@@ -906,20 +906,36 @@ const changeControlChoice = (gate) => {
 // The prompt section a changed approved input adds. `relaxed` states the change
 // and continues; `strict` states that the human already reconfirmed it, so the
 // agent knows the divergence was accepted deliberately rather than missed.
+// A fingerprint the comparison could not read is rendered as such. A null hash is
+// a real state here — an unreadable approval or artifact history records no
+// fingerprints at all — and the documented behaviour for it is to state the gap
+// and continue (relaxed) or ask about it (strict), never to crash before the
+// agent runs.
+const shortFingerprint = (hash) =>
+  typeof hash === 'string' && hash ? hash.slice(0, 12) : 'unavailable';
+
 const renderChangedInputs = (changed, { reconfirmed = false } = {}) => {
   if (!changed.length) return '';
   const artifactHistoryReadFailed = changed.some((item) => item.artifactHistoryReadFailed);
+  // The heading speaks for the WHOLE list, so it only claims the approval history was
+  // unreadable when that is true of every item; a mixed list keeps the generic
+  // heading and the per-item lines say which is which.
+  const approvalHistoryReadFailed = changed.every((item) => item.approvalHistoryReadFailed);
   const lines = changed.map((item) =>
     item.artifactHistoryReadFailed
       ? `- ${item.artifactType ?? item.artifactId}: current artifact history could not be read`
-      : item.approvalHistoryUnknown
-        ? `- ${item.artifactType ?? item.artifactId} has incomplete approval history (receipt size limit); current fingerprint ${item.toHash.slice(0, 12)}`
-        : `- ${item.artifactType ?? item.artifactId} changed since it was approved (${item.fromHash.slice(0, 12)} → ${item.toHash.slice(0, 12)})`,
+      : item.approvalHistoryReadFailed
+        ? `- ${item.artifactType ?? item.artifactId}: approval history could not be read, so no approved fingerprint is known`
+        : item.approvalHistoryUnknown
+          ? `- ${item.artifactType ?? item.artifactId} has incomplete approval history (receipt size limit); current fingerprint ${shortFingerprint(item.toHash)}`
+          : `- ${item.artifactType ?? item.artifactId} changed since it was approved (${shortFingerprint(item.fromHash)} → ${shortFingerprint(item.toHash)})`,
   );
   return [
     artifactHistoryReadFailed
       ? '## Artifact history could not be read'
-      : '## Inputs that changed since they were approved',
+      : approvalHistoryReadFailed
+        ? '## Approval history could not be read'
+        : '## Inputs that changed since they were approved',
     '',
     ...lines,
     '',

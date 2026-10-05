@@ -18,6 +18,7 @@ const {
   changeControlGateId,
   changeControlFingerprint,
   isChangeControlGate,
+  renderChangedInputs,
 } = __test;
 
 describe('changedApprovedInputs', () => {
@@ -1008,5 +1009,92 @@ describe('changedApprovedInputs across three stages', () => {
         approvals: [APPROVAL_A, scopedApprovalB, reapprovalA],
       }),
     ).toEqual([]);
+  });
+});
+
+// An unreadable approval history records NO fingerprints, so every hash on the
+// comparison is null. The documented behaviour is to state the gap and continue
+// (relaxed) or ask about it and continue after the answer (strict) — never to fail
+// before the agent runs.
+describe('runStage — unavailable approval history is rendered, not dereferenced', () => {
+  const unreadableApprovals = (store) => {
+    store.listReceipts = async () => {
+      throw new Error('receipt store unavailable');
+    };
+  };
+
+  it('records the unavailable history and continues in relaxed mode', async () => {
+    const store = harnessStore({ receipts: [APPROVAL] });
+    unreadableApprovals(store);
+    const capture = promptCapture();
+
+    const res = await runStage(
+      args,
+      deps(store, { scopeFm: { changeControl: 'relaxed' }, deps: { spawnFn: capture.spawnFn } }),
+    );
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(store.of('createHumanTask')).toEqual([]);
+    expect(store.of('appendEvent')).toContainEqual(
+      expect.objectContaining({
+        type: 'v2.change.accepted',
+        detail: expect.objectContaining({
+          artifactType: PRODUCER,
+          approvalHistoryReadFailed: true,
+          toHash: null,
+        }),
+      }),
+    );
+    expect(capture.seen.prompt).toContain('## Approval history could not be read');
+    expect(capture.seen.prompt).toContain('no approved fingerprint is known');
+    expect(capture.seen.prompt).not.toContain('unavailable →');
+  });
+
+  it('continues after the human reconfirms while the history is still unavailable', async () => {
+    const store = harnessStore({
+      receipts: [APPROVAL],
+      humanTask: {
+        humanTaskId: ccGateId(0, UNREADABLE_FINGERPRINT),
+        stageInstanceId: CONSUMER_INSTANCE,
+        status: 'answered',
+        answeredBy: 'u1',
+        answeredByName: 'Ada',
+        answer: { perQuestion: [{ answer: 'Reconfirm and continue' }] },
+      },
+    });
+    unreadableApprovals(store);
+    const capture = promptCapture();
+
+    const res = await runStage(
+      { ...args, resumeFrom: ccGateId(0, UNREADABLE_FINGERPRINT) },
+      deps(store, { scopeFm: { changeControl: 'strict' }, deps: { spawnFn: capture.spawnFn } }),
+    );
+
+    expect(res.state).toBe('SUCCEEDED');
+    expect(store.of('appendEvent').map((event) => event.type)).toContain('v2.change.reconfirmed');
+    expect(capture.seen.prompt).toContain('## Approval history could not be read');
+    expect(capture.seen.prompt).toContain('The human reconfirmed the current state');
+  });
+
+  it('keeps the generic heading when only some items lost their approval history', () => {
+    const rendered = renderChangedInputs([
+      { artifactType: PRODUCER, approvalHistoryUnknown: true, approvalHistoryReadFailed: true },
+      { artifactType: CONSUMER, fromHash: 'sha-old-0123456789', toHash: 'sha-new-0123456789' },
+    ]);
+    expect(rendered).toContain('## Inputs that changed since they were approved');
+    expect(rendered).toContain(`- ${PRODUCER}: approval history could not be read`);
+    expect(rendered).toContain(`- ${CONSUMER} changed since it was approved`);
+  });
+
+  it('still renders a real fingerprint pair when both histories were readable', () => {
+    expect(
+      renderChangedInputs([
+        {
+          artifactType: PRODUCER,
+          fromHash: 'sha-old-0123456789',
+          toHash: 'sha-new-0123456789',
+        },
+      ]),
+    ).toContain('(sha-old-0123 → sha-new-0123)');
   });
 });
