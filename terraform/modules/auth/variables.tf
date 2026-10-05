@@ -90,6 +90,18 @@ variable "vpc_security_group_ids" {
   default     = []
 }
 
+variable "web_acl_arn" {
+  description = "ARN of a regional AWS WAFv2 web ACL. Empty leaves the user pool without AWS WAF."
+  type        = string
+  default     = ""
+}
+
+variable "waf_enabled" {
+  description = "Whether to associate the user pool with AWS WAF"
+  type        = bool
+  default     = false
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)

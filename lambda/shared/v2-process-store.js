@@ -209,6 +209,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     starterEmail,
     agentCli,
     credentialBinding,
+    mcpServersByTier,
     constructionAutonomyMode,
     projectType,
     // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
@@ -342,6 +343,14 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }
       sets.push('credentialBinding = :acb');
       values[':acb'] = credentialBinding;
+    }
+    if (mcpServersByTier !== undefined) {
+      if (status !== 'CREATED' || !fromStatus) {
+        throw new Error('MCP settings can only be replaced during a conditional launch');
+      }
+      sets.push('mcpServersByTier = :mcp');
+      values[':mcp'] = mcpServersByTier;
+      removes.push('customMcpServers');
     }
     if (orchestratorRunId !== undefined) {
       sets.push('orchestratorRunId = :orid');

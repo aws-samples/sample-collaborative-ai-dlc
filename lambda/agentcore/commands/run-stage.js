@@ -60,7 +60,7 @@ import {
 } from '../ensemble-runner.js';
 import { fetchCustomRules as defaultFetchCustomRules } from '../custom-rules.js';
 import { materializeAttachments } from '../attachments.js';
-import { toMcpServerMap } from '../../shared/mcp-validator.js';
+import { toMcpServerMap, validateMcpServers } from '../../shared/mcp-validator.js';
 import {
   computeSurvivors,
   resolveMcpSecrets as defaultResolveMcpSecrets,
@@ -1938,6 +1938,24 @@ export const runStage = async (
   const stageLabel = unitSlug ? `${stageId} [unit ${unitSlug}]` : stageId;
 
   if (stage.notImplemented) return fail(stageInstanceId, 'not_implemented', `mode ${stage.mode}`);
+
+  // Stored configs may predate current validation. Check both tiers, as verify-mcp
+  // does, before resolving MCP secrets or launching a CLI (fresh AND resume).
+  for (const tier of ['global', 'project']) {
+    const validation = validateMcpServers(mcpServersByTier?.[tier] ?? {});
+    if (!validation.valid) {
+      // Report field paths, not raw config values that might contain secrets.
+      const fields = validation.issues.map(({ path }) => path || '<root>').join(', ');
+      const httpsHint = validation.issues.some(({ code }) => code === 'https_required')
+        ? ' Remote MCP URLs must use https://.'
+        : '';
+      return fail(
+        stageInstanceId,
+        'mcp_config_error',
+        `Invalid ${tier} MCP configuration at ${fields}.${httpsHint} Correct MCP settings, then retry the intent to reload the corrected configuration.`,
+      );
+    }
+  }
 
   // Release-authored scope policy can silently REMOVE verification (a reviewer, a
   // sensor list). Record what it took away so an operator reading the timeline

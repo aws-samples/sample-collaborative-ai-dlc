@@ -75,6 +75,19 @@ bash /tmp/aidlc-install.sh install \
 
 This is a non-release mode. The installer resolves the branch to an immutable commit snapshot, records the tracked branch, and follows newer branch commits when `update` runs. Normal installations continue to require immutable version tags.
 
+### AWS WAF
+
+[AWS WAF](https://docs.aws.amazon.com/waf/latest/developerguide/waf-chapter.html) (Web Application Firewall) is optional and disabled by default.
+To create web ACLs for CloudFront, the REST API Gateway stage, and the Cognito user pool, set:
+
+```hcl
+enable_waf = true
+```
+
+The ACLs use the AWS-managed Common Rule Set, Known Bad Inputs, and Amazon IP Reputation rule groups.
+Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
+A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
+
 ### Custom domain
 
 Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.

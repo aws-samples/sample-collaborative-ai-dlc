@@ -471,6 +471,9 @@ beforeEach(() => {
   sourceControlOperationHandler = null;
   credentialMetadataHandler = null;
   ssmMock.reset();
+  ssmMock
+    .on(GetParameterCommand)
+    .rejects(Object.assign(new Error('Parameter not found'), { name: 'ParameterNotFound' }));
   vi.stubEnv('AGENT_SETTINGS_SSM_PREFIX', '/collab/dev');
   ssmMock.on(GetParametersCommand).callsFake((input) => ({
     Parameters: (input.Names ?? [])
@@ -3097,6 +3100,144 @@ describe('POST /recompose — in-flight reshape', () => {
 });
 
 describe('POST /start', () => {
+  const start = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/start`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify({ agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+
+  const setProjectMcp = (projectId, servers) =>
+    g
+      .V()
+      .has('Project', 'id', projectId)
+      .property(gremlin.process.cardinality.single, 'custom_mcp_servers', JSON.stringify(servers))
+      .next();
+
+  it.each([
+    ['DRAFT', 'global'],
+    ['DRAFT', 'project'],
+    ['FAILED', 'global'],
+    ['FAILED', 'project'],
+  ])('blocks %s launch with %s HTTP settings before any runtime starts', async (status, tier) => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const servers = { tool: { type: 'http', url: 'http://legacy.example/mcp?token=private' } };
+    if (tier === 'global') {
+      ssmMock.on(GetParameterCommand, { Name: '/collab/dev/custom-mcp-servers' }).resolves({
+        Parameter: { Value: JSON.stringify(servers) },
+      });
+    } else {
+      await setProjectMcp(projectId, servers);
+    }
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, status);
+    const key = keyOf(`EXEC#${intent.id}`, 'META');
+    const before = { ...procStore.get(key) };
+
+    const res = await start(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'mcp_config_error' });
+    expect(JSON.parse(res.body).error).toContain(`${tier} MCP`);
+    expect(JSON.parse(res.body).error).toContain('https://');
+    expect(JSON.parse(res.body).error).toContain(
+      tier === 'global' ? 'Platform Admin settings' : 'Space Settings',
+    );
+    expect(res.body).not.toContain('private');
+    expect(procStore.get(key)).toEqual(before);
+    expect(orchestratorInvokes()).toHaveLength(0);
+    expect(agentcoreMock.calls()).toHaveLength(0);
+  });
+
+  it.each(['DRAFT', 'FAILED'])(
+    'saves corrected settings and starts the same %s intent with a repaired snapshot',
+    async (status) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      await setProjectMcp(projectId, { tool: { type: 'http', url: 'http://legacy.example/mcp' } });
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, status);
+      expect((await start(sub, projectId, intent.id)).statusCode).toBe(400);
+
+      const corrected = { tool: { type: 'http', url: 'https://legacy.example/mcp' } };
+      const { handler: projectsHandler } = await import('../../projects/index.js');
+      const saved = await projectsHandler({
+        httpMethod: 'PUT',
+        path: `/projects/${projectId}/custom-mcp-servers`,
+        pathParameters: { projectId },
+        body: JSON.stringify({ customMcpServers: JSON.stringify(corrected) }),
+        ...claims(sub),
+      });
+      expect(saved.statusCode).toBe(200);
+      // The settings save alone has not rewritten the snapshot.
+      expect(
+        procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).mcpServersByTier.project.tool.url,
+      ).toBe('http://legacy.example/mcp');
+      expect((await start(sub, projectId, intent.id)).statusCode).toBe(202);
+      expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).mcpServersByTier).toEqual({
+        global: {},
+        project: corrected,
+      });
+      expect(orchestratorInvokes()).toHaveLength(1);
+    },
+  );
+
+  it('repairs legacy snapshots after all servers are removed without reviving the old map', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    Object.assign(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')), {
+      status: 'FAILED',
+      mcpServersByTier: null,
+      customMcpServers: { tool: { type: 'http', url: 'http://legacy.example/mcp' } },
+    });
+
+    expect((await start(sub, projectId, intent.id)).statusCode).toBe(202);
+    const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
+    expect(meta.mcpServersByTier).toEqual({ global: {}, project: {} });
+    expect(meta.customMcpServers).toBeUndefined();
+  });
+
+  it('keeps a valid snapshot on retry even if settings have since changed', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const pinned = { tool: { type: 'http', url: 'https://original.example/mcp' } };
+    await setProjectMcp(projectId, pinned);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, 'FAILED');
+    await setProjectMcp(projectId, { other: { type: 'http', url: 'https://new.example/mcp' } });
+
+    expect((await start(sub, projectId, intent.id)).statusCode).toBe(202);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).mcpServersByTier.project).toEqual(
+      pinned,
+    );
+  });
+
+  it.each(['unavailable', 'malformed'])(
+    'does not erase a snapshot when global settings are %s',
+    async (failure) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      const key = keyOf(`EXEC#${intent.id}`, 'META');
+      const before = { ...procStore.get(key) };
+      const read = ssmMock.on(GetParameterCommand, { Name: '/collab/dev/custom-mcp-servers' });
+      if (failure === 'unavailable') read.rejects(new Error('AccessDenied'));
+      else read.resolves({ Parameter: { Value: '{invalid-secret' } });
+
+      const res = await start(sub, projectId, intent.id);
+      expect(res.statusCode).toBe(failure === 'unavailable' ? 503 : 400);
+      expect(res.body).not.toContain('invalid-secret');
+      expect(res.body).not.toContain('https://');
+      expect(procStore.get(key)).toEqual(before);
+      expect(orchestratorInvokes()).toHaveLength(0);
+      expect(agentcoreMock.calls()).toHaveLength(0);
+    },
+  );
+
   it('requires an explicit CLI for a fresh DRAFT', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -5489,6 +5630,41 @@ describe('POST /rewind', () => {
       body: JSON.stringify(body),
       ...claims(sub),
     });
+
+  it('rejects HTTP before stopping a parked runtime or resetting work, then accepts corrected settings', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    const servers = { tool: { type: 'http', url: 'http://legacy.example/mcp' } };
+    ssmMock.on(GetParameterCommand, { Name: '/collab/dev/custom-mcp-servers' }).resolves({
+      Parameter: { Value: JSON.stringify(servers) },
+    });
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'WAITING' });
+    seedStageRow(intent.id, 'design');
+    seedStageRow(intent.id, 'implement', 'WAITING_FOR_HUMAN');
+    const key = keyOf(`EXEC#${intent.id}`, 'META');
+    const before = { ...procStore.get(key) };
+
+    const blocked = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
+    expect(blocked.statusCode).toBe(400);
+    expect(JSON.parse(blocked.body).code).toBe('mcp_config_error');
+    expect(procStore.get(key)).toEqual(before);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`)).attempt).toBe(0);
+    expect(archiveArtifactsSpy).not.toHaveBeenCalled();
+    expect(agentcoreMock.calls()).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
+
+    const corrected = { tool: { type: 'http', url: 'https://legacy.example/mcp' } };
+    ssmMock.on(GetParameterCommand, { Name: '/collab/dev/custom-mcp-servers' }).resolves({
+      Parameter: { Value: JSON.stringify(corrected) },
+    });
+    expect((await rewind(sub, projectId, intent.id, { fromStageId: 'implement' })).statusCode).toBe(
+      202,
+    );
+    expect(procStore.get(key).mcpServersByTier).toEqual({ global: corrected, project: {} });
+    expect(orchestratorInvokes()).toHaveLength(1);
+  });
 
   it('resets the target stage + downstream, supersedes their artifacts, relaunches at the stage', async () => {
     const sub = `u-${randomUUID()}`;
