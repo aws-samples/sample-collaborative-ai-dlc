@@ -57,6 +57,26 @@ describe('receipt keys', () => {
     );
   });
 
+  // A checkpoint raised twice within one revision records two decisions, so the
+  // round joins the key. Round 0 adds nothing, which is what keeps every receipt
+  // written before rounds existed addressable at its original key.
+  it('keys each checkpoint round separately while leaving round 0 unchanged', () => {
+    expect(receiptKey('e1', { ...SELECTOR, round: 0 }).sk).toBe(
+      'RECEIPT#summary-confirmation#si-1#2#-',
+    );
+    expect(receiptKey('e1', { ...SELECTOR, round: 1 }).sk).toBe(
+      'RECEIPT#summary-confirmation#si-1#2#-#r1',
+    );
+    expect(receiptKey('e1', { ...SELECTOR, ordinal: 1, round: 2 }).sk).toBe(
+      'RECEIPT#summary-confirmation#si-1#2#-#1#r2',
+    );
+    expect(buildReceiptRow({ executionId: 'e1', ...SELECTOR, round: 1, now: 'T' })).toMatchObject({
+      round: 1,
+      sk: 'RECEIPT#summary-confirmation#si-1#2#-#r1',
+    });
+    expect(buildReceiptRow({ executionId: 'e1', ...SELECTOR, now: 'T' }).round).toBeNull();
+  });
+
   it('projects GSI2 by kind so one query answers "every override on this run"', () => {
     const row = buildReceiptRow({
       executionId: 'e1',

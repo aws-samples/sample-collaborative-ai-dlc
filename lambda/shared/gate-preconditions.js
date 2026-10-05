@@ -92,6 +92,40 @@ const checkpointReceipts = (receipts, kind, attempt, validationRound) =>
     (row) => Number(row?.ordinal ?? 0) === Number(validationRound ?? 0),
   );
 
+// The event each checkpoint writes when the human answers "Request changes". It is
+// the DURABLE record that an authorization was withdrawn: the MCP process also
+// drops it from memory, but that memory dies with the container while this does not.
+const CHECKPOINT_WITHDRAWAL_EVENTS = Object.freeze({
+  'summary-confirmation': 'v2.summary.changes_requested',
+  'plan-approval': 'v2.plan.changes_requested',
+});
+
+const withdrawnAfter = (events, kind, receipt) => {
+  const withdrawal = CHECKPOINT_WITHDRAWAL_EVENTS[kind];
+  if (!withdrawal) return false;
+  const decidedAt = String(receipt?.decidedAt ?? '');
+  return (events ?? []).some(
+    (event) =>
+      eventTypeOf(event) === withdrawal &&
+      String(event.timestamp ?? '').localeCompare(decidedAt) > 0,
+  );
+};
+
+// The receipt that AUTHORIZES this revision, or null. A checkpoint can be raised
+// several times within one revision ("raise a different summary"), and each round
+// records its own receipt — so only the LATEST round speaks for the stage, and a
+// "Request changes" answered after it withdraws the authorization here exactly as
+// it does in the MCP process. Rows written before rounds were tracked carry no
+// `round`, so they resolve to the single approval they always were.
+const currentCheckpointReceipt = (receipts, kind, attempt, validationRound, events) => {
+  const latest = checkpointReceipts(receipts, kind, attempt, validationRound).reduce(
+    (best, row) => (!best || Number(row?.round ?? 0) >= Number(best?.round ?? 0) ? row : best),
+    null,
+  );
+  if (!latest) return null;
+  return withdrawnAfter(events, kind, latest) ? null : latest;
+};
+
 // A `<stage>-questions` output is satisfied by the platform question channel
 // (HUMAN# rows + timeline), not by a graph artifact — see
 // `isQuestionChannelOutput`. Excluded here so it is neither reported missing nor
@@ -254,11 +288,12 @@ const evaluateGatePreconditions = ({
   }
 
   if (summaryConfirmationRequired(policy, events, attempt)) {
-    const [receipt] = checkpointReceipts(
+    const receipt = currentCheckpointReceipt(
       receipts,
       'summary-confirmation',
       attempt,
       validationRound,
+      events,
     );
     if (!receipt) {
       findings.push(
@@ -297,7 +332,7 @@ const evaluateGatePreconditions = ({
   }
 
   if (policy.planApproval === 'required') {
-    if (checkpointReceipts(receipts, 'plan-approval', attempt, validationRound).length === 0) {
+    if (!currentCheckpointReceipt(receipts, 'plan-approval', attempt, validationRound, events)) {
       findings.push(
         finding({
           code: 'plan_approval_missing',

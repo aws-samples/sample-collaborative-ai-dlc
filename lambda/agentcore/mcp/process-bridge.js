@@ -18,6 +18,7 @@
 
 import { randomUUID, createHash } from 'node:crypto';
 import { canonicalJson } from '../../shared/workflow-checkpoint.js';
+import { eventTypeOf } from '../../shared/v2-process-keys.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -266,6 +267,17 @@ export const createProcessBridge = ({
       revision > 0 ? `v${revision}` : ''
     }-${unitSlug ?? '-'}-${round}`;
 
+  // Which round a checkpoint gate belongs to, read back off its derived id. The
+  // receipt is keyed by the SAME round, so two re-asks within one revision can
+  // never collapse onto each other's authorization.
+  const checkpointRoundOf = (checkpoint, task) => {
+    const taskId = String(task?.humanTaskId ?? '');
+    for (let round = 0; round < CHECKPOINT_MAX_ROUNDS; round += 1) {
+      if (taskId === checkpointTaskId(checkpoint, round)) return round;
+    }
+    return 0;
+  };
+
   // The newest checkpoint gate for this (stage, attempt) and the first free round
   // after it, bounded so a pathological loop cannot scan forever.
   const latestCheckpointGate = async (checkpoint) => {
@@ -282,8 +294,11 @@ export const createProcessBridge = ({
 
   // Record the authorization the human gave. Idempotent through putReceipt's
   // deterministic SK, so the same answer replayed by a resume or a redrive returns
-  // the existing row instead of writing a second one.
+  // the existing row instead of writing a second one. The SK carries the checkpoint
+  // ROUND, so a second re-ask within one revision records its own decision rather
+  // than resolving onto the first one's row.
   const recordCheckpointReceipt = async ({ spec, checkpoint, task, label }) => {
+    const round = checkpointRoundOf(checkpoint, task);
     const receipt = await store.putReceipt({
       executionId,
       kind: spec.receiptKind,
@@ -292,12 +307,13 @@ export const createProcessBridge = ({
       unitSlug,
       sectionIndex,
       ordinal: revisionOrdinal,
+      round,
       boundDigest: task.detail?.boundDigest ?? null,
       choice: label,
       decidedBy: task.answeredBy ?? null,
       decidedByName: task.answeredByName ?? null,
       humanTaskId: task.humanTaskId,
-      detail: { checkpoint },
+      detail: { checkpoint, round },
     });
     if (spec.receiptKind === 'summary-confirmation') activeAuthorizationId = receipt.sk;
     await store
@@ -353,7 +369,10 @@ export const createProcessBridge = ({
     }
     if (label === spec.reject) {
       // A later "Request changes" withdraws the confirmation given earlier in
-      // this revision: the outputs written next are not covered by it.
+      // this revision: the outputs written next are not covered by it. The
+      // `changes_requested` event below is the DURABLE half of that withdrawal —
+      // the gate evaluator reads it, so the receipt this process stops trusting
+      // stops authorizing anything there too.
       if (spec.receiptKind === 'summary-confirmation') activeAuthorizationId = null;
       await store
         .appendEvent({
@@ -389,6 +408,39 @@ export const createProcessBridge = ({
     };
   };
 
+  // The newest decision this checkpoint has on the record, by `decidedAt`. A
+  // withdrawal only has to be published when there IS an approval it withdraws.
+  const latestReceiptDecidedAt = async (spec) => {
+    if (typeof store.listReceipts !== 'function') return null;
+    const rows = await store
+      .listReceipts(executionId, { kind: spec.receiptKind, stageInstanceId, attempt })
+      .catch(() => null);
+    if (!Array.isArray(rows)) return null;
+    return (
+      rows
+        .map((row) => String(row?.decidedAt ?? ''))
+        .filter(Boolean)
+        .toSorted()
+        .at(-1) ?? null
+    );
+  };
+
+  // Whether the withdrawal is already on the record. `rehydrateAuthorizations` runs
+  // once per container and a parked rejection is read by every container that
+  // resumes after it, so without this the same withdrawal would be appended again
+  // on each resume.
+  const withdrawalRecordedSince = async (spec, decidedAt) => {
+    if (typeof store.listEvents !== 'function') return false;
+    const events = await store.listEvents(executionId).catch(() => null);
+    if (!Array.isArray(events)) return false;
+    return events.some(
+      (event) =>
+        eventTypeOf(event) === spec.events.changesRequested &&
+        (event?.stageInstanceId == null || event.stageInstanceId === stageInstanceId) &&
+        String(event?.timestamp ?? '').localeCompare(String(decidedAt ?? '')) > 0,
+    );
+  };
+
   const refuseAuthorization = async ({ checkpoint, reason, humanTaskId = null }) => {
     await store
       .appendEvent({
@@ -410,6 +462,9 @@ export const createProcessBridge = ({
   // have produced one — is the ONLY record that the human authorized anything.
   // Minting it here rather than on the raise path is what makes park/resume safe.
   //
+  // Authority is resolved from the LATEST checkpoint round: an earlier round's
+  // approval cannot speak for a later re-ask, and a later rejection withdraws it.
+  //
   // An EXISTING receipt is re-checked against the gate it names before it is
   // allowed to stamp anything: same digest, and a gate that still records a human.
   // Refusing is safe — the completion ladder then reports the authorization as
@@ -418,6 +473,8 @@ export const createProcessBridge = ({
   const rehydrateAuthorizations = async () => {
     if (!policy) return null;
     for (const [checkpoint, spec] of Object.entries(CHECKPOINTS)) {
+      const { latest } = await latestCheckpointGate(checkpoint);
+      const round = latest ? checkpointRoundOf(checkpoint, latest) : 0;
       const existing = await store
         .getReceipt(executionId, {
           kind: spec.receiptKind,
@@ -425,9 +482,13 @@ export const createProcessBridge = ({
           attempt,
           unitSlug,
           ordinal: revisionOrdinal,
+          round,
         })
         .catch(() => null);
       if (existing) {
+        // A recorded rejection is a decision, not a missing one: it authorizes
+        // nothing and no earlier round can be revived behind it.
+        if (existing.detail?.decision === 'changes-requested') continue;
         // Only the summary confirmation mints the stamp this bridge applies, so it
         // is the only receipt whose provenance this code can act on. A plan-approval
         // receipt is judged by the completion ladder's commit-lineage rule from the
@@ -451,7 +512,6 @@ export const createProcessBridge = ({
           continue;
         }
         // A "Request changes" answered after this confirmation withdrew it.
-        const { latest } = await latestCheckpointGate(checkpoint);
         if (
           latest &&
           latest.humanTaskId !== existing.humanTaskId &&
@@ -462,8 +522,37 @@ export const createProcessBridge = ({
         activeAuthorizationId = existing.sk;
         continue;
       }
-      const { latest } = await latestCheckpointGate(checkpoint);
       if (!latest || latest.status === 'pending') continue;
+      if (chosenLabel(latest.answer) === spec.reject) {
+        // The rejection was answered while no container existed, so nothing has
+        // recorded the withdrawal yet. Writing it here is what stops an EARLIER
+        // round's approval from still satisfying the durable evaluator — and it is
+        // written only when there is such an approval and no withdrawal already
+        // postdates it, so a resume cannot duplicate the row.
+        const withdrawnFrom = await latestReceiptDecidedAt(spec);
+        if (withdrawnFrom && !(await withdrawalRecordedSince(spec, withdrawnFrom))) {
+          // Best-effort like every other audit write here, but NOT silent: this row
+          // is what the durable evaluator reads, so a failure has to be traceable.
+          // stderr only — stdout is the StdioServerTransport JSON-RPC stream.
+          await store
+            .appendEvent({
+              executionId,
+              type: spec.events.changesRequested,
+              stageInstanceId,
+              unitSlug,
+              sectionIndex,
+              actor: latest.answeredByName || latest.answeredBy || 'the human team',
+              summary: `${checkpoint} changes requested`,
+              detail: { checkpoint, attempt, round },
+            })
+            .catch((error) => {
+              console.error(
+                `[mcp-bridge] ${checkpoint} withdrawal not recorded stage=${stageInstanceId} attempt=${attempt} round=${round} err=${error?.message}`,
+              );
+            });
+        }
+        continue;
+      }
       if (chosenLabel(latest.answer) !== spec.approve) continue;
       const refusal = authorizationRefusal(latest);
       if (refusal) {
@@ -483,6 +572,9 @@ export const createProcessBridge = ({
     }
     return activeAuthorizationId;
   };
+  // ONE rehydration per container: it is started at construction and every caller
+  // awaits that same promise. Running it twice in one process would re-read the same
+  // durable state and could append the withdrawal row below a second time.
   const rehydrated = rehydrateAuthorizations().catch(() => null);
 
   // Raise one checkpoint. Everything but the payload is identical to ask_question:
@@ -812,7 +904,7 @@ export const createProcessBridge = ({
     requestPlanApproval,
     stampArtifact,
     stampsArtifacts: () => Boolean(policy),
-    rehydrateAuthorizations,
+    rehydrateAuthorizations: () => rehydrated,
     activeAuthorizationId: () => activeAuthorizationId,
     sendOutput,
     recordProjectType,
