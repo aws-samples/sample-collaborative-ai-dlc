@@ -3525,8 +3525,14 @@ export const runStage = async (
   // repair turns' (added by runRepairTurn below).
   let stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
   retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
-  if (gitResult.committed || !gitResult.ok) {
-    const failedRepos = gitResult.results
+  // The authoritative commit evidence. `v2.git.pushed` is what the plan-approval
+  // lineage rule (`latestCommitAt` / `withPlanApprovalLineage`) reads to decide
+  // whether the stage's code predates its approval, so EVERY commit of the attempt
+  // must publish it — a repair commit that stayed silent left the lineage check
+  // judging the stage on its pre-approval commit.
+  const publishGitEvidence = async (result, { label = null } = {}) => {
+    if (!result || (!result.committed && result.ok)) return;
+    const failedRepos = (result.results ?? [])
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
       // Carry the git stderr into the event — the 2026-07 incident's ENOSPC
       // root cause was invisible because only the reason label was recorded.
@@ -3534,16 +3540,17 @@ export const runStage = async (
         (r) =>
           `${r.repo} (${r.reason ?? 'unknown'}${r.detail ? `: ${String(r.detail).slice(0, 300)}` : ''})`,
       );
-    const gitSummary = gitResult.ok
-      ? `Engine committed + pushed work for ${stageLabel} (${gitResult.results
+    const scope = label ? `${stageLabel} (${label})` : stageLabel;
+    const gitSummary = result.ok
+      ? `Engine committed + pushed work for ${scope} (${(result.results ?? [])
           .filter((r) => r.committed)
           .map((r) => `${r.repo}@${(r.sha ?? '').slice(0, 8)}`)
           .join(', ')})`
-      : `Engine push failed for ${stageLabel}: ${failedRepos.join(', ')}`;
+      : `Engine push failed for ${scope}: ${failedRepos.join(', ')}`;
     await store
       .appendEvent({
         executionId,
-        type: gitResult.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
+        type: result.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
         stageInstanceId,
         unitSlug,
         sectionIndex,
@@ -3554,7 +3561,7 @@ export const runStage = async (
     // Surface a push failure live (agent.note is the timeline-note action the
     // UI already routes) — the user must see git trouble at stage N, not after
     // the whole run has burned its tokens.
-    if (!gitResult.ok) {
+    if (!result.ok) {
       await publish({
         action: 'agent.note',
         noteType: 'v2.git.push_failed',
@@ -3564,7 +3571,8 @@ export const runStage = async (
         summary: gitSummary,
       });
     }
-  }
+  };
+  await publishGitEvidence(gitResult);
 
   const parkStage = async (parked) => {
     if ((cli === 'opencode' || cli === 'codex') && !cliSessionId) {
@@ -3787,6 +3795,7 @@ export const runStage = async (
         stageCodeCommitRefs = mergeCodeCommitRefs(stageCodeCommitRefs, repairGit);
         if (stageCodeCommitRefs.length > refsBefore) repairCommitted = true;
         retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
+        await publishGitEvidence(repairGit, { label });
         repairGitFailure ??= workAtRiskFailure(repairGit);
       }
     : null;
