@@ -690,6 +690,7 @@ locals {
     WEBSOCKET_ENDPOINT            = var.websocket_endpoint
     AIDLC_REPO_REF                = var.aidlc_repo_ref
     BEDROCK_MODEL                 = var.bedrock_model
+    BEDROCK_REGION                = var.bedrock_region
     AWS_REGION                    = var.aws_region
     CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
     SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"

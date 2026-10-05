@@ -84,6 +84,17 @@ variable "bedrock_model" {
   default     = "us.anthropic.claude-sonnet-4-6"
 }
 
+variable "bedrock_region" {
+  description = "AWS region for Bedrock inference and model discovery. Empty uses aws_region. Bedrock API keys are regional, so set this when the key or model access lives outside the deployment region; bedrock_model and model selections must then use this region's geo prefix (us./eu./apac.) or global."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.bedrock_region == "" || can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]$", var.bedrock_region))
+    error_message = "bedrock_region must be empty or an AWS region name such as us-east-1."
+  }
+}
+
 variable "codex_model" {
   description = "Default Codex-on-Bedrock model id (exact openai.* id, e.g. openai.gpt-5.5) seeded into the cli-models SSM parameter (empty = none)"
   type        = string

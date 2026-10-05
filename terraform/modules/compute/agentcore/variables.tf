@@ -107,6 +107,11 @@ variable "bedrock_model" {
   type        = string
 }
 
+variable "bedrock_region" {
+  description = "AWS region the agent CLIs send Bedrock inference to (BEDROCK_REGION)"
+  type        = string
+}
+
 variable "kiro_model" {
   description = "Default Kiro-native model id seeded into the cli-models SSM parameter (empty = none)"
   type        = string

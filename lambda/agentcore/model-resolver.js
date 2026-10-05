@@ -29,7 +29,8 @@ const DEFAULT_ALIASES = {
 const isFullId = (v) => /[./]/.test(v);
 
 // Region prefix for a resolved alias. Bedrock cross-region inference profiles are
-// prefixed by geo (us./eu./apac.); derive from the runtime region, default us.
+// prefixed by geo (us./eu./apac.); derive from the inference region (the CLIs
+// call Bedrock in BEDROCK_REGION when set, else the runtime region), default us.
 const regionPrefix = (region = '') => {
   if (region.startsWith('eu-')) return 'eu';
   if (region.startsWith('ap-')) return 'apac';
@@ -59,7 +60,7 @@ export const resolveModelId = (raw, { env = process.env } = {}) => {
   // Prefix the alias target with the geo unless it already carries one.
   return isFullId(target) && /^(us|eu|apac)\./.test(target)
     ? target
-    : `${regionPrefix(env.AWS_REGION || env.BEDROCK_REGION)}.${target}`;
+    : `${regionPrefix(env.BEDROCK_REGION || env.AWS_REGION)}.${target}`;
 };
 
 // CLIs whose `--model` value is a Bedrock id (inference profile / provider-
