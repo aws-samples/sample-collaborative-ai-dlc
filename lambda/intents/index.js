@@ -1,3 +1,4 @@
+import { validateSparseCheckout } from '../shared/sparse-checkout.js';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { createHash, randomUUID, randomBytes } from 'node:crypto';
@@ -1287,6 +1288,7 @@ const mapIntent = (meta) => ({
   branch: meta.branch ?? null,
   baseBranch: meta.baseBranch ?? null,
   baseBranches: meta.baseBranches ?? null,
+  sparseCheckout: meta.sparseCheckout ?? null,
   repos: meta.repos ?? null,
   repoProviders: meta.repoProviders ?? null,
   gitProvider: meta.gitProvider ?? null,
@@ -5422,6 +5424,11 @@ export const handler = async (event, context) => {
       if (baseBranchesError) {
         return response(400, { error: baseBranchesError });
       }
+      const { value: sparseCheckout, error: sparseCheckoutError } = validateSparseCheckout(
+        data.sparseCheckout,
+        cfg.repos,
+      );
+      if (sparseCheckoutError) return response(400, { error: sparseCheckoutError });
       // Optional provenance — when the intent is kicked off from a tracker
       // issue, record which one. The imported text rides in `prompt`; this is
       // only the back-link. Validated against the project's actual bindings.
@@ -5493,6 +5500,7 @@ export const handler = async (event, context) => {
         branch,
         baseBranch: data.baseBranch || cfg.baseBranch,
         baseBranches,
+        sparseCheckout,
         repos: cfg.repos,
         repoProviders: cfg.repoProviders,
         gitProvider: cfg.gitProvider,

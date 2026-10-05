@@ -154,6 +154,32 @@ describe('NewIntentPage — base branch selection', () => {
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     const payload = create.mock.calls[0][1];
     expect(payload.baseBranches).toBeUndefined();
+    expect(payload.sparseCheckout).toBeUndefined();
+  });
+
+  it('submits per-repository directory selections', async () => {
+    const user = userEvent.setup();
+    useProjectCache.mockReturnValue({
+      project: baseProject({
+        repos: [
+          { url: 'owner/repo', role: 'primary' },
+          { url: 'owner/web', role: 'secondary' },
+        ],
+      }),
+      loading: false,
+    });
+    renderPage();
+    await user.type(await screen.findByLabelText('Prompt'), 'Update API');
+    await user.click(screen.getByText('Repository directories (optional)'));
+    await user.type(
+      screen.getByLabelText('Directories for owner/repo'),
+      'services/api\npackages/shared',
+    );
+    await user.click(screen.getByRole('button', { name: /continue to compose/i }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create.mock.calls[0][1].sparseCheckout).toEqual({
+      'owner/repo': ['services/api', 'packages/shared'],
+    });
   });
 
   it('includes only the explicitly-picked repo in baseBranches on submit', async () => {

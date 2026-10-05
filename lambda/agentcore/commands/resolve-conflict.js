@@ -98,6 +98,7 @@ export const resolveConflict = async (
     intentBranch,
     gitProvider,
     repoProviders = null,
+    sparseCheckout = null,
     // Commit attribution: the starter is author; the delegated OAuth/App
     // identity resolved by the broker is committer.
     gitAuthor = null,
@@ -150,6 +151,7 @@ export const resolveConflict = async (
     baseBranch: intentBranch,
     gitProvider,
     repoProviders,
+    sparseCheckout,
     projectId,
     executionId,
     workspaceDir,
