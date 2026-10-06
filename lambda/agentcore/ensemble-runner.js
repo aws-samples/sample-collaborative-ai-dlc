@@ -22,9 +22,12 @@
 // A support's contribution is a `contribution` artifact written through the
 // generic `create_artifact`
 // tool plus a `persona-contribution` receipt; a pipeline link's completion is a
-// `pipeline-link` receipt carrying its ordinal. Receipts are attempt-scoped, so
-// a rewind bumps `attempt` on the STAGE row and every prior receipt becomes
-// invisible, while a park/resume within one attempt skips personas that already ran.
+// `pipeline-link` receipt carrying its ordinal. Receipts are scoped to the
+// attempt AND to the validation revision, so a rewind bumps `attempt` on the
+// STAGE row and every prior receipt becomes invisible, "Request changes" at the
+// validation gate bumps the revision and re-runs the whole topology against the
+// human's feedback, while a park/resume within one revision skips personas that
+// already ran.
 //
 // FAILURE NEVER BLOCKS. A persona session that produces no
 // evidence is retried once with a reduced brief (no knowledge block, artifact
@@ -185,6 +188,26 @@ const positionLine = (position) =>
 const positionsInline = (positions = []) =>
   neutralizeTokens(positions.map((p) => `${p.stance}: ${p.text}`).join(' | '));
 
+// The human's "Request changes" feedback, rendered for a persona brief. Per-line
+// `> ` quoting is the containment here: it keeps the human's words inside one
+// block so a line of theirs cannot read as a new brief heading or instruction.
+// `neutralizeTokens` runs for a narrower reason — it scrubs the runtime-managed
+// `{{INVOKE}}` / `{{HARNESS_DIR}}` templates, exactly as it does for peer
+// positions — and is NOT a general sanitizer of prompt text.
+const feedbackBlock = ({ humanFeedback, heading, guidance }) =>
+  humanFeedback
+    ? [
+        '',
+        `## ${heading}`,
+        '',
+        ...guidance,
+        '',
+        ...neutralizeTokens(String(humanFeedback))
+          .split('\n')
+          .map((line) => `> ${line}`.trimEnd()),
+      ]
+    : [];
+
 export const buildSupportBrief = ({
   stage,
   unit = null,
@@ -192,6 +215,10 @@ export const buildSupportBrief = ({
   mode,
   round = 1,
   reduced = false,
+  // The human's feedback when this is a post-"Request changes" revision, so the
+  // support reviews the revised draft against what the human actually asked for
+  // instead of re-recording its position on the draft that was rejected.
+  humanFeedback = null,
   // Dissent triage only: later rounds receive the revised draft and peer positions.
   // Round 1 passes none, preserving mutual blindness.
   peerPositions = [],
@@ -242,6 +269,14 @@ export const buildSupportBrief = ({
     '',
     'Label every OBJECT `knowledge` or `judgment`; an unlabelled objection is read',
     'as `knowledge`. Do NOT edit the stage outputs — the lead integrates.',
+    ...feedbackBlock({
+      humanFeedback,
+      heading: 'The human requested changes on the previous revision',
+      guidance: [
+        'The draft you are reviewing is the lead\u2019s response to this feedback. Record',
+        'your position on THIS revision, with the feedback in view.',
+      ],
+    }),
     ...(peerPositions.length
       ? [
           '',
@@ -302,6 +337,7 @@ export const buildIntegratorBrief = ({
   contributions = [],
   judgmentDissent = [],
   reduced = false,
+  humanFeedback = null,
 }) =>
   [
     `# Integration: ${stage.stageId}`,
@@ -339,6 +375,14 @@ export const buildIntegratorBrief = ({
     'Where you carry a position forward, say so. Where you do NOT, record the dissent',
     'in the output attributed to the collaborator that raised it — never silently',
     'pick a winner.',
+    ...feedbackBlock({
+      humanFeedback,
+      heading: 'The human requested changes on the previous revision',
+      guidance: [
+        'The integrated output must answer this feedback as well as the contributions',
+        'above.',
+      ],
+    }),
     ...(judgmentDissent.length
       ? [
           '',
@@ -487,6 +531,16 @@ export const runEnsembleSessions = async ({
   policy = null,
   personaScope = {},
   attempt = 0,
+  // Which validation revision of this attempt is running (0 for the first run,
+  // +1 per "Request changes" at the stage's validation gate). It keys the
+  // receipts, so a revision never inherits the previous revision's evidence:
+  // every support is re-dispatched against the human's feedback and a blocking
+  // budget finding cannot vanish without a recorded override. Revision 0 writes
+  // no key part, which keeps every pre-revision receipt key byte-identical.
+  validationRound = 0,
+  // The human's "Request changes" feedback for this revision, threaded into the
+  // support and integrator briefs as a quoted block. Null on revision 0.
+  humanFeedback = null,
   lead = { persona: '', block: null },
   // Everything dispatchPersona needs that is identical for every persona in this
   // stage (cli, models, env, workspaceDir, spawnFn, mcpEntry, materializers, ids).
@@ -576,13 +630,25 @@ export const runEnsembleSessions = async ({
   // The receipts this run wrote, so the runner's findings are evaluated over the
   // same rows the orchestrator re-reads before the gate opens.
   const written = [];
+  // Revision 0 writes `round: null`, the key every receipt carried before
+  // revisions were tracked.
+  const receiptRound = Number(validationRound ?? 0) || null;
+  const inThisRevision = (row) => Number(row?.round ?? 0) === Number(validationRound ?? 0);
   const receipt = async (row) => {
     if (typeof store?.putReceipt !== 'function') return null;
     return store
-      .putReceipt({ executionId, stageInstanceId, attempt, unitSlug, sectionIndex, ...row })
+      .putReceipt({
+        executionId,
+        stageInstanceId,
+        attempt,
+        round: receiptRound,
+        unitSlug,
+        sectionIndex,
+        ...row,
+      })
       .then(
         (stored) => {
-          written.push({ attempt, ...row });
+          written.push({ attempt, round: receiptRound, ...row });
           return stored;
         },
         () => null,
@@ -702,7 +768,9 @@ export const runEnsembleSessions = async ({
       typeof store?.listReceipts === 'function'
         ? // No catch: without them a resume would re-run settled personas and
           // reset the dissent budget. The floor below turns the error into a gap.
-          await store.listReceipts(executionId, { stageInstanceId, attempt })
+          (await store.listReceipts(executionId, { stageInstanceId, attempt })).filter(
+            inThisRevision,
+          )
         : [];
     const ordinalsOf = (kind) =>
       new Set(
@@ -737,6 +805,7 @@ export const runEnsembleSessions = async ({
       stage,
       unit,
       attempt,
+      humanFeedback,
       evidence,
       runPersona,
       receipt,
@@ -779,6 +848,7 @@ export const runEnsembleSessions = async ({
       stage,
       policy,
       attempt,
+      validationRound,
       evidence,
       receipts: latestReceipts([
         ...(Array.isArray(priorReceipts) ? [...priorReceipts] : []),
@@ -884,6 +954,7 @@ const runHubAndSpoke = async ({
   stage,
   unit,
   attempt,
+  humanFeedback,
   evidence,
   completed,
   priorReceipts,
@@ -947,6 +1018,7 @@ const runHubAndSpoke = async ({
           agentRef: topology.leadAgentRef,
           contributions: evidence.contributions,
           judgmentDissent,
+          humanFeedback,
           reduced,
         }),
       // The integration IS a rewrite of the stage outputs, so nothing moving means
@@ -969,6 +1041,7 @@ const runHubAndSpoke = async ({
     stage,
     unit,
     attempt,
+    humanFeedback,
     round,
     targets: topology.supports,
     completed,
@@ -995,6 +1068,7 @@ const runHubAndSpoke = async ({
       stage,
       unit,
       attempt,
+      humanFeedback,
       round,
       targets: topology.supports.filter((support) =>
         maintained.some((item) => item.agentRef === support.ref),
@@ -1020,6 +1094,7 @@ const dispatchSupports = async ({
   stage,
   unit,
   attempt,
+  humanFeedback,
   round,
   targets,
   completed,
@@ -1048,6 +1123,7 @@ const dispatchSupports = async ({
           agentRef: support.ref,
           mode: topology.mode,
           round,
+          humanFeedback,
           peerPositions,
           reduced,
         }),
@@ -1178,12 +1254,20 @@ const latestReceipts = (rows) => [
   ...new Map(rows.map((row) => [`${row?.kind}#${row?.ordinal ?? ''}`, row])).values(),
 ];
 
-export const findingsFor = ({ stage, policy, attempt, evidence, receipts = [] }) => {
+export const findingsFor = ({
+  stage,
+  policy,
+  attempt,
+  validationRound = 0,
+  evidence,
+  receipts = [],
+}) => {
   if (!policy) return [];
   const { findings } = evaluateGatePreconditions({
     stage,
     policy,
     attempt,
+    validationRound,
     receipts,
     ensembleEvidence: evidence,
   });
@@ -1194,10 +1278,17 @@ export const findingsFor = ({ stage, policy, attempt, evidence, receipts = [] })
 // last resort if `runEnsembleSessions` itself failed to return. Built from the same
 // evaluator as a normal run, over the DECLARED topology with zero receipts, so
 // every persona is named exactly as it would be had each one gapped individually.
-export const ensembleGapFindings = ({ stage, policy, attempt = 0, topology, reason }) => {
+export const ensembleGapFindings = ({
+  stage,
+  policy,
+  attempt = 0,
+  validationRound = 0,
+  topology,
+  reason,
+}) => {
   const evidence = emptyEvidence(topology);
   evidence.gaps.push({ agentRef: topology?.leadAgentRef ?? null, role: 'ensemble', reason });
-  return findingsFor({ stage, policy, attempt, evidence });
+  return findingsFor({ stage, policy, attempt, validationRound, evidence });
 };
 
 export default {

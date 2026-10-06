@@ -371,6 +371,28 @@ describe('evaluateGatePreconditions: ensemble evidence', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('does not accept the rejected revision\u2019s contribution as evidence for the next one', () => {
+    const contributed = (round) =>
+      receipt({
+        kind: 'persona-contribution',
+        sk: `RECEIPT#persona-contribution#si-1#0#-#1${round ? `#r${round}` : ''}`,
+        round,
+        detail: { agentRef: 'design-agent' },
+      });
+    const evaluate = (validationRound, receipts) =>
+      evaluateGatePreconditions({
+        stage: STAGE,
+        policy: POLICY,
+        validationRound,
+        ensembleEvidence: { supports: ['design-agent'] },
+        receipts,
+        producedArtifacts: ['requirements'],
+      });
+    expect(codesOf(evaluate(0, [contributed(null)]))).toEqual([]);
+    expect(codesOf(evaluate(1, [contributed(null)]))).toEqual(['persona_contribution_missing']);
+    expect(codesOf(evaluate(1, [contributed(null), contributed(1)]))).toEqual([]);
+  });
+
   it('quotes maintained dissent verbatim', () => {
     const result = evaluateGatePreconditions({
       stage: STAGE,

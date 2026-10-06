@@ -93,8 +93,15 @@ const receiptsOfKind = (receipts, kind, attempt) =>
 
 // Ensemble receipts that are evidence. A gapped pipeline link also holds a receipt
 // (`choice: 'gap'`) so a resume advances past it; it is not a completed link.
-const evidenceReceipts = (receipts, kind, attempt) =>
-  receiptsOfKind(receipts, kind, attempt).filter((row) => row?.choice !== 'gap');
+// Scoped to the validation revision for the same reason the checkpoint receipts
+// are: "Request changes" re-runs the stage within one attempt, and a contribution
+// recorded about the REJECTED draft is not evidence for the revised one. Revision
+// 0 writes no `round`, so its rows resolve exactly as they did before revisions
+// were tracked.
+const evidenceReceipts = (receipts, kind, attempt, validationRound) =>
+  receiptsOfKind(receipts, kind, attempt).filter(
+    (row) => row?.choice !== 'gap' && Number(row?.round ?? 0) === Number(validationRound ?? 0),
+  );
 
 // The checkpoint receipts (summary confirmation, plan approval) are also scoped
 // to the validation revision. "Request changes" at the validation gate re-runs
@@ -367,7 +374,7 @@ const evaluateGatePreconditions = ({
   const declaredSupports = ensembleEvidence?.supports ?? [];
   if (declaredSupports.length > 0) {
     const contributed = new Set(
-      evidenceReceipts(receipts, 'persona-contribution', attempt).map(
+      evidenceReceipts(receipts, 'persona-contribution', attempt, validationRound).map(
         (row) => row.detail?.agentRef ?? row.unitSlug,
       ),
     );
@@ -386,7 +393,7 @@ const evaluateGatePreconditions = ({
 
   const declaredLinks = ensembleEvidence?.links ?? [];
   if (declaredLinks.length > 0) {
-    const completed = evidenceReceipts(receipts, 'pipeline-link', attempt).length;
+    const completed = evidenceReceipts(receipts, 'pipeline-link', attempt, validationRound).length;
     if (completed < declaredLinks.length) {
       findings.push(
         finding({
@@ -411,10 +418,15 @@ const evaluateGatePreconditions = ({
   if (budgetCut.length > 0) {
     const collaboratorEvidence = [
       ...(declaredSupports.length > 0
-        ? [evidenceReceipts(receipts, 'persona-contribution', attempt).length]
+        ? [evidenceReceipts(receipts, 'persona-contribution', attempt, validationRound).length]
         : []),
       ...(declaredLinks.length > 0
-        ? [Math.max(0, evidenceReceipts(receipts, 'pipeline-link', attempt).length - 1)]
+        ? [
+            Math.max(
+              0,
+              evidenceReceipts(receipts, 'pipeline-link', attempt, validationRound).length - 1,
+            ),
+          ]
         : []),
     ];
     const fullyCut =

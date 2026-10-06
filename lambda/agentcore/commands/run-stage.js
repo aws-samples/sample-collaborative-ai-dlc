@@ -3655,6 +3655,10 @@ export const runStage = async (
           policy: stage.policy ?? null,
           personaScope,
           attempt,
+          validationRound,
+          // On a "Request changes" revision the supports review the lead's
+          // response to the human, so they get the feedback the lead got.
+          humanFeedback: validationRound ? (reviewFeedbackPrompt ?? null) : null,
           lead: { persona: leadPersona, block: agentBlock },
           dispatchContext,
           knowledgeFor: (agentRef) =>
@@ -3744,6 +3748,7 @@ export const runStage = async (
             stage,
             policy: stage.policy ?? null,
             attempt,
+            validationRound,
             topology: ensemble,
             reason: `ensemble sessions failed: ${error?.message ?? String(error)}`,
           }),
