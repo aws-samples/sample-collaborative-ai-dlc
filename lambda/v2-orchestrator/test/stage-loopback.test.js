@@ -780,3 +780,73 @@ describe('a target skipped at the intent level', () => {
     expect(deps.store.resetStageRow).not.toHaveBeenCalled();
   });
 });
+
+// Every durable step name in a stage the walk revisits must carry the pass, or
+// pass 1's name collides with pass 0's and the replayed step returns the earlier
+// result instead of re-emitting. Two names took the bare validation round. The
+// pass-0 control proves the token is byte-identical when no loop-back happened,
+// so unpinned and 2.3.3 runs keep the exact step names they had.
+describe('durable step names in a revisited stage', () => {
+  const stepNames = () => {
+    const names = [];
+    ctx = makeCtx({
+      step: async (name, fn) => {
+        names.push(name);
+        return fn();
+      },
+    });
+    return names;
+  };
+  // An approve answer may carry a recompose delta; a stage this run has no plan
+  // for is rejected per entry, which is the second name under test.
+  const APPROVE_WITH_BAD_RECOMPOSE = {
+    decision: 'approve',
+    recompose: { skip: ['not-in-this-plan'] },
+  };
+
+  beforeEach(() => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      stageSkipping: 'enabled',
+      loopBackCount: deps.store.loopBackState.count,
+    }));
+  });
+
+  it('names them by the bare validation round when no loop-back happened', async () => {
+    const names = stepNames();
+    deps.store.getHumanTask = gateScript([
+      { decision: 'request-changes', feedback: 'tidy the report' },
+      APPROVE_WITH_BAD_RECOMPOSE,
+    ]);
+
+    await run();
+
+    expect(names).toContain('stage-validation-revision-build-and-test-1');
+    expect(names).toContain('recompose-rejected-build-and-test-1-not-in-this-plan');
+    expect(names.filter((name) => name.includes('lb1-'))).toEqual([]);
+  });
+
+  it('carries the pass once a loop-back has sent the stage back', async () => {
+    const names = stepNames();
+    recommending.add('build-and-test');
+    deps.store.getHumanTask = gateScript([
+      { decision: 'loop-back' },
+      { decision: 'request-changes', feedback: 'still red' },
+      APPROVE_WITH_BAD_RECOMPOSE,
+    ]);
+
+    const result = await run();
+
+    expect(result.ok).toBe(true);
+    expect(names).toContain('stage-validation-revision-build-and-test-lb1-1');
+    expect(names).toContain('recompose-rejected-build-and-test-lb1-1-not-in-this-plan');
+    // Pass 0 of the same stage already used the bare names, so reusing them in
+    // pass 1 is the collision this rule exists to prevent.
+    expect(names.filter((name) => name === 'stage-validation-revision-build-and-test-1')).toEqual(
+      [],
+    );
+    expect(
+      names.filter((name) => name === 'recompose-rejected-build-and-test-1-not-in-this-plan'),
+    ).toEqual([]);
+  });
+});

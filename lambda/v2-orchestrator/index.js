@@ -1232,9 +1232,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // The gate/receipt/event step names are keyed on the validation round;
           // after a loop-back the same stage runs its round 0 again, so the pass
           // joins the key. Unchanged (`0`, `1`, …) until a loop-back happens.
-          const round = loopBackPass
-            ? `lb${loopBackPass}-${validationRound}`
-            : `${validationRound}`;
+          // A function because the revision event below names the round it is
+          // about to enter, not the one this iteration opened its gate on.
+          const roundToken = (forRound) =>
+            loopBackPass ? `lb${loopBackPass}-${forRound}` : `${forRound}`;
+          const round = roundToken(validationRound);
           const outcome = await executeStage(ctx, stage, {
             suffix,
             initialResumeFrom: resumeFromValidation,
@@ -1988,7 +1990,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                 for (const rej of verdict.rejected) {
                   await emitEvent(
                     ctx,
-                    `recompose-rejected-${stage.stageId}-${validationRound}-${rej.stageId}`,
+                    `recompose-rejected-${stage.stageId}-${round}-${rej.stageId}`,
                     'v2.stage.recompose_rejected',
                     `Recompose skip of "${rej.stageId}" ignored: ${rej.reason}`,
                   );
@@ -2002,7 +2004,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           validationRound += 1;
           await emitEvent(
             ctx,
-            `stage-validation-revision-${stage.stageId}-${validationRound}`,
+            `stage-validation-revision-${stage.stageId}-${roundToken(validationRound)}`,
             'v2.stage.revision_requested',
             `Human requested changes for ${stage.stageId}; re-running stage with feedback`,
           );
