@@ -519,6 +519,56 @@ describe('orchestrator durable handler', () => {
     expect(step).toHaveBeenCalledWith('stage-validation-revision-a-1', expect.any(Function));
   });
 
+  // The revision's feedback lives on the validation gate, and a later leg of the
+  // same revision resumes from whatever gate parked it. The container can only
+  // read the real feedback if every leg is told which gate asked for the changes.
+  it('names the validation gate on the revision dispatch, not just the gate it resumes', async () => {
+    const policy = { sensorsEnabled: false, reviewClass: 'none', learnings: 'off' };
+    deps.loadPlan.mockResolvedValue({
+      valid: true,
+      plan: {
+        stages: [
+          {
+            stageId: 'a',
+            stageInstanceId: 'si-a',
+            humanValidation: 'required',
+            outputArtifacts: [],
+            policy,
+          },
+        ],
+      },
+    });
+    // A policy-bearing stage reads its own row for the findings channel.
+    deps.store.getStage = vi.fn(async () => ({ stageInstanceId: 'si-a', attempt: 0 }));
+    deps.store.listReceipts = vi.fn(async () => []);
+    deps.store.listEvents = vi.fn(async () => []);
+    deps.store.getHumanTask = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        humanTaskId: 'eg-validation-si-a-0',
+        status: 'rejected',
+        answer: { decision: 'request-changes', feedback: 'tighten scope' },
+      })
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        humanTaskId: 'eg-validation-si-a-1',
+        status: 'approved',
+        answer: { decision: 'approve' },
+      });
+
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+    const starts = stageStarts();
+    expect(starts).toHaveLength(2);
+    expect(starts[0].validationGateId).toBeUndefined();
+    expect(starts[1]).toMatchObject({
+      resumeFrom: 'eg-validation-si-a-0',
+      validationRound: 1,
+      validationGateId: 'eg-validation-si-a-0',
+    });
+  });
+
   it('forwards the project cliModels to run-stage-start', async () => {
     await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
     const starts = stageStarts();

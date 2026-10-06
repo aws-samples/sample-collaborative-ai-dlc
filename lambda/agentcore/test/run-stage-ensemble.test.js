@@ -904,6 +904,99 @@ describe('runStage — native ensemble sessions: the validation feedback the lea
     expect(prompts.some((text) => text.includes(REVISION_HEADING))).toBe(false);
   });
 
+  // A revision is not one leg. The revised stage can open a checkpoint or a
+  // question of its own, park on it, and be resumed from THAT gate while the same
+  // revision is still in flight. Reading the feedback off the resumed gate hands
+  // the personas the checkpoint's answer as the human's requested changes, and the
+  // real feedback is gone for the rest of the revision.
+  it('keeps the validation feedback on a leg resumed from a checkpoint in the same revision', async () => {
+    const checkpointGateId = 'gate-plan-approval-1';
+    const CHECKPOINT_ANSWER = 'Looks right, go ahead and build it.';
+    const prompts = [];
+    const { deps, store } = harness({
+      mode: 'mob',
+      supportRefs: ['aidlc-design-agent'],
+      ...withGraph(),
+    });
+    const gatesById = new Map([
+      [
+        humanTaskId,
+        {
+          humanTaskId,
+          kind: 'validation',
+          status: 'answered',
+          answer: { decision: 'request-changes', feedback: FEEDBACK },
+          createdAt: 'T',
+        },
+      ],
+      [
+        checkpointGateId,
+        {
+          humanTaskId: checkpointGateId,
+          kind: 'approval',
+          status: 'answered',
+          detail: { checkpoint: 'plan-approval' },
+          answer: { decision: 'Approve plan', freeText: CHECKPOINT_ANSWER },
+          createdAt: 'T',
+        },
+      ],
+    ]);
+    store.getStage = async () => ({
+      stageInstanceId: STAGE_INSTANCE_ID,
+      state: 'WAITING_FOR_HUMAN',
+      pendingHumanTaskId: checkpointGateId,
+      cli: 'claude',
+      cliSessionId: 'session-1',
+      attempt: 0,
+    });
+    store.getHumanTask = async (_executionId, id) => gatesById.get(id) ?? null;
+    deps.spawnFn = promptCapturingSpawn(prompts);
+
+    const result = await runStage(
+      {
+        ...baseArgs,
+        methodologyRelease: RELEASE_PIN,
+        resumeFrom: checkpointGateId,
+        validationRound: 1,
+        validationGateId: humanTaskId,
+      },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+
+    const supportBrief = prompts.find((text) => text.includes('You are aidlc-design-agent'));
+    const integratorBrief = prompts.find((text) =>
+      text.includes('# Integration: requirements-analysis'),
+    );
+    for (const brief of [supportBrief, integratorBrief]) {
+      expect(brief).toContain(`## ${REVISION_HEADING}`);
+      expect(brief).toContain(`> ${FEEDBACK}`);
+      expect(brief).not.toContain(CHECKPOINT_ANSWER);
+      expect(brief).not.toContain('plan-approval checkpoint');
+    }
+  });
+
+  // An orchestrator from before this field was sent still dispatches the revision
+  // as a resume of the validation gate itself, so that leg must keep working.
+  it('still finds the feedback when the dispatch names no validation gate', async () => {
+    const { deps, prompts } = revisionHarness();
+
+    const result = await runStage(
+      {
+        ...baseArgs,
+        methodologyRelease: RELEASE_PIN,
+        resumeFrom: humanTaskId,
+        validationRound: 1,
+      },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    const supportBrief = prompts.find((text) => text.includes('You are aidlc-design-agent'));
+    expect(supportBrief).toContain(`> ${FEEDBACK}`);
+  });
+
   // Validation round 0 is the first pass at the stage: an answered gate can still
   // be the resume that carries it (a checkpoint, a question), and that answer is
   // not rejected-draft feedback.

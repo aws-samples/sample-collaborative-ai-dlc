@@ -1590,6 +1590,10 @@ export const runStage = async (
     // stage with a resolved release policy, where the checkpoint receipts are
     // scoped by it.
     validationRound = 0,
+    // The gate whose "Request changes" opened this revision, which is NOT the gate
+    // a later leg resumes: a leg parked on a checkpoint or a question resumes from
+    // that gate instead. Absent on an unpinned/2.3.3 run and on revision 0.
+    validationGateId = null,
     scope,
     // Per-run skip overlay (shared/stage-skip.js): intent-level deselections +
     // accumulated gate-time skips, forwarded by the orchestrator on EVERY
@@ -3670,6 +3674,32 @@ export const runStage = async (
       await publishGitEvidence(leadDraftGit, { label: 'lead draft' });
       // The attempt this leg wrote on the stage row (putStage above).
       const attempt = Number(priorStageRow?.attempt ?? 0);
+      // The feedback this revision is answering is the VALIDATION gate's answer,
+      // read from that gate by id. `resumeAnswer` is the answer to whatever gate
+      // THIS leg resumes, which on a leg that parked on a checkpoint or a question
+      // is a different gate entirely — passing it would hand the personas the
+      // checkpoint's answer as the human's requested changes. An older
+      // orchestrator sends no id, so that dispatch keeps the previous behaviour.
+      // A gate that cannot be read yields no feedback rather than the wrong one.
+      let revisionFeedback = null;
+      if (validationRound) {
+        if (validationGateId) {
+          const validationGate =
+            validationGateId === resumeFrom
+              ? resumeGate
+              : await store
+                  .getHumanTask(executionId, validationGateId, { consistentRead: true })
+                  .catch(() => null);
+          if (validationGate) revisionFeedback = formatResumeAnswer(validationGate, stageId);
+          else
+            logger.error('validation gate not readable for revision feedback', {
+              stageInstanceId,
+              validationGateId,
+            });
+        } else {
+          revisionFeedback = resumeAnswer ?? null;
+        }
+      }
       // A resume leg never materialized a prompt, so the lead persona is re-read
       // here. For a pinned intent a typed release failure (digest mismatch,
       // unreadable object, unresolvable overlay) must not seat the integration
@@ -3772,16 +3802,13 @@ export const runStage = async (
           attempt,
           validationRound,
           // On a "Request changes" revision the supports review the lead's
-          // response to the human, so they get the feedback the LEAD got — which
-          // is `resumeAnswer`: a validation revision reaches this stage as a
-          // RESUME of the answered validation gate (orchestrator: validationRound
-          // += 1 with initialResumeFrom = that gate), never as `reviewFeedback` —
-          // that is the PR-feedback lane's text, dispatched with no
-          // validationRound at all. A change-control gate is answered BEFORE the
-          // agent runs and leaves `resumeAnswer` null by construction, so a
-          // pre-agent decision is never handed to a persona as rejected-draft
+          // response to the human, so they get the feedback the LEAD got. Resolved
+          // above from the validation gate itself, never from the gate this leg
+          // happens to resume. The PR-feedback lane dispatches with no
+          // validationRound at all, and a change-control gate is answered BEFORE the
+          // agent runs, so neither is ever handed to a persona as rejected-draft
           // feedback.
-          humanFeedback: validationRound ? (resumeAnswer ?? null) : null,
+          humanFeedback: revisionFeedback,
           lead: { persona: leadPersona, block: agentBlock },
           dispatchContext,
           knowledgeFor: (agentRef) =>

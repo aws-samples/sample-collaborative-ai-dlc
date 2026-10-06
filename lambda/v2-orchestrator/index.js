@@ -846,6 +846,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         initialResumeFrom = null,
         reviewFeedback = null,
         validationRound = 0,
+        validationGateId = null,
       } = opts;
       const label = `${unitSlug ? `${stage.stageId}-u-${unitSlug}` : stage.stageId}${suffix}`;
       const allSkipIds = [...intentSkipIds, ...dynamicSkipIds];
@@ -878,6 +879,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         cloneInputs: stageCloneInputs,
         reviewFeedback,
         validationRound,
+        // The gate whose "Request changes" opened this revision. Carried on EVERY
+        // leg of the revision, including the ones resumed from a checkpoint or a
+        // question, so the container never has to infer the feedback from the gate
+        // it happens to be resuming.
+        validationGateId,
       };
       let result = await runStage(ctxArg, invokeIntentRuntime, {
         ...stageOpts,
@@ -1225,6 +1231,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         const fanoutSection = producesUnitDag ? nextSection : null;
         let validationRound = 0;
         let resumeFromValidation = loopBackResumeFrom;
+        // Set only by a "Request changes", so a loop-back's re-entry (round 0)
+        // never hands its own gate to the personas as revision feedback.
+        let validationGateId = null;
         loopBackResumeFrom = null;
         for (;;) {
           const passTag = loopBackPass ? `-loopback-${loopBackPass}` : '';
@@ -1241,6 +1250,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             suffix,
             initialResumeFrom: resumeFromValidation,
             validationRound,
+            validationGateId,
           });
           if (outcome.state === 'TERMINAL') return outcome.value;
           if (outcome.state === 'FAILED') {
@@ -2001,6 +2011,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           }
 
           resumeFromValidation = validation.gate.humanTaskId;
+          validationGateId = validation.gate.humanTaskId;
           validationRound += 1;
           await emitEvent(
             ctx,
@@ -2260,6 +2271,7 @@ const runStage = async (
     resumeFrom,
     reviewFeedback = null,
     validationRound = 0,
+    validationGateId = null,
     // Expected process-row identity for this attempt. The orchestrator already
     // has the resolved plan, so it can reconcile a dead worker even when no
     // callback result arrives to report the id.
@@ -2332,6 +2344,12 @@ const runStage = async (
         // only for a stage with a resolved release policy and only after a
         // "Request changes", so every other payload is unchanged.
         ...(stage.policy && validationRound ? { validationRound } : {}),
+        // The gate the revision's feedback lives on, sent under the same
+        // condition. A later leg of the revision resumes from whatever gate
+        // parked it, so the gate it resumes is not the one that asked for
+        // changes; naming the validation gate is what keeps the personas on the
+        // real feedback.
+        ...(stage.policy && validationRound && validationGateId ? { validationGateId } : {}),
         reviewFeedback: reviewFeedback
           ? {
               batchId: reviewFeedback.batchId ?? null,
