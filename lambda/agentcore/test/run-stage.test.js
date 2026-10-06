@@ -579,30 +579,54 @@ describe('CLI output sink — UI-safe stdout', () => {
     );
   });
 
-  it('suppresses raw Kiro send_output terminal blocks to avoid duplicate final output', () => {
-    const emitted = [];
-    const sink = createCliOutputSink({ cli: 'kiro', emit: (text) => emitted.push(text) });
-    sink.write('Before\n');
-    sink.write(`Running tool  ${esc}[38;5;141msend_output${esc}[0m with the param\n`);
-    sink.write(' ⋮  { "content": "Clean final" }\n');
-    sink.write(`${esc}[0m# Clean final\n`);
-    sink.write(` ${esc}[38;5;244m - Completed in 0.45s${esc}[0m\n`);
-    sink.write('After\n');
-    sink.flush();
+  // One Kiro v2 stream-json MCP tool call (tool_call + terminal tool_call_update).
+  const kiroMcpCall = (toolName, rawInput, { output = 'ok', isError = false } = {}) =>
+    [
+      {
+        sessionUpdate: 'tool_call',
+        title: `Running: @aidlc/${toolName}`,
+        rawInput,
+        _meta: { kiro: { toolName, mcpServerName: 'aidlc' } },
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        status: 'completed',
+        rawOutput: {
+          items: [
+            {
+              Json: { content: [{ type: 'text', text: output }], ...(isError ? { isError } : {}) },
+            },
+          ],
+        },
+      },
+    ]
+      .map(
+        (update) =>
+          `${JSON.stringify({ type: 'sessionUpdate', data: { sessionId: 's', update: { toolCallId: toolName, ...update } } })}\n`,
+      )
+      .join('');
+  const kiroText = (text) =>
+    `${JSON.stringify({ type: 'sessionUpdate', data: { sessionId: 's', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } })}\n`;
 
-    expect(emitted.map((e) => e.content).join('')).toBe('Before\nAfter\n');
-  });
-
-  it('collapses Kiro get_artifact chatter without exposing params in display metadata', () => {
+  it('suppresses Kiro send_output tool calls to avoid duplicate final output', () => {
     const emitted = [];
     const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write('Running tool get_artifact with the param\n');
-    sink.write(' ⋮  { "id": "intent-statement", "mode": "full" }\n');
-    sink.write(' - Completed in 0.12s\n');
+    sink.write(kiroText('Before'));
+    sink.write(kiroMcpCall('send_output', { content: 'Clean final' }));
+    sink.write(kiroText('After'));
+    sink.flush();
+
+    expect(emitted.map((e) => e.content)).toEqual(['Before', 'After']);
+  });
+
+  it('collapses Kiro get_artifact calls without exposing params in display metadata', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
+    sink.write(kiroMcpCall('get_artifact', { id: 'intent-statement', mode: 'full' }));
     sink.flush();
 
     expect(emitted).toHaveLength(1);
-    expect(emitted[0].content).toContain('"mode": "full"');
+    expect(emitted[0].content).toContain('"mode":"full"');
     expect(emitted[0].display).toMatchObject({
       type: 'artifact',
       title: 'Loaded artifact: intent-statement',
@@ -610,126 +634,17 @@ describe('CLI output sink — UI-safe stdout', () => {
     expect(JSON.stringify(emitted[0].display)).not.toContain('"mode"');
   });
 
-  it('recognizes decorated Kiro tool names and recovers artifact ids from malformed params', () => {
-    const emitted = [];
-    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write('Running tool `get_artifact` with the param\n');
-    sink.write(': { "id": "architecture",\n');
-    sink.write(': "mode": "full",\n');
-    sink.write(': }\n');
-    sink.write(' - Completed in 0.43s\n');
-    sink.flush();
-
-    expect(emitted).toHaveLength(1);
-    expect(emitted[0].display).toMatchObject({
-      type: 'artifact',
-      title: 'Loaded artifact: architecture',
-    });
-  });
-
-  it('collapses consecutive Kiro fs_read tool blocks into one batch_read event', () => {
-    const emitted = [];
-    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    for (const path of ['Cargo.toml', 'templates/index.md', 'static/app.css']) {
-      sink.write('Running tool fs_read with the param\n');
-      sink.write(` ⋮  { "path": "${path}" }\n`);
-      sink.write(' - Completed in 0.03s\n');
-    }
-    sink.write('Done reading.\n');
-    sink.flush();
-
-    expect(emitted[0].display).toMatchObject({
-      type: 'batch_read',
-      title: 'Read 3 workspace items: Cargo.toml, index.md, app.css',
-    });
-    expect(emitted[0].content).toContain('"path": "Cargo.toml"');
-    expect(emitted[1].display).toMatchObject({ type: 'message', summary: 'Done reading.' });
-  });
-
-  it('groups loose Kiro numbered patch lines into one visible edit event', () => {
-    const emitted = [];
-    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write('+ 10: <div class="settings-card">\n');
-    sink.write('+ 11: <h2>Mobile App Pairing</h2>\n');
-    sink.write('+ 12: <p>Scan this QR code</p>\n');
-    sink.write('\n');
-    sink.flush();
-
-    expect(emitted).toHaveLength(1);
-    expect(emitted[0]).toMatchObject({
-      display: {
-        type: 'edit',
-        title: 'Updated 3 lines',
-      },
-    });
-    expect(emitted[0].display.details).toContain('Mobile App Pairing');
-  });
-
-  it('renders a completed Kiro filesystem write as one edit with the target filename', () => {
-    const emitted = [];
-    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write('Running tool fs_write with the param\n');
-    sink.write(' ⋮  { "path": "templates/settings.html", "content": "updated" }\n');
-    sink.write(' - Completed in 0.20s\n');
-    sink.flush();
-
-    expect(emitted).toHaveLength(1);
-    expect(emitted[0].display).toMatchObject({
-      type: 'edit',
-      title: 'Wrote: settings.html',
-      summary: 'Completed in 0.20s',
-    });
-  });
-
-  it('coalesces native Kiro read and create output into semantic filesystem events', () => {
-    const emitted = [];
-    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write('Reading file: /mnt/workspace/README.md, all lines (using tool: read)\n');
-    sink.write(' \u2713 Successfully read 9 bytes from /mnt/workspace/README.md\n');
-    sink.write(' - Completed in 0.0s\n');
-    sink.write(
-      "I'll create the following file: /mnt/workspace/agent-output-kiro.txt (using tool: write)\n",
-    );
-    sink.write('+    1: agent output parser fixture for kiro\n');
-    sink.write('Creating: /mnt/workspace/agent-output-kiro.txt\n');
-    sink.write(' - Completed in 0.0s\n');
-    sink.flush();
-
-    expect(emitted).toHaveLength(2);
-    expect(emitted[0].display).toMatchObject({
-      type: 'batch_read',
-      title: 'Read 1 workspace item: README.md',
-    });
-    expect(emitted[1].display).toMatchObject({
-      type: 'edit',
-      title: 'Created: agent-output-kiro.txt (+1 line)',
-      summary: 'Completed in 0.0s',
-    });
-  });
-
-  it('groups consecutive Kiro prose lines into one message event', () => {
-    const emitted = [];
-    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write('Inspecting the settings template.\n');
-    sink.write('The pairing card needs a clearer state.\n\n');
-    sink.flush();
-
-    expect(emitted).toHaveLength(1);
-    expect(emitted[0].display).toMatchObject({
-      type: 'message',
-      summary: 'Inspecting the settings template.\nThe pairing card needs a clearer state.',
-    });
-  });
-
   it('hides routine successful Kiro MCP calls but keeps failures visible with details', () => {
     const emitted = [];
     const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write('Running tool link_artifacts with the param\n');
-    sink.write(' ⋮  { "from": "a", "to": "b" }\n');
-    sink.write(' - Completed in 0.08s\n');
-    sink.write('Running tool fs_read with the param\n');
-    sink.write(' ⋮  { "path": "missing.txt" }\n');
-    sink.write(' - Failed in 0.01s\n');
+    sink.write(kiroMcpCall('link_artifacts', { from: 'a', to: 'b' }));
+    sink.write(
+      kiroMcpCall(
+        'get_upstream',
+        { id: 'missing' },
+        { output: 'artifact missing not found', isError: true },
+      ),
+    );
     sink.flush();
 
     expect(emitted[0].display).toMatchObject({
@@ -740,19 +655,20 @@ describe('CLI output sink — UI-safe stdout', () => {
     expect(emitted[1].display).toMatchObject({
       type: 'tool',
       level: 'error',
-      title: 'Fs Read failed',
+      title: 'Get Upstream failed',
     });
-    expect(emitted[1].display.details).toContain('missing.txt');
+    expect(emitted[1].display.details).toContain('artifact missing not found');
   });
 
   it('does not treat error words inside Kiro tool parameters as failure statuses', () => {
     const emitted = [];
     const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write('Running tool record_learning_rule with the param\n');
     sink.write(
-      ' ⋮  { "id": "rust-no-unwrap-production", "content": "Use anyhow::Context for error propagation." }\n',
+      kiroMcpCall('record_learning_rule', {
+        id: 'rust-no-unwrap-production',
+        content: 'Use anyhow::Context for error propagation.',
+      }),
     );
-    sink.write(' - Completed in 0.15s\n');
     sink.flush();
 
     expect(emitted).toHaveLength(1);
@@ -760,16 +676,13 @@ describe('CLI output sink — UI-safe stdout', () => {
       type: 'tool',
       level: 'info',
       title: 'Record Learning Rule',
-      summary: 'Completed in 0.15s',
     });
   });
 
   it('suppresses emit_stage_note from progress while retaining raw content', () => {
     const emitted = [];
     const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write('Running tool emit_stage_note with the param\n');
-    sink.write(' ⋮  { "summary": "created artifact" }\n');
-    sink.write(' - Completed in 0.04s\n');
+    sink.write(kiroMcpCall('emit_stage_note', { summary: 'created artifact' }));
     sink.flush();
 
     expect(emitted[0].content).toContain('emit_stage_note');
@@ -778,40 +691,6 @@ describe('CLI output sink — UI-safe stdout', () => {
       title: 'Stage note recorded',
       hiddenByDefault: true,
     });
-  });
-
-  it('passes unknown Kiro lines through as message events', () => {
-    const emitted = [];
-    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write('Thinking about requirements.\n');
-    sink.flush();
-
-    expect(emitted).toEqual([
-      {
-        content: 'Thinking about requirements.\n',
-        display: {
-          type: 'message',
-          level: 'info',
-          summary: 'Thinking about requirements.',
-        },
-      },
-    ]);
-  });
-
-  it('preserves unmatched structural fragments but hides them from Progress by default', () => {
-    const emitted = [];
-    const sink = createCliOutputSink({ cli: 'kiro', emit: (event) => emitted.push(event) });
-    sink.write(': "label": "No enforcement - trust the developer",\n');
-    sink.write('stdout\n');
-    sink.write('- Completed in 12.76s\n');
-    sink.flush();
-
-    expect(emitted.map((e) => e.content).join('')).toContain('No enforcement');
-    expect(emitted.map((e) => e.display)).toEqual([
-      expect.objectContaining({ type: 'raw', hiddenByDefault: true }),
-      expect.objectContaining({ type: 'raw', hiddenByDefault: true }),
-      expect.objectContaining({ type: 'raw', hiddenByDefault: true }),
-    ]);
   });
 
   it('pairs Claude tool_use/tool_result events and suppresses send_output duplication', () => {
@@ -2721,41 +2600,39 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
   });
 });
 
-describe('runStage — Kiro SQLite store sync (restore before spawn, persist after)', () => {
+// Kiro v2 stream-json stdout for a run: its session id, then optional metering
+// and terminal events. Shapes mirror real kiro-cli 2.27 output.
+const kiroStream = (sessionId, ...events) =>
+  [['metadata', { sessionId }], ...events]
+    .map(([type, data]) => JSON.stringify({ type, data: { sessionId, ...data } }))
+    .join('\n') + '\n';
+const kiroChild = ({ stdout = '', stderr = '', exitCode = 0 } = {}) => ({
+  on: (ev, cb) => ev === 'close' && setImmediate(() => cb(exitCode)),
+  stdout: { on: (ev, cb) => ev === 'data' && stdout && cb(Buffer.from(stdout)) },
+  stderr: { on: (ev, cb) => ev === 'data' && stderr && cb(Buffer.from(stderr)) },
+  stdin: { end() {} },
+});
+const kiroListing = (sessions) => JSON.stringify([{ cwd: '/ws', sessions }]);
+
+describe('runStage — Kiro store sync (restore before spawn, persist after)', () => {
   const okSpawn = () => ({
     on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
     stdin: { end() {} },
   });
+  const sessionIds = (deps) =>
+    deps.store.calls
+      .filter((c) => c[0] === 'updateStageState')
+      .map((c) => c[1].cliSessionId)
+      .filter(Boolean);
+
   // Kiro library so selectCli picks kiro; capture sync ordering relative to spawn.
-  it('restores before the CLI spawns and persists after it exits', async () => {
+  it('restores before the CLI spawns, persists after it exits, and links the streamed session', async () => {
     const order = [];
     const deps = baseDeps({
       availableClis: ['kiro'],
-      // Kiro id capture (--list-sessions) + the run share spawnFn; both exit 0.
-      spawnFn: (command, args) => {
-        if (args.includes('--list-sessions')) {
-          order.push('capture');
-          return {
-            on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
-            stdout: {
-              on: (ev, cb) =>
-                ev === 'data' &&
-                cb(
-                  Buffer.from(
-                    JSON.stringify([
-                      {
-                        cwd: '/ws',
-                        sessions: [{ sessionId: 'kiro-7', updatedAt: '2026-06-29T12:00:00Z' }],
-                      },
-                    ]),
-                  ),
-                ),
-            },
-            stdin: { end() {} },
-          };
-        }
+      spawnFn: () => {
         order.push('spawn');
-        return okSpawn();
+        return kiroChild({ stdout: kiroStream('kiro-7') });
       },
       restoreKiroStore: async () => {
         order.push('restore');
@@ -2768,15 +2645,9 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     });
     const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
-    // restore precedes the run spawn; persist follows it.
-    expect(order.indexOf('restore')).toBeLessThan(order.indexOf('spawn'));
-    expect(order.indexOf('persist')).toBeGreaterThan(order.indexOf('spawn'));
-    // Kiro session id captured post-run and persisted on the stage row.
-    const csid = deps.store.calls
-      .filter((c) => c[0] === 'updateStageState')
-      .map((c) => c[1].cliSessionId)
-      .filter(Boolean);
-    expect(csid).toContain('kiro-7');
+    // One spawn: the session id comes from the stream, not a --list-sessions call.
+    expect(order).toEqual(['restore', 'spawn', 'persist']);
+    expect(sessionIds(deps)).toContain('kiro-7');
   });
 
   it('does not sync the Kiro store for a Claude stage', async () => {
@@ -2795,48 +2666,85 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
   // configured), so the resume amnesia guard is armed.
   const kiroStoreEnv = {
     BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+    HOME: '/home/node',
     XDG_DATA_HOME: '/home/node/.kiro-data',
     V2_KIRO_STORE_DIR: '/mnt/workspace/.kiro-data',
   };
+  const parkedKiroStore = () =>
+    spyStore({
+      // No createdAt → age unknown → treated as recent → recoverable.
+      humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'go' } },
+      stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
+    });
+  // Answers --list-sessions with `sessions`; every other spawn is the CLI run.
+  const resumeSpawn = (sessions, calls) => (command, args) => {
+    calls.push(args);
+    return args.includes('--list-sessions')
+      ? kiroChild({ stdout: kiroListing(sessions) })
+      : kiroChild({ stdout: kiroStream('kiro-new') });
+  };
+  const recovered = (deps) =>
+    deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.recovered');
+
+  it('resumes a restored v2 session by id', async () => {
+    const calls = [];
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      env: kiroStoreEnv,
+      spawnFn: resumeSpawn([{ sessionId: 'kiro-7', source: 'v2' }], calls),
+      restoreKiroStore: async () => true,
+      store: parkedKiroStore(),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
+    expect(recovered(deps)).toBe(false);
+    const run = calls.find((args) => !args.includes('--list-sessions'));
+    expect(run.slice(run.indexOf('--resume-id'), run.indexOf('--resume-id') + 2)).toEqual([
+      '--resume-id',
+      'kiro-7',
+    ]);
+  });
+
+  it.each([
+    ['a classic session parked by Kiro <= 2.19', [{ sessionId: 'kiro-7', source: 'classic' }]],
+    ['a session missing from the restored store', [{ sessionId: 'other', source: 'v2' }]],
+  ])('recovers %s by re-running fresh with the answer', async (_label, sessions) => {
+    // The pinned v2 engine cannot load it, so a --resume-id would exit non-zero.
+    const calls = [];
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      env: kiroStoreEnv,
+      spawnFn: resumeSpawn(sessions, calls),
+      restoreKiroStore: async () => true,
+      store: parkedKiroStore(),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
+    expect(recovered(deps)).toBe(true);
+    const run = calls.find((args) => !args.includes('--list-sessions'));
+    expect(run).not.toContain('--resume-id');
+    // The fresh conversation's streamed id replaces the unusable one.
+    expect(sessionIds(deps)).toContain('kiro-new');
+  });
 
   it('recovers a resume with a lost Kiro store by re-running fresh (recent gate)', async () => {
     // D2 recoverable path: mount wiped (restore fails, mount configured) but the
     // gate is recent → re-run the stage FRESH with the answer injected, not a blind
-    // fail. A fresh Kiro run captures a new session id via --list-sessions.
+    // fail. A fresh Kiro run links the new session id from its stream.
+    const calls = [];
     const deps = baseDeps({
       availableClis: ['kiro'],
       env: kiroStoreEnv,
-      spawnFn: (command, args) =>
-        args.includes('--list-sessions')
-          ? {
-              on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
-              stdout: {
-                on: (ev, cb) =>
-                  ev === 'data' &&
-                  cb(
-                    Buffer.from(
-                      JSON.stringify([
-                        { cwd: '/ws', sessions: [{ sessionId: 'kiro-new', updatedAt: 'T' }] },
-                      ]),
-                    ),
-                  ),
-              },
-              stdin: { end() {} },
-            }
-          : okSpawn(),
+      spawnFn: resumeSpawn([], calls),
       restoreKiroStore: async () => false, // mount wiped
-      store: spyStore({
-        // No createdAt → age unknown → treated as recent → recoverable.
-        humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'go' } },
-        stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
-      }),
+      store: parkedKiroStore(),
     });
     const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', cli: 'kiro' });
-    // A recovery note is recorded and a NEW session id is captured (fresh run).
-    expect(
-      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.recovered'),
-    ).toBe(true);
+    expect(recovered(deps)).toBe(true);
+    expect(sessionIds(deps)).toContain('kiro-new');
+    // A wiped store is already known lost; no session lookup is needed.
+    expect(calls.some((args) => args.includes('--list-sessions'))).toBe(false);
   });
 
   it('fails resume_store_expired when the lost conversation is over 14 days old', async () => {
@@ -2870,22 +2778,18 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
   it('resumes normally when no store mount is configured (local/test run)', async () => {
     // resolveKiroStore() is null without the store env — a local run keeps its
     // best-effort resume behavior (no wiped-mount recovery kicks in).
+    const calls = [];
     const deps = baseDeps({
       availableClis: ['kiro'],
       env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
-      spawnFn: okSpawn,
+      spawnFn: resumeSpawn([{ sessionId: 'kiro-7', source: 'v2' }], calls),
       restoreKiroStore: async () => false,
-      store: spyStore({
-        humanTask: { humanTaskId: 'q-1', status: 'answered', answer: { freeText: 'go' } },
-        stage: { cli: 'kiro', cliSessionId: 'kiro-7' },
-      }),
+      store: parkedKiroStore(),
     });
     const res = await runStage({ ...baseArgs, requestedCli: 'kiro', resumeFrom: 'q-1' }, deps);
     expect(res.ok).toBe(true);
     // Not demoted → resumes the SAME conversation, no recovery note.
-    expect(
-      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.stage.recovered'),
-    ).toBe(false);
+    expect(recovered(deps)).toBe(false);
   });
 
   it('does NOT fail a FRESH kiro run when the store is absent (mount configured)', async () => {
@@ -2893,53 +2797,56 @@ describe('runStage — Kiro SQLite store sync (restore before spawn, persist aft
     const deps = baseDeps({
       availableClis: ['kiro'],
       env: kiroStoreEnv,
-      spawnFn: (command, args) =>
-        args.includes('--list-sessions')
-          ? {
-              on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
-              stdout: { on: (ev, cb) => ev === 'data' && cb(Buffer.from('[]')) },
-              stdin: { end() {} },
-            }
-          : okSpawn(),
+      spawnFn: () => kiroChild({ stdout: kiroStream('kiro-1') }),
       restoreKiroStore: async () => false,
     });
     const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
     expect(res.reason).not.toBe('resume_store_lost');
     expect(res.ok).toBe(true);
   });
+
+  it('classifies a Kiro credential rejection reported on the stream', async () => {
+    // The v2 engine reports a rejected key as a runError on stdout; stderr is empty.
+    const deps = baseDeps({
+      availableClis: ['kiro'],
+      spawnFn: () =>
+        kiroChild({
+          exitCode: 1,
+          stdout: kiroStream('kiro-1', [
+            'runError',
+            {
+              stage: 'prompt',
+              message:
+                'Internal error (code -32603): Encountered an error in the response stream: The bearer token included in the request is invalid. (request_id: r-1)',
+            },
+          ]),
+        }),
+    });
+    const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
+    expect(res).toMatchObject({ ok: false, reason: 'credential_invalid' });
+  });
 });
 
-describe('runStage — Kiro credit capture (per-turn footer → credits metric)', () => {
+describe('runStage — Kiro credit capture (stream metering → credits metric)', () => {
   beforeEach(() => resetKiroCreditRateCache());
 
-  // A spawn dispatcher covering the three Kiro child processes of a fresh run:
-  // the run itself (emits the credits footer on stderr — runChild tees it into
-  // stderrTail), the post-run --list-sessions capture, and the /usage rate
-  // capture (its report is on stderr too).
+  // A spawn dispatcher covering the two Kiro child processes of a fresh run: the
+  // run itself (stream-json on stdout, with the turn's metering) and the /usage
+  // rate capture (its report is on stderr).
   const kiroSpawn =
-    ({ footer = ' ▸ Credits: 0.42 • Time: 2s\n', usage = 'billed at $0.04 per credit\n' } = {}) =>
+    ({ credits = [0.3, 0.12], usage = 'billed at $0.04 per credit\n' } = {}) =>
     (command, args) => {
-      if (args.includes('--list-sessions')) {
-        return {
-          on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
-          stdout: { on: (ev, cb) => ev === 'data' && cb(Buffer.from('[]')) },
-          stdin: { end() {} },
-        };
-      }
-      if (args.includes('/usage')) {
-        return {
-          on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
-          stdout: { on: () => {} },
-          stderr: { on: (ev, cb) => ev === 'data' && cb(Buffer.from(usage)) },
-          stdin: { end() {} },
-        };
-      }
-      return {
-        on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
-        stderr: { on: (ev, cb) => ev === 'data' && footer && cb(Buffer.from(footer)) },
-        stdin: { end() {} },
-      };
+      if (args.includes('/usage')) return kiroChild({ stderr: usage });
+      const metering = credits.map((value) => ({ value, unit: 'credit', unitPlural: 'credits' }));
+      return kiroChild({
+        stdout: kiroStream(
+          'kiro-1',
+          ...(metering.length ? [['metadata', { meteringUsage: metering }]] : []),
+        ),
+      });
     };
+  const creditsMetric = (deps) =>
+    deps.store.calls.find((c) => c[0] === 'recordMetric' && c[1].metrics?.credits !== undefined);
 
   it('records a credits metric stamped with the model and the $/credit rate', async () => {
     const sent = [];
@@ -2952,19 +2859,19 @@ describe('runStage — Kiro credit capture (per-turn footer → credits metric)'
     const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
     expect(res).toMatchObject({ ok: true, cli: 'kiro' });
     // Several metric samples land per run (prompt bytes, credits); pick the
-    // credits one explicitly.
-    const metric = deps.store.calls.find(
-      (c) => c[0] === 'recordMetric' && c[1].metrics?.credits !== undefined,
-    );
+    // credits one explicitly. The turn's metering entries are summed.
+    const metric = creditsMetric(deps);
     expect(metric).toBeTruthy();
     expect(metric[1]).toMatchObject({
       executionId: 'e1',
-      metrics: { credits: 0.42 },
+      metrics: { credits: expect.closeTo(0.42) },
       resolvedModel: 'claude-opus-4.6',
       creditRate: 0.04,
     });
     // Live-parity broadcast so the UI refreshes usage without a full refetch.
-    expect(sent.some((p) => p.action === 'agent.metric' && p.metrics?.credits === 0.42)).toBe(true);
+    expect(
+      sent.some((p) => p.action === 'agent.metric' && Math.abs(p.metrics?.credits - 0.42) < 1e-9),
+    ).toBe(true);
   });
 
   it('records credits unpriced (rate null) when /usage yields no rate', async () => {
@@ -2975,23 +2882,21 @@ describe('runStage — Kiro credit capture (per-turn footer → credits metric)'
     });
     const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
     expect(res.ok).toBe(true);
-    const metric = deps.store.calls.find(
-      (c) => c[0] === 'recordMetric' && c[1].metrics?.credits !== undefined,
-    );
-    expect(metric[1]).toMatchObject({ metrics: { credits: 0.42 }, creditRate: null });
+    expect(creditsMetric(deps)[1]).toMatchObject({
+      metrics: { credits: expect.closeTo(0.42) },
+      creditRate: null,
+    });
   });
 
-  it('records no credits metric when the footer is absent (prompt-size sample still lands)', async () => {
+  it('records no credits metric when the stream has no metering (prompt-size sample still lands)', async () => {
     const deps = baseDeps({
       availableClis: ['kiro'],
       env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
-      spawnFn: kiroSpawn({ footer: '' }),
+      spawnFn: kiroSpawn({ credits: [] }),
     });
     const res = await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
     expect(res.ok).toBe(true);
-    expect(
-      deps.store.calls.some((c) => c[0] === 'recordMetric' && c[1].metrics?.credits !== undefined),
-    ).toBe(false);
+    expect(creditsMetric(deps)).toBeUndefined();
     // The write-side context ledger records prompt size on every fresh run.
     const promptMetric = deps.store.calls.find(
       (c) => c[0] === 'recordMetric' && c[1].metrics?.promptBytes !== undefined,

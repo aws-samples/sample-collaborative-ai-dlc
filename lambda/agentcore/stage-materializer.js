@@ -472,7 +472,9 @@ export const KIRO_AGENT_NAME = 'aidlc';
 // Build the Kiro agent config that wires our stdio MCP server. Reuses the exact
 // server spec buildMcpConfig produces (command/args/scope-env) — just wrapped in
 // Kiro's agent envelope. `tools:["*"]` exposes the MCP tools (we also pass
-// --trust-all-tools so none prompt for approval). `resources` points Kiro at the
+// --trust-all-tools so none prompt for approval). No `allowedTools`: it only
+// duplicates --trust-all-tools, and Kiro's v3 engine ignores agent JSON that
+// carries that CLI-only field. `resources` points Kiro at the
 // steering dir: with a custom --agent, Kiro does NOT auto-load .kiro/steering,
 // so the glob is required to load the project's custom rules
 // (https://kiro.dev/docs/cli/steering). Pure.
@@ -483,7 +485,6 @@ export const buildKiroAgentConfig = ({ mcpEntry, scope, env = {}, customServers 
   description: 'AI-DLC v2 stage execution agent (runtime-managed MCP surface).',
   mcpServers: buildMcpConfig({ mcpEntry, scope, env, customServers }).mcpServers,
   tools: ['*'],
-  allowedTools: ['*'],
   resources: ['file://.kiro/steering/**/*.md'],
 });
 

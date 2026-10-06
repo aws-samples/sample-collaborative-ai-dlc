@@ -476,6 +476,8 @@ describe('buildKiroAgentConfig', () => {
     expect(cfg.mcpServers.aidlc.command).toBe('node');
     expect(cfg.mcpServers.aidlc.env.V2_EXECUTION_ID).toBe('e1');
     expect(cfg.tools).toEqual(['*']);
+    // allowedTools duplicates --trust-all-tools; Kiro's v3 engine rejects it.
+    expect(cfg).not.toHaveProperty('allowedTools');
     // Custom-agent steering isn't auto-loaded by Kiro — the resources glob wires
     // .kiro/steering (where materializeCustomRules writes the project's rules).
     expect(cfg.resources).toContain('file://.kiro/steering/**/*.md');

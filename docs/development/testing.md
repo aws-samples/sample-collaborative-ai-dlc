@@ -526,7 +526,8 @@ For each selected CLI, the harness:
    native edit parsing, output timestamps, and Git runtime exclusions.
 
 Starting fresh and resume legs in separate containers exercises Claude's and
-Codex's durable JSONL state and Kiro/OpenCode SQLite restore and persistence.
+Codex's durable JSONL state, OpenCode's SQLite restore and persistence, and
+Kiro's SQLite and v2 session-file restore and persistence.
 
 The script continues after an individual CLI failure and prints a flat summary:
 

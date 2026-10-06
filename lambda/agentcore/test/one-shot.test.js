@@ -57,6 +57,11 @@ describe('extractJsonObject', () => {
   });
 });
 
+const kiroStream = (...events) =>
+  events
+    .map(([type, data]) => JSON.stringify({ type, data: { sessionId: 'k-1', ...data } }))
+    .join('\n');
+
 describe('runOneShotPrompt', () => {
   it('returns no_cli when nothing usable is installed', async () => {
     const out = await runOneShotPrompt({ prompt: 'p', availableClis: [] });
@@ -126,13 +131,33 @@ describe('runOneShotPrompt', () => {
     );
   });
 
-  it('runs kiro, strips ANSI from stdout, and captures the credit footer', async () => {
+  it('runs kiro on stream-json and parses the answer and credits', async () => {
     let argv;
     const spawnFn = vi.fn((command, args) => {
       argv = { command, args };
       return fakeChild({
-        stdout: '\u001B[38;5;141mThe answer\u001B[0m {"gist":"k"}',
-        stderr: ' ▸ Credits: 0.12 • Time: 1s',
+        stdout: kiroStream(
+          [
+            'sessionUpdate',
+            {
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: 'The answer ' },
+              },
+            },
+          ],
+          [
+            'sessionUpdate',
+            {
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: '{"gist":"k"}' },
+              },
+            },
+          ],
+          ['metadata', { meteringUsage: [{ value: 0.12, unit: 'credit', unitPlural: 'credits' }] }],
+          ['runFinished', { status: 'success', finalText: 'The answer {"gist":"k"}' }],
+        ),
       });
     });
     const restoreKiroStore = vi.fn(async () => true);
@@ -147,12 +172,12 @@ describe('runOneShotPrompt', () => {
     });
     expect(out.ok).toBe(true);
     expect(out.cli).toBe('kiro');
-    expect(out.text).toContain('{"gist":"k"}');
-    expect(out.text).not.toContain('\u001B');
+    expect(out.text).toBe('The answer {"gist":"k"}');
     expect(out.metrics).toEqual({ credits: 0.12 });
+    expect(argv.args).toContain('stream-json');
     expect(argv.args).toContain('--agent');
     expect(argv.args[argv.args.indexOf('--agent') + 1]).toBe('aidlc');
-    // Kiro's SQLite store is bracketed exactly like resolve-conflict.
+    // Kiro's store is bracketed exactly like resolve-conflict.
     expect(restoreKiroStore).toHaveBeenCalledOnce();
     expect(persistKiroStore).toHaveBeenCalledOnce();
   });
@@ -286,10 +311,18 @@ describe('runOneShotPrompt', () => {
   });
 
   it('maps rejected credentials to credential_invalid without returning provider output', async () => {
+    // Kiro's v2 engine reports a rejected key as a runError on stdout only.
     const spawnFn = vi.fn(() =>
       fakeChild({
         exitCode: 1,
-        stderr: 'HTTP 403 Forbidden: bearer token rejected secret-value',
+        stdout: kiroStream([
+          'runError',
+          {
+            stage: 'prompt',
+            message:
+              'Internal error (code -32603): Encountered an error in the response stream: The bearer token included in the request is invalid. secret-value',
+          },
+        ]),
       }),
     );
     const out = await runOneShotPrompt({
