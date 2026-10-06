@@ -1461,6 +1461,26 @@ describe('steering store methods', () => {
     expect(clear).not.toHaveProperty('ExpressionAttributeValues');
   });
 
+  // Stamped by the target's re-run after it archived both rewound stages, so a
+  // replayed re-run recognises its own completed archive and does not version the
+  // heads pass 1 has since written.
+  it('stamps the loop-back archive marker on the stage row', async () => {
+    ddb.on(UpdateCommand).resolves({});
+
+    await store.markLoopBackArchived({
+      executionId: 'e1',
+      stageInstanceId: 'si-cg',
+      loopBackId: 'eg-validation-si-bt-0-run-1',
+    });
+
+    expect(ddb.commandCalls(UpdateCommand)[0].args[0].input).toMatchObject({
+      Key: stageKey('e1', 'si-cg'),
+      UpdateExpression: 'SET loopBackArchiveId = :loopBackId',
+      ConditionExpression: 'attribute_exists(pk)',
+      ExpressionAttributeValues: { ':loopBackId': 'eg-validation-si-bt-0-run-1' },
+    });
+  });
+
   it('resetStageRow is a no-op (null) for a stage that never ran', async () => {
     ddb.on(GetCommand).resolves({});
     const reset = await store.resetStageRow({ executionId: 'e1', stageInstanceId: 'si-x' });

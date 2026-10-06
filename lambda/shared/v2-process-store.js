@@ -1380,6 +1380,23 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     return row ? { ...row, loopBackCount: Number(meta?.loopBackCount ?? 0) } : row;
   };
 
+  // The loop-back decision whose artifact archive this stage instance completed.
+  // Stamped by the target's re-run AFTER the archive succeeded, so a retry that
+  // follows a partial archive re-archives (every write in
+  // `archiveArtifactsForStages` is replay-safe) instead of skipping and letting the
+  // new attempt overwrite a head that was never versioned.
+  const markLoopBackArchived = async ({ executionId, stageInstanceId, loopBackId }) => {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: stageKey(executionId, stageInstanceId),
+        UpdateExpression: 'SET loopBackArchiveId = :loopBackId',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':loopBackId': loopBackId },
+      }),
+    );
+  };
+
   // The build-and-test agent's loop-back recommendation, kept on its STAGE# row
   // until the validation gate reads it. `reason: null` clears it. A fresh run
   // rebuilds the row (putStage), which drops it too.
@@ -2892,6 +2909,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     markSteeringConsumed,
     supersedeSteering,
     resetStageRow,
+    markLoopBackArchived,
     setLoopBackRecommendation,
     recordMetric,
     recordGraphRead,

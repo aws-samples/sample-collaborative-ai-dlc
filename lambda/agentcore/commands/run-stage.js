@@ -106,7 +106,10 @@ import {
   mergeFindings,
   sensorGateFindings,
 } from '../../shared/gate-preconditions.js';
-import { readCurrentArtifactHeadHashes as defaultReadArtifactHeadHashes } from '../../shared/artifact-versioning.js';
+import {
+  archiveArtifactsForStages as defaultArchiveArtifactsForStages,
+  readCurrentArtifactHeadHashes as defaultReadArtifactHeadHashes,
+} from '../../shared/artifact-versioning.js';
 import { compileContextPack as defaultCompileContextPack } from '../context-compiler.js';
 import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
 import {
@@ -1720,6 +1723,7 @@ export const runStage = async (
     // like every other graph reader so the comparison is testable without a real
     // Gremlin traversal.
     readArtifactHeadHashes = defaultReadArtifactHeadHashes,
+    archiveArtifactsForStages = defaultArchiveArtifactsForStages,
     // Fetch project custom agent rules (.md bodies) from S3 → written into the
     // selected CLI's native rules dir by the materializer. Injected for tests.
     fetchCustomRules = defaultFetchCustomRules,
@@ -2240,6 +2244,62 @@ export const runStage = async (
     const freshFromGate = preAgentGate || isLoopBackAnswer(resumeGate, stageId);
     if ((!cli || !priorSessionId) && !reviewFeedback && !freshFromGate) {
       return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
+    }
+    // A loop-back is a two-stage rewind in all but name, so it owes the same
+    // artifact history: rewind runs `archiveArtifactsForStages` BEFORE it touches a
+    // stage row, which writes an immutable version of each current head and marks
+    // the head and its HAS_SECTION/HAS_ITEM items superseded. The loop-back only
+    // reset the rows. Left unarchived, `create_artifact` overwrites the pass-0 head
+    // in place (rehabilitation only happens for a superseded head), so the
+    // build-test-results the human acted on and the plan behind them are gone, and
+    // anything pass 1 does not rewrite stays current as if the new attempt had
+    // produced it.
+    //
+    // The orchestrator has no Neptune access, so the archive runs HERE, at the
+    // target's re-run, keyed on the same gate id as the resets, covering BOTH stage
+    // instances — the target this stage is, and the recommender the gate belongs to
+    // — and before the agent writes anything. It fails the stage closed, exactly as
+    // rewind aborts when the snapshot fails: a re-run that silently overwrote
+    // unversioned heads is the loss this guards.
+    if (isLoopBackAnswer(resumeGate, stageId)) {
+      const loopBackId = resumeGate.humanTaskId;
+      if (row?.loopBackArchiveId !== loopBackId) {
+        if (!openGraph) {
+          return fail(
+            stageInstanceId,
+            'loopback_archive_failed',
+            'no graph connection to archive the rewound stages',
+          );
+        }
+        let gArchive = null;
+        try {
+          gArchive = await openGraph();
+          await archiveArtifactsForStages({
+            g: gArchive,
+            intentId,
+            stageInstanceIds: [
+              ...new Set([stageInstanceId, resumeGate.stageInstanceId].filter(Boolean)),
+            ],
+            restartId: `loopback-${loopBackId}`,
+            reason: `Loop-back to ${stageId}: ${resumeGate.loopBackReason || 'no reason recorded'}`,
+            actor: resumeGate.answeredByName || resumeGate.answeredBy || 'unknown',
+          });
+        } catch (error) {
+          logger.error('loop-back artifact archive failed', { error, stageInstanceId });
+          return fail(stageInstanceId, 'loopback_archive_failed', error?.message ?? String(error));
+        } finally {
+          await closeGraphSource(gArchive).catch(() => {});
+        }
+        // Stamped only after the archive completed, so a crash mid-archive retries
+        // the whole archive rather than skipping it.
+        if (typeof store.markLoopBackArchived === 'function') {
+          await store
+            .markLoopBackArchived({ executionId, stageInstanceId, loopBackId })
+            .catch((error) =>
+              logger.error('loop-back archive marker not stamped', { error, stageInstanceId }),
+            );
+        }
+      }
     }
     if (cli && !availableClis.includes(cli)) {
       const detail = credentialFailureDetail({
