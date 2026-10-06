@@ -393,6 +393,33 @@ describe('evaluateGatePreconditions: ensemble evidence', () => {
     expect(codesOf(evaluate(1, [contributed(null), contributed(1)]))).toEqual([]);
   });
 
+  // The orchestrator re-derives the findings from the same evidence before the
+  // gate opens, so the unreadable-evidence block has to survive that re-read.
+  it('blocks, non-overridably, when the persona evidence could not be read', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      ensembleEvidence: {
+        supports: ['design-agent'],
+        evidenceUnavailable: 'ThrottlingException',
+      },
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toContain('ensemble_evidence_unavailable');
+    expect(result.ok).toBe(false);
+    const unavailable = result.findings.find(
+      (item) => item.code === 'ensemble_evidence_unavailable',
+    );
+    expect(unavailable).toMatchObject({
+      severity: 'blocking',
+      overridable: false,
+      receiptKind: null,
+      detail: { reason: 'ThrottlingException' },
+    });
+    // No `override-and-approve` is offered: only request-changes resolves it.
+    expect(overridableFindings(result.findings)).not.toContainEqual(unavailable);
+  });
+
   // `runHubAndSpoke` records a failed integration as a gap; before this the gate
   // read only supports/links/budget/dissent and offered a plain `approve`.
   it('reports an integration that produced no evidence as an advisory finding', () => {

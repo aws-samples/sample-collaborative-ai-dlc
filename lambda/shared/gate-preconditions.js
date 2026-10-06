@@ -36,6 +36,7 @@ const FINDING_CODES = Object.freeze([
   'summary_confirmation_missing',
   'summary_confirmation_stale',
   'plan_approval_missing',
+  'ensemble_evidence_unavailable',
   'persona_contribution_missing',
   'pipeline_link_incomplete',
   'ensemble_integration_missing',
@@ -370,6 +371,26 @@ const evaluateGatePreconditions = ({
         }),
       );
     }
+  }
+
+  // The ensemble's evidence channel could not be read (the receipt history for
+  // this attempt). Nothing was dispatched, and nothing can be said about whether
+  // the declared personas ran — so this is not an absence the human can weigh, it
+  // is an unknown. It therefore follows the same fail-closed rule as a pinned
+  // sensor whose integrity check never ran: BLOCKING and NOT overridable, because
+  // a waiver would be a waiver of something nobody can describe. `request-changes`
+  // re-runs the stage, which re-reads the receipts, so the run is never stuck.
+  if (ensembleEvidence?.evidenceUnavailable) {
+    findings.push(
+      finding({
+        code: 'ensemble_evidence_unavailable',
+        severity: 'blocking',
+        title: 'The persona evidence for this stage could not be read',
+        detail: { reason: String(ensembleEvidence.evidenceUnavailable) },
+        remediation:
+          'The collaborator evidence was never readable, so no persona session ran. Request changes: the stage re-runs and re-reads it.',
+      }),
+    );
   }
 
   const declaredSupports = ensembleEvidence?.supports ?? [];

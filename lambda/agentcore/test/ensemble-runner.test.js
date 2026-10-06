@@ -920,14 +920,15 @@ describe('failure never blocks', () => {
   });
 
   // Without the receipts, a resume cannot tell which personas already ran, nor how
-  // many dissent rounds were spent: nothing is dispatched, and the gate hears it.
-  it('dispatches nothing when the prior receipts cannot be read', async () => {
+  // many dissent rounds were spent: nothing is dispatched. That is an UNKNOWN, not
+  // an absence the human can weigh, so it fails closed at the gate.
+  it('dispatches nothing and blocks the gate when the prior receipts cannot be read', async () => {
     const stageRow = stage({ mode: 'mob' });
     const store = spyStore();
     store.listReceipts = async () => {
       throw new Error('ThrottlingException');
     };
-    const { briefs, ensembleEvidence } = await run({
+    const { briefs, ensembleEvidence, findings } = await run({
       stageRow,
       topology: await topologyFor(stageRow),
       store,
@@ -936,6 +937,25 @@ describe('failure never blocks', () => {
     expect(ensembleEvidence.gaps).toEqual([
       expect.objectContaining({ role: 'ensemble', reason: expect.stringContaining('Throttling') }),
     ]);
+    expect(ensembleEvidence.evidenceUnavailable).toContain('ThrottlingException');
+    const unavailable = findings.find((item) => item.code === 'ensemble_evidence_unavailable');
+    // Non-overridable: a human cannot waive evidence nobody can describe. Request
+    // changes re-runs the stage and re-reads the receipts.
+    expect(unavailable).toMatchObject({
+      severity: 'blocking',
+      overridable: false,
+      receiptKind: null,
+    });
+  });
+
+  it('leaves a readable run without the unavailable flag', async () => {
+    const stageRow = stage({ mode: 'mob', supportAgentRefs: ['design-agent'] });
+    const { ensembleEvidence, findings } = await run({
+      stageRow,
+      topology: await topologyFor(stageRow),
+    });
+    expect(ensembleEvidence).not.toHaveProperty('evidenceUnavailable');
+    expect(findings.map((item) => item.code)).not.toContain('ensemble_evidence_unavailable');
   });
 
   it('accepts a support that produces its contribution only on the reduced retry', async () => {

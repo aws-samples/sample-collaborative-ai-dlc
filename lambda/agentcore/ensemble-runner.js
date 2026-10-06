@@ -787,14 +787,21 @@ export const runEnsembleSessions = async ({
         reason: `topology declares more than ${MAX_SUPPORT_PERSONAS} support personas; this one was not dispatched`,
       });
     }
-    priorReceipts =
-      typeof store?.listReceipts === 'function'
-        ? // No catch: without them a resume would re-run settled personas and
-          // reset the dissent budget. The floor below turns the error into a gap.
-          (await store.listReceipts(executionId, { stageInstanceId, attempt })).filter(
-            inThisRevision,
-          )
-        : [];
+    if (typeof store?.listReceipts === 'function') {
+      try {
+        priorReceipts = (
+          await store.listReceipts(executionId, { stageInstanceId, attempt })
+        ).filter(inThisRevision);
+      } catch (error) {
+        if (isFatalLoadError(error)) throw error;
+        // Not a gap we can shrug at. Without the receipts the runner cannot tell
+        // which personas already ran, so it dispatches NOBODY — and it equally
+        // cannot tell the human whether the ensemble ran at all. Recorded so the
+        // gate blocks on it instead of reading "no evidence" as "nothing to do".
+        evidence.evidenceUnavailable = error?.message ?? String(error);
+        throw error;
+      }
+    }
     const ordinalsOf = (kind) =>
       new Set(
         priorReceipts
@@ -1260,6 +1267,7 @@ const recordDissent = async ({ evidence, emit, stage, attempt, mode, round }) =>
 // The codes this stream can raise. Everything else in the evaluator belongs to
 // another stream and must not leak out of an ensemble run.
 const ENSEMBLE_FINDING_CODES = new Set([
+  'ensemble_evidence_unavailable',
   'persona_contribution_missing',
   'pipeline_link_incomplete',
   'ensemble_integration_missing',
