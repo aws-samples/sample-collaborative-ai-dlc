@@ -3760,8 +3760,16 @@ export const runStage = async (
           attempt,
           validationRound,
           // On a "Request changes" revision the supports review the lead's
-          // response to the human, so they get the feedback the lead got.
-          humanFeedback: validationRound ? (reviewFeedbackPrompt ?? null) : null,
+          // response to the human, so they get the feedback the LEAD got — which
+          // is `resumeAnswer`: a validation revision reaches this stage as a
+          // RESUME of the answered validation gate (orchestrator: validationRound
+          // += 1 with initialResumeFrom = that gate), never as `reviewFeedback` —
+          // that is the PR-feedback lane's text, dispatched with no
+          // validationRound at all. A change-control gate is answered BEFORE the
+          // agent runs and leaves `resumeAnswer` null by construction, so a
+          // pre-agent decision is never handed to a persona as rejected-draft
+          // feedback.
+          humanFeedback: validationRound ? (resumeAnswer ?? null) : null,
           lead: { persona: leadPersona, block: agentBlock },
           dispatchContext,
           knowledgeFor: (agentRef) =>

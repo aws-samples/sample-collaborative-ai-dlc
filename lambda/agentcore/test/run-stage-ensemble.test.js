@@ -821,3 +821,101 @@ describe('runStage — native ensemble sessions: support knowledge on a pinned r
     expect(spawned.length).toBeGreaterThan(1);
   });
 });
+
+// A validation "Request changes" is not a separate dispatch shape: it reaches the
+// stage as a RESUME of the answered gate, so the feedback lives in that gate's
+// answer and nowhere else. The ensemble's own unit tests inject `humanFeedback`
+// directly, which cannot observe whether the STAGE RUNNER ever finds it — only a
+// seam test that answers a real gate can.
+describe('runStage — native ensemble sessions: the validation feedback the lead got', () => {
+  const FEEDBACK = 'Tighten the acceptance criteria on the payment story.';
+  const REVISION_HEADING = 'The human requested changes on the previous revision';
+  const humanTaskId = 'gate-validation-1';
+
+  const revisionHarness = () => {
+    const prompts = [];
+    const { deps, store } = harness({
+      mode: 'mob',
+      supportRefs: ['aidlc-design-agent'],
+      ...withGraph(),
+    });
+    store.getStage = async () => ({
+      stageInstanceId: STAGE_INSTANCE_ID,
+      state: 'WAITING_FOR_HUMAN',
+      pendingHumanTaskId: humanTaskId,
+      cli: 'claude',
+      cliSessionId: 'session-1',
+      attempt: 0,
+    });
+    store.getHumanTask = async () => ({
+      humanTaskId,
+      kind: 'validation',
+      status: 'answered',
+      answer: { decision: 'request-changes', feedback: FEEDBACK },
+      createdAt: 'T',
+    });
+    deps.spawnFn = promptCapturingSpawn(prompts);
+    return { deps, store, prompts };
+  };
+
+  it('reaches both a support brief and the integrator brief on a validation revision', async () => {
+    const { deps, prompts } = revisionHarness();
+
+    const result = await runStage(
+      {
+        ...baseArgs,
+        methodologyRelease: RELEASE_PIN,
+        resumeFrom: humanTaskId,
+        validationRound: 1,
+      },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+
+    const supportBrief = prompts.find((text) => text.includes('You are aidlc-design-agent'));
+    expect(supportBrief).toContain(`## ${REVISION_HEADING}`);
+    // Quoted per line, so the human's words cannot read as a new brief heading.
+    expect(supportBrief).toContain(`> ${FEEDBACK}`);
+
+    const integratorBrief = prompts.find((text) =>
+      text.includes('# Integration: requirements-analysis'),
+    );
+    expect(integratorBrief).toContain(`## ${REVISION_HEADING}`);
+    expect(integratorBrief).toContain(`> ${FEEDBACK}`);
+  });
+
+  it('passes no feedback to any persona on a fresh run', async () => {
+    const prompts = [];
+    const { deps } = harness({
+      mode: 'mob',
+      supportRefs: ['aidlc-design-agent'],
+      ...withGraph(),
+    });
+    deps.spawnFn = promptCapturingSpawn(prompts);
+
+    const result = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(prompts.some((text) => text.includes('You are aidlc-design-agent'))).toBe(true);
+    expect(prompts.some((text) => text.includes('# Integration: requirements-analysis'))).toBe(
+      true,
+    );
+    expect(prompts.some((text) => text.includes(REVISION_HEADING))).toBe(false);
+  });
+
+  // Validation round 0 is the first pass at the stage: an answered gate can still
+  // be the resume that carries it (a checkpoint, a question), and that answer is
+  // not rejected-draft feedback.
+  it('passes no feedback on a resume at validation round 0', async () => {
+    const { deps, prompts } = revisionHarness();
+
+    const result = await runStage(
+      { ...baseArgs, methodologyRelease: RELEASE_PIN, resumeFrom: humanTaskId },
+      deps,
+    );
+
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(prompts.some((text) => text.includes(REVISION_HEADING))).toBe(false);
+  });
+});
