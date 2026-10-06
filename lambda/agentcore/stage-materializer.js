@@ -410,6 +410,16 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         // ONLY when the plan resolved a policy, so an unpinned or 2.3.3-era run
         // produces a byte-identical config.
         ...(scope.policy ? { V2_STAGE_POLICY: JSON.stringify(scope.policy) } : {}),
+        // Written ONLY for a session that is NOT the checkpoint owner (a dispatched
+        // persona under a resolved policy), so the MCP server withholds the
+        // checkpoint tools there. Absent everywhere else, which keeps the lead's and
+        // every unpinned run's config byte-identical.
+        ...(scope.policy && scope.checkpointOwner === false ? { V2_CHECKPOINT_OWNER: '0' } : {}),
+        // Written ONLY for a dispatched persona session: nothing threads an answer
+        // back into one, so the MCP server withholds ask_question there. Absent
+        // everywhere else — independent of the policy, because the absence of an
+        // answer path does not depend on what the release enables.
+        ...(scope.canAsk === false ? { V2_ASK_QUESTION: '0' } : {}),
         // The validation revision the checkpoint receipts are scoped to. Absent
         // for the first run and for every run without a policy.
         ...(scope.policy && scope.validationRound
@@ -419,6 +429,11 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         // on the verdict row instead of trusting the agent's self-reported name
         // (upstream §12a identity marker, enforced server-side). Empty → null.
         V2_REVIEWER_AGENT: scope.reviewerAgent ?? '',
+        // Trusted author identity (dispatched persona sessions, and the lead under
+        // a resolved policy): graph-writer pins a `contribution`'s collaborator
+        // to it. Absent on an unpinned/2.3.3 run, whose config must stay
+        // byte-identical.
+        ...(scope.agentRef ? { V2_AGENT_REF: scope.agentRef } : {}),
         V2_PROCESS_TABLE: env.V2_PROCESS_TABLE ?? '',
         // Local E2E only. Production leaves this empty and uses the normal AWS
         // endpoint; the MCP child does not reliably inherit arbitrary CLI env.

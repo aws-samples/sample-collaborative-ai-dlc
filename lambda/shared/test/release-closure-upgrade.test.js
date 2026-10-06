@@ -41,9 +41,13 @@ import {
 
 const BUCKET = 'artifacts-test';
 const TABLE = 'blocks-test';
-const PROFILE = RUNTIME_HANDLERS.has('stage.mode.ensemble-sessions@v1')
-  ? 'v2.9.0'
-  : 'current-stable';
+// The newest profile this build can promote: 2.9.0 needs the persona sessions
+// and the build-and-test loop-back handler.
+const PROFILE =
+  RUNTIME_HANDLERS.has('stage.mode.ensemble-sessions@v1') &&
+  RUNTIME_HANDLERS.has('protocol.loopback.gate-offered@v1')
+    ? 'v2.9.0'
+    : 'current-stable';
 
 const s3Mock = mockClient(S3Client);
 const ddbMock = mockClient(DynamoDBDocumentClient);

@@ -9545,7 +9545,7 @@ describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () =>
 });
 
 describe('GET intent — timeline event fields', () => {
-  it('forwards no event detail to the browser', async () => {
+  it('forwards only the dissent counters from the event detail', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
@@ -9571,6 +9571,6 @@ describe('GET intent — timeline event fields', () => {
 
     const event = JSON.parse(res.body).events.find((row) => row.eventId === 'e1');
     expect(event).toBeDefined();
-    expect(event).not.toHaveProperty('detail');
+    expect(event.detail).toEqual({ round: 1, maxRounds: 2 });
   });
 });

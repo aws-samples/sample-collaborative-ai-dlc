@@ -409,11 +409,7 @@ describe('release promotion evidence', () => {
       { blockType: 'UNKNOWN', field: 'value', value: 'new' },
     ];
 
-    expect(unhonouredValues({ fidelityGaps })).toEqual([
-      fidelityGaps[0],
-      fidelityGaps[1],
-      fidelityGaps[2],
-    ]);
+    expect(unhonouredValues({ fidelityGaps })).toEqual([fidelityGaps[0], fidelityGaps[2]]);
   });
 
   it('makes promotion availability depend on registered handlers', () => {
@@ -427,7 +423,11 @@ describe('release promotion evidence', () => {
       const expected = expectedUnhonoured(fidelityGaps);
 
       expect(unhonouredValues({ fidelityGaps }), profileId).toEqual(expected);
-      expect(report.readyForCertification, profileId).toBe(expected.length === 0);
+      // Protocol gaps (the build-and-test loop-back) withhold certification on top
+      // of the authored values.
+      expect(report.readyForCertification, profileId).toBe(
+        expected.length === 0 && report.certificationGaps.length === 0,
+      );
     }
   });
 });

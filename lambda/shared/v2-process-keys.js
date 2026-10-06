@@ -278,10 +278,6 @@ const RECEIPT_KINDS = [
   'stage-approval',
   'change-reconfirm',
   'persona-contribution',
-  // The ensemble integrator raised its ONE judgment question for this attempt.
-  // Its presence is what tells the resumed leg the answer belongs to the
-  // integrator, and what stops it from asking a second time.
-  'integrator-question',
 ];
 // Per-unit construction lane states (docs/v2-parallel.md rule 4 / WP3).
 //   PENDING  — promoted, dependencies not yet satisfied

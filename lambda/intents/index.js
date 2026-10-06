@@ -1263,6 +1263,21 @@ const mirrorSteeringVertex = async ({ g, intentId, steer }) => {
   }
 };
 
+// The only `detail` fields a durable timeline event forwards to the browser.
+// Numeric round counters, nothing else: the rest of `detail` is verbatim agent
+// text, authorization ids and sensor internals that the feed must not leak.
+const TIMELINE_DETAIL_NUMBERS = ['round', 'maxRounds'];
+
+const timelineEventDetail = (detail) => {
+  if (!detail || typeof detail !== 'object') return {};
+  const picked = {};
+  for (const key of TIMELINE_DETAIL_NUMBERS) {
+    const value = Number(detail[key]);
+    if (Number.isFinite(value)) picked[key] = value;
+  }
+  return Object.keys(picked).length > 0 ? { detail: picked } : {};
+};
+
 const buildGateAnswerEvents = async (g, gates) => {
   const answered = gates.filter((gate) => gate.kind === 'question' && gate.answeredAt);
   const events = [];
@@ -5208,6 +5223,11 @@ export const handler = async (event, context) => {
             actor: e.actor ?? null,
             summary: e.summary ?? null,
             timestamp: e.timestamp,
+            // A WHITELIST of `detail` fields the timeline renders — never the
+            // whole object, which carries verbatim agent text and internal ids.
+            // Today: the dissent round counters, so the feed can say "round 1/2"
+            // instead of an unqualified "Maintained dissent".
+            ...timelineEventDetail(e.detail),
           })),
           ...answerEvents,
         ].toSorted((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))),

@@ -16,6 +16,7 @@ export default {
       'test/aidlc-release-adapters.test.js',
       'test/aidlc-release-importer.test.js',
       'test/aidlc-release.test.js',
+      'test/release-matrix.test.js',
       'test/block-mappers.test.js',
       'test/frontmatter.test.js',
       'test/v2-execution-plan.test.js',
