@@ -523,6 +523,99 @@ describe('runStage — native ensemble sessions: evidence reaches the gate', () 
   });
 });
 
+// The ensemble runs between the lead's exit and the engine commit, for up to
+// MAX_SUPPORT_PERSONAS x 2 tries plus the integrator and the dissent rounds, on a
+// 1 GiB session mount a persona session can fill. The lead's draft must not be
+// the thing that is lost when it does.
+describe('runStage — the lead draft is durable before any persona runs', () => {
+  const commitTrackingHarness = ({ failAfterLeadDraft = false } = {}) => {
+    const { deps, store, args } = harness({ mode: 'mob', ...withGraph() });
+    const commits = [];
+    deps.commitAndPushAll = async (commitArgs) => {
+      commits.push(commitArgs.message);
+      if (commits.length === 1) {
+        return {
+          ok: true,
+          committed: true,
+          results: [{ repo: 'r1', sha: 'lead1', committed: true, pushed: true }],
+        };
+      }
+      if (failAfterLeadDraft) {
+        return {
+          ok: false,
+          committed: false,
+          results: [
+            {
+              repo: 'r1',
+              committed: false,
+              dirty: true,
+              reason: 'git_commit_failed',
+              detail: 'ENOSPC: no space left on device',
+            },
+          ],
+        };
+      }
+      return {
+        ok: true,
+        committed: true,
+        results: [{ repo: 'r1', sha: 'post1', committed: true, pushed: true }],
+      };
+    };
+    return { deps, store, args, commits };
+  };
+
+  it('commits and pushes the lead tree before dispatching the personas, then again after', async () => {
+    const { deps, store, args, commits } = commitTrackingHarness();
+    const order = [];
+    deps.commitAndPushAll = async (commitArgs) => {
+      order.push(`commit:${commitArgs.message.includes('(lead draft)') ? 'lead-draft' : 'engine'}`);
+      commits.push(commitArgs.message);
+      return {
+        ok: true,
+        committed: true,
+        results: [{ repo: 'r1', sha: 'abc', committed: true, pushed: true }],
+      };
+    };
+    const spawns = [];
+    deps.spawnFn = (...spawnArgs) => {
+      order.push('spawn');
+      spawns.push(spawnArgs);
+      return outputWritingSpawn();
+    };
+
+    await runStage(args, deps);
+
+    // Lead session, then the lead-draft commit, then every persona session, then
+    // the engine commit.
+    expect(order[0]).toBe('spawn');
+    expect(order[1]).toBe('commit:lead-draft');
+    expect(order.slice(2, -1).every((step) => step === 'spawn')).toBe(true);
+    expect(order.at(-1)).toBe('commit:engine');
+    expect(commits.filter((message) => message.includes('(lead draft)'))).toHaveLength(1);
+    expect(eventTypes(store).filter((type) => type === 'v2.git.pushed').length).toBeGreaterThan(1);
+  });
+
+  it('leaves the lead commit pushed when the persona phase then fills the mount', async () => {
+    const { deps, store, args, commits } = commitTrackingHarness({ failAfterLeadDraft: true });
+    deps.spawnFn = outputWritingSpawn;
+
+    const result = await runStage(args, deps);
+
+    expect(commits[0]).toContain('(lead draft)');
+    const pushed = store.calls
+      .filter((call) => call[0] === 'appendEvent' && call[1].type === 'v2.git.pushed')
+      .map((call) => call[1].summary);
+    expect(pushed.some((summary) => summary.includes('(lead draft)'))).toBe(true);
+    expect(result.ok).toBe(false);
+    // The lead's commit is retained for traceability even though the stage then
+    // failed on the engine commit, so a clean retry can still reconstruct it.
+    const failedStage = store.calls
+      .filter((call) => call[0] === 'updateStageState' && call[1].state === 'FAILED')
+      .at(-1);
+    expect(failedStage[1].pendingCodeCommitRefs).toContainEqual({ repo: 'r1', sha: 'lead1' });
+  });
+});
+
 describe('runStage — the lead session carries its own trusted identity', () => {
   it('pins the lead agentRef on its MCP scope when the plan resolved a policy', async () => {
     const { deps, materialized, args } = harness({ mode: 'mob', ...withGraph() });

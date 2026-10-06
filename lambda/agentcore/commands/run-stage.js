@@ -3501,6 +3501,54 @@ export const runStage = async (
     }
   }
 
+  // The authoritative commit evidence. `v2.git.pushed` is what the plan-approval
+  // lineage rule (`latestCommitAt` / `withPlanApprovalLineage`) reads to decide
+  // whether the stage's code predates its approval, so EVERY commit of the attempt
+  // must publish it — a repair commit that stayed silent left the lineage check
+  // judging the stage on its pre-approval commit.
+  const publishGitEvidence = async (result, { label = null } = {}) => {
+    if (!result || (!result.committed && result.ok)) return;
+    const failedRepos = (result.results ?? [])
+      .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
+      // Carry the git stderr into the event — the 2026-07 incident's ENOSPC
+      // root cause was invisible because only the reason label was recorded.
+      .map(
+        (r) =>
+          `${r.repo} (${r.reason ?? 'unknown'}${r.detail ? `: ${String(r.detail).slice(0, 300)}` : ''})`,
+      );
+    const scope = label ? `${stageLabel} (${label})` : stageLabel;
+    const gitSummary = result.ok
+      ? `Engine committed + pushed work for ${scope} (${(result.results ?? [])
+          .filter((r) => r.committed)
+          .map((r) => `${r.repo}@${(r.sha ?? '').slice(0, 8)}`)
+          .join(', ')})`
+      : `Engine push failed for ${scope}: ${failedRepos.join(', ')}`;
+    await store
+      .appendEvent({
+        executionId,
+        type: result.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary: gitSummary,
+      })
+      .catch(() => {});
+    // Surface a push failure live (agent.note is the timeline-note action the
+    // UI already routes) — the user must see git trouble at stage N, not after
+    // the whole run has burned its tokens.
+    if (!result.ok) {
+      await publish({
+        action: 'agent.note',
+        noteType: 'v2.git.push_failed',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        summary: gitSummary,
+      });
+    }
+  };
+
   // ── Native ensemble sessions ───────────────────────────────────────────────
   // ONE call point. The lead's session has fully wound down (its CLI store is
   // persisted, its session id captured), and the engine commit has NOT run yet —
@@ -3521,6 +3569,9 @@ export const runStage = async (
   // ensemble sessions below. It fails the stage, but only after the engine
   // commit, so the lead's work is still made durable.
   let releaseBodyFailure = null;
+  // The lead-draft commit made before the personas ran, so its refs join the
+  // attempt's even when the ensemble phase then fails or fills the mount.
+  let leadDraftGit = null;
   if (ensemble) {
     const leadParked = await pendingGate({
       store,
@@ -3553,6 +3604,35 @@ export const runStage = async (
         })
         .catch(() => {});
     } else {
+      // The lead's draft becomes durable BEFORE any persona session starts. The
+      // ensemble can run for hours across up to MAX_SUPPORT_PERSONAS × 2 tries
+      // plus the integrator and the dissent rounds, and a persona session may
+      // install dependencies into the same 1 GiB mount — so leaving the draft
+      // uncommitted until the engine commit below would put it in the blast
+      // radius of the documented ENOSPC loss. Same helper and same evidence
+      // event as a repair turn; the engine commit below then captures whatever
+      // the personas added.
+      await warnIfDiskLow('before the lead-draft commit');
+      leadDraftGit = await commitAndPushAll({
+        repos,
+        workspaceDir,
+        branch,
+        gitProvider,
+        repoProviders,
+        projectId,
+        executionId,
+        author: gitAuthor,
+        message: unitSlug
+          ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (lead draft)`
+          : `aidlc(${stageId}): ${executionId} (lead draft)`,
+      }).catch((error) => ({
+        ok: false,
+        committed: false,
+        results: [{ repo: '-', reason: 'engine_crashed', detail: error?.message }],
+      }));
+      const leadDraftRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, leadDraftGit);
+      if (leadDraftRefs.length > 0) retainedCodeCommitRefs = leadDraftRefs;
+      await publishGitEvidence(leadDraftGit, { label: 'lead draft' });
       // The attempt this leg wrote on the stage row (putStage above).
       const attempt = Number(priorStageRow?.attempt ?? 0);
       // A resume leg never materialized a prompt, so the lead persona is re-read
@@ -3838,55 +3918,11 @@ export const runStage = async (
   });
   // Every commit of this attempt: carried from a parked leg, this leg's, and the
   // repair turns' (added by runRepairTurn below).
-  let stageCodeCommitRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, gitResult);
+  let stageCodeCommitRefs = mergeCodeCommitRefs(
+    mergeCodeCommitRefs(carriedCodeCommitRefs, leadDraftGit),
+    gitResult,
+  );
   retainedCodeCommitRefs = stageCodeCommitRefs.length ? stageCodeCommitRefs : null;
-  // The authoritative commit evidence. `v2.git.pushed` is what the plan-approval
-  // lineage rule (`latestCommitAt` / `withPlanApprovalLineage`) reads to decide
-  // whether the stage's code predates its approval, so EVERY commit of the attempt
-  // must publish it — a repair commit that stayed silent left the lineage check
-  // judging the stage on its pre-approval commit.
-  const publishGitEvidence = async (result, { label = null } = {}) => {
-    if (!result || (!result.committed && result.ok)) return;
-    const failedRepos = (result.results ?? [])
-      .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
-      // Carry the git stderr into the event — the 2026-07 incident's ENOSPC
-      // root cause was invisible because only the reason label was recorded.
-      .map(
-        (r) =>
-          `${r.repo} (${r.reason ?? 'unknown'}${r.detail ? `: ${String(r.detail).slice(0, 300)}` : ''})`,
-      );
-    const scope = label ? `${stageLabel} (${label})` : stageLabel;
-    const gitSummary = result.ok
-      ? `Engine committed + pushed work for ${scope} (${(result.results ?? [])
-          .filter((r) => r.committed)
-          .map((r) => `${r.repo}@${(r.sha ?? '').slice(0, 8)}`)
-          .join(', ')})`
-      : `Engine push failed for ${scope}: ${failedRepos.join(', ')}`;
-    await store
-      .appendEvent({
-        executionId,
-        type: result.ok ? 'v2.git.pushed' : 'v2.git.push_failed',
-        stageInstanceId,
-        unitSlug,
-        sectionIndex,
-        actor: 'agentcore',
-        summary: gitSummary,
-      })
-      .catch(() => {});
-    // Surface a push failure live (agent.note is the timeline-note action the
-    // UI already routes) — the user must see git trouble at stage N, not after
-    // the whole run has burned its tokens.
-    if (!result.ok) {
-      await publish({
-        action: 'agent.note',
-        noteType: 'v2.git.push_failed',
-        stageInstanceId,
-        unitSlug,
-        sectionIndex,
-        summary: gitSummary,
-      });
-    }
-  };
   await publishGitEvidence(gitResult);
 
   const parkStage = async (parked) => {
