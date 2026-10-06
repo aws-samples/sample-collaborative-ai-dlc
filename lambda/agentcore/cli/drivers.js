@@ -16,6 +16,11 @@
 // Pure of process spawning so argv construction is unit-tested directly. Auth
 // secret loading is the caller's job (loadSecrets), kept out of argv.
 
+// The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
+// this module implements. Checked against the registry by a test, so a
+// capability cannot be declared handled without the code that handles it.
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['agent.max-turns@v1']);
+
 // The MCP server name we register under in mcp-config (see stage-materializer).
 export const MCP_SERVER_NAME = 'aidlc';
 
@@ -34,7 +39,14 @@ export const MCP_SERVER_NAME = 'aidlc';
 const claudeDriver = {
   name: 'claude',
   contextKey: 'mcpConfigPath',
-  buildInvocation({ prompt, mcpConfigPath, model, allowedTools = [], sessionId = null }) {
+  buildInvocation({
+    prompt,
+    mcpConfigPath,
+    model,
+    allowedTools = [],
+    sessionId = null,
+    maxTurns = null,
+  }) {
     const args = ['-p'];
     // MCP config is optional: a plain one-shot prompt (e.g. derive-time
     // enrichment) runs without any tool surface.
@@ -45,6 +57,8 @@ const claudeDriver = {
     if (sessionId) args.push('--session-id', sessionId);
     if (model) args.push('--model', model);
     if (allowedTools.length) args.push('--allowedTools', allowedTools.join(','));
+    // AGENT.maxTurns (release catalogs only): Claude's own agentic-turn cap.
+    if (Number.isInteger(maxTurns) && maxTurns > 0) args.push('--max-turns', String(maxTurns));
     args.push('--output-format', 'stream-json', '--verbose');
     return { command: 'claude', args, env: {}, prompt, promptViaStdin: true };
   },

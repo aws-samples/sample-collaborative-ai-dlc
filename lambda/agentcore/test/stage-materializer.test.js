@@ -825,3 +825,43 @@ describe('renderIntentBlock + prompt placement', () => {
     expect(buildStagePrompt({ stage: stage(), stageBody: 'x' })).not.toContain('## The intent');
   });
 });
+
+describe('buildMcpConfig — validation revision', () => {
+  const scope = { executionId: 'e1', intentId: 'i1', stageInstanceId: 'si-1' };
+  const envOf = (s) =>
+    buildMcpConfig({ mcpEntry: '/opt/mcp/index.js', scope: s }).mcpServers.aidlc.env;
+
+  it('passes the revision to the bridge for a stage with a release policy', () => {
+    expect(envOf({ ...scope, policy: { learnings: 'on' }, validationRound: 2 })).toMatchObject({
+      V2_VALIDATION_ROUND: '2',
+    });
+  });
+
+  it('adds nothing for the first run or without a policy', () => {
+    expect(envOf({ ...scope, policy: { learnings: 'on' } })).not.toHaveProperty(
+      'V2_VALIDATION_ROUND',
+    );
+    expect(envOf({ ...scope, validationRound: 2 })).not.toHaveProperty('V2_VALIDATION_ROUND');
+  });
+});
+
+describe('buildStagePrompt — the learning tools in the execution annex', () => {
+  const stageWith = (policy) => ({
+    stageId: 's',
+    phase: 'inception',
+    ...(policy ? { policy } : {}),
+  });
+
+  it('does not point the agent at learning tools the scope withdrew', () => {
+    const prompt = buildStagePrompt({ stage: stageWith({ learnings: 'off' }) });
+    expect(prompt).not.toContain('record_team_knowledge');
+    expect(prompt).not.toContain('record_learning_rule');
+  });
+
+  it('keeps the annex verbatim without a policy and with learnings on', () => {
+    expect(buildStagePrompt({ stage: stageWith(null) })).toContain(MCP_EXECUTION_ANNEX);
+    expect(buildStagePrompt({ stage: stageWith({ learnings: 'on' }) })).toContain(
+      MCP_EXECUTION_ANNEX,
+    );
+  });
+});

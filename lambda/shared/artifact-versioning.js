@@ -334,6 +334,34 @@ export const snapshotCurrentArtifactHeads = async ({
   return refs;
 };
 
+// Read current artifact fingerprints without materializing checkpoint versions.
+// Change control calls this before an agent starts, when no new version should
+// be written as a side effect of comparison.
+//
+// Every head carries its PRODUCING stage and lane. The read is intent-wide, so
+// that attribution is what lets a caller tell "everything in this intent" from
+// "what this stage left behind" — a stage approval must only cover the latter.
+//
+// The provenance stamp writes '' for a dimension the scope did not have (see the
+// graph-writer's `stamp`), so '' is normalized to null here: a caller asking "did
+// THIS stage produce it?" must see one representation of "not recorded", not two.
+const attribution = (value) => (value == null || value === '' ? null : value);
+
+export const readCurrentArtifactHeadHashes = async ({ g, intentId }) => {
+  const heads = selectCurrentArtifactHeads(await readIntentArtifactEntries(g, intentId), intentId);
+  return heads
+    .map((canonical) => ({
+      artifactId: canonical.id ?? null,
+      artifactType: canonical.artifact_type ?? null,
+      logicalKey: artifactLogicalKeyFromRow(canonical, intentId),
+      snapshotHash: artifactSnapshotHash(canonical),
+      stageInstanceId: attribution(canonical.created_by_stage_instance_id),
+      sectionIndex: attribution(canonical.section_index),
+      unitSlug: attribution(canonical.unit_slug),
+    }))
+    .toSorted((left, right) => left.logicalKey.localeCompare(right.logicalKey));
+};
+
 // Hydrate the exact immutable artifact versions named by a workflow checkpoint
 // and reject missing or mismatched references instead of falling back to heads.
 export const readCheckpointArtifactVersions = async ({ g, intentId, refs = [] }) => {
@@ -526,6 +554,7 @@ export default {
   artifactSnapshot,
   artifactSnapshotHash,
   snapshotCurrentArtifactHeads,
+  readCurrentArtifactHeadHashes,
   readCheckpointArtifactVersions,
   archiveArtifactsForStages,
 };

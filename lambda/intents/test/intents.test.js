@@ -103,6 +103,7 @@ let attachmentUpdateConflict = null;
 let transactWriteBarrier = null;
 let sourceControlOperationHandler = null;
 let credentialMetadataHandler = null;
+let failResumeMarkerWrites = 0;
 
 const MANAGED_ENVIRONMENT_SNAPSHOT = {
   environmentId: 'polyglot',
@@ -127,6 +128,7 @@ const installDdbFakes = () => {
   procStore.clear();
   yjsStore.clear();
   transactWriteBarrier = null;
+  failResumeMarkerWrites = 0;
   ddbMock.on(GetCommand).callsFake((input) => {
     if (input.Key.documentId) return { Item: yjsStore.get(input.Key.documentId) };
     const key =
@@ -251,6 +253,14 @@ const installDdbFakes = () => {
       yjsStore.set(row.documentId, row);
       return {};
     }
+    if (
+      failResumeMarkerWrites > 0 &&
+      input.Key.sk === 'META' &&
+      input.UpdateExpression?.includes('resumeRequired')
+    ) {
+      failResumeMarkerWrites -= 1;
+      throw new Error('resume marker write failed');
+    }
     const k = keyOf(input.Key.pk, input.Key.sk);
     const existing = procStore.get(k);
     const values = input.ExpressionAttributeValues || {};
@@ -265,6 +275,12 @@ const installDdbFakes = () => {
       casFail();
     }
     if (cond.includes('#status = :pending') && (!existing || existing.status !== 'pending')) {
+      casFail();
+    }
+    if (cond.includes('callbackId = :cb') && (!existing || existing.callbackId !== values[':cb'])) {
+      casFail();
+    }
+    if (cond.includes('attribute_not_exists(callbackConsumedAt)') && existing?.callbackConsumedAt) {
       casFail();
     }
     if (cond.includes('#status <> :pending') && (!existing || existing.status === 'pending')) {
@@ -309,6 +325,9 @@ const installDdbFakes = () => {
       cond.includes(':ifOrid') &&
       (!existing || existing.orchestratorRunId !== values[':ifOrid'])
     ) {
+      casFail();
+    }
+    if (cond.includes(':ifRrh') && existing?.resumeRequired?.humanTaskId !== values[':ifRrh']) {
       casFail();
     }
     if (
@@ -4301,6 +4320,82 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     expect((await answerGate(sub, projectId, intent.id, 'h1')).statusCode).toBe(200);
   });
 
+  it('requires a bounded non-blank reason before recording override-and-approve', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const humanTaskId = 'h-override-reason';
+    const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+    seedGate(intent.id, humanTaskId);
+
+    for (const answer of [
+      { decision: 'override-and-approve' },
+      { decision: 'override-and-approve', reason: ' \t ' },
+      { decision: 'override-and-approve', reason: 'r'.repeat(2001) },
+      'override-and-approve',
+    ]) {
+      const invalid = await answerGate(sub, projectId, intent.id, humanTaskId, { answer });
+      expect(invalid.statusCode).toBe(400);
+      expect(JSON.parse(invalid.body).code).toMatch(/^override_reason_/);
+      expect(procStore.get(humanKey).status).toBe('pending');
+    }
+
+    const accepted = await answerGate(sub, projectId, intent.id, humanTaskId, {
+      answer: { decision: 'override-and-approve', reason: '  Accepted on the record.  ' },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(procStore.get(humanKey).answer.reason).toBe('Accepted on the record.');
+  });
+
+  it('reads the override choice and its reason limit exactly as the orchestrator does', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const humanTaskId = 'h-override-parser';
+    const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+    seedGate(intent.id, humanTaskId);
+
+    for (const answer of [
+      { freeText: 'override-and-approve' },
+      { decision: 'override-and-approve', reason: 'r'.repeat(301) },
+    ]) {
+      const invalid = await answerGate(sub, projectId, intent.id, humanTaskId, { answer });
+      expect(invalid.statusCode).toBe(400);
+      expect(JSON.parse(invalid.body).code).toMatch(/^override_reason_/);
+      expect(procStore.get(humanKey).status).toBe('pending');
+    }
+  });
+
+  it('rejects a validation-gate choice the gate did not offer', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const humanTaskId = 'h-blocked-validation';
+    const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+    seedGate(intent.id, humanTaskId);
+    procStore.set(humanKey, {
+      ...procStore.get(humanKey),
+      kind: 'validation',
+      options: ['request-changes', 'override-and-approve'],
+    });
+
+    for (const body of [
+      { answer: { decision: 'approve' } },
+      { status: 'approved', answer: { ok: 1 } },
+    ]) {
+      const invalid = await answerGate(sub, projectId, intent.id, humanTaskId, body);
+      expect(invalid.statusCode).toBe(400);
+      expect(JSON.parse(invalid.body).code).toBe('gate_choice_not_offered');
+      expect(procStore.get(humanKey).status).toBe('pending');
+    }
+
+    const accepted = await answerGate(sub, projectId, intent.id, humanTaskId, {
+      status: 'rejected',
+      answer: { decision: 'request-changes', feedback: 'fix it' },
+    });
+    expect(accepted.statusCode).toBe(200);
+  });
+
   it('answers a pending gate (CAS) and resumes the durable callback when bound', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -4456,48 +4551,6 @@ describe('POST /gates/{humanTaskId}/answer', () => {
         (row) => row.type === 'Event' && row.eventType === 'v2.gate.resume_failed',
       ),
     ).toBe(true);
-  });
-
-  it('does not advertise a resume action the API cannot serve', async () => {
-    const sub = `u-${randomUUID()}`;
-    const projectId = await seedV2Project(sub);
-    const intent = JSON.parse((await createIntent(sub, projectId)).body);
-    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
-    procStore.set(metaKey, {
-      ...procStore.get(metaKey),
-      status: 'WAITING',
-      pendingHumanTaskId: 'h1',
-    });
-    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
-    lambdaMock
-      .on(SendDurableExecutionCallbackSuccessCommand)
-      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
-
-    const res = await answerGate(sub, projectId, intent.id, 'h1');
-
-    expect(res.statusCode).toBe(503);
-    expect(JSON.parse(res.body).error).toBe(
-      'Gate answer was recorded, but the durable callback could not be completed. Retry after refreshing the intent.',
-    );
-    expect(procStore.get(metaKey).resumeRequired).toBeUndefined();
-    expect(JSON.parse(res.body)).not.toHaveProperty('resumeRequired');
-
-    const detail = await handler({
-      httpMethod: 'GET',
-      path: `/projects/${projectId}/intents/${intent.id}`,
-      pathParameters: { projectId, intentId: intent.id },
-      ...claims(sub),
-    });
-    expect(JSON.parse(detail.body).intent).not.toHaveProperty('resumeRequired');
-
-    const resume = await handler({
-      httpMethod: 'POST',
-      path: `/projects/${projectId}/intents/${intent.id}/resume`,
-      pathParameters: { projectId, intentId: intent.id },
-      ...claims(sub),
-    });
-    expect(JSON.parse(resume.body)).not.toHaveProperty('resumed');
-    expect(resume.statusCode).not.toBe(200);
   });
 
   it('404s an unknown gate', async () => {
@@ -8993,5 +9046,531 @@ describe('AI-DLC per-intent release selection', () => {
     // The existing intent's persisted pin is untouched by the registry move.
     expect(metaFor(existingId).methodologyRelease).toEqual(legacyPinB);
     expect(legacyPinB.importerRevision).toBe(1);
+  });
+});
+
+// Anti-stuck recovery. The gate answer is already
+// durable when `resumeDurableCallback` fails, so the only thing missing is the
+// record that the run STILL NEEDS RESUMING — without it the intent sits WAITING
+// with no pending gate and nothing able to wake it. Each case below must end in
+// a running run or a recoverable FAILED, never an indefinite wait.
+describe('gate resume recovery — POST /projects/{p}/intents/{i}/resume', () => {
+  const resume = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/resume`,
+      pathParameters: { projectId, intentId },
+      body: null,
+      ...claims(sub),
+    });
+
+  const parkedOnGate = async (sub, projectId) => {
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'WAITING',
+      pendingHumanTaskId: 'h1',
+      orchestratorRunId: 'run-old',
+    });
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    return { intent, metaKey };
+  };
+
+  it('records resumeRequired on a non-timeout resume failure and recovers on resume', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+
+    const answered = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(answered.statusCode).toBe(503);
+    // The answer is durable and so is the need to resume.
+    expect(procStore.get(metaKey)).toMatchObject({
+      status: 'WAITING',
+      resumeRequired: { humanTaskId: 'h1', callbackId: 'cb-h1' },
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1')).status).toBe('answered');
+
+    const res = await resume(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+    // The recorded answer is re-sent verbatim — the human is not asked again.
+    const sent = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).at(-1);
+    expect(sent.args[0].input.CallbackId).toBe('cb-h1');
+    expect(JSON.parse(Buffer.from(sent.args[0].input.Result).toString())).toEqual({
+      answer: { ok: 1 },
+    });
+    expect(
+      [...procStore.values()].some(
+        (row) => row.type === 'Event' && row.eventType === 'v2.gate.resumed',
+      ),
+    ).toBe(true);
+  });
+
+  it('recovers from an answered gate when the resume marker write fails', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    failResumeMarkerWrites = 1;
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+
+    const answered = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(answered.statusCode).toBe(503);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1'))).toMatchObject({
+      status: 'answered',
+      callbackId: 'cb-h1',
+    });
+    expect(procStore.get(metaKey).resumeRequired ?? null).toBeNull();
+
+    const resumed = await resume(sub, projectId, intent.id);
+    expect(resumed.statusCode).toBe(200);
+    expect(JSON.parse(resumed.body)).toMatchObject({ resumed: true });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(2);
+  });
+
+  it.each(['approved', 'rejected'])(
+    'recovers markerless validation gates with %s status',
+    async (status) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const { intent } = await parkedOnGate(sub, projectId);
+      const gateKey = keyOf(`EXEC#${intent.id}`, 'HUMAN#h1');
+      procStore.set(gateKey, {
+        ...procStore.get(gateKey),
+        status,
+        answer: { decision: status === 'approved' ? 'approve' : 'request-changes' },
+      });
+
+      const resumed = await resume(sub, projectId, intent.id);
+
+      expect(resumed.statusCode).toBe(200);
+      expect(JSON.parse(resumed.body)).toMatchObject({ resumed: true });
+      expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(1);
+    },
+  );
+
+  it.each(['approved', 'rejected'])(
+    'marks an unconsumed %s gate as resumeAvailable',
+    async (status) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const { intent } = await parkedOnGate(sub, projectId);
+
+      const answered = await answerGate(sub, projectId, intent.id, 'h1', {
+        status,
+        answer: { decision: status === 'approved' ? 'approve' : 'request-changes' },
+      });
+
+      expect(answered.statusCode).toBe(200);
+      expect(JSON.parse(answered.body)).toMatchObject({ status, resumeAvailable: true });
+    },
+  );
+
+  it('surfaces resumeRequired on the intent DTO so the UI can offer the action', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+    await answerGate(sub, projectId, intent.id, 'h1');
+
+    const detail = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(JSON.parse(detail.body).intent.resumeRequired).toMatchObject({
+      humanTaskId: 'h1',
+      callbackId: 'cb-h1',
+    });
+    expect(procStore.get(metaKey).resumeRequired).not.toBeNull();
+  });
+
+  it('is idempotent: nothing to resume is a 200, and a second resume is harmless', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent } = await parkedOnGate(sub, projectId);
+
+    const first = await resume(sub, projectId, intent.id);
+    expect(first.statusCode).toBe(200);
+    expect(JSON.parse(first.body)).toMatchObject({ resumed: false });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(0);
+
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+    await answerGate(sub, projectId, intent.id, 'h1');
+    expect((await resume(sub, projectId, intent.id)).statusCode).toBe(200);
+    const second = await resume(sub, projectId, intent.id);
+    expect(second.statusCode).toBe(200);
+    expect(JSON.parse(second.body)).toMatchObject({ resumed: false });
+  });
+
+  it('fails the intent (rewind-recoverable) when the callback has expired', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    // Attempt 1 fails transiently (setting the marker); by the time the human
+    // clicks Resume the durable execution has aged out entirely.
+    let attempt = 0;
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).callsFake(() => {
+      attempt += 1;
+      throw attempt === 1
+        ? Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' })
+        : Object.assign(new Error('callback timed out'), { name: 'CallbackTimeoutException' });
+    });
+    await answerGate(sub, projectId, intent.id, 'h1');
+
+    const res = await resume(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({ code: 'durable_execution_expired' });
+    // FAILED is the documented, rewindable state — never an indefinite WAITING.
+    expect(procStore.get(metaKey)).toMatchObject({
+      status: 'FAILED',
+      failureReason: 'durable_callback_expired',
+      pendingHumanTaskId: null,
+    });
+    // The marker is cleared: a button that can no longer work is not offered.
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('returns 503 and keeps the marker when the retry itself fails transiently', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).callsFake(() => {
+      throw Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' });
+    });
+    await answerGate(sub, projectId, intent.id, 'h1');
+
+    const res = await resume(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'durable_callback_resume_failed',
+      retryable: true,
+    });
+    expect(procStore.get(metaKey).resumeRequired).toMatchObject({ callbackId: 'cb-h1' });
+  });
+
+  it('404s an intent from another project', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const other = await seedV2Project(sub);
+    const { intent } = await parkedOnGate(sub, projectId);
+    expect((await resume(sub, other, intent.id)).statusCode).toBe(404);
+  });
+
+  const stuckMarker = async (sub, projectId) => {
+    const { intent, metaKey } = await parkedOnGate(sub, projectId);
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+    const answered = await answerGate(sub, projectId, intent.id, 'h1');
+    expect(answered.statusCode).toBe(503);
+    expect(procStore.get(metaKey).resumeRequired).toMatchObject({ callbackId: 'cb-h1' });
+    return { intent, metaKey };
+  };
+
+  it('clears the marker when the intent is cancelled instead of resumed', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await stuckMarker(sub, projectId);
+
+    const cancelled = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/cancel`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: null,
+      ...claims(sub),
+    });
+
+    expect(cancelled.statusCode).toBe(200);
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('treats a callback that already completed as resumed and clears the marker', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await stuckMarker(sub, projectId);
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).rejects(
+      Object.assign(new Error('callback already completed'), {
+        name: 'InvalidParameterValueException',
+      }),
+    );
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: false });
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1')).callbackConsumedAt).toBeTruthy();
+  });
+
+  it('does not re-send a stale marker once the intent is no longer waiting', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await stuckMarker(sub, projectId);
+    procStore.set(metaKey, { ...procStore.get(metaKey), status: 'FAILED' });
+    const sendsBefore = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: false });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(
+      sendsBefore,
+    );
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('does not re-send a marker whose gate callback was already consumed', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await stuckMarker(sub, projectId);
+    const gateKey = keyOf(`EXEC#${intent.id}`, 'HUMAN#h1');
+    procStore.set(gateKey, { ...procStore.get(gateKey), callbackConsumedAt: 'T' });
+    const sendsBefore = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: false });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(
+      sendsBefore,
+    );
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  // A unit-lane question parks only its STAGE row: META stays RUNNING because
+  // sibling lanes keep going, and the single META pointer is not the lane's.
+  const laneParkedOnGate = async (sub, projectId) => {
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'RUNNING',
+      pendingHumanTaskId: null,
+      orchestratorRunId: 'run-old',
+    });
+    seedGate(intent.id, 'h-lane', {
+      status: 'pending',
+      callbackId: 'cb-lane',
+      stageInstanceId: 'si-lane',
+    });
+    const stageKey = keyOf(`EXEC#${intent.id}`, 'STAGE#si-lane');
+    procStore.set(stageKey, {
+      pk: `EXEC#${intent.id}`,
+      sk: 'STAGE#si-lane',
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: 'si-lane',
+      stageId: 'code-generation',
+      unitSlug: 'billing',
+      sectionIndex: 1,
+      state: 'WAITING_FOR_HUMAN',
+      pendingHumanTaskId: 'h-lane',
+    });
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejectsOnce(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+    const answered = await answerGate(sub, projectId, intent.id, 'h-lane');
+    expect(answered.statusCode).toBe(503);
+    expect(procStore.get(metaKey).resumeRequired).toMatchObject({ callbackId: 'cb-lane' });
+    return { intent, metaKey, stageKey };
+  };
+
+  // A second unit lane of the same intent, parked on its own answered question
+  // whose first callback send failed too.
+  const addParkedLane = async (sub, projectId, intent, n) => {
+    seedGate(intent.id, `h-lane-${n}`, {
+      status: 'pending',
+      callbackId: `cb-lane-${n}`,
+      stageInstanceId: `si-lane-${n}`,
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, `STAGE#si-lane-${n}`), {
+      pk: `EXEC#${intent.id}`,
+      sk: `STAGE#si-lane-${n}`,
+      type: 'Stage',
+      executionId: intent.id,
+      stageInstanceId: `si-lane-${n}`,
+      stageId: 'code-generation',
+      unitSlug: `unit-${n}`,
+      sectionIndex: 1,
+      state: 'WAITING_FOR_HUMAN',
+      pendingHumanTaskId: `h-lane-${n}`,
+    });
+    lambdaMock
+      .on(SendDurableExecutionCallbackSuccessCommand)
+      .rejects(Object.assign(new Error('throttled'), { name: 'TooManyRequestsException' }));
+    const answered = await answerGate(sub, projectId, intent.id, `h-lane-${n}`);
+    expect(answered.statusCode).toBe(503);
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).resolves({});
+  };
+  const sentCallbackIds = () =>
+    lambdaMock
+      .commandCalls(SendDurableExecutionCallbackSuccessCommand)
+      .map((call) => call.args[0].input.CallbackId);
+
+  it('re-sends every owed lane answer in one call, whichever the marker names', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await laneParkedOnGate(sub, projectId);
+    await addParkedLane(sub, projectId, intent, 2);
+    expect(procStore.get(metaKey).resumeRequired).toMatchObject({ humanTaskId: 'h-lane-2' });
+    const sentBefore = sentCallbackIds().length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
+    expect(sentCallbackIds().slice(sentBefore).toSorted()).toEqual(['cb-lane', 'cb-lane-2']);
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h-lane')).callbackConsumedAt,
+    ).toBeTruthy();
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h-lane-2')).callbackConsumedAt,
+    ).toBeTruthy();
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('re-sends an owed lane answer even when its marker could not be written', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await laneParkedOnGate(sub, projectId);
+    failResumeMarkerWrites = 1;
+    await addParkedLane(sub, projectId, intent, 3);
+    const marker = procStore.get(metaKey).resumeRequired;
+    expect(marker?.humanTaskId).not.toBe('h-lane-3');
+    const sentBefore = sentCallbackIds().length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
+    expect(sentCallbackIds().slice(sentBefore)).toContain('cb-lane-3');
+  });
+
+  it('resumes the owed gate when the marker names one that is no longer owed', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await laneParkedOnGate(sub, projectId);
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      resumeRequired: { humanTaskId: 'h-gone', callbackId: 'cb-gone', answeredAt: null },
+    });
+    const sentBefore = sentCallbackIds().length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
+    expect(sentCallbackIds().slice(sentBefore)).toEqual(['cb-lane']);
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('resumes an answered lane question while the intent keeps running', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey } = await laneParkedOnGate(sub, projectId);
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: true });
+    const sent = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).at(-1);
+    expect(sent.args[0].input.CallbackId).toBe('cb-lane');
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('offers the resume on the parked lane gate in the intent detail', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent } = await laneParkedOnGate(sub, projectId);
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+
+    const gate = JSON.parse(res.body).gates.find((row) => row.humanTaskId === 'h-lane');
+    expect(gate.resumeAvailable).toBe(true);
+  });
+
+  it('clears the marker once the stage resumed on that gate', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, metaKey, stageKey } = await laneParkedOnGate(sub, projectId);
+    procStore.set(stageKey, {
+      ...procStore.get(stageKey),
+      state: 'RUNNING',
+      pendingHumanTaskId: null,
+    });
+    const sendsBefore = lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand).length;
+
+    const res = await resume(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body)).toMatchObject({ resumed: false });
+    expect(lambdaMock.commandCalls(SendDurableExecutionCallbackSuccessCommand)).toHaveLength(
+      sendsBefore,
+    );
+    expect(procStore.get(metaKey)).not.toHaveProperty('resumeRequired');
+  });
+
+  it('does not offer the resume of a lane gate whose stage already resumed', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { intent, stageKey } = await laneParkedOnGate(sub, projectId);
+    procStore.set(stageKey, {
+      ...procStore.get(stageKey),
+      state: 'RUNNING',
+      pendingHumanTaskId: null,
+    });
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+
+    const gate = JSON.parse(res.body).gates.find((row) => row.humanTaskId === 'h-lane');
+    expect(gate.resumeAvailable).toBe(false);
+  });
+});
+
+describe('GET intent — timeline event fields', () => {
+  it('forwards no event detail to the browser', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'EVENT#T#e1'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'EVENT#T#e1',
+      type: 'Event',
+      executionId: intent.id,
+      eventId: 'e1',
+      eventType: 'v2.review.dissent',
+      actor: 'reviewer',
+      summary: 'Maintained dissent',
+      timestamp: 'T2',
+      detail: { round: 1, maxRounds: 2, findings: 'verbatim agent text' },
+    });
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+
+    const event = JSON.parse(res.body).events.find((row) => row.eventId === 'e1');
+    expect(event).toBeDefined();
+    expect(event).not.toHaveProperty('detail');
   });
 });

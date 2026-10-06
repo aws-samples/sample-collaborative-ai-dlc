@@ -24,7 +24,10 @@ import { UnitBranchEntry } from '@/components/intent/UnitBranchEntry';
 const engineGateStatusFor = (opt: string): GateAnswer['status'] =>
   /^(reject|request-changes)/i.test(opt)
     ? 'rejected'
-    : /^(approve|accept-as-is)/i.test(opt)
+    : // `override-and-approve` IS an approval: the human accepted the blocking
+      // findings on the record. Recording it as a plain answer would leave the
+      // gate — and the intent badge — reading as undecided.
+      /^(approve|accept-as-is|override-and-approve)/i.test(opt)
       ? 'approved'
       : 'answered';
 

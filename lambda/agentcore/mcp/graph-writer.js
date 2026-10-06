@@ -833,7 +833,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     await clearSuperseded(head.id, head.vertexId);
     await clearStale(head.id, head.vertexId);
     await linkAnsweredQuestionsToArtifact(head.vertexId);
-    return { id: head.id, updated: Object.keys(clean) };
+    return { id: head.id, artifactType: head.artifact_type ?? null, updated: Object.keys(clean) };
   };
 
   const linkArtifacts = async ({ fromId, toId, edge }) => {

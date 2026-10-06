@@ -20,6 +20,7 @@ export const COMMANDS = Object.freeze({
   'derive-artifacts': command('deriveArtifacts', AGENT_AUTH_MODES.EXECUTION),
   'create-workflow-checkpoint': command('createWorkflowCheckpoint'),
   'record-pr': command('recordPr'),
+  'record-learning': command('recordLearning'),
   'record-unit-pr': command('recordUnitPr'),
   'init-lane': command('initLane'),
   'merge-lane': command('mergeLane'),

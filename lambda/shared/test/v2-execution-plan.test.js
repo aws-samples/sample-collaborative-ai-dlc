@@ -1129,3 +1129,30 @@ describe('buildExecutionPlan — composed grid', () => {
     expect(plan.composed).toBe(false);
   });
 });
+
+describe('buildExecutionPlan — sensor fire_on outside release mode', () => {
+  const library = (fromRelease) =>
+    baseLibrary({
+      ...(fromRelease ? { fromRelease: true } : {}),
+      stagesById: { a: stage('a', { sensors: ['linter'] }) },
+      sensorsById: {
+        linter: {
+          command: 'aidlc-sensor-linter.ts',
+          severity: 'blocking',
+          runtime: 'bun',
+          fireOn: 'gate',
+        },
+      },
+    });
+  const sensorOf = (lib) =>
+    buildExecutionPlan({ workflow: workflow([placement('a')]), scope: 'feature', library: lib })
+      .plan.stages[0].sensors[0];
+
+  it('leaves fire_on off an unpinned plan, which runs every sensor in one pass', () => {
+    expect(sensorOf(library(false))).not.toHaveProperty('fireOn');
+  });
+
+  it('keeps fire_on on a plan built from a release closure', () => {
+    expect(sensorOf(library(true))).toMatchObject({ fireOn: 'gate' });
+  });
+});
