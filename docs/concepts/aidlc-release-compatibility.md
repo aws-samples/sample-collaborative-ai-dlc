@@ -110,8 +110,10 @@ authored value is classified as `native`, `approximated`, `unsupported`, or
 `packaging-only`. The report includes the specific source values that the
 current runtime does not honour.
 
-The runtime supports the single-session stage mode and the platform's
-always-restored workspace behavior. The mapper and analyzer know the complete
+The runtime supports the single-session stage mode, and the per-persona session
+mode for pinned `pipeline`, `mob`, and `subagent`-with-supports stages whose
+release closure ships `core/aidlc-common/protocols/stage-protocol-ensemble.md`.
+It also supports the platform's always-restored workspace behavior. The mapper and analyzer know the complete
 frontmatter vocabulary of all five profiles, but knowing a field is not the
 same as executing its semantics. Other authored values remain `unsupported`
 until the corresponding runtime handler is registered and implemented. This
@@ -120,12 +122,18 @@ safe-to-run releases.
 
 The gate handlers cover summary and plan-approval checkpoints, review policy,
 both sensor planes, change control, learnings, skeleton selection, and
-`AGENT.maxTurns`. The persona runtime dispatches `pipeline`, `mob`, and
-`subagent` supports in separate serial sessions with role-scoped briefs.
-`agent-team` remains unsupported because it requires concurrent sessions.
+`AGENT.maxTurns`. The persona runtime dispatches `pipeline` and `mob` stages, and
+`subagent` stages that declare supports, in separate serial sessions with
+role-scoped briefs. A `subagent` stage gets separate sessions only when its
+release closure ships `core/aidlc-common/protocols/stage-protocol-ensemble.md`;
+without that file a `subagent` stage with a support stays a single delegated
+session, which is why 2.3.3 `reverse-engineering` is unchanged. `agent-team`
+remains unsupported because it requires concurrent sessions.
 
 The 2.3.3 baseline remains promotable. The 2.6.18, 2.7.0, 2.8.2, and 2.9.0
-fixtures have runtime handlers for their authored persona modes. Their
+fixtures have runtime handlers for their authored persona modes, but they remain
+unpromotable: `PROTOCOL:build-and-test-loopback` stays `unsupported` until the
+loop-back handler lands, so the release-promotion guard still refuses them. Their
 compatibility classification remains field-driven and reflects the supported
 runtime semantics rather than profile-version exceptions.
 
@@ -248,8 +256,15 @@ rewind-recoverable `FAILED` state rather than leaving it indefinitely `WAITING`.
 
 ## Persona sessions
 
-Pinned releases that declare `pipeline`, `mob`, or `subagent` supports dispatch
-each persona in its own serial session. Each session receives a role-scoped brief:
+Pinned releases that declare `pipeline` or `mob` stages, or `subagent` stages
+with supports, dispatch each persona in its own serial session. For `subagent`
+this applies only when the release closure ships
+`core/aidlc-common/protocols/stage-protocol-ensemble.md`; a closure without that
+file keeps a `subagent` stage on one delegated session however many supports it
+declares, so 2.3.3 `reverse-engineering` is unaffected. A stage whose plan
+resolved no policy also stays on the single-session path, because the validation
+gate could not report persona evidence for it.
+Each session receives a role-scoped brief:
 pipeline links see earlier outputs, support personas see the lead draft without
 sibling contributions, and the lead integration sees the collected contributions.
 The reviewer remains a separate read-only session.
@@ -258,11 +273,25 @@ Contributions are written as persona-scoped artifacts and timeline events. The
 platform stamps the contributor identity from the trusted session scope, so one
 persona cannot create or overwrite another persona's evidence. A failed support
 session is retried once with a reduced brief; if it still produces no evidence,
-the run records a gap and continues. A timed-out CLI child is killed and its exit
-awaited before retry or gap handling. A persona session, retry included, starts
+the run records a gap and continues, and the gap is reported at the validation
+gate. An integration that produced no evidence is reported the same way, as
+`ensemble_integration_missing`. A timed-out CLI child is killed and its exit
+awaited before retry or gap handling.
+
+One failure does not degrade to a gap. If the stage's persona receipt history
+cannot be read, no persona session is dispatched and the platform cannot say
+whether the declared personas ran, so the validation gate records
+`ensemble_evidence_unavailable`: blocking and not overridable. There is no
+`override-and-approve` for it, because a waiver would waive something nobody can
+describe. Requesting changes re-runs the stage, which re-reads the receipts, so
+the run is never stuck; a receipt store that stays unreadable leaves the stage
+unapprovable until it recovers. A persona session, retry included, starts
 only if a full 45-minute session still fits the stage budget of 6.5 hours; the
-budget restarts with each run of the stage, including a resume. A session that
-does not fit is recorded as a gap. Mob dissent is triaged for at most two
+budget restarts with each run of the stage, including a resume, and is additionally
+bounded by the runtime session's remaining lifetime, because serial stages share
+one session. A session that does not fit is recorded as a gap, and a budget that
+cut every collaborator, or that cut the integration, blocks the validation gate
+overridably. Mob dissent is triaged for at most two
 rounds and any maintained objection is shown verbatim at the existing validation
 gate. Only the lead session can ask the human: no persona session, the
 integrator included, is given `ask_question`, and judgment-class objections are
@@ -279,7 +308,9 @@ defaults to `off`. There is no separate switch for them: to stop running
 persona sessions, do not pin intents to a release that declares these modes.
 
 `agent-team` remains explicitly unimplemented. Build-and-Test loop-back is a
-separate runtime behavior; persona sessions do not add a loop-back gate option.
+separate runtime behavior; persona sessions do not add a loop-back gate option,
+and the releases that declare it (2.6.18 through 2.9.0) stay unpromotable until
+that handler lands.
 
 ### Verification
 
