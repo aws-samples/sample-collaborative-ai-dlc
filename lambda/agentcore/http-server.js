@@ -72,6 +72,7 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import http from 'node:http';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { commandDefinition } from './command-registry.js';
+import { installProcessGroupShutdown } from './cli/spawn.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -421,6 +422,14 @@ const main = async () => {
       deriveArtifacts: (q) => handlers.deriveArtifacts(q, context),
       env: context.env,
     });
+
+  // Shutdown policy, installed once for the whole container rather than lazily by
+  // the first persona session: a stop reaps the persona-session process groups
+  // (their children are not group leaders and would otherwise be orphaned) and
+  // then lets the signal take its default course. A container that never runs a
+  // persona stage therefore keeps exactly the disposition it had before persona
+  // sessions existed.
+  installProcessGroupShutdown();
 
   const server = createServer({
     handlers,
