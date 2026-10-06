@@ -465,7 +465,10 @@ describe('contribution evidence identity', () => {
     });
 
     expect(result.ensembleEvidence.contributions).toEqual([]);
-    expect(result.findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
+    expect(result.findings.map((item) => item.code)).toEqual([
+      'persona_contribution_missing',
+      'ensemble_integration_missing',
+    ]);
   });
 });
 
@@ -542,7 +545,10 @@ describe('subagent / mob — contributions, receipts and events', () => {
       stageInstanceId: stageRow.stageInstanceId,
     });
     expect(result.ensembleEvidence.contributions).toEqual([]);
-    expect(result.findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
+    expect(result.findings.map((item) => item.code)).toEqual([
+      'persona_contribution_missing',
+      'ensemble_integration_missing',
+    ]);
   });
 
   it('integrates once for subagent and never opens a dissent round', async () => {
@@ -1052,7 +1058,10 @@ describe('failure never blocks', () => {
       stageInstanceId: stageRow.stageInstanceId,
     });
     expect(result.ensembleEvidence.supports).toEqual(['design-agent']);
-    expect(result.findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
+    expect(result.findings.map((item) => item.code)).toEqual([
+      'persona_contribution_missing',
+      'ensemble_integration_missing',
+    ]);
   });
 
   it('raises no finding at all without a resolved release policy', async () => {
@@ -1248,13 +1257,18 @@ describe('the aggregate stage wall-clock budget', () => {
       'stage wall-clock budget exhausted before this session could run',
     ]);
     expect(findings.map((item) => item.code)).toContain('stage_budget_exhausted');
+    // Two supports contributed, but the INTEGRATION was cut, so their work never
+    // reached the stage output: the human waives that on the record.
     expect(findings.find((item) => item.code === 'stage_budget_exhausted')).toMatchObject({
-      severity: 'advisory',
+      severity: 'blocking',
+      overridable: true,
+      receiptKind: 'stage-approval',
       detail: {
         sessions: [
           { agentRef: 'quality-agent', role: 'support' },
           { agentRef: 'product-agent', role: 'integrator' },
         ],
+        integrationCut: true,
       },
     });
   });

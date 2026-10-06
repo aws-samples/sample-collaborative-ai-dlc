@@ -1262,6 +1262,7 @@ const recordDissent = async ({ evidence, emit, stage, attempt, mode, round }) =>
 const ENSEMBLE_FINDING_CODES = new Set([
   'persona_contribution_missing',
   'pipeline_link_incomplete',
+  'ensemble_integration_missing',
   'review_dissent_maintained',
   'stage_budget_exhausted',
 ]);

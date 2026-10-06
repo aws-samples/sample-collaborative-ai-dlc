@@ -446,6 +446,7 @@ describe('runStage — native ensemble sessions: evidence reaches the gate', () 
     expect(res.findings.map((item) => item.code)).toEqual([
       'persona_contribution_missing',
       'persona_contribution_missing',
+      'ensemble_integration_missing',
     ]);
     expect(res.findings.every((item) => item.severity === 'advisory')).toBe(true);
     // Two support gaps plus the integrator's: its session rewrote nothing either,
@@ -462,7 +463,10 @@ describe('runStage — native ensemble sessions: evidence reaches the gate', () 
     const { deps, store } = harness({ mode: 'subagent', supportRefs: ['aidlc-design-agent'] });
     const res = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
-    expect(res.findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
+    expect(res.findings.map((item) => item.code)).toEqual([
+      'persona_contribution_missing',
+      'ensemble_integration_missing',
+    ]);
     expect(eventTypes(store)).toContain('v2.persona.gap');
   });
 
