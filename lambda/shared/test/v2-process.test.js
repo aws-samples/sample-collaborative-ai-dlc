@@ -1333,6 +1333,111 @@ describe('steering store methods', () => {
     });
   });
 
+  it('guards the recommending stage’s reset like the target’s, without a second tally', async () => {
+    const stageRow = { stageInstanceId: 'si-bt', state: 'SUCCEEDED', attempt: 1 };
+    ddb.on(GetCommand).resolves({ Item: stageRow });
+    ddb.on(UpdateCommand).resolves({ Attributes: { ...stageRow, state: 'PENDING', attempt: 2 } });
+
+    const reset = await store.resetStageRow({
+      executionId: 'e1',
+      stageInstanceId: 'si-bt',
+      loopBackId: 'eg-validation-si-bt-0-run-1',
+      countsAgainstCap: false,
+    });
+    expect(reset).toMatchObject({ state: 'PENDING', attempt: 2 });
+
+    // Read consistently, exactly like the target's reset: a stale row would be the
+    // very thing the attempt condition below is defending against.
+    expect(ddb.commandCalls(GetCommand)[0].args[0].input.ConsistentRead).toBe(true);
+    const { input } = ddb.commandCalls(UpdateCommand)[0].args[0];
+    expect(input.ConditionExpression).toBe('attribute_exists(pk) AND attempt = :oldAttempt');
+    expect(input.ExpressionAttributeValues[':oldAttempt']).toBe(1);
+    expect(input.ExpressionAttributeValues[':attempt']).toBe(2);
+    // Stamped so a replay of this durable step recognises its own earlier write.
+    expect(input.UpdateExpression).toContain('lastLoopBackId = :loopBackId');
+    expect(input.ExpressionAttributeValues[':loopBackId']).toBe('eg-validation-si-bt-0-run-1');
+    // The cap counts DECISIONS, not rows, so this reset never touches META.
+    expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+  });
+
+  it('treats a replayed recommending-stage reset as already applied', async () => {
+    ddb.on(GetCommand).resolves({
+      Item: {
+        stageInstanceId: 'si-bt',
+        state: 'PENDING',
+        attempt: 2,
+        lastLoopBackId: 'eg-validation-si-bt-0-run-1',
+      },
+    });
+
+    const replay = await store.resetStageRow({
+      executionId: 'e1',
+      stageInstanceId: 'si-bt',
+      loopBackId: 'eg-validation-si-bt-0-run-1',
+      countsAgainstCap: false,
+    });
+
+    expect(replay).toMatchObject({ attempt: 2 });
+    // The attempt is bumped once per loop-back however often the step re-drives.
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+  });
+
+  // The target's replay REPORTS the tally, so it must read META the way every other
+  // loop-back read on this path does. An eventually consistent read can hand back a
+  // count from before this decision's own transaction, which is the number the
+  // orchestrator renders as "loop-back N of 3".
+  it('reads META consistently when a replayed target reset reports the tally', async () => {
+    const stageRow = {
+      stageInstanceId: 'si-cg',
+      state: 'PENDING',
+      attempt: 2,
+      lastLoopBackId: 'eg-validation-si-bt-0-run-1',
+    };
+    const metaRow = {
+      executionId: 'e1',
+      loopBackCount: 1,
+      loopBackIds: ['eg-validation-si-bt-0-run-1'],
+    };
+    ddb.on(GetCommand).callsFake((input) => ({
+      Item: input.Key.sk === 'META' ? { ...metaRow } : { ...stageRow },
+    }));
+
+    const replay = await store.resetStageRow({
+      executionId: 'e1',
+      stageInstanceId: 'si-cg',
+      loopBackId: 'eg-validation-si-bt-0-run-1',
+    });
+
+    expect(replay).toMatchObject({ attempt: 2, loopBackCount: 1 });
+    const reads = ddb.commandCalls(GetCommand).map((call) => call.args[0].input);
+    expect(reads.find((input) => input.Key.sk === 'META')).toMatchObject({ ConsistentRead: true });
+    expect(reads.every((input) => input.ConsistentRead === true)).toBe(true);
+    // Nothing is re-applied: the attempt is bumped once per decision.
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+  });
+
+  it('returns null when a stale read loses the attempt condition, so the caller fails closed', async () => {
+    // The row moved between the read and the write: another writer already used
+    // attempt 2, and reusing it would leave this pass's receipts reachable.
+    ddb.on(GetCommand).resolves({ Item: { stageInstanceId: 'si-bt', attempt: 1 } });
+    ddb
+      .on(UpdateCommand)
+      .rejects(
+        Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' }),
+      );
+
+    expect(
+      await store.resetStageRow({
+        executionId: 'e1',
+        stageInstanceId: 'si-bt',
+        loopBackId: 'eg-validation-si-bt-0-run-1',
+        countsAgainstCap: false,
+      }),
+    ).toBeNull();
+  });
+
   it('records and clears the loop-back recommendation on the stage row', async () => {
     ddb.on(UpdateCommand).resolves({});
     const where = { executionId: 'e1', stageInstanceId: 'si-1' };

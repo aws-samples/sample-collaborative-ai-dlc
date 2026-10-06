@@ -1224,16 +1224,39 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   // repair ladder's cap is per ATTEMPT, and a stale non-zero counter surviving a
   // rewind/retry would arrive at the new attempt already "used up", silently
   // withholding the one repair turn the fresh attempt is entitled to.
+  // `loopBackId` marks a reset as part of ONE loop-back decision and is what makes
+  // the reset safe to replay: the read is consistent, the clean-PENDING
+  // short-circuit is skipped (a loop-back must bump the attempt even from a clean
+  // row), the write is conditional on the attempt it read, and the id is stamped on
+  // the row so a replay recognises its own earlier write instead of bumping again.
+  // `countsAgainstCap` additionally tallies the decision on META, which is the
+  // per-intent cap — true for the stage the run jumps TO (one tally per decision),
+  // false for the stage it jumps FROM, which needs the same guards and no second
+  // tally.
   const resetStageRow = async ({
     executionId,
     stageInstanceId,
     preservePendingCodeCommitRefs = false,
     loopBackId = null,
+    countsAgainstCap = true,
   }) => {
     const existing = await getStage(executionId, stageInstanceId, {
       consistentRead: Boolean(loopBackId),
     });
     if (!existing) return null;
+    // Replay of a reset this same decision already applied. Returned rather than
+    // re-applied so the attempt is bumped exactly once per loop-back.
+    if (loopBackId && existing.lastLoopBackId === loopBackId) {
+      // Consistent, like every other read on this path: the tally this replay is
+      // reporting was written by the transaction below, so an eventually
+      // consistent META could hand the caller a count from before its own write.
+      const meta = countsAgainstCap
+        ? await getExecution(executionId, { consistentRead: true })
+        : null;
+      return countsAgainstCap
+        ? { ...existing, loopBackCount: Number(meta?.loopBackCount ?? 0) }
+        : existing;
+    }
     // A previous rewind attempt may have reset this row before its caller
     // timed out. Treat a clean PENDING row as already reset so replay does not
     // inflate the attempt counter or duplicate reset events.
@@ -1268,6 +1291,7 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     };
     if (loopBackId) {
       values[':oldAttempt'] = Number(existing.attempt ?? 0);
+      values[':loopBackId'] = loopBackId;
     }
     const stageUpdate = {
       TableName: table(),
@@ -1277,18 +1301,34 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
         'runtimeError = :null, startedAt = :null, completedAt = :null, ' +
         'parkedAt = :null, pendingHumanTaskId = :null, waitMs = :zero, ' +
         'pendingCodeCommitRefs = :pendingCodeCommitRefs, ' +
+        `${loopBackId ? 'lastLoopBackId = :loopBackId, ' : ''}` +
         `${counterResets}, updatedAt = :ts, GSI2SK = :g2sk`,
       ExpressionAttributeNames: { '#state': 'state' },
       ExpressionAttributeValues: values,
       ...(loopBackId
         ? {
             ConditionExpression: 'attribute_exists(pk) AND attempt = :oldAttempt',
+            ...(countsAgainstCap ? {} : { ReturnValues: 'ALL_NEW' }),
           }
         : { ReturnValues: 'ALL_NEW' }),
     };
     if (!loopBackId) {
       const { Attributes } = await ddb.send(new UpdateCommand(stageUpdate));
       return Attributes;
+    }
+    // Guarded but not tallied: the attempt CAS alone, so a stale read cannot write
+    // an attempt another writer already used. A lost CAS returns null and the caller
+    // fails the loop-back closed rather than leaving this stage's earlier receipts
+    // reachable under the new attempt.
+    if (!countsAgainstCap) {
+      try {
+        const { Attributes } = await ddb.send(new UpdateCommand(stageUpdate));
+        return Attributes;
+      } catch (error) {
+        if (error?.name !== 'ConditionalCheckFailedException') throw error;
+        const row = await getStage(executionId, stageInstanceId, { consistentRead: true });
+        return row?.lastLoopBackId === loopBackId ? row : null;
+      }
     }
 
     try {

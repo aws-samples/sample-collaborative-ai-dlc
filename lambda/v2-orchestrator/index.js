@@ -1584,14 +1584,36 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           if (answered === LOOP_BACK_OPTION && loopBack.offered) {
             const target = loopBack.target;
             const targetStage = segment.stages[target.index];
-            // Reset this stage, then the target: the target reset also records
-            // the loop-back on the META tally, under this gate's id, which is
-            // unique to the run. Each attempt bump makes the stage's earlier
-            // receipts unreachable without deleting them.
+            // Reset this stage, then the target: both under this gate's id, which
+            // is unique to the run, so each row is reset exactly once per decision
+            // however often the step replays. Only the target's reset tallies the
+            // loop-back on META — the cap counts decisions, not rows. Each attempt
+            // bump makes the stage's earlier receipts unreachable without deleting
+            // them, so the reset is the invalidation and a lost CAS must fail the
+            // loop-back rather than leave a rejected pass's receipts in force.
+            // A failed reset marks the stage whose OWN reset failed, never the
+            // other one: the recommending stage's reset runs first, so attribution
+            // starts there and moves to the target only once the target's reset is
+            // the one in flight. Marking the untouched target FAILED would report a
+            // stage that was never written.
+            let resetFailureStage = stage;
             try {
-              await ctx.step(`loop-back-reset-${stage.stageInstanceId}-${round}`, () =>
-                store.resetStageRow({ executionId, stageInstanceId: stage.stageInstanceId }),
+              const recommenderReset = await ctx.step(
+                `loop-back-reset-${stage.stageInstanceId}-${round}`,
+                () =>
+                  store.resetStageRow({
+                    executionId,
+                    stageInstanceId: stage.stageInstanceId,
+                    loopBackId: validation.gate.humanTaskId,
+                    countsAgainstCap: false,
+                  }),
               );
+              if (!recommenderReset) {
+                throw new Error(
+                  `recommending stage row was not reset; ${stage.stageId}'s receipts from the rejected pass would stay reachable`,
+                );
+              }
+              resetFailureStage = targetStage;
               const reset = await ctx.step(
                 `loop-back-reset-${targetStage.stageInstanceId}-${round}`,
                 () =>
@@ -1608,17 +1630,17 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               const detail = error?.message ?? String(error);
               logger.error('Loop-back stage reset failed', error);
               await ctx.step(
-                `loop-back-reset-failed-stage-${targetStage.stageInstanceId}-${round}`,
+                `loop-back-reset-failed-stage-${resetFailureStage.stageInstanceId}-${round}`,
                 () =>
                   store.updateStageState({
                     executionId,
-                    stageInstanceId: targetStage.stageInstanceId,
+                    stageInstanceId: resetFailureStage.stageInstanceId,
                     state: 'FAILED',
                     runtimeError: `loopback_reset_failed: ${detail}`,
                     completedAt: nowIso(),
                   }),
               );
-              return await fail('loopback_reset_failed', `${target.stageId}: ${detail}`);
+              return await fail('loopback_reset_failed', `${resetFailureStage.stageId}: ${detail}`);
             }
             await emitEvent(
               ctx,

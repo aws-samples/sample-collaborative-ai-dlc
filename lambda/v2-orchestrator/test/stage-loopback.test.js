@@ -218,14 +218,22 @@ beforeEach(() => {
         stageRows.set(input.stageInstanceId, row);
         return row;
       }),
-      resetStageRow: vi.fn(async ({ stageInstanceId, loopBackId }) => {
+      // Both rows of one loop-back are reset under the SAME gate id; only the
+      // target's reset counts against the per-intent cap, and a replay of either
+      // must not bump the attempt again.
+      resetStageRow: vi.fn(async ({ stageInstanceId, loopBackId, countsAgainstCap = true }) => {
+        const seen = stageRows.get(stageInstanceId);
+        if (loopBackId && seen?.lastLoopBackId === loopBackId) {
+          return { ...seen, loopBackCount: loopBackState.count };
+        }
         attempts.set(stageInstanceId, (attempts.get(stageInstanceId) ?? 0) + 1);
-        if (loopBackId) loopBackState.count += 1;
+        if (loopBackId && countsAgainstCap) loopBackState.count += 1;
         const row = {
-          ...stageRows.get(stageInstanceId),
+          ...seen,
           stageInstanceId,
           state: 'PENDING',
           attempt: attempts.get(stageInstanceId),
+          ...(loopBackId ? { lastLoopBackId: loopBackId } : {}),
         };
         stageRows.set(stageInstanceId, row);
         return {
@@ -384,6 +392,86 @@ describe('a recommended loop-back the human accepts', () => {
     expect(attemptsQueried).toEqual([0, 1]);
   });
 
+  // The stage being sent BACK is invalidated the same way the target is. It was
+  // reset without a loop-back id, so its read was eventually consistent and its
+  // write carried no attempt condition: a stale read could have written an attempt
+  // another writer already used, and `listReceipts` filters on exactly that number,
+  // so this pass's own rejected evidence would have stayed reachable.
+  it('invalidates the recommending stage’s own receipts from the rejected pass', async () => {
+    deps.store.receipts.push({
+      kind: 'stage-approval',
+      stageInstanceId: 'si-bt',
+      attempt: 0,
+      sk: 'RECEIPT#stage-approval',
+    });
+    await run();
+    expect(deps.store.attempts.get('si-bt')).toBe(1);
+    expect(
+      await deps.store.listReceipts('i1', {
+        stageInstanceId: 'si-bt',
+        attempt: deps.store.attempts.get('si-bt'),
+      }),
+    ).toEqual([]);
+    // Nothing deleted: the receipt is still there, bound to the attempt it was
+    // written under.
+    expect(
+      await deps.store.listReceipts('i1', { stageInstanceId: 'si-bt', attempt: 0 }),
+    ).toHaveLength(1);
+    // And it was reset with the guards the target gets: a consistent read, an
+    // attempt CAS, and a replay identity — without a second tally against the cap.
+    expect(
+      deps.store.resetStageRow.mock.calls.find(([args]) => args.stageInstanceId === 'si-bt')[0],
+    ).toMatchObject({ loopBackId: gates()[0].humanTaskId, countsAgainstCap: false });
+  });
+
+  // A lost CAS means another writer already moved the row. Continuing would leave
+  // this pass's receipts reachable under the new attempt, so the walk fails closed.
+  it('fails the loop-back when the recommending stage’s reset loses its attempt CAS', async () => {
+    const real = deps.store.resetStageRow;
+    deps.store.resetStageRow = vi.fn(async (args) =>
+      args.stageInstanceId === 'si-bt' ? null : real(args),
+    );
+    const result = await run();
+    expect(result).toMatchObject({ ok: false, reason: 'loopback_reset_failed' });
+    // The target was never reset, so the cap was not spent on a jump that did not
+    // happen.
+    expect(deps.store.resetStageRow.mock.calls.map(([args]) => args.stageInstanceId)).toEqual([
+      'si-bt',
+    ]);
+    expect(deps.store.loopBackState.count).toBe(0);
+    expect(events().some((e) => e.type === LOOP_BACK_RECORDED_EVENT)).toBe(false);
+  });
+
+  // The failure belongs to the stage whose reset failed. The target was never
+  // written, so reporting IT would send an operator to the wrong stage.
+  it('blames the recommending stage, not the untouched target, when its own reset fails', async () => {
+    const real = deps.store.resetStageRow;
+    deps.store.resetStageRow = vi.fn(async (args) =>
+      args.stageInstanceId === 'si-bt' ? null : real(args),
+    );
+
+    const result = await run();
+
+    expect(result.reason).toBe('loopback_reset_failed');
+    const failedStages = deps.store.updateStageState.mock.calls
+      .map(([args]) => args)
+      .filter((args) => args.state === 'FAILED')
+      .map((args) => args.stageInstanceId);
+    expect(failedStages).toEqual(['si-bt']);
+    expect(failedStages).not.toContain('si-cg');
+    expect(
+      deps.store.updateStageState.mock.calls
+        .map(([args]) => args)
+        .find((args) => args.state === 'FAILED').runtimeError,
+    ).toContain('loopback_reset_failed');
+    // And the execution-level reason names that stage too.
+    expect(
+      deps.store.updateExecution.mock.calls
+        .map(([args]) => args)
+        .find((args) => args.status === 'FAILED').failureReason,
+    ).toContain('build-and-test');
+  });
+
   it('records the decision on the timeline and re-runs the target stage', async () => {
     const result = await run();
     expect(result.ok).not.toBe(false);
@@ -418,11 +506,22 @@ describe('a recommended loop-back the human accepts', () => {
 
   it('records the loop-back under the gate id, which is unique to this run', async () => {
     await run();
-    const ids = deps.store.resetStageRow.mock.calls
-      .map(([args]) => args.loopBackId)
-      .filter(Boolean);
-    expect(ids).toEqual([gates()[0].humanTaskId]);
-    expect(ids[0]).toContain('-run-');
+    const gateId = gates()[0].humanTaskId;
+    // BOTH rows are reset under that one id — the recommending stage needs the same
+    // consistent read, attempt CAS and replay identity as the target — and only the
+    // target's reset counts against the per-intent cap.
+    expect(
+      deps.store.resetStageRow.mock.calls.map(([args]) => [
+        args.stageInstanceId,
+        args.loopBackId,
+        args.countsAgainstCap ?? true,
+      ]),
+    ).toEqual([
+      ['si-bt', gateId, false],
+      ['si-cg', gateId, true],
+    ]);
+    expect(gateId).toContain('-run-');
+    expect(deps.store.loopBackState.count).toBe(1);
   });
 
   it('clears the recommendation once the gate has read it', async () => {

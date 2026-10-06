@@ -336,17 +336,18 @@ const makeWorld = ({
         ...(reason ? { loopBackRecommendation: reason } : {}),
       });
     },
-    resetStageRow: async ({ stageInstanceId, loopBackId }) => {
+    // Both rows of one loop-back are reset under the SAME id; only the target's
+    // reset tallies it, so replaying a reset must not bump the attempt twice.
+    resetStageRow: async ({ stageInstanceId, loopBackId, countsAgainstCap = true }) => {
       const row = world.stageRows.get(stageInstanceId);
+      if (loopBackId && row?.lastLoopBackId === loopBackId) return row;
       const next = {
         ...row,
         state: 'PENDING',
         attempt: Number(row?.attempt ?? 0) + 1,
-        ...(loopBackId
-          ? {
-              loopBackCount: Number(row?.loopBackCount ?? 0) + 1,
-              lastLoopBackId: loopBackId,
-            }
+        ...(loopBackId ? { lastLoopBackId: loopBackId } : {}),
+        ...(loopBackId && countsAgainstCap
+          ? { loopBackCount: Number(row?.loopBackCount ?? 0) + 1 }
           : {}),
       };
       world.stageRows.set(stageInstanceId, next);
