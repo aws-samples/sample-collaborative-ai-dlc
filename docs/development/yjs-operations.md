@@ -16,6 +16,10 @@ one worker with 1024 CPU units and 2048 MiB, increased from 512/1024. Other
 environments retain 256/512. To retain the previous production allocation, set
 `cpu = 512` and `memory = 1024` explicitly.
 
+When `kms_key_arn` is configured, the cluster's membership table uses the same
+customer-managed key as the document table. The worker receives the shared
+DynamoDB-scoped KMS permissions; standalone workers do not receive them.
+
 Standalone vertical sizing:
 
 ```hcl

@@ -19,6 +19,12 @@ variable "snapshots_bucket_arn" {
   type = string
 }
 
+variable "kms_key_arn" {
+  description = "Optional customer-managed key for DynamoDB documents and membership."
+  type        = string
+  default     = ""
+}
+
 variable "scaling" {
   description = "Worker sizing and optional sharding/autoscaling; CPU units and memory in MiB."
   type = object({

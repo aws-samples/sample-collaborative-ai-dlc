@@ -113,6 +113,25 @@ run "manual_cluster" {
   }
 }
 
+run "encrypted_cluster" {
+  command = plan
+  module {
+    source = "./modules/realtime/yjs-server"
+  }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  variables {
+    scaling     = { cluster_enabled = true, desired_count = 2 }
+    kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000457"
+  }
+  assert {
+    condition     = aws_dynamodb_table.members[0].server_side_encryption[0].enabled && aws_dynamodb_table.members[0].server_side_encryption[0].kms_key_arn == var.kms_key_arn
+    error_message = "Cluster membership must use the configured DynamoDB encryption key."
+  }
+}
+
 run "automatic_cluster" {
   command = plan
   module {

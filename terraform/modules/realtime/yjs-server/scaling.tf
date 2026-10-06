@@ -12,6 +12,20 @@ resource "aws_dynamodb_table" "members" {
     attribute_name = "expiresAt"
     enabled        = true
   }
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+}
+
+module "dynamodb_kms_runtime_access" {
+  source = "../../security/dynamodb-kms-runtime-access"
+
+  kms_key_arn = var.scaling.cluster_enabled ? var.kms_key_arn : ""
+  dns_suffix  = local.dns_suffix
+  role_names = {
+    yjs = aws_iam_role.ecs_task.name
+  }
 }
 
 resource "aws_iam_role_policy" "cluster" {

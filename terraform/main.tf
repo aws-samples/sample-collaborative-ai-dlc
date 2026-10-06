@@ -666,6 +666,7 @@ module "yjs_server" {
   documents_table_arn           = module.dynamodb.yjs_documents_table_arn
   snapshots_bucket_name         = module.s3.artifacts_bucket_name
   snapshots_bucket_arn          = module.s3.artifacts_bucket_arn
+  kms_key_arn                   = var.kms_key_arn
   # Serialize the yjs image build after the agentcore image build — concurrent
   # builds from the two docker provider instances deadlock at context
   # transfer. Value-neutral: only creates a dependency edge (see variable).
