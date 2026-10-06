@@ -51,7 +51,15 @@ export function useYjsDocument(
   const awareness = useMemo(() => new awarenessProtocol.Awareness(doc), [doc]);
   const [syncState, setSyncState] = useState({ doc, synced: false });
   const synced = syncState.doc === doc && syncState.synced;
-  const setSynced = useCallback((value: boolean) => setSyncState({ doc, synced: value }), [doc]);
+  const setSynced = useCallback(
+    (value: boolean) =>
+      // Retiring sockets still process final-save messages, but only the current
+      // document may change the editor's sync state.
+      setSyncState((previous) =>
+        currentDocRef.current === doc ? { doc, synced: value } : previous,
+      ),
+    [doc],
+  );
   const [remoteUsers, setRemoteUsers] = useState<Map<number, AwarenessUser>>(new Map());
   const [localChange, setLocalChange] = useState({ doc, revision: 0 });
   const wsRef = useDocumentRef<WebSocket | null>(doc, null);
