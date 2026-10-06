@@ -148,6 +148,12 @@ Add these environment variables to `demo-main`:
 | `TF_STATE_KEY`    | `main/terraform.tfstate`                                        |
 | `TF_STATE_REGION` | The state bucket's region; this may differ from `AWS_REGION`    |
 
+Optionally set `BEDROCK_REGION` to send agent inference to a different region
+than the application, for example when the Bedrock API key belongs to
+`us-east-1`. `BEDROCK_MODEL` and the models selected in the application must
+then be inference profiles of that region's geo (`us.`, `eu.`, `apac.`) or
+`global.`. When it is unset, inference uses `AWS_REGION`.
+
 The workflow supplies the isolation values itself:
 
 - Terraform `environment = "prod"`, preserving production behavior.
@@ -209,9 +215,9 @@ Before the first deployment:
 1. Choose a region present in the AgentCore VPC AZ map in
    `terraform/modules/compute/agentcore/main.tf`, or explicitly configure its
    supported AZ IDs.
-2. Confirm the selected Bedrock inference profile is available there. Bedrock
-   API keys are regional; enable the OpenAI models in that region when using
-   Codex.
+2. Confirm the selected Bedrock inference profile is available there, or in
+   `BEDROCK_REGION` when it is set. Bedrock API keys are regional; enable the
+   OpenAI models in the inference region when using Codex.
 3. Check regional quotas for VPCs, elastic IPs/NAT gateways, Neptune,
    Fargate/ECS, Lambda, ECR, and Bedrock AgentCore, plus account quotas for IAM
    roles and CloudFront resources.

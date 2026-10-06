@@ -75,6 +75,7 @@ export interface IntentResumeRequired {
 }
 
 export interface Intent {
+  draftRevision?: number;
   id: string;
   executionId: string;
   projectId: string;
@@ -441,6 +442,7 @@ export interface SensorDetail {
 }
 
 export interface IntentArtifact {
+  editRevision?: string | null;
   id: string;
   artifactType: string | null;
   title: string | null;
@@ -450,6 +452,7 @@ export interface IntentArtifact {
   unitSlug?: string | null;
   stageAttempt?: number;
   generation?: number;
+  collaborationEpoch?: string | null;
   versionCount?: number;
   aliases?: string[];
   createdAt: string | null;
@@ -1058,10 +1061,19 @@ export const intentsService = {
     api.post<Intent>(`/projects/${projectId}/intents`, input),
   // DRAFT-only header edit (the collaborative draft page's auto-save target):
   // title/prompt/scope/composedGrid/skipStageIds. 409 once the intent starts.
+  draftEditState: (projectId: string, intentId: string) =>
+    api.get<{ draftRevision: number; status: IntentStatus }>(
+      `/projects/${projectId}/intents/${intentId}?editState=draft`,
+    ),
+  artifactEditState: (projectId: string, intentId: string, artifactId: string) =>
+    api.get<{ editRevision: string | null; collaborationEpoch: string | null }>(
+      `/projects/${projectId}/intents/${intentId}?editState=${encodeURIComponent(artifactId)}`,
+    ),
   update: (
     projectId: string,
     intentId: string,
     patch: {
+      ifDraftRevision: number;
       title?: string | null;
       prompt?: string | null;
       scope?: string;
@@ -1201,6 +1213,8 @@ export const intentsService = {
     intentId: string,
     artifactId: string,
     content: string,
+    collaborationEpoch: string | null,
+    ifEditRevision: string | null,
   ) =>
     api.put<{
       artifactId: string;
@@ -1210,7 +1224,7 @@ export const intentsService = {
       steering: IntentSteering | null;
     }>(
       `/projects/${projectId}/intents/${intentId}/artifacts/${encodeURIComponent(artifactId)}/content`,
-      { content },
+      { content, collaborationEpoch, ifEditRevision },
     ),
   // Clear the drift marker: reviewed against the upstream edit, still valid.
   verifyArtifact: (projectId: string, intentId: string, artifactId: string, note?: string) =>

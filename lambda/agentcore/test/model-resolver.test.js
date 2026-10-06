@@ -26,6 +26,11 @@ describe('resolveModelId', () => {
     );
   });
 
+  it('takes the geo prefix from BEDROCK_REGION over the deployment region', () => {
+    const env = { AWS_REGION: 'eu-central-1', BEDROCK_REGION: 'us-east-1' };
+    expect(resolveModelId('sonnet', { env })).toBe('us.anthropic.claude-sonnet-4-6');
+  });
+
   it('defaults to the us geo when region is unknown/absent', () => {
     expect(resolveModelId('opus', { env: {} })).toBe('us.anthropic.claude-opus-4-6-v1');
   });

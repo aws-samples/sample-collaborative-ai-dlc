@@ -18,6 +18,10 @@ terraform {
       source  = "hashicorp/time"
       version = "~> 0.13"
     }
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 3.0"
+    }
   }
   backend "s3" {}
 }
@@ -61,6 +65,10 @@ locals {
   partition               = data.aws_partition.current.partition
   dns_suffix              = data.aws_partition.current.dns_suffix
   powertools_service_name = "collaborative-aidlc"
+
+  # Bedrock inference may live outside the deployment region (regional API keys
+  # or model access). The runtime CLIs and the model picker share this value.
+  bedrock_region = coalesce(var.bedrock_region, var.aws_region)
 
   custom_domain_enabled = var.app_domain != ""
 
@@ -599,6 +607,7 @@ module "api" {
   agent_outputs_table_name                 = module.dynamodb.agent_outputs_table_name
   agents_lambda_role_arn                   = module.lambda.agents_orchestrator_role_arn
   agentcore_runtime_arn                    = module.agentcore.runtime_arn
+  bedrock_region                           = local.bedrock_region
   agent_credential_grant_secret_param_name = aws_ssm_parameter.agent_credential_grant_secret.name
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   runtime_compatibility_version            = module.agentcore.runtime_compatibility_version
@@ -652,6 +661,12 @@ module "yjs_server" {
   cognito_user_pool_id          = module.auth.user_pool_id
   cognito_client_id             = module.auth.user_pool_client_id
   realtime_doc_secret_param_arn = module.realtime.realtime_doc_secret_param_arn
+  scaling                       = var.yjs_scaling
+  documents_table_name          = module.dynamodb.yjs_documents_table_name
+  documents_table_arn           = module.dynamodb.yjs_documents_table_arn
+  snapshots_bucket_name         = module.s3.artifacts_bucket_name
+  snapshots_bucket_arn          = module.s3.artifacts_bucket_arn
+  kms_key_arn                   = var.kms_key_arn
   # Serialize the yjs image build after the agentcore image build — concurrent
   # builds from the two docker provider instances deadlock at context
   # transfer. Value-neutral: only creates a dependency edge (see variable).
@@ -683,6 +698,7 @@ module "agentcore" {
   websocket_execution_arn     = module.realtime.websocket_execution_arn
   aidlc_repo_ref              = var.aidlc_repo_ref
   bedrock_model               = var.bedrock_model
+  bedrock_region              = local.bedrock_region
   # The kiro-cli build shipped in the agentcore image only accepts the "auto"
   # model selector; a concrete model id (e.g. "claude-opus-4.6") is rejected at
   # spawn with `error: Model '...' does not exist. Available models: auto`,

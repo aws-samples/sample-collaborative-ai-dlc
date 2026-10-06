@@ -262,6 +262,7 @@ test('DynamoDB CMK access covers deployment and every runtime caller', () => {
     'terraform/modules/realtime/lambda.tf',
     'terraform/modules/compute/managed-environments/main.tf',
     'terraform/modules/compute/agentcore/main.tf',
+    'terraform/modules/realtime/yjs-server/scaling.tf',
   ]) {
     const source = read(path);
     assert.deepEqual(
@@ -272,9 +273,20 @@ test('DynamoDB CMK access covers deployment and every runtime caller', () => {
   }
 
   const rootMain = read('terraform/main.tf');
-  for (const moduleName of ['lambda', 'realtime', 'agentcore', 'managed_environments']) {
+  for (const moduleName of [
+    'lambda',
+    'realtime',
+    'agentcore',
+    'managed_environments',
+    'yjs_server',
+  ]) {
     assert.match(moduleBlock(rootMain, moduleName), /kms_key_arn\s+= var\.kms_key_arn/);
   }
+  const yjsScaling = read('terraform/modules/realtime/yjs-server/scaling.tf');
+  assert.match(
+    moduleBlock(yjsScaling, 'dynamodb_kms_runtime_access'),
+    /kms_key_arn\s+= var\.scaling\.cluster_enabled \? var\.kms_key_arn : ""/,
+  );
 
   const prerequisites = read('docs/getting-started/prerequisites.md');
   assert.match(prerequisites, /deployment principal needs `kms:DescribeKey`/);

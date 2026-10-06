@@ -122,6 +122,30 @@ resource "aws_dynamodb_table" "yjs_documents" {
     type = "S"
   }
 
+  attribute {
+    name = "cleanupPartition"
+    type = "S"
+  }
+  attribute {
+    name = "cleanupAfter"
+    type = "N"
+  }
+  global_secondary_index {
+    name            = "cleanup"
+    projection_type = "ALL"
+    read_capacity   = local.read_capacity
+    write_capacity  = local.write_capacity
+
+    key_schema {
+      attribute_name = "cleanupPartition"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "cleanupAfter"
+      key_type       = "RANGE"
+    }
+  }
+
   server_side_encryption {
     enabled     = var.kms_key_arn != ""
     kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
