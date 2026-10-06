@@ -41,6 +41,7 @@ import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
+import { requireYjsCleanupTime, revokeYjsScope } from '../shared/yjs-revocation.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import {
   findCheckoutPathCollision,
@@ -1233,6 +1234,7 @@ const handleReposRoute = async (g, response, event, projectId, userId) => {
 // ---------------------------------------------------------------------------
 
 export const handler = async (event, context) => {
+  const cleanupDeadline = Date.now() + 10_000;
   if (context) logger.addContext(context);
   logger.resetKeys();
   logSafeEventIfEnabled(logger, event);
@@ -1890,9 +1892,31 @@ export const handler = async (event, context) => {
         // and the delete is simply retryable.
         {
           const actor = userEmail || userId;
+          const legacySprintIds = await g
+            .V()
+            .has('Project', 'id', projectId)
+            .out('HAS_SPRINT')
+            .hasLabel('Sprint')
+            .values('id')
+            .toList();
+          for (const [type, scopeId] of [
+            ['project', projectId],
+            ...legacySprintIds.map((sprintId) => ['sprint', sprintId]),
+          ]) {
+            requireYjsCleanupTime(cleanupDeadline);
+            await revokeYjsScope({
+              ddb,
+              table: process.env.YJS_DOCUMENTS_TABLE,
+              type,
+              id: scopeId,
+              bucket: process.env.ARTIFACTS_BUCKET,
+              deadline: cleanupDeadline,
+            });
+          }
           const execs = await store.listProjectExecutions({ projectId, limit: 1000 });
           const failures = [];
           for (const execMeta of execs) {
+            requireYjsCleanupTime(cleanupDeadline);
             const intentId = execMeta.intentId ?? execMeta.executionId;
             try {
               await deleteIntentCascade({
@@ -1904,6 +1928,7 @@ export const handler = async (event, context) => {
                 intentId,
                 meta: execMeta,
                 yjsTable: process.env.YJS_DOCUMENTS_TABLE,
+                cleanupDeadline,
                 agentcoreRuntimeTarget: runtimeTargetInput(
                   execMeta,
                   process.env.AGENTCORE_RUNTIME_ARN || '',
@@ -1913,6 +1938,7 @@ export const handler = async (event, context) => {
                 force: true,
               });
             } catch (err) {
+              if (err?.code === 'YJS_CLEANUP_PENDING') throw err;
               logger.error('Project delete: intent cascade failed', {
                 intentId,
                 error: err,
@@ -1976,6 +2002,11 @@ export const handler = async (event, context) => {
         return response(405, { error: 'Method not allowed' });
     }
   } catch (err) {
+    if (err?.code === 'YJS_CLEANUP_PENDING')
+      return response(409, {
+        error: 'Collaboration cleanup is in progress. Retry deletion shortly.',
+        code: 'deletion_pending',
+      });
     logger.error('Unhandled error', err);
     return response(500, {
       error: 'Internal server error',

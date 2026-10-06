@@ -19,6 +19,7 @@
 
 import { createHash } from 'node:crypto';
 import gremlin from 'gremlin';
+import { randomUUID } from 'node:crypto';
 import {
   DERIVED_ITEM_LABELS,
   flattenVertexMap,
@@ -184,6 +185,8 @@ const RESERVED_PROPS = new Set([
   'artifact_logical_key',
   'artifact_aliases',
   'generation',
+  'collaboration_epoch',
+  'edit_revision',
   'version_count',
   'created_at',
   'updated_at',
@@ -635,6 +638,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       artifact_logical_key: logicalKey,
       artifact_aliases: JSON.stringify([...aliases]),
       generation,
+      collaboration_epoch: randomUUID(),
       version_count: Number(head.version_count) || 0,
     };
 
@@ -820,6 +824,9 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .property(cardinality.single, 'stage_attempt', Number(scope.stageAttempt) || 0)
       .property(cardinality.single, 'generation', generation);
     for (const [k, v] of Object.entries(clean)) q = q.property(cardinality.single, k, v);
+    if (Object.hasOwn(clean, 'content') || rehabilitating) {
+      q = q.property(cardinality.single, 'collaboration_epoch', randomUUID());
+    }
     await q.next();
     // An updated artifact is current again (rewind rehabilitation) and no
     // longer stale (drift rehabilitation).
