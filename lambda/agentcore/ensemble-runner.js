@@ -456,8 +456,14 @@ export const renderLeadTopologyBrief = ({ mode, leadAgentRef, supports = [] }) =
 
 // The native topology for a stage, or null when the stage keeps today's
 // single-session behaviour. Gated on release mode (the existing authored
-// provenance gate — an unpinned or 2.3.3-era intent is untouched) and on at least
-// one support persona resolving from the SAME library the stage came from.
+// provenance gate — an unpinned or 2.3.3-era intent is untouched), on a RESOLVED
+// STAGE POLICY, and on at least one support persona resolving from the SAME
+// library the stage came from.
+//
+// The policy condition is the same one `findingsFor` uses, deliberately: without
+// it a pinned stage whose plan resolved no policy would run the whole ensemble and
+// then report nothing at the gate — every gap, every dissent and every budget cut
+// silently dropped, because the evaluator is inert without a policy.
 export const resolveEnsembleTopology = async ({
   stage,
   library,
@@ -465,6 +471,7 @@ export const resolveEnsembleTopology = async ({
   methodologyRelease = null,
 }) => {
   if (!methodologyRelease) return null;
+  if (!stage?.policy) return null;
   if (!SESSION_ENSEMBLE_MODES.includes(stage?.mode)) return null;
   if (stage.mode === 'subagent' && !subagentIsHubAndSpoke(library)) return null;
   const refs = (stage.supportAgentRefs ?? []).filter(

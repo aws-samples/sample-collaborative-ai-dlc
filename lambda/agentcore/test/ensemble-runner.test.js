@@ -258,6 +258,19 @@ describe('resolveEnsembleTopology — the gate on native sessions', () => {
     }
   });
 
+  // The topology gate and the gate findings must agree: a pinned stage whose plan
+  // resolved no policy would otherwise run every persona session and then report
+  // nothing at all, because `findingsFor` is inert without a policy.
+  it('is inert when the stage resolved no policy, so personas never run unreportable', async () => {
+    for (const policy of [null, undefined]) {
+      expect(await topologyFor(stage({ mode: 'mob', policy }))).toBeNull();
+      expect(await topologyFor(stage({ mode: 'pipeline', policy }))).toBeNull();
+      expect(
+        await topologyFor(stage({ mode: 'subagent', policy, supportAgentRefs: ['design-agent'] })),
+      ).toBeNull();
+    }
+  });
+
   // §5 acceptance: "mode: pipeline with zero resolved supports is byte-identical
   // to inline" — nothing native, so the stage takes the untouched single path.
   it('is inert when the mode resolves no support persona', async () => {
@@ -1085,10 +1098,10 @@ describe('failure never blocks', () => {
   });
 
   it('raises no finding at all without a resolved release policy', async () => {
-    const stageRow = stage({ mode: 'mob', policy: null, supportAgentRefs: ['design-agent'] });
+    const stageRow = stage({ mode: 'mob', supportAgentRefs: ['design-agent'] });
     const topology = await topologyFor(stageRow);
     const { findings } = await run({
-      stageRow,
+      stageRow: { ...stageRow, policy: null },
       topology,
       sessions: { 'design-agent': { kind: 'crashes' } },
     });
