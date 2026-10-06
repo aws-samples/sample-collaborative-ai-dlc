@@ -4400,10 +4400,18 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    // `awaitEngineGate` writes `loopBackTarget` in the SAME call that puts
+    // `loop-back` in the options, so a gate offering the option always names the
+    // target it would rewind to.
     const seedValidation = (humanTaskId, options) => {
       const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
       seedGate(intent.id, humanTaskId);
-      procStore.set(humanKey, { ...procStore.get(humanKey), kind: 'validation', options });
+      procStore.set(humanKey, {
+        ...procStore.get(humanKey),
+        kind: 'validation',
+        options,
+        ...(options.includes('loop-back') ? { loopBackTarget: 'code-generation' } : {}),
+      });
       return humanKey;
     };
     const loopBack = { decision: 'loop-back', feedback: 'check the refund path' };
@@ -4434,6 +4442,49 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     });
     expect(accepted.statusCode).toBe(200);
     expect(procStore.get(offeredKey).answer).toEqual(loopBack);
+  });
+
+  // The engine's offer, not the human's text, is what makes an answer a loop-back:
+  // `parseChoice` reads `freeText` too, and the stage runner uses the same parser to
+  // decide a stage may re-enter with no parked session. A gate that never offered
+  // the jump carries no `loopBackTarget`, and the answer is refused whatever its
+  // kind and whatever option list it stored.
+  it('refuses a loop-back on any gate the engine never offered it on', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+
+    const refusals = [];
+    for (const [humanTaskId, row, answer] of [
+      // A `question` gate: no `kind: 'validation'`, no options, so the guarded
+      // branch above never ran. `freeText` is the field the agent's own questions
+      // are answered in.
+      ['h-question-freetext', { kind: 'question' }, { freeText: 'loop-back' }],
+      ['h-question-decision', { kind: 'question' }, { decision: 'loop-back' }],
+      // A validation gate whose option list was never stored.
+      ['h-validation-no-options', { kind: 'validation' }, { decision: 'loop-back' }],
+      // And one that stored an empty list.
+      ['h-validation-empty-options', { kind: 'validation', options: [] }, { mode: 'loop-back' }],
+    ]) {
+      const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+      seedGate(intent.id, humanTaskId);
+      procStore.set(humanKey, { ...procStore.get(humanKey), ...row });
+      const refused = await answerGate(sub, projectId, intent.id, humanTaskId, {
+        status: 'rejected',
+        answer,
+      });
+      refusals.push([humanTaskId, refused.statusCode, JSON.parse(refused.body).code]);
+      // Nothing was recorded, so no orchestrator or stage runner ever reads it.
+      expect(procStore.get(humanKey).status).toBe('pending');
+      expect(procStore.get(humanKey).answer ?? null).toBeNull();
+    }
+
+    expect(refusals).toEqual([
+      ['h-question-freetext', 400, 'loop_back_not_offered'],
+      ['h-question-decision', 400, 'loop_back_not_offered'],
+      ['h-validation-no-options', 400, 'loop_back_not_offered'],
+      ['h-validation-empty-options', 400, 'loop_back_not_offered'],
+    ]);
   });
 
   it('answers a pending gate (CAS) and resumes the durable callback when bound', async () => {

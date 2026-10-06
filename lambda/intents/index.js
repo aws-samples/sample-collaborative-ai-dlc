@@ -2798,6 +2798,22 @@ export const handler = async (event, context) => {
           });
         }
       }
+      // A loop-back is recordable ONLY on the gate the ENGINE offered it on, and
+      // `loopBackTarget` is the only proof of that offer: `awaitEngineGate` writes it
+      // when, and only when, the walk resolved a target. The branch above covers
+      // validation gates with a stored option list; this covers every other gate,
+      // because `loop-back` in a `question` gate's `freeText` is read as the choice
+      // by the same parser the orchestrator and the stage runner use, and would
+      // otherwise re-enter a stage as a fresh run on nothing but typed text.
+      if (
+        parseChoice(data.answer, [LOOP_BACK_OPTION]) === LOOP_BACK_OPTION &&
+        !gate.loopBackTarget
+      ) {
+        return response(400, {
+          error: 'This gate did not offer a loop-back',
+          code: 'loop_back_not_offered',
+        });
+      }
       // The same parser the orchestrator reads the answer with, so an answer the
       // engine treats as an override is held to the override's requirements here.
       const overrideChosen =

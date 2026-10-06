@@ -2288,6 +2288,9 @@ describe('runStage — resume mode', () => {
           kind: 'validation',
           status: 'rejected',
           answer: { decision: 'loop-back', feedback: 'check the null refund path' },
+          // Written by the engine when the gate offered the jump, naming the stage
+          // the walk rewound to. It is what authorizes the fresh re-entry below.
+          loopBackTarget: 'requirements-analysis',
           loopBackReason: 'payment integration tests fail',
         },
         stage: { state: 'PENDING', attempt: 1, cli: null, cliSessionId: null },
@@ -2302,6 +2305,59 @@ describe('runStage — resume mode', () => {
       state: 'RUNNING',
       attempt: 1,
     });
+  });
+
+  // The bypass is the engine's offer, not the human's words. `parseChoice` reads
+  // `freeText`, so a question gate answered "loop-back" used to look like a
+  // loop-back here and skip the fail-closed session guard, re-entering a stage as a
+  // fresh run with "Build-and-test sent this work back to you" in its prompt.
+  it('does not treat a loop-back answer on a gate without a target as a loop-back', async () => {
+    for (const [label, humanTask] of [
+      [
+        'question gate answered in free text',
+        {
+          humanTaskId: 'eg-question-si-ra-0-run-1',
+          kind: 'question',
+          status: 'answered',
+          answer: { freeText: 'loop-back' },
+        },
+      ],
+      [
+        'validation gate that never offered it',
+        {
+          humanTaskId: 'eg-validation-si-ra-0-run-1',
+          kind: 'validation',
+          status: 'rejected',
+          answer: { decision: 'loop-back' },
+        },
+      ],
+      [
+        'gate whose target names another stage',
+        {
+          humanTaskId: 'eg-validation-si-bt-0-run-1',
+          kind: 'validation',
+          status: 'rejected',
+          answer: { decision: 'loop-back' },
+          loopBackTarget: 'code-generation',
+        },
+      ],
+    ]) {
+      let promptSeen = null;
+      const deps = baseDeps({
+        availableClis: ['claude'],
+        spawnFn: () => ({
+          ...okSpawn(),
+          stdin: { end: (prompt) => (promptSeen = prompt) },
+        }),
+        store: spyStore({
+          humanTask,
+          stage: { state: 'PENDING', attempt: 1, cli: null, cliSessionId: null },
+        }),
+      });
+      const res = await runStage({ ...baseArgs, resumeFrom: humanTask.humanTaskId }, deps);
+      expect(res, label).toMatchObject({ ok: false, reason: 'resume_no_session' });
+      expect(promptSeen, label).toBeNull();
+    }
   });
 
   it('explains a removed pinned credential when resuming a parked stage', async () => {

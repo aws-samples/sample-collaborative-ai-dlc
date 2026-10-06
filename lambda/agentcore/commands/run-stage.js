@@ -824,7 +824,17 @@ const isChangeControlGate = (gate) =>
 // A build-and-test gate answered `loop-back` sends the run back to this
 // code-generation stage. The gate belongs to another stage, whose reset left this
 // row with no session, so the stage runs fresh with the answer in its prompt.
-const isLoopBackAnswer = (gate) => parseChoice(gate?.answer, [LOOP_BACK_OPTION]) !== null;
+//
+// Keyed on the ENGINE's offer, never on what the human typed: `loopBackTarget` is
+// written only by `awaitEngineGate`/`createHumanTask`, and only when the gate
+// actually offered the jump, and it names the stage the walk rewound to. Requiring
+// it to name THIS stage is what stops a `loop-back` string in any answer field of
+// any other gate — a `question` gate's `freeText`, for instance — from skipping the
+// `resume_no_session` guard below and re-entering a stage as a fresh run.
+const isLoopBackAnswer = (gate, stageId) =>
+  typeof gate?.loopBackTarget === 'string' &&
+  gate.loopBackTarget === stageId &&
+  parseChoice(gate?.answer, [LOOP_BACK_OPTION]) !== null;
 
 // The approved inputs whose bytes moved since an approval recorded them.
 // Identity is the artifact's LOGICAL key, not its type: a stage may consume
@@ -1263,7 +1273,7 @@ const runCheckpointLadder = async ({
 // The agent asked structured questions; we feed back the human's answer so it
 // continues from where it parked. Tolerant of the answer shapes the resume lambda
 // / phaseb-answer write (`perQuestion[]`, `freeText`, or a raw string).
-const formatResumeAnswer = (gate) => {
+const formatResumeAnswer = (gate, stageId) => {
   const a = gate?.answer ?? null;
   // A checkpoint gate (summary confirmation / plan approval) is a `question` row
   // carrying `detail.checkpoint`, so it must be recognised BEFORE the generic
@@ -1295,7 +1305,7 @@ const formatResumeAnswer = (gate) => {
       } again with the revision.`
     );
   }
-  if (isLoopBackAnswer(gate)) {
+  if (isLoopBackAnswer(gate, stageId)) {
     const feedback = typeof a === 'string' ? '' : (a?.feedback ?? a?.freeText ?? '');
     return (
       `Build-and-test sent this work back to you: ${gate.loopBackReason || 'no reason recorded'}.` +
@@ -2223,7 +2233,7 @@ export const runStage = async (
     // is already durable and the change-control block below reads it from the
     // receipt, so nothing is lost and nothing is re-asked.
     const preAgentGate = isChangeControlGate(resumeGate);
-    const freshFromGate = preAgentGate || isLoopBackAnswer(resumeGate);
+    const freshFromGate = preAgentGate || isLoopBackAnswer(resumeGate, stageId);
     if ((!cli || !priorSessionId) && !reviewFeedback && !freshFromGate) {
       return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
     }
@@ -2240,7 +2250,9 @@ export const runStage = async (
     // A pre-agent gate answer is NOT a reply to the agent: injecting "Reconfirm
     // and continue" as an answer to a question it never asked would be noise. The
     // change-control block renders the decision into the prompt instead.
-    resumeAnswer = preAgentGate ? null : reviewFeedbackPrompt || formatResumeAnswer(resumeGate);
+    resumeAnswer = preAgentGate
+      ? null
+      : reviewFeedbackPrompt || formatResumeAnswer(resumeGate, stageId);
     // A pre-agent gate re-enters as a fresh run even when the row names a
     // session: the conversation was never started, and resuming it would send
     // the CLI neither the stage prompt nor the change-control decision.
