@@ -27,7 +27,7 @@ export const normalizeCredentialLease = (lease) => {
   )
     return invalid();
   if (renewal?.action) assertIdentifier(renewal.action, 'renewal action');
-  if (renewal?.tokenField && !['grant', 'renewalToken'].includes(renewal.tokenField))
+  if (renewal && Object.keys(renewal).some((key) => !['grant', 'action'].includes(key)))
     return invalid();
   return {
     version: 1,
@@ -38,7 +38,6 @@ export const normalizeCredentialLease = (lease) => {
       ? {
           grant: renewal.grant,
           ...(renewal.action ? { action: renewal.action } : {}),
-          ...(renewal.tokenField ? { tokenField: renewal.tokenField } : {}),
         }
       : null,
   };

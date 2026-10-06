@@ -1,5 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { PutCommand, QueryCommand, ScanCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  PutCommand,
+  QueryCommand,
+  ScanCommand,
+  GetCommand,
+  BatchWriteCommand,
+  TransactWriteCommand,
+  UpdateCommand,
+  DeleteCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { createAgentConnectionRepository } from '../agent-connection-repository.js';
 import { createAgentAuthChangeService, credentialUpdateCandidate } from '../agent-auth-changes.js';
 import { resolveSelectedAgentCredential } from '../agent-credential-service.js';
@@ -7,6 +16,7 @@ import { resolvePolicyBindings } from '../agent-binding-selection.js';
 import { inspectAgentCredentialMetadata } from '../../credential-metadata/index.js';
 import { createProcessStore } from '../v2-process-store.js';
 import { cleanup, createAuthTable, ddb, requireDynamoDbLocal } from './helpers/auth-table.js';
+import { inventoryReferenceWrites } from '../agent-auth-inventory.js';
 
 beforeAll(requireDynamoDbLocal);
 afterAll(cleanup);
@@ -30,6 +40,194 @@ const setup = async () => {
 };
 
 describe('provider and scope isolation', () => {
+  it('can rotate a space key with more than 5,000 finished invocations and stale references', async () => {
+    const { tableName, repository, service, calls } = await setup();
+    const records = Array.from({ length: 5001 }, (_, index) => ({
+      pk: `AGENTAUTH#INVOCATION#finished-${index}`,
+      sk: 'META',
+      type: 'AgentInvocation',
+      id: `finished-${index}`,
+      projectId: 'busy-space',
+      state: 'FINISHED',
+      credentialBinding: { provider: 'bedrock', source: 'space' },
+      // Historical references had no TTL, and TTL deletion is asynchronous.
+    })).flatMap((row) => [
+      row,
+      ...inventoryReferenceWrites(tableName, row).map(({ Put }) => Put.Item),
+    ]);
+    const missing = { pk: 'EXEC#deleted', sk: 'META', projectId: 'busy-space' };
+    records.push(...inventoryReferenceWrites(tableName, missing).map(({ Put }) => Put.Item));
+    for (let offset = 0; offset < records.length; offset += 25) {
+      const result = await ddb.send(
+        new BatchWriteCommand({
+          RequestItems: {
+            [tableName]: records
+              .slice(offset, offset + 25)
+              .map((Item) => ({ PutRequest: { Item } })),
+          },
+        }),
+      );
+      expect(result.UnprocessedItems ?? {}).toEqual({});
+    }
+    const candidate = credentialUpdateCandidate({
+      source: 'space',
+      projectId: 'busy-space',
+      update: { bedrockBearerToken: 'rotated' },
+    });
+    calls.length = 0;
+    const review = await service.preview(candidate, 'admin');
+    expect(review.items).toEqual([]);
+    const writeCredentials = vi.fn(async () => {});
+    await expect(
+      service.apply(review.id, 'admin', { candidate, writeCredentials }),
+    ).resolves.toMatchObject({ saved: true });
+    expect(writeCredentials).toHaveBeenCalledOnce();
+    expect(calls.some((command) => command instanceof ScanCommand)).toBe(false);
+    expect(await repository.loadInventory(candidate)).toEqual([]);
+  }, 60_000);
+
+  it('still rejects a scoped review with more than 5,000 material records', async () => {
+    const send = vi.fn(async (command) => {
+      if (command instanceof QueryCommand) {
+        const offset = command.input.ExclusiveStartKey?.offset ?? 0;
+        return {
+          Items: Array.from({ length: offset === 5000 ? 1 : 100 }, (_, index) => ({
+            target: { pk: `AGENTAUTH#INVOCATION#${offset + index}`, sk: 'META' },
+          })),
+          ...(offset < 5000 ? { LastEvaluatedKey: { offset: offset + 100 } } : {}),
+        };
+      }
+      if (command.input.Key.pk === 'AGENTAUTH#INVENTORY') return { Item: { version: 1 } };
+      return {
+        Item: {
+          ...command.input.Key,
+          type: 'AgentInvocation',
+          state: 'ACTIVE',
+          projectId: 'busy-space',
+        },
+      };
+    });
+    const repository = createAgentConnectionRepository({ ddb: { send }, tableName: 'inventory' });
+    await expect(
+      repository.loadInventory({ source: 'space', projectId: 'busy-space' }),
+    ).rejects.toMatchObject({ code: 'AGENT_AUTH_INVENTORY_TOO_LARGE' });
+  });
+
+  it('retains rewindable execution references and removes them atomically on deletion', async () => {
+    const { tableName, repository } = await setup();
+    const store = createProcessStore({ ddb, tableName });
+    await store.createExecution({
+      executionId: 'rewindable',
+      projectId: 'p1',
+      credentialBinding: { provider: 'bedrock', source: 'user', userId: 'u1' },
+    });
+    for (const status of ['SUCCEEDED', 'FAILED', 'CANCELLED']) {
+      await store.updateExecution({ executionId: 'rewindable', status });
+      expect(await repository.loadInventory({ source: 'user', userId: 'u1' })).toMatchObject([
+        { executionId: 'rewindable', status },
+      ]);
+    }
+    const execution = await store.getExecution('rewindable');
+    await store.deleteExecution('rewindable');
+    expect(await store.getExecution('rewindable')).toBeNull();
+    for (const { Put } of inventoryReferenceWrites(tableName, execution)) {
+      const { Item } = await ddb.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: { pk: Put.Item.pk, sk: Put.Item.sk },
+          ConsistentRead: true,
+        }),
+      );
+      expect(Item).toBeUndefined();
+    }
+    expect(await repository.loadInventory({ source: 'space', projectId: 'p1' })).toEqual([]);
+    await expect(store.deleteExecution('rewindable')).resolves.toEqual({ deleted: 0 });
+  });
+
+  it('initializes an empty installation once and permits its first scoped review', async () => {
+    const tableName = await createAuthTable('fresh-auth');
+    const calls = [];
+    const repository = createAgentConnectionRepository({
+      ddb: {
+        send: (command) => {
+          calls.push(command);
+          return ddb.send(command);
+        },
+      },
+      tableName,
+    });
+    expect(await repository.initializeInventory()).toEqual({ initialized: true, records: 0 });
+    calls.length = 0;
+    expect(await repository.initializeInventory()).toEqual({ initialized: false, records: 0 });
+    expect(calls.some((command) => command instanceof ScanCommand)).toBe(false);
+    const service = createAgentAuthChangeService({ repository });
+    const candidate = credentialUpdateCandidate({
+      source: 'user',
+      userId: 'first-user',
+      update: { kiroApiKey: 'new-key' },
+    });
+    const review = await service.preview(candidate, 'first-user');
+    await expect(
+      service.apply(review.id, 'first-user', {
+        candidate,
+        writeCredentials: async () => {},
+      }),
+    ).resolves.toMatchObject({ saved: true });
+  });
+
+  it.each(['finish', 'delete'])(
+    'backfill preserves a concurrent invocation %s',
+    async (operation) => {
+      const tableName = await createAuthTable('backfill-race');
+      const row = {
+        pk: 'AGENTAUTH#INVOCATION#racing',
+        sk: 'META',
+        type: 'AgentInvocation',
+        state: 'ACTIVE',
+        projectId: 'p1',
+      };
+      const Key = { pk: row.pk, sk: row.sk };
+      await ddb.send(new PutCommand({ TableName: tableName, Item: row }));
+      const ttl = Math.floor(Date.now() / 1000) + 86400;
+      let raced = false;
+      const repository = createAgentConnectionRepository({
+        tableName,
+        ddb: {
+          async send(command) {
+            if (!raced && command instanceof TransactWriteCommand) {
+              raced = true;
+              await ddb.send(
+                operation === 'delete'
+                  ? new DeleteCommand({ TableName: tableName, Key })
+                  : new UpdateCommand({
+                      TableName: tableName,
+                      Key,
+                      UpdateExpression: 'SET #state = :state, agentAuthTtl = :ttl',
+                      ExpressionAttributeNames: { '#state': 'state' },
+                      ExpressionAttributeValues: { ':state': 'FINISHED', ':ttl': ttl },
+                    }),
+              );
+            }
+            return ddb.send(command);
+          },
+        },
+      });
+      await repository.initializeInventory();
+      expect(raced).toBe(true);
+      const { Put } = inventoryReferenceWrites(tableName, row)[0];
+      const { Item } = await ddb.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: { pk: Put.Item.pk, sk: Put.Item.sk },
+          ConsistentRead: true,
+        }),
+      );
+      if (operation === 'delete') expect(Item).toBeUndefined();
+      else expect(Item.agentAuthTtl).toBe(ttl);
+      expect(await repository.loadInventory({ source: 'space', projectId: 'p1' })).toEqual([]);
+    },
+  );
+
   it.each([
     ['claude', 'bedrock', 'kiroApiKey', 'kiro'],
     ['kiro', 'kiro', 'bedrockBearerToken', 'bedrock'],

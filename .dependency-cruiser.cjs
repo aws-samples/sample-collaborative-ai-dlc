@@ -37,7 +37,7 @@ module.exports = {
       severity: 'error',
       from: { path: '^lambda/agentcore/', pathNot: '/test/' },
       to: {
-        path: '^lambda/shared/(agent-key-repository|agent-credential-grants|agent-auth-redemption|agent-credentials|agent-connection-repository)\\.js$',
+        path: '^lambda/shared/(agent-key-repository|agent-credential-grants|agent-auth-redemption|agent-credentials|agent-connection-repository|agent-auth-inventory-repository|agent-auth-review-repository)\\.js$',
         reachable: true,
       },
     },

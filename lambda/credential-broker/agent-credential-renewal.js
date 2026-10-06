@@ -66,6 +66,6 @@ export const composeLease = ({
     material,
     expiresAt: deadlines.length ? Math.min(...deadlines) : null,
     authorizationExpiresAt,
-    renewal: token ? { grant: token, action: policy.action, tokenField: policy.tokenField } : null,
+    renewal: token ? { grant: token, action: policy.action } : null,
   });
 };

@@ -1,3 +1,4 @@
+import { isMaterialAuthInventoryRow } from './agent-auth-inventory.js';
 import { normalizeAuthAction } from './agent-auth-actions.js';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -45,26 +46,7 @@ export const materialAuthInventory = (rows, now = Date.now()) => {
       : [row],
   );
   return expanded
-    .filter(
-      (row) =>
-        [
-          'Execution',
-          'AgentConnectionHead',
-          'AgentInvocation',
-          'AgentSelection',
-          'EnvironmentRevision',
-          'Space',
-          'CredentialScope',
-          'Compose',
-          'QuorumEdit',
-        ].includes(row.type) &&
-        (!row.agentAuthTtl || row.agentAuthTtl * 1000 > now) &&
-        !(row.type === 'AgentInvocation' && row.state === 'FINISHED') &&
-        !(
-          ['Compose', 'QuorumEdit'].includes(row.type) &&
-          ['SUCCEEDED', 'FAILED', 'CANCELLED', 'APPLIED', 'REJECTED'].includes(row.state)
-        ),
-    )
+    .filter((row) => isMaterialAuthInventoryRow(row, now))
     .map((row) => {
       const parent = executions.get(row.executionId);
       const binding =

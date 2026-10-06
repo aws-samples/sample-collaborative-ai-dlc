@@ -38,6 +38,27 @@ export const scopeContainsRow = (scope, row) =>
   scope.source === 'platform' ||
   inventoryScopes(row).some((candidate) => authScopeKey(candidate).pk === authScopeKey(scope).pk);
 
+// Terminal executions remain relevant because they can be rewound with the same
+// pinned binding. Finished invocations and auxiliary operations cannot resume.
+export const isMaterialAuthInventoryRow = (row, now = Date.now()) =>
+  [
+    'Execution',
+    'AgentConnectionHead',
+    'AgentInvocation',
+    'AgentSelection',
+    'EnvironmentRevision',
+    'Space',
+    'CredentialScope',
+    'Compose',
+    'QuorumEdit',
+  ].includes(row.type) &&
+  (!row.agentAuthTtl || row.agentAuthTtl * 1000 > now) &&
+  !(row.type === 'AgentInvocation' && row.state === 'FINISHED') &&
+  !(
+    ['Compose', 'QuorumEdit'].includes(row.type) &&
+    ['SUCCEEDED', 'FAILED', 'CANCELLED', 'APPLIED', 'REJECTED'].includes(row.state)
+  );
+
 // References contain no copied execution state. Queries re-read the authoritative
 // row and check ownership again, including references left by a changed binding.
 export const inventoryReferenceWrites = (tableName, row) => {

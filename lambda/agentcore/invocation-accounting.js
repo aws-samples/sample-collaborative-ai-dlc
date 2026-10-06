@@ -136,17 +136,25 @@ export const accountCredentialInvocation = async ({
     stopped = true;
     clearInterval(timer);
     await pending;
+    const agentAuthTtl = Math.floor(now() / 1000) + 86400;
     await ddb.send(
-      new UpdateCommand({
-        TableName: tableName,
-        Key,
-        UpdateExpression: 'SET #state = :state, completedAt = :now, agentAuthTtl = :ttl',
-        ExpressionAttributeNames: { '#state': 'state' },
-        ExpressionAttributeValues: {
-          ':state': 'FINISHED',
-          ':now': stamp(),
-          ':ttl': Math.floor(now() / 1000) + 86400,
-        },
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: tableName,
+              Key,
+              UpdateExpression: 'SET #state = :state, completedAt = :now, agentAuthTtl = :ttl',
+              ExpressionAttributeNames: { '#state': 'state' },
+              ExpressionAttributeValues: {
+                ':state': 'FINISHED',
+                ':now': stamp(),
+                ':ttl': agentAuthTtl,
+              },
+            },
+          },
+          ...inventoryReferenceWrites(tableName, { ...invocation, agentAuthTtl }),
+        ],
       }),
     );
   };

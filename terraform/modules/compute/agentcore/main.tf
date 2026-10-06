@@ -398,7 +398,8 @@ resource "aws_iam_role_policy" "agentcore" {
           ]
         },
         {
-          # Only the broker may assume inference roles; the runtime receives leased credentials.
+          # General runtime hardening: application credentials cannot assume another role.
+          # Credential acquisition belongs to the broker.
           Effect   = "Deny"
           Action   = ["sts:AssumeRole"]
           Resource = "*"

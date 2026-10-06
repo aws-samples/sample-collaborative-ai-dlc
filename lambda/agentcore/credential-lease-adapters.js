@@ -90,7 +90,7 @@ export const prepareCredentialLeases = async ({
               if (!lease.renewal) return { binding, lease };
               const response = await broker({
                 action: lease.renewal.action ?? 'resolve-agent-credentials',
-                [lease.renewal.tokenField ?? 'grant']: lease.renewal.grant,
+                grant: lease.renewal.grant,
               });
               if (
                 response.purpose !== context.purpose ||

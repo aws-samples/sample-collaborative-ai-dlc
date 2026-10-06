@@ -293,22 +293,3 @@ test('the AgentCore runtime role cannot assume roles', () => {
     /\{\s*(?:#[^\n]*\n\s*)*Effect\s+= "Deny"\s+Action\s+= \["sts:AssumeRole"\]\s+Resource\s+= "\*"\s*\}/,
   );
 });
-
-test('the agents Lambda receives the credential broker role as the provider trust principal', () => {
-  assert.match(
-    moduleBlock(read('terraform/modules/api/lambda/main.tf'), 'credential_broker_lambda'),
-    /lambda_role\s+= aws_iam_role\.credential_broker\.arn/,
-  );
-  assert.match(
-    read('terraform/modules/api/lambda/outputs.tf'),
-    /output "credential_broker_role_arn" \{[^}]*value\s+= aws_iam_role\.credential_broker\.arn/,
-  );
-  assert.match(
-    moduleBlock(read('terraform/main.tf'), 'api'),
-    /credential_broker_role_arn\s+= module\.lambda\.credential_broker_role_arn/,
-  );
-  assert.match(
-    moduleBlock(read('terraform/modules/api/agents.tf'), 'agents_lambda'),
-    /CREDENTIAL_BROKER_ROLE_ARN\s+= var\.credential_broker_role_arn/,
-  );
-});

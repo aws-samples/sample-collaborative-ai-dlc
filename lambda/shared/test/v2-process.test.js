@@ -707,6 +707,7 @@ describe('createProcessStore', () => {
       pk: 'EXEC#e1',
       sk: `EVENT#T#${String(i).padStart(2, '0')}`,
     }));
+    ddb.on(GetCommand).resolves({});
     ddb.on(QueryCommand).resolves({ Items: keys });
     ddb.on(BatchWriteCommand).resolves({ UnprocessedItems: {} });
     const { deleted } = await store.deleteExecution('e1');
@@ -725,6 +726,14 @@ describe('createProcessStore', () => {
   });
 
   it('deleteExecution retries UnprocessedItems until the batch fully lands', async () => {
+    ddb.on(GetCommand).resolves({
+      Item: {
+        pk: 'EXEC#e1',
+        sk: 'META',
+        projectId: 'p1',
+        credentialBinding: { provider: 'bedrock', source: 'user', userId: 'u1' },
+      },
+    });
     ddb.on(QueryCommand).resolves({
       Items: [
         { pk: 'EXEC#e1', sk: 'META' },
@@ -741,9 +750,21 @@ describe('createProcessStore', () => {
     const batches = ddb.commandCalls(BatchWriteCommand).map((c) => c.args[0].input);
     expect(batches).toHaveLength(2);
     expect(batches[1].RequestItems['v2-proc']).toEqual(leftover);
+    const transaction = ddb.commandCalls(TransactWriteCommand).at(-1).args[0].input;
+    expect(transaction.TransactItems.map(({ Delete }) => Delete.Key.pk)).toEqual([
+      'EXEC#e1',
+      'AGENTAUTH#SCOPE#space#p1',
+      'AGENTAUTH#SCOPE#user#u1',
+    ]);
+    expect(
+      batches
+        .flatMap((batch) => batch.RequestItems['v2-proc'])
+        .every(({ DeleteRequest }) => DeleteRequest.Key.sk !== 'META'),
+    ).toBe(true);
   });
 
   it('deleteExecution is a no-op on an empty partition', async () => {
+    ddb.on(GetCommand).resolves({});
     ddb.on(QueryCommand).resolves({ Items: [] });
     const { deleted } = await store.deleteExecution('gone');
     expect(deleted).toBe(0);

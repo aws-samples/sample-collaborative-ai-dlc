@@ -102,8 +102,7 @@ const harness = ({ registry, tokenClient, ssmSend } = {}) => {
     ddbClient,
     ssmClient,
     authorize,
-    renew: (token, extra) =>
-      authorize({ action: FIXTURE_RENEWAL.action, [FIXTURE_RENEWAL.tokenField]: token }, extra),
+    renew: (token, extra) => authorize({ action: FIXTURE_RENEWAL.action, grant: token }, extra),
     grant: (purpose, bindings = [binding]) =>
       signAgentCredentialGrant(
         { purpose, projectId: 'p', executionId: purpose === 'execution' ? 'e' : null, bindings },
@@ -127,13 +126,12 @@ describe('host-owned renewal and lease composition', () => {
 
     const token = fixture.lease.renewal.grant;
     expect(fixture).toEqual({
-      testRenewalToken: token,
       lease: {
         version: 1,
         material: { type: FIXTURE_MATERIAL_TYPE, token: 'inert-token' },
         expiresAt: START + 15 * MINUTE,
         authorizationExpiresAt: CEILING,
-        renewal: { grant: token, action: FIXTURE_RENEWAL.action, tokenField: 'grant' },
+        renewal: { grant: token, action: FIXTURE_RENEWAL.action },
       },
       binding,
     });
@@ -170,13 +168,12 @@ describe('host-owned renewal and lease composition', () => {
     expect(renewed).toMatchObject({ purpose: 'execution', projectId: 'p', executionId: 'e' });
     expect(renewed.credentials).toEqual([
       {
-        testRenewalToken: token,
         lease: {
           version: 1,
           material: { type: FIXTURE_MATERIAL_TYPE, token: 'inert-token' },
           expiresAt: START + 35 * MINUTE,
           authorizationExpiresAt: CEILING,
-          renewal: { grant: token, action: FIXTURE_RENEWAL.action, tokenField: 'grant' },
+          renewal: { grant: token, action: FIXTURE_RENEWAL.action },
         },
         binding,
       },
@@ -289,7 +286,6 @@ describe('connection verification', () => {
       executionId: null,
       credentials: [
         {
-          testRenewalToken: null,
           lease: {
             version: 1,
             material: { type: FIXTURE_MATERIAL_TYPE, token: 'inert-token' },
@@ -389,7 +385,6 @@ describe('adapter results', () => {
     const h = withAdapter(async () => ({ material: null }));
     expect((await h.authorize({ grant: h.grant('execution') })).credentials).toEqual([
       {
-        testRenewalToken: null,
         lease: {
           version: 1,
           material: null,
@@ -429,16 +424,6 @@ describe('adapter results', () => {
       code: 'AGENT_AUTH_LEASE_INVALID',
     });
   });
-
-  it.each(['binding', 'lease', 'value', 'error'])(
-    'refuses a legacyResponse that sets %s',
-    async (field) => {
-      const h = withProvider({ legacyResponse: () => ({ [field]: 'provider-value' }) });
-      await expect(h.authorize({ grant: h.grant('execution') })).rejects.toMatchObject({
-        code: 'AGENT_AUTH_LEASE_INVALID',
-      });
-    },
-  );
 });
 
 describe('provider error scoping', () => {
@@ -599,7 +584,12 @@ describe('broker provider registry', () => {
       /renewal lifetime/,
     ],
     ['a zero renewal lifetime', [second(renewal({ ttlSeconds: 0 }))], /renewal lifetime/],
-    ['an unsupported token field', [second(renewal({ tokenField: 'token' }))], /token field/],
+    [
+      'a provider-specific token field',
+      [second(renewal({ tokenField: 'renewalToken' }))],
+      /invalid renewal policy/,
+    ],
+    ['a legacy response hook', [second({ legacyResponse: () => ({}) })], /unsupported fields/],
     [
       'an unknown mechanism',
       [second({ adapters: { 'litellm:password': async () => ({}) } })],

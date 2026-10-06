@@ -324,6 +324,16 @@ stop_retired_agent_tasks "$TFVARS_FILE"
 
 echo "Applying changes..."
 terraform apply "$PLAN_FILE"
+
+# All selection, execution and invocation writers are deployed before this
+# additive backfill. It also writes the readiness marker on fresh installations.
+# Initialization is idempotent and independent of the optional baseline reseed.
+echo "Initializing scoped agent authentication inventory..."
+INVENTORY_REGION="$(terraform output -raw aws_region)"
+INVENTORY_TABLE="$(terraform output -raw v2_executions_table_name)"
+AWS_REGION="$INVENTORY_REGION" V2_PROCESS_TABLE="$INVENTORY_TABLE" \
+    node "$SCRIPT_DIR/initialize-agent-auth-inventory.mjs"
+
 if [[ "${AIDLC_KEEP_PLAN:-0}" != "1" ]]; then
     rm -f "$PLAN_FILE"
 fi

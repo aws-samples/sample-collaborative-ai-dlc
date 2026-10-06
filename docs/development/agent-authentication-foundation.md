@@ -1,7 +1,7 @@
 # Agent authentication foundation
 
-This document records the foundation contracts and operations described in
-[the accepted implementation plan](agent-authentication-foundation-plan.md).
+This document records the authentication foundation contracts, provider extension
+points and deployment operations.
 
 ## Delivery and upgrade
 
@@ -296,8 +296,10 @@ return a space to inheritance, and `connection-draft` for a mode whose provider
 declares a draft. The service mints the reviewed `connection-create` itself; key
 changes are reviewed through the credential routes. Provider setup steps use
 `POST /agents/authentication-setup` with `{ mode, action, projectId? }`, for platform
-administrators only. Storage applies domain actions and does not interpret provider
-setup operations.
+administrators only. The pure `agent-auth-actions.js` planner decides policy transitions and activation
+writes. `agent-auth-review-repository.js` executes them and owns review locking;
+`agent-auth-inventory-repository.js` owns discovery and backfill. The connection
+repository composes these stores behind its existing public interface.
 
 ## Scoped reviews
 
@@ -313,8 +315,17 @@ invocation accounting, and execution binding writes update references atomically
 References are discovery metadata; existing execution records and credential
 bindings remain authoritative.
 
-Existing installations require one additive index initialization after deploying
-the new writers:
+`scripts/deploy-terraform.sh` automatically initializes the additive scope index
+on fresh installs and upgrades, after Terraform has deployed all writers. The
+managed installer and deployment workflow use that script. Initialization runs
+even with `--skip-seed`, is idempotent once the readiness marker exists, and a
+failure fails the deployment before it reports success.
+
+The initializer uses the deployment principal, which needs `dynamodb:GetItem`,
+`dynamodb:Scan`, `dynamodb:PutItem` and `dynamodb:ConditionCheckItem` on the process
+table. It reads non-secret records and writes references and the readiness marker.
+
+If applying Terraform directly, initialize the index after the complete apply:
 
 ```sh
 AWS_PROFILE=solution AWS_REGION=eu-central-1 \
@@ -322,12 +333,17 @@ AWS_PROFILE=solution AWS_REGION=eu-central-1 \
   node scripts/initialize-agent-auth-inventory.mjs
 ```
 
-This operator command indexes historical records without changing their bindings
+Initialization indexes historical records without changing their bindings
 or secrets. Scoped reviews fail closed until the initialization marker exists;
 there is no fallback to a global scan from a personal request. Existing runtime
 images do not gain new accounting behavior until republished. Scoped enumeration
-has a 5,000-record safety limit and reports an error instead of silently truncating
-an impact review. Probe deployments with fresh AgentCore session IDs.
+has a 5,000-record safety limit applied to material records, after re-reading
+the targets and excluding expired, finished and deleted work. Invocation completion
+sets the same TTL on the invocation and its scope references in one transaction.
+Succeeded, failed and cancelled executions remain rewindable and retain their
+references; permanent intent deletion removes them atomically with execution META.
+Historical dangling references do not consume the review limit. Probe deployments
+with fresh AgentCore session IDs.
 
 ## Adding an authentication provider
 
@@ -350,7 +366,7 @@ names out of those files as well.
 2. **Broker provider** (`lambda/credential-broker/<id>-provider.js`). It declares an
    `id` and `adapters` keyed `'<backend>:<mechanism>'`, and optionally `renewal`,
    `verification`, `isolateCapabilityFailures`, `errorCodes`, `classifyError`,
-   `legacyResponse` and `createDependencies`. An adapter receives
+   `createDependencies`. An adapter receives
    `{ ssm, connection, binding, claims, request, deps }`, where `request` is
    `resolve`, `renew` or `verify`, and returns `{ material, expiresAt }`. Create SDK
    clients in `createDependencies`, which runs once on first use, never at import.
@@ -379,8 +395,9 @@ names out of those files as well.
 
 The hosts enforce these contracts:
 
-- **Renewal policy.** `renewal` declares `action`, `tokenField` (`grant` or
-  `renewalToken`), `audience` and `ttlSeconds`. The action must be new to the
+- **Renewal policy.** `renewal` declares `action`, `audience` and `ttlSeconds`.
+  Renewal requests use the single neutral `grant` field; leases expose that token
+  in `renewal.grant`. The action must be new to the
   broker, the audience distinct from the grant's and every other provider's, and
   the lifetime 1 to 86,400 seconds. The host issues the token on resolve, accepts
   the same token on renew, and fixes the authorization deadline at grant issue plus
@@ -420,14 +437,12 @@ lockfile has no `node_modules/@aws-sdk/<client>/node_modules/@aws-sdk/core` entr
 for the new client: a nested core ships a second SDK core in the bundle. The
 runtime image installs only `lambda/agentcore/package.json`.
 
-Providers add no Terraform. The agents Lambda receives the broker principal as
-`CREDENTIAL_BROKER_ROLE_ARN` for trust policies, and the runtime role denies
-`sts:AssumeRole`, so only the broker assumes provider roles. Never replace or
-rename `aws_iam_role.credential_broker`: provider inference roles trust its unique
-principal ID, which a same-name replacement does not keep. Never manage its inline
-policies exclusively either. The IAM provider's setup attaches the broker's
-cross-account `sts:AssumeRole` policy outside Terraform, and it must survive every
-apply.
+The runtime role denies `sts:AssumeRole` as general hardening: application
+credentials cannot assume another role. Providers own any additional deployment
+wiring they require, including exposing the broker principal for IAM trust setup.
+Published Keys runtimes retain their existing top-level `value` response. There
+is no deployed IAM wire contract on `main`; any compatibility for IAM review
+environments belongs to the IAM provider change.
 
 LiteLLM uses the same roots and contracts. It still needs foundation work that no
 provider has needed yet:
