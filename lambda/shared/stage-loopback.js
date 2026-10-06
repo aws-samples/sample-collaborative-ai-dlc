@@ -16,7 +16,7 @@
 // release already resolved, and the capability that enables the offer is a
 // registry entry keyed on the closure's runtime files (aidlc-capabilities.js).
 
-import { PLAN_APPROVAL_ARTIFACT } from './aidlc-capabilities.js';
+import { LOOP_BACK_RESULTS_ARTIFACT, PLAN_APPROVAL_ARTIFACT } from './aidlc-capabilities.js';
 import { LOOP_BACK_OPTION } from './gate-answer.js';
 
 // The registry key whose presence turns the offer on. Release mode alone is not
@@ -33,8 +33,13 @@ const LOOP_BACK_LIMIT = 3;
 // the cap.
 const LOOP_BACK_RECORDED_EVENT = 'v2.loopback.recorded';
 
+// The authored output slugs of a stage, read from either shape the two call sites
+// hold: the PLAN instance (`outputArtifacts`, at the gate) and the CATALOG block
+// (`produces`, while the policy is resolved). Both are the same authored list.
 const outputArtifactTypesOf = (stage) =>
-  (stage?.outputArtifacts ?? []).map((output) => output?.artifact ?? output).filter(Boolean);
+  (stage?.outputArtifacts ?? stage?.produces ?? [])
+    .map((output) => output?.artifact ?? output)
+    .filter(Boolean);
 
 /**
  * Whether this catalog proves it has a construction loop-back at all. Consumed
@@ -42,6 +47,20 @@ const outputArtifactTypesOf = (stage) =>
  * re-deriving capability presence.
  */
 const loopBackApplies = ({ capabilities = {} } = {}) => capabilities[LOOP_BACK_CAPABILITY] === true;
+
+/**
+ * Is this stage the one the release lets RECOMMEND a loop-back — upstream's
+ * build-and-test?
+ *
+ * `loopBackApplies` says the RELEASE has a loop-back; this says WHO may offer one.
+ * Both are required, and adjacency cannot substitute for either: any stage that
+ * happens to run after code generation would otherwise qualify. Read off the
+ * authored `build-test-results` output for the same reason `isCodeGenerationStage`
+ * reads `code-generation-plan` — upstream states the recommender in protocol prose,
+ * and mapping a new stage-block field would move the 2.3.3 block digest.
+ */
+const isLoopBackRecommenderStage = (stage) =>
+  outputArtifactTypesOf(stage).includes(LOOP_BACK_RESULTS_ARTIFACT);
 
 /**
  * Is this stage the one the release marks as code generation — the stage a
@@ -94,7 +113,8 @@ const loopBackTarget = ({ segmentStages = [], currentIndex = 0, skippedStageIds 
  *   the gate says so instead of silently withholding the option.
  * - `{ offered: false, unavailable: true, reason }`: the agent recommended it but
  *   this stage has no linear code-generation stage to go back to; the gate says so.
- * - `{ offered: false }`: nothing to show.
+ * - `{ offered: false }`: nothing to show — including when the stage asking is not
+ *   the release's recommender, which no amount of stage order can make it.
  */
 const resolveLoopBackOffer = ({
   stage = null,
@@ -105,6 +125,7 @@ const resolveLoopBackOffer = ({
   loopBackCount = 0,
 } = {}) => {
   if (stage?.policy?.loopBack !== 'human-offered' || !recommendation) return { offered: false };
+  if (!isLoopBackRecommenderStage(stage)) return { offered: false };
   const reason = String(recommendation).slice(0, 300);
   const target = loopBackTarget({
     segmentStages,
@@ -129,6 +150,7 @@ export {
   LOOP_BACK_OPTION,
   LOOP_BACK_RECORDED_EVENT,
   isCodeGenerationStage,
+  isLoopBackRecommenderStage,
   loopBackApplies,
   loopBackTarget,
   resolveLoopBackOffer,
@@ -140,6 +162,7 @@ export default {
   LOOP_BACK_OPTION,
   LOOP_BACK_RECORDED_EVENT,
   isCodeGenerationStage,
+  isLoopBackRecommenderStage,
   loopBackApplies,
   loopBackTarget,
   resolveLoopBackOffer,

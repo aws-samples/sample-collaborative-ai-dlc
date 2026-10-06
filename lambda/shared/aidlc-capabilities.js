@@ -74,6 +74,15 @@ const UNHANDLED = Object.freeze({ handling: 'unsupported', handler: null });
 // `planApprovalApplies`.
 const PLAN_APPROVAL_ARTIFACT = 'code-generation-plan';
 
+// The version-agnostic marker for the ONE stage that may recommend a
+// Build-and-Test loop-back — see `isLoopBackRecommenderStage` in stage-loopback.js.
+// Upstream names that stage in construction-protocol prose, which no frontmatter
+// field carries, so the authored `build-test-results` output stands in for it: it is
+// produced by build-and-test and by no other stage in every release the registry
+// covers, and reading an authored output needs no version string and no new
+// stage-block field.
+const LOOP_BACK_RESULTS_ARTIFACT = 'build-test-results';
+
 // Upstream's per-stage questions file (`<stage>-questions`, listed in `produces:`
 // from 2.9.0 on). Upstream asks a stage's clarifying questions by writing that
 // file and reading the answers back from it; the platform asks the same
@@ -389,10 +398,11 @@ const AIDLC_CAPABILITIES = Object.freeze([
     defaultWhenAbsent: null,
     capabilityPresentIf:
       'runtimeFilePresent:core/aidlc-common/protocols/stage-protocol-construction.md',
-    // The target is derived from the plan, never from a stage id: the code
-    // generation stage immediately before (see `stage-loopback.js`, which reads
-    // the same output slug as PLAN_APPROVAL).
-    appliesTo: `in-scope stage immediately before the current one, with workspaceRequires === true || produces includes ${PLAN_APPROVAL_ARTIFACT}`,
+    // Neither end of the jump is a stage id. The RECOMMENDER is the stage that
+    // authors `build-test-results` (see `isLoopBackRecommenderStage`); the TARGET
+    // is the code generation stage immediately before it (see `stage-loopback.js`,
+    // which reads the same output slug as PLAN_APPROVAL).
+    appliesTo: `recommender: stage.produces includes ${LOOP_BACK_RESULTS_ARTIFACT}; target: in-scope stage immediately before it, with workspaceRequires === true || produces includes ${PLAN_APPROVAL_ARTIFACT}`,
     note: 'Upstream loops build-and-test back to code generation AUTONOMOUSLY, up to three times per intent. The platform reproduces the bound and the routing but OFFERS the jump to the human at the validation gate build-and-test already has: the agent records a recommendation through `emit_stage_note`\u2019s `loopBackRecommended` field (written by the platform onto the stage row, never parsed from prose), and the gate then carries a third `loop-back` option naming the code-generation stage immediately before. Choosing it resets both stage rows, which bumps their attempt and makes every prior plan-approval and review receipt invisible, and re-runs code generation with the reason and the reviewer\u2019s feedback. At three recorded loop-backs the option is withheld and the gate says so. `approximated`, not `native`: the bound is faithful, the autonomy is deliberately not. Residual: in scopes that run code generation per unit (classic, enterprise, feature, mvp, workshop) build-and-test has no linear target, so the gate shows the recommendation as a note and those scopes keep the rewind API.',
   }),
 ]);
@@ -631,6 +641,7 @@ export {
   AIDLC_CAPABILITIES,
   FIELD_FIDELITY,
   FRONTMATTER_ENUMS,
+  LOOP_BACK_RESULTS_ARTIFACT,
   PLAN_APPROVAL_ARTIFACT,
   POLICY_ENUMS,
   QUESTION_CHANNEL_OUTPUT_SUFFIX,
@@ -650,6 +661,7 @@ export default {
   AIDLC_CAPABILITIES,
   FIELD_FIDELITY,
   FRONTMATTER_ENUMS,
+  LOOP_BACK_RESULTS_ARTIFACT,
   PLAN_APPROVAL_ARTIFACT,
   POLICY_ENUMS,
   QUESTION_CHANNEL_OUTPUT_SUFFIX,

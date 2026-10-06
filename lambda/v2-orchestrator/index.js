@@ -1482,7 +1482,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                       stage,
                       segmentStages: segment.stages,
                       currentIndex: stageIdx,
-                      skippedStageIds: dynamicSkipIds,
+                      // The same union the forward walk and the gate's skip
+                      // targets read. Intent-level skips are no less skipped than
+                      // the ones a gate flipped, and a target derivation that saw
+                      // only the dynamic ones could name a stage this run never
+                      // enters.
+                      skippedStageIds: [...intentSkipIds, ...dynamicSkipIds],
                       recommendation: row?.loopBackRecommendation ?? null,
                       loopBackCount: Number(execution.loopBackCount ?? 0),
                     });

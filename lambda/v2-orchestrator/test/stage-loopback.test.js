@@ -659,3 +659,25 @@ describe('loop-back recommendation at the cap', () => {
     expect(events().some((e) => e.type === 'v2.stage.validated')).toBe(true);
   });
 });
+
+// The forward walk and the gate's skip targets both read
+// `[...intentSkipIds, ...dynamicSkipIds]`; the target derivation read only the
+// dynamic half, so the two disagreed about what this run skips. A target the run
+// never enters must not be offered, whichever half skipped it.
+describe('a target skipped at the intent level', () => {
+  it('is not offered, exactly as a gate-flipped skip is not', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      skipStageIds: ['code-generation'],
+      loopBackCount: deps.store.loopBackState.count,
+    }));
+    recommending.add('build-and-test');
+    await run();
+    const [gate] = gates();
+    expect(gate.options).toEqual(['approve', 'request-changes']);
+    expect(gate).not.toHaveProperty('loopBackTarget');
+    expect(gate.prompt).toContain(REASON);
+    expect(gate.prompt).toContain('Loop-back is not offered here');
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+  });
+});

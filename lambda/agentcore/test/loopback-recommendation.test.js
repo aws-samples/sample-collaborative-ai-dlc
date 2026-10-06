@@ -6,9 +6,37 @@
 // The load-bearing invariant: the gate reads a field only the platform writes,
 // never the agent's prose, and nothing outside release mode writes it at all.
 
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
+import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
+import { resolveCapabilities } from '../../shared/aidlc-capabilities.js';
+import { buildFromFiles } from '../../shared/block-mappers.js';
+import { resolveStagePolicy } from '../../shared/v2-execution-plan.js';
 import { createProcessBridge } from '../mcp/process-bridge.js';
 import { buildToolHandlers, registerTools, toolSchemas } from '../mcp/server.js';
+
+// The stage blocks and capabilities a pinned release resolves, so the tool surface
+// is asserted against the policy the plan really writes rather than a hand-made one.
+const releasePolicyInputs = (profileId) => {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL(`../../shared/test/fixtures/aidlc-compatibility/${profileId}.json`, import.meta.url),
+      'utf8',
+    ),
+  );
+  const { blocks } = buildFromFiles(filesFromCompatibilityFixture({ profileId, fixture }));
+  const byType = (type) =>
+    Object.fromEntries(
+      blocks.filter((block) => block.type === type && block.id).map((block) => [block.id, block]),
+    );
+  const capabilities = resolveCapabilities({
+    ...Object.fromEntries(
+      ['STAGE', 'SCOPE'].map((type) => [`${type.toLowerCase()}sById`, byType(type)]),
+    ),
+    runtimeFilePaths: fixture.runtimeFiles.map((file) => file.path),
+  });
+  return { capabilities, scopeBlock: byType('SCOPE').bugfix, stagesById: byType('STAGE') };
+};
 
 const fakeStore = () => {
   const events = [];
@@ -129,6 +157,29 @@ describe('the tool surface the policy decides', () => {
     const withCap = toolSchemas(zod, { loopBack: 'human-offered' }).emit_stage_note;
     expect(Object.keys(withCap.shape)).toEqual(['summary', 'type', 'loopBackRecommended']);
     expect(withCap.description).toContain('loopBackRecommended');
+  });
+
+  // The field reaches an agent only through this policy key, which the plan now
+  // resolves for the recommending stage alone. A stage that merely runs after code
+  // generation is told nothing about recommending a loop-back.
+  it('withholds the field from every stage the release does not declare', () => {
+    const { capabilities, scopeBlock, stagesById } = releasePolicyInputs('v2.9.0');
+    const exposed = [];
+    const instructed = [];
+    for (const [stageId, stage] of Object.entries(stagesById)) {
+      const policy = resolveStagePolicy({
+        scopeBlock,
+        stage,
+        stageId,
+        errors: [],
+        capabilities,
+      });
+      const tool = toolSchemas(zod, policy).emit_stage_note;
+      if (Object.keys(tool.shape).includes('loopBackRecommended')) exposed.push(stageId);
+      if (tool.description.includes('loopBackRecommended')) instructed.push(stageId);
+    }
+    expect(exposed).toEqual(['build-and-test']);
+    expect(instructed).toEqual(['build-and-test']);
   });
 
   it('keeps the 2.3.3-era and unpinned tool byte-identical', () => {

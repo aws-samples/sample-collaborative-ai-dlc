@@ -236,7 +236,7 @@ const resolveTopology = (stage, library, releaseId) =>
     env: {},
   });
 
-const loopBackOfferFor = ({ stage, stages, profileId }) => {
+const loopBackOfferFor = ({ stage, stages, profileId, skippedStageIds = [] }) => {
   const segment = planSegments(stages).find((item) =>
     item.stages.some((candidate) => candidate.stageId === stage.stageId),
   );
@@ -246,6 +246,7 @@ const loopBackOfferFor = ({ stage, stages, profileId }) => {
     stage,
     segmentStages: segment.stages,
     currentIndex,
+    skippedStageIds,
     recommendation: `synthetic recommendation for ${profileId}`,
     loopBackCount: 0,
   });
@@ -518,5 +519,55 @@ describe('release coexistence matrix', () => {
     expect(
       failures.map(({ profileId, scope, error }) => `${profileId}/${scope}: ${error.message}`),
     ).toEqual([]);
+  });
+
+  // Skipping build-and-test used to hand its offer to whatever stage then became
+  // the one after code generation: the rule read stage ORDER and never asked which
+  // stage was recommending. The release declares the recommender (the stage that
+  // authors `build-test-results`), so no later stage inherits the jump.
+  it('offers the loop-back only from the stage the release declares, never from its successor', async () => {
+    const profileId = 'v2.9.0';
+    const { workflow, releaseLibrary } = await fixtureContext(profileId);
+    const skippedStageIds = ['build-and-test'];
+    const inherited = [];
+    const declaredWithoutPolicy = [];
+
+    for (const scope of ['bugfix', 'express', 'refactor', 'security-patch']) {
+      const { plan, valid } = buildExecutionPlan({ workflow, scope, library: releaseLibrary });
+      expect(valid, `${profileId}/${scope} plan is invalid`).toBe(true);
+      const recommenders = plan.stages.filter(
+        (stage) => stage.policy?.loopBack === 'human-offered',
+      );
+      // The policy key is what opens the gate option AND what puts
+      // `loopBackRecommended` on the agent's `emit_stage_note`, so exactly one
+      // stage may carry it.
+      expect(recommenders.map((stage) => stage.stageId)).toEqual(['build-and-test']);
+      if (!plan.stages.some((stage) => stage.stageId === 'build-and-test')) {
+        declaredWithoutPolicy.push(`${profileId}/${scope}`);
+      }
+
+      for (const stage of plan.stages) {
+        if (stage.stageId === 'build-and-test') continue;
+        const offer = loopBackOfferFor({ stage, stages: plan.stages, profileId, skippedStageIds });
+        if (offer.offered) {
+          inherited.push(`${profileId}/${scope}/${stage.stageId}→${offer.target.stageId}`);
+        }
+        // Forcing the policy on proves the refusal is the recommender rule and
+        // not just the policy's absence: a plan written by an older build, or a
+        // stage whose policy was resolved before this rule, must still be refused.
+        const forced = loopBackOfferFor({
+          stage: { ...stage, policy: { ...stage.policy, loopBack: 'human-offered' } },
+          stages: plan.stages,
+          profileId,
+          skippedStageIds,
+        });
+        expect(forced, `${profileId}/${scope}/${stage.stageId} forced policy`).toEqual({
+          offered: false,
+        });
+      }
+    }
+
+    expect(inherited).toEqual([]);
+    expect(declaredWithoutPolicy).toEqual([]);
   });
 });
