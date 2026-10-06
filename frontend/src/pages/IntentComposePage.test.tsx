@@ -366,10 +366,10 @@ describe('IntentComposePage', () => {
     expect(screen.getByTestId('compose-start')).toBeDisabled();
     expect(screen.getByTestId('start-intent')).toBeDisabled();
 
-    await user.click(screen.getByTestId('grid-editor-toggle'));
-    const designBox = screen
-      .getByTestId('grid-stage-design')
-      .querySelector('input') as HTMLInputElement;
+    await user.click(await screen.findByTestId('grid-editor-toggle'));
+    const designBox = (await screen.findByTestId('grid-stage-design')).querySelector(
+      'input',
+    ) as HTMLInputElement;
     expect(designBox).toBeDisabled();
   });
 
