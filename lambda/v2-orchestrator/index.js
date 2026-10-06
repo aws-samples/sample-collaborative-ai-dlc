@@ -57,6 +57,8 @@ import {
   LOOP_BACK_LIMIT,
   LOOP_BACK_OPTION,
   LOOP_BACK_RECORDED_EVENT,
+  loopBackGateFields,
+  loopBackNote,
   resolveLoopBackOffer,
 } from '../shared/stage-loopback.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
@@ -1552,9 +1554,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             ...(gateRecomposeTargets.length ? { recomposeTargets: gateRecomposeTargets } : {}),
             ...(gateFindings.length ? { findings: gateFindings } : {}),
             ...(learningsRitual ? { learningsRitual: true } : {}),
-            ...(loopBack.offered
-              ? { loopBackTarget: loopBack.target.stageId, loopBackReason: loopBack.reason }
-              : {}),
+            // The reason, the outcome and its one-sentence explanation, for every
+            // outcome the agent recommended — not only the one that offers the
+            // option. `loopBackTarget` stays offered-only: the answer endpoint and
+            // the container read it as the engine's offer.
+            ...loopBackGateFields({ loopBack, stageId: stage.stageId }),
           });
           // The gate holds the offer now, so the next validation round starts
           // without a recommendation unless the agent records a new one.
@@ -2556,11 +2560,9 @@ const validationPrompt = ({
             : '## The agent recommends going back to the code',
           '',
           `Reason: ${loopBack.reason}`,
-          loopBack.offered
-            ? `Choose loop-back to send this work back to ${loopBack.target.stageId}. ${loopBack.target.stageId} and ${stage.stageId} re-run from scratch with your feedback, and their prior plan approvals and reviews stop counting. ${loopBack.remaining} of ${LOOP_BACK_LIMIT} loop-backs remain for this intent.`
-            : loopBack.atCap
-              ? `This intent has already used all ${loopBack.spent} loop-backs, so loop-back is not offered again. Choose request-changes to have this stage re-run with your feedback, or rewind to ${loopBack.target.stageId} yourself from the intent view.`
-              : 'Loop-back is not offered here: it goes back only to a code-generation stage that runs immediately before this one in the same linear part of the run. Choose request-changes, or rewind to code generation yourself from the intent view.',
+          // The same sentence the gate row carries, so the prompt and the review
+          // UI cannot drift apart.
+          loopBackNote({ loopBack, stageId: stage.stageId }),
         ]
       : []),
   ].join('\n');

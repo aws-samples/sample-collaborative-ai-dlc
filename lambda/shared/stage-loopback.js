@@ -144,6 +144,69 @@ const resolveLoopBackOffer = ({
   };
 };
 
+/**
+ * The offer's outcome as one name the API and the UI can branch on, instead of
+ * re-deriving it from the flag triple.
+ */
+const loopBackStatus = (loopBack) =>
+  loopBack?.offered
+    ? 'offered'
+    : loopBack?.atCap
+      ? 'at-cap'
+      : loopBack?.unavailable
+        ? 'unavailable'
+        : null;
+
+/**
+ * What a reviewer needs to read, in one sentence, for each outcome. Lives here so
+ * the gate prompt and the gate row say the SAME thing: the prompt is prose nobody
+ * renders, and a reviewer who never sees the prompt still has to learn why the
+ * option is absent.
+ */
+const loopBackNote = ({ loopBack, stageId }) => {
+  if (!loopBack?.reason) return null;
+  if (loopBack.offered) {
+    return (
+      `Choose loop-back to send this work back to ${loopBack.target.stageId}. ` +
+      `${loopBack.target.stageId} and ${stageId} re-run from scratch with your feedback, and ` +
+      `their prior plan approvals and reviews stop counting. ${loopBack.remaining} of ` +
+      `${LOOP_BACK_LIMIT} loop-backs remain for this intent.`
+    );
+  }
+  if (loopBack.atCap) {
+    return (
+      `This intent has already used all ${loopBack.spent} loop-backs, so loop-back is not ` +
+      `offered again. Choose request-changes to have this stage re-run with your feedback, or ` +
+      `rewind to ${loopBack.target.stageId} yourself from the intent view.`
+    );
+  }
+  return (
+    'Loop-back is not offered here: it goes back only to a code-generation stage that runs ' +
+    'immediately before this one in the same linear part of the run. Choose request-changes, ' +
+    'or rewind to code generation yourself from the intent view.'
+  );
+};
+
+/**
+ * The loop-back fields a validation gate row and its live broadcast carry.
+ *
+ * `loopBackTarget` is written ONLY when the option is offered: the answer endpoint
+ * and the container's resume bypass both read it as "the engine offered this jump",
+ * so an at-cap target would turn a refusal into an offer. The reason, the status
+ * and the note are written whenever there IS a recommendation, which is what makes
+ * the at-cap and no-target cases visible instead of silent.
+ */
+const loopBackGateFields = ({ loopBack, stageId }) => {
+  const status = loopBackStatus(loopBack);
+  if (!status || !loopBack?.reason) return {};
+  return {
+    ...(loopBack.offered ? { loopBackTarget: loopBack.target.stageId } : {}),
+    loopBackReason: loopBack.reason,
+    loopBackStatus: status,
+    loopBackNote: loopBackNote({ loopBack, stageId }),
+  };
+};
+
 export {
   LOOP_BACK_CAPABILITY,
   LOOP_BACK_LIMIT,
@@ -152,6 +215,9 @@ export {
   isCodeGenerationStage,
   isLoopBackRecommenderStage,
   loopBackApplies,
+  loopBackGateFields,
+  loopBackNote,
+  loopBackStatus,
   loopBackTarget,
   resolveLoopBackOffer,
 };
@@ -164,6 +230,9 @@ export default {
   isCodeGenerationStage,
   isLoopBackRecommenderStage,
   loopBackApplies,
+  loopBackGateFields,
+  loopBackNote,
+  loopBackStatus,
   loopBackTarget,
   resolveLoopBackOffer,
 };

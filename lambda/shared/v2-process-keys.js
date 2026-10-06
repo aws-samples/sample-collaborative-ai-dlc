@@ -758,6 +758,11 @@ const buildHumanTaskRow = ({
   loopBackTarget = undefined,
   // Why the agent recommended the loop-back (written with the target).
   loopBackReason = undefined,
+  // The offer rule's outcome ('offered' | 'at-cap' | 'unavailable') and that
+  // outcome in one sentence, so the review UI can state why the option is absent
+  // instead of showing nothing.
+  loopBackStatus = undefined,
+  loopBackNote = undefined,
   status = 'pending',
   now,
 }) => ({
@@ -781,6 +786,8 @@ const buildHumanTaskRow = ({
   ...(learningsRitual === undefined ? {} : { learningsRitual }),
   ...(loopBackTarget === undefined ? {} : { loopBackTarget }),
   ...(loopBackReason === undefined ? {} : { loopBackReason }),
+  ...(loopBackStatus === undefined ? {} : { loopBackStatus }),
+  ...(loopBackNote === undefined ? {} : { loopBackNote }),
   // The v1-shaped structured-questions payload (JSON) when kind==='question'.
   questions,
   answer: null,

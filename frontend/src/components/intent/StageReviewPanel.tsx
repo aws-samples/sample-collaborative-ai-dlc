@@ -323,6 +323,16 @@ export function StageReviewPanel({
   // code-generation stage it goes back to. Like request-changes it records as
   // rejected, with the reviewer's feedback, so the re-run is told why.
   const loopBackTarget = gateOptions.includes('loop-back') ? (gate.loopBackTarget ?? null) : null;
+  // The agent's own words, and the engine's verdict on them. Shown whenever the
+  // agent recommended a loop-back: when the option is offered the reason is what
+  // the reviewer is deciding on, and when it is withheld the note is the only
+  // explanation they get — the recommendation is cleared off the stage row as soon
+  // as this gate opens.
+  const loopBackReason = gate.loopBackReason ?? null;
+  const loopBackWithheld = Boolean(
+    gate.loopBackStatus && gate.loopBackStatus !== 'offered' && !loopBackTarget,
+  );
+  const loopBackNote = gate.loopBackNote ?? null;
   const gateFindings = gate.findings ?? [];
   const blockingFindingCount = gateFindings.filter((item) => item.severity === 'blocking').length;
   const canApprove = gateOptions.length === 0 || gateOptions.includes('approve');
@@ -822,9 +832,16 @@ export function StageReviewPanel({
           </div>
           {pending && loopBackTarget && (
             <p className="text-xs text-amber-600 dark:text-amber-500">
-              The agent recommends revising the generated code. Sending this back re-runs{' '}
+              The agent recommends revising the generated code
+              {loopBackReason ? `: ${loopBackReason}` : ''}. Sending this back re-runs{' '}
               {loopBackTarget} and this stage from scratch, with your feedback, and their earlier
               plan approvals and reviews stop counting.
+            </p>
+          )}
+          {pending && loopBackWithheld && (
+            <p className="text-xs text-amber-600 dark:text-amber-500">
+              The agent recommends revising the generated code
+              {loopBackReason ? `: ${loopBackReason}` : ''}.{loopBackNote ? ` ${loopBackNote}` : ''}
             </p>
           )}
           {pending && skipTo && (

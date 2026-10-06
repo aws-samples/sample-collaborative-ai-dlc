@@ -4396,6 +4396,65 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     expect(accepted.statusCode).toBe(200);
   });
 
+  // The reason, the outcome and its explanation are only on the gate row; the stage
+  // row's recommendation is cleared as soon as the gate opens. A DTO that drops
+  // them leaves the reviewer with a generic sentence when the option is offered and
+  // with nothing at all when it is not.
+  it('maps the loop-back reason, status and note onto the gate DTO', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const seed = (humanTaskId, fields) => {
+      const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+      seedGate(intent.id, humanTaskId);
+      procStore.set(humanKey, {
+        ...procStore.get(humanKey),
+        kind: 'validation',
+        options: ['approve', 'request-changes'],
+        ...fields,
+      });
+    };
+    seed('h-offered', {
+      options: ['approve', 'request-changes', 'loop-back'],
+      loopBackTarget: 'code-generation',
+      loopBackReason: 'integration tests fail',
+      loopBackStatus: 'offered',
+      loopBackNote: 'Choose loop-back to send this work back to code-generation.',
+    });
+    seed('h-at-cap', {
+      loopBackReason: 'integration tests fail',
+      loopBackStatus: 'at-cap',
+      loopBackNote: 'This intent has already used all 3 loop-backs.',
+    });
+    seed('h-none', {});
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+
+    const gates = JSON.parse(res.body).gates;
+    const byId = (id) => gates.find((row) => row.humanTaskId === id);
+    expect(byId('h-offered')).toMatchObject({
+      loopBackTarget: 'code-generation',
+      loopBackReason: 'integration tests fail',
+      loopBackStatus: 'offered',
+      loopBackNote: 'Choose loop-back to send this work back to code-generation.',
+    });
+    expect(byId('h-at-cap')).toMatchObject({
+      loopBackReason: 'integration tests fail',
+      loopBackStatus: 'at-cap',
+      loopBackNote: 'This intent has already used all 3 loop-backs.',
+    });
+    expect(byId('h-at-cap')).not.toHaveProperty('loopBackTarget');
+    // Absent, not null: a gate with no recommendation says nothing about one.
+    expect(byId('h-none')).not.toHaveProperty('loopBackReason');
+    expect(byId('h-none')).not.toHaveProperty('loopBackStatus');
+    expect(byId('h-none')).not.toHaveProperty('loopBackNote');
+  });
+
   it('accepts loop-back only where offered, and only recorded as rejected', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

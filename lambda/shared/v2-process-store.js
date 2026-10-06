@@ -797,6 +797,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     learningsRitual,
     loopBackTarget,
     loopBackReason,
+    loopBackStatus,
+    loopBackNote,
     humanTaskId,
   }) => {
     const id = humanTaskId ?? nextId();
@@ -818,6 +820,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       learningsRitual,
       loopBackTarget,
       loopBackReason,
+      loopBackStatus,
+      loopBackNote,
       now: now(),
     });
     await ddb.send(

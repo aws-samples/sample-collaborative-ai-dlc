@@ -355,6 +355,8 @@ describe('a recommended loop-back the human accepts', () => {
     expect(gate.options).toEqual(['approve', 'request-changes', 'loop-back']);
     expect(gate.loopBackTarget).toBe('code-generation');
     expect(gate.loopBackReason).toBe(REASON);
+    expect(gate.loopBackStatus).toBe('offered');
+    expect(gate.loopBackNote).toContain('Choose loop-back to send this work back to');
     expect(gate.prompt).toContain('## The agent recommends going back to the code');
     expect(gate.prompt).toContain(REASON);
     expect(gate.prompt).toContain('Choose loop-back to send this work back to code-generation');
@@ -699,6 +701,52 @@ describe('a recommended loop-back the human accepts', () => {
   );
 });
 
+// The gate row is read on a page load; the live event is what a reviewer already
+// looking at the gate sees. A reason on one and not the other means the note the
+// reviewer gets depends on when they opened the page.
+describe('the live gate broadcast', () => {
+  const liveValidationGate = () =>
+    deps.broadcast.mock.calls
+      .map(([, payload]) => payload)
+      .find((payload) => payload?.action === 'agent.question' && payload.kind === 'validation');
+
+  it('carries the same reason, status and note as the row when the option is offered', async () => {
+    recommending.add('build-and-test');
+    deps.store.getHumanTask = gateScript([{ decision: 'approve' }]);
+
+    await run();
+
+    const gate = gates()[0];
+    const live = liveValidationGate();
+    expect(live.loopBackTarget).toBe(gate.loopBackTarget);
+    expect(live.loopBackReason).toBe(REASON);
+    expect(live.loopBackStatus).toBe('offered');
+    expect(live.loopBackNote).toBe(gate.loopBackNote);
+  });
+
+  it('carries the refusal when the cap is spent, where there is no target to carry', async () => {
+    deps.store.loopBackState.count = 3;
+    recommending.add('build-and-test');
+
+    await run();
+
+    const live = liveValidationGate();
+    expect(live).not.toHaveProperty('loopBackTarget');
+    expect(live.loopBackReason).toBe(REASON);
+    expect(live.loopBackStatus).toBe('at-cap');
+    expect(live.loopBackNote).toBe(gates()[0].loopBackNote);
+  });
+
+  it('carries nothing when the agent recommended nothing', async () => {
+    await run();
+
+    const live = liveValidationGate();
+    expect(live).not.toHaveProperty('loopBackReason');
+    expect(live).not.toHaveProperty('loopBackStatus');
+    expect(live).not.toHaveProperty('loopBackNote');
+  });
+});
+
 describe('a recommendation from an earlier validation round', () => {
   it('is not offered again after request-changes unless the agent repeats it', async () => {
     const runtime = deps.invokeRuntime;
@@ -732,6 +780,9 @@ describe('a recommendation the plan cannot offer', () => {
     const [gate] = gates();
     expect(gate.options).toEqual(['approve', 'request-changes']);
     expect(gate).not.toHaveProperty('loopBackTarget');
+    expect(gate.loopBackReason).toBe(REASON);
+    expect(gate.loopBackStatus).toBe('unavailable');
+    expect(gate.loopBackNote).toContain('Loop-back is not offered here');
     expect(gate.prompt).toContain(REASON);
     expect(gate.prompt).toContain('Loop-back is not offered here');
   });
@@ -748,8 +799,15 @@ describe('loop-back recommendation at the cap', () => {
     expect(result.ok).not.toBe(false);
     const gate = gates()[0];
     expect(gate.options).toEqual(['approve', 'request-changes']);
+    // No target: the answer endpoint and the container both read that field as the
+    // engine's offer, so an at-cap target would turn this refusal into an offer.
     expect(gate).not.toHaveProperty('loopBackTarget');
-    expect(gate).not.toHaveProperty('loopBackReason');
+    // The reason and the refusal DO reach the row, which is the only place they
+    // survive — the recommendation is cleared off the stage row right after.
+    expect(gate.loopBackReason).toBe(REASON);
+    expect(gate.loopBackStatus).toBe('at-cap');
+    expect(gate.loopBackNote).toContain('already used all 3 loop-backs');
+    expect(gate.loopBackNote).toContain('rewind to code-generation yourself');
     expect(gate.prompt).toContain('the loop-back limit is spent');
     expect(gate.prompt).toContain('already used all 3 loop-backs');
     expect(gate.prompt).toContain('rewind to code-generation yourself');
@@ -775,6 +833,8 @@ describe('a target skipped at the intent level', () => {
     const [gate] = gates();
     expect(gate.options).toEqual(['approve', 'request-changes']);
     expect(gate).not.toHaveProperty('loopBackTarget');
+    expect(gate.loopBackStatus).toBe('unavailable');
+    expect(gate.loopBackNote).toContain('Loop-back is not offered here');
     expect(gate.prompt).toContain(REASON);
     expect(gate.prompt).toContain('Loop-back is not offered here');
     expect(deps.store.resetStageRow).not.toHaveBeenCalled();

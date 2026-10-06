@@ -6526,6 +6526,13 @@ const mapHumanTask = (h) => ({
   // (not null) on every gate that does not offer the option, so the review panel
   // renders no third button rather than one with an empty target.
   ...('loopBackTarget' in h ? { loopBackTarget: h.loopBackTarget ?? null } : {}),
+  // The agent's reason, the offer rule's outcome, and that outcome in one
+  // sentence. Present whenever the agent recommended a loop-back, INCLUDING the
+  // outcomes that offer no option — those are the ones the reviewer was shown
+  // nothing about. Absent (not null) on every other gate.
+  ...('loopBackReason' in h ? { loopBackReason: h.loopBackReason ?? null } : {}),
+  ...('loopBackStatus' in h ? { loopBackStatus: h.loopBackStatus ?? null } : {}),
+  ...('loopBackNote' in h ? { loopBackNote: h.loopBackNote ?? null } : {}),
   // The computed next stage a plain approve continues to (upstream 2.2.6):
   // string = stageId, null = approving completes the workflow. Omitted (not
   // null) on legacy rows / gates where it was never computed, so the UI can

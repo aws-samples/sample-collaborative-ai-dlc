@@ -156,6 +156,47 @@ describe('StageReviewPanel — learnings ritual', () => {
     });
   });
 
+  // The reason is the agent's own words. Before it was exposed the panel showed a
+  // generic sentence instead, whatever the agent had actually found.
+  it("shows the agent's reason when the option is offered", () => {
+    renderPanel(
+      gate({
+        options: ['approve', 'request-changes', 'loop-back'],
+        loopBackTarget: 'code-generation',
+        loopBackReason: 'the payment integration tests fail',
+        loopBackStatus: 'offered',
+        loopBackNote: 'Choose loop-back to send this work back to code-generation.',
+      }),
+    );
+    expect(screen.getByText(/the payment integration tests fail/)).toBeInTheDocument();
+  });
+
+  // The withheld cases are the ones a reviewer was shown NOTHING about: the cap
+  // being spent, and every per-unit build-and-test cell. The engine's note is the
+  // only explanation that survives, because the recommendation is cleared off the
+  // stage row as soon as the gate opens.
+  it.each([
+    ['at-cap' as const, 'This intent has already used all 3 loop-backs.'],
+    ['unavailable' as const, 'Loop-back is not offered here: it goes back only to a stage.'],
+  ])('explains a recommendation the engine withheld (%s)', (loopBackStatus, loopBackNote) => {
+    renderPanel(
+      gate({
+        options: ['approve', 'request-changes'],
+        loopBackReason: 'the payment integration tests fail',
+        loopBackStatus,
+        loopBackNote,
+      }),
+    );
+    expect(screen.getByText(/the payment integration tests fail/)).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(loopBackNote.slice(0, 30)))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Send back to/i })).not.toBeInTheDocument();
+  });
+
+  it('says nothing about a loop-back on a gate with no recommendation', () => {
+    renderPanel(gate({ options: ['approve', 'request-changes'] }));
+    expect(screen.queryByText(/recommends revising the generated code/)).not.toBeInTheDocument();
+  });
+
   it('sends the feedback with a loop-back, recorded as rejected', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     renderPanel(

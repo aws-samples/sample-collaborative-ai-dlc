@@ -98,6 +98,14 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
               The agent finished this stage and produced {stageArtifacts.length} artifact
               {stageArtifacts.length === 1 ? '' : 's'}. Review them and approve or request changes.
             </p>
+            {gate.loopBackReason && (
+              <p className="mt-1 text-xs text-amber-600 dark:text-amber-500">
+                The agent recommends revising the generated code: {gate.loopBackReason}
+                {gate.loopBackStatus !== 'offered' && gate.loopBackNote
+                  ? ` ${gate.loopBackNote}`
+                  : ''}
+              </p>
+            )}
           </div>
           {stageArtifacts.length > 0 && (
             <div className="flex flex-wrap gap-1.5">

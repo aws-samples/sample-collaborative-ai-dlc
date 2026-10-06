@@ -243,4 +243,24 @@ describe('the loop-back option on a stage review gate', () => {
     expect(screen.queryByRole('button', { name: /Send back to/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Approve/i })).toBeInTheDocument();
   });
+
+  // Withholding the option is not the same as withholding the recommendation. The
+  // cap being spent, and every per-unit build-and-test cell, reach the reviewer
+  // with no target at all — the engine's note is the only thing that explains why
+  // there is nothing to click.
+  it("states the agent's reason and the engine's note when the option is withheld", async () => {
+    get.mockResolvedValue(
+      reviewDetail({
+        options: ['approve', 'request-changes'],
+        loopBackReason: 'the payment integration tests fail',
+        loopBackStatus: 'at-cap',
+        loopBackNote:
+          'This intent has already used all 3 loop-backs, so loop-back is not offered again.',
+      }),
+    );
+    await openReview();
+    expect(screen.getByText(/the payment integration tests fail/)).toBeInTheDocument();
+    expect(screen.getByText(/already used all 3 loop-backs/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Send back to/i })).not.toBeInTheDocument();
+  });
 });

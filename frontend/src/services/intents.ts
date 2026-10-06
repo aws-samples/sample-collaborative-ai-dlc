@@ -329,6 +329,15 @@ export interface IntentGate {
   // loop-back, the agent recommended one in this run of the stage, and the cap
   // is not spent. Absent on every other gate.
   loopBackTarget?: string | null;
+  // Why the agent recommended the loop-back, and what the engine decided about
+  // it: 'offered' | 'at-cap' | 'unavailable'. Present whenever the agent
+  // recommended one, INCLUDING the outcomes that offer no option — those are the
+  // ones the reviewer would otherwise be told nothing about. Absent on every gate
+  // with no recommendation.
+  loopBackReason?: string | null;
+  loopBackStatus?: 'offered' | 'at-cap' | 'unavailable' | null;
+  // That decision in one sentence, written by the engine.
+  loopBackNote?: string | null;
   // The COMPUTED next stage a plain approve continues to (upstream 2.2.6):
   // string = its stageId, null = approving completes the workflow. Absent on
   // legacy gates / gates where it was never computed — fall back to generic

@@ -64,6 +64,10 @@ export interface IntentEvent {
   learningsRitual?: boolean | null;
   /** Validation gate: the stage a `loop-back` answer goes back to. */
   loopBackTarget?: string | null;
+  /** Validation gate: why the agent recommended a loop-back, and what the engine decided. */
+  loopBackReason?: string | null;
+  loopBackStatus?: 'offered' | 'at-cap' | 'unavailable' | null;
+  loopBackNote?: string | null;
   // agent.metric
   metricId?: string;
   metrics?: Record<string, number>;

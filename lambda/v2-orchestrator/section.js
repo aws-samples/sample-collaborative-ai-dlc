@@ -169,9 +169,16 @@ export const awaitEngineGate = async (
     // The stage a `loop-back` answer sends the run back to. Null on
     // every gate that does not offer the option, and writes nothing.
     loopBackTarget = null,
-    // Why the agent recommended it. Stored on the gate row only (with the
-    // target), so the target stage's re-run can tell the agent why.
+    // Why the agent recommended it. Written whenever the agent recommended one,
+    // target or no target, so the target stage's re-run can tell the agent why and
+    // the reviewer can read it at the gate.
     loopBackReason = null,
+    // The outcome of the offer rule: 'offered' | 'at-cap' | 'unavailable'. Null on
+    // every gate with no recommendation, and writes nothing.
+    loopBackStatus = null,
+    // That outcome in one sentence for the reviewer. The gate prompt carries the
+    // same text, which nothing renders.
+    loopBackNote = null,
   },
 ) => {
   const { store, broadcast, ids, runId } = toolkit;
@@ -203,7 +210,12 @@ export const awaitEngineGate = async (
         ...(nextStageId !== undefined ? { nextStageId } : {}),
         ...(findings?.length ? { findings } : {}),
         ...(learningsRitual ? { learningsRitual: true } : {}),
-        ...(loopBackTarget ? { loopBackTarget, loopBackReason } : {}),
+        ...(loopBackTarget ? { loopBackTarget } : {}),
+        // Independent of the target: a recommendation the rule could not offer has
+        // no target and is exactly the case the reviewer was never told about. The
+        // orchestrator clears the recommendation from the stage row right after
+        // this open, so the gate row is the only place it survives.
+        ...(loopBackStatus ? { loopBackReason, loopBackStatus, loopBackNote } : {}),
       });
     } catch {
       /* already exists from a prior attempt — idempotent open */
@@ -238,6 +250,7 @@ export const awaitEngineGate = async (
         ...(findings?.length ? { findings } : {}),
         ...(learningsRitual ? { learningsRitual: true } : {}),
         ...(loopBackTarget ? { loopBackTarget } : {}),
+        ...(loopBackStatus ? { loopBackReason, loopBackStatus, loopBackNote } : {}),
       });
     } catch {
       /* live fan-out is best-effort */
