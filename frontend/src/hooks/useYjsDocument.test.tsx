@@ -1,6 +1,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { StrictMode, type ReactNode } from 'react';
 import * as decoding from 'lib0/decoding';
+import * as encoding from 'lib0/encoding';
+import * as syncProtocol from 'y-protocols/sync';
 import * as Y from 'yjs';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -69,6 +71,14 @@ class MockWebSocket {
 }
 
 const instances: MockWebSocket[] = [];
+const deliver = (ws: MockWebSocket, type: number, write: (encoder: encoding.Encoder) => void) => {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, type);
+  write(encoder);
+  ws.onmessage?.(new MessageEvent('message', { data: encoding.toUint8Array(encoder).buffer }));
+};
+const completeSync = (ws: MockWebSocket, doc: Y.Doc) =>
+  deliver(ws, 0, (encoder) => syncProtocol.writeSyncStep2(encoder, doc));
 
 describe('useYjsDocument', () => {
   beforeEach(() => {
@@ -84,7 +94,9 @@ describe('useYjsDocument', () => {
     vi.stubGlobal('WebSocket', MockWebSocket);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (vi.isFakeTimers()) await vi.runOnlyPendingTimersAsync();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -129,6 +141,210 @@ describe('useYjsDocument', () => {
 
     await waitFor(() => expect(mocks.notifySessionExpired).toHaveBeenCalledWith(7));
     expect(instances).toHaveLength(0);
+    unmount();
+  });
+
+  it('counts only local edits and does not echo remote presence', async () => {
+    const { result, unmount } = renderHook(() => useYjsDocument('inception-project-1', 'Alice'));
+    await waitFor(() => expect(instances).toHaveLength(1));
+    const ws = instances[0];
+    act(() => ws.open());
+    const peer = new Y.Doc();
+    peer.getText('content').insert(0, 'seed');
+    act(() => completeSync(ws, peer));
+    expect(result.current.synced).toBe(true);
+    expect(result.current.localRevision).toBe(0);
+    act(() => result.current.doc.getText('content').insert(0, 'local'));
+    expect(result.current.localRevision).toBe(1);
+    const peerAwareness = new awarenessProtocol.Awareness(peer);
+    peerAwareness.setLocalStateField('user', { name: 'Bob' });
+    // Wait for our coalesced initial awareness before measuring remote echoes.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 60)));
+    const before = ws.sent.length;
+    act(() =>
+      deliver(ws, 1, (encoder) =>
+        encoding.writeVarUint8Array(
+          encoder,
+          awarenessProtocol.encodeAwarenessUpdate(peerAwareness, [peer.clientID]),
+        ),
+      ),
+    );
+    await act(() => new Promise((resolve) => setTimeout(resolve, 60)));
+    expect(result.current.remoteUsers.get(peer.clientID)?.name).toBe('Bob');
+    expect(ws.sent).toHaveLength(before);
+    unmount();
+    peerAwareness.destroy();
+    peer.destroy();
+  });
+
+  it('sends unchanged-state awareness renewals without periodic document sync', async () => {
+    const { result, unmount } = renderHook(() => useYjsDocument('inception-project-1', 'Alice'));
+    await waitFor(() => expect(instances).toHaveLength(1));
+    await act(() => new Promise((resolve) => setTimeout(resolve, 60)));
+    vi.useFakeTimers();
+    const ws = instances[0];
+    act(() => ws.open());
+    const before = ws.sent.filter((bytes) => bytes[0] === 0).length;
+    const presenceBefore = ws.sent.filter((bytes) => bytes[0] === 1).length;
+    act(() => result.current.awareness.setLocalState(result.current.awareness.getLocalState()));
+    await act(() => vi.advanceTimersByTimeAsync(30_001));
+    expect(ws.sent.filter((bytes) => bytes[0] === 1).length).toBeGreaterThan(presenceBefore);
+    expect(ws.sent.filter((bytes) => bytes[0] === 0)).toHaveLength(before);
+    unmount();
+  });
+
+  it('waits for the checkpoint receipt and rejects an interrupted flush', async () => {
+    const { result, unmount } = renderHook(() => useYjsDocument('inception-project-1', 'Alice'));
+    await waitFor(() => expect(instances).toHaveLength(1));
+    const ws = instances[0];
+    act(() => ws.open());
+    await expect(result.current.flushDocument()).rejects.toThrow('not synchronized');
+    act(() => {
+      deliver(ws, 4, (encoder) => {
+        encoding.writeVarUint(encoder, 0);
+        encoding.writeVarUint(encoder, 1);
+      });
+      completeSync(ws, new Y.Doc());
+    });
+    let completed = false;
+    const flush = result.current.flushDocument().then(() => {
+      completed = true;
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const request = decoding.createDecoder(ws.sent.at(-1)!);
+    expect(decoding.readVarUint(request)).toBe(4);
+    expect(decoding.readVarUint(request)).toBe(1);
+    const id = decoding.readVarUint(request);
+    expect(completed).toBe(false);
+    await act(async () => {
+      deliver(ws, 4, (encoder) => {
+        encoding.writeVarUint(encoder, 2);
+        encoding.writeVarUint(encoder, id);
+      });
+      await flush;
+    });
+    expect(completed).toBe(true);
+    const sentBefore = ws.sent.length;
+    const interrupted = result.current.flushDocument();
+    const assertion = expect(interrupted).rejects.toThrow('disconnected');
+    await waitFor(() => expect(ws.sent.length).toBe(sentBefore + 1));
+    await act(async () => {
+      ws.close(1012);
+      await assertion;
+    });
+    await expect(result.current.flushDocument()).rejects.toThrow('not synchronized');
+    unmount();
+  });
+
+  it.each(['final save completes', 'server disconnects'] as const)(
+    'keeps the new document synchronized when the retiring document %s',
+    async (retirement) => {
+      const { result, rerender, unmount } = renderHook(
+        ({ documentId }) => useYjsDocument(documentId, 'Alice'),
+        { initialProps: { documentId: 'inception-project-1' } },
+      );
+      await waitFor(() => expect(instances).toHaveLength(1));
+      const oldSocket = instances[0];
+      const oldDoc = result.current.doc;
+      act(() => {
+        oldSocket.open();
+        deliver(oldSocket, 4, (encoder) => {
+          encoding.writeVarUint(encoder, 0);
+          encoding.writeVarUint(encoder, 1);
+        });
+        completeSync(oldSocket, oldDoc);
+      });
+      const flush = result.current.flushDocument;
+      let finishSave!: () => void;
+      const saveFinished = new Promise<void>((resolve) => {
+        finishSave = resolve;
+      });
+      const save = vi.fn(async () => {
+        await flush();
+        await saveFinished;
+      });
+      result.current.beforeDisconnect(save);
+
+      rerender({ documentId: 'inception-project-2' });
+      expect(result.current.synced).toBe(false);
+      await waitFor(() => expect(instances).toHaveLength(2));
+      const newSocket = instances[1];
+      const newDoc = result.current.doc;
+      act(() => {
+        newSocket.open();
+        completeSync(newSocket, newDoc);
+      });
+      expect(result.current.synced).toBe(true);
+      expect(save).toHaveBeenCalledOnce();
+      expect(oldSocket.readyState).toBe(MockWebSocket.OPEN);
+      expect(oldDoc.isDestroyed).toBe(false);
+      const request = decoding.createDecoder(oldSocket.sent.at(-1)!);
+      expect(decoding.readVarUint(request)).toBe(4);
+      expect(decoding.readVarUint(request)).toBe(1);
+      const id = decoding.readVarUint(request);
+
+      if (retirement === 'server disconnects') {
+        const rejected = expect(save.mock.results[0].value).rejects.toThrow('disconnected');
+        await act(async () => {
+          oldSocket.close(1012, 'owner transfer');
+          await rejected;
+        });
+      } else {
+        await act(async () => {
+          deliver(oldSocket, 4, (encoder) => {
+            encoding.writeVarUint(encoder, 2);
+            encoding.writeVarUint(encoder, id);
+          });
+        });
+        expect(oldSocket.readyState).toBe(MockWebSocket.OPEN);
+        expect(oldDoc.isDestroyed).toBe(false);
+        await act(async () => {
+          finishSave();
+          await save.mock.results[0].value;
+        });
+      }
+
+      expect(result.current.doc).toBe(newDoc);
+      expect(result.current.synced).toBe(true);
+      expect(newSocket.readyState).toBe(MockWebSocket.OPEN);
+      await expect(result.current.flushDocument()).resolves.toBeUndefined();
+      await waitFor(() => expect(oldDoc.isDestroyed).toBe(true));
+      expect(oldSocket.readyState).toBe(MockWebSocket.CLOSED);
+      expect(instances).toHaveLength(2);
+      unmount();
+    },
+  );
+
+  it('ignores a late initial sync from a retiring document while finishing its save', async () => {
+    const { result, rerender, unmount } = renderHook(
+      ({ documentId }) => useYjsDocument(documentId, 'Alice'),
+      { initialProps: { documentId: 'inception-project-1' } },
+    );
+    await waitFor(() => expect(instances).toHaveLength(1));
+    const oldSocket = instances[0];
+    const oldDoc = result.current.doc;
+    act(() => oldSocket.open());
+    let finishSave!: () => void;
+    const saveFinished = new Promise<void>((resolve) => {
+      finishSave = resolve;
+    });
+    result.current.beforeDisconnect(() => saveFinished);
+
+    rerender({ documentId: 'inception-project-2' });
+    await waitFor(() => expect(instances).toHaveLength(2));
+    const newSocket = instances[1];
+    act(() => {
+      newSocket.open();
+      completeSync(newSocket, result.current.doc);
+    });
+    expect(result.current.synced).toBe(true);
+    act(() => completeSync(oldSocket, oldDoc));
+    expect(result.current.synced).toBe(true);
+    expect(newSocket.readyState).toBe(MockWebSocket.OPEN);
+    await act(async () => finishSave());
+    await waitFor(() => expect(oldDoc.isDestroyed).toBe(true));
     unmount();
   });
 });

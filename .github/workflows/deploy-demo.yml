@@ -110,6 +110,7 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
       BEDROCK_MODEL: ${{ vars.BEDROCK_MODEL }}
+      BEDROCK_REGION: ${{ vars.BEDROCK_REGION }}
       DEPLOY_REF: ${{ inputs.ref }}
       DEPLOY_REF_TYPE: ${{ inputs.ref_type || 'release-tag' }}
       DEPLOY_TARGET: ${{ inputs.deployment_target || 'release' }}
@@ -361,6 +362,11 @@ jobs:
             printf 'aws_region    = %s\n' "$(hcl_string "$AWS_REGION")"
             printf 'bedrock_model = %s\n' "$(hcl_string "$BEDROCK_MODEL")"
           } > "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+
+          if [[ -n "$BEDROCK_REGION" ]]; then
+            printf 'bedrock_region = %s\n' "$(hcl_string "$BEDROCK_REGION")" \
+              >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+          fi
 
           if [[ -n "$APP_DOMAIN" ]]; then
             {

@@ -204,6 +204,11 @@ variable "agentcore_runtime_arn" {
   default     = ""
 }
 
+variable "bedrock_region" {
+  description = "AWS region the agents Lambda lists Bedrock inference profiles from for the model picker"
+  type        = string
+}
+
 variable "environment_registry_table_name" {
   description = "Managed environment registry table used to resolve project runtime targets"
   type        = string
