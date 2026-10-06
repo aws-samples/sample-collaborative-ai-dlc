@@ -28,15 +28,11 @@ const PROVIDER_KEYS = Object.freeze([
   'isolateCapabilityFailures',
   'errorCodes',
   'classifyError',
-  'legacyResponse',
   'createDependencies',
 ]);
-const RENEWAL_KEYS = Object.freeze(['action', 'tokenField', 'audience', 'ttlSeconds']);
-const RENEWAL_TOKEN_FIELDS = Object.freeze(['grant', 'renewalToken']);
+const RENEWAL_KEYS = Object.freeze(['action', 'audience', 'ttlSeconds']);
 const MAX_RENEWAL_TTL_SECONDS = 86_400;
 const ERROR_CODE = /^[A-Z][A-Z0-9_]+$/;
-// Redemption owns these credential fields; legacyResponse may only add provider wire fields.
-const RESPONSE_FIELDS = Object.freeze(['binding', 'lease', 'value', 'error']);
 
 const isRecord = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
@@ -50,7 +46,6 @@ const defineBrokerProvider = (provider) => {
     isolateCapabilityFailures = false,
     errorCodes = [],
     classifyError = null,
-    legacyResponse = null,
     createDependencies = null,
   } = provider;
   assertIdentifier(id, 'Broker provider id');
@@ -71,8 +66,6 @@ const defineBrokerProvider = (provider) => {
     assertIdentifier(renewal.action, `Broker provider ${id} renewal action`);
     if (RESERVED_ACTIONS.includes(renewal.action))
       throw invalid(`cannot renew on the reserved action ${renewal.action}`);
-    if (!RENEWAL_TOKEN_FIELDS.includes(renewal.tokenField))
-      throw invalid(`declares an unsupported renewal token field: ${renewal.tokenField}`);
     if (
       typeof renewal.audience !== 'string' ||
       !renewal.audience.trim() ||
@@ -94,7 +87,7 @@ const defineBrokerProvider = (provider) => {
     errorCodes.some((code) => typeof code !== 'string' || !ERROR_CODE.test(code))
   )
     throw invalid('declares invalid error codes');
-  for (const [name, hook] of Object.entries({ classifyError, legacyResponse, createDependencies }))
+  for (const [name, hook] of Object.entries({ classifyError, createDependencies }))
     if (hook !== null && typeof hook !== 'function')
       throw invalid(`declares a non-function ${name}`);
   if (classifyError && !errorCodes.length)
@@ -105,7 +98,6 @@ const defineBrokerProvider = (provider) => {
     renewal: renewal
       ? Object.freeze({
           action: renewal.action,
-          tokenField: renewal.tokenField,
           audience: renewal.audience,
           ttlSeconds: renewal.ttlSeconds,
         })
@@ -114,7 +106,6 @@ const defineBrokerProvider = (provider) => {
     isolateCapabilityFailures,
     errorCodes: Object.freeze([...errorCodes]),
     classifyError,
-    legacyResponse,
     createDependencies,
   });
 };
@@ -201,10 +192,7 @@ export const createBrokerProviderRegistry = (providers) => {
         presentedToken,
         issueRenewal: () => signRenewal({ claims, binding, policy: provider.renewal, key }),
       });
-      const legacy = provider.legacyResponse?.(lease) ?? {};
-      if (!isRecord(legacy) || Object.keys(legacy).some((field) => RESPONSE_FIELDS.includes(field)))
-        throw invalidLease();
-      return { ...legacy, lease };
+      return { lease };
     };
 
   return Object.freeze({
@@ -251,7 +239,7 @@ export const createAgentProviderContext = async (
   const renewing = action === RESOLVE_AGENT_CREDENTIALS ? null : registry.renewalProvider(action);
   if (action !== RESOLVE_AGENT_CREDENTIALS && !renewing)
     throw authError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential action is not supported');
-  const presentedToken = renewing ? event[renewing.renewal.tokenField] : event.grant;
+  const presentedToken = event.grant;
   if (!presentedToken)
     throw authError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is required');
   const key = secret ?? (await loadAgentCredentialGrantSecret(ssmClient, { env }));

@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { GetCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, ScanCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { makeDdb, createV2Table, deleteV2Table } from './helpers/v2-table.js';
 import { accountCredentialInvocation } from '../invocation-accounting.js';
 import { createCredentialSession } from '../credential-session.js';
 import { createAgentConnectionRepository } from '../../shared/agent-connection-repository.js';
 import { createAgentAuthChangeService } from '../../shared/agent-auth-changes.js';
+import { inventoryReferenceWrites } from '../../shared/agent-auth-inventory.js';
 
 const tableName = `invocation-auth-${randomUUID()}`;
 const { client, doc: ddb } = makeDdb();
@@ -68,7 +69,65 @@ describe('invocation activity evidence', () => {
       ).Item;
     expect((await read()).state).toBe('ACTIVE');
     await releaseJob();
-    expect(await read()).toMatchObject({ state: 'FINISHED', agentAuthTtl: expect.any(Number) });
+    const finished = await read();
+    expect(finished).toMatchObject({ state: 'FINISHED', agentAuthTtl: expect.any(Number) });
+    for (const { Put } of inventoryReferenceWrites(tableName, invocation)) {
+      const { Item } = await ddb.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: { pk: Put.Item.pk, sk: Put.Item.sk },
+          ConsistentRead: true,
+        }),
+      );
+      expect(Item.agentAuthTtl).toBe(finished.agentAuthTtl);
+    }
+  });
+  it('keeps the invocation and both scope references active if completion cannot commit', async () => {
+    let finish;
+    let completing = false;
+    const guardedDdb = {
+      send(command) {
+        if (completing && command instanceof TransactWriteCommand)
+          throw new Error('completion unavailable');
+        return ddb.send(command);
+      },
+    };
+    await accountCredentialInvocation({
+      ddb: guardedDdb,
+      tableName,
+      session: {
+        own: (cleanup) => {
+          finish = cleanup;
+        },
+      },
+      payload: { command: 'capabilities', projectId: 'atomic-p' },
+      bindings: [{ provider: 'bedrock', source: 'user', userId: 'atomic-u' }],
+    });
+    completing = true;
+    await expect(finish()).rejects.toThrow('completion unavailable');
+    const repository = createAgentConnectionRepository({ ddb, tableName });
+    const invocation = (await repository.scanInventory()).find(
+      (row) => row.projectId === 'atomic-p',
+    );
+    expect(invocation.state).toBe('ACTIVE');
+    for (const { Put } of inventoryReferenceWrites(tableName, invocation)) {
+      const { Item } = await ddb.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: { pk: Put.Item.pk, sk: Put.Item.sk },
+          ConsistentRead: true,
+        }),
+      );
+      expect(Item.agentAuthTtl).toBeUndefined();
+    }
+    completing = false;
+    await finish();
+    const { Items } = await ddb.send(new ScanCommand({ TableName: tableName }));
+    const finished = Items.find((row) => row.pk === invocation.pk);
+    for (const { Put } of inventoryReferenceWrites(tableName, invocation))
+      expect(
+        Items.find((row) => row.pk === Put.Item.pk && row.sk === Put.Item.sk).agentAuthTtl,
+      ).toBe(finished.agentAuthTtl);
   });
   it('finishes evidence if the credential expires while accounting is being installed', async () => {
     await expect(

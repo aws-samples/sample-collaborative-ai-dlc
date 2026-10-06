@@ -545,7 +545,6 @@ module "lambda" {
 module "api" {
   source = "./modules/api"
 
-  credential_broker_role_arn = module.lambda.credential_broker_role_arn
 
   v2_executions_table_name = module.agentcore.v2_executions_table_name
 

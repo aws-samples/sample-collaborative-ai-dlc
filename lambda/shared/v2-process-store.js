@@ -2755,12 +2755,16 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
   // never silently leaves rows behind. Idempotent — deleting a missing key is
   // a no-op, so a retried delete after a partial failure just finishes the job.
   const deleteExecution = async (executionId) => {
-    const keys = await queryAll(ddb, {
+    const execution = await getExecution(executionId, { consistentRead: true });
+    const records = await queryAll(ddb, {
       TableName: table(),
       KeyConditionExpression: 'pk = :pk',
       ExpressionAttributeValues: { ':pk': executionPk(executionId) },
       ProjectionExpression: 'pk, sk',
     });
+    // Keep META until all other rows are gone so a retry can still find the
+    // pinned scopes. Delete its references atomically with the authoritative row.
+    const keys = records.filter((key) => key.sk !== META);
     let deleted = 0;
     for (let i = 0; i < keys.length; i += 25) {
       let requests = keys
@@ -2784,6 +2788,22 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
         }
       }
     }
+    await ddb.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          { Delete: { TableName: table(), Key: executionMetaKey(executionId) } },
+          ...(execution
+            ? inventoryReferenceWrites(table(), execution).map(({ Put }) => ({
+                Delete: {
+                  TableName: table(),
+                  Key: { pk: Put.Item.pk, sk: Put.Item.sk },
+                },
+              }))
+            : []),
+        ],
+      }),
+    );
+    if (execution) deleted += 1;
     return { deleted };
   };
 

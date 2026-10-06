@@ -60,7 +60,6 @@ module "agents_lambda" {
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_METADATA_FUNCTION  = "${var.project_name}-credential-metadata-${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
-    CREDENTIAL_BROKER_ROLE_ARN          = var.credential_broker_role_arn
     CORS_ALLOWED_ORIGINS                = var.cors_allowed_origins
     # v2 model discovery: lets GET /agents/capabilities?models=1 invoke the
     # runtime's `capabilities` command for Kiro's model list + auth state.

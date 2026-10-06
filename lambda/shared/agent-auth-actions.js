@@ -1,6 +1,10 @@
 import { authError, assertIdentifier, normalizeConnection } from './agent-auth-contracts.js';
 import { AGENT_AUTH_MODES_CATALOG } from './agent-auth-providers.js';
-import { authenticationScope } from './agent-auth-inventory.js';
+import {
+  authenticationScope,
+  authScopeKey,
+  inventoryReferenceWrites,
+} from './agent-auth-inventory.js';
 
 // Provider setup produces these domain actions. Review and persistence know
 // nothing about role setup, token acquisition, or gateway configuration.
@@ -139,4 +143,124 @@ export const authActionWrites = ({ action, tableName }) => {
         ];
   }
   return [];
+};
+
+// Pure activation plan: storage executes these writes without interpreting the action.
+export const authReviewWrites = ({ review, actorId, policy, now, tableName }) => {
+  const selectedPlatform =
+    review.candidate.kind === 'connection-create' &&
+    review.candidate.select &&
+    review.candidate.connection.source === 'platform'
+      ? review.candidate.connection
+      : null;
+  const next = {
+    mode:
+      selectedPlatform?.mode ??
+      (review.candidate.kind === 'policy-change' ? review.candidate.mode : policy.mode),
+    defaultConnectionId:
+      selectedPlatform?.id ??
+      (review.candidate.kind === 'policy-change'
+        ? review.candidate.defaultConnectionId
+        : policy.defaultConnectionId),
+    revision: review.policyRevision + 1,
+    activityRevision: policy.activityRevision,
+  };
+  const values = { ':revision': review.policyRevision, ':activity': review.activityRevision };
+  let condition =
+    review.policyRevision === 0 && review.activityRevision === 0
+      ? '(attribute_not_exists(revision) OR revision = :revision) AND (attribute_not_exists(activityRevision) OR activityRevision = :activity)'
+      : 'revision = :revision AND activityRevision = :activity';
+  condition += ' AND attribute_not_exists(pendingReview)';
+  const policyWrite =
+    review.candidate.kind === 'credential-update'
+      ? {
+          Update: {
+            TableName: tableName,
+            Key: authScopeKey(review.candidate),
+            UpdateExpression: 'SET updatedBy = :actor, updatedAt = :now REMOVE pendingReview',
+            ConditionExpression: 'revision = :revision AND pendingReview = :review',
+            ExpressionAttributeValues: {
+              ':revision': next.revision,
+              ':review': review.id,
+              ':actor': actorId,
+              ':now': now,
+            },
+          },
+        }
+      : {
+          Put: {
+            TableName: tableName,
+            Item: {
+              ...authScopeKey(review.candidate),
+              ...next,
+              type: 'AgentAuthPolicy',
+              updatedBy: actorId,
+              updatedAt: now,
+            },
+            ConditionExpression: condition,
+            ExpressionAttributeValues: values,
+          },
+        };
+  return {
+    next,
+    transactItems: [
+      policyWrite,
+      ...authActionWrites({ action: review.candidate, tableName }),
+      ...(review.candidate.kind === 'connection-create'
+        ? inventoryReferenceWrites(tableName, {
+            pk: `AGENTAUTH#CONNECTION#${review.candidate.connection.id}`,
+            sk: 'META',
+            ...review.candidate.connection,
+          })
+        : []),
+      ...(review.configurationRevision !== undefined &&
+      review.candidate.kind !== 'credential-update'
+        ? [
+            {
+              Update: {
+                TableName: tableName,
+                Key: authScopeKey(),
+                UpdateExpression: 'ADD activityRevision :one',
+                ConditionExpression:
+                  '(attribute_not_exists(revision) OR revision = :revision) AND attribute_not_exists(pendingReview)',
+                ExpressionAttributeValues: {
+                  ':one': 1,
+                  ':revision': review.configurationRevision,
+                },
+              },
+            },
+          ]
+        : []),
+      {
+        Update: {
+          TableName: tableName,
+          Key: { pk: `AGENTAUTH#REVIEW#${review.id}`, sk: 'META' },
+          UpdateExpression: 'SET appliedRevision = :revision, appliedBy = :actor, appliedAt = :now',
+          ConditionExpression: 'attribute_not_exists(appliedRevision)',
+          ExpressionAttributeValues: {
+            ':revision': next.revision,
+            ':actor': actorId,
+            ':now': now,
+          },
+        },
+      },
+      {
+        Put: {
+          TableName: tableName,
+          Item: {
+            pk: `${authScopeKey(review.candidate).pk}#AUDIT`,
+            sk: `REV#${String(next.revision).padStart(12, '0')}`,
+            type: 'AgentAuthAudit',
+            reviewId: review.id,
+            revision: next.revision,
+            actorId,
+            at: now,
+            candidate: review.candidate,
+            inventoryHash: review.inventoryHash,
+          },
+          ConditionExpression: 'attribute_not_exists(pk)',
+        },
+      },
+    ],
+  };
 };

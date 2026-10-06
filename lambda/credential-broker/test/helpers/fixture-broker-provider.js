@@ -3,7 +3,6 @@ import { TEST_CONNECTION_MODE } from '../../../shared/test/helpers/auth-modes.js
 export const FIXTURE_ADAPTER_KEY = `${TEST_CONNECTION_MODE.backend}:${TEST_CONNECTION_MODE.mechanisms[0]}`;
 export const FIXTURE_RENEWAL = Object.freeze({
   action: 'renew-test-credentials',
-  tokenField: 'grant',
   audience: 'aidlc-test-renewal',
   ttlSeconds: 3600,
 });
@@ -44,7 +43,6 @@ export const createFixtureBrokerProvider = (overrides = {}) => ({
       : error?.name === 'ThrottlingException'
         ? 'TEST_PROVIDER_UNDECLARED'
         : null,
-  legacyResponse: (lease) => ({ testRenewalToken: lease.renewal?.grant ?? null }),
   createDependencies: () => ({ tokenClient: fixtureTokenClient() }),
   ...overrides,
 });

@@ -191,6 +191,9 @@ const installDdbFakes = () => {
       procStore.set(k, next);
     }
     for (const put of puts) procStore.set(keyOf(put.Item.pk, put.Item.sk), { ...put.Item });
+    for (const { Delete } of input.TransactItems ?? []) {
+      if (Delete) procStore.delete(keyOf(Delete.Key.pk, Delete.Key.sk));
+    }
     return {};
   });
   ddbMock.on(QueryCommand).callsFake((input) => {

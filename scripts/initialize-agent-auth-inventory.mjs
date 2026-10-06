@@ -1,5 +1,6 @@
-// Explicit additive index backfill for existing installations. Run after all
-// credential-selection and process writers have been deployed.
+// Idempotent additive index backfill for fresh and existing installations.
+// deploy-terraform.sh runs this after all credential-selection and process
+// writers have been deployed; direct Terraform users run it after apply.
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { createAgentConnectionRepository } from '../lambda/shared/agent-connection-repository.js';

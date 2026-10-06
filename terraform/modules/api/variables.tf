@@ -360,8 +360,3 @@ variable "v2_executions_table_name" {
   description = "Process table used for authentication policy, reviews, and invocation inventory"
   type        = string
 }
-
-variable "credential_broker_role_arn" {
-  description = "Principal that provider inference roles trust"
-  type        = string
-}
