@@ -209,18 +209,23 @@ describe('credential delivery boundary', () => {
     }
   });
   it.each(['claude', 'kiro', 'opencode', 'codex'])(
-    'materializes the scoped relay for %s with no AWS forwarding',
+    'materializes the scoped relay for %s with trusted release policy and no AWS forwarding',
     async (cli) => {
       const directory = await mkdtemp(path.join(tmpdir(), 'auth-cli-test-'));
       const session = createCredentialSession();
       const mcpEntry = path.join(directory, 'fixture-mcp.mjs');
+      const policy = { learnings: 'on', planApproval: 'required' };
       await writeFile(
         mcpEntry,
         `
       import { McpServer } from ${JSON.stringify(import.meta.resolve('@modelcontextprotocol/sdk/server/mcp.js'))};
       import { StdioServerTransport } from ${JSON.stringify(import.meta.resolve('@modelcontextprotocol/sdk/server/stdio.js'))};
       const server = new McpServer({ name: 'scope-fixture', version: '1.0.0' });
-      server.tool('scope', {}, async () => ({ content: [{ type: 'text', text: process.env.V2_EXECUTION_ID }] }));
+      server.tool('scope', {}, async () => ({ content: [{ type: 'text', text: JSON.stringify({
+        executionId: process.env.V2_EXECUTION_ID,
+        policy: JSON.parse(process.env.V2_STAGE_POLICY),
+        validationRound: process.env.V2_VALIDATION_ROUND,
+      }) }] }));
       await server.connect(new StdioServerTransport());
     `,
       );
@@ -231,8 +236,16 @@ describe('credential delivery boundary', () => {
             cli,
             workspaceDir: directory,
             mcpEntry,
-            scope: { executionId: 'e1', intentId: 'e1', projectId: 'p1', stageId: 's1' },
+            scope: {
+              executionId: 'e1',
+              intentId: 'e1',
+              projectId: 'p1',
+              stageId: 's1',
+              policy,
+              validationRound: 2,
+            },
             env: { V2_CODEX_HOME_ROOT: directory },
+            maxTurns: 7,
           }),
         );
         const serialized =
@@ -260,7 +273,9 @@ describe('credential delivery boundary', () => {
             env: {},
           };
         } else if (cli === 'opencode') {
-          const config = JSON.parse(serialized).mcp.aidlc;
+          const materialized = JSON.parse(serialized);
+          expect(materialized.agent.build.steps).toBe(7);
+          const config = materialized.mcp.aidlc;
           native = {
             command: config.command[0],
             args: config.command.slice(1),
@@ -279,7 +294,11 @@ describe('credential delivery boundary', () => {
           name: 'scope',
           arguments: { executionId: 'attacker' },
         });
-        expect(answer.content).toEqual([{ type: 'text', text: 'e1' }]);
+        expect(JSON.parse(answer.content[0].text)).toEqual({
+          executionId: 'e1',
+          policy,
+          validationRound: '2',
+        });
       } finally {
         await client.close();
         await session.release();
