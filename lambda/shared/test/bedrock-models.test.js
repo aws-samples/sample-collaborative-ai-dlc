@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import bedrockModels from '../bedrock-models.js';
 
 const { listClaudeModels, regionPrefix } = bedrockModels;
@@ -57,6 +57,19 @@ describe('listClaudeModels', () => {
     expect(ids).toContain('eu.anthropic.claude-sonnet-4-6');
     expect(ids).toContain('global.anthropic.claude-opus-4-6-v1');
     expect(ids).not.toContain('us.anthropic.claude-sonnet-4-6');
+  });
+
+  it('defaults to BEDROCK_REGION over the deployment region', async () => {
+    vi.stubEnv('AWS_REGION', 'eu-central-1');
+    vi.stubEnv('BEDROCK_REGION', 'us-east-1');
+    try {
+      const models = await listClaudeModels({ listInferenceProfiles: async () => SUMMARIES });
+      const ids = models.map((m) => m.id);
+      expect(ids).toContain('us.anthropic.claude-sonnet-4-6');
+      expect(ids).not.toContain('eu.anthropic.claude-sonnet-4-6');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('sorts region-own geo before global', async () => {

@@ -206,6 +206,7 @@ module "agentcore_docker_build" {
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
   version = "~> 8.0"
 
+  keep_remotely   = true
   create_ecr_repo = false
   ecr_repo        = aws_ecr_repository.agentcore.name
   ecr_address     = format("%v.dkr.ecr.%v.%v", data.aws_caller_identity.current.account_id, data.aws_region.current.region, local.dns_suffix)
@@ -690,6 +691,7 @@ locals {
     WEBSOCKET_ENDPOINT            = var.websocket_endpoint
     AIDLC_REPO_REF                = var.aidlc_repo_ref
     BEDROCK_MODEL                 = var.bedrock_model
+    BEDROCK_REGION                = var.bedrock_region
     AWS_REGION                    = var.aws_region
     CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
     SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"

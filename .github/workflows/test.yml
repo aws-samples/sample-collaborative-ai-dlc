@@ -29,9 +29,14 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            lambda/yjs-server/package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm ci --prefix lambda/yjs-server --ignore-scripts
 
       - name: Run unit tests
         run: npm test
