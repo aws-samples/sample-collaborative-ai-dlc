@@ -87,14 +87,37 @@ export const MAX_PERSONA_SESSION_MS = 45 * 60 * 1000;
 // up to MAX_SUPPORT_PERSONAS supports (each up to MAX_PERSONA_SESSION_MS, retried
 // once), the integrator, mob dissent rounds, pipeline links, and the reviewer
 // loop's lead repair turns. Per-session caps alone multiply past the AgentCore
-// runtime's max_lifetime (28800 s, terraform/modules/compute/agentcore), which
-// kills the container and loses every persona after the kill. 6.5 h leaves the
-// last 1.5 h for the engine commit, sensors and the gate hand-off. Measured from
-// the start of the current leg (run-stage computes the deadline; a resume starts
-// a new budget); a session that would not finish before it degrades to a GAP the
-// human reads, and a budget that cut every collaborator blocks the gate
+// runtime's max_lifetime, which kills the container and loses every persona after
+// the kill. Measured from the start of the current leg (a resume starts a new
+// budget); a session that would not finish before the deadline degrades to a GAP
+// the human reads, and a budget that cut every collaborator blocks the gate
 // overridably.
 export const STAGE_BUDGET_MS = 6.5 * 60 * 60 * 1000;
+// The AgentCore runtime session's `max_lifetime`
+// (`lifecycle_configuration` in terraform/modules/compute/agentcore/main.tf).
+// There is no runtime API or environment variable for it, so the value is pinned
+// here against that declaration.
+export const RUNTIME_MAX_LIFETIME_MS = 28800 * 1000;
+// What the lifetime bound reserves after the last persona session: the engine
+// commit, the sensor pass and the gate hand-off. An independent reserve, NOT
+// derived from STAGE_BUDGET_MS — the two bounds answer different questions and
+// retuning the leg budget must not silently retune the hand-off reserve.
+export const RUNTIME_LIFETIME_MARGIN_MS = 90 * 60 * 1000;
+
+// The stage's effective deadline. The leg's own budget restarts with every
+// `runStage` call, but the runtime SESSION does not: the intent keeps one session
+// across serial stages, and `max_lifetime` counts from the session's start. A
+// stage that begins in a container that is already hours old therefore gets the
+// EARLIER of the two bounds, so the ensemble cannot be killed mid-persona by a
+// lifetime the leg budget knows nothing about.
+export const stageDeadline = ({ startedAtMs, budgetMs, containerStartedAtMs = null }) => {
+  const legDeadline = startedAtMs + budgetMs;
+  if (!Number.isFinite(containerStartedAtMs)) return legDeadline;
+  return Math.min(
+    legDeadline,
+    containerStartedAtMs + RUNTIME_MAX_LIFETIME_MS - RUNTIME_LIFETIME_MARGIN_MS,
+  );
+};
 const BUDGET_GAP_REASON = 'stage wall-clock budget exhausted before this session could run';
 
 // A receipt SK offers exactly one discriminator per (kind, stage, attempt, unit):

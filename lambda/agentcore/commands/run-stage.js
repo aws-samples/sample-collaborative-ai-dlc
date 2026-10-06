@@ -52,6 +52,7 @@ import { dispatchPersona, composePersonaPrompt, OFF_MOUNT_CACHE_ENV } from '../p
 import {
   MAX_PERSONA_SESSION_MS,
   STAGE_BUDGET_MS,
+  stageDeadline,
   contributionArtifactId,
   ensembleGapFindings,
   renderLeadTopologyBrief,
@@ -1700,16 +1701,23 @@ export const runStage = async (
     verifyReviewTargets: recheckReviewTargets = verifyReviewTargets,
     // The stage wall-clock budget (ensemble-runner STAGE_BUDGET_MS), read against
     // `nowMs` (epoch ms) and anchored on the start of THIS leg: each runStage call
-    // (a fresh run or a resume) gets its own budget. It is deliberately NOT
-    // anchored on the container's age, so it bounds the sessions one leg starts,
-    // not the container's lifetime, which AgentCore enforces. Injected for tests.
+    // (a fresh run or a resume) gets its own budget. Injected for tests.
     nowMs = Date.now,
     stageBudgetMs = STAGE_BUDGET_MS,
+    // How long this container has been running. The intent's runtime session is
+    // not stopped between serial stages, so a stage can start in a microVM that
+    // is already hours into its `max_lifetime`; the deadline below takes whichever
+    // of the two bounds comes first. Injected for tests.
+    processUptimeMs = () => process.uptime() * 1000,
   } = deps;
 
   const now = () => clock();
   const stageStartedAtMs = nowMs();
-  const stageDeadlineMs = stageStartedAtMs + stageBudgetMs;
+  const stageDeadlineMs = stageDeadline({
+    startedAtMs: stageStartedAtMs,
+    budgetMs: stageBudgetMs,
+    containerStartedAtMs: stageStartedAtMs - processUptimeMs(),
+  });
   // A lead repair turn has no timeout of its own, so it is started only while a
   // full persona session's worth of budget remains; past that it is skipped with a
   // note rather than risk the runtime killing the container mid-turn.

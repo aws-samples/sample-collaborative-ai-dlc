@@ -523,6 +523,45 @@ describe('runStage — native ensemble sessions: evidence reaches the gate', () 
   });
 });
 
+// The leg budget restarts on every runStage call, but the runtime session is not
+// stopped between serial stages, so a stage can start in a microVM that is
+// already hours into its 8 h max_lifetime.
+describe('runStage — the stage deadline is bounded by the container lifetime', () => {
+  const T0 = Date.parse('2026-10-06T00:00:00.000Z');
+  const HOUR = 60 * 60 * 1000;
+
+  const uptimeHarness = (uptimeHours) => {
+    const { deps, store, args } = harness({ mode: 'mob', ...withGraph() });
+    const spawns = [];
+    deps.nowMs = () => T0;
+    deps.processUptimeMs = () => uptimeHours * HOUR;
+    deps.spawnFn = (...spawnArgs) => {
+      spawns.push(spawnArgs);
+      return outputWritingSpawn();
+    };
+    return { deps, store, args, spawns };
+  };
+
+  it('starts no persona session in a container already past the usable lifetime', async () => {
+    const { deps, store, args, spawns } = uptimeHarness(7);
+
+    const result = await runStage(args, deps);
+
+    // Only the lead ran: the ensemble found no room before the runtime kill.
+    expect(spawns).toHaveLength(1);
+    expect(result.findings.map((item) => item.code)).toContain('stage_budget_exhausted');
+    expect(eventTypes(store).filter((type) => type === 'v2.persona.gap').length).toBeGreaterThan(0);
+  });
+
+  it('runs the whole topology in a freshly started container', async () => {
+    const { deps, args, spawns } = uptimeHarness(0);
+
+    await runStage(args, deps);
+
+    expect(spawns.length).toBeGreaterThan(1);
+  });
+});
+
 // The ensemble runs between the lead's exit and the engine commit, for up to
 // MAX_SUPPORT_PERSONAS x 2 tries plus the integrator and the dissent rounds, on a
 // 1 GiB session mount a persona session can fill. The lead's draft must not be

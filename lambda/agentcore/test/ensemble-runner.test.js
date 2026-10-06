@@ -19,8 +19,12 @@ import {
   parsePositions,
   renderLeadTopologyBrief,
   ENSEMBLE_PROTOCOL_FILE,
+  RUNTIME_LIFETIME_MARGIN_MS,
+  RUNTIME_MAX_LIFETIME_MS,
+  STAGE_BUDGET_MS,
   resolveEnsembleTopology,
   runEnsembleSessions,
+  stageDeadline,
 } from '../ensemble-runner.js';
 
 const RELEASE = { releaseId: 'aidlc:abc', closureDigest: 'd'.repeat(64) };
@@ -1340,6 +1344,53 @@ describe('the aggregate stage wall-clock budget', () => {
 // A "Request changes" at the validation gate re-runs the stage within the SAME
 // attempt. Receipts are keyed by the revision so the rejected draft's evidence
 // cannot stand in for the revised one.
+// A stage's leg budget restarts on every run, but the runtime session's
+// `max_lifetime` counts from the session's start and nothing stops the session
+// between serial stages.
+describe('stageDeadline — the leg budget and the container lifetime', () => {
+  const T0 = Date.parse('2026-10-06T00:00:00.000Z');
+  const HOUR = 60 * 60 * 1000;
+
+  it('uses the leg budget in a container that has just started', () => {
+    expect(
+      stageDeadline({ startedAtMs: T0, budgetMs: STAGE_BUDGET_MS, containerStartedAtMs: T0 }),
+    ).toBe(T0 + STAGE_BUDGET_MS);
+  });
+
+  it('uses the container lifetime when the session is already hours old', () => {
+    // An ungated stage ran for 3 h in this session first.
+    const containerStartedAtMs = T0 - 3 * HOUR;
+    expect(
+      stageDeadline({ startedAtMs: T0, budgetMs: STAGE_BUDGET_MS, containerStartedAtMs }),
+    ).toBe(containerStartedAtMs + RUNTIME_MAX_LIFETIME_MS - RUNTIME_LIFETIME_MARGIN_MS);
+  });
+
+  it('never returns a deadline past the runtime kill, whatever the leg budget', () => {
+    const containerStartedAtMs = T0 - 7 * HOUR;
+    const deadline = stageDeadline({
+      startedAtMs: T0,
+      budgetMs: 48 * HOUR,
+      containerStartedAtMs,
+    });
+    expect(deadline).toBeLessThan(containerStartedAtMs + RUNTIME_MAX_LIFETIME_MS);
+    expect(deadline).toBeLessThan(T0);
+  });
+
+  it('falls back to the leg budget when the container age is unknown', () => {
+    for (const containerStartedAtMs of [null, undefined, Number.NaN]) {
+      expect(stageDeadline({ startedAtMs: T0, budgetMs: HOUR, containerStartedAtMs })).toBe(
+        T0 + HOUR,
+      );
+    }
+  });
+
+  it('reserves 90 minutes for the engine commit and the gate hand-off', () => {
+    expect(RUNTIME_LIFETIME_MARGIN_MS).toBe(90 * 60 * 1000);
+    // The reserve is independent of the leg budget; today they happen to meet.
+    expect(RUNTIME_MAX_LIFETIME_MS - RUNTIME_LIFETIME_MARGIN_MS).toBe(STAGE_BUDGET_MS);
+  });
+});
+
 describe('validation revisions', () => {
   const T0 = Date.parse('2026-10-06T00:00:00.000Z');
 
