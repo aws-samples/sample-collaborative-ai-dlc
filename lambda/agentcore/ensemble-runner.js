@@ -22,9 +22,12 @@
 // A support's contribution is a `contribution` artifact written through the
 // generic `create_artifact`
 // tool plus a `persona-contribution` receipt; a pipeline link's completion is a
-// `pipeline-link` receipt carrying its ordinal. Receipts are attempt-scoped, so
-// a rewind bumps `attempt` on the STAGE row and every prior receipt becomes
-// invisible, while a park/resume within one attempt skips personas that already ran.
+// `pipeline-link` receipt carrying its ordinal. Receipts are scoped to the
+// attempt AND to the validation revision, so a rewind bumps `attempt` on the
+// STAGE row and every prior receipt becomes invisible, "Request changes" at the
+// validation gate bumps the revision and re-runs the whole topology against the
+// human's feedback, while a park/resume within one revision skips personas that
+// already ran.
 //
 // FAILURE NEVER BLOCKS. A persona session that produces no
 // evidence is retried once with a reduced brief (no knowledge block, artifact
@@ -84,14 +87,37 @@ export const MAX_PERSONA_SESSION_MS = 45 * 60 * 1000;
 // up to MAX_SUPPORT_PERSONAS supports (each up to MAX_PERSONA_SESSION_MS, retried
 // once), the integrator, mob dissent rounds, pipeline links, and the reviewer
 // loop's lead repair turns. Per-session caps alone multiply past the AgentCore
-// runtime's max_lifetime (28800 s, terraform/modules/compute/agentcore), which
-// kills the container and loses every persona after the kill. 6.5 h leaves the
-// last 1.5 h for the engine commit, sensors and the gate hand-off. Measured from
-// the start of the current leg (run-stage computes the deadline; a resume starts
-// a new budget); a session that would not finish before it degrades to a GAP the
-// human reads, and a budget that cut every collaborator blocks the gate
+// runtime's max_lifetime, which kills the container and loses every persona after
+// the kill. Measured from the start of the current leg (a resume starts a new
+// budget); a session that would not finish before the deadline degrades to a GAP
+// the human reads, and a budget that cut every collaborator blocks the gate
 // overridably.
 export const STAGE_BUDGET_MS = 6.5 * 60 * 60 * 1000;
+// The AgentCore runtime session's `max_lifetime`
+// (`lifecycle_configuration` in terraform/modules/compute/agentcore/main.tf).
+// There is no runtime API or environment variable for it, so the value is pinned
+// here against that declaration.
+export const RUNTIME_MAX_LIFETIME_MS = 28800 * 1000;
+// What the lifetime bound reserves after the last persona session: the engine
+// commit, the sensor pass and the gate hand-off. An independent reserve, NOT
+// derived from STAGE_BUDGET_MS — the two bounds answer different questions and
+// retuning the leg budget must not silently retune the hand-off reserve.
+export const RUNTIME_LIFETIME_MARGIN_MS = 90 * 60 * 1000;
+
+// The stage's effective deadline. The leg's own budget restarts with every
+// `runStage` call, but the runtime SESSION does not: the intent keeps one session
+// across serial stages, and `max_lifetime` counts from the session's start. A
+// stage that begins in a container that is already hours old therefore gets the
+// EARLIER of the two bounds, so the ensemble cannot be killed mid-persona by a
+// lifetime the leg budget knows nothing about.
+export const stageDeadline = ({ startedAtMs, budgetMs, containerStartedAtMs = null }) => {
+  const legDeadline = startedAtMs + budgetMs;
+  if (!Number.isFinite(containerStartedAtMs)) return legDeadline;
+  return Math.min(
+    legDeadline,
+    containerStartedAtMs + RUNTIME_MAX_LIFETIME_MS - RUNTIME_LIFETIME_MARGIN_MS,
+  );
+};
 const BUDGET_GAP_REASON = 'stage wall-clock budget exhausted before this session could run';
 
 // A receipt SK offers exactly one discriminator per (kind, stage, attempt, unit):
@@ -185,6 +211,26 @@ const positionLine = (position) =>
 const positionsInline = (positions = []) =>
   neutralizeTokens(positions.map((p) => `${p.stance}: ${p.text}`).join(' | '));
 
+// The human's "Request changes" feedback, rendered for a persona brief. Per-line
+// `> ` quoting is the containment here: it keeps the human's words inside one
+// block so a line of theirs cannot read as a new brief heading or instruction.
+// `neutralizeTokens` runs for a narrower reason — it scrubs the runtime-managed
+// `{{INVOKE}}` / `{{HARNESS_DIR}}` templates, exactly as it does for peer
+// positions — and is NOT a general sanitizer of prompt text.
+const feedbackBlock = ({ humanFeedback, heading, guidance }) =>
+  humanFeedback
+    ? [
+        '',
+        `## ${heading}`,
+        '',
+        ...guidance,
+        '',
+        ...neutralizeTokens(String(humanFeedback))
+          .split('\n')
+          .map((line) => `> ${line}`.trimEnd()),
+      ]
+    : [];
+
 export const buildSupportBrief = ({
   stage,
   unit = null,
@@ -192,6 +238,10 @@ export const buildSupportBrief = ({
   mode,
   round = 1,
   reduced = false,
+  // The human's feedback when this is a post-"Request changes" revision, so the
+  // support reviews the revised draft against what the human actually asked for
+  // instead of re-recording its position on the draft that was rejected.
+  humanFeedback = null,
   // Dissent triage only: later rounds receive the revised draft and peer positions.
   // Round 1 passes none, preserving mutual blindness.
   peerPositions = [],
@@ -242,6 +292,14 @@ export const buildSupportBrief = ({
     '',
     'Label every OBJECT `knowledge` or `judgment`; an unlabelled objection is read',
     'as `knowledge`. Do NOT edit the stage outputs — the lead integrates.',
+    ...feedbackBlock({
+      humanFeedback,
+      heading: 'The human requested changes on the previous revision',
+      guidance: [
+        'The draft you are reviewing is the lead\u2019s response to this feedback. Record',
+        'your position on THIS revision, with the feedback in view.',
+      ],
+    }),
     ...(peerPositions.length
       ? [
           '',
@@ -302,6 +360,7 @@ export const buildIntegratorBrief = ({
   contributions = [],
   judgmentDissent = [],
   reduced = false,
+  humanFeedback = null,
 }) =>
   [
     `# Integration: ${stage.stageId}`,
@@ -339,6 +398,14 @@ export const buildIntegratorBrief = ({
     'Where you carry a position forward, say so. Where you do NOT, record the dissent',
     'in the output attributed to the collaborator that raised it — never silently',
     'pick a winner.',
+    ...feedbackBlock({
+      humanFeedback,
+      heading: 'The human requested changes on the previous revision',
+      guidance: [
+        'The integrated output must answer this feedback as well as the contributions',
+        'above.',
+      ],
+    }),
     ...(judgmentDissent.length
       ? [
           '',
@@ -389,8 +456,14 @@ export const renderLeadTopologyBrief = ({ mode, leadAgentRef, supports = [] }) =
 
 // The native topology for a stage, or null when the stage keeps today's
 // single-session behaviour. Gated on release mode (the existing authored
-// provenance gate — an unpinned or 2.3.3-era intent is untouched) and on at least
-// one support persona resolving from the SAME library the stage came from.
+// provenance gate — an unpinned or 2.3.3-era intent is untouched), on a RESOLVED
+// STAGE POLICY, and on at least one support persona resolving from the SAME
+// library the stage came from.
+//
+// The policy condition is the same one `findingsFor` uses, deliberately: without
+// it a pinned stage whose plan resolved no policy would run the whole ensemble and
+// then report nothing at the gate — every gap, every dissent and every budget cut
+// silently dropped, because the evaluator is inert without a policy.
 export const resolveEnsembleTopology = async ({
   stage,
   library,
@@ -398,6 +471,7 @@ export const resolveEnsembleTopology = async ({
   methodologyRelease = null,
 }) => {
   if (!methodologyRelease) return null;
+  if (!stage?.policy) return null;
   if (!SESSION_ENSEMBLE_MODES.includes(stage?.mode)) return null;
   if (stage.mode === 'subagent' && !subagentIsHubAndSpoke(library)) return null;
   const refs = (stage.supportAgentRefs ?? []).filter(
@@ -487,6 +561,16 @@ export const runEnsembleSessions = async ({
   policy = null,
   personaScope = {},
   attempt = 0,
+  // Which validation revision of this attempt is running (0 for the first run,
+  // +1 per "Request changes" at the stage's validation gate). It keys the
+  // receipts, so a revision never inherits the previous revision's evidence:
+  // every support is re-dispatched against the human's feedback and a blocking
+  // budget finding cannot vanish without a recorded override. Revision 0 writes
+  // no key part, which keeps every pre-revision receipt key byte-identical.
+  validationRound = 0,
+  // The human's "Request changes" feedback for this revision, threaded into the
+  // support and integrator briefs as a quoted block. Null on revision 0.
+  humanFeedback = null,
   lead = { persona: '', block: null },
   // Everything dispatchPersona needs that is identical for every persona in this
   // stage (cli, models, env, workspaceDir, spawnFn, mcpEntry, materializers, ids).
@@ -576,13 +660,25 @@ export const runEnsembleSessions = async ({
   // The receipts this run wrote, so the runner's findings are evaluated over the
   // same rows the orchestrator re-reads before the gate opens.
   const written = [];
+  // Revision 0 writes `round: null`, the key every receipt carried before
+  // revisions were tracked.
+  const receiptRound = Number(validationRound ?? 0) || null;
+  const inThisRevision = (row) => Number(row?.round ?? 0) === Number(validationRound ?? 0);
   const receipt = async (row) => {
     if (typeof store?.putReceipt !== 'function') return null;
     return store
-      .putReceipt({ executionId, stageInstanceId, attempt, unitSlug, sectionIndex, ...row })
+      .putReceipt({
+        executionId,
+        stageInstanceId,
+        attempt,
+        round: receiptRound,
+        unitSlug,
+        sectionIndex,
+        ...row,
+      })
       .then(
         (stored) => {
-          written.push({ attempt, ...row });
+          written.push({ attempt, round: receiptRound, ...row });
           return stored;
         },
         () => null,
@@ -698,12 +794,21 @@ export const runEnsembleSessions = async ({
         reason: `topology declares more than ${MAX_SUPPORT_PERSONAS} support personas; this one was not dispatched`,
       });
     }
-    priorReceipts =
-      typeof store?.listReceipts === 'function'
-        ? // No catch: without them a resume would re-run settled personas and
-          // reset the dissent budget. The floor below turns the error into a gap.
+    if (typeof store?.listReceipts === 'function') {
+      try {
+        priorReceipts = (
           await store.listReceipts(executionId, { stageInstanceId, attempt })
-        : [];
+        ).filter(inThisRevision);
+      } catch (error) {
+        if (isFatalLoadError(error)) throw error;
+        // Not a gap we can shrug at. Without the receipts the runner cannot tell
+        // which personas already ran, so it dispatches NOBODY — and it equally
+        // cannot tell the human whether the ensemble ran at all. Recorded so the
+        // gate blocks on it instead of reading "no evidence" as "nothing to do".
+        evidence.evidenceUnavailable = error?.message ?? String(error);
+        throw error;
+      }
+    }
     const ordinalsOf = (kind) =>
       new Set(
         priorReceipts
@@ -737,6 +842,7 @@ export const runEnsembleSessions = async ({
       stage,
       unit,
       attempt,
+      humanFeedback,
       evidence,
       runPersona,
       receipt,
@@ -779,6 +885,7 @@ export const runEnsembleSessions = async ({
       stage,
       policy,
       attempt,
+      validationRound,
       evidence,
       receipts: latestReceipts([
         ...(Array.isArray(priorReceipts) ? [...priorReceipts] : []),
@@ -884,6 +991,7 @@ const runHubAndSpoke = async ({
   stage,
   unit,
   attempt,
+  humanFeedback,
   evidence,
   completed,
   priorReceipts,
@@ -947,6 +1055,7 @@ const runHubAndSpoke = async ({
           agentRef: topology.leadAgentRef,
           contributions: evidence.contributions,
           judgmentDissent,
+          humanFeedback,
           reduced,
         }),
       // The integration IS a rewrite of the stage outputs, so nothing moving means
@@ -969,6 +1078,7 @@ const runHubAndSpoke = async ({
     stage,
     unit,
     attempt,
+    humanFeedback,
     round,
     targets: topology.supports,
     completed,
@@ -995,6 +1105,7 @@ const runHubAndSpoke = async ({
       stage,
       unit,
       attempt,
+      humanFeedback,
       round,
       targets: topology.supports.filter((support) =>
         maintained.some((item) => item.agentRef === support.ref),
@@ -1020,6 +1131,7 @@ const dispatchSupports = async ({
   stage,
   unit,
   attempt,
+  humanFeedback,
   round,
   targets,
   completed,
@@ -1048,6 +1160,7 @@ const dispatchSupports = async ({
           agentRef: support.ref,
           mode: topology.mode,
           round,
+          humanFeedback,
           peerPositions,
           reduced,
         }),
@@ -1161,8 +1274,10 @@ const recordDissent = async ({ evidence, emit, stage, attempt, mode, round }) =>
 // The codes this stream can raise. Everything else in the evaluator belongs to
 // another stream and must not leak out of an ensemble run.
 const ENSEMBLE_FINDING_CODES = new Set([
+  'ensemble_evidence_unavailable',
   'persona_contribution_missing',
   'pipeline_link_incomplete',
+  'ensemble_integration_missing',
   'review_dissent_maintained',
   'stage_budget_exhausted',
 ]);
@@ -1178,12 +1293,20 @@ const latestReceipts = (rows) => [
   ...new Map(rows.map((row) => [`${row?.kind}#${row?.ordinal ?? ''}`, row])).values(),
 ];
 
-export const findingsFor = ({ stage, policy, attempt, evidence, receipts = [] }) => {
+export const findingsFor = ({
+  stage,
+  policy,
+  attempt,
+  validationRound = 0,
+  evidence,
+  receipts = [],
+}) => {
   if (!policy) return [];
   const { findings } = evaluateGatePreconditions({
     stage,
     policy,
     attempt,
+    validationRound,
     receipts,
     ensembleEvidence: evidence,
   });
@@ -1194,10 +1317,17 @@ export const findingsFor = ({ stage, policy, attempt, evidence, receipts = [] })
 // last resort if `runEnsembleSessions` itself failed to return. Built from the same
 // evaluator as a normal run, over the DECLARED topology with zero receipts, so
 // every persona is named exactly as it would be had each one gapped individually.
-export const ensembleGapFindings = ({ stage, policy, attempt = 0, topology, reason }) => {
+export const ensembleGapFindings = ({
+  stage,
+  policy,
+  attempt = 0,
+  validationRound = 0,
+  topology,
+  reason,
+}) => {
   const evidence = emptyEvidence(topology);
   evidence.gaps.push({ agentRef: topology?.leadAgentRef ?? null, role: 'ensemble', reason });
-  return findingsFor({ stage, policy, attempt, evidence });
+  return findingsFor({ stage, policy, attempt, validationRound, evidence });
 };
 
 export default {

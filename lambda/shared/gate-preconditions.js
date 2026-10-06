@@ -36,8 +36,10 @@ const FINDING_CODES = Object.freeze([
   'summary_confirmation_missing',
   'summary_confirmation_stale',
   'plan_approval_missing',
+  'ensemble_evidence_unavailable',
   'persona_contribution_missing',
   'pipeline_link_incomplete',
+  'ensemble_integration_missing',
   'stage_budget_exhausted',
   'review_advisory_findings',
   'review_dissent_maintained',
@@ -93,8 +95,15 @@ const receiptsOfKind = (receipts, kind, attempt) =>
 
 // Ensemble receipts that are evidence. A gapped pipeline link also holds a receipt
 // (`choice: 'gap'`) so a resume advances past it; it is not a completed link.
-const evidenceReceipts = (receipts, kind, attempt) =>
-  receiptsOfKind(receipts, kind, attempt).filter((row) => row?.choice !== 'gap');
+// Scoped to the validation revision for the same reason the checkpoint receipts
+// are: "Request changes" re-runs the stage within one attempt, and a contribution
+// recorded about the REJECTED draft is not evidence for the revised one. Revision
+// 0 writes no `round`, so its rows resolve exactly as they did before revisions
+// were tracked.
+const evidenceReceipts = (receipts, kind, attempt, validationRound) =>
+  receiptsOfKind(receipts, kind, attempt).filter(
+    (row) => row?.choice !== 'gap' && Number(row?.round ?? 0) === Number(validationRound ?? 0),
+  );
 
 // The checkpoint receipts (summary confirmation, plan approval) are also scoped
 // to the validation revision. "Request changes" at the validation gate re-runs
@@ -364,10 +373,30 @@ const evaluateGatePreconditions = ({
     }
   }
 
+  // The ensemble's evidence channel could not be read (the receipt history for
+  // this attempt). Nothing was dispatched, and nothing can be said about whether
+  // the declared personas ran — so this is not an absence the human can weigh, it
+  // is an unknown. It therefore follows the same fail-closed rule as a pinned
+  // sensor whose integrity check never ran: BLOCKING and NOT overridable, because
+  // a waiver would be a waiver of something nobody can describe. `request-changes`
+  // re-runs the stage, which re-reads the receipts, so the run is never stuck.
+  if (ensembleEvidence?.evidenceUnavailable) {
+    findings.push(
+      finding({
+        code: 'ensemble_evidence_unavailable',
+        severity: 'blocking',
+        title: 'The persona evidence for this stage could not be read',
+        detail: { reason: String(ensembleEvidence.evidenceUnavailable) },
+        remediation:
+          'The collaborator evidence was never readable, so no persona session ran. Request changes: the stage re-runs and re-reads it.',
+      }),
+    );
+  }
+
   const declaredSupports = ensembleEvidence?.supports ?? [];
   if (declaredSupports.length > 0) {
     const contributed = new Set(
-      evidenceReceipts(receipts, 'persona-contribution', attempt).map(
+      evidenceReceipts(receipts, 'persona-contribution', attempt, validationRound).map(
         (row) => row.detail?.agentRef ?? row.unitSlug,
       ),
     );
@@ -386,7 +415,7 @@ const evaluateGatePreconditions = ({
 
   const declaredLinks = ensembleEvidence?.links ?? [];
   if (declaredLinks.length > 0) {
-    const completed = evidenceReceipts(receipts, 'pipeline-link', attempt).length;
+    const completed = evidenceReceipts(receipts, 'pipeline-link', attempt, validationRound).length;
     if (completed < declaredLinks.length) {
       findings.push(
         finding({
@@ -400,38 +429,78 @@ const evaluateGatePreconditions = ({
     }
   }
 
+  const budgetCut = ensembleEvidence?.budgetExhausted ?? [];
+  // The integration is where the contributions become the stage output, so an
+  // integrator that crashed or left the outputs untouched means the stage output
+  // is the lead's unintegrated draft. `runHubAndSpoke` records that as a gap and a
+  // timeline event; without this the gate offered a plain `approve` with no
+  // warning at all. Advisory, like every other gap — unless the BUDGET cut the
+  // integration, which the finding below reports as a block instead, so the two
+  // never speak about the same cause at once.
+  const integrationCutByBudget = budgetCut.some((row) => row?.role === 'integrator');
+  const integratorGaps = (ensembleEvidence?.gaps ?? []).filter((row) => row?.role === 'integrator');
+  if (integratorGaps.length > 0 && !integrationCutByBudget) {
+    findings.push(
+      finding({
+        code: 'ensemble_integration_missing',
+        severity: 'advisory',
+        title: `The integration produced no evidence (${integratorGaps[0].agentRef ?? 'lead'})`,
+        detail: {
+          agentRef: integratorGaps[0].agentRef ?? null,
+          reason: integratorGaps[0].reason ?? null,
+        },
+        remediation:
+          "Review the stage output knowing it is the lead's unintegrated draft, or request changes so the integration runs again.",
+      }),
+    );
+  }
+
   // The stage's aggregate wall-clock budget cut persona sessions before they ran
   // (or while they ran). Advisory while at least one collaborator's evidence
-  // exists: the stage output is there, the human decides knowing which
-  // perspectives are absent. When the cut left NO collaborator evidence at all
-  // (no support contribution, no pipeline link past the lead) the ensemble did
-  // not happen, so the finding blocks — overridably, so approving a stage that
-  // ran as a single session is a recorded waiver rather than a silent one.
-  const budgetCut = ensembleEvidence?.budgetExhausted ?? [];
+  // exists AND the integration still ran: the stage output is there, the human
+  // decides knowing which perspectives are absent. It BLOCKS — overridably, so
+  // approving it is a recorded waiver rather than a silent one — when the cut left
+  // NO collaborator evidence at all (no support contribution, no pipeline link
+  // past the lead), or when it cut the INTEGRATION, because contributions that
+  // were never integrated did not reach the stage output either.
   if (budgetCut.length > 0) {
     const collaboratorEvidence = [
       ...(declaredSupports.length > 0
-        ? [evidenceReceipts(receipts, 'persona-contribution', attempt).length]
+        ? [evidenceReceipts(receipts, 'persona-contribution', attempt, validationRound).length]
         : []),
       ...(declaredLinks.length > 0
-        ? [Math.max(0, evidenceReceipts(receipts, 'pipeline-link', attempt).length - 1)]
+        ? [
+            Math.max(
+              0,
+              evidenceReceipts(receipts, 'pipeline-link', attempt, validationRound).length - 1,
+            ),
+          ]
         : []),
     ];
     const fullyCut =
       collaboratorEvidence.length > 0 && collaboratorEvidence.every((count) => count === 0);
+    const blocking = fullyCut || integrationCutByBudget;
     findings.push(
       finding({
         code: 'stage_budget_exhausted',
-        severity: fullyCut ? 'blocking' : 'advisory',
+        severity: blocking ? 'blocking' : 'advisory',
         title: fullyCut
           ? `The stage wall-clock budget ran out before any collaborator ran; ${budgetCut.length} persona session(s) were cut`
-          : `The stage wall-clock budget ran out; ${budgetCut.length} persona session(s) did not run to completion`,
-        detail: { sessions: budgetCut, ...(fullyCut ? { collaboratorEvidence: 0 } : {}) },
-        overridable: fullyCut,
-        ...(fullyCut ? { receiptKind: 'stage-approval' } : {}),
+          : integrationCutByBudget
+            ? `The stage wall-clock budget ran out before the integration ran; ${budgetCut.length} persona session(s) were cut`
+            : `The stage wall-clock budget ran out; ${budgetCut.length} persona session(s) did not run to completion`,
+        detail: {
+          sessions: budgetCut,
+          ...(fullyCut ? { collaboratorEvidence: 0 } : {}),
+          ...(integrationCutByBudget ? { integrationCut: true } : {}),
+        },
+        overridable: blocking,
+        ...(blocking ? { receiptKind: 'stage-approval' } : {}),
         remediation: fullyCut
           ? 'Override to approve the single-session output on the record, or request changes to run the stage again with a fresh budget.'
-          : 'Review the stage output knowing these sessions were cut, or request changes to run the stage again with a fresh budget.',
+          : integrationCutByBudget
+            ? "Override to approve the lead's unintegrated draft on the record, or request changes to run the stage again with a fresh budget."
+            : 'Review the stage output knowing these sessions were cut, or request changes to run the stage again with a fresh budget.',
       }),
     );
   }

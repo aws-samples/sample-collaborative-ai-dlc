@@ -11,6 +11,10 @@
 // the container log AND buffered (last N bytes) so the runner can inspect the
 // CLI's final error line (e.g. Kiro's ACP empty-completion signature) without
 // losing the log. Otherwise stderr is inherited as before.
+//
+// Shutdown: `processGroup` spawns register in `liveProcessGroups`, but this module
+// installs NO signal handler by itself. The composition root calls
+// `installProcessGroupShutdown` once (see its contract below).
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import { spawn } from 'node:child_process';
@@ -41,30 +45,61 @@ const signalLiveProcessGroups = (signal) => {
   for (const child of liveProcessGroups.values()) signalGroup(child, signal);
 };
 
-// Installed on the first persona session only, so a runner that never starts
-// one keeps Node's default signal handling.
-const installShutdownHandlers = () => {
+// Install the process-wide shutdown policy for persona-session process groups.
+// Called ONCE from the composition root (http-server.js) — never lazily from a
+// spawn — so a container's signal disposition does not depend on whether it ever
+// happened to host an ensemble stage.
+//
+// The handler reaps the persona groups and then RESTORES the default disposition
+// and re-raises the signal to itself, rather than calling `process.exit`. That is
+// what keeps a non-persona run byte-identical to a runner with no handler at all:
+// with no live group the signal is re-raised immediately, and if node is PID 1 the
+// kernel still ignores an unhandled SIGTERM exactly as it did before.
+export const installProcessGroupShutdown = ({
+  // Each signal's listener is remembered so `reraise` can detach OURS and leave
+  // every other listener on that signal alone: `removeAllListeners` would silently
+  // disarm unrelated shutdown work owned by someone else in this process.
+  onSignal = (handler) => {
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      const listener = () => handler(signal, listener);
+      process.once(signal, listener);
+    }
+  },
+  reraise = (signal, listener) => {
+    if (listener) process.removeListener(signal, listener);
+    process.kill(process.pid, signal);
+  },
+  graceMs = SHUTDOWN_GRACE_MS,
+  onExit = (handler) => process.once('exit', handler),
+} = {}) => {
   if (shutdownHandlersInstalled) return;
   shutdownHandlersInstalled = true;
-  for (const signal of ['SIGTERM', 'SIGINT']) {
-    process.once(signal, () => {
-      if (shuttingDown) return;
-      shuttingDown = true;
-      signalLiveProcessGroups('SIGTERM');
-      setTimeout(() => {
-        signalLiveProcessGroups('SIGKILL');
-        process.exit(signal === 'SIGINT' ? 130 : 143);
-      }, SHUTDOWN_GRACE_MS);
+  onSignal((signal, listener) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    if (liveProcessGroups.size === 0) {
+      reraise(signal, listener);
+      return;
+    }
+    logger.warn('stopping persona session process groups', {
+      signal,
+      groups: liveProcessGroups.size,
     });
-  }
-  process.once('exit', () => signalLiveProcessGroups('SIGKILL'));
+    signalLiveProcessGroups('SIGTERM');
+    // Deliberately NOT unref'd: this timer IS the rest of the shutdown, so it has
+    // to hold the event loop open even after the last persona promise settles.
+    setTimeout(() => {
+      signalLiveProcessGroups('SIGKILL');
+      reraise(signal, listener);
+    }, graceMs);
+  });
+  onExit(() => signalLiveProcessGroups('SIGKILL'));
 };
 
 const trackProcessGroup = (child) => {
   const pid = child?.pid;
   if (!pid) return () => {};
   liveProcessGroups.set(pid, child);
-  installShutdownHandlers();
   return () => liveProcessGroups.delete(pid);
 };
 

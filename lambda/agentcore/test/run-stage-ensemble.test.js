@@ -446,6 +446,7 @@ describe('runStage — native ensemble sessions: evidence reaches the gate', () 
     expect(res.findings.map((item) => item.code)).toEqual([
       'persona_contribution_missing',
       'persona_contribution_missing',
+      'ensemble_integration_missing',
     ]);
     expect(res.findings.every((item) => item.severity === 'advisory')).toBe(true);
     // Two support gaps plus the integrator's: its session rewrote nothing either,
@@ -462,7 +463,10 @@ describe('runStage — native ensemble sessions: evidence reaches the gate', () 
     const { deps, store } = harness({ mode: 'subagent', supportRefs: ['aidlc-design-agent'] });
     const res = await runStage({ ...baseArgs, methodologyRelease: RELEASE_PIN }, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
-    expect(res.findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
+    expect(res.findings.map((item) => item.code)).toEqual([
+      'persona_contribution_missing',
+      'ensemble_integration_missing',
+    ]);
     expect(eventTypes(store)).toContain('v2.persona.gap');
   });
 
@@ -520,6 +524,138 @@ describe('runStage — native ensemble sessions: evidence reaches the gate', () 
     expect(scopes.length).toBeGreaterThan(0);
     expect(scopes.every((scope) => scope.canAsk === false)).toBe(true);
     expect(scopes.every((scope) => scope.checkpointOwner === false)).toBe(true);
+  });
+});
+
+// The leg budget restarts on every runStage call, but the runtime session is not
+// stopped between serial stages, so a stage can start in a microVM that is
+// already hours into its 8 h max_lifetime.
+describe('runStage — the stage deadline is bounded by the container lifetime', () => {
+  const T0 = Date.parse('2026-10-06T00:00:00.000Z');
+  const HOUR = 60 * 60 * 1000;
+
+  const uptimeHarness = (uptimeHours) => {
+    const { deps, store, args } = harness({ mode: 'mob', ...withGraph() });
+    const spawns = [];
+    deps.nowMs = () => T0;
+    deps.processUptimeMs = () => uptimeHours * HOUR;
+    deps.spawnFn = (...spawnArgs) => {
+      spawns.push(spawnArgs);
+      return outputWritingSpawn();
+    };
+    return { deps, store, args, spawns };
+  };
+
+  it('starts no persona session in a container already past the usable lifetime', async () => {
+    const { deps, store, args, spawns } = uptimeHarness(7);
+
+    const result = await runStage(args, deps);
+
+    // Only the lead ran: the ensemble found no room before the runtime kill.
+    expect(spawns).toHaveLength(1);
+    expect(result.findings.map((item) => item.code)).toContain('stage_budget_exhausted');
+    expect(eventTypes(store).filter((type) => type === 'v2.persona.gap').length).toBeGreaterThan(0);
+  });
+
+  it('runs the whole topology in a freshly started container', async () => {
+    const { deps, args, spawns } = uptimeHarness(0);
+
+    await runStage(args, deps);
+
+    expect(spawns.length).toBeGreaterThan(1);
+  });
+});
+
+// The ensemble runs between the lead's exit and the engine commit, for up to
+// MAX_SUPPORT_PERSONAS x 2 tries plus the integrator and the dissent rounds, on a
+// 1 GiB session mount a persona session can fill. The lead's draft must not be
+// the thing that is lost when it does.
+describe('runStage — the lead draft is durable before any persona runs', () => {
+  const commitTrackingHarness = ({ failAfterLeadDraft = false } = {}) => {
+    const { deps, store, args } = harness({ mode: 'mob', ...withGraph() });
+    const commits = [];
+    deps.commitAndPushAll = async (commitArgs) => {
+      commits.push(commitArgs.message);
+      if (commits.length === 1) {
+        return {
+          ok: true,
+          committed: true,
+          results: [{ repo: 'r1', sha: 'lead1', committed: true, pushed: true }],
+        };
+      }
+      if (failAfterLeadDraft) {
+        return {
+          ok: false,
+          committed: false,
+          results: [
+            {
+              repo: 'r1',
+              committed: false,
+              dirty: true,
+              reason: 'git_commit_failed',
+              detail: 'ENOSPC: no space left on device',
+            },
+          ],
+        };
+      }
+      return {
+        ok: true,
+        committed: true,
+        results: [{ repo: 'r1', sha: 'post1', committed: true, pushed: true }],
+      };
+    };
+    return { deps, store, args, commits };
+  };
+
+  it('commits and pushes the lead tree before dispatching the personas, then again after', async () => {
+    const { deps, store, args, commits } = commitTrackingHarness();
+    const order = [];
+    deps.commitAndPushAll = async (commitArgs) => {
+      order.push(`commit:${commitArgs.message.includes('(lead draft)') ? 'lead-draft' : 'engine'}`);
+      commits.push(commitArgs.message);
+      return {
+        ok: true,
+        committed: true,
+        results: [{ repo: 'r1', sha: 'abc', committed: true, pushed: true }],
+      };
+    };
+    const spawns = [];
+    deps.spawnFn = (...spawnArgs) => {
+      order.push('spawn');
+      spawns.push(spawnArgs);
+      return outputWritingSpawn();
+    };
+
+    await runStage(args, deps);
+
+    // Lead session, then the lead-draft commit, then every persona session, then
+    // the engine commit.
+    expect(order[0]).toBe('spawn');
+    expect(order[1]).toBe('commit:lead-draft');
+    expect(order.slice(2, -1).every((step) => step === 'spawn')).toBe(true);
+    expect(order.at(-1)).toBe('commit:engine');
+    expect(commits.filter((message) => message.includes('(lead draft)'))).toHaveLength(1);
+    expect(eventTypes(store).filter((type) => type === 'v2.git.pushed').length).toBeGreaterThan(1);
+  });
+
+  it('leaves the lead commit pushed when the persona phase then fills the mount', async () => {
+    const { deps, store, args, commits } = commitTrackingHarness({ failAfterLeadDraft: true });
+    deps.spawnFn = outputWritingSpawn;
+
+    const result = await runStage(args, deps);
+
+    expect(commits[0]).toContain('(lead draft)');
+    const pushed = store.calls
+      .filter((call) => call[0] === 'appendEvent' && call[1].type === 'v2.git.pushed')
+      .map((call) => call[1].summary);
+    expect(pushed.some((summary) => summary.includes('(lead draft)'))).toBe(true);
+    expect(result.ok).toBe(false);
+    // The lead's commit is retained for traceability even though the stage then
+    // failed on the engine commit, so a clean retry can still reconstruct it.
+    const failedStage = store.calls
+      .filter((call) => call[0] === 'updateStageState' && call[1].state === 'FAILED')
+      .at(-1);
+    expect(failedStage[1].pendingCodeCommitRefs).toContainEqual({ repo: 'r1', sha: 'lead1' });
   });
 });
 

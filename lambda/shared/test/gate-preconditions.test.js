@@ -371,6 +371,106 @@ describe('evaluateGatePreconditions: ensemble evidence', () => {
     expect(result.ok).toBe(true);
   });
 
+  it('does not accept the rejected revision\u2019s contribution as evidence for the next one', () => {
+    const contributed = (round) =>
+      receipt({
+        kind: 'persona-contribution',
+        sk: `RECEIPT#persona-contribution#si-1#0#-#1${round ? `#r${round}` : ''}`,
+        round,
+        detail: { agentRef: 'design-agent' },
+      });
+    const evaluate = (validationRound, receipts) =>
+      evaluateGatePreconditions({
+        stage: STAGE,
+        policy: POLICY,
+        validationRound,
+        ensembleEvidence: { supports: ['design-agent'] },
+        receipts,
+        producedArtifacts: ['requirements'],
+      });
+    expect(codesOf(evaluate(0, [contributed(null)]))).toEqual([]);
+    expect(codesOf(evaluate(1, [contributed(null)]))).toEqual(['persona_contribution_missing']);
+    expect(codesOf(evaluate(1, [contributed(null), contributed(1)]))).toEqual([]);
+  });
+
+  // The orchestrator re-derives the findings from the same evidence before the
+  // gate opens, so the unreadable-evidence block has to survive that re-read.
+  it('blocks, non-overridably, when the persona evidence could not be read', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      ensembleEvidence: {
+        supports: ['design-agent'],
+        evidenceUnavailable: 'ThrottlingException',
+      },
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toContain('ensemble_evidence_unavailable');
+    expect(result.ok).toBe(false);
+    const unavailable = result.findings.find(
+      (item) => item.code === 'ensemble_evidence_unavailable',
+    );
+    expect(unavailable).toMatchObject({
+      severity: 'blocking',
+      overridable: false,
+      receiptKind: null,
+      detail: { reason: 'ThrottlingException' },
+    });
+    // No `override-and-approve` is offered: only request-changes resolves it.
+    expect(overridableFindings(result.findings)).not.toContainEqual(unavailable);
+  });
+
+  // `runHubAndSpoke` records a failed integration as a gap; before this the gate
+  // read only supports/links/budget/dissent and offered a plain `approve`.
+  it('reports an integration that produced no evidence as an advisory finding', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      ensembleEvidence: {
+        supports: ['design-agent'],
+        gaps: [
+          {
+            agentRef: 'product-agent',
+            role: 'integrator',
+            reason: 'integration session produced no evidence',
+          },
+        ],
+      },
+      receipts: [
+        {
+          kind: 'persona-contribution',
+          attempt: 0,
+          sk: 'RECEIPT#persona-contribution#si-1#0#-#1',
+          detail: { agentRef: 'design-agent' },
+        },
+      ],
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(['ensemble_integration_missing']);
+    expect(result.ok).toBe(true);
+    expect(result.findings[0]).toMatchObject({
+      severity: 'advisory',
+      overridable: false,
+      detail: {
+        agentRef: 'product-agent',
+        reason: 'integration session produced no evidence',
+      },
+    });
+  });
+
+  it('says nothing about the integration when a support gapped but the integration ran', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      ensembleEvidence: {
+        supports: ['design-agent'],
+        gaps: [{ agentRef: 'design-agent', role: 'support', reason: 'no contribution' }],
+      },
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(['persona_contribution_missing']);
+  });
+
   it('quotes maintained dissent verbatim', () => {
     const result = evaluateGatePreconditions({
       stage: STAGE,
@@ -682,7 +782,9 @@ describe('evaluateGatePreconditions: maintained dissent carries the verbatim tex
 });
 
 describe('evaluateGatePreconditions: stage wall-clock budget', () => {
-  it('reports the sessions the budget cut as ONE advisory finding', () => {
+  // An integration the budget never ran leaves the lead's unintegrated draft as the
+  // stage output, so approving it is a recorded waiver rather than an advisory note.
+  it('reports the sessions the budget cut as ONE finding, blocking when it cut the integration', () => {
     const result = evaluateGatePreconditions({
       stage: STAGE,
       policy: POLICY,
@@ -697,12 +799,41 @@ describe('evaluateGatePreconditions: stage wall-clock budget', () => {
         budgetExhausted: [{ agentRef: 'aidlc-product-agent', role: 'integrator' }],
       },
     });
-    const cut = result.findings.find((item) => item.code === 'stage_budget_exhausted');
-    expect(cut).toMatchObject({
-      severity: 'advisory',
-      overridable: false,
-      detail: { sessions: [{ agentRef: 'aidlc-product-agent', role: 'integrator' }] },
+    expect(codesOf(result).filter((code) => code === 'stage_budget_exhausted')).toHaveLength(1);
+    expect(result.findings.find((item) => item.code === 'stage_budget_exhausted')).toMatchObject({
+      severity: 'blocking',
+      overridable: true,
+      receiptKind: 'stage-approval',
+      detail: {
+        sessions: [{ agentRef: 'aidlc-product-agent', role: 'integrator' }],
+        integrationCut: true,
+      },
     });
+    // The budget explains the absent integration, so the integration finding does
+    // not also fire about the same cause.
+    expect(codesOf(result)).not.toContain('ensemble_integration_missing');
+  });
+
+  it('blocks, overridably, when the budget cut the integration after the supports contributed', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      producedArtifacts: ['requirements'],
+      receipts: [
+        { kind: 'persona-contribution', attempt: 0, detail: { agentRef: 'design-agent' } },
+      ],
+      ensembleEvidence: {
+        supports: ['design-agent'],
+        links: [],
+        dissent: [],
+        gaps: [{ agentRef: 'lead', role: 'integrator', reason: 'budget' }],
+        budgetExhausted: [{ agentRef: 'lead', role: 'integrator' }],
+      },
+    });
+    const cut = result.findings.find((item) => item.code === 'stage_budget_exhausted');
+    expect(cut).toMatchObject({ severity: 'blocking', overridable: true });
+    expect(overridableFindings(result.findings)).toContainEqual(cut);
+    expect(result.ok).toBe(false);
   });
 
   it('blocks, overridably, when the cut left no collaborator evidence at all', () => {

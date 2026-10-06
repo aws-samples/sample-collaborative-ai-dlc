@@ -19,8 +19,12 @@ import {
   parsePositions,
   renderLeadTopologyBrief,
   ENSEMBLE_PROTOCOL_FILE,
+  RUNTIME_LIFETIME_MARGIN_MS,
+  RUNTIME_MAX_LIFETIME_MS,
+  STAGE_BUDGET_MS,
   resolveEnsembleTopology,
   runEnsembleSessions,
+  stageDeadline,
 } from '../ensemble-runner.js';
 
 const RELEASE = { releaseId: 'aidlc:abc', closureDigest: 'd'.repeat(64) };
@@ -65,9 +69,12 @@ const contribution = ({ stageId = 'user-stories', agentRef, positions }) => ({
 
 // A store spy carrying real receipt semantics: deterministic key, idempotent, and
 // queryable by attempt — the three properties the resume/rewind paths rely on.
+// The key mirrors `receiptKey`: kind, attempt, ordinal and the validation
+// revision, so a revision cannot replay another revision's row.
 const spyStore = (seedReceipts = []) => {
   const receipts = [...seedReceipts];
   const events = [];
+  const keyOf = (row) => `${row.kind}#${row.attempt}#${row.ordinal}#${Number(row.round ?? 0)}`;
   return {
     receipts,
     events,
@@ -75,10 +82,7 @@ const spyStore = (seedReceipts = []) => {
       return receipts.filter((row) => attempt == null || Number(row.attempt) === Number(attempt));
     },
     async putReceipt(row) {
-      const key = `${row.kind}#${row.attempt}#${row.ordinal}`;
-      const existing = receipts.find(
-        (candidate) => `${candidate.kind}#${candidate.attempt}#${candidate.ordinal}` === key,
-      );
+      const existing = receipts.find((candidate) => keyOf(candidate) === keyOf(row));
       if (existing) return existing;
       receipts.push(row);
       return row;
@@ -102,6 +106,8 @@ const run = async ({
   sessions = {},
   store = spyStore(),
   attempt = 0,
+  validationRound = undefined,
+  humanFeedback = undefined,
   personaScope,
   parkAfter = null,
   resumeAnswer = null,
@@ -184,6 +190,8 @@ const run = async ({
     policy: stageRow.policy,
     ...(personaScope ? { personaScope } : {}),
     attempt,
+    ...(validationRound === undefined ? {} : { validationRound }),
+    ...(humanFeedback === undefined ? {} : { humanFeedback }),
     resumeAnswer,
     lead: { persona: 'persona:product-agent', block: { id: 'product-agent' } },
     dispatch: dispatchOverride ?? dispatch,
@@ -247,6 +255,19 @@ describe('resolveEnsembleTopology — the gate on native sessions', () => {
         env: { V2_ENSEMBLE_SESSIONS: value },
       });
       expect(resolved).not.toBeNull();
+    }
+  });
+
+  // The topology gate and the gate findings must agree: a pinned stage whose plan
+  // resolved no policy would otherwise run every persona session and then report
+  // nothing at all, because `findingsFor` is inert without a policy.
+  it('is inert when the stage resolved no policy, so personas never run unreportable', async () => {
+    for (const policy of [null, undefined]) {
+      expect(await topologyFor(stage({ mode: 'mob', policy }))).toBeNull();
+      expect(await topologyFor(stage({ mode: 'pipeline', policy }))).toBeNull();
+      expect(
+        await topologyFor(stage({ mode: 'subagent', policy, supportAgentRefs: ['design-agent'] })),
+      ).toBeNull();
     }
   });
 
@@ -457,7 +478,10 @@ describe('contribution evidence identity', () => {
     });
 
     expect(result.ensembleEvidence.contributions).toEqual([]);
-    expect(result.findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
+    expect(result.findings.map((item) => item.code)).toEqual([
+      'persona_contribution_missing',
+      'ensemble_integration_missing',
+    ]);
   });
 });
 
@@ -534,7 +558,10 @@ describe('subagent / mob — contributions, receipts and events', () => {
       stageInstanceId: stageRow.stageInstanceId,
     });
     expect(result.ensembleEvidence.contributions).toEqual([]);
-    expect(result.findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
+    expect(result.findings.map((item) => item.code)).toEqual([
+      'persona_contribution_missing',
+      'ensemble_integration_missing',
+    ]);
   });
 
   it('integrates once for subagent and never opens a dissent round', async () => {
@@ -906,14 +933,15 @@ describe('failure never blocks', () => {
   });
 
   // Without the receipts, a resume cannot tell which personas already ran, nor how
-  // many dissent rounds were spent: nothing is dispatched, and the gate hears it.
-  it('dispatches nothing when the prior receipts cannot be read', async () => {
+  // many dissent rounds were spent: nothing is dispatched. That is an UNKNOWN, not
+  // an absence the human can weigh, so it fails closed at the gate.
+  it('dispatches nothing and blocks the gate when the prior receipts cannot be read', async () => {
     const stageRow = stage({ mode: 'mob' });
     const store = spyStore();
     store.listReceipts = async () => {
       throw new Error('ThrottlingException');
     };
-    const { briefs, ensembleEvidence } = await run({
+    const { briefs, ensembleEvidence, findings } = await run({
       stageRow,
       topology: await topologyFor(stageRow),
       store,
@@ -922,6 +950,25 @@ describe('failure never blocks', () => {
     expect(ensembleEvidence.gaps).toEqual([
       expect.objectContaining({ role: 'ensemble', reason: expect.stringContaining('Throttling') }),
     ]);
+    expect(ensembleEvidence.evidenceUnavailable).toContain('ThrottlingException');
+    const unavailable = findings.find((item) => item.code === 'ensemble_evidence_unavailable');
+    // Non-overridable: a human cannot waive evidence nobody can describe. Request
+    // changes re-runs the stage and re-reads the receipts.
+    expect(unavailable).toMatchObject({
+      severity: 'blocking',
+      overridable: false,
+      receiptKind: null,
+    });
+  });
+
+  it('leaves a readable run without the unavailable flag', async () => {
+    const stageRow = stage({ mode: 'mob', supportAgentRefs: ['design-agent'] });
+    const { ensembleEvidence, findings } = await run({
+      stageRow,
+      topology: await topologyFor(stageRow),
+    });
+    expect(ensembleEvidence).not.toHaveProperty('evidenceUnavailable');
+    expect(findings.map((item) => item.code)).not.toContain('ensemble_evidence_unavailable');
   });
 
   it('accepts a support that produces its contribution only on the reduced retry', async () => {
@@ -1044,14 +1091,17 @@ describe('failure never blocks', () => {
       stageInstanceId: stageRow.stageInstanceId,
     });
     expect(result.ensembleEvidence.supports).toEqual(['design-agent']);
-    expect(result.findings.map((item) => item.code)).toEqual(['persona_contribution_missing']);
+    expect(result.findings.map((item) => item.code)).toEqual([
+      'persona_contribution_missing',
+      'ensemble_integration_missing',
+    ]);
   });
 
   it('raises no finding at all without a resolved release policy', async () => {
-    const stageRow = stage({ mode: 'mob', policy: null, supportAgentRefs: ['design-agent'] });
+    const stageRow = stage({ mode: 'mob', supportAgentRefs: ['design-agent'] });
     const topology = await topologyFor(stageRow);
     const { findings } = await run({
-      stageRow,
+      stageRow: { ...stageRow, policy: null },
       topology,
       sessions: { 'design-agent': { kind: 'crashes' } },
     });
@@ -1240,13 +1290,18 @@ describe('the aggregate stage wall-clock budget', () => {
       'stage wall-clock budget exhausted before this session could run',
     ]);
     expect(findings.map((item) => item.code)).toContain('stage_budget_exhausted');
+    // Two supports contributed, but the INTEGRATION was cut, so their work never
+    // reached the stage output: the human waives that on the record.
     expect(findings.find((item) => item.code === 'stage_budget_exhausted')).toMatchObject({
-      severity: 'advisory',
+      severity: 'blocking',
+      overridable: true,
+      receiptKind: 'stage-approval',
       detail: {
         sessions: [
           { agentRef: 'quality-agent', role: 'support' },
           { agentRef: 'product-agent', role: 'integrator' },
         ],
+        integrationCut: true,
       },
     });
   });
@@ -1330,6 +1385,134 @@ describe('the aggregate stage wall-clock budget', () => {
     });
     expect(ensembleEvidence).not.toHaveProperty('budgetExhausted');
     expect(findings.map((item) => item.code)).not.toContain('stage_budget_exhausted');
+  });
+});
+
+// A "Request changes" at the validation gate re-runs the stage within the SAME
+// attempt. Receipts are keyed by the revision so the rejected draft's evidence
+// cannot stand in for the revised one.
+// A stage's leg budget restarts on every run, but the runtime session's
+// `max_lifetime` counts from the session's start and nothing stops the session
+// between serial stages.
+describe('stageDeadline — the leg budget and the container lifetime', () => {
+  const T0 = Date.parse('2026-10-06T00:00:00.000Z');
+  const HOUR = 60 * 60 * 1000;
+
+  it('uses the leg budget in a container that has just started', () => {
+    expect(
+      stageDeadline({ startedAtMs: T0, budgetMs: STAGE_BUDGET_MS, containerStartedAtMs: T0 }),
+    ).toBe(T0 + STAGE_BUDGET_MS);
+  });
+
+  it('uses the container lifetime when the session is already hours old', () => {
+    // An ungated stage ran for 3 h in this session first.
+    const containerStartedAtMs = T0 - 3 * HOUR;
+    expect(
+      stageDeadline({ startedAtMs: T0, budgetMs: STAGE_BUDGET_MS, containerStartedAtMs }),
+    ).toBe(containerStartedAtMs + RUNTIME_MAX_LIFETIME_MS - RUNTIME_LIFETIME_MARGIN_MS);
+  });
+
+  it('never returns a deadline past the runtime kill, whatever the leg budget', () => {
+    const containerStartedAtMs = T0 - 7 * HOUR;
+    const deadline = stageDeadline({
+      startedAtMs: T0,
+      budgetMs: 48 * HOUR,
+      containerStartedAtMs,
+    });
+    expect(deadline).toBeLessThan(containerStartedAtMs + RUNTIME_MAX_LIFETIME_MS);
+    expect(deadline).toBeLessThan(T0);
+  });
+
+  it('falls back to the leg budget when the container age is unknown', () => {
+    for (const containerStartedAtMs of [null, undefined, Number.NaN]) {
+      expect(stageDeadline({ startedAtMs: T0, budgetMs: HOUR, containerStartedAtMs })).toBe(
+        T0 + HOUR,
+      );
+    }
+  });
+
+  it('reserves 90 minutes for the engine commit and the gate hand-off', () => {
+    expect(RUNTIME_LIFETIME_MARGIN_MS).toBe(90 * 60 * 1000);
+    // The reserve is independent of the leg budget; today they happen to meet.
+    expect(RUNTIME_MAX_LIFETIME_MS - RUNTIME_LIFETIME_MARGIN_MS).toBe(STAGE_BUDGET_MS);
+  });
+});
+
+describe('validation revisions', () => {
+  const T0 = Date.parse('2026-10-06T00:00:00.000Z');
+
+  it('writes the legacy receipt key on the first revision', async () => {
+    const stageRow = stage({ mode: 'mob', supportAgentRefs: ['design-agent'] });
+    const store = spyStore();
+    await run({ stageRow, topology: await topologyFor(stageRow), store });
+    expect(store.receipts.map((row) => row.round)).toEqual([null]);
+  });
+
+  it("re-dispatches every support on a request-changes revision, with the human's feedback", async () => {
+    const stageRow = stage({ mode: 'mob' });
+    const topology = await topologyFor(stageRow);
+    const store = spyStore();
+    // Revision 0: the budget is already spent, so nothing runs and the gate blocks.
+    const first = await run({ stageRow, topology, store, nowMs: () => T0, deadlineMs: T0 - 1 });
+    expect(first.briefs).toEqual([]);
+    expect(first.findings.find((item) => item.code === 'stage_budget_exhausted')).toMatchObject({
+      severity: 'blocking',
+      overridable: true,
+    });
+
+    // Revision 1 on the SAME store and attempt, with a fresh budget: every
+    // support is dispatched again rather than skipped on revision 0's receipts.
+    const feedback = 'Tighten the acceptance criteria on the payment story.';
+    const revised = await run({
+      stageRow,
+      topology,
+      store,
+      validationRound: 1,
+      humanFeedback: feedback,
+    });
+    expect(revised.briefs.map((entry) => entry.role)).toEqual([
+      'support',
+      'support',
+      'support',
+      'integrator',
+    ]);
+    for (const entry of revised.briefs) expect(entry.brief).toContain(feedback);
+    expect(revised.findings).toEqual([]);
+    expect(store.receipts.filter((row) => row.round === 1)).toHaveLength(3);
+  });
+
+  it('keeps the blocking budget finding on a revision that is cut again', async () => {
+    const stageRow = stage({ mode: 'mob' });
+    const topology = await topologyFor(stageRow);
+    const store = spyStore();
+    await run({ stageRow, topology, store });
+    // Revision 0 contributed; revision 1 is cut before any support can answer the
+    // feedback, so the block does not inherit the rejected draft's evidence.
+    const cut = await run({
+      stageRow,
+      topology,
+      store,
+      validationRound: 1,
+      nowMs: () => T0,
+      deadlineMs: T0 - 1,
+    });
+    expect(cut.findings.find((item) => item.code === 'stage_budget_exhausted')).toMatchObject({
+      severity: 'blocking',
+      overridable: true,
+      receiptKind: 'stage-approval',
+    });
+    expect(
+      cut.findings.filter((item) => item.code === 'persona_contribution_missing'),
+    ).toHaveLength(3);
+  });
+
+  it('resumes within one revision instead of re-dispatching it', async () => {
+    const stageRow = stage({ mode: 'mob', supportAgentRefs: ['design-agent', 'quality-agent'] });
+    const topology = await topologyFor(stageRow);
+    const store = spyStore();
+    await run({ stageRow, topology, store, validationRound: 2 });
+    const resumed = await run({ stageRow, topology, store, validationRound: 2 });
+    expect(resumed.briefs.map((entry) => entry.role)).toEqual(['integrator']);
   });
 });
 
