@@ -2,5 +2,9 @@
 // only by credential-material-registry.js. Static imports keep container-deps.test.js walking
 // every provider dependency the image must install.
 import { KEYS_RUNTIME_PROVIDER } from './keys-runtime-provider.js';
+import { BEDROCK_IAM_RUNTIME_PROVIDER } from './bedrock-iam-runtime-provider.js';
 
-export const RUNTIME_AUTH_PROVIDERS = Object.freeze([KEYS_RUNTIME_PROVIDER]);
+export const RUNTIME_AUTH_PROVIDERS = Object.freeze([
+  KEYS_RUNTIME_PROVIDER,
+  BEDROCK_IAM_RUNTIME_PROVIDER,
+]);
