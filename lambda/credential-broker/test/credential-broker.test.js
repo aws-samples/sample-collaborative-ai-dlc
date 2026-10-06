@@ -1,3 +1,4 @@
+import { apiKeyLease } from '../../shared/agent-credential-lease.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -6,11 +7,15 @@ import { SSMClient, GetParameterCommand, PutParameterCommand } from '@aws-sdk/cl
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import {
   CREDENTIAL_ACTIVE_EXECUTION_STATUSES,
+  RESOLVE_AGENT_CREDENTIALS,
   authorizeAgentCredentialRequest,
   authorizeCredentialRequest,
   executionIncludesRepository,
+  loggableAgentCredentialErrorCode,
 } from '../index.js';
 import { signAgentCredentialGrant } from '../../shared/agent-credential-grants.js';
+import { legacyConnection } from '../../shared/agent-connection-repository.js';
+import { connectionBinding } from '../../shared/agent-binding-selection.js';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const ssmMock = mockClient(SSMClient);
@@ -158,10 +163,12 @@ describe('agent credential grant authorization', () => {
         {
           binding: { provider: 'bedrock', source: 'space' },
           value: 'bedrock-space',
+          lease: apiKeyLease('bedrock-space'),
         },
         {
           binding: { provider: 'kiro', source: 'user', userId: 'u-1' },
           value: 'kiro-user',
+          lease: apiKeyLease('kiro-user'),
         },
       ],
     });
@@ -198,6 +205,118 @@ describe('agent credential grant authorization', () => {
       ),
     ).rejects.toMatchObject({ code: 'AGENT_CREDENTIAL_GRANT_INVALID' });
     expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(0);
+  });
+
+  // Published key-only runtimes read these bytes: key order included.
+  it('keeps the v2 keys wire: an api-key lease beside the top-level value, null when missing', async () => {
+    const bedrock = connectionBinding(legacyConnection('legacy-space-bedrock-p-1'), 2);
+    const kiro = connectionBinding(legacyConnection('legacy-user-kiro-u-1'), 2);
+    const grant = signAgentCredentialGrant(
+      { purpose: 'capabilities', projectId: 'p-1', bindings: [kiro, bedrock] },
+      SECRET,
+      { now: () => NOW, randomId: () => 'grant-1234567890' },
+    );
+    ssmMock.on(GetParameterCommand).callsFake((input) => {
+      if (input.Name === '/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token')
+        return { Parameter: { Name: input.Name, Value: 'bedrock-space' } };
+      throw Object.assign(new Error('missing'), { name: 'ParameterNotFound' });
+    });
+
+    const result = await authorizeAgentCredentialRequest(
+      { grant },
+      {
+        ssmClient: ssm,
+        secret: SECRET,
+        env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+        now: () => NOW,
+      },
+    );
+
+    expect(JSON.stringify(result)).toBe(
+      JSON.stringify({
+        purpose: 'capabilities',
+        projectId: 'p-1',
+        executionId: null,
+        credentials: [
+          { lease: apiKeyLease('bedrock-space'), binding: bedrock, value: 'bedrock-space' },
+          { lease: apiKeyLease(null), binding: kiro, value: null },
+        ],
+      }),
+    );
+    expect(
+      ssmMock.commandCalls(GetParameterCommand).map((call) => call.args[0].input.Name),
+    ).toEqual([
+      '/app/dev/projects/p-1/agent-credentials/bedrock-bearer-token',
+      '/app/dev/users/u-1/agent-credentials/kiro-api-key',
+    ]);
+  });
+
+  it('keeps the v1 grant wire byte-identical', async () => {
+    const grant = signAgentCredentialGrant(
+      {
+        purpose: 'discussion',
+        projectId: 'p-1',
+        bindings: [{ provider: 'bedrock', source: 'platform' }],
+      },
+      SECRET,
+      { now: () => NOW, randomId: () => 'grant-1234567890' },
+    );
+    ssmMock.on(GetParameterCommand).resolves({ Parameter: { Value: 'platform-key' } });
+
+    const result = await authorizeAgentCredentialRequest(
+      { grant, action: RESOLVE_AGENT_CREDENTIALS },
+      {
+        ssmClient: ssm,
+        secret: SECRET,
+        env: { AGENT_SETTINGS_SSM_PREFIX: '/app/dev' },
+        now: () => NOW,
+      },
+    );
+
+    expect(JSON.stringify(result)).toBe(
+      JSON.stringify({
+        purpose: 'discussion',
+        projectId: 'p-1',
+        executionId: null,
+        credentials: [
+          {
+            binding: { provider: 'bedrock', source: 'platform' },
+            value: 'platform-key',
+            lease: apiKeyLease('platform-key'),
+          },
+        ],
+      }),
+    );
+  });
+
+  it('requires a grant before loading the signing key', async () => {
+    await expect(
+      authorizeAgentCredentialRequest(
+        { action: RESOLVE_AGENT_CREDENTIALS },
+        {
+          ssmClient: ssm,
+          env: { AGENT_CREDENTIAL_GRANT_SECRET_PARAM: '/app/dev/grant-secret' },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'AGENT_CREDENTIAL_GRANT_INVALID' });
+    expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(0);
+  });
+
+  it('logs only allowlisted codes and keeps the five base codes', () => {
+    for (const code of [
+      'AGENT_CREDENTIAL_GRANT_EXPIRED',
+      'AGENT_CREDENTIAL_GRANT_INVALID',
+      'AGENT_CREDENTIAL_GRANT_NOT_CONFIGURED',
+      'AGENT_AUTH_CONNECTION_UNAVAILABLE',
+      'AGENT_AUTH_CHANGE_IN_PROGRESS',
+    ])
+      expect(loggableAgentCredentialErrorCode({ code })).toBe(code);
+    for (const error of [
+      { code: 'AGENT_AUTH_MODE_UNAVAILABLE' },
+      Object.assign(new Error('User is not authorized'), { name: 'AccessDeniedException' }),
+      null,
+    ])
+      expect(loggableAgentCredentialErrorCode(error)).toBe('AGENT_CREDENTIAL_BROKER_FAILED');
   });
 });
 

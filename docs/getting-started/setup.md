@@ -349,6 +349,12 @@ baseline blocks, or default workflow, skip the post-apply reseed:
 ./scripts/deploy-terraform.sh dev --skip-seed
 ```
 
+After Terraform applies, the deployment script initializes the scoped agent
+authentication inventory on both fresh installs and upgrades. This idempotent
+step also runs with `--skip-seed`; a failure fails deployment. If you apply
+Terraform directly, follow the [inventory initialization instructions](../development/agent-authentication-foundation.md#scoped-reviews)
+before saving personal or space credentials.
+
 ### Bootstrap the first platform administrator
 
 The **Admin** page (user management, agent settings and default models, provider OAuth/App configuration, migrations) and workflow/building-block authoring require the **`platform-admin`** role. For local Cognito users, bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional local admins can be granted or revoked in the UI under **Admin → Users**:

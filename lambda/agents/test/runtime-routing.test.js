@@ -10,6 +10,12 @@ import {
   resolveProjectRuntimeTarget,
   verifyMcpServers,
 } from '../index.js';
+import { TEST_CONNECTION_MODE } from '../../shared/test/helpers/auth-modes.js';
+
+// A registered non-keys mode stands in for whichever provider a deployment adds.
+vi.mock('../../shared/agent-auth-modes.js', async (importOriginal) =>
+  (await import('../../shared/test/helpers/auth-modes.js')).withAuthModes(importOriginal),
+);
 
 const CORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/core';
 const MANAGED_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed';
@@ -113,5 +119,50 @@ describe('agent utility runtime routing', () => {
     const input = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
     expect(input.agentRuntimeArn).toBe(CORE_RUNTIME_ARN);
     expect(input).not.toHaveProperty('qualifier');
+  });
+
+  it('discovers a new mode after a deployment while older sessions still run the key-only image', async () => {
+    const mode = TEST_CONNECTION_MODE.id;
+    let deployedModes = ['keys'];
+    const sessions = new Map();
+    agentcoreMock.on(InvokeAgentRuntimeCommand).callsFake(async (input) => {
+      if (!sessions.has(input.runtimeSessionId))
+        sessions.set(input.runtimeSessionId, deployedModes);
+      const modes = sessions.get(input.runtimeSessionId);
+      const payload = JSON.parse(Buffer.from(input.payload).toString());
+      const authed = modes.includes(mode) && Boolean(payload.agentCredentialGrant);
+      return runtimeResponse({
+        ok: true,
+        agentAuthProtocol: 2,
+        agentAuthModes: modes,
+        clis: [{ cli: 'claude', installed: true, authed, available: authed }],
+      });
+    });
+
+    expect((await fetchRuntimeCapabilities()).agentAuthModes).toEqual(['keys']);
+    deployedModes = ['keys', mode];
+    const caps = await fetchRuntimeCapabilities(undefined, {
+      bedrock: {
+        version: 2,
+        provider: 'bedrock',
+        source: 'platform',
+        connectionId: 'platform-test-connection',
+        connectionRevision: 1,
+        policyRevision: 1,
+        mode,
+        backend: 'bedrock',
+        mechanism: 'oauth-machine',
+        configuration: { region: 'eu-west-1' },
+      },
+    });
+    expect(caps.clis).toEqual([{ cli: 'claude', installed: true, authed: true, available: true }]);
+    // Qualification and credential redemption must inspect the same fresh image.
+    const calls = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand);
+    expect(calls).toHaveLength(3);
+    expect(calls[1].args[0].input.runtimeSessionId).not.toBe(
+      calls[0].args[0].input.runtimeSessionId,
+    );
+    expect(calls[1].args[0].input.runtimeSessionId).toBe(calls[2].args[0].input.runtimeSessionId);
+    expect(sessions.get(calls[0].args[0].input.runtimeSessionId)).toEqual(['keys']);
   });
 });

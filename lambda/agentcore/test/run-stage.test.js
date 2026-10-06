@@ -16,6 +16,7 @@ import {
   runGit,
 } from '../git-engine.js';
 import { collectCodeTraceabilityBatches } from '../code-traceability.js';
+import { currentCredentialSession } from '../credential-session.js';
 import { renderRulesDoc } from '../stage-materializer.js';
 import {
   buildExecutionPlan,
@@ -1672,6 +1673,40 @@ describe('runStage — LLM reviewer axis', () => {
     expect(spawnFn).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['claude', 'opencode'])(
+    'records a failed %s review, not a missing verdict, when the credential is lost',
+    async (cli) => {
+      const store = storeWithVerdict('READY', 'ready');
+      const append = store.appendEvent;
+      // The builder has finished; the reviewer's launch finds the session already expired.
+      store.appendEvent = async (event) => {
+        if (event.type === 'v2.review.running') currentCredentialSession().cancel();
+        return append(event);
+      };
+      const spawnFn = vi.fn(okSpawn);
+      await runStage(
+        { ...baseArgs, requestedCli: cli },
+        baseDeps({
+          store,
+          spawnFn,
+          availableClis: [cli],
+          loadLibrary: async () => ({
+            workflow: workflow(),
+            library: libWithReviewer({ humanValidation: 'none' }),
+          }),
+        }),
+      );
+      const events = store.calls.filter((c) => c[0] === 'appendEvent').map((c) => c[1]);
+      expect(events.find(({ type }) => type === 'v2.review.failed')).toMatchObject({
+        actor: 'aidlc-reviewer-agent',
+        summary:
+          'Reviewer aidlc-reviewer-agent failed: Invocation credential is no longer available',
+      });
+      expect(store.calls.some((c) => c[0] === 'recordSensorRun')).toBe(false);
+      expect(spawnFn).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('keeps Codex reviewer sessions ephemeral and persists only the author rollout', async () => {
     const persistCodexRollout = vi.fn(async () => ({ ok: true, status: 'persisted' }));
     const cleanupCodexHome = vi.fn(async () => true);
@@ -3016,6 +3051,40 @@ describe('runStage — Kiro credit capture (per-turn footer → credits metric)'
     await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, mkDeps());
     await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, mkDeps());
     expect(usageSpawns).toBe(1);
+  });
+
+  it.each([
+    [
+      'the credential is lost during /usage',
+      () => (command, args) => {
+        const child = kiroSpawn({ usage: '' })(command, args);
+        currentCredentialSession().cancel();
+        return child;
+      },
+    ],
+  ])('does not cache an unread rate when %s', async (_label, failingUsage) => {
+    let usageSpawns = 0;
+    const spawn = kiroSpawn();
+    const failing = failingUsage();
+    const counting = (command, args) => {
+      if (!args.includes('/usage')) return spawn(command, args);
+      usageSpawns += 1;
+      return usageSpawns === 1 ? failing(command, args) : spawn(command, args);
+    };
+    const run = async () => {
+      const deps = baseDeps({
+        availableClis: ['kiro'],
+        env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
+        spawnFn: counting,
+      });
+      await runStage({ ...baseArgs, cliModels: { kiro: 'claude-opus-4.6' } }, deps);
+      return deps.store.calls.find(
+        (c) => c[0] === 'recordMetric' && c[1].metrics?.credits !== undefined,
+      )[1].creditRate;
+    };
+    expect(await run()).toBeNull();
+    expect(await run()).toBe(0.04);
+    expect(usageSpawns).toBe(2);
   });
 });
 

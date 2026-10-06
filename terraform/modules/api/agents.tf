@@ -56,6 +56,7 @@ module "agents_lambda" {
     QUESTIONS_TABLE                     = var.agent_questions_table_name
     NEPTUNE_ENDPOINT                    = var.neptune_endpoint
     AGENT_OUTPUTS_TABLE                 = var.agent_outputs_table_name
+    V2_PROCESS_TABLE                    = var.v2_executions_table_name
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_METADATA_FUNCTION  = "${var.project_name}-credential-metadata-${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
@@ -316,6 +317,37 @@ module "cors_agent_verify_mcp" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.agent_verify_mcp.id
+}
+
+# /agents/authentication-setup — setup steps of registered authentication providers,
+# selected by mode and action in the body, so providers add no API Gateway resources.
+resource "aws_api_gateway_resource" "agent_authentication_setup" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.agents_root.id
+  path_part   = "authentication-setup"
+}
+
+resource "aws_api_gateway_method" "agent_authentication_setup_post" {
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.agent_authentication_setup.id
+  http_method   = "POST"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "agent_authentication_setup_post" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.agent_authentication_setup.id
+  http_method             = aws_api_gateway_method.agent_authentication_setup_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = module.agents_lambda.lambda_function_invoke_arn
+}
+
+module "cors_agent_authentication_setup" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.agent_authentication_setup.id
 }
 
 # /agents/settings

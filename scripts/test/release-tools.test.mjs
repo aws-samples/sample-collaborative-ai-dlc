@@ -519,7 +519,8 @@ case "$*" in
     ;;
   *"show -json "*) printf '{"resource_changes":[]}\\n' ;;
   *" output -raw application_url"*) printf 'https://app.example.invalid\\n' ;;
-  *" output -raw aws_region"*) printf 'eu-west-1\\n' ;;
+  *"output -raw aws_region"*) printf 'eu-west-1\\n' ;;
+  *"output -raw v2_executions_table_name"*) printf 'auth-summary\\n' ;;
   *" output -raw environment"*) printf 'summary\\n' ;;
   *" output -raw seed_blocks_lambda_name"*) printf 'seed-summary\\n' ;;
 esac
@@ -539,6 +540,17 @@ if [[ "$*" == *"lambda invoke"* ]]; then
   done
   printf 'None\\n'
 fi
+`,
+    { mode: 0o755 },
+  );
+
+  writeFileSync(
+    join(bin, 'node'),
+    `#!/usr/bin/env bash
+if [[ "$1" == */initialize-agent-auth-inventory.mjs ]]; then
+  exit 0
+fi
+exec '${process.execPath}' "$@"
 `,
     { mode: 0o755 },
   );
@@ -608,7 +620,8 @@ case "$*" in
   *" output -raw oidc_idp_callback_url"*) printf 'https://broker.example.invalid/oauth2/idpresponse\\n' ;;
   *" output -raw saml_acs_url"*) printf 'https://broker.example.invalid/saml2/idpresponse\\n' ;;
   *" output -raw saml_entity_id"*) printf 'urn:amazon:cognito:sp:eu-west-1_pool\\n' ;;
-  *" output -raw aws_region"*) printf 'eu-west-1\\n' ;;
+  *"output -raw aws_region"*) printf 'eu-west-1\\n' ;;
+  *"output -raw v2_executions_table_name"*) printf 'auth-summary\\n' ;;
   *" output -raw environment"*) printf 'summary\\n' ;;
   *" output -raw seed_blocks_lambda_name"*) printf 'seed-summary\\n' ;;
 esac
@@ -629,6 +642,18 @@ if [[ "$*" == *"lambda invoke"* ]]; then
   done
   printf 'None\\n'
 fi
+`,
+    { mode: 0o755 },
+  );
+
+  writeFileSync(
+    join(bin, 'node'),
+    `#!/usr/bin/env bash
+if [[ "$1" == */initialize-agent-auth-inventory.mjs ]]; then
+  printf 'initialize-inventory %s %s\\n' "$AWS_REGION" "$V2_PROCESS_TABLE" >> "$AIDLC_TERRAFORM_LOG"
+  exit "\${AIDLC_FAKE_INVENTORY_EXIT:-0}"
+fi
+exec '${process.execPath}' "$@"
 `,
     { mode: 0o755 },
   );
@@ -711,6 +736,39 @@ test('standalone deployment can skip the post-apply baseline seed', () => {
 
   assert.equal(deployed.status, 0, deployed.stderr);
   assert.match(deployed.stdout, /Skipping AI-DLC default workflow/);
+  assert.doesNotMatch(readFileSync(awsLog, 'utf8'), /lambda invoke/);
+});
+
+test('deployment initializes inventory after apply even when baseline seeding is skipped', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-inventory-'));
+  const { env, terraformLog, planFile } = standaloneDeployEnv(dir);
+  const planned = run(
+    'bash',
+    [deployTerraform, 'summary', '--phase', 'plan', '--plan-file', planFile],
+    { env },
+  );
+  assert.equal(planned.status, 0, planned.stderr);
+  assert.doesNotMatch(readFileSync(terraformLog, 'utf8'), /initialize-inventory/);
+  const applied = run(
+    'bash',
+    [deployTerraform, 'summary', '--phase', 'apply', '--plan-file', planFile, '--skip-seed'],
+    { env },
+  );
+  assert.equal(applied.status, 0, applied.stderr);
+  const log = readFileSync(terraformLog, 'utf8');
+  assert.match(log, /initialize-inventory eu-west-1 auth-summary/);
+  assert.ok(log.indexOf(`apply ${planFile}`) < log.indexOf('initialize-inventory'));
+});
+
+test('deployment fails and retains the plan when inventory initialization fails', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-inventory-failed-'));
+  const { env, awsLog, planFile } = standaloneDeployEnv(dir);
+  const result = run('bash', [deployTerraform, 'summary', '--plan-file', planFile], {
+    env: { ...env, AIDLC_FAKE_INVENTORY_EXIT: '1' },
+  });
+  assert.equal(result.status, 1);
+  assert.ok(existsSync(planFile));
+  assert.doesNotMatch(result.stdout, /Infrastructure deployment complete/);
   assert.doesNotMatch(readFileSync(awsLog, 'utf8'), /lambda invoke/);
 });
 
@@ -1011,7 +1069,10 @@ test('standalone destroy refuses production even when confirmation is bypassed',
     join(bin, 'terraform'),
     `#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$TERRAFORM_LOG"
-[[ "$*" == *" console "* ]] && printf 'true\\n'
+if [[ "$*" == *" console "* ]]; then
+  cat >/dev/null
+  printf 'true\\n'
+fi
 exit 0
 `,
     { mode: 0o755 },

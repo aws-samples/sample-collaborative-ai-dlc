@@ -6,23 +6,31 @@
 // trusted API Lambdas can ask only for set-state or effective source bindings.
 
 import { SSMClient } from '@aws-sdk/client-ssm';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { createAgentConnectionRepository } from '../shared/agent-connection-repository.js';
+import { resolvePolicyBindings } from '../shared/agent-binding-selection.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 import {
   AGENT_CREDENTIAL_METADATA_ACTIONS,
   readCredentialScopeStatus,
   resolveEffectiveCredentialBindings,
+  listCredentialScopes,
 } from '../shared/agent-credentials.js';
 
 const ssm = new SSMClient({});
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const logger = new Logger({ persistentKeys: { component: 'credential-metadata' } });
 
 export const inspectAgentCredentialMetadata = async (
   event = {},
-  { ssmClient = ssm, env = process.env } = {},
+  { ssmClient = ssm, ddbClient = ddb, env = process.env } = {},
 ) => {
   const base = env.AGENT_SETTINGS_SSM_PREFIX || '';
   switch (event.action) {
+    case AGENT_CREDENTIAL_METADATA_ACTIONS.LIST_SCOPES:
+      return { scopes: await listCredentialScopes(ssmClient, { base }) };
     case AGENT_CREDENTIAL_METADATA_ACTIONS.READ_SCOPE_STATUS:
       return {
         status: await readCredentialScopeStatus(ssmClient, {
@@ -34,10 +42,23 @@ export const inspectAgentCredentialMetadata = async (
       };
     case AGENT_CREDENTIAL_METADATA_ACTIONS.RESOLVE_EFFECTIVE_BINDINGS:
       return {
-        bindings: await resolveEffectiveCredentialBindings(ssmClient, {
-          base,
+        bindings: await resolvePolicyBindings({
+          repository: createAgentConnectionRepository({
+            ddb: ddbClient,
+            tableName: env.V2_PROCESS_TABLE,
+            base,
+          }),
           projectId: event.projectId,
           userId: event.userId,
+          reserve: event.reserve === true,
+          providers: event.providers,
+          resolveLegacy: (providers) =>
+            resolveEffectiveCredentialBindings(ssmClient, {
+              base,
+              providers,
+              projectId: event.projectId,
+              userId: event.userId,
+            }),
         }),
       };
     default:
@@ -52,8 +73,17 @@ export const handler = async (event, context) => {
   try {
     return { ok: true, ...(await inspectAgentCredentialMetadata(event)) };
   } catch (error) {
-    const code =
-      error?.code === 'INVALID_REQUEST' ? 'INVALID_REQUEST' : 'CREDENTIAL_METADATA_FAILED';
+    const code = [
+      'INVALID_REQUEST',
+      'AGENT_AUTH_INVALID',
+      'AGENT_AUTH_CHANGE_IN_PROGRESS',
+      'AGENT_AUTH_POLICY_CHANGED',
+      'AGENT_AUTH_MODE_UNAVAILABLE',
+      'AGENT_AUTH_MODE_MISMATCH',
+      'AGENT_AUTH_CONNECTION_UNAVAILABLE',
+    ].includes(error?.code)
+      ? error.code
+      : 'CREDENTIAL_METADATA_FAILED';
     logger.error('request denied', {
       code,
       action: event?.action || null,

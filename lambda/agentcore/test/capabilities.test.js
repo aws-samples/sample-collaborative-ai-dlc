@@ -1,6 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import { capabilities } from '../commands/capabilities.js';
 import { parseKiroModels } from '../cli/drivers.js';
+import {
+  RUNTIME_AGENT_AUTH_MODES,
+  RUNTIME_VERIFICATION_MODES,
+  composeRuntimeAuthProviders,
+} from '../credential-material-registry.js';
+import { KEYS_RUNTIME_PROVIDER } from '../keys-runtime-provider.js';
+import { AGENT_AUTH_MODES_CATALOG, authModeDescriptor } from '../../shared/agent-auth-providers.js';
+import { createBrokerProviderRegistry } from '../../credential-broker/agent-provider-registry.js';
+import { AGENT_BROKER_PROVIDERS } from '../../credential-broker/agent-broker-providers.js';
 
 // A trimmed real `kiro-cli chat --list-models --format json` payload.
 const KIRO_LIST_JSON = JSON.stringify({
@@ -90,5 +99,107 @@ describe('capabilities command', () => {
     );
     expect(res.ok).toBe(true);
     expect(res.clis.every((c) => !c.installed && !c.available)).toBe(true);
+  });
+});
+
+describe('capabilities authentication and advertisement', () => {
+  const byCli = (res) => Object.fromEntries(res.clis.map((c) => [c.cli, c]));
+  const ambient = {
+    AWS_BEARER_TOKEN_BEDROCK: 'ambient',
+    KIRO_API_KEY: 'ambient',
+    BEDROCK_AUTH_MODE: 'iam',
+  };
+
+  it('authenticates CLIs from the invocation providers, not from env', async () => {
+    const res = await capabilities(
+      {},
+      {
+        discoverInstalledClis: async () => ['claude', 'kiro', 'opencode', 'codex'],
+        captureChild: async () => ({ stdout: KIRO_LIST_JSON }),
+        env: ambient,
+        authenticatedProviders: ['kiro'],
+      },
+    );
+    expect(byCli(res).kiro).toMatchObject({ authed: true, available: true });
+    for (const cli of ['claude', 'opencode', 'codex'])
+      expect(byCli(res)[cli]).toMatchObject({ installed: true, authed: false, available: false });
+  });
+
+  it('never falls back to env when the invocation resolved no provider', async () => {
+    const res = await capabilities(
+      {},
+      {
+        discoverInstalledClis: async () => ['claude', 'kiro'],
+        captureChild: async () => ({ stdout: '' }),
+        env: ambient,
+        authenticatedProviders: [],
+      },
+    );
+    expect(res.clis.every((c) => !c.authed && !c.available)).toBe(true);
+  });
+
+  it('keeps the keys-only body byte-for-byte', async () => {
+    const keysOnly = composeRuntimeAuthProviders([KEYS_RUNTIME_PROVIDER]);
+    const res = await capabilities(
+      {},
+      {
+        discoverInstalledClis: async () => ['claude', 'kiro'],
+        captureChild: async () => ({ stdout: KIRO_LIST_JSON }),
+        env: { AWS_BEARER_TOKEN_BEDROCK: 'bedrock-key', KIRO_API_KEY: 'kiro-key' },
+        authenticatedProviders: ['bedrock', 'kiro'],
+        materialTypes: ['api-key'],
+        agentAuthModes: keysOnly.modes,
+        agentAuthVerification: keysOnly.verificationModes,
+        capabilityContributions: keysOnly.capabilityContributions,
+      },
+    );
+    // The body a keys-only image published before runtime providers were composed, plus the
+    // connection-verification modes it serves (none).
+    expect(JSON.stringify(res)).toBe(
+      JSON.stringify({
+        ok: true,
+        clis: [
+          { cli: 'claude', installed: true, authed: true, available: true },
+          { cli: 'kiro', installed: true, authed: true, available: true },
+          { cli: 'opencode', installed: false, authed: true, available: false },
+          { cli: 'codex', installed: false, authed: true, available: false },
+        ],
+        kiroModels: parseKiroModels(KIRO_LIST_JSON),
+        agentAuthProtocol: 2,
+        agentAuthModes: ['keys'],
+        agentAuthVerification: [],
+        invocationAccounting: true,
+      }),
+    );
+  });
+
+  it('advertises the composed runtime modes, keys included', async () => {
+    const res = await capabilities({}, { discoverInstalledClis: async () => [], env: {} });
+    expect(res.agentAuthModes).toEqual([...RUNTIME_AGENT_AUTH_MODES]);
+    expect(res.agentAuthModes).toContain('keys');
+    expect(res.agentAuthVerification).toEqual([...RUNTIME_VERIFICATION_MODES]);
+  });
+
+  // The agents Lambda mints a verification grant only for a mode the runtime advertises, and
+  // the broker redeems it only through a provider that declares verification.
+  it('verifies a mode at the runtime exactly when its broker adapters declare verification (registration invariant)', () => {
+    const registry = createBrokerProviderRegistry(AGENT_BROKER_PROVIDERS);
+    const available = AGENT_AUTH_MODES_CATALOG.filter((mode) => mode.available);
+    expect(available.length).toBeGreaterThan(0);
+    for (const { id } of available) {
+      const { backend, mechanisms } = authModeDescriptor(id);
+      const runtimeVerifies = RUNTIME_VERIFICATION_MODES.includes(id);
+      for (const mechanism of mechanisms)
+        expect(
+          registry.ownerOf({ version: 2, backend, mechanism })?.verification,
+          `${id} ${mechanism}`,
+        ).toBe(runtimeVerifies);
+    }
+  });
+
+  it('advertises exactly the available shared modes (registration invariant)', () => {
+    const available = AGENT_AUTH_MODES_CATALOG.filter((mode) => mode.available).map(({ id }) => id);
+    expect(RUNTIME_AGENT_AUTH_MODES.filter((mode) => !available.includes(mode))).toEqual([]);
+    expect(available.filter((mode) => !RUNTIME_AGENT_AUTH_MODES.includes(mode))).toEqual([]);
   });
 });

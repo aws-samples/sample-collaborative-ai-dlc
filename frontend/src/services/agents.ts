@@ -68,7 +68,100 @@ export interface RuntimeCliStatus {
 
 export type AgentCredentialSource = 'user' | 'space' | 'platform';
 
+export interface AgentConnectionView {
+  id: string;
+  revision?: number;
+  mode: string;
+  backend: string;
+  mechanism: string;
+  source: string;
+  projectId?: string;
+  userId?: string;
+  state: string;
+  configuration: Readonly<Record<string, unknown>>;
+}
+
+export interface AgentAuthModeView {
+  id: string;
+  label: string;
+  available: boolean;
+  backend?: string;
+  mechanisms?: string[];
+  modelDiscovery?: string;
+  /** A ready platform connection that lets the policy switch without setup. */
+  defaultConnectionId?: string;
+}
+
+export interface AgentAuthenticationView {
+  policy: { mode: string; revision: number; defaultConnectionId: string; pendingReview?: string };
+  modes: AgentAuthModeView[];
+  reviewRequired: boolean;
+  connection: AgentConnectionView | null;
+  personalMechanisms: string[];
+  /** Absent from older backends; callers fall back to the saved Bedrock key. */
+  hasOverride?: boolean;
+  canManageConnections?: boolean;
+}
+
+type AgentAuthActionScope = {
+  source: AgentCredentialSource;
+  projectId?: string;
+  userId?: string;
+};
+
+/** The normalized candidate the server stores on a review. */
+export type AgentAuthAction =
+  | { kind: 'policy-change'; mode: string; defaultConnectionId: string }
+  | { kind: 'space-selection'; source: 'space'; projectId: string; connectionId: string | null }
+  | (AgentAuthActionScope & {
+      kind: 'connection-create';
+      connection: AgentConnectionView;
+      select: boolean;
+    })
+  | (AgentAuthActionScope & {
+      kind: 'credential-update';
+      changes: { provider: string; action: 'rotate' | 'clear'; digest: string }[];
+    });
+
+/** What the browser may ask the server to turn into a reviewed change. */
+export type AgentAuthChangeRequest =
+  | { kind?: 'policy-change'; mode: string; defaultConnectionId: string }
+  | { kind: 'space-selection'; projectId: string; connectionId: null }
+  | {
+      kind: 'connection-draft';
+      mode: string;
+      projectId?: string;
+      configuration: Record<string, unknown>;
+    };
+
+export interface AgentAuthImpactReview {
+  candidate?: AgentAuthAction;
+  id: string;
+  createdAt: string;
+  policyRevision: number;
+  complete: boolean;
+  limitations: string[];
+  counts: Record<string, number>;
+  items: {
+    key: string;
+    id: string;
+    type: string;
+    projectId: string | null;
+    status: string | null;
+    connectionId: string | null;
+    outcome: string;
+    reason: string;
+    action: string;
+  }[];
+}
+export interface AgentCredentialUpdate {
+  bedrockBearerToken?: string;
+  kiroApiKey?: string;
+  reviewId?: string;
+}
+
 export interface AgentCredentialStatus {
+  authentication?: AgentAuthenticationView;
   bedrockBearerTokenSet: boolean;
   kiroApiKeySet: boolean;
 }
@@ -89,6 +182,7 @@ export interface AgentCapabilities {
 }
 
 export interface AgentSettings {
+  authentication?: AgentAuthenticationView;
   /** True when a bearer token is stored in SSM (value is never returned to the browser) */
   bedrockBearerTokenSet: boolean;
   /** True when a Kiro API key is stored in SSM */
@@ -148,6 +242,7 @@ export interface McpVerifyResponse {
 }
 
 export interface AgentSettingsUpdate {
+  reviewId?: string;
   /** New bearer token value. Pass empty string to clear. Omit to leave unchanged. */
   bedrockBearerToken?: string;
   /** New Kiro API key value. Pass empty string to clear. Omit to leave unchanged. */
@@ -206,9 +301,7 @@ export const agentsService = {
     return api.get('/users/me/agent-credentials');
   },
 
-  async updatePersonalCredentials(
-    update: Pick<AgentSettingsUpdate, 'bedrockBearerToken' | 'kiroApiKey'>,
-  ): Promise<{ saved: boolean }> {
+  async updatePersonalCredentials(update: AgentCredentialUpdate): Promise<{ saved: boolean }> {
     return api.put('/users/me/agent-credentials', update);
   },
 
@@ -218,9 +311,42 @@ export const agentsService = {
 
   async updateProjectCredentials(
     projectId: string,
-    update: Pick<AgentSettingsUpdate, 'bedrockBearerToken' | 'kiroApiKey'>,
+    update: AgentCredentialUpdate,
   ): Promise<{ saved: boolean }> {
     return api.put(`/projects/${projectId}/agent-credentials`, update);
+  },
+
+  async previewCredentialUpdate(
+    scope: 'platform' | 'space' | 'personal',
+    projectId: string | undefined,
+    update: AgentCredentialUpdate,
+  ): Promise<AgentAuthImpactReview> {
+    const path =
+      scope === 'platform'
+        ? '/agents/settings'
+        : scope === 'personal'
+          ? '/users/me/agent-credentials'
+          : `/projects/${projectId}/agent-credentials`;
+    return api.put(path, { ...update, reviewAction: 'preview' });
+  },
+  async previewAuthenticationChange(
+    request: AgentAuthChangeRequest,
+  ): Promise<AgentAuthImpactReview> {
+    return api.put('/agents/settings', {
+      authenticationChange: { action: 'preview', candidate: request },
+    });
+  },
+  async applyAuthenticationChange(reviewId: string): Promise<{ saved: boolean }> {
+    return api.put('/agents/settings', { authenticationChange: { action: 'apply', reviewId } });
+  },
+  // Provider-owned setup steps (defaults, generated policies, verification).
+  // Platform admins only; `mode` and `action` select the registered handler.
+  async authenticationProviderAction<T>(
+    mode: string,
+    action: string,
+    body: Record<string, unknown> = {},
+  ): Promise<T> {
+    return api.post('/agents/authentication-setup', { ...body, mode, action });
   },
 
   async getProjectCapabilities(projectId: string, withModels = false): Promise<AgentCapabilities> {

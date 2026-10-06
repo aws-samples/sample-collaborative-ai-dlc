@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
-import { authenticatedClisForEnv, resolveInvocationAgentAuth } from '../auth-resolver.js';
+import { authenticatedClis, resolveInvocationAgentAuth } from '../auth-resolver.js';
 import { AGENT_AUTH_MODES } from '../command-registry.js';
+import {
+  credentialEnvName,
+  credentialProviderForCli,
+  isConfiguredCredentialValue,
+} from '../../shared/agent-auth-contracts.js';
+import { apiKeyLease } from '../../shared/agent-credential-lease.js';
 
 describe('resolveInvocationAgentAuth', () => {
   it('strongly reads the credential pin before verifying a grant', async () => {
@@ -40,6 +46,7 @@ describe('resolveInvocationAgentAuth', () => {
 
     expect(getExecution).toHaveBeenCalledWith('e1', { consistentRead: true });
     expect(result.env.KIRO_API_KEY).toBe('starter-key');
+    expect(result.projectId).toBe('p-1');
   });
 
   it('keeps concurrent users in separate invocation environments', async () => {
@@ -106,9 +113,9 @@ describe('resolveInvocationAgentAuth', () => {
     expect(one.env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
     expect(two.env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
     expect(baseEnv.KIRO_API_KEY).toBe('must-not-leak');
-    expect(authenticatedClisForEnv({ installed: ['kiro', 'claude'], env: one.env })).toEqual([
-      'kiro',
-    ]);
+    expect(
+      authenticatedClis({ installed: ['kiro', 'claude'], providers: one.resolvedProviders }),
+    ).toEqual(['kiro']);
   });
 
   it('does not fall back when a pinned credential was cleared', async () => {
@@ -274,9 +281,9 @@ describe('resolveInvocationAgentAuth', () => {
     });
 
     expect(result.env.KIRO_API_KEY).toBe('draft-user-key');
-    expect(authenticatedClisForEnv({ installed: ['kiro', 'claude'], env: result.env })).toEqual([
-      'kiro',
-    ]);
+    expect(
+      authenticatedClis({ installed: ['kiro', 'claude'], providers: result.resolvedProviders }),
+    ).toEqual(['kiro']);
     expect(result.credentialBindings).toEqual([{ provider: 'kiro', source: 'user' }]);
   });
 
@@ -446,5 +453,72 @@ describe('resolveInvocationAgentAuth', () => {
         }),
       }),
     ).rejects.toMatchObject({ code: 'credential_grant_mismatch' });
+  });
+});
+
+describe('authenticatedClis', () => {
+  const installed = ['claude', 'kiro', 'opencode', 'codex'];
+  // The env rule leases replaced: a CLI was authenticated when its key env var was set.
+  const envAuthenticatedClis = (env) =>
+    installed.filter((cli) => Boolean(env[credentialEnvName(credentialProviderForCli(cli))]));
+  // The broker's key redemption: a cleared ('placeholder') parameter redeems as no key.
+  const redeemed = (binding, stored) => {
+    const value = isConfiguredCredentialValue(stored) ? stored : null;
+    return { binding, value, lease: apiKeyLease(value) };
+  };
+  const bedrock = { provider: 'bedrock', source: 'platform' };
+  const kiro = { provider: 'kiro', source: 'space' };
+  const probe = (credentials, env = {}) =>
+    resolveInvocationAgentAuth({
+      authMode: AGENT_AUTH_MODES.CAPABILITIES,
+      payload: {
+        projectId: 'p-1',
+        credentialBindings: Object.fromEntries(
+          credentials.map(({ binding }) => [binding.provider, binding]),
+        ),
+        agentCredentialGrant: 'grant',
+      },
+      env,
+      broker: async () => ({
+        purpose: 'capabilities',
+        projectId: 'p-1',
+        executionId: null,
+        credentials,
+      }),
+    });
+
+  it.each([
+    ['a set key', [redeemed(bedrock, 'bedrock-key'), redeemed(kiro, 'kiro-key')], installed],
+    [
+      "a cleared ('placeholder') key",
+      [redeemed(bedrock, 'placeholder'), redeemed(kiro, 'kiro-key')],
+      ['kiro'],
+    ],
+    [
+      'a v1 value without a lease',
+      [{ binding: bedrock, value: 'bedrock-key' }],
+      ['claude', 'opencode', 'codex'],
+    ],
+    ['a v1 null value', [{ binding: kiro, value: null }], []],
+    ['absent bindings', [], []],
+  ])('matches the env-based result for %s', async (_name, credentials, expected) => {
+    const auth = await probe(credentials, { PATH: '/usr/bin' });
+    const clis = authenticatedClis({ installed, providers: auth.resolvedProviders });
+    expect(clis).toEqual(expected);
+    expect(clis).toEqual(envAuthenticatedClis(auth.env));
+  });
+
+  it('cannot be made authenticated by ambient key or auth-mode env', async () => {
+    const ambient = {
+      AWS_BEARER_TOKEN_BEDROCK: 'ambient',
+      KIRO_API_KEY: 'ambient',
+      BEDROCK_AUTH_MODE: 'iam',
+    };
+    for (const credentials of [[], [redeemed(bedrock, 'placeholder'), redeemed(kiro, '')]]) {
+      const auth = await probe(credentials, ambient);
+      expect(auth.resolvedProviders).toEqual([]);
+      expect(authenticatedClis({ installed, providers: auth.resolvedProviders })).toEqual([]);
+    }
+    expect(authenticatedClis({ installed })).toEqual([]);
   });
 });

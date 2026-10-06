@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runOneShotPrompt, parseClaudeOneShot, extractJsonObject } from '../cli/one-shot.js';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // Fake child factory for captureChild: emits the given stdout/stderr then closes.
 // `stdin.end` records the piped prompt so tests can assert it goes on stdin (not
@@ -283,6 +287,81 @@ describe('runOneShotPrompt', () => {
     const out = await runOneShotPrompt({ prompt: 'p', availableClis: ['claude'], spawnFn });
     expect(out).toMatchObject({ ok: false, reason: 'cli_failed', exitCode: 1, metrics: null });
     expect(out.sample).toContain('boom: credentials missing');
+  });
+
+  it('creates a fresh working directory before launching a real child', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'one-shot-cwd-'));
+    const cwd = join(root, 'fresh', 'invocation');
+    try {
+      const result = await runOneShotPrompt({
+        prompt: 'fixture',
+        availableClis: ['claude'],
+        cwd,
+        env: {},
+        spawnFn: (_command, _args, options) =>
+          spawn(
+            process.execPath,
+            ['-e', 'console.log(JSON.stringify({type:"result",result:process.cwd()}))'],
+            options,
+          ),
+      });
+      expect(result.ok).toBe(true);
+      expect(result.text).toContain('/fresh/invocation');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('maps a working directory that cannot be created to cli_failed before any CLI state is touched', async () => {
+    const makeDirectory = vi.fn(async () => {
+      throw Object.assign(new Error('read-only file system'), { code: 'EROFS' });
+    });
+    const spawnFn = vi.fn();
+    const restoreKiroStore = vi.fn(async () => true);
+    const persistKiroStore = vi.fn(async () => true);
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['kiro'],
+      cliModels: { kiro: 'auto' },
+      cwd: '/tmp/compose/i1',
+      spawnFn,
+      makeDirectory,
+      restoreKiroStore,
+      persistKiroStore,
+    });
+    expect(out).toEqual({
+      ok: false,
+      reason: 'cli_failed',
+      text: '',
+      cli: 'kiro',
+      model: 'auto',
+      exitCode: null,
+      metrics: null,
+    });
+    expect(makeDirectory).toHaveBeenCalledWith('/tmp/compose/i1', { recursive: true });
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(restoreKiroStore).not.toHaveBeenCalled();
+    expect(persistKiroStore).not.toHaveBeenCalled();
+  });
+
+  it('still removes the caller-materialized Codex home when the working directory fails', async () => {
+    const cleanupCodexHome = vi.fn(async () => true);
+    const spawnFn = vi.fn();
+    const env = { AWS_REGION: 'us-east-1' };
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['codex'],
+      codexHome: '/ws/.aidlc/codex-home',
+      env,
+      spawnFn,
+      cleanupCodexHome,
+      makeDirectory: async () => {
+        throw new Error('no space left on device');
+      },
+    });
+    expect(out).toMatchObject({ ok: false, reason: 'cli_failed', cli: 'codex', exitCode: null });
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(cleanupCodexHome).toHaveBeenCalledWith({ codexHome: '/ws/.aidlc/codex-home', env });
   });
 
   it('maps rejected credentials to credential_invalid without returning provider output', async () => {

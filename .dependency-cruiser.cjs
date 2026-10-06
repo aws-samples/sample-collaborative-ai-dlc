@@ -23,6 +23,25 @@ const sharedRuntimeDependencyPath =
 module.exports = {
   forbidden: [
     {
+      name: 'authentication-protocol-is-pure',
+      comment:
+        'Public authentication contracts cannot load clients, storage, or workspace modules.',
+      severity: 'error',
+      from: { path: '^lambda/shared/agent-auth-protocol\\.js$' },
+      to: {},
+    },
+    {
+      name: 'runtime-cannot-issue-or-load-agent-secrets',
+      comment:
+        'Runtime authentication uses the redemption broker; it cannot load key storage, connection records or grant signing code, not even through a shared module.',
+      severity: 'error',
+      from: { path: '^lambda/agentcore/', pathNot: '/test/' },
+      to: {
+        path: '^lambda/shared/(agent-key-repository|agent-credential-grants|agent-auth-redemption|agent-credentials|agent-connection-repository|agent-auth-inventory-repository|agent-auth-review-repository)\\.js$',
+        reachable: true,
+      },
+    },
+    {
       name: 'no-circular',
       comment:
         'Circular dependency detected. Cycles couple modules tightly, make ' +
