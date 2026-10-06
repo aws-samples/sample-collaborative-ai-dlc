@@ -29,6 +29,7 @@
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import { randomUUID } from 'node:crypto';
+import { scopeStageAttempt } from '../../shared/stage-attempt.js';
 import {
   selectCli,
   getDriver,
@@ -39,7 +40,7 @@ import {
   parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild, captureChild } from '../cli/spawn.js';
-import { isCredentialFailure } from '../cli/credential-errors.js';
+import { isCredentialFailure, isCreditExhaustion } from '../cli/credential-errors.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
   materializeKiroAgent as defaultMaterializeKiroAgent,
@@ -184,7 +185,20 @@ const credentialFailureDetail = ({ binding, state }) => {
   if (!binding) return null;
   const provider = CREDENTIAL_PROVIDER_LABELS[binding.provider] ?? binding.provider;
   const source = CREDENTIAL_SOURCE_LABELS[binding.source] ?? binding.source;
-  const condition = state === 'rejected' ? 'was rejected' : 'is no longer available';
+  const condition =
+    state === 'exhausted'
+      ? 'has exhausted its provider credits or usage allowance'
+      : state === 'rejected'
+        ? 'was rejected'
+        : 'is no longer available';
+  if (state === 'exhausted') {
+    const settings = {
+      user: 'Account Settings',
+      space: 'Space Settings',
+      platform: 'Platform Settings',
+    }[binding.source];
+    return `The ${source} ${provider} credential pinned to this run ${condition}. Replenish its allowance or rotate the key in ${settings}, then retry the failed stage. Updating another credential scope does not change this run's binding.`;
+  }
   const remediation = {
     user: 'Restore or rotate it in Account Settings, then restart the run.',
     space:
@@ -958,7 +972,7 @@ const mergeCodeCommitRefs = (priorRefs, gitResult) => {
   return refs;
 };
 
-export const runStage = async (
+const runStageAttempt = async (
   {
     projectId,
     intentId,
@@ -1036,6 +1050,7 @@ export const runStage = async (
     // traceability/operator recovery; the callback itself is completed by
     // run-stage-start's background job, not here. Null on the legacy sync path.
     stageCallbackId = null,
+    orchestratorRunId = null,
     // Agent launching time (cold start) in ms — orchestrator dispatch → job
     // accept, computed by run-stage-start. Recorded below as an `agentLaunchMs`
     // metric sample (gauge). Null on the legacy sync path / old dispatchers.
@@ -1044,7 +1059,7 @@ export const runStage = async (
   deps,
 ) => {
   let {
-    store,
+    store: processStore,
     loadLibrary,
     loadBlockBody,
     loadBlockScript = async () => '',
@@ -1100,6 +1115,7 @@ export const runStage = async (
     resolveMcpSecrets = defaultResolveMcpSecrets,
     verifyReviewTargets: recheckReviewTargets = verifyReviewTargets,
   } = deps;
+  let store = processStore;
 
   const releaseOptions = methodologyRelease ? { methodologyRelease } : undefined;
   if (methodologyRelease) {
@@ -1163,7 +1179,7 @@ export const runStage = async (
 
   const fail = async (stageInstanceId, reason, detail, { clearPending = false } = {}) => {
     if (stageInstanceId) {
-      await store
+      const saved = await store
         .updateStageState({
           executionId,
           stageInstanceId,
@@ -1175,7 +1191,12 @@ export const runStage = async (
             : {}),
           ...(clearPending ? { pendingHumanTaskId: null } : {}),
         })
-        .catch(() => {});
+        .then(() => true)
+        .catch((error) => {
+          if (error?.name === 'ConditionalCheckFailedException') return false;
+          return true; // preserve the original failure during a storage outage
+        });
+      if (!saved) return ownershipConflict(processStore, { executionId, orchestratorRunId });
     }
     await store
       .appendEvent({
@@ -1301,13 +1322,30 @@ export const runStage = async (
   const stageInstanceId = unitSlug
     ? planStageInstanceId(plan.namespace, stageId, unitSlug, sectionIndex)
     : stage.stageInstanceId;
+  const ownership =
+    orchestratorRunId && stageCallbackId
+      ? { orchestratorRunId, stageCallbackId, stageInstanceId }
+      : null;
+  store = scopeStageAttempt(processStore, ownership);
+  if (ownership) {
+    await processStore.claimStageAttempt({ executionId, ownership, stageId, phase: stage.phase });
+  }
 
   // A lane run must reference a unit the promoted UNITPLAN actually knows —
   // scheduling truth is the DDB snapshot, never the dispatch payload alone.
   // The unit's dependsOn edges feed the prompt's unit-scope block below.
   let unit = null;
   if (unitSlug) {
-    const unitPlan = await store.getUnitPlan(executionId).catch(() => null);
+    let unitPlan;
+    try {
+      unitPlan = await store.getUnitPlan(executionId, { consistentRead: true });
+    } catch {
+      return fail(
+        stageInstanceId,
+        'unit_plan_unavailable',
+        'The promoted unit plan could not be read. Retry the stage when storage is available; the approved plan has not been changed.',
+      );
+    }
     unit = (unitPlan?.units ?? []).find((u) => u.slug === unitSlug) ?? null;
     if (!unit) {
       return fail(
@@ -1469,17 +1507,18 @@ export const runStage = async (
   }
 
   // 2b. Pick the CLI + recover (resume) or mint (fresh) the conversation handle.
-  // On resume the gate MUST be answered and the parked stage MUST carry a CLI
-  // session id (same conversation continues). On a fresh run Claude's id is forced
-  // up front; Kiro's is captured after the run (it has no start-time id flag).
+  // Resume the saved conversation when available. Legacy Kiro waits with a
+  // missing handle require matching stage/gate ownership before a fresh recovery.
+  // Claude's fresh id is forced up front; Kiro's is captured after the run.
   let cli;
   let cliSessionId = null;
   let resumeAnswer = null;
   let resumeGate = null;
-  // A resume we had to demote to a fresh run because the parked conversation was
-  // lost with the wiped mount (D2 recoverable path): re-runs fresh with the human's
-  // answer injected into the prompt so the agent does not re-ask.
+  // A resume we had to demote to a fresh run because its conversation is
+  // unavailable: re-runs fresh with the human's answer injected into the prompt.
+  // A missing session ID does not imply that the shared Kiro store was lost.
   let demotedResume = false;
+  let kiroStoreRestoreAttempted = false;
   const recoverLostConversation = async () => {
     const age = resumeGate ? gateAgeMs(resumeGate, now()) : null;
     if (!reviewFeedback && age !== null && age >= FOURTEEN_DAYS_MS) {
@@ -1513,21 +1552,69 @@ export const runStage = async (
         : 'Resuming agent session...',
       stageInstanceId,
     });
-    resumeGate = resumeFrom
-      ? await store
-          .getHumanTask(executionId, resumeFrom, { consistentRead: true })
-          .catch(() => null)
-      : null;
+    let row;
+    try {
+      resumeGate = resumeFrom
+        ? await store.getHumanTask(executionId, resumeFrom, { consistentRead: true })
+        : null;
+      row = await store.getStage(executionId, stageInstanceId, { consistentRead: true });
+    } catch {
+      return fail(
+        ownership ? stageInstanceId : null,
+        'resume_state_unavailable',
+        'The saved stage or answer could not be read. Retry when storage is available; the saved conversation has not been reset.',
+      );
+    }
     if (resumeFrom && !resumeGate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
+    if (resumeGate?.status === 'superseded') return { ok: false, reason: 'retired' };
     if (resumeFrom && resumeGate.status === 'pending')
       return fail(stageInstanceId, 'gate_not_answered', resumeFrom);
-    const row = await store
-      .getStage(executionId, stageInstanceId, { consistentRead: true })
-      .catch(() => null);
+    // Engine feedback gates (batch/skeleton request-changes) belong to no
+    // stage: a halt-and-ask retry of the revision round re-dispatches the lane
+    // stage that failed while revising, so its FAILED row resumes as well.
+    const retriesFeedbackRound = resumeGate?.stageInstanceId == null && row?.state === 'FAILED';
+    if (
+      resumeFrom &&
+      (!humanTaskMatchesOwner({
+        task: resumeGate,
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        engineGates: true,
+      }) ||
+        (row?.state != null &&
+          !['WAITING_FOR_HUMAN', 'SUCCEEDED'].includes(row.state) &&
+          !retriesFeedbackRound &&
+          !(
+            row.state === 'RUNNING' &&
+            stageCallbackId &&
+            row.stageCallbackId === stageCallbackId
+          )) ||
+        (row?.state === 'WAITING_FOR_HUMAN' && row.pendingHumanTaskId !== resumeFrom))
+    ) {
+      return fail(
+        ownership ? stageInstanceId : null,
+        'resume_state_conflict',
+        'The answer no longer belongs to this parked stage.',
+      );
+    }
     cli = row?.cli ?? null;
     const priorSessionId = row?.cliSessionId ?? null;
-    if ((!cli || !priorSessionId) && !reviewFeedback) {
-      return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
+    // Legacy Kiro waits could be parked before session capture succeeded.
+    // Recover only a positively owned wait, never a reset row or sibling gate.
+    const recoverMissingKiroSession =
+      cli === 'kiro' &&
+      !priorSessionId &&
+      resumeFrom &&
+      row?.state === 'WAITING_FOR_HUMAN' &&
+      row.pendingHumanTaskId === resumeFrom &&
+      resumeGate?.stageInstanceId === stageInstanceId;
+    if ((!cli || !priorSessionId) && !reviewFeedback && !recoverMissingKiroSession) {
+      return fail(
+        stageInstanceId,
+        'resume_no_session',
+        'Stage has no persisted CLI session. Retry this stage to recover from its saved artifacts.',
+      );
     }
     if (cli && !availableClis.includes(cli)) {
       const detail = credentialFailureDetail({
@@ -1540,9 +1627,13 @@ export const runStage = async (
       cli = null;
     }
     resumeAnswer = reviewFeedbackPrompt || formatResumeAnswer(resumeGate);
+    if (recoverMissingKiroSession) {
+      const recoveryFailure = await recoverLostConversation();
+      if (recoveryFailure) return recoveryFailure;
+    }
     if (!cli || !priorSessionId) {
       demotedResume = true;
-      cli = selectCli({ requested: requestedCli, availableClis });
+      cli ??= selectCli({ requested: requestedCli, availableClis });
       if (!cli) {
         return fail(
           stageInstanceId,
@@ -1564,6 +1655,7 @@ export const runStage = async (
     // home is resolved below. Checkout restoration is not a loss signal for it.
     let conversationLost = !demotedResume && cli !== 'codex' && sourceRestored;
     if (!demotedResume && cli === 'kiro') {
+      kiroStoreRestoreAttempted = true;
       const kiroRestored = await restoreKiroStore({ env }).catch(() => false);
       if (!kiroRestored && resolveKiroStore(env)) conversationLost = true;
       else if (!kiroRestored)
@@ -1631,6 +1723,8 @@ export const runStage = async (
     unitSlug,
     sectionIndex,
     stageAttempt: priorStageRow?.attempt ?? 0,
+    orchestratorRunId,
+    stageCallbackId,
     role: 'author',
     model,
   };
@@ -1993,8 +2087,8 @@ export const runStage = async (
       attachments: attachmentRefs,
     });
     prompt = materialized.prompt;
-    // Demoted resume (D2): the parked conversation was lost with the wiped mount,
-    // so we re-run the stage fresh — but prepend the human's already-given answer
+    // Demoted resume: the parked conversation is unavailable, so we re-run the
+    // stage fresh — but prepend the human's already-given answer
     // so the agent applies it instead of re-asking the same question.
     if (demotedResume && resumeAnswer) {
       prompt = `## Previously answered\n${resumeAnswer}\n\n---\n\n${prompt}`;
@@ -2046,12 +2140,13 @@ export const runStage = async (
 
   // Kiro store handling for a RESUME is done in step 2b (restore + the D2 wiped-
   // mount decision) so a lost parked conversation is recovered, not run blind. For
-  // a plain FRESH Kiro run we still restore the durable store here: Kiro keeps ALL
+  // a FRESH Kiro run we still restore the durable store here: Kiro keeps ALL
   // conversations in one SQLite DB and persistKiroStore does rm+cp at exit, so
   // without a prior restore this run would clobber sibling stages' conversations on
-  // the mount. A missing store is fine (Kiro just starts new). Skip for a demoted
-  // resume — its mount was wiped, so there is nothing to restore.
-  if (freshRun && !demotedResume && cli === 'kiro') {
+  // the mount. A missing store is fine (Kiro just starts new). Only skip if step
+  // 2b already attempted restoration: a missing session ID starts a fresh
+  // conversation but may still have a durable store with sibling sessions.
+  if (freshRun && !kiroStoreRestoreAttempted && cli === 'kiro') {
     const restored = await restoreKiroStore({ env }).catch(() => false);
     if (!restored) logger.error('kiro store not restored (fresh)', { stageInstanceId });
   }
@@ -2111,9 +2206,16 @@ export const runStage = async (
       .catch(() => {});
   };
   let sessionUpdateQueue = Promise.resolve();
+  // Error events the JSON-output CLIs report on stdout (never agent text or
+  // tool output), kept for failure classification next to the stderr tail.
+  const reportedErrors = [];
   const cliOutput = createCliOutputSink({
     cli,
     emit: emitCliOutput,
+    onError: (message) => {
+      reportedErrors.push(message);
+      if (reportedErrors.length > 8) reportedErrors.shift();
+    },
     onSession: (observedSessionId) => {
       // OpenCode and Codex choose their own session/thread id; capture the
       // first one observed on the stream so a later resume can target it.
@@ -2268,12 +2370,12 @@ export const runStage = async (
   });
 
   // Kiro only: persist the live local store back to the durable mount after the
-  // run. Runs on ANY exit (success, park, or crash) so a parked conversation is
-  // captured even if the CLI later errored. Best-effort — a failed persist never
-  // fails the stage, but a parked conversation then won't survive a reap, so log it.
+  // run. Runs on ANY exit (success, park, or crash). A parked stage must have a
+  // successful durable write; the park check below retires unresumable questions.
+  let kiroStorePersisted = false;
   if (cli === 'kiro') {
-    const persisted = await persistKiroStore({ env }).catch(() => false);
-    if (!persisted) {
+    kiroStorePersisted = await persistKiroStore({ env }).catch(() => false);
+    if (!kiroStorePersisted) {
       logger.error('kiro store not persisted', { stageInstanceId });
     }
   }
@@ -2472,6 +2574,54 @@ export const runStage = async (
     unitSlug,
     sectionIndex,
   });
+  const failUnresumableGate = async (reason, detail) => {
+    // Cleanup can hit the same storage outage as the park write. Attempt each
+    // write independently and preserve the original structured stage failure.
+    await store
+      .supersedeHumanTask({
+        executionId,
+        humanTaskId: parked.humanTaskId,
+        supersededBy: reason,
+      })
+      .catch((error) => {
+        logger.error('failed to supersede unresumable gate', {
+          humanTaskId: parked.humanTaskId,
+          stageInstanceId,
+          reason,
+          error,
+        });
+      });
+    if (!unitSlug) {
+      await store
+        .updateExecution({
+          executionId,
+          pendingHumanTaskId: null,
+          ...(ownership
+            ? { ifOrchestratorRunId: orchestratorRunId, ifPendingHumanTaskId: parked.humanTaskId }
+            : {}),
+        })
+        .catch((error) => {
+          logger.error('failed to clear pending gate', {
+            executionId,
+            stageInstanceId,
+            reason,
+            error,
+          });
+        });
+    }
+    return fail(stageInstanceId, reason, detail, { clearPending: true });
+  };
+  if (
+    parked &&
+    cli === 'kiro' &&
+    (!cliSessionId || (resolveKiroStore(env) && !kiroStorePersisted))
+  ) {
+    const reason = !cliSessionId ? 'kiro_session_missing' : 'kiro_store_persist_failed';
+    return failUnresumableGate(
+      reason,
+      'Kiro could not save a resumable conversation. Retry this stage using its saved artifacts; the unresumable question has been retired.',
+    );
+  }
   if (parked && (cli === 'opencode' || cli === 'codex') && !cliSessionId) {
     return fail(
       stageInstanceId,
@@ -2480,24 +2630,9 @@ export const runStage = async (
     );
   }
   if (parked && cli === 'codex' && codexStoreConfigured && !codexPersistResult?.ok) {
-    await (store.supersedeHumanTask?.({
-      executionId,
-      humanTaskId: parked.humanTaskId,
-      supersededBy: 'codex_store_persist_failed',
-    }) ?? Promise.resolve());
-    if (!unitSlug) {
-      await store
-        .updateExecution({
-          executionId,
-          pendingHumanTaskId: null,
-        })
-        .catch(() => {});
-    }
-    return fail(
-      stageInstanceId,
+    return failUnresumableGate(
       'codex_store_persist_failed',
       'Codex parked the stage, but its rollout could not be written to durable storage',
-      { clearPending: true },
     );
   }
   if (!parked && exitCode !== 0) {
@@ -2505,7 +2640,18 @@ export const runStage = async (
     // agent just ended without closing text and kiro-cli's ACP rejected the empty
     // message. Treat as success (not a stage failure) but record a note so the
     // signature stays visible. Sensors below still run and can hold the stage.
-    if (cli === 'kiro' && isBenignKiroEmptyCompletion(result?.stderrTail)) {
+    const failureOutput = [result?.stderrTail, ...reportedErrors].filter(Boolean).join('\n');
+    if (isCreditExhaustion(failureOutput)) {
+      return fail(
+        stageInstanceId,
+        'credential_quota_exhausted',
+        credentialFailureDetail({
+          binding: credentialBindingForCli(credentialBindings, cli),
+          state: 'exhausted',
+        }) ??
+          'The provider credit allowance is exhausted. Replenish it or rotate the pinned credential, then retry the failed stage.',
+      );
+    } else if (cli === 'kiro' && isBenignKiroEmptyCompletion(result?.stderrTail)) {
       logger.error('kiro empty-completion (benign); treating as success', {
         stage: stageId,
         exitCode,
@@ -2521,7 +2667,7 @@ export const runStage = async (
           summary: `Kiro exited ${exitCode} with an empty final message after completing work; treated as success (ACP empty-completion).`,
         })
         .catch(() => {});
-    } else if (isCredentialFailure(result?.stderrTail)) {
+    } else if (isCredentialFailure(failureOutput)) {
       const detail =
         credentialFailureDetail({
           binding: credentialBindingForCli(credentialBindings, cli),
@@ -2534,8 +2680,8 @@ export const runStage = async (
     }
   }
   if (parked) {
-    await store
-      .updateStageState({
+    const savePark = () =>
+      store.updateStageState({
         executionId,
         stageInstanceId,
         state: 'WAITING_FOR_HUMAN',
@@ -2548,8 +2694,47 @@ export const runStage = async (
         cli,
         cliSessionId,
         pendingCodeCommitRefs: stageCodeCommitRefs.length ? stageCodeCommitRefs : null,
-      })
-      .catch(() => {});
+      });
+    let parkSaved = false;
+    for (let attempt = 0; attempt < 2 && !parkSaved; attempt++) {
+      parkSaved = await savePark()
+        .then(() => true)
+        .catch((error) => {
+          // Lost ownership is not transient: runStage classifies it.
+          if (error?.name === 'ConditionalCheckFailedException') throw error;
+          return false;
+        });
+    }
+    if (!parkSaved) {
+      let saved;
+      try {
+        saved = await store.getStage(executionId, stageInstanceId, { consistentRead: true });
+      } catch {
+        return fail(
+          stageInstanceId,
+          'stage_park_persist_failed',
+          'The saved conversation could not be verified. Retry when storage is available; the question and conversation have been retained.',
+        );
+      }
+      // The bridge may already have parked Claude with its startup session,
+      // or our write may have committed before its acknowledgment was lost.
+      // Either way the row must also carry this attempt's commit refs, or the
+      // CodeFile projection would silently drop them on resume.
+      parkSaved =
+        saved?.state === 'WAITING_FOR_HUMAN' &&
+        saved.pendingHumanTaskId === parked.humanTaskId &&
+        saved.cli === cli &&
+        saved.cliSessionId === cliSessionId &&
+        Boolean(saved.cliSessionId) &&
+        Boolean(saved.parkedAt) &&
+        JSON.stringify(saved.pendingCodeCommitRefs ?? []) === JSON.stringify(stageCodeCommitRefs);
+    }
+    if (!parkSaved) {
+      return failUnresumableGate(
+        'stage_park_persist_failed',
+        'The conversation metadata could not be saved. Retry the stage when storage is available; the unresumable question has been retired.',
+      );
+    }
     await store.appendEvent({
       executionId,
       type: 'v2.stage.parked',
@@ -2870,6 +3055,45 @@ export const runStage = async (
       withPlatformSensors(stage).length > 0 ? 'Stage sensors passed' : 'Stage completed',
     reviewTargetCheck,
   };
+};
+
+// A failed ownership condition retires this attempt when META names another
+// run, the intent is gone, or the run was already settled (a cancel lands on
+// the same run ID while a parked worker is still shutting down). A stale STAGE
+// callback, left by an earlier attempt that crashed or was refused, leaves this
+// run the owner: the orchestrator exits without a terminal write on `retired`,
+// so report a stage failure it can retry instead.
+const ownershipConflict = async (store, { executionId, orchestratorRunId }) => {
+  let meta;
+  try {
+    meta = await store.getExecution(executionId, { consistentRead: true });
+  } catch {
+    meta = undefined; // unknown: a failure is retryable, a wrong `retired` is not
+  }
+  if (
+    meta === null ||
+    (meta?.orchestratorRunId &&
+      orchestratorRunId &&
+      meta.orchestratorRunId !== orchestratorRunId) ||
+    (meta?.status && !['RUNNING', 'WAITING'].includes(meta.status))
+  ) {
+    return { ok: false, reason: 'retired' };
+  }
+  return {
+    ok: false,
+    reason: 'stage_attempt_conflict',
+    detail: 'An earlier attempt still owns this stage. Retry the stage to release it.',
+  };
+};
+
+export const runStage = async (payload, deps) => {
+  try {
+    return await runStageAttempt(payload, deps);
+  } catch (error) {
+    if (error?.name === 'ConditionalCheckFailedException')
+      return ownershipConflict(deps.store, payload);
+    throw error;
+  }
 };
 
 // Exposed for unit tests (pure helpers; the runStage flow is integration-tested).

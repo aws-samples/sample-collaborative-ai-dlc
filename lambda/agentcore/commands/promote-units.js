@@ -120,7 +120,8 @@ export const promoteUnits = async (payload, deps) => {
     // 3. Scheduling truth: UNITPLAN snapshot + UNIT rows (active lanes safe).
     // Deterministic skeleton default: first slug of the first topological
     // batch (batches are sorted). The fan-out approval can override.
-    const existingPlan = await store.getUnitPlan(executionId);
+    // Consistent: a stale read would drop decisions the fan-out approval saved.
+    const existingPlan = await store.getUnitPlan(executionId, { consistentRead: true });
     const plan = await store.putUnitPlan({
       executionId,
       units,

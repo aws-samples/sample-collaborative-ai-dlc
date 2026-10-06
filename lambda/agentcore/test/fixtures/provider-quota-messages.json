@@ -1,0 +1,32 @@
+[
+  {
+    "source": "https://github.com/anthropics/claude-code/issues/88711",
+    "cli": "claude",
+    "output": "Your credit balance is too low to access the Anthropic API",
+    "exhausted": true
+  },
+  {
+    "source": "https://github.com/anomalyco/opencode/issues/47685",
+    "cli": "opencode",
+    "output": "You exceeded your current quota",
+    "exhausted": true
+  },
+  {
+    "source": "https://github.com/anomalyco/opencode/issues/41740",
+    "cli": "opencode",
+    "output": "You exceeded your current quota, please check your plan and\nbilling details.\nPlease retry in 45.14551691s.",
+    "exhausted": false
+  },
+  {
+    "source": "https://github.com/kirodotdev/Kiro/issues/10553",
+    "cli": "kiro",
+    "output": "The monthly usage limit has been reached (request_id: 0e06d8cd-211d-4ef7-a3d5-b14bd01b70b1)",
+    "exhausted": true
+  },
+  {
+    "source": "https://github.com/kirodotdev/Kiro/issues/9134",
+    "cli": "kiro",
+    "output": "You've reached your monthly usage limit. Please return next month to continue building. (Request ID: d4c274b2-56d0-4296-8122-68ec40c51e39)",
+    "exhausted": true
+  }
+]
