@@ -21,8 +21,8 @@ RUN apt-get update \
 # Agent CLIs — installed for all supported drivers; selectCli picks what's
 # present at runtime. Kiro (API-key auth), Claude Code + OpenCode + Codex
 # (Bedrock).
-ARG KIRO_CLI_VERSION=2.19.2
-ARG KIRO_CLI_SHA256=84df9ddcf02156d9563910850c7a07805ea41cf6a32bc30438741878f10a5af5
+ARG KIRO_CLI_VERSION=2.27.1
+ARG KIRO_CLI_SHA256=937ff1ae3df373717b66cc09aec79c3b7f0b8e53968d746e3a4545722e1e4587
 RUN curl -fsSLo /tmp/kiro-cli.zip \
         "https://prod.download.cli.kiro.dev/stable/${KIRO_CLI_VERSION}/kirocli-aarch64-linux-musl.zip" \
     && echo "${KIRO_CLI_SHA256}  /tmp/kiro-cli.zip" | sha256sum -c - \
@@ -33,12 +33,12 @@ RUN curl -fsSLo /tmp/kiro-cli.zip \
     && ln -sf /opt/kiro/bin/kiro-cli /usr/local/bin/kiro-cli \
     && kiro-cli --version | grep -F "${KIRO_CLI_VERSION}" \
     && rm -rf /root/.local /tmp/kiro-cli /tmp/kiro-cli.zip
-ARG CLAUDE_CODE_VERSION=2.1.246
+ARG CLAUDE_CODE_VERSION=2.1.291
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && claude --version | grep -F "${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
-ARG OPENCODE_VERSION=1.17.20
-ARG OPENCODE_SHA256=0a41572e83a896eb008683589dfe09e17b941d06122608510f3e5f16d86d9afc
+ARG OPENCODE_VERSION=1.18.34
+ARG OPENCODE_SHA256=bbdb3f00c2c51e42e315525233151309724226a8776da8e9145e3b0fa3d5310f
 RUN mkdir -p /opt/opencode/bin \
     && curl -fsSLo /tmp/opencode.tar.gz \
         "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz" \
@@ -50,7 +50,7 @@ RUN mkdir -p /opt/opencode/bin \
 # Codex — pinned for reproducibility (the npm package ships the arm64 binary).
 # The per-stage CODEX_HOME (config.toml) is materialized at run time; the
 # version assert catches a broken/mismatched install at build time.
-ARG CODEX_VERSION=0.145.0
+ARG CODEX_VERSION=0.160.1
 RUN npm install -g @openai/codex@${CODEX_VERSION} \
     && codex --version | grep -F "${CODEX_VERSION}" \
     && npm cache clean --force
@@ -123,12 +123,12 @@ USER node
 # CLI conversation-store placement (for park/resume durability):
 #  - Claude: plain JSONL — CLAUDE_CONFIG_DIR points straight at the persistent
 #    mount; append-only file needs no locking, works on the mount directly.
-#  - Kiro: SQLite — the managed mount does NOT provide the fcntl byte-range
-#    locking SQLite needs ("database is locked" on open). So XDG_DATA_HOME stays
-#    on EPHEMERAL local disk where locking works, and run-stage syncs the single
-#    data.sqlite3* store file between the mount (V2_KIRO_STORE_DIR, durable) and
-#    local XDG around each Kiro spawn so a resume after a microVM reap still
-#    recalls the conversation. See cli/kiro-store.js.
+#  - Kiro: SQLite CLI state under XDG_DATA_HOME plus v2-engine session files
+#    under ~/.kiro/sessions. The managed mount does NOT provide the fcntl
+#    byte-range locking SQLite needs ("database is locked" on open), so both
+#    stay on EPHEMERAL local disk, and run-stage syncs them with the mount
+#    (V2_KIRO_STORE_DIR, durable) around each Kiro spawn so a resume after a
+#    microVM reap still recalls the conversation. See cli/kiro-store.js.
 #  - OpenCode: SQLite — the same copy protocol, but its XDG override is applied
 #    only to OpenCode children so Kiro's global XDG placement is unchanged.
 #  - Codex: CODEX_HOME stays on EPHEMERAL local disk. run-stage restores and

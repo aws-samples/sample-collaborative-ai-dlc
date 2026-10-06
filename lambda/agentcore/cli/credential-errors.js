@@ -5,6 +5,8 @@ const CREDENTIAL_FAILURE_PATTERNS = [
   /\bauthentication (?:failed|required|error)\b/i,
   /\binvalid (?:api[ -]?key|credential|token|bearer token)\b/i,
   /\b(?:api[ -]?key|credential|token|bearer token) (?:is )?(?:invalid|expired|missing|rejected)\b/i,
+  // AWS phrasing, e.g. Kiro's "The bearer token included in the request is invalid".
+  /\b(?:bearer|security) token included in the request is invalid\b/i,
   /\baccess denied\b/i,
 ];
 

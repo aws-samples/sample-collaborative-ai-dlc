@@ -1,5 +1,6 @@
 import { createOpenCodeJsonlParser } from './cli/opencode-parser.js';
 import { createCodexJsonlParser } from './cli/codex-parser.js';
+import { createKiroJsonlParser } from './cli/kiro-parser.js';
 
 const TOOL_DISPLAY_TYPES = new Set([
   'message',
@@ -98,46 +99,6 @@ const displayForMessage = (content) => {
     type: success ? 'system' : 'message',
     level: success ? 'success' : 'info',
     ...(success ? { title: summary } : { summary }),
-  };
-};
-
-const completionOf = (line) => {
-  const match = line.match(
-    /^\s*-?\s*(Completed|Failed|Errored|Error)(?:\s+in\s+([0-9.]+\s*[a-z]+))?\s*$/i,
-  );
-  if (!match) return null;
-  const word = match[1].toLowerCase();
-  return {
-    ok: word === 'completed',
-    duration: match[2]?.replace(/\s+/g, '') ?? null,
-  };
-};
-
-const parseToolStart = (line) => {
-  const match = line.match(/^\s*Running tool\s+[`'"]?([A-Za-z0-9_.:-]+)\b/i);
-  return match?.[1] ?? null;
-};
-
-const parseNativeFsStart = (line) => {
-  const read = line.match(
-    /^\s*Reading file:\s*(.+?)(?:,\s*all lines)?\s*\(using tool:\s*read\)\s*$/i,
-  );
-  if (read?.[1]) {
-    return {
-      name: 'fs_read',
-      targets: [read[1].trim()],
-    };
-  }
-
-  const write = line.match(
-    /^\s*I'll\s+(create|update|modify|edit|write)\s+the following file:\s*(.+?)\s*\(using tool:\s*(?:write|edit)\)\s*$/i,
-  );
-  if (!write?.[2]) return null;
-  const operation = write[1].toLowerCase();
-  return {
-    name: 'fs_write',
-    targets: [write[2].trim()],
-    editAction: operation === 'create' ? 'Created' : operation === 'write' ? 'Wrote' : 'Updated',
   };
 };
 
@@ -377,21 +338,6 @@ const displayForReadBatch = (tools) => {
   };
 };
 
-const isStructuralNoiseLine = (text) => {
-  const s = String(text ?? '').trim();
-  if (!s) return true;
-  if (/^stdout$/i.test(s)) return true;
-  if (/^Running tool\b/i.test(s)) return true;
-  if (/^[-\s]*(Completed|Failed|Errored|Error)\b/i.test(s)) return true;
-  const stripped = s.replace(/^[.:…⋮\s]+/, '').trim();
-  if (/^[{}[\],]+$/.test(stripped)) return true;
-  if (/^"[^"]+"\s*:/.test(stripped)) return true;
-  if (/^[{[]\s*"[^"]+"\s*:/.test(stripped)) return true;
-  return false;
-};
-
-const isPatchLine = (text) => /^\s*[+-]\s*\d+:\s?/.test(String(text ?? ''));
-
 const openCodeToolName = (name) => {
   const raw = String(name ?? 'tool')
     .split(/[.:]/)
@@ -413,275 +359,120 @@ const claudeResultText = (result) => {
     .join('\n');
 };
 
+// Codex, OpenCode and Kiro stream JSONL through parsers with one callback
+// surface; render their events identically. Consecutive successful file reads
+// collapse into one batch row.
+const createParsedSink = ({ createParser, label, toolName, emit, onSession, onUsage, onError }) => {
+  let readBatch = [];
+  const flushReadBatch = () => {
+    if (!readBatch.length) return;
+    const event = displayForReadBatch(readBatch);
+    readBatch = [];
+    emitEvent(emit, event.content, event.display);
+  };
+  const send = (content, display) => {
+    flushReadBatch();
+    emitEvent(emit, content, display);
+  };
+  const parser = createParser({
+    onSession,
+    onUsage,
+    onText(text) {
+      const content = stripTerminalControls(text);
+      send(content, displayForMessage(content));
+    },
+    onTool(toolEvent) {
+      const name = toolName(toolEvent.name);
+      // send_output already persists its canonical output through MCP.
+      if (name === 'send_output') return;
+      const rawLines = [
+        `Running tool ${name}\n`,
+        `${JSON.stringify(toolEvent.input ?? {})}\n`,
+        ...(toolEvent.output ? [`${String(toolEvent.output)}\n`] : []),
+        ...(toolEvent.error ? [`${String(toolEvent.error?.message ?? toolEvent.error)}\n`] : []),
+      ];
+      const tool = {
+        name,
+        rawLines,
+        ...(Array.isArray(toolEvent.targets) && toolEvent.targets.length
+          ? { targets: toolEvent.targets }
+          : {}),
+        ...(toolEvent.editAction ? { editAction: toolEvent.editAction } : {}),
+        completion: { ok: toolEvent.status === 'completed', duration: null },
+      };
+      if (name === 'fs_read' && tool.completion.ok) {
+        readBatch.push(tool);
+        return;
+      }
+      const event = displayForTool(tool);
+      send(event.content, event.display);
+    },
+    onError(message, event) {
+      onError(message, event);
+      const content = stripTerminalControls(`${message}\n`);
+      send(content, {
+        type: 'raw',
+        level: 'error',
+        title: `${label} error`,
+        summary: content.trim(),
+        details: content.trim(),
+      });
+    },
+    onDiagnostic(line) {
+      const content = stripTerminalControls(`${line}\n`);
+      emitEvent(emit, content, {
+        type: 'raw',
+        level: 'info',
+        summary: content.trim(),
+        hiddenByDefault: true,
+      });
+    },
+  });
+  return {
+    state: parser.state,
+    write(chunk) {
+      parser.write(chunk);
+    },
+    flush() {
+      const state = parser.flush();
+      flushReadBatch();
+      return state;
+    },
+  };
+};
+
+const PARSED_SINKS = {
+  opencode: {
+    createParser: createOpenCodeJsonlParser,
+    label: 'OpenCode',
+    toolName: openCodeToolName,
+  },
+  // Codex and Kiro report MCP tools with the bare tool name (server carried
+  // separately) — no prefix stripping needed.
+  codex: {
+    createParser: createCodexJsonlParser,
+    label: 'Codex',
+    toolName: (name) => String(name ?? 'tool'),
+  },
+  kiro: {
+    createParser: createKiroJsonlParser,
+    label: 'Kiro',
+    toolName: (name) => String(name ?? 'tool'),
+  },
+};
+
 export const createCliOutputSink = ({
   cli,
   emit,
   onSession = () => {},
   onUsage = () => {},
-  onError: handleError = () => {},
+  onError = () => {},
 }) => {
+  if (PARSED_SINKS[cli]) {
+    return createParsedSink({ ...PARSED_SINKS[cli], emit, onSession, onUsage, onError });
+  }
+
   let pending = '';
-
-  if (cli === 'opencode') {
-    const parser = createOpenCodeJsonlParser({
-      onSession,
-      onUsage,
-      onText(text) {
-        const content = stripTerminalControls(text);
-        emitEvent(emit, content, displayForMessage(content));
-      },
-      onTool(toolEvent) {
-        const name = openCodeToolName(toolEvent.name);
-        // send_output already persists its canonical output through MCP.
-        if (name === 'send_output') return;
-        const rawLines = [
-          `Running tool ${name}\n`,
-          `${JSON.stringify(toolEvent.input ?? {})}\n`,
-          ...(toolEvent.output ? [`${String(toolEvent.output)}\n`] : []),
-          ...(toolEvent.error ? [`${String(toolEvent.error?.message ?? toolEvent.error)}\n`] : []),
-        ];
-        const event = displayForTool({
-          name,
-          rawLines,
-          completion: { ok: toolEvent.status === 'completed', duration: null },
-        });
-        emitEvent(emit, event.content, event.display);
-      },
-      onError(message, event) {
-        handleError(message, event);
-        const content = stripTerminalControls(`${message}\n`);
-        emitEvent(emit, content, {
-          type: 'raw',
-          level: 'error',
-          title: 'OpenCode error',
-          summary: content.trim(),
-          details: content.trim(),
-        });
-      },
-      onDiagnostic(line) {
-        const content = stripTerminalControls(`${line}\n`);
-        emitEvent(emit, content, {
-          type: 'raw',
-          level: 'info',
-          summary: content.trim(),
-          hiddenByDefault: true,
-        });
-      },
-    });
-    return {
-      state: parser.state,
-      write(chunk) {
-        parser.write(chunk);
-      },
-      flush() {
-        return parser.flush();
-      },
-    };
-  }
-
-  if (cli === 'codex') {
-    const parser = createCodexJsonlParser({
-      onSession,
-      onUsage,
-      onText(text) {
-        const content = stripTerminalControls(text);
-        emitEvent(emit, content, displayForMessage(content));
-      },
-      onTool(toolEvent) {
-        // Codex reports MCP tools with the bare tool name (server carried
-        // separately) — no prefix stripping needed.
-        const name = String(toolEvent.name ?? 'tool');
-        // send_output already persists its canonical output through MCP.
-        if (name === 'send_output') return;
-        const rawLines = [
-          `Running tool ${name}\n`,
-          `${JSON.stringify(toolEvent.input ?? {})}\n`,
-          ...(toolEvent.output ? [`${String(toolEvent.output)}\n`] : []),
-          ...(toolEvent.error ? [`${String(toolEvent.error?.message ?? toolEvent.error)}\n`] : []),
-        ];
-        const event = displayForTool({
-          name,
-          rawLines,
-          ...(Array.isArray(toolEvent.targets) && toolEvent.targets.length
-            ? { targets: toolEvent.targets }
-            : {}),
-          completion: { ok: toolEvent.status === 'completed', duration: null },
-        });
-        emitEvent(emit, event.content, event.display);
-      },
-      onError(message, event) {
-        handleError(message, event);
-        const content = stripTerminalControls(`${message}\n`);
-        emitEvent(emit, content, {
-          type: 'raw',
-          level: 'error',
-          title: 'Codex error',
-          summary: content.trim(),
-          details: content.trim(),
-        });
-      },
-      onDiagnostic(line) {
-        const content = stripTerminalControls(`${line}\n`);
-        emitEvent(emit, content, {
-          type: 'raw',
-          level: 'info',
-          summary: content.trim(),
-          hiddenByDefault: true,
-        });
-      },
-    });
-    return {
-      state: parser.state,
-      write(chunk) {
-        parser.write(chunk);
-      },
-      flush() {
-        return parser.flush();
-      },
-    };
-  }
-
-  if (cli !== 'claude') {
-    let suppressTool = false;
-    let tool = null;
-    let readBatch = [];
-    let messageLines = [];
-    let patchLines = [];
-
-    const flushReadBatch = () => {
-      if (!readBatch.length) return;
-      const event = displayForReadBatch(readBatch);
-      readBatch = [];
-      emitEvent(emit, event.content, event.display);
-    };
-
-    const flushMessage = () => {
-      if (!messageLines.length) return;
-      const content = messageLines.join('');
-      messageLines = [];
-      emitEvent(emit, content, displayForMessage(content));
-    };
-
-    const flushPatch = () => {
-      if (!patchLines.length) return;
-      const content = patchLines.join('');
-      const lineCount = patchLines.length;
-      patchLines = [];
-      emitEvent(emit, content, {
-        type: 'edit',
-        level: 'info',
-        title: `Updated ${lineCount} ${lineCount === 1 ? 'line' : 'lines'}`,
-        details: content.trim(),
-        hiddenByDefault: false,
-      });
-    };
-
-    const flushToolAsRaw = () => {
-      if (!tool) return;
-      const content = tool.rawLines.join('');
-      tool = null;
-      flushReadBatch();
-      emitEvent(emit, content, {
-        type: 'raw',
-        level: 'info',
-        summary: content.trim(),
-      });
-    };
-
-    const finishTool = (completion) => {
-      if (!tool) return;
-      tool.completion = completion;
-      const finished = tool;
-      tool = null;
-      if (finished.name === 'fs_read' && completion.ok) {
-        readBatch.push(finished);
-        return;
-      }
-      flushReadBatch();
-      const event = displayForTool(finished);
-      emitEvent(emit, event.content, event.display);
-    };
-
-    const consumeLine = (line, newline = true) => {
-      const text = stripTerminalControls(`${line}${newline ? '\n' : ''}`);
-      const toolName = parseToolStart(text);
-      const nativeFs = parseNativeFsStart(text);
-
-      if (suppressTool) {
-        if (completionOf(text)) suppressTool = false;
-        return;
-      }
-
-      if (toolName || nativeFs) {
-        flushMessage();
-        flushPatch();
-        flushToolAsRaw();
-        if (toolName === 'send_output') {
-          suppressTool = true;
-          return;
-        }
-        tool = {
-          name: toolName ?? nativeFs.name,
-          rawLines: [text],
-          completion: null,
-          ...nativeFs,
-        };
-        return;
-      }
-
-      if (tool) {
-        tool.rawLines.push(text);
-        const completion = completionOf(text);
-        if (completion) finishTool(completion);
-        return;
-      }
-
-      if (!text.trim()) {
-        flushMessage();
-        flushPatch();
-        return;
-      }
-
-      flushReadBatch();
-      if (isPatchLine(text)) {
-        flushMessage();
-        patchLines.push(text);
-        return;
-      }
-
-      flushPatch();
-      const structural = isStructuralNoiseLine(text);
-      if (structural) {
-        flushMessage();
-        emitEvent(emit, text, {
-          type: 'raw',
-          level: 'info',
-          summary: text.trim(),
-          hiddenByDefault: true,
-        });
-      } else {
-        messageLines.push(text);
-      }
-    };
-
-    return {
-      write(chunk) {
-        pending += chunk;
-        const lines = pending.split(/\r?\n/);
-        pending = lines.pop() ?? '';
-        for (const line of lines) consumeLine(line);
-      },
-      flush() {
-        if (pending) consumeLine(pending, false);
-        pending = '';
-        flushToolAsRaw();
-        flushMessage();
-        flushPatch();
-        flushReadBatch();
-      },
-    };
-  }
-
   // Claude's stream-json is JSONL. Forward only human-readable assistant text,
   // plus completed tool calls paired by tool_use id.
   const pendingTools = new Map();
@@ -750,7 +541,5 @@ export const __test = {
   displayForReadBatch,
   extractJson,
   isEditTool,
-  isPatchLine,
-  isStructuralNoiseLine,
   openCodeToolName,
 };
