@@ -6,12 +6,17 @@ import {
   agentsService,
   type AgentCredentialStatus,
   type SpaceAgentCredentialStatus,
+  type AgentCredentialUpdate,
+  type AgentAuthImpactReview,
 } from '@/services/agents';
+import { AuthenticationImpactReview } from './AuthenticationImpactReview';
+import { AgentAuthenticationModeSettings } from './AgentAuthenticationModeSettings';
 import { SettingsCard } from '@/components/settings/SettingsCard';
 import { ConfigStatusBadge } from '@/components/settings/ConfigStatusBadge';
 import { SecretField } from '@/components/settings/SecretField';
 import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveStatusButton';
 import { agentCredentialFormatWarning } from '@/lib/agentCredentialFormat';
+import { ApiError } from '@/services/api';
 
 // Credential storage scopes. Intents pin an opaque binding to one of these;
 // they do not store a separate secret.
@@ -52,6 +57,10 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
   const [settings, setSettings] = useState<AgentCredentialStatus | null>(null);
   const [platformFallback, setPlatformFallback] = useState<AgentCredentialStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pendingReview, setPendingReview] = useState<{
+    review: AgentAuthImpactReview;
+    update: AgentCredentialUpdate;
+  } | null>(null);
   const [bearerToken, setBearerToken] = useState('');
   const [kiroApiKey, setKiroApiKey] = useState('');
   const [saving, setSaving] = useState(false);
@@ -86,6 +95,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
   useEffect(() => {
     setLoading(true);
     setSettings(null);
+    setPendingReview(null);
     setPlatformFallback(null);
     setBearerToken('');
     setKiroApiKey('');
@@ -106,7 +116,12 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       });
   }, [identity, isCurrentIdentity, load, scope]);
 
-  const update = async (value: { bedrockBearerToken?: string; kiroApiKey?: string }) => {
+  const update = async (value: AgentCredentialUpdate) => {
+    if (settings?.authentication?.reviewRequired && !value.reviewId) {
+      const review = await agentsService.previewCredentialUpdate(scope, projectId, value);
+      if (isCurrentIdentity()) setPendingReview({ review, update: value });
+      return { saved: false };
+    }
     if (scope === 'platform') return agentsService.updateSettings(value);
     if (scope === 'personal') return agentsService.updatePersonalCredentials(value);
     if (!projectId) throw new Error('projectId is required for space credentials');
@@ -123,7 +138,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       const value: { bedrockBearerToken?: string; kiroApiKey?: string } = {};
       if (bearerToken !== '') value.bedrockBearerToken = bearerToken;
       if (kiroApiKey !== '') value.kiroApiKey = kiroApiKey;
-      await update(value);
+      if (!(await update(value)).saved) return;
       if (!isCurrentIdentity() || !(await load())) return;
       setBearerToken('');
       setKiroApiKey('');
@@ -150,7 +165,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     setSaveResult(null);
     setErrorMessage(null);
     try {
-      await update({ [field]: '' });
+      if (!(await update({ [field]: '' })).saved) return;
       if (!isCurrentIdentity() || !(await load())) return;
       if (field === 'bedrockBearerToken') setBearerToken('');
       else setKiroApiKey('');
@@ -172,8 +187,55 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     }
   };
 
+  const applyReview = async () => {
+    if (!pendingReview) return;
+    setSaving(true);
+    setErrorMessage(null);
+    try {
+      await update({ ...pendingReview.update, reviewId: pendingReview.review.id });
+      if (!isCurrentIdentity()) return;
+      setPendingReview(null);
+      setBearerToken('');
+      setKiroApiKey('');
+      await load();
+      setSaveResult('saved');
+    } catch (error) {
+      if (!isCurrentIdentity()) return;
+      // The API carries the auth error code in the response body, not on the error.
+      if (error instanceof ApiError && error.body?.code === 'AGENT_AUTH_REVIEW_STALE')
+        setPendingReview(null);
+      setErrorMessage(
+        error instanceof Error
+          ? error.message
+          : 'Failed to finish the reviewed change. Apply it again to retry.',
+      );
+      setSaveResult('error');
+    } finally {
+      if (isCurrentIdentity()) setSaving(false);
+    }
+  };
+
   const configuredCount =
     Number(Boolean(settings?.bedrockBearerTokenSet)) + Number(Boolean(settings?.kiroApiKeySet));
+  const authentication = settings?.authentication;
+  const policyMode = authentication?.policy.mode;
+  // Keys is the built-in legacy-key owner; every other mode authenticates
+  // Bedrock agents through a connection, so saved Bedrock keys are inert.
+  const connectionMode = policyMode !== undefined && policyMode !== 'keys';
+  const modeLabel =
+    authentication?.modes.find((option) => option.id === policyMode)?.label ?? policyMode;
+  const hasOverride = authentication?.hasOverride ?? Boolean(settings?.bedrockBearerTokenSet);
+  const connectionReady =
+    authentication?.connection?.mode === policyMode &&
+    authentication?.connection?.state === 'ready';
+  const inheritsConnection = scope !== 'platform' && !hasOverride;
+  const description = !connectionMode
+    ? COPY[scope].description
+    : scope === 'platform'
+      ? `Agents use the platform ${modeLabel} connection. Kiro keeps its separate API key.`
+      : scope === 'space'
+        ? `Agents inherit the platform ${modeLabel} connection unless this space has its own. Kiro keeps its separate API key.`
+        : `Agents use the ${modeLabel} connection managed by administrators. Kiro keeps your personal API key.`;
   const fallbackText = (provider: 'bedrock' | 'kiro') => {
     if (scope !== 'space') return null;
     const available =
@@ -187,16 +249,24 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
     <SettingsCard
       icon={<KeyRound />}
       title={COPY[scope].title}
-      description={COPY[scope].description}
+      description={description}
       badge={
-        !loading && (
+        !loading &&
+        (connectionMode ? (
+          <ConfigStatusBadge
+            ok={connectionReady}
+            okLabel={inheritsConnection ? 'Using platform connection' : `${modeLabel} configured`}
+            notOkLabel={`${modeLabel} needs attention`}
+            notOkTone="warning"
+          />
+        ) : (
           <ConfigStatusBadge
             ok={configuredCount > 0}
             okLabel={`${configuredCount} provider${configuredCount === 1 ? '' : 's'} configured`}
             notOkLabel="No credentials"
             notOkTone="warning"
           />
-        )
+        ))
       }
     >
       {loading ? (
@@ -239,18 +309,43 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
         </div>
       ) : (
         <div className="space-y-5">
+          {authentication && (
+            <AgentAuthenticationModeSettings
+              key={`${identity}:${authentication.policy.revision}`}
+              authentication={authentication}
+              scope={scope}
+              projectId={projectId}
+              hasOverride={hasOverride}
+              onApplied={load}
+            />
+          )}
+          {pendingReview && (
+            <AuthenticationImpactReview
+              review={pendingReview.review}
+              applying={saving}
+              onApply={() => void applyReview()}
+              onCancel={() => setPendingReview(null)}
+            />
+          )}
           <SecretField
             id={`${scope}-bedrock-bearer-token`}
             label="Bedrock Bearer Token"
             isSet={Boolean(settings?.bedrockBearerTokenSet)}
             value={bearerToken}
-            onChange={setBearerToken}
+            onChange={(value) => {
+              setBearerToken(value);
+              setPendingReview(null);
+            }}
             emptyPlaceholder="Enter AWS_BEARER_TOKEN_BEDROCK value"
             rotatePlaceholder="Enter a new token to rotate, or leave blank"
             onClear={() => clearSecret('bedrockBearerToken')}
             clearing={clearingSecret === 'bedrockBearerToken'}
-            disabled={saving || clearingSecret !== null}
-            helpText={`Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`}
+            disabled={saving || clearingSecret !== null || connectionMode}
+            helpText={
+              connectionMode
+                ? `Agents authenticate with ${modeLabel}. Saved Bedrock keys are not used in this mode.`
+                : `Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`
+            }
             warningText={agentCredentialFormatWarning('bedrockBearerToken', bearerToken)}
           />
           <SecretField
@@ -258,7 +353,10 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
             label="Kiro API Key"
             isSet={Boolean(settings?.kiroApiKeySet)}
             value={kiroApiKey}
-            onChange={setKiroApiKey}
+            onChange={(value) => {
+              setKiroApiKey(value);
+              setPendingReview(null);
+            }}
             emptyPlaceholder="Enter KIRO_API_KEY value"
             rotatePlaceholder="Enter a new key to rotate, or leave blank"
             onClear={() => clearSecret('kiroApiKey')}

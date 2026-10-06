@@ -334,3 +334,23 @@ test('teardown covers every protected data store and cannot automate production'
   const installer = read('scripts/install.sh');
   assert.match(installer, /destroy_command\(\)[\s\S]*?\[\[ "\$ENVIRONMENT" == "prod" \]\]/);
 });
+
+test('the AgentCore runtime role cannot assume roles', () => {
+  const agentcore = read('terraform/modules/compute/agentcore/main.tf');
+  const runtimes = resourceBlocks(agentcore, 'awscc_bedrockagentcore_runtime');
+  assert.ok(runtimes.length > 0, 'missing awscc_bedrockagentcore_runtime');
+  for (const { body, name } of runtimes) {
+    assert.match(body, /role_arn\s+= aws_iam_role\.agentcore\.arn/, `${name} runtime role`);
+  }
+
+  const runtimePolicy = resourceBlocks(agentcore, 'aws_iam_role_policy').find(
+    ({ name }) => name === 'agentcore',
+  );
+  assert.ok(runtimePolicy, 'missing aws_iam_role_policy "agentcore"');
+  assert.match(runtimePolicy.body, /role\s+= aws_iam_role\.agentcore\.id/);
+  // An explicit identity-policy Deny outranks any Allow later attached to the runtime role.
+  assert.match(
+    runtimePolicy.body,
+    /\{\s*(?:#[^\n]*\n\s*)*Effect\s+= "Deny"\s+Action\s+= \["sts:AssumeRole"\]\s+Resource\s+= "\*"\s*\}/,
+  );
+});

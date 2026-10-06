@@ -1,3 +1,7 @@
+import {
+  authenticationCommandFailure,
+  authenticationCommandHandlers,
+} from './authentication-command-registry.js';
 // AgentCore Runtime HTTP server — the container contract.
 //
 // Bedrock AgentCore Runtime requires a container that listens on 0.0.0.0:8080
@@ -68,6 +72,8 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import http from 'node:http';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { commandDefinition } from './command-registry.js';
+import { createCredentialSession } from './credential-session.js';
+import { accountCredentialInvocation } from './invocation-accounting.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -110,6 +116,7 @@ export const dispatchInvocation = async ({
   }
 
   busy?.enter();
+  let credentialSession = null;
   try {
     const context =
       prepareInvocation && definition.agentAuth
@@ -117,7 +124,10 @@ export const dispatchInvocation = async ({
         : {};
     const handlerPayload = { ...payload };
     delete handlerPayload.agentCredentialGrant;
-    const result = await handler(handlerPayload, context);
+    credentialSession = context.credentialSession ?? null;
+    const result = credentialSession
+      ? await credentialSession.run(() => handler(handlerPayload, context))
+      : await handler(handlerPayload, context);
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception. Log them
@@ -133,9 +143,15 @@ export const dispatchInvocation = async ({
     }
     return { statusCode: 200, body: { ...result, command, at: now() } };
   } catch (e) {
+    const failure = authenticationCommandFailure(command, e);
+    if (failure) {
+      logger.warn('Authentication command failed', { command, code: failure.code });
+      return { statusCode: 200, body: { ...failure, command, at: now() } };
+    }
     logger.error('command threw', e, { command });
     return { statusCode: 500, body: { error: e.message, command } };
   } finally {
+    await credentialSession?.release();
     busy?.leave();
   }
 };
@@ -231,8 +247,7 @@ const main = async () => {
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
   const { discoverInstalledClis } = await import('./cli/discover.js');
-  const { authenticatedClisForEnv, resolveInvocationAgentAuth } =
-    await import('./auth-resolver.js');
+  const { authenticatedClis, resolveInvocationAgentAuth } = await import('./auth-resolver.js');
 
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
@@ -245,9 +260,34 @@ const main = async () => {
       store,
       env: process.env,
     });
+    const credentialSession =
+      auth.credentialSession ??
+      createCredentialSession({
+        env: auth.env,
+        credentialEnvironment: auth.credentialEnvironment,
+        expiresAt: auth.expiresAt,
+        authorizationExpiresAt: auth.authorizationExpiresAt,
+        refresh: auth.refresh,
+      });
+    try {
+      await accountCredentialInvocation({
+        ddb,
+        tableName: process.env.V2_PROCESS_TABLE,
+        session: credentialSession,
+        payload: { ...payload, projectId: auth.projectId },
+        bindings: auth.bindings,
+      });
+    } catch (error) {
+      await credentialSession.release();
+      throw error;
+    }
     return {
       ...auth,
-      availableClis: authenticatedClisForEnv({ installed: installedClis, env: auth.env }),
+      credentialSession,
+      availableClis: authenticatedClis({
+        installed: installedClis,
+        providers: auth.resolvedProviders,
+      }),
     };
   };
 
@@ -283,9 +323,12 @@ const main = async () => {
       capabilities(p, {
         env: context.env,
         discoverInstalledClis: async () => installedClis,
+        authenticatedProviders: context.resolvedProviders,
+        materialTypes: context.materialTypes ?? [],
       }),
     managedRuntimeCheck: (p) => managedRuntimeCheck(p, { workspaceDir }),
     verifyMcp: (p) => verifyMcp(p),
+    ...authenticationCommandHandlers(),
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).

@@ -9,7 +9,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
 import { tmpdir } from 'node:os';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -114,9 +114,14 @@ describe('end-to-end: init-ws → run-stage with a real agent-equivalent MCP ses
 
     // 2. run-stage: the spawnFn simulates the headless CLI by driving the SAME MCP
     // tool handlers the real agent would call over stdio.
+    let capturedMcpConfigPath = null;
     const fakeAgentSpawn = (command, args) => {
       // Find the mcp-config the materializer wrote and act as the agent: build a
       // writer+bridge with the trusted scope and create the expected artifact.
+      capturedMcpConfigPath = args[args.indexOf('--mcp-config') + 1];
+      const mcpConfig = JSON.parse(readFileSync(capturedMcpConfigPath, 'utf8'));
+      expect(mcpConfig.mcpServers.aidlc.args[0]).toContain('stdio-relay.js');
+      expect(mcpConfig.mcpServers.aidlc.env.AWS_ACCESS_KEY_ID).toBe('');
       const run = async () => {
         const stageScope = {
           executionId: 'e1',
@@ -207,12 +212,13 @@ describe('end-to-end: init-ws → run-stage with a real agent-equivalent MCP ses
     const topLevel = readdirSync(workspaceDir);
     expect(topLevel).toContain('.aidlc');
     expect(topLevel).not.toContain('aidlc-docs');
-    // No rules in this library, so only the mcp-config is materialized; either
-    // way every workspace write stays inside .aidlc (steering), never aidlc-docs.
+    // Invocation-scoped MCP configuration existed during the child lifetime and
+    // was removed afterward. Persistent steering files can remain in .aidlc.
     for (const f of readdirSync(path.join(workspaceDir, '.aidlc'))) {
-      expect(['mcp-config.json', 'rules.md']).toContain(f);
+      expect(f).toBe('rules.md');
     }
-    expect(readdirSync(path.join(workspaceDir, '.aidlc'))).toContain('mcp-config.json');
+    expect(capturedMcpConfigPath).not.toBeNull();
+    expect(existsSync(capturedMcpConfigPath)).toBe(false);
 
     // 3a. Business artifact landed in Neptune, typed + anchored to the Intent.
     const anchored = await g

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { AgentAuthenticationView } from '@/services/agents';
+import type { AgentAuthProviderUi, AgentAuthSetupProps } from './agent-auth/contract';
 
 const getPersonalCredentials = vi.fn();
 const updatePersonalCredentials = vi.fn();
@@ -15,6 +17,22 @@ vi.mock('@/services/agents', () => ({
     updateProjectCredentials: (...args: unknown[]) => updateProjectCredentials(...args),
   },
 }));
+
+vi.mock('./agent-auth/registry', () => {
+  const ui: AgentAuthProviderUi = {
+    mode: 'test-connection',
+    noun: 'test link',
+    Setup: ({ scope, projectId }: AgentAuthSetupProps) => (
+      <p>
+        Test setup for {scope} {projectId}
+      </p>
+    ),
+  };
+  return {
+    AGENT_AUTH_PROVIDER_UIS: [ui],
+    agentAuthProviderUi: (mode?: string | null) => (mode === ui.mode ? ui : undefined),
+  };
+});
 
 import { AgentCredentialScopeCard } from './AgentCredentialScopeCard';
 
@@ -220,5 +238,128 @@ describe('AgentCredentialScopeCard', () => {
 
     expect(await screen.findByText('1 provider configured')).toBeInTheDocument();
     expect(getPersonalCredentials).toHaveBeenCalledTimes(2);
+  });
+
+  describe('in a connection mode', () => {
+    const connectionView = (
+      overrides: Partial<AgentAuthenticationView> = {},
+    ): AgentAuthenticationView => ({
+      policy: { mode: 'test-connection', revision: 2, defaultConnectionId: 'test-platform' },
+      modes: [
+        { id: 'keys', label: 'Keys', available: true },
+        { id: 'test-connection', label: 'Test gateway', available: true },
+      ],
+      reviewRequired: true,
+      personalMechanisms: [],
+      hasOverride: false,
+      canManageConnections: false,
+      connection: {
+        id: 'test-platform',
+        mode: 'test-connection',
+        backend: 'bedrock',
+        mechanism: 'oauth-machine',
+        source: 'platform',
+        state: 'ready',
+        configuration: {},
+      },
+      ...overrides,
+    });
+
+    it('shows an inherited ready connection and keeps saved Bedrock keys inert', async () => {
+      getProjectCredentials.mockResolvedValue({
+        ...SPACE_A_STATUS,
+        authentication: connectionView({ reviewRequired: false }),
+      });
+      const user = userEvent.setup();
+      render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+
+      expect(await screen.findByText('Using platform connection')).toBeInTheDocument();
+      expect(screen.queryByText('1 provider configured')).not.toBeInTheDocument();
+      expect(screen.getByText(/Inherits platform connection/)).toBeInTheDocument();
+      expect(
+        screen.getByText(/inherit the platform Test gateway connection unless this space/),
+      ).toBeInTheDocument();
+      expect(screen.getByLabelText(/Bedrock Bearer Token/)).toBeDisabled();
+      expect(screen.getByText(/Saved Bedrock keys are not used in this mode/)).toBeInTheDocument();
+      expect(screen.queryByText(/Enables Claude Code/)).not.toBeInTheDocument();
+
+      const kiro = screen.getByLabelText(/Kiro API Key/);
+      expect(kiro).toBeEnabled();
+      await user.type(kiro, 'ksk_space');
+      await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+      await waitFor(() =>
+        expect(updateProjectCredentials).toHaveBeenCalledWith('space-1', {
+          kiroApiKey: 'ksk_space',
+        }),
+      );
+    });
+
+    it('does not let a saved key hide an unavailable override', async () => {
+      getProjectCredentials.mockResolvedValue({
+        ...SPACE_A_STATUS,
+        authentication: connectionView({
+          hasOverride: true,
+          connection: {
+            id: 'test-space',
+            mode: 'test-connection',
+            backend: 'bedrock',
+            mechanism: 'oauth-machine',
+            source: 'space',
+            projectId: 'space-1',
+            state: 'revoked',
+            configuration: {},
+          },
+        }),
+      });
+      render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+
+      expect(await screen.findByText('Test gateway needs attention')).toBeInTheDocument();
+      expect(screen.queryByText('1 provider configured')).not.toBeInTheDocument();
+      expect(screen.getByText(/Space test link override/)).toBeInTheDocument();
+    });
+
+    it('marks a space-owned ready connection as configured and hands Setup the space', async () => {
+      getProjectCredentials.mockResolvedValue({
+        ...SPACE_B_STATUS,
+        authentication: connectionView({
+          hasOverride: true,
+          canManageConnections: true,
+          connection: {
+            id: 'test-space',
+            mode: 'test-connection',
+            backend: 'bedrock',
+            mechanism: 'oauth-machine',
+            source: 'space',
+            projectId: 'space-1',
+            state: 'ready',
+            configuration: {},
+          },
+        }),
+      });
+      const user = userEvent.setup();
+      render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+
+      expect(await screen.findByText('Test gateway configured')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Change space test link' }));
+      expect(screen.getByText('Test setup for space space-1')).toBeInTheDocument();
+    });
+  });
+
+  it('falls back to the saved space key when the server omits hasOverride', async () => {
+    getProjectCredentials.mockResolvedValue({
+      ...SPACE_A_STATUS,
+      authentication: {
+        policy: { mode: 'keys', revision: 1, defaultConnectionId: 'keys-platform' },
+        modes: [{ id: 'keys', label: 'Keys', available: true }],
+        reviewRequired: true,
+        personalMechanisms: ['api-key'],
+        connection: null,
+      },
+    });
+    render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
+
+    expect(await screen.findByText(/Space key override/)).toBeInTheDocument();
+    expect(screen.getByText('1 provider configured')).toBeInTheDocument();
+    expect(screen.getByLabelText(/Bedrock Bearer Token/)).toBeEnabled();
   });
 });
