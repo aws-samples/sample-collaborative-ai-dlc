@@ -4462,6 +4462,40 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     expect(accepted.statusCode).toBe(200);
   });
 
+  it('records grant-autonomy only with status "approved"', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const humanTaskId = 'h-grant-autonomy';
+    const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+    seedGate(intent.id, humanTaskId);
+    procStore.set(humanKey, {
+      ...procStore.get(humanKey),
+      kind: 'validation',
+      options: ['approve', 'request-changes', 'grant-autonomy'],
+    });
+    const grant = { decision: 'grant-autonomy' };
+
+    // The engine applies the grant on the parsed decision, so a rejected or
+    // plain-answered row would carry a grant its status says was not given.
+    for (const status of ['rejected', 'answered']) {
+      const invalid = await answerGate(sub, projectId, intent.id, humanTaskId, {
+        status,
+        answer: grant,
+      });
+      expect(invalid.statusCode).toBe(400);
+      expect(JSON.parse(invalid.body).code).toBe('grant_autonomy_status_invalid');
+      expect(procStore.get(humanKey).status).toBe('pending');
+    }
+
+    const accepted = await answerGate(sub, projectId, intent.id, humanTaskId, {
+      status: 'approved',
+      answer: grant,
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(procStore.get(humanKey).answer).toEqual(grant);
+  });
+
   // The reason, the outcome and its explanation are only on the gate row; the stage
   // row's recommendation is cleared as soon as the gate opens. A DTO that drops
   // them leaves the reviewer with a generic sentence when the option is offered and

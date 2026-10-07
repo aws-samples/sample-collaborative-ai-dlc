@@ -37,7 +37,10 @@ import {
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
-import { constructionAutonomyApplies } from '../shared/construction-autonomy.js';
+import {
+  GRANT_AUTONOMY_OPTION,
+  constructionAutonomyApplies,
+} from '../shared/construction-autonomy.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { CONSTRUCTION_AUTONOMY_MODES, isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
@@ -2797,6 +2800,14 @@ export const handler = async (event, context) => {
           return response(400, {
             error: 'A loop-back answer must be recorded with status "rejected"',
             code: 'loop_back_status_invalid',
+          });
+        }
+        // The engine applies a grant on the parsed decision alone, so a row whose
+        // status says it was not approved must not carry one.
+        if (chosen === GRANT_AUTONOMY_OPTION && answerStatus !== 'approved') {
+          return response(400, {
+            error: 'A grant-autonomy answer must be recorded with status "approved"',
+            code: 'grant_autonomy_status_invalid',
           });
         }
       }
