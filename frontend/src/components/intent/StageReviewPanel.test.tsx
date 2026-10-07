@@ -225,6 +225,9 @@ describe('StageReviewPanel — learnings ritual', () => {
 
     expect(confirm).toHaveBeenCalledTimes(1);
     expect(String(confirm.mock.calls[0][0])).toContain('without stopping');
+    expect(String(confirm.mock.calls[0][0])).toContain(
+      'This applies for the rest of the intent, rewinds included, until the intent is cancelled.',
+    );
     expect(onAnswer).toHaveBeenCalledWith(expect.anything(), {
       status: 'approved',
       answer: { decision: 'grant-autonomy' },

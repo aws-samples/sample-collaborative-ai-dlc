@@ -346,6 +346,7 @@ export function StageReviewPanel({
         'Approve this stage and run the remaining construction stages without stopping?',
         'Later construction stages will be approved automatically while their checks are clean.',
         'A failure, a plan approval, a blocking finding, or a reviewer that is not ready still stops and asks you.',
+        'This applies for the rest of the intent, rewinds included, until the intent is cancelled.',
       ].join('\n'),
     );
   const submit = async (
