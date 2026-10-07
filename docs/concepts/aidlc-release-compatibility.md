@@ -29,6 +29,13 @@ All official profiles use the same source trust tier. Trust establishes whether
 the imported source may run; it does not certify that the platform reproduces
 every semantic in that source.
 
+A custom fork names the official profile whose frontmatter dialect it uses (for
+example `v2.9.0`); that base grants no trust. It is recorded `T0` and
+import-only, and it may author its own stages, scopes, agents and sensors. It
+becomes runnable only through the explicit admin promotion described under
+[Registry, promotion, and channels](#registry-promotion-and-channels), which
+applies the same fidelity guard as an official release.
+
 ## Immutable storage and import
 
 The seed-blocks import mode fetches the profile's declared source closure,
@@ -133,11 +140,49 @@ because it requires concurrent sessions.
 
 The 2.3.3 baseline remains promotable. The 2.6.18, 2.7.0, 2.8.2, and 2.9.0
 fixtures have runtime handlers for their authored persona modes and for the
-build-and-test loop-back, so with this layer 2.6.18 through 2.9.0 become
-promotable: `PROTOCOL:build-and-test-loopback` is no longer `unsupported`, which
-is the gap that made the release-promotion guard refuse them. Their
+build-and-test loop-back, so `PROTOCOL:build-and-test-loopback` is no longer
+`unsupported` — the gap that made the release-promotion guard refuse them. Their
 compatibility classification remains field-driven and reflects the supported
 runtime semantics rather than profile-version exceptions.
+
+Those fixtures carry no bodies, so they do not show one more condition. From
+2.8.2 on, a release's prompts invoke the upstream engine CLI as
+`{{INVOKE}} engine <command>`, and the guard reads those invocations out of the
+published closure as `BODY:{{INVOKE}}` gaps. It reads them only from what
+reaches a prompt: the bodies of the blocks a release library resolves (stages,
+agents, sensors, rules, artifacts, knowledge, scopes) and the conductor. The
+engine's own sources, hooks and protocols, and the SKILL and TEMPLATE bodies,
+ship in the closure and quote engine commands too, but no prompt renders them,
+so they are not read as gaps. The 2.6.18 and 2.7.0 prompts invoke no engine
+command.
+
+No engine binary exists here. The stage and compose prompts neutralize the
+token and append the engine-command annex, a closed list that tells the agent,
+per command, what to do instead. A stage prompt carries the annex when its
+stage body or the conductor carries the token; the compose prompt carries it
+when the composer persona or its knowledge does. A command the annex answers
+does not hold promotion when it is found in one of those bodies:
+
+| Command                                                                                                   | Handling              | What the platform does                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------------------------------------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `orchestrate report`                                                                                      | unsupported, answered | Records stage lifecycle itself from the turn ending.                                                                                                                                                                                                                                                                    |
+| `recompose --add`, `state set-construction-iteration`, `state practices-event`, `state practices-promote` | unsupported, answered | The agent records a recommendation for the human instead of performing the action.                                                                                                                                                                                                                                      |
+| `graph ars`                                                                                               | unsupported, answered | No composite is computed or shown. Upstream's score is advisory and nothing routes on it; the agent justifies each EXECUTE/SKIP with evidence and never presents a score.                                                                                                                                               |
+| `gen scope-table`, `gen stage-table`                                                                      | approximated          | Read-only reporting the prompt already carries.                                                                                                                                                                                                                                                                         |
+| `workspace detect`, `workspace codekb`, `workspace codekb-scope-diff`                                     | approximated          | Read-only reporting. The compose prompt carries the workspace signals the platform detected; a stage reads the compiled context and its working tree. No scope-diff identifier is minted.                                                                                                                               |
+| `worktree`, `worktree create`, `worktree merge`, `worktree info`                                          | approximated          | A per-unit lane runs on a unit branch the platform creates from the intent branch and checks out before the stage; any other stage runs on the intent branch. The platform merges each unit branch into the intent branch with `--no-ff` after the unit, and the intent branch reaches `main` through its pull request. |
+| `graph validate-grid`                                                                                     | approximated          | The plan resolver re-validates every compose proposal (strictly when in flight). Not reproduced: the validator summary, `nearest_stock`, the keyword collision check.                                                                                                                                                   |
+
+Any other command, including other subcommands or flags of these families and a
+family name on its own (`state`, `orchestrate --next`), gets only the annex's
+catch-all (say it is unavailable, never improvise), which leaves the
+authored step unperformed, so it still holds promotion. So does an answered
+command found only in a body whose prompt may carry no annex, such as a
+persona other than the composer or a rule. With these, 2.8.2 and 2.9.0 author
+nothing this build cannot honour and are promotable. The admin tab lists
+exactly what a given import still holds on. A gap list stored by a build that
+read other files is re-read from the closure the next time it is listed or
+promoted.
 
 `readyForCertification` is derived from the current compatibility report. It is
 not a version allowlist, and the report's Boolean is not treated as durable
@@ -166,11 +211,59 @@ registry row and re-reads bounded, digest-checked catalog objects. An upgrade
 that adds behavior the running build cannot honor is refused before new intents
 can select it.
 
+A custom fork is promoted the same way. Registration records it `T0`,
+import-only and invisible, with its fidelity gaps and the unhonoured subset on
+the record. Promoting it to `selectable` or `certified` runs the guard above
+over the fork's own closure: if every behavior it authors has a runtime handler,
+the record becomes runnable and can then be made visible, pointed at by a
+channel, and pinned by new intents; otherwise the promotion is refused with
+`release_capability_unhandled` and the record stays import-only. Nothing else
+makes a fork runnable, and a fork registered by an earlier build is in the same
+state until it is promoted. A fork's intents pin a closure that names the fork,
+and the runtime reads that closure only from the fork's own storage prefix; a
+custom closure is never executed under an official pin. The runtime also reads
+the fork's release record before it loads the closure and refuses the pin with
+`release_not_runnable` unless the record is runnable, so a fork pin written by
+hand or restored from a backup does not run a fork that was never promoted.
+
+Promoting a fork is a trust decision. Earlier builds kept every fork
+import-only until sandboxed execution and IAM isolation existed; this build lets
+an admin promote one, and neither of those exists yet. A promoted fork's sensor
+scripts, and the `command` each sensor declares (a `runtime: sh` command runs
+through `sh -c`), run in the agent runtime with the runtime's own role and no
+separate sandbox. That is how a user's script sensor runs too, but the blast
+radius is wider: a user's sensor runs only in that user's intents, while a
+promoted fork is offered to every project in the deployment. Only a platform
+admin can promote a fork, the guard refuses a fork that authors behavior this
+build has no handler for, and promotion is not revoked once granted. Promote
+only a fork whose sources you would run as your own sensors in every project.
+
 Because the registry reevaluates content evidence against the current handler
 registry, adding a handler can make an existing import promotable without
 changing its source bytes, importer revision, or closure digest. The registry
 API exposes both the original fidelity gaps and the subset this build still
 cannot honour; the admin screen explains a refused promotion.
+
+### Enable pinning and promote a release
+
+A deployment of this build can run 2.8.2, 2.9.0 or an admin-promoted fork as
+follows. Every step is explicit; none happens on its own.
+
+1. Turn release pinning on. In the Terraform variables for the deployment, set
+   `aidlc_release_pinning = "on"` and apply. The demo deployment workflow reads
+   it from the optional `AIDLC_RELEASE_PINNING` GitHub environment variable.
+2. Publish the release bytes with the seed-blocks `importRelease` mode, for an
+   allowlisted profile or for a custom fork pinned to an exact SHA.
+3. In the admin AI-DLC releases tab, register the published release. Check its
+   unhonoured values: a release with any cannot be promoted, and the list says
+   which behavior this build is missing.
+4. Set its support state to `selectable` (or `certified`), then make it
+   visible. Each step re-checks the release against this build.
+5. Optionally point a channel at it. `stable` makes it the default for new
+   intents; it requires `certified` unless the release is the platform baseline.
+
+Existing intents keep the release they were created with. To stop offering a
+release, follow [Roll back a channel](#roll-back-a-channel).
 
 ## Selection and rollback
 
@@ -343,9 +436,8 @@ defaults to `off`. There is no separate switch for them: to stop running
 persona sessions, do not pin intents to a release that declares these modes.
 
 `agent-team` remains explicitly unimplemented. Build-and-Test loop-back is a
-separate runtime behavior; persona sessions do not add a loop-back gate option,
-and the releases that declare it (2.6.18 through 2.9.0) stay unpromotable until
-that handler lands.
+separate runtime behavior with its own handler; persona sessions do not add a
+loop-back gate option.
 
 ### Verification
 
