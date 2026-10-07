@@ -505,14 +505,20 @@ const evaluateGatePreconditions = ({
     );
   }
 
-  if (reviewVerdict?.advisory && reviewVerdict.verdict !== 'READY') {
+  // Any reviewer verdict that is not READY is decision support at the gate. An
+  // ADVISORY reviewer ran once by design; an ADVERSARIAL one reaches the gate only
+  // when its repair loop ended without READY, so the human decides with the
+  // reviewer's unresolved objection in view instead of approving into silence. A
+  // DTO with no `advisory` flag at all is read as advisory.
+  if (reviewVerdict && reviewVerdict.verdict !== 'READY') {
+    const kind = reviewVerdict.advisory === false ? 'Adversarial' : 'Advisory';
     findings.push(
       finding({
         code: 'review_advisory_findings',
         severity: 'advisory',
-        title: `Advisory review (${reviewVerdict.reviewerAgent ?? 'reviewer'}): ${reviewVerdict.verdict ?? 'NOT-READY'}`,
+        title: `${kind} review (${reviewVerdict.reviewerAgent ?? 'reviewer'}): ${reviewVerdict.verdict ?? 'NOT-READY'}`,
         detail: { findings: reviewVerdict.findings ?? null },
-        remediation: 'The advisory reviewer does not block; decide with its findings in view.',
+        remediation: `The ${kind.toLowerCase()} reviewer does not block; decide with its findings in view.`,
       }),
     );
   }

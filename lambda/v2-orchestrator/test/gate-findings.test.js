@@ -209,6 +209,31 @@ describe('validation gate with findings', () => {
     expect(gate.findings[0].code).toBe('review_advisory_findings');
   });
 
+  it('keeps a terminal adversarial NOT-READY advisory at a human gate', async () => {
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      reviewAdvisory: {
+        advisory: false,
+        verdict: 'NOT-READY',
+        reviewerAgent: 'arch-reviewer',
+        findings: 'the retry budget is still unbounded',
+      },
+    });
+    await run();
+    const gate = openedGate();
+    // This intent never granted construction autonomy, so the pre-autonomy
+    // contract holds: the verdict is surfaced, `approve` is still offered.
+    expect(gate.options).toEqual(['approve', 'request-changes']);
+    expect(gate.prompt).toContain('## Findings for your decision');
+    expect(gate.findings).toHaveLength(1);
+    expect(gate.findings[0]).toMatchObject({
+      code: 'review_advisory_findings',
+      severity: 'advisory',
+      overridable: false,
+    });
+  });
+
   it('offers override-and-approve INSTEAD of plain approve for an overridable block', async () => {
     stageVerdict = () => ({ ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [BLOCKING_SENSOR] });
     deps.store.getHumanTask = answeredGate({

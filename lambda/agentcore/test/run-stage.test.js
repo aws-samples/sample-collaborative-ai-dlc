@@ -1579,6 +1579,83 @@ describe('runStage — LLM reviewer axis', () => {
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    // Unpinned: the stage result, and so the durable history, is unchanged.
+    expect(res.reviewAdvisory).toBeUndefined();
+  });
+
+  // Release mode with a scope policy: the plan stage carries a resolved policy.
+  const gatedReleaseLibrary = () => {
+    const lib = libWithReviewer({ humanValidation: 'required' });
+    lib.fromRelease = true;
+    lib.scopesById = { feature: { id: 'feature', reviewCap: 'adversarial' } };
+    return lib;
+  };
+
+  it('hands a terminal NOT-READY to the gate of a gated release-mode stage', async () => {
+    const deps = baseDeps({
+      store: storeWithVerdict('NOT-READY', 'human should decide'),
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: gatedReleaseLibrary() }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(res.reviewAdvisory).toMatchObject({
+      reviewerAgent: 'aidlc-reviewer-agent',
+      advisory: false,
+      verdict: 'NOT-READY',
+      findings: 'human should decide',
+    });
+  });
+
+  // The runner records an INCONCLUSIVE row when the reviewer wrote nothing.
+  const storeRecordingRows = () => {
+    const store = spyStore();
+    store.recordSensorRun = async (row) => ({ sensorRunId: 'review-none', ...row });
+    return store;
+  };
+
+  it.each([
+    ['wrote no verdict', storeRecordingRows, {}, 'Reviewer did not submit a verdict'],
+    [
+      'failed before writing a verdict',
+      () => storeWithVerdict('READY'),
+      {
+        materializeMcpConfig: async ({ scope }) => {
+          if (scope.role === 'reviewer') throw new Error('mcp config unwritable');
+          return '/tmp/mcp.json';
+        },
+      },
+      'aidlc-reviewer-agent recorded no verdict',
+    ],
+  ])(
+    'hands an INCONCLUSIVE verdict to the gate when the reviewer %s',
+    async (_, store, extra, findings) => {
+      const deps = baseDeps({
+        store: store(),
+        spawnFn: okSpawn,
+        ...extra,
+        loadLibrary: async () => ({ workflow: workflow(), library: gatedReleaseLibrary() }),
+      });
+      const res = await runStage(baseArgs, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(res.reviewAdvisory).toEqual({
+        reviewerAgent: 'aidlc-reviewer-agent',
+        advisory: false,
+        verdict: 'INCONCLUSIVE',
+        findings,
+      });
+    },
+  );
+
+  it('carries no reviewer verdict DTO when the adversarial reviewer is READY', async () => {
+    const deps = baseDeps({
+      store: storeWithVerdict('READY'),
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: gatedReleaseLibrary() }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(res.reviewAdvisory).toBeUndefined();
   });
 
   it('retries a NOT-READY reviewer verdict up to reviewerMaxIterations before failing', async () => {

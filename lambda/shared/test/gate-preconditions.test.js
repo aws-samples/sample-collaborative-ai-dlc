@@ -503,27 +503,57 @@ describe('evaluateGatePreconditions: reviewer and sensors', () => {
     expect(result.findings[0].title).toContain('architecture-reviewer');
   });
 
-  it('says nothing about an adversarial reviewer or a READY advisory one', () => {
-    expect(
-      codesOf(
-        evaluateGatePreconditions({
-          stage: STAGE,
-          policy: POLICY,
-          reviewVerdict: { advisory: false, verdict: 'NOT-READY' },
-          producedArtifacts: ['requirements'],
-        }),
-      ),
-    ).toEqual([]);
-    expect(
-      codesOf(
-        evaluateGatePreconditions({
-          stage: STAGE,
-          policy: POLICY,
-          reviewVerdict: { advisory: true, verdict: 'READY' },
-          producedArtifacts: ['requirements'],
-        }),
-      ),
-    ).toEqual([]);
+  it.each([
+    {
+      name: 'an adversarial NOT-READY is surfaced as an ADVISORY finding',
+      reviewVerdict: {
+        advisory: false,
+        verdict: 'NOT-READY',
+        reviewerAgent: 'architecture-reviewer',
+        findings: 'Section 3 is unsupported',
+      },
+      codes: ['review_advisory_findings'],
+    },
+    {
+      name: 'an adversarial reviewer that wrote no verdict is surfaced the same way',
+      reviewVerdict: {
+        advisory: false,
+        verdict: 'INCONCLUSIVE',
+        reviewerAgent: 'architecture-reviewer',
+        findings: 'architecture-reviewer recorded no verdict',
+      },
+      codes: ['review_advisory_findings'],
+    },
+    {
+      name: 'a verdict with no advisory flag is read as advisory',
+      reviewVerdict: { verdict: 'NOT-READY', reviewerAgent: 'architecture-reviewer' },
+      codes: ['review_advisory_findings'],
+    },
+    {
+      name: 'an adversarial READY says nothing',
+      reviewVerdict: { advisory: false, verdict: 'READY' },
+      codes: [],
+    },
+    {
+      name: 'a READY advisory one says nothing',
+      reviewVerdict: { advisory: true, verdict: 'READY' },
+      codes: [],
+    },
+    {
+      name: 'no reviewer verdict at all says nothing',
+      reviewVerdict: null,
+      codes: [],
+    },
+  ])('$name', ({ reviewVerdict, codes }) => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      reviewVerdict,
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(codes);
+    expect(result.ok).toBe(true);
+    expect(overridableFindings(result.findings)).toEqual([]);
   });
 
   it('holds the gate on a BLOCKING gate-plane sensor, with an override', () => {
