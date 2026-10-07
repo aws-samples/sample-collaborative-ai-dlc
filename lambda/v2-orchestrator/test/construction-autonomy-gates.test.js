@@ -82,6 +82,11 @@ const constructionStage = (stageId, over = {}) => ({
 // the one the grant may waive.
 const ANCHOR = constructionStage('functional-design');
 const SECOND = constructionStage('build-and-test');
+// The release's loop-back recommender: identified by its authored results output.
+const BUILD_AND_TEST = constructionStage('build-and-test', {
+  outputArtifacts: [{ artifact: 'build-test-results' }],
+  policy: { ...POLICY, loopBack: 'human-offered' },
+});
 
 const BLOCKING_SENSOR = {
   sensorId: 'claim-sources',
@@ -375,6 +380,73 @@ describe('construction autonomy: an autonomous grant', () => {
     await run();
     expect(gateFor('si-build-and-test')).toMatchObject({ learningsRitual: true });
     expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: 'an offered loop-back',
+      stages: () => [
+        ANCHOR,
+        constructionStage('code-generation', {
+          outputArtifacts: [{ artifact: 'code-generation-plan' }],
+        }),
+        BUILD_AND_TEST,
+      ],
+      options: ['approve', 'request-changes', 'loop-back'],
+      status: 'offered',
+    },
+    {
+      name: 'a loop-back recommendation with no code generation to go back to',
+      stages: () => [ANCHOR, BUILD_AND_TEST],
+      options: ['approve', 'request-changes'],
+      status: 'unavailable',
+    },
+  ])('opens the human gate on $name', async ({ stages, options, status }) => {
+    // The agent's "this code must be revised" is not a finding, so without this
+    // rule the gate would be waived and the recommendation cleared unseen.
+    deps.loadPlan = vi.fn(async () => ({ valid: true, plan: { stages: stages() } }));
+    const declared = {
+      'code-generation': 'code-generation-plan',
+      'build-and-test': 'build-test-results',
+    };
+    stageVerdicts = (stageId) => ({
+      ...cleanVerdict(stageId),
+      producedHeads: [
+        {
+          artifactType: declared[stageId] ?? `${stageId}-out`,
+          logicalKey: `${stageId}-k`,
+          snapshotHash: 'sha-1',
+        },
+      ],
+    });
+    const recommendations = new Map([
+      [
+        'si-build-and-test',
+        'unit tests fail in the payment module; the generated code must be revised',
+      ],
+    ]);
+    deps.store.getStage = vi.fn(async (_e, stageInstanceId) => ({
+      stageInstanceId,
+      attempt: 0,
+      ...(recommendations.has(stageInstanceId)
+        ? { loopBackRecommendation: recommendations.get(stageInstanceId) }
+        : {}),
+    }));
+    deps.store.setLoopBackRecommendation = vi.fn(async ({ stageInstanceId, reason }) => {
+      if (reason === null) recommendations.delete(stageInstanceId);
+      return {};
+    });
+    await run();
+    const gate = gateFor('si-build-and-test');
+    expect(gate).not.toBeNull();
+    expect(gate.options).toEqual(options);
+    expect(gate).toMatchObject({
+      loopBackReason: 'unit tests fail in the payment module; the generated code must be revised',
+      loopBackStatus: status,
+    });
+    expect(
+      eventsOfType('v2.gate.auto_approved').map((event) => event.detail.stageId),
+    ).not.toContain('build-and-test');
   });
 
   it('never waives a Plan Approval stage', async () => {

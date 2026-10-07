@@ -1615,22 +1615,21 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           let autoApprove = false;
           let autonomyGrantOffered = false;
           try {
-            // At the cap the option is withheld and upstream halts: the bound is
-            // one of the two cases autonomy stops to consult the human, so the
-            // gate must open even though nothing in the evidence blocks. "No
-            // finding" only means clean when the outputs were OBSERVED: the
+            // "No finding" only means clean when the outputs were OBSERVED: the
             // evaluator deliberately skips the required-output check for an
             // unobserved set, so an unobserved set halts here instead.
             const outputsObserved =
               outcome.result?.producedHeadsUnavailable !== true &&
               Array.isArray(outcome.result?.producedHeads);
-            // Learning candidates are put to the human at the gate; a waived gate
-            // would drop them unseen, so a gate with any halts instead.
+            // Learning candidates and a loop-back recommendation are put to the
+            // human at the gate; a waived gate would drop them unseen, so a gate
+            // with either halts. That covers every recommendation: offered, at
+            // the cap (upstream halts there too), or with no target.
             autoApprove =
               autonomyWaivable &&
               outputsObserved &&
               learningCandidates.length === 0 &&
-              !loopBack.atCap &&
+              !loopBackLookup.recommended &&
               gateFindings.length === 0;
             autonomyGrantOffered = grantAutonomyOffered({
               mode: autonomyMode,
