@@ -34,6 +34,7 @@ import {
   getChannel,
   getChannels,
   getRelease,
+  isAccessDenied,
   listRegistrableProfiles,
   listReleases,
   registerCustomRelease,
@@ -1401,6 +1402,15 @@ describe('listRegistrableProfiles tolerates a masked 403', () => {
     await expect(registerRelease(registerArgs(BASELINE_PROFILE))).rejects.toMatchObject({
       name: 'AccessDenied',
     });
+  });
+
+  it('takes only an S3 AccessDenied for a masked read, not another 403', () => {
+    expect(isAccessDenied(accessDenied())).toBe(true);
+    expect(isAccessDenied({ Code: 'AccessDenied' })).toBe(true);
+    expect(
+      isAccessDenied({ name: 'AccessDeniedException', $metadata: { httpStatusCode: 403 } }),
+    ).toBe(false);
+    expect(isAccessDenied({ name: 'Forbidden', $metadata: { httpStatusCode: 403 } })).toBe(false);
   });
 });
 

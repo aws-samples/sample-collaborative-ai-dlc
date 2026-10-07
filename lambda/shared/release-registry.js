@@ -1404,16 +1404,19 @@ const resolveSelectableRelease = async ({ ddb, tableName, releaseId = null }) =>
  * probe over keys that are USUALLY absent, so a masked 403 there means "not
  * published", not "broken", and must not 500 the whole listing.
  *
+ * Registration and a closure upgrade let the 403 propagate, and the admin API
+ * answers it as 502 `release_manifest_unreadable`, naming both possible causes
+ * rather than guessing between them.
+ *
  * This tolerance is deliberately scoped to the probe. Every execution path
  * (loadReleaseClosure, registerRelease, the auto-pin lookup) keeps treating an
  * unreadable manifest as a hard failure: there, "cannot read" must never be
  * downgraded to "does not exist", or a genuine permissions regression would
  * silently unpin intents.
  */
-const isAccessDenied = (error) =>
-  error?.name === 'AccessDenied' ||
-  error?.Code === 'AccessDenied' ||
-  error?.$metadata?.httpStatusCode === 403;
+// S3's own code only: DynamoDB, STS and KMS also answer 403, as
+// `AccessDeniedException`, and those are not a masked "not published".
+const isAccessDenied = (error) => error?.name === 'AccessDenied' || error?.Code === 'AccessDenied';
 
 const probePublishedManifest = async ({ s3, bucket, profile }) => {
   try {
@@ -1490,6 +1493,7 @@ export {
   getChannel,
   getChannels,
   getRelease,
+  isAccessDenied,
   isReleaseRegistryError,
   isSelectableRecord,
   listRegistrableProfiles,
@@ -1517,6 +1521,7 @@ export default {
   getChannel,
   getChannels,
   getRelease,
+  isAccessDenied,
   isReleaseRegistryError,
   isSelectableRecord,
   listRegistrableProfiles,

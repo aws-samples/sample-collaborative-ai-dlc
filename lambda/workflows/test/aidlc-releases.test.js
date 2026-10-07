@@ -296,6 +296,37 @@ describe('POST /aidlc-releases', () => {
     expect(res.body.code).toBe('release_not_published');
   });
 
+  // This role has no s3:ListBucket, so S3 answers the read of a manifest that
+  // was never published with 403 rather than 404. Registration does not guess
+  // which of the two it is, but it must not answer 500 either.
+  it('502s with the manifest it could not read when S3 denies the read', async () => {
+    s3Mock.on(GetObjectCommand).callsFake(() => {
+      const error = new Error('Access Denied');
+      error.name = 'AccessDenied';
+      error.$metadata = { httpStatusCode: 403 };
+      throw error;
+    });
+    const res = await register(CANDIDATE_PROFILE);
+
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe('release_manifest_unreadable');
+    expect(res.body.error).toMatch(/s3:ListBucket/);
+    expect(res.body.error).toMatch(/not been published/);
+  });
+
+  it('does not blame S3 when another service denies the request', async () => {
+    ddbMock.on(PutCommand).callsFake(() => {
+      const error = new Error('not authorized to perform dynamodb:PutItem');
+      error.name = 'AccessDeniedException';
+      error.$metadata = { httpStatusCode: 403 };
+      throw error;
+    });
+    const res = await register(CANDIDATE_PROFILE);
+
+    expect(res.body.code).not.toBe('release_manifest_unreadable');
+    expect(JSON.stringify(res.body)).not.toMatch(/S3 denied/);
+  });
+
   it('400s an unknown profile and a missing profileId', async () => {
     expect((await register('nope')).body.code).toBe('release_profile_unknown');
     const missing = parse(
