@@ -214,9 +214,11 @@ const deleteIntentCascade = async ({
   // rebuilt from the persisted UNIT#/STAGE# rows and every session is stopped
   // and — on the Instances compute type — deleted so its EBS volume goes with
   // the intent. Releasing a session that never started is a tolerated miss; a
-  // release that fails for any other reason is queued on the shared cleanup
-  // store and retried by the environments poller, so the cascade itself never
-  // has to be re-run for it.
+  // release that fails is handed off to the shared cleanup store and retried by
+  // the environments poller. This partition is the sessions' owner until then:
+  // if a hand-off itself fails, releaseSessions throws HERE — before the
+  // records are deleted below — so the identities survive and the delete can be
+  // re-run.
   const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
   const target = resolveRuntimeTargetForDeletion(meta, agentcoreRuntimeTarget, agentcoreRuntimeArn);
   await releaseSessions({

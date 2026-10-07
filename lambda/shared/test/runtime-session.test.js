@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   SESSION_ABSENT_ERRORS,
+  SessionReleaseHandoffError,
   capacityProviderIdFromArn,
   releaseSession,
   releaseSessions,
@@ -118,12 +119,24 @@ describe('releaseSession', () => {
     });
   });
 
-  it('reports the double failure when the queue write also fails', async () => {
+  it('throws a hand-off error (caller keeps ownership) when the queue write also fails', async () => {
     const client = { send: vi.fn().mockRejectedValue(named('InternalServerException', 'boom')) };
     const cleanupStore = { enqueue: vi.fn().mockRejectedValue(new Error('ddb down')) };
-    expect(
-      await releaseSession({ client, capacityProviderArn: CP_ARN, sessionId: 's-1', cleanupStore }),
-    ).toEqual({ released: false, queued: false, reason: 'boom' });
+    const failure = await releaseSession({
+      client,
+      capacityProviderArn: CP_ARN,
+      sessionId: 's-1',
+      cleanupStore,
+    }).catch((error) => error);
+    expect(failure).toBeInstanceOf(SessionReleaseHandoffError);
+    expect(failure.sessionIds).toEqual(['s-1']);
+  });
+
+  it('throws a hand-off error when a failed delete has no store to hand off to', async () => {
+    const client = { send: vi.fn().mockRejectedValue(named('InternalServerException', 'boom')) };
+    await expect(
+      releaseSession({ client, capacityProviderArn: CP_ARN, sessionId: 's-1' }),
+    ).rejects.toBeInstanceOf(SessionReleaseHandoffError);
   });
 });
 

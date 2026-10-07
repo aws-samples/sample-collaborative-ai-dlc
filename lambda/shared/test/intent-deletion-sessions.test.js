@@ -6,6 +6,7 @@ import {
   runtimeSessionIdFor,
 } from '../intent-deletion.js';
 import { buildStageRow, buildUnitRow } from '../v2-process-keys.js';
+import { SessionReleaseHandoffError } from '../runtime-session.js';
 
 // Chainable gremlin stub — every step returns the chain; terminal steps
 // resolve empty so the cascade runs without a graph.
@@ -228,5 +229,37 @@ describe('deleteIntentCascade on the Instances compute type', () => {
       context: { intentId: 'int-1', projectId: 'proj-1' },
     });
     expect(store.deleteExecution).toHaveBeenCalledWith('int-1');
+  });
+
+  it('keeps the intent records when a release can be neither completed nor handed off', async () => {
+    const store = storeStub(records);
+    const laneSession = laneSessionIdFor('int-1', 1, 'beta');
+    const agentcore = {
+      send: vi.fn().mockImplementation(async (command) => {
+        if (
+          command.constructor.name === 'DeleteCapacityProviderSessionCommand' &&
+          command.input.sessionId === laneSession
+        ) {
+          throw Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+        }
+        return {};
+      }),
+    };
+    const sessionCleanupStore = { enqueue: vi.fn().mockRejectedValue(new Error('throttled')) };
+    const failure = await deleteIntentCascade({
+      g: gStub(),
+      store,
+      ddb: null,
+      agentcore,
+      intentId: 'int-1',
+      meta: instancesMeta,
+      sessionCleanupStore,
+    }).catch((error) => error);
+    expect(failure).toBeInstanceOf(SessionReleaseHandoffError);
+    expect(failure.sessionIds).toEqual([laneSession]);
+    // The partition is still the session's only owner — and the other
+    // sessions were released anyway, so a re-run only has this one left.
+    expect(store.deleteExecution).not.toHaveBeenCalled();
+    expect(sentCommands(agentcore, 'DeleteCapacityProviderSessionCommand')).toHaveLength(4);
   });
 });

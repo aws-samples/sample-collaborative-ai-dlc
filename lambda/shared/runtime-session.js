@@ -10,10 +10,15 @@
 //   release  Stop AND drop the persistent workspace. Only meaningful on the
 //            Instances compute type (DeleteCapacityProviderSession); a no-op
 //            when the target has no capacity provider. A failed delete is
-//            never swallowed and never thrown: it is queued on the shared
-//            session-cleanup store so a poller retries it until the volume is
-//            gone or confirmed absent. Callers therefore do not need to keep
-//            their own state alive to make the release retryable.
+//            handed off to the shared session-cleanup store, which a poller
+//            retries until the volume is gone or confirmed absent.
+//
+// OWNERSHIP CONTRACT. Whoever holds a session id (a revision row, an intent
+// partition) owns that session's cleanup. release() returns only once the
+// ownership has been DISCHARGED — the session is deleted, confirmed absent, or
+// durably queued — and throws SessionReleaseHandoffError otherwise. Callers
+// may drop their copy of the identity only after release() returns; on the
+// error they must keep it so the release can be retried from their side.
 //
 // ---------------------------------------------------------------------------
 // VOLUME RETENTION POLICY (explicit — see docs/using-the-platform/managed-environments.md)
@@ -91,14 +96,42 @@ export const stopSessions = async ({ client, target, sessionIds = [] }) =>
     ...(await stopSession({ client, target, sessionId })),
   }));
 
+// Raised when a release could not be discharged: the delete failed AND the
+// durable hand-off to the cleanup store failed (or no store was provided).
+// The caller is still the only owner of the listed sessions.
+export class SessionReleaseHandoffError extends Error {
+  constructor(sessionIds, cause) {
+    super(
+      `Workspace release for ${sessionIds.length} session(s) could not be completed or queued — ` +
+        'the caller keeps ownership and must retry',
+      { cause },
+    );
+    this.name = 'SessionReleaseHandoffError';
+    this.code = 'SESSION_RELEASE_HANDOFF_FAILED';
+    this.sessionIds = sessionIds;
+  }
+}
+
+// One DeleteCapacityProviderSession attempt. Never throws; an already-gone
+// session is a completed release.
+const attemptDelete = async ({ client, capacityProviderId, sessionId }) => {
+  try {
+    await client.send(new DeleteCapacityProviderSessionCommand({ capacityProviderId, sessionId }));
+    return { released: true };
+  } catch (error) {
+    if (SESSION_ABSENT_ERRORS.has(error?.name)) return { released: true, absent: true };
+    return { released: false, reason: error?.message ?? String(error) };
+  }
+};
+
 // Release one session's persistent workspace. Returns one of:
 //   { released: true }                     delete succeeded
 //   { released: true, absent: true }       session already gone
 //   { released: false, skipped: true }     nothing to release (no provider)
-//   { released: false, queued: true }      delete failed; queued for retry
-//   { released: false, queued: false }     delete failed AND the queue write
-//                                          failed — logged at error level, the
-//                                          volume may leak until an operator acts
+//   { released: false, queued: true }      delete failed; the cleanup store
+//                                          now owns the retry
+// and throws SessionReleaseHandoffError when neither the delete nor the
+// hand-off succeeded — see the ownership contract at the top of this file.
 export const releaseSession = async ({
   client,
   capacityProviderArn,
@@ -109,31 +142,29 @@ export const releaseSession = async ({
 }) => {
   const capacityProviderId = capacityProviderIdFromArn(capacityProviderArn);
   if (!client || !capacityProviderId || !sessionId) return { released: false, skipped: true };
+  const outcome = await attemptDelete({ client, capacityProviderId, sessionId });
+  if (outcome.released) return outcome;
+  const { reason } = outcome;
+  if (!cleanupStore) throw new SessionReleaseHandoffError([sessionId], new Error(reason));
   try {
-    await client.send(new DeleteCapacityProviderSessionCommand({ capacityProviderId, sessionId }));
-    return { released: true };
-  } catch (error) {
-    if (SESSION_ABSENT_ERRORS.has(error?.name)) {
-      return { released: true, absent: true };
-    }
-    const reason = error?.message ?? String(error);
-    logger.warn('release-runtime-session failed — queued for retry', { sessionId, source, reason });
-    if (!cleanupStore) return { released: false, queued: false, reason };
-    try {
-      await cleanupStore.enqueue({ sessionId, capacityProviderArn, source, reason, context });
-      return { released: false, queued: true, reason };
-    } catch (persistError) {
-      logger.error('release-runtime-session: failed to queue cleanup work', persistError, {
-        sessionId,
-        capacityProviderArn,
-      });
-      return { released: false, queued: false, reason };
-    }
+    await cleanupStore.enqueue({ sessionId, capacityProviderArn, source, reason, context });
+  } catch (persistError) {
+    logger.error('release-runtime-session: delete and cleanup hand-off both failed', persistError, {
+      sessionId,
+      capacityProviderArn,
+      source,
+      reason,
+    });
+    throw new SessionReleaseHandoffError([sessionId], persistError);
   }
+  logger.warn('release-runtime-session failed — queued for retry', { sessionId, source, reason });
+  return { released: false, queued: true, reason };
 };
 
 // Stop, then release, every session in the set. This is what "the intent is
-// gone" means for its workspaces. Never throws.
+// gone" means for its workspaces. Every session is attempted; if any could not
+// be discharged, one SessionReleaseHandoffError lists them all (the others are
+// already deleted or queued, and repeating them is idempotent).
 export const releaseSessions = async ({
   client,
   target,
@@ -146,19 +177,28 @@ export const releaseSessions = async ({
   await stopSessions({ client, target, sessionIds: ids });
   if (!target?.capacityProviderArn) return ids.map((sessionId) => ({ sessionId, skipped: true }));
   const results = [];
+  const undischarged = [];
+  let lastError = null;
   for (const sessionId of ids) {
-    results.push({
-      sessionId,
-      ...(await releaseSession({
-        client,
-        capacityProviderArn: target.capacityProviderArn,
+    try {
+      results.push({
         sessionId,
-        cleanupStore,
-        source,
-        context,
-      })),
-    });
+        ...(await releaseSession({
+          client,
+          capacityProviderArn: target.capacityProviderArn,
+          sessionId,
+          cleanupStore,
+          source,
+          context,
+        })),
+      });
+    } catch (error) {
+      if (!(error instanceof SessionReleaseHandoffError)) throw error;
+      undischarged.push(sessionId);
+      lastError = error.cause ?? error;
+    }
   }
+  if (undischarged.length) throw new SessionReleaseHandoffError(undischarged, lastError);
   return results;
 };
 
@@ -176,11 +216,11 @@ export const retryQueuedReleases = async ({ client, cleanupStore }) => {
       results.push({ sessionId, dropped: true });
       continue;
     }
-    // No cleanupStore here on purpose: a retry that fails must bump the
-    // existing record, not overwrite it with attempts = 0.
-    const outcome = await releaseSession({
+    // A bare delete attempt: the record already owns the retry, so a failure
+    // bumps it instead of re-queueing (which would reset attempts to 0).
+    const outcome = await attemptDelete({
       client,
-      capacityProviderArn: record.capacityProviderArn,
+      capacityProviderId: capacityProviderIdFromArn(record.capacityProviderArn),
       sessionId,
     });
     if (outcome.released) {
@@ -200,6 +240,7 @@ export const retryQueuedReleases = async ({ client, cleanupStore }) => {
 };
 
 export default {
+  SessionReleaseHandoffError,
   SESSION_ABSENT_ERRORS,
   capacityProviderIdFromArn,
   stopSession,

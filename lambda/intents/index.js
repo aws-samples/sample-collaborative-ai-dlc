@@ -36,7 +36,7 @@ import {
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
-import { stopSessions } from '../shared/runtime-session.js';
+import { SessionReleaseHandoffError, stopSessions } from '../shared/runtime-session.js';
 import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
@@ -4043,6 +4043,17 @@ export const handler = async (event, context) => {
           return response(409, {
             error:
               'Intent is RUNNING, cannot delete — wait for it to park or finish, or cancel it first',
+          });
+        }
+        if (err instanceof SessionReleaseHandoffError) {
+          // Nothing was removed: the intent still owns its workspace sessions.
+          logger.error('Intent delete: workspace release could not be handed off', err, {
+            intentId,
+            sessionIds: err.sessionIds,
+          });
+          return response(503, {
+            error: 'Could not release the intent workspaces right now; nothing was deleted. Retry.',
+            code: err.code,
           });
         }
         throw err;
