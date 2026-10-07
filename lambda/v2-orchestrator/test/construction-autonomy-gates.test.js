@@ -654,6 +654,40 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
     expect(openedGates().map((gate) => gate.stageInstanceId)).toEqual(['si-functional-design']);
     expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
   });
+
+  it('records the grant and its event once across a durable replay', async () => {
+    // Same memoization as the create-time replay test: only the steps this
+    // feature adds replay their recorded result.
+    const REPLAYED =
+      /^(autonomy-mode-|autonomy-grant-|gate-auto-approved-|stage-approval-receipt-)/;
+    const results = new Map();
+    const replayCtx = () =>
+      makeCtx({
+        step: async (name, fn) => {
+          if (!REPLAYED.test(name)) return fn();
+          if (results.has(name)) return results.get(name);
+          const value = await fn();
+          results.set(name, value);
+          return value;
+        },
+      });
+
+    ctx = replayCtx();
+    await run();
+    ctx = replayCtx();
+    await run();
+
+    const grants = deps.store.updateExecution.mock.calls.filter(
+      ([args]) => args.constructionGateAutonomy !== undefined,
+    );
+    expect(grants).toHaveLength(1);
+    expect(grants[0][0]).toMatchObject({ constructionGateAutonomy: 'autonomous' });
+    expect(eventsOfType('v2.autonomy.mode_set')).toHaveLength(1);
+    expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
+    expect(
+      receiptsFor('si-functional-design').filter((receipt) => receipt.kind === 'stage-approval'),
+    ).toHaveLength(1);
+  });
 });
 
 describe('construction autonomy: the lane ladder must not confer the sequential grant', () => {
