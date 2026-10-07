@@ -292,6 +292,12 @@ bounded by the same three per intent.
   missing required output, or a reviewer still not ready — opens the human gate
   instead, because rewinding would discard the finding and silently re-run the
   work. Advisory findings do not withhold the jump.
+- The autonomous jump is stored the way a human one is: build-and-test's
+  validation gate row, under a run-scoped id, written already answered
+  (`rejected`, `loop-back`, the marker as the answer, no human author) with the
+  agent's reason. Code generation resumes from that row, so the same resets,
+  archive of both stages, reason in the prompt and cap tally apply, and a
+  relaunch takes a new decision rather than reusing the earlier one.
 
 An answered gate whose durable callback failed to resume can be retried through
 the intent's Resume action. Callback-consumption markers and answered gate state
