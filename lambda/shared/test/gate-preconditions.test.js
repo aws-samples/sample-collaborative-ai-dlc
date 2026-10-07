@@ -515,6 +515,16 @@ describe('evaluateGatePreconditions: reviewer and sensors', () => {
       codes: ['review_advisory_findings'],
     },
     {
+      name: 'an adversarial reviewer that wrote no verdict is surfaced the same way',
+      reviewVerdict: {
+        advisory: false,
+        verdict: 'INCONCLUSIVE',
+        reviewerAgent: 'architecture-reviewer',
+        findings: 'architecture-reviewer recorded no verdict',
+      },
+      codes: ['review_advisory_findings'],
+    },
+    {
       name: 'a verdict with no advisory flag is read as advisory',
       reviewVerdict: { verdict: 'NOT-READY', reviewerAgent: 'architecture-reviewer' },
       codes: ['review_advisory_findings'],

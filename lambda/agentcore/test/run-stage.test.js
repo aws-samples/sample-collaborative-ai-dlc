@@ -1606,6 +1606,46 @@ describe('runStage — LLM reviewer axis', () => {
     });
   });
 
+  // The runner records an INCONCLUSIVE row when the reviewer wrote nothing.
+  const storeRecordingRows = () => {
+    const store = spyStore();
+    store.recordSensorRun = async (row) => ({ sensorRunId: 'review-none', ...row });
+    return store;
+  };
+
+  it.each([
+    ['wrote no verdict', storeRecordingRows, {}, 'Reviewer did not submit a verdict'],
+    [
+      'failed before writing a verdict',
+      () => storeWithVerdict('READY'),
+      {
+        materializeMcpConfig: async ({ scope }) => {
+          if (scope.role === 'reviewer') throw new Error('mcp config unwritable');
+          return '/tmp/mcp.json';
+        },
+      },
+      'aidlc-reviewer-agent recorded no verdict',
+    ],
+  ])(
+    'hands an INCONCLUSIVE verdict to the gate when the reviewer %s',
+    async (_, store, extra, findings) => {
+      const deps = baseDeps({
+        store: store(),
+        spawnFn: okSpawn,
+        ...extra,
+        loadLibrary: async () => ({ workflow: workflow(), library: gatedReleaseLibrary() }),
+      });
+      const res = await runStage(baseArgs, deps);
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(res.reviewAdvisory).toEqual({
+        reviewerAgent: 'aidlc-reviewer-agent',
+        advisory: false,
+        verdict: 'INCONCLUSIVE',
+        findings,
+      });
+    },
+  );
+
   it('carries no reviewer verdict DTO when the adversarial reviewer is READY', async () => {
     const deps = baseDeps({
       store: storeWithVerdict('READY'),

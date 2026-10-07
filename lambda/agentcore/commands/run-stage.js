@@ -4548,6 +4548,7 @@ export const runStage = async (
     if (repairGitFailure) {
       return fail(stageInstanceId, repairGitFailure.code, repairGitFailure.detail);
     }
+    const ready = verdict?.result === 'PASS' || verdict?.detail?.verdict === 'READY';
     const notReady = verdict?.result === 'FAIL' || verdict?.detail?.verdict === 'NOT-READY';
     if (advisory) {
       reviewAdvisory = {
@@ -4590,19 +4591,23 @@ export const runStage = async (
         'reviewer_not_ready',
         verdict?.detail?.findings ?? `${reviewerAgent} returned NOT-READY`,
       );
-    } else if (notReady && stage.policy) {
+    } else if (!ready && stage.policy && stage.humanValidation === 'required') {
       // A gated stage does not fail on a terminal NOT-READY — the human decides.
       // But the decision has to CARRY the verdict, so the same DTO is handed to the
       // gate with `advisory: false`, which the precondition evaluator surfaces as
       // an advisory finding; `approve` stays on offer. Without this the
-      // reviewer's unresolved objection reached the gate as silence. Release mode
-      // only: an unpinned gate reads no preconditions, so the DTO would change the
-      // durable stage result and nothing else.
+      // reviewer's unresolved objection reached the gate as silence. A reviewer
+      // that crashed or wrote no verdict is not a READY one, so it reaches the
+      // gate the same way, as INCONCLUSIVE with the reason. Release mode only: an
+      // unpinned gate reads no preconditions, so the DTO would change the durable
+      // stage result and nothing else.
       reviewAdvisory = {
         reviewerAgent,
         advisory: false,
-        verdict: verdict?.detail?.verdict ?? verdict?.result ?? 'NOT-READY',
-        findings: verdict?.detail?.findings ?? null,
+        verdict: verdict?.detail?.verdict ?? verdict?.result ?? 'INCONCLUSIVE',
+        findings: verdict
+          ? (verdict.detail?.findings ?? null)
+          : `${reviewerAgent} recorded no verdict`,
         ...(reviewArtifactUnderReview ? { artifact: reviewArtifactUnderReview } : {}),
       };
     }
