@@ -14,6 +14,27 @@ export const TOOL_VERSION_STATUSES = [
   'FAILED',
 ];
 
+// A tool version is built for exactly one CPU architecture. arm64 is the
+// default and is never written into a definition, so every arm64 record —
+// including those created before x86_64 support existed — normalizes
+// byte-for-byte as before. An x86_64 variant of the same tool version is a
+// separate version record with its own source, checksum, image digest, scan
+// and security review.
+export const TOOL_ARCHITECTURES = ['arm64', 'x86_64'];
+export const toolArchitecture = (value) => (value?.architecture === 'x86_64' ? 'x86_64' : 'arm64');
+// The tool family's recommended version per architecture. arm64 keeps the
+// original attribute so existing records need no migration.
+export const recommendedVersionAttribute = (architecture) =>
+  architecture === 'x86_64' ? 'recommendedX86_64VersionId' : 'recommendedVersionId';
+export const recommendedVersionIdFor = (tool, architecture = 'arm64') =>
+  tool?.[recommendedVersionAttribute(architecture)] ?? null;
+const DOCKER_PLATFORMS = { arm64: 'linux/arm64', x86_64: 'linux/amd64' };
+// docker image inspect reports x86_64 as "amd64".
+const DOCKER_ARCHITECTURES = { arm64: 'arm64', x86_64: 'amd64' };
+
+export const toolArchitectureMismatch = (message) =>
+  Object.assign(new Error(message), { statusCode: 409, code: 'TOOL_ARCHITECTURE_MISMATCH' });
+
 const TOOL_ID_PATTERN = /^[a-z][a-z0-9-]{1,62}$/;
 const VERSION_PATTERN = /^[0-9][0-9A-Za-z.+:~_-]*$/;
 const PACKAGE_PATTERN = /^[a-z0-9][a-z0-9+.-]*$/;
@@ -56,9 +77,11 @@ const archiveVersion = ({
   aptPackages = [],
   environmentVariables = {},
   installerScript = null,
+  architecture = 'arm64',
 }) => ({
   schemaVersion: TOOL_SCHEMA_VERSION,
   version,
+  ...(architecture === 'arm64' ? {} : { architecture }),
   distribution,
   publisher,
   source: {
@@ -81,11 +104,11 @@ const archiveVersion = ({
   },
 });
 
-const RUST_INSTALLER = `#!/usr/bin/env bash
+const rustInstaller = (triple) => `#!/usr/bin/env bash
 set -Eeuo pipefail
 staging="$TOOL_OUTPUT/.rust-installer"
-archive_root="rust-\${TOOL_VERSION}-aarch64-unknown-linux-gnu"
-components="rustc,rust-std-aarch64-unknown-linux-gnu,cargo,rustfmt-preview"
+archive_root="rust-\${TOOL_VERSION}-${triple}"
+components="rustc,rust-std-${triple},cargo,rustfmt-preview"
 mkdir -p "$staging"
 trap 'rm -rf "$staging"' EXIT
 tar -xzf "$TOOL_SOURCE" -C "$staging" \\
@@ -93,7 +116,7 @@ tar -xzf "$TOOL_SOURCE" -C "$staging" \\
   "$archive_root/components" \\
   "$archive_root/rust-installer-version" \\
   "$archive_root/rustc" \\
-  "$archive_root/rust-std-aarch64-unknown-linux-gnu" \\
+  "$archive_root/rust-std-${triple}" \\
   "$archive_root/cargo" \\
   "$archive_root/rustfmt-preview"
 installer="$staging/$archive_root/install.sh"
@@ -108,7 +131,7 @@ export const SYSTEM_TOOL_TEMPLATES = [
   {
     toolId: 'java',
     name: 'Java JDK',
-    description: 'Eclipse Temurin JDK for ARM64 Linux builds.',
+    description: 'Eclipse Temurin JDK for Linux builds.',
     category: 'language-sdk',
     publisher: 'Eclipse Temurin',
     version: archiveVersion({
@@ -131,7 +154,7 @@ export const SYSTEM_TOOL_TEMPLATES = [
   {
     toolId: 'go',
     name: 'Go SDK',
-    description: 'The official Go ARM64 Linux toolchain.',
+    description: 'The official Go Linux toolchain.',
     category: 'language-sdk',
     publisher: 'The Go project',
     version: archiveVersion({
@@ -152,7 +175,7 @@ export const SYSTEM_TOOL_TEMPLATES = [
   {
     toolId: 'rust',
     name: 'Rust Toolchain',
-    description: 'The official Rust ARM64 Linux compiler and Cargo.',
+    description: 'The official Rust Linux compiler and Cargo.',
     category: 'language-sdk',
     publisher: 'The Rust project',
     version: archiveVersion({
@@ -170,7 +193,7 @@ export const SYSTEM_TOOL_TEMPLATES = [
         { name: 'rustfmt', path: 'bin/rustfmt' },
       ],
       aptPackages: [{ name: 'build-essential', version: '12.9' }],
-      installerScript: RUST_INSTALLER,
+      installerScript: rustInstaller('aarch64-unknown-linux-gnu'),
     }),
   },
   {
@@ -213,6 +236,63 @@ export const SYSTEM_TOOL_TEMPLATES = [
     }),
   },
 ];
+
+// x86_64 variants of the system templates, pinned to the publishers'
+// official x86_64 artifacts and checksums. Maven and Gradle ship
+// architecture-independent archives, so their x86_64 variant reuses the same
+// source — it still needs its own version record because its image is
+// validated against the amd64 core and the x86_64 Java dependency.
+const X86_64_TEMPLATE_SOURCES = {
+  java: {
+    url: 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.8_9.tar.gz',
+    checksum: 'f2dc5418092c43003db8f9005c4a286e1c0104fea96ccdd49e8ebd037cac9219',
+    evidenceUrl:
+      'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.8%2B9/OpenJDK21U-jdk_x64_linux_hotspot_21.0.8_9.tar.gz.sha256.txt',
+  },
+  go: {
+    url: 'https://go.dev/dl/go1.24.6.linux-amd64.tar.gz',
+    checksum: 'bbca37cc395c974ffa4893ee35819ad23ebb27426df87af92e93a9ec66ef8712',
+    evidenceUrl: 'https://go.dev/dl/?mode=json&include=all',
+  },
+  rust: {
+    url: 'https://static.rust-lang.org/dist/rust-1.89.0-x86_64-unknown-linux-gnu.tar.gz',
+    checksum: '542f517d0624cbee516627221482b166bf0ffe5fd560ec32beb778c01f5c99b6',
+    evidenceUrl:
+      'https://static.rust-lang.org/dist/rust-1.89.0-x86_64-unknown-linux-gnu.tar.gz.sha256',
+    installerScript: rustInstaller('x86_64-unknown-linux-gnu'),
+  },
+  maven: {},
+  gradle: {},
+};
+
+const x86_64TemplateVersion = (template) => {
+  const override = X86_64_TEMPLATE_SOURCES[template.toolId];
+  if (!override) return null;
+  const base = template.version;
+  return {
+    ...base,
+    architecture: 'x86_64',
+    source: override.url
+      ? {
+          type: 'https',
+          url: override.url,
+          expectedChecksum: exactChecksum(override.checksum, override.evidenceUrl),
+        }
+      : base.source,
+    installer: override.installerScript
+      ? { mode: 'script', script: override.installerScript }
+      : base.installer,
+  };
+};
+
+// The versions the platform seeds for a system template, one per requested
+// architecture that the template supports.
+export const systemTemplateVersions = (template, architectures = ['arm64']) =>
+  architectures
+    .map((architecture) =>
+      architecture === 'arm64' ? template.version : x86_64TemplateVersion(template),
+    )
+    .filter(Boolean);
 
 const issue = (path, message) => ({ path, message });
 
@@ -307,6 +387,10 @@ export const validateToolVersionDefinition = (definition) => {
   }
   if (!VERSION_PATTERN.test(definition.version ?? '')) {
     issues.push(issue('version', 'version must be exact and start with a number'));
+  }
+  if (definition.architecture !== undefined && definition.architecture !== 'x86_64') {
+    // arm64 is the implicit default and is never stored explicitly.
+    issues.push(issue('architecture', 'architecture must be arm64 or x86_64'));
   }
   for (const field of ['distribution', 'publisher']) {
     const value = definition[field];
@@ -458,9 +542,17 @@ export const normalizeToolVersionDefinition = (input = {}) => {
   const preset = String(input.verification?.preset || input.preset || 'generic');
   const version = String(input.version ?? '').trim();
   const generatedVersionCommand = presetVersionCommand(preset, version);
+  const requestedArchitecture = String(input.architecture ?? 'arm64').trim() || 'arm64';
+  if (!TOOL_ARCHITECTURES.includes(requestedArchitecture)) {
+    throw Object.assign(new Error('Invalid tool version definition'), {
+      statusCode: 400,
+      issues: [issue('architecture', 'architecture must be arm64 or x86_64')],
+    });
+  }
   const definition = {
     schemaVersion: TOOL_SCHEMA_VERSION,
     version,
+    ...(requestedArchitecture === 'x86_64' ? { architecture: 'x86_64' } : {}),
     ...(String(input.distribution ?? '').trim()
       ? { distribution: String(input.distribution).trim() }
       : {}),
@@ -1147,9 +1239,14 @@ while IFS=$'\\t' read -r name path; do
 done < <(jq -r '.definition.executables[] | [.name, .path] | @tsv' manifest.json)
 
 node generate-sbom.mjs
-docker build --platform linux/arm64 --tag "$tool_ref" -f Dockerfile.tool .
-docker build --platform linux/arm64 --tag "$validation_ref" \
+# The target platform is part of the checksummed manifest, not the build
+# environment, so a context can only ever produce the architecture it was
+# generated for.
+tool_platform="$(jq -r .platform manifest.json)"
+docker build --platform "$tool_platform" --tag "$tool_ref" -f Dockerfile.tool .
+docker build --platform "$tool_platform" --tag "$validation_ref" \
   --build-arg "TOOL_IMAGE=$tool_ref" -f Dockerfile.validation .
+test "$(docker image inspect "$validation_ref" --format '{{.Architecture}}')" = "$(jq -r .dockerArchitecture manifest.json)"
 docker run --rm --network none --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,size=512m \
   --tmpfs /mnt/workspace:rw,exec,nosuid,nodev,size=512m,mode=1777 \
@@ -1164,7 +1261,8 @@ jq -n \
   --argjson imageSizeBytes "$(cat image-size.txt)" \
   --arg coreImageDigest "$(jq -r .coreImageDigest manifest.json)" \
   --arg runtimeCompatibilityVersion "$(jq -r .runtimeCompatibilityVersion manifest.json)" \
-  '{source: $source, imageTag: $imageTag, imageSizeBytes: $imageSizeBytes, verification: {status: "PASSED", architecture: "arm64", nonRoot: true, networkless: true, sbom: true, coreImageDigest: $coreImageDigest, runtimeCompatibilityVersion: $runtimeCompatibilityVersion}}' \
+  --arg architecture "$(jq -r .architecture manifest.json)" \
+  '{source: $source, imageTag: $imageTag, imageSizeBytes: $imageSizeBytes, verification: {status: "PASSED", architecture: $architecture, nonRoot: true, networkless: true, sbom: true, coreImageDigest: $coreImageDigest, runtimeCompatibilityVersion: $runtimeCompatibilityVersion}}' \
   > tool-result.json
 aws s3 cp tool-result.json "s3://\${CONTEXT_BUCKET}/\${CONTEXT_PREFIX}/tool-result.json" --sse AES256
 `;
@@ -1179,6 +1277,14 @@ export const generateToolBuildContext = ({
   generatedAt = new Date().toISOString(),
 }) => {
   const definition = normalizeToolVersionDefinition(version.definition ?? version);
+  const architecture = toolArchitecture(definition);
+  for (const dependency of dependencies) {
+    if (toolArchitecture(dependency) !== architecture) {
+      throw toolArchitectureMismatch(
+        `Dependency ${dependency.toolId} is ${toolArchitecture(dependency)} but ${tool.toolId} targets ${architecture}`,
+      );
+    }
+  }
   const coreImageRef = `${coreImageUri}@${coreImageDigest}`;
   const manifest = {
     schemaVersion: TOOL_SCHEMA_VERSION,
@@ -1186,6 +1292,9 @@ export const generateToolBuildContext = ({
     versionId: version.versionId,
     generatedAt,
     definition,
+    architecture,
+    platform: DOCKER_PLATFORMS[architecture],
+    dockerArchitecture: DOCKER_ARCHITECTURES[architecture],
     archiveFormat: archiveFormat(definition.source.url),
     coreImageRef,
     coreImageDigest,
@@ -1202,6 +1311,7 @@ export const generateToolBuildContext = ({
     toolId: tool.toolId,
     versionId: version.versionId,
     version: definition.version,
+    ...(architecture === 'arm64' ? {} : { architecture }),
     executables: definition.executables,
     dependencies: definition.dependencies,
     aptPackages: definition.aptPackages,
@@ -1248,6 +1358,7 @@ export const resolveToolDependencies = ({
   tools,
   versions,
   providedToolIds = [],
+  architecture = 'arm64',
 }) => {
   const toolById = new Map(tools.map((tool) => [tool.toolId, tool]));
   const versionById = new Map(versions.map((version) => [version.versionId, version]));
@@ -1257,6 +1368,13 @@ export const resolveToolDependencies = ({
     const version = versionById.get(versionId);
     if (!version || version.status !== 'PUBLISHED') {
       throw Object.assign(new Error('Selected tool version is not published'), { statusCode: 409 });
+    }
+    if (toolArchitecture(version.definition) !== architecture) {
+      throw toolArchitectureMismatch(
+        `Tool ${version.toolId} ${version.definition.version} is built for ${toolArchitecture(
+          version.definition,
+        )}; this environment targets ${architecture}`,
+      );
     }
     if (selected.has(version.toolId)) {
       throw Object.assign(new Error(`Only one ${version.toolId} version can be selected`), {
@@ -1277,10 +1395,18 @@ export const resolveToolDependencies = ({
       if (provided.has(dependencyId)) continue;
       if (!selected.has(dependencyId)) {
         const dependency = toolById.get(dependencyId);
-        const recommended = versionById.get(dependency?.recommendedVersionId);
-        if (!recommended || recommended.status !== 'PUBLISHED') {
+        const recommended = versionById.get(recommendedVersionIdFor(dependency, architecture));
+        if (
+          !recommended ||
+          recommended.status !== 'PUBLISHED' ||
+          toolArchitecture(recommended.definition) !== architecture
+        ) {
           throw Object.assign(
-            new Error(`Tool ${toolId} requires a recommended ${dependencyId} version`),
+            new Error(
+              architecture === 'arm64'
+                ? `Tool ${toolId} requires a recommended ${dependencyId} version`
+                : `Tool ${toolId} requires a recommended ${architecture} ${dependencyId} version`,
+            ),
             { statusCode: 409 },
           );
         }
@@ -1302,6 +1428,7 @@ export const toolVersionSnapshot = (version, tool = {}) => ({
   publisher: version.definition.publisher ?? tool.publisher ?? '',
   versionId: version.versionId,
   version: version.definition.version,
+  ...(toolArchitecture(version.definition) === 'arm64' ? {} : { architecture: 'x86_64' }),
   imageUri: version.imageUri,
   imageDigest: version.imageDigest,
   imageSizeBytes: version.imageSizeBytes ?? null,

@@ -73,3 +73,6 @@ jobs:
 
       - name: Yjs configuration tests (mock providers)
         run: terraform test -filter=tests/yjs.tftest.hcl
+
+      - name: Managed environments IAM and configuration tests (mock providers)
+        run: terraform test -filter=tests/managed-environments.tftest.hcl

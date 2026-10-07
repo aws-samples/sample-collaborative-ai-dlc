@@ -112,6 +112,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     flattenedRecipe = recipe,
     createdBy,
     system = false,
+    compute = null,
   }) => {
     const createdAt = now();
     const revisionId = `r-${nextId()}`;
@@ -126,6 +127,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       system,
       status: 'DRAFT',
       baseEnvironmentId,
+      ...(compute ? { compute } : {}),
       currentRevisionId: revisionId,
       publishedRevisionId: null,
       updateAvailable: false,
@@ -313,6 +315,17 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         statusCode: 409,
       });
     }
+    // fromStatus is an optimistic precondition ("I am acting on the revision
+    // as I last read it"). Check it BEFORE the transition table: a writer whose
+    // view is stale — e.g. an overlapping status poll that lost the race to
+    // the one that already moved the revision to READY — must see the same
+    // conditional failure DynamoDB would raise, so callers treat it as
+    // "already handled" instead of an invalid transition.
+    if (fromStatus && existing.status !== fromStatus) {
+      throw Object.assign(new Error(`Revision is ${existing.status}, expected ${fromStatus}`), {
+        name: 'ConditionalCheckFailedException',
+      });
+    }
     if (patch.status) assertRevisionTransition(existing.status, patch.status);
     const updatedAt = now();
     const nextStatus = patch.status ?? existing.status;
@@ -335,6 +348,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       'imageUri',
       'imageDigest',
       'imageSizeBytes',
+      'amd64Image',
       'projectedImageSizeBytes',
       'scanFindings',
       'highFindingsAcknowledgedAt',
@@ -346,6 +360,9 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       'runtimeVersion',
       'runtimeEndpoint',
       'runtimeEndpointArn',
+      'capacityProviderArn',
+      'validationSessionId',
+      'validationAttempts',
       'verification',
       'failure',
       'publishedAt',
@@ -523,7 +540,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     return changed;
   };
 
-  const markToolUpdatesAvailable = async (toolId, recommendedVersionId) => {
+  const markToolUpdatesAvailable = async (toolId, recommendedVersionId, architecture = 'arm64') => {
     const environments = await listEnvironments();
     const changed = [];
     for (const environment of environments) {
@@ -535,6 +552,9 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         (tool) => tool.toolId === toolId,
       );
       if (!selected || selected.versionId === recommendedVersionId) continue;
+      // A recommendation only applies to environments of the same
+      // architecture; the other architecture has its own slot.
+      if ((selected.architecture === 'x86_64' ? 'x86_64' : 'arm64') !== architecture) continue;
       const toolUpdates = [
         ...(environment.toolUpdates ?? []).filter((update) => update.toolId !== toolId),
         {
@@ -567,6 +587,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     coreRuntimeArn,
     coreRuntimeVersion = '1',
     coreImageSizeBytes = null,
+    coreAmd64Image = null,
     actor = 'platform',
   }) => {
     const createdAt = now();
@@ -641,6 +662,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         imageUri: template.id === 'standard' ? coreImageUri : null,
         imageDigest: template.id === 'standard' ? coreImageDigest : null,
         imageSizeBytes: template.id === 'standard' ? coreImageSizeBytes : null,
+        amd64Image: template.id === 'standard' ? coreAmd64Image : null,
         runtimeArn: template.id === 'standard' ? coreRuntimeArn : null,
         runtimeVersion: template.id === 'standard' ? coreRuntimeVersion : null,
         runtimeEndpoint: null,
@@ -691,16 +713,24 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     coreRuntimeArn,
     coreRuntimeVersion = '1',
     coreImageSizeBytes = null,
+    coreAmd64Image = null,
     actor = 'platform',
   }) => {
     const environment = await getEnvironment('standard');
     if (!environment?.publishedRevisionId) return null;
     const published = await getRevision('standard', environment.publishedRevisionId);
     if (published?.imageDigest === coreImageDigest) {
-      if (!published.imageSizeBytes && coreImageSizeBytes) {
-        await updateRevision('standard', published.revisionId, {
-          imageSizeBytes: coreImageSizeBytes,
-        });
+      // Same core as this deployment — backfill fields that predate them being
+      // stored with the revision. The amd64 variant belongs to THIS digest, so
+      // attaching it here is exact (pre-existing revisions gain their variant).
+      const backfill = {
+        ...(!published.imageSizeBytes && coreImageSizeBytes
+          ? { imageSizeBytes: coreImageSizeBytes }
+          : {}),
+        ...(!published.amd64Image && coreAmd64Image ? { amd64Image: coreAmd64Image } : {}),
+      };
+      if (Object.keys(backfill).length) {
+        await updateRevision('standard', published.revisionId, backfill);
       }
       return null;
     }
@@ -739,6 +769,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       imageUri: coreImageUri,
       imageDigest: coreImageDigest,
       imageSizeBytes: coreImageSizeBytes,
+      amd64Image: coreAmd64Image,
       runtimeArn: coreRuntimeArn,
       runtimeVersion: coreRuntimeVersion,
       runtimeEndpoint: null,
@@ -785,6 +816,58 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     return getRevision('standard', revisionId);
   };
 
+  // Verification lease. The status poll runs every minute and may take up to
+  // its Lambda timeout, so two polls can see the same VERIFYING revision. The
+  // lease makes one of them the revision's only verifier until it finishes or
+  // the lease expires (a crashed holder never blocks the revision for longer
+  // than the TTL): only the holder may mint, reuse, retain or release the
+  // revision's validation session. Atomic: one conditional write. Returns the
+  // revision as the holder now sees it, or null when another poll holds it.
+  const acquireVerificationLease = async (environmentId, revisionId, { owner, ttlMs }) => {
+    const nowMs = Date.parse(now());
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: revisionKey(environmentId, revisionId),
+          UpdateExpression:
+            'SET verificationLeaseOwner = :owner, verificationLeaseExpiresAt = :expires',
+          ConditionExpression:
+            '#status = :verifying AND (attribute_not_exists(verificationLeaseExpiresAt) OR verificationLeaseExpiresAt < :now)',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':owner': owner,
+            ':expires': nowMs + ttlMs,
+            ':now': nowMs,
+            ':verifying': 'VERIFYING',
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  // Ends the lease, only if this owner still holds it.
+  const releaseVerificationLease = async (environmentId, revisionId, owner) => {
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: revisionKey(environmentId, revisionId),
+          UpdateExpression: 'REMOVE verificationLeaseOwner, verificationLeaseExpiresAt',
+          ConditionExpression: 'verificationLeaseOwner = :owner',
+          ExpressionAttributeValues: { ':owner': owner },
+        }),
+      );
+    } catch (error) {
+      if (error?.name !== 'ConditionalCheckFailedException') throw error;
+    }
+  };
+
   return {
     getEnvironment,
     getRevision,
@@ -795,6 +878,8 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     updateEnvironment,
     updateRevision,
     publishRevision,
+    acquireVerificationLease,
+    releaseVerificationLease,
     listRevisionsByStatus,
     markDependentsUpdateAvailable,
     reconcileBaseUpdates,

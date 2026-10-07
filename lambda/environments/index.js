@@ -29,6 +29,13 @@ import {
 } from './request.js';
 import { createEnvironmentStore } from './store.js';
 import { createToolStore } from './tool-store.js';
+import {
+  assertBaseArchitecture,
+  capabilities,
+  normalizeCompute,
+  prepareRecipesForCompute,
+} from './compute-model.js';
+import { runtimeBackendFor } from './runtime-backends/index.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -44,6 +51,13 @@ const configuredCore = () => ({
   coreRuntimeArn: process.env.CORE_RUNTIME_ARN,
   coreRuntimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
   coreImageSizeBytes: Number(process.env.CORE_IMAGE_SIZE_BYTES || 0) || null,
+  coreAmd64Image:
+    process.env.CORE_IMAGE_URI_AMD64 && process.env.CORE_IMAGE_DIGEST_AMD64
+      ? {
+          imageUri: process.env.CORE_IMAGE_URI_AMD64,
+          imageDigest: process.env.CORE_IMAGE_DIGEST_AMD64,
+        }
+      : null,
 });
 
 const ensureSeeded = async (store) => {
@@ -94,9 +108,17 @@ const assertAcyclicBase = async (store, environmentId, baseEnvironmentId) => {
   }
 };
 
-const prepareCatalogRecipe = async (store, toolStore, input, baseEnvironmentId) => {
+// Resolves the catalog recipe against the published base and applies the
+// environment's compute rules (base-architecture check, amd64 base swap) to
+// BOTH the recipe and its flattened form. Every create path — create, revise,
+// rebuild-on-latest-base — stores what this returns, so the compute rules are
+// applied in exactly one place.
+const prepareCatalogRecipe = async (store, toolStore, input, baseEnvironmentId, compute) => {
   const { revision: baseRevision } = await requirePublishedBaseImage(store, baseEnvironmentId);
-  return resolveCatalogEnvironmentRecipe({
+  // Before resolving: an arm64 recipe cannot be resolved against an x86_64
+  // base at all, and this is the error the caller should see for it.
+  assertBaseArchitecture({ compute, baseRevision, baseEnvironmentId });
+  const resolved = await resolveCatalogEnvironmentRecipe({
     input: {
       ...input,
       schemaVersion: CATALOG_RECIPE_SCHEMA_VERSION,
@@ -104,7 +126,19 @@ const prepareCatalogRecipe = async (store, toolStore, input, baseEnvironmentId) 
     baseEnvironmentId,
     baseRevision,
     toolStore,
+    architecture: compute?.architecture === 'x86_64' ? 'x86_64' : 'arm64',
   });
+  return {
+    ...resolved,
+    ...prepareRecipesForCompute({
+      compute,
+      baseRevision,
+      baseEnvironmentId,
+      recipe: resolved.recipe,
+      flattenedRecipe: resolved.flattenedRecipe,
+    }),
+    baseRevision,
+  };
 };
 
 const assertCatalogRevision = (environmentId, revision) => {
@@ -142,6 +176,7 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
       { statusCode: 409, code: 'PROJECTED_IMAGE_SIZE_EXCEEDED' },
     );
   }
+  const backend = runtimeBackendFor(environment);
   const catalogRecipe = revision.recipe?.schemaVersion === CATALOG_RECIPE_SCHEMA_VERSION;
   const recipe = catalogRecipe ? revision.recipe : applyToolPrerequisites(revision.recipe);
   const flattenedRecipe = catalogRecipe
@@ -207,7 +242,11 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
             type: 'PLAINTEXT',
           },
           { name: 'IMAGE_TAG', value: revision.revisionId, type: 'PLAINTEXT' },
+          { name: 'IMAGE_PLATFORM', value: backend.build.platform, type: 'PLAINTEXT' },
         ],
+        // Fleet/image selection belongs to the runtime backend (one CodeBuild
+        // project serves every architecture through per-build overrides).
+        ...backend.build.codeBuildOverrides,
       }),
     );
   } catch (error) {
@@ -300,10 +339,17 @@ const cloneOnLatestBase = async ({ store, environment, actor }) => {
     store,
     environment.baseEnvironmentId,
   );
-  const { recipe, flattenedRecipe } = rebuildCatalogEnvironmentRecipe({
+  const rebuilt = rebuildCatalogEnvironmentRecipe({
     sourceRecipe: sourceRevision.recipe,
     baseEnvironmentId: environment.baseEnvironmentId,
     baseRevision: latestBase,
+  });
+  const { recipe, flattenedRecipe } = prepareRecipesForCompute({
+    compute: environment.compute,
+    baseRevision: latestBase,
+    baseEnvironmentId: environment.baseEnvironmentId,
+    recipe: rebuilt.recipe,
+    flattenedRecipe: rebuilt.flattenedRecipe,
   });
   return store.createRevision({
     environment,
@@ -348,6 +394,14 @@ export const createHandler = ({
         return response(200, await store.listEnvironments({ publishedOnly }));
       }
 
+      // Deployment capabilities — the (compute type × architecture) matrix
+      // this deployment can build and run, so the settings UI renders exactly
+      // the selectable combinations instead of surfacing a 409 at draft
+      // creation.
+      if (event.httpMethod === 'GET' && tail.length === 1 && environmentId === 'capabilities') {
+        return response(200, capabilities());
+      }
+
       if (event.httpMethod === 'POST' && tail.length === 0) {
         const denied = requirePlatformAdmin(event);
         if (denied)
@@ -358,16 +412,18 @@ export const createHandler = ({
         const data = parseBody(event);
         if (!data.name?.trim()) return response(400, { error: 'name is required' });
         const id = normalizeEnvironmentId(data.environmentId || data.name);
-        if (id === 'rebuild') {
+        if (id === 'rebuild' || id === 'capabilities') {
           return response(400, { error: 'environmentId is reserved by the platform' });
         }
         const baseEnvironmentId = data.baseEnvironmentId || 'standard';
+        const compute = normalizeCompute(data.compute);
         await assertAcyclicBase(store, id, baseEnvironmentId);
         const prepared = await prepareCatalogRecipe(
           store,
           toolStore,
           data.recipe,
           baseEnvironmentId,
+          compute,
         );
         const created = await store.createEnvironment({
           environmentId: id,
@@ -376,6 +432,7 @@ export const createHandler = ({
           baseEnvironmentId,
           recipe: prepared.recipe,
           flattenedRecipe: prepared.flattenedRecipe,
+          compute,
           createdBy: actor,
         });
         return response(201, created);
@@ -464,6 +521,7 @@ export const createHandler = ({
           toolStore,
           data.recipe,
           baseEnvironmentId,
+          environment.compute,
         );
         const revision = await store.createRevision({
           environment,
