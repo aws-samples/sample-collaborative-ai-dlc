@@ -3372,6 +3372,7 @@ export const runStage = async (
       .catch(() => {});
   };
   let sessionUpdateQueue = Promise.resolve();
+  let usageMetricQueue = Promise.resolve();
   const cliOutput = createCliOutputSink({
     cli,
     emit: emitCliOutput,
@@ -3393,6 +3394,34 @@ export const runStage = async (
           }),
         )
         .catch(() => {});
+    },
+    onUsage: (metrics) => {
+      // Parsers surface trusted CLI usage (Codex/OpenCode) synchronously while
+      // stdout is drained. Serialize the durable write + live broadcast and
+      // await the queue before evaluating the stage outcome so usage is never
+      // dropped at process exit.
+      usageMetricQueue = usageMetricQueue
+        .then(async () => {
+          const row = await store.recordMetric({
+            executionId,
+            stageInstanceId,
+            unitSlug,
+            sectionIndex,
+            metrics,
+            resolvedModel: model ?? null,
+          });
+          await publish({
+            action: 'agent.metric',
+            stageInstanceId,
+            unitSlug,
+            sectionIndex,
+            metricId: row.metricId,
+            metrics,
+          });
+        })
+        .catch((error) => {
+          logger.error('CLI usage metric not recorded', error, { stageInstanceId, cli });
+        });
     },
   });
   // Correlate the [spawn:size] line below to THIS stage/cli — the diagnostic for
@@ -3440,6 +3469,7 @@ export const runStage = async (
   cliOutput.flush();
   await outputQueue;
   await sessionUpdateQueue;
+  await usageMetricQueue;
 
   // Codex runs entirely against local disk. Once stdout has been drained (and
   // therefore the thread id captured), persist only that thread's rollout.
