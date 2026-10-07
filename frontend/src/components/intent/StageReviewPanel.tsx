@@ -336,8 +336,25 @@ export function StageReviewPanel({
   const gateFindings = gate.findings ?? [];
   const blockingFindingCount = gateFindings.filter((item) => item.severity === 'blocking').length;
   const canApprove = gateOptions.length === 0 || gateOptions.includes('approve');
+  // The autonomy escalation. Offered by the engine only at the one construction
+  // gate that always stays human, and only while the intent is still gated — so,
+  // like every other button here, it is driven by the option list, never assumed.
+  const canGrantAutonomy = gateOptions.includes('grant-autonomy');
+  const confirmGrantAutonomy = () =>
+    window.confirm(
+      [
+        'Approve this stage and run the remaining construction stages without stopping?',
+        'Later construction stages will be approved automatically while their checks are clean.',
+        'A failure, a plan approval, a blocking finding, or a reviewer that is not ready still stops and asks you.',
+      ].join('\n'),
+    );
   const submit = async (
-    decision: 'approve' | 'request-changes' | 'override-and-approve' | 'loop-back',
+    decision:
+      | 'approve'
+      | 'request-changes'
+      | 'override-and-approve'
+      | 'loop-back'
+      | 'grant-autonomy',
   ) => {
     const sendsBack = decision === 'request-changes' || decision === 'loop-back';
     setSubmitting(true);
@@ -792,6 +809,18 @@ export function StageReviewPanel({
                     }}
                   >
                     Send back to {loopBackTarget}
+                  </Button>
+                )}
+                {canGrantAutonomy && (
+                  <Button
+                    variant="outline"
+                    disabled={submitting || !synced}
+                    onClick={() => {
+                      if (!confirmGrantAutonomy()) return;
+                      void submit('grant-autonomy');
+                    }}
+                  >
+                    Approve and continue autonomously
                   </Button>
                 )}
                 {canOverride && (

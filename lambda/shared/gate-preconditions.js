@@ -41,6 +41,7 @@ const FINDING_CODES = Object.freeze([
   'pipeline_link_incomplete',
   'ensemble_integration_missing',
   'stage_budget_exhausted',
+  'review_not_ready',
   'review_advisory_findings',
   'review_dissent_maintained',
   'sensor_gate_blocking',
@@ -285,6 +286,13 @@ const evaluateGatePreconditions = ({
   // Approved inputs whose content changed since their producing stage was
   // approved (change control). Empty/null when the check did not run.
   changedInputs = [],
+  // True only when THIS gate is eligible to be waived by a construction autonomy
+  // grant. It is what makes a terminal adversarial NOT-READY block: with no human
+  // at the gate, an unresolved reviewer objection would otherwise be approved by
+  // the machine. A gated stage keeps the advisory contract — the verdict is
+  // surfaced as an advisory finding and `approve` stays on offer — so an intent
+  // that never opted in sees no change in what it may answer.
+  autonomyGoverned = false,
 } = {}) => {
   if (!policy) return { ok: true, findings: [] };
 
@@ -508,17 +516,25 @@ const evaluateGatePreconditions = ({
   // Any reviewer verdict that is not READY is decision support at the gate. An
   // ADVISORY reviewer ran once by design; an ADVERSARIAL one reaches the gate only
   // when its repair loop ended without READY, so the human decides with the
-  // reviewer's unresolved objection in view instead of approving into silence. A
-  // DTO with no `advisory` flag at all is read as advisory.
+  // reviewer's unresolved objection in view instead of approving into silence. On
+  // a gate autonomy may waive there is no human to decide, so the adversarial
+  // objection BLOCKS there, overridably. A DTO with no `advisory` flag at all is
+  // read as advisory.
   if (reviewVerdict && reviewVerdict.verdict !== 'READY') {
     const kind = reviewVerdict.advisory === false ? 'Adversarial' : 'Advisory';
+    const adversarialBlock = reviewVerdict.advisory === false && autonomyGoverned;
     findings.push(
       finding({
-        code: 'review_advisory_findings',
-        severity: 'advisory',
-        title: `${kind} review (${reviewVerdict.reviewerAgent ?? 'reviewer'}): ${reviewVerdict.verdict ?? 'NOT-READY'}`,
+        code: adversarialBlock ? 'review_not_ready' : 'review_advisory_findings',
+        severity: adversarialBlock ? 'blocking' : 'advisory',
+        title: adversarialBlock
+          ? `Adversarial review (${reviewVerdict.reviewerAgent ?? 'reviewer'}) did not reach READY (${reviewVerdict.verdict ?? 'NOT-READY'})`
+          : `${kind} review (${reviewVerdict.reviewerAgent ?? 'reviewer'}): ${reviewVerdict.verdict ?? 'NOT-READY'}`,
         detail: { findings: reviewVerdict.findings ?? null },
-        remediation: `The ${kind.toLowerCase()} reviewer does not block; decide with its findings in view.`,
+        ...(adversarialBlock ? { overridable: true, receiptKind: 'stage-approval' } : {}),
+        remediation: adversarialBlock
+          ? 'Request changes to run the stage again, or override to accept the reviewer’s unresolved objection on the record.'
+          : `The ${kind.toLowerCase()} reviewer does not block; decide with its findings in view.`,
       }),
     );
   }

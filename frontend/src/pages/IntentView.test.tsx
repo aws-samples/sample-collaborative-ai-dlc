@@ -457,6 +457,23 @@ describe('IntentView', () => {
     expect(screen.getByRole('img', { name: 'Jira' })).toBeInTheDocument();
   });
 
+  it.each([
+    { label: 'an autonomous grant', mode: 'autonomous' as const, shown: true },
+    { label: 'a gated grant', mode: 'gated' as const, shown: false },
+    { label: 'no grant at all', mode: null, shown: false },
+  ])('shows the construction autonomy chip only for $label', async ({ mode, shown }) => {
+    get.mockResolvedValue(baseDetail({ status: 'WAITING', constructionGateAutonomy: mode }));
+    renderAt();
+
+    await screen.findByText('My intent');
+    const chip = screen.queryByTestId('construction-autonomy-badge');
+    if (shown) {
+      expect(chip).toHaveTextContent('Autonomous construction');
+    } else {
+      expect(chip).not.toBeInTheDocument();
+    }
+  });
+
   it('opens the reshape controls from the intent actions menu', async () => {
     const user = userEvent.setup();
     get.mockResolvedValue(

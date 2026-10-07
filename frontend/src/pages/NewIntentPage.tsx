@@ -88,6 +88,10 @@ export default function NewIntentPage() {
   const [releaseSelectionDisabled, setReleaseSelectionDisabled] = useState(false);
   const [releasesSettled, setReleasesSettled] = useState(false);
 
+  // Construction autonomy, off by default: the opt-in is the human's grant, so
+  // it is never pre-checked and never remembered across intents.
+  const [autonomousConstruction, setAutonomousConstruction] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
     aidlcReleasesService
@@ -228,6 +232,10 @@ export default function NewIntentPage() {
           showReleaseSelector && selectedReleaseId && selectedReleaseId !== stableReleaseId
             ? selectedReleaseId
             : undefined,
+        // Sent only as an explicit opt-in, and only where a release pin is on
+        // offer — the server refuses the field on an unpinned intent.
+        constructionGateAutonomy:
+          showReleaseSelector && autonomousConstruction ? 'autonomous' : undefined,
         source: source
           ? {
               bindingId: source.binding.id,
@@ -461,6 +469,23 @@ export default function NewIntentPage() {
                 </Select>
                 <p className="mt-1.5 text-xs text-muted-foreground">
                   This intent stays on this version; it is never migrated automatically.
+                </p>
+              </div>
+            )}
+
+            {showReleaseSelector && (
+              <div>
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={autonomousConstruction}
+                    onChange={(event) => setAutonomousConstruction(event.target.checked)}
+                  />
+                  Autonomous construction
+                </label>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Build the remaining construction stages without stopping for approval. The first
+                  construction stage, plan approvals, and anything that fails still stop and ask.
                 </p>
               </div>
             )}

@@ -172,6 +172,52 @@ describe('NewIntentPage — AI-DLC release selection', () => {
     expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:ccc333');
   });
 
+  it('leaves construction autonomy off unless the box is ticked', async () => {
+    listReleases.mockResolvedValue({ releases: [release()] });
+    listChannels.mockResolvedValue({
+      pinningEnabled: true,
+      stable: { channel: 'stable', releaseId: 'aidlc:aaa111bbb222', revision: 1 },
+      candidate: null,
+      preview: null,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    const box = await screen.findByLabelText('Autonomous construction');
+    expect(box).not.toBeChecked();
+
+    await submitPrompt(user);
+    expect(create.mock.calls[0][1].constructionGateAutonomy).toBeUndefined();
+  });
+
+  it('sends the autonomous grant once the box is ticked', async () => {
+    listReleases.mockResolvedValue({ releases: [release()] });
+    listChannels.mockResolvedValue({
+      pinningEnabled: true,
+      stable: { channel: 'stable', releaseId: 'aidlc:aaa111bbb222', revision: 1 },
+      candidate: null,
+      preview: null,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByLabelText('Autonomous construction'));
+
+    await submitPrompt(user);
+    expect(create.mock.calls[0][1].constructionGateAutonomy).toBe('autonomous');
+  });
+
+  it('offers no autonomy opt-in when no release is on offer', async () => {
+    listReleases.mockResolvedValue({ releases: [] });
+    listChannels.mockResolvedValue({
+      pinningEnabled: true,
+      stable: null,
+      candidate: null,
+      preview: null,
+    });
+    renderPage();
+    await screen.findByLabelText('Prompt');
+    expect(screen.queryByLabelText('Autonomous construction')).not.toBeInTheDocument();
+  });
+
   it('hides the selector and omits the field when no release is offered', async () => {
     listReleases.mockResolvedValue({ releases: [] });
     listChannels.mockResolvedValue({ stable: null, candidate: null, preview: null });

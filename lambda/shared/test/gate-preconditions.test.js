@@ -505,6 +505,37 @@ describe('evaluateGatePreconditions: reviewer and sensors', () => {
 
   it.each([
     {
+      name: 'an adversarial NOT-READY blocks overridably on an autonomy-governed gate',
+      reviewVerdict: {
+        advisory: false,
+        verdict: 'NOT-READY',
+        reviewerAgent: 'architecture-reviewer',
+        findings: 'Section 3 is unsupported',
+      },
+      autonomyGoverned: true,
+      codes: ['review_not_ready'],
+      ok: false,
+    },
+    {
+      name: 'an adversarial reviewer with no verdict blocks the same way when governed',
+      reviewVerdict: { advisory: false, verdict: 'INCONCLUSIVE', reviewerAgent: 'r' },
+      autonomyGoverned: true,
+      codes: ['review_not_ready'],
+      ok: false,
+    },
+    {
+      name: 'an advisory NOT-READY never blocks, even when governed',
+      reviewVerdict: { advisory: true, verdict: 'NOT-READY' },
+      autonomyGoverned: true,
+      codes: ['review_advisory_findings'],
+    },
+    {
+      name: 'a verdict with no advisory flag stays advisory when governed',
+      reviewVerdict: { verdict: 'NOT-READY' },
+      autonomyGoverned: true,
+      codes: ['review_advisory_findings'],
+    },
+    {
       name: 'an adversarial NOT-READY is surfaced as an ADVISORY finding',
       reviewVerdict: {
         advisory: false,
@@ -544,16 +575,26 @@ describe('evaluateGatePreconditions: reviewer and sensors', () => {
       reviewVerdict: null,
       codes: [],
     },
-  ])('$name', ({ reviewVerdict, codes }) => {
+  ])('$name', ({ reviewVerdict, codes, autonomyGoverned = false, ok = true }) => {
     const result = evaluateGatePreconditions({
       stage: STAGE,
       policy: POLICY,
       reviewVerdict,
+      autonomyGoverned,
       producedArtifacts: ['requirements'],
     });
     expect(codesOf(result)).toEqual(codes);
-    expect(result.ok).toBe(true);
-    expect(overridableFindings(result.findings)).toEqual([]);
+    expect(result.ok).toBe(ok);
+    if (ok) {
+      expect(overridableFindings(result.findings)).toEqual([]);
+    } else {
+      expect(result.findings[0]).toMatchObject({
+        severity: 'blocking',
+        overridable: true,
+        receiptKind: 'stage-approval',
+      });
+      expect(overridableFindings(result.findings)).toHaveLength(1);
+    }
   });
 
   it('holds the gate on a BLOCKING gate-plane sensor, with an override', () => {
