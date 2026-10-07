@@ -772,6 +772,27 @@ moved {
   to   = module.agentcore.aws_ssm_parameter.cli_models
 }
 
+# Attention-notifications data plane: escalation and capture queues and the
+# unsubscribe signing secret. The tables live in module.dynamodb and the
+# v2_executions stream in module.agentcore.
+module "notifications" {
+  source = "./modules/notifications"
+
+  project_name             = var.project_name
+  environment              = var.environment
+  kms_key_arn              = var.kms_key_arn
+  notifications_table_name = module.dynamodb.notifications_table_name
+  notifications_table_arn  = module.dynamodb.notifications_table_arn
+  preferences_table_name   = module.dynamodb.preferences_table_name
+  preferences_table_arn    = module.dynamodb.preferences_table_arn
+  v2_executions_stream_arn = module.agentcore.v2_executions_stream_arn
+
+  tags = {
+    Environment = var.environment
+    Project     = var.project_name
+  }
+}
+
 moved {
   from = module.agents.aws_ssm_parameter.kiro_api_key
   to   = module.agentcore.aws_ssm_parameter.kiro_api_key

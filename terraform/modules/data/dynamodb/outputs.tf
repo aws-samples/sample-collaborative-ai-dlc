@@ -18,6 +18,26 @@ output "notifications_table_arn" {
   value       = aws_dynamodb_table.notifications.arn
 }
 
+output "notifications_source_index_name" {
+  description = "Sparse GSI on sourceKey used to resolve every inbox item raised by one source"
+  value       = local.notifications_source_index
+}
+
+output "notifications_digest_index_name" {
+  description = "Sparse GSI on digestBucket used by the morning digest"
+  value       = local.notifications_digest_index
+}
+
+output "preferences_table_name" {
+  description = "Name of the namespaced preferences table"
+  value       = aws_dynamodb_table.preferences.name
+}
+
+output "preferences_table_arn" {
+  description = "ARN of the namespaced preferences table"
+  value       = aws_dynamodb_table.preferences.arn
+}
+
 output "agent_questions_table_name" {
   description = "Name of the agent questions table"
   value       = aws_dynamodb_table.agent_questions.name

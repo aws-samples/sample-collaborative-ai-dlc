@@ -4,6 +4,11 @@ locals {
   billing_mode   = "PAY_PER_REQUEST"
   read_capacity  = null
   write_capacity = null
+
+  # Published through outputs; the deploy pre-flight treats SourceIndex as the
+  # "notifications table already upgraded" marker.
+  notifications_source_index = "SourceIndex"
+  notifications_digest_index = "DigestIndex"
 }
 
 resource "aws_dynamodb_table" "sessions" {
@@ -53,6 +58,99 @@ resource "aws_dynamodb_table" "notifications" {
   attribute {
     name = "timestamp"
     type = "N"
+  }
+
+  # Attention-notification inbox. The key schema above is unchanged on purpose:
+  # changing it would replace the table, which deletion protection blocks on
+  # existing installs. TTL and the two sparse GSIs below are online, in-place
+  # updates. The provider creates one GSI per UpdateTable call and waits for it.
+  attribute {
+    name = "sourceKey"
+    type = "S"
+  }
+
+  attribute {
+    name = "digestBucket"
+    type = "S"
+  }
+
+  # Resolve-on-answer: every inbox item raised by one gate shares a sourceKey.
+  # Only base keys are needed to update those items, so KEYS_ONLY is enough.
+  # deploy-terraform.sh's notifications pre-flight uses this index as the
+  # "already upgraded" marker; do not rename it.
+  global_secondary_index {
+    name            = local.notifications_source_index
+    projection_type = "KEYS_ONLY"
+    read_capacity   = local.read_capacity
+    write_capacity  = local.write_capacity
+
+    key_schema {
+      attribute_name = "sourceKey"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "timestamp"
+      key_type       = "RANGE"
+    }
+  }
+
+  # Morning digest: items carry digestBucket (UTC YYYY-MM-DDTHH) until the
+  # digest is sent and the writer removes it. The range key groups items by user.
+  global_secondary_index {
+    name            = local.notifications_digest_index
+    projection_type = "ALL"
+    read_capacity   = local.read_capacity
+    write_capacity  = local.write_capacity
+
+    key_schema {
+      attribute_name = "digestBucket"
+      key_type       = "HASH"
+    }
+    key_schema {
+      attribute_name = "userId"
+      key_type       = "RANGE"
+    }
+  }
+
+  # 30-day retention: writers set expiresAt (epoch seconds) to createdAt + 30 days.
+  # TTL deletion is lazy, so readers also filter expiresAt > now.
+  ttl {
+    attribute_name = "expiresAt"
+    enabled        = true
+  }
+
+  server_side_encryption {
+    enabled     = var.kms_key_arn != ""
+    kms_key_arn = var.kms_key_arn != "" ? var.kms_key_arn : null
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  tags = var.tags
+}
+
+# Generic namespaced preferences: PK scope (user#<sub> | platform | project#<id>),
+# SK namespace (notifications, email-channel, ...). Accessed only through
+# lambda/shared/preferences-store.js. Preferences never expire, so there is no TTL.
+resource "aws_dynamodb_table" "preferences" {
+  name                        = "${var.project_name}-preferences-${var.environment}"
+  billing_mode                = local.billing_mode
+  hash_key                    = "scope"
+  range_key                   = "namespace"
+  read_capacity               = local.read_capacity
+  write_capacity              = local.write_capacity
+  deletion_protection_enabled = var.deletion_protection
+
+  attribute {
+    name = "scope"
+    type = "S"
+  }
+
+  attribute {
+    name = "namespace"
+    type = "S"
   }
 
   server_side_encryption {

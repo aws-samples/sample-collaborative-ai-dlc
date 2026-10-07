@@ -119,6 +119,53 @@ tf_output() {
     terraform -chdir="$TF_DIR" output -raw "$1" 2>/dev/null || true
 }
 
+# Effective value of a root variable before a plan exists, using Terraform's
+# precedence: the last -var override, then the tfvars file, then TF_VAR_<name>,
+# then the given default.
+effective_tfvar() {
+    local name="$1" fallback="$2" value="" arg env_name="TF_VAR_$1"
+    for arg in ${TF_VAR_ARGS[@]+"${TF_VAR_ARGS[@]}"}; do
+        if [[ "$arg" == "$name="* ]]; then
+            value="${arg#*=}"
+        fi
+    done
+    [[ -z "$value" ]] && value="$(tfvar_string "$name" "$TFVARS_FILE")"
+    [[ -z "$value" ]] && value="${!env_name:-}"
+    printf '%s' "${value:-$fallback}"
+}
+
+# Halts the deploy (exit 1) when the existing notifications table holds rows
+# written before the attention-notifications release. See
+# scripts/notifications-preflight.mjs and the CHANGELOG upgrade notes.
+notifications_preflight_before_plan() {
+    local project_name environment region
+    project_name="$(effective_tfvar project_name collaborative-ai-dlc)"
+    environment="$(effective_tfvar environment "$ENVIRONMENT")"
+    region="$(effective_tfvar aws_region us-east-1)"
+    node "$SCRIPT_DIR/notifications-preflight.mjs" \
+        --table "${project_name}-notifications-${environment}" \
+        --region "$region"
+}
+
+# The saved plan carries the exact variables it was made with, so the second
+# check reads the table name and region from it.
+notifications_preflight_before_apply() {
+    local plan_file="$1"
+    local plan_json="${plan_file}.preflight.json"
+    terraform show -json "$plan_file" > "$plan_json"
+    local status=0
+    node "$SCRIPT_DIR/notifications-preflight.mjs" --plan-json "$plan_json" || status=$?
+    rm -f "$plan_json"
+    return "$status"
+}
+
+# Puts the unsubscribe HMAC key once; the value never enters Terraform state.
+seed_notifications_secret() {
+    node "$SCRIPT_DIR/seed-notifications-secret.mjs" \
+        --secret-arn "$(tf_output notifications_unsubscribe_secret_arn)" \
+        --region "$(tf_output aws_region)"
+}
+
 print_deployment_summary() {
     local application_url region deployed_environment custom_domain aliases auth_mode providers lambda_vpc_scope nat_ips
     local oidc_callback saml_acs saml_entity_id
@@ -299,6 +346,8 @@ if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then
     echo "Initializing Terraform..."
     terraform init -lockfile=readonly -reconfigure -backend-config="$BACKEND_FILE"
 
+    notifications_preflight_before_plan
+
     mkdir -p "$(dirname "$PLAN_FILE")"
     echo "Planning deployment..."
     TF_VAR_FILE_ARGS=(-var-file="$TFVARS_FILE")
@@ -317,6 +366,8 @@ if [[ ! -f "$PLAN_FILE" ]]; then
 fi
 
 cd "$TF_DIR"
+# Table state may have changed since the plan was made, so check again.
+notifications_preflight_before_apply "$PLAN_FILE"
 if [[ "$PHASE" == "apply" ]]; then
     inspect_plan "$PLAN_FILE"
 fi
@@ -327,6 +378,8 @@ terraform apply "$PLAN_FILE"
 if [[ "${AIDLC_KEEP_PLAN:-0}" != "1" ]]; then
     rm -f "$PLAN_FILE"
 fi
+
+seed_notifications_secret
 
 if [[ "$SKIP_SEED" == "true" ]]; then
     echo "Skipping AI-DLC default workflow and building-block reseed (--skip-seed)."

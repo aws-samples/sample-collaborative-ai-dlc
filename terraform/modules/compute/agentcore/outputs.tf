@@ -43,6 +43,11 @@ output "v2_executions_table_arn" {
   value       = aws_dynamodb_table.v2_executions.arn
 }
 
+output "v2_executions_stream_arn" {
+  description = "NEW_AND_OLD_IMAGES stream ARN of the v2 process/state table"
+  value       = aws_dynamodb_table.v2_executions.stream_arn
+}
+
 output "runtime_arn" {
   description = "ARN of the Bedrock AgentCore Runtime"
   value       = awscc_bedrockagentcore_runtime.stage_executor.agent_runtime_arn

@@ -246,6 +246,12 @@ resource "aws_dynamodb_table" "v2_executions" {
   write_capacity              = local.write_capacity
   deletion_protection_enabled = var.deletion_protection
 
+  # Change stream for attention-notification capture (execution-event-capture
+  # owns the consumer). Enabling it is an online update that does not interrupt
+  # writes or change any durable orchestrator step. Records expire after 24 hours.
+  stream_enabled   = true
+  stream_view_type = "NEW_AND_OLD_IMAGES"
+
   attribute {
     name = "pk"
     type = "S"
