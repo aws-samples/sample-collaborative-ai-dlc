@@ -26,6 +26,24 @@ locals {
   managed_workload_identity_directory_arn = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default"
   managed_workload_identity_arn           = "${local.managed_workload_identity_directory_arn}/workload-identity/*"
   ecr_registry_host                       = split("/", var.environment_repository_url)[0]
+
+  # Instances compute configuration. ONE map, merged into both lambdas: the
+  # control lambda serves GET /environments/capabilities and validates
+  # environment creation from it, the status lambda provisions capacity
+  # providers from it, and the two must agree. The Lambda code has no
+  # defaults of its own for these values, so this is the only source.
+  # Subnets, security groups and the operator role are exposed only when the
+  # feature is enabled (empty = not configured); the allowlists always pass
+  # through as configured (an empty list disables that architecture).
+  instances_compute_environment = {
+    MANAGED_INSTANCES_OPERATOR_ROLE_ARN   = var.instances_compute_enabled ? aws_iam_role.instances_operator.arn : ""
+    MANAGED_INSTANCES_SUBNETS             = jsonencode(var.instances_compute_enabled ? var.runtime_subnet_ids : [])
+    MANAGED_INSTANCES_SECURITY_GROUPS     = jsonencode(var.instances_compute_enabled ? var.runtime_security_group_ids : [])
+    MANAGED_INSTANCES_ALLOWED_TYPES       = jsonencode(var.instances_allowed_instance_types)
+    MANAGED_INSTANCES_ALLOWED_TYPES_ARM64 = jsonencode(var.instances_allowed_instance_types_arm64)
+    MANAGED_INSTANCES_WORKSPACE_GIB       = tostring(var.instances_workspace_gib)
+    MANAGED_INSTANCES_CP_NAME_PREFIX      = replace("${var.project_name}_${var.environment}", "-", "_")
+  }
 }
 
 module "dynamodb_kms_runtime_access" {
@@ -370,7 +388,7 @@ module "control_lambda" {
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
-  environment_variables = {
+  environment_variables = merge({
     POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT     = tostring(var.powertools_log_event)
@@ -388,13 +406,10 @@ module "control_lambda" {
     MAX_ENVIRONMENT_IMAGE_MB        = "2048"
     CORS_ALLOWED_ORIGINS            = var.cors_allowed_origins
 
-    # Instances compute type (empty/no-op when disabled)
-    CORE_IMAGE_URI_AMD64                = var.core_image_uri_amd64
-    CORE_IMAGE_DIGEST_AMD64             = var.core_image_digest_amd64
-    MANAGED_INSTANCES_OPERATOR_ROLE_ARN = var.instances_compute_enabled ? aws_iam_role.instances_operator.arn : ""
-    MANAGED_INSTANCES_SUBNETS           = jsonencode(var.instances_compute_enabled ? var.runtime_subnet_ids : [])
-    MANAGED_INSTANCES_SECURITY_GROUPS   = jsonencode(var.instances_compute_enabled ? var.runtime_security_group_ids : [])
-  }
+    # amd64 core image for x86_64 environments (empty when not built)
+    CORE_IMAGE_URI_AMD64    = var.core_image_uri_amd64
+    CORE_IMAGE_DIGEST_AMD64 = var.core_image_digest_amd64
+  }, local.instances_compute_environment)
 
   depends_on = [aws_iam_role_policy_attachment.control_vpc]
 }
@@ -620,7 +635,7 @@ module "status_lambda" {
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
-  environment_variables = {
+  environment_variables = merge({
     POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
     ENVIRONMENT_REGISTRY_TABLE      = var.registry_table_name
@@ -633,16 +648,7 @@ module "status_lambda" {
     MANAGED_RUNTIME_ENVIRONMENT     = jsonencode(var.runtime_environment_variables)
     MANAGED_RUNTIME_TAGS            = jsonencode(var.tags)
     MAX_ENVIRONMENT_IMAGE_MB        = "2048"
-
-    # Instances compute type (empty/no-op when disabled)
-    MANAGED_INSTANCES_OPERATOR_ROLE_ARN   = var.instances_compute_enabled ? aws_iam_role.instances_operator.arn : ""
-    MANAGED_INSTANCES_SUBNETS             = jsonencode(var.instances_compute_enabled ? var.runtime_subnet_ids : [])
-    MANAGED_INSTANCES_SECURITY_GROUPS     = jsonencode(var.instances_compute_enabled ? var.runtime_security_group_ids : [])
-    MANAGED_INSTANCES_ALLOWED_TYPES       = jsonencode(var.instances_allowed_instance_types)
-    MANAGED_INSTANCES_ALLOWED_TYPES_ARM64 = jsonencode(var.instances_allowed_instance_types_arm64)
-    MANAGED_INSTANCES_WORKSPACE_GIB       = tostring(var.instances_workspace_gib)
-    MANAGED_INSTANCES_CP_NAME_PREFIX      = replace("${var.project_name}_${var.environment}", "-", "_")
-  }
+  }, local.instances_compute_environment)
 
   depends_on = [aws_iam_role_policy_attachment.status_vpc]
 }

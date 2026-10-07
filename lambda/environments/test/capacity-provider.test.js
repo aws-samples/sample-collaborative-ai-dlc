@@ -8,7 +8,8 @@ const INSTANCES_ENV = {
   MANAGED_INSTANCES_OPERATOR_ROLE_ARN: 'arn:aws:iam::123456789012:role/operator',
   MANAGED_INSTANCES_SUBNETS: '["subnet-1","subnet-2"]',
   MANAGED_INSTANCES_SECURITY_GROUPS: '["sg-1"]',
-  MANAGED_INSTANCES_ALLOWED_TYPES: '["t3.large"]',
+  MANAGED_INSTANCES_ALLOWED_TYPES: '["m6i.xlarge"]',
+  MANAGED_INSTANCES_ALLOWED_TYPES_ARM64: '["m7g.xlarge"]',
   MANAGED_INSTANCES_CP_NAME_PREFIX: 'test_platform',
   CORE_IMAGE_URI_AMD64: '123456789012.dkr.ecr.us-east-1.amazonaws.com/core',
   CORE_IMAGE_DIGEST_AMD64: `sha256:${'a'.repeat(64)}`,
@@ -81,7 +82,7 @@ describe('ensureCapacityProvider', () => {
     const launch =
       createInput.computeConfiguration.ec2Configuration.launchTemplateSource.launchParameters;
     expect(launch.operatingSystem).toBe('LINUX_X86_64');
-    expect(launch.instanceRequirements.allowedInstanceTypes).toEqual(['t3.large']);
+    expect(launch.instanceRequirements.allowedInstanceTypes).toEqual(['m6i.xlarge']);
     expect(createInput.computeConfiguration.ec2Configuration.vpcConfiguration).toEqual({
       subnets: ['subnet-1', 'subnet-2'],
       securityGroups: ['sg-1'],
@@ -109,7 +110,7 @@ describe('ensureCapacityProvider', () => {
 
   it('derives a new provider identity when the configuration changes', () => {
     const before = capacityProviderName('x86_64');
-    process.env.MANAGED_INSTANCES_ALLOWED_TYPES = '["m6i.xlarge"]';
+    process.env.MANAGED_INSTANCES_ALLOWED_TYPES = '["m6i.2xlarge"]';
     const after = capacityProviderName('x86_64');
     expect(after).not.toBe(before);
     // Same prefix and architecture tag — only the fingerprint differs.
@@ -149,7 +150,6 @@ describe('ensureCapacityProvider', () => {
 
 describe('capacity provider instance types per architecture', () => {
   it('launches the architecture-specific allowlist', async () => {
-    process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64 = '["m7g.large"]';
     const sends = [];
     const controlClient = {
       send: vi.fn().mockImplementation(async (command) => {
@@ -166,12 +166,20 @@ describe('capacity provider instance types per architecture', () => {
       c.input.computeConfiguration.ec2Configuration.launchTemplateSource.launchParameters;
     expect(launch(creates[0])).toMatchObject({
       operatingSystem: 'LINUX_ARM64',
-      instanceRequirements: { allowedInstanceTypes: ['m7g.large'] },
+      instanceRequirements: { allowedInstanceTypes: ['m7g.xlarge'] },
     });
     expect(launch(creates[1])).toMatchObject({
       operatingSystem: 'LINUX_X86_64',
-      instanceRequirements: { allowedInstanceTypes: ['t3.large'] },
+      instanceRequirements: { allowedInstanceTypes: ['m6i.xlarge'] },
     });
-    delete process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64;
+  });
+
+  it('refuses to provision an architecture whose allowlist is empty', async () => {
+    process.env.MANAGED_INSTANCES_ALLOWED_TYPES = '[]';
+    const controlClient = { send: vi.fn() };
+    await expect(
+      ensureCapacityProvider({ controlClient, architecture: 'x86_64' }),
+    ).rejects.toMatchObject({ code: 'NO_INSTANCE_TYPES' });
+    expect(controlClient.send).not.toHaveBeenCalled();
   });
 });

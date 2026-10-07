@@ -11,7 +11,8 @@ const INSTANCES_ENV = {
   MANAGED_INSTANCES_OPERATOR_ROLE_ARN: 'arn:aws:iam::123456789012:role/operator',
   MANAGED_INSTANCES_SUBNETS: '["subnet-1","subnet-2"]',
   MANAGED_INSTANCES_SECURITY_GROUPS: '["sg-1"]',
-  MANAGED_INSTANCES_ALLOWED_TYPES: '["t3.large"]',
+  MANAGED_INSTANCES_ALLOWED_TYPES: '["m6i.xlarge"]',
+  MANAGED_INSTANCES_ALLOWED_TYPES_ARM64: '["m7g.xlarge"]',
   MANAGED_INSTANCES_CP_NAME_PREFIX: 'test_platform',
   CORE_IMAGE_URI_AMD64: '123456789012.dkr.ecr.us-east-1.amazonaws.com/core',
   CORE_IMAGE_DIGEST_AMD64: `sha256:${'a'.repeat(64)}`,
@@ -185,13 +186,13 @@ describe('capabilities matrix', () => {
         type: 'instances',
         architecture: 'arm64',
         available: true,
-        allowedInstanceTypes: ['m7g.large'],
+        allowedInstanceTypes: ['m7g.xlarge'],
       },
       {
         type: 'instances',
         architecture: 'x86_64',
         available: true,
-        allowedInstanceTypes: ['t3.large'],
+        allowedInstanceTypes: ['m6i.xlarge'],
       },
     ]);
     expect(matrix.instancesCompute).toBe(true);
@@ -222,25 +223,41 @@ describe('capabilities matrix', () => {
     });
   });
 
-  it('keeps a separate allowlist per architecture and disables an empty one', () => {
+  it('reports the configured allowlist of each architecture, with no built-in default', () => {
+    process.env.MANAGED_INSTANCES_ALLOWED_TYPES = '["c7i.large","m7i.large"]';
     process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64 = '["m8g.large"]';
-    let cells = Object.fromEntries(
+    const cells = Object.fromEntries(
       capabilities().combinations.map((c) => [`${c.type}/${c.architecture}`, c]),
     );
+    expect(cells['instances/x86_64'].allowedInstanceTypes).toEqual(['c7i.large', 'm7i.large']);
     expect(cells['instances/arm64'].allowedInstanceTypes).toEqual(['m8g.large']);
-    expect(cells['instances/x86_64'].allowedInstanceTypes).toEqual(['t3.large']);
-    process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64 = '[]';
-    cells = Object.fromEntries(
+
+    // Unset is not "use a default": the architecture is simply not offered.
+    delete process.env.MANAGED_INSTANCES_ALLOWED_TYPES;
+    delete process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64;
+    for (const cell of capabilities().combinations.filter((c) => c.type === 'instances')) {
+      expect(cell).toMatchObject({ available: false, reason: 'NO_INSTANCE_TYPES' });
+    }
+  });
+
+  it.each([
+    ['x86_64', 'MANAGED_INSTANCES_ALLOWED_TYPES'],
+    ['arm64', 'MANAGED_INSTANCES_ALLOWED_TYPES_ARM64'],
+  ])('disables %s when its allowlist is empty, in the matrix and on creation', (arch, name) => {
+    process.env[name] = '[]';
+    const cells = Object.fromEntries(
       capabilities().combinations.map((c) => [`${c.type}/${c.architecture}`, c]),
     );
-    expect(cells['instances/arm64']).toMatchObject({
+    expect(cells[`instances/${arch}`]).toMatchObject({
       available: false,
       reason: 'NO_INSTANCE_TYPES',
     });
-    expect(() => normalizeCompute({ type: 'instances', architecture: 'arm64' })).toThrow(
-      /No arm64 instance types/,
+    expect(cells[`instances/${arch}`].allowedInstanceTypes).toBeUndefined();
+    const other = arch === 'x86_64' ? 'arm64' : 'x86_64';
+    expect(cells[`instances/${other}`].available).toBe(true);
+    expect(() => normalizeCompute({ type: 'instances', architecture: arch })).toThrow(
+      new RegExp(`No ${arch} instance types`),
     );
-    delete process.env.MANAGED_INSTANCES_ALLOWED_TYPES_ARM64;
   });
 
   it('normalizeCompute agrees with the matrix', () => {

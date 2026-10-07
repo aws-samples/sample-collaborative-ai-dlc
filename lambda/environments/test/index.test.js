@@ -130,6 +130,8 @@ describe('managed environment handler', () => {
     vi.stubEnv('MANAGED_INSTANCES_OPERATOR_ROLE_ARN', 'arn:aws:iam::1:role/operator');
     vi.stubEnv('MANAGED_INSTANCES_SUBNETS', '["subnet-1"]');
     vi.stubEnv('MANAGED_INSTANCES_SECURITY_GROUPS', '["sg-1"]');
+    vi.stubEnv('MANAGED_INSTANCES_ALLOWED_TYPES', '["c7i.large"]');
+    vi.stubEnv('MANAGED_INSTANCES_ALLOWED_TYPES_ARM64', '["m8g.large"]');
     vi.stubEnv('CORE_IMAGE_URI_AMD64', '111111111111.dkr.ecr.eu-west-1.amazonaws.com/core');
     vi.stubEnv('CORE_IMAGE_DIGEST_AMD64', `sha256:${'d'.repeat(64)}`);
     const enabled = await handler({
@@ -144,7 +146,19 @@ describe('managed environment handler', () => {
     ).toEqual(['microvms/arm64', 'instances/arm64', 'instances/x86_64']);
     expect(
       enabledBody.combinations.find((c) => c.type === 'instances' && c.architecture === 'x86_64'),
-    ).toMatchObject({ allowedInstanceTypes: ['m6i.large'] });
+    ).toMatchObject({ allowedInstanceTypes: ['c7i.large'] });
+    expect(
+      enabledBody.combinations.find((c) => c.type === 'instances' && c.architecture === 'arm64'),
+    ).toMatchObject({ allowedInstanceTypes: ['m8g.large'] });
+
+    // An empty allowlist disables that architecture on the endpoint too.
+    vi.stubEnv('MANAGED_INSTANCES_ALLOWED_TYPES', '[]');
+    const emptyX86 = JSON.parse(
+      (await handler({ httpMethod: 'GET', path: '/environments/capabilities', ...claims() })).body,
+    );
+    expect(
+      emptyX86.combinations.find((c) => c.type === 'instances' && c.architecture === 'x86_64'),
+    ).toMatchObject({ available: false, reason: 'NO_INSTANCE_TYPES' });
     vi.unstubAllEnvs();
   });
 

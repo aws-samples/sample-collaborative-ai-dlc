@@ -86,6 +86,13 @@ export const capacityProviderName = (architecture, spec = capacityProviderSpec(a
 // { pending: true } while the provider is still CREATING so the status
 // poller re-enters on the next tick; throws when creation failed.
 export const ensureCapacityProvider = async ({ controlClient, architecture }) => {
+  if (allowedInstanceTypes(architecture).length === 0) {
+    // The architecture was disabled after the environment was created.
+    throw Object.assign(
+      new Error(`No ${architecture} instance types are allowed on this deployment`),
+      { code: 'NO_INSTANCE_TYPES' },
+    );
+  }
   const spec = capacityProviderSpec(architecture);
   const name = capacityProviderName(architecture, spec);
   let token;

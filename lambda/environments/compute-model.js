@@ -40,56 +40,60 @@ export const amd64CoreImageConfigured = () =>
 // EC2 instance types the deployment's capacity providers may launch, per
 // architecture — an instance family is built for exactly one of them (m6i is
 // x86_64, m7g is arm64/Graviton), so a single list cannot serve both cells.
-// Deployment-wide today; per-environment selection would become a capacity
-// provider per (architecture, allowlist) — the provider fingerprint already
-// accounts for it.
+// Terraform is the only source (local.instances_compute_environment, given to
+// both the control and the status lambda); there is deliberately no default
+// here, so an unset or empty list means the architecture is not offered.
 const INSTANCE_TYPE_ENV = {
-  x86_64: ['MANAGED_INSTANCES_ALLOWED_TYPES', ['m6i.large']],
-  arm64: ['MANAGED_INSTANCES_ALLOWED_TYPES_ARM64', ['m7g.large']],
+  x86_64: 'MANAGED_INSTANCES_ALLOWED_TYPES',
+  arm64: 'MANAGED_INSTANCES_ALLOWED_TYPES_ARM64',
 };
 
-export const allowedInstanceTypes = (architecture = 'x86_64') => {
-  const [name, fallback] = INSTANCE_TYPE_ENV[architecture] ?? INSTANCE_TYPE_ENV.x86_64;
-  return parseJsonEnv(name, fallback);
+export const allowedInstanceTypes = (architecture) => {
+  const name = INSTANCE_TYPE_ENV[architecture];
+  if (!name) return [];
+  const types = parseJsonEnv(name, []);
+  return Array.isArray(types) ? types.filter((type) => typeof type === 'string' && type) : [];
+};
+
+// Why an Instances cell is unavailable, or null. The same checks apply to
+// every architecture; x86_64 additionally needs the amd64 core image.
+const instancesUnavailableReason = (architecture) => {
+  if (!instancesComputeConfigured()) return 'INSTANCES_COMPUTE_NOT_CONFIGURED';
+  if (allowedInstanceTypes(architecture).length === 0) return 'NO_INSTANCE_TYPES';
+  if (architecture === 'x86_64' && !amd64CoreImageConfigured()) return 'AMD64_CORE_IMAGE_MISSING';
+  return null;
 };
 
 // Every (type, architecture) cell with whether THIS deployment can build and
 // run it, and why not when it cannot. Exposed on GET /environments/capabilities
 // so the UI renders exactly the selectable combinations instead of hardcoding
-// them.
+// them; normalizeCompute validates creation against the same cells.
 export const capabilities = () => {
-  const instances = instancesComputeConfigured();
-  const amd64 = amd64CoreImageConfigured();
-  const cell = (type, architecture, available, reason = null) => ({
-    type,
+  const microvms = (architecture, reason = null) => ({
+    type: 'microvms',
     architecture,
-    available,
-    ...(available ? {} : { reason }),
-    ...(type === 'instances' && available
-      ? { allowedInstanceTypes: allowedInstanceTypes(architecture) }
-      : {}),
+    available: reason === null,
+    ...(reason ? { reason } : {}),
   });
-  const armTypes = allowedInstanceTypes('arm64').length > 0;
+  const instances = (architecture) => {
+    const reason = instancesUnavailableReason(architecture);
+    return {
+      type: 'instances',
+      architecture,
+      available: reason === null,
+      ...(reason ? { reason } : { allowedInstanceTypes: allowedInstanceTypes(architecture) }),
+    };
+  };
   return {
     // Kept for callers that only need the two flags.
-    instancesCompute: instances,
-    amd64CoreImage: amd64,
+    instancesCompute: instancesComputeConfigured(),
+    amd64CoreImage: amd64CoreImageConfigured(),
     default: { ...DEFAULT_COMPUTE },
     combinations: [
-      cell('microvms', 'arm64', true),
-      cell('microvms', 'x86_64', false, 'MICROVMS_ARCHITECTURE_UNSUPPORTED'),
-      cell(
-        'instances',
-        'arm64',
-        instances && armTypes,
-        !instances ? 'INSTANCES_COMPUTE_NOT_CONFIGURED' : armTypes ? null : 'NO_INSTANCE_TYPES',
-      ),
-      cell(
-        'instances',
-        'x86_64',
-        instances && amd64,
-        !instances ? 'INSTANCES_COMPUTE_NOT_CONFIGURED' : amd64 ? null : 'AMD64_CORE_IMAGE_MISSING',
-      ),
+      microvms('arm64'),
+      microvms('x86_64', 'MICROVMS_ARCHITECTURE_UNSUPPORTED'),
+      instances('arm64'),
+      instances('x86_64'),
     ],
   };
 };
