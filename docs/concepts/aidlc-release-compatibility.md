@@ -314,7 +314,7 @@ all reproduced.
   grant's own provenance — who, when, and whether at create or at a gate — is
   durable too, as `constructionGateAutonomyGrant`.
 - The halt-and-ask set is reproduced in full: the plan's first non-skipped
-  construction stage, every Code Generation Plan Approval, every fan-out
+  construction stage with a sequential gate, every Code Generation Plan Approval, every fan-out
   approval, a stage failure, a blocking gate sensor, and an exhausted loop-back
   bound all still open a human gate. Losing the run to a cancel, a delete, or
   another orchestrator stops the walk — a waived gate opens no gate row, so that
@@ -327,8 +327,10 @@ all reproduced.
 - Residual: the grant governs only the once-per-workflow sequential gates.
   Per-unit stages inside a parallel section keep their own ceremony — the
   walking-skeleton gate and the section autonomy ladder — so a scope with a unit
-  DAG still batches its lane approvals there. Non-construction phases are
-  untouched.
+  DAG still batches its lane approvals there. In those scopes the gate that
+  always stays human is the first sequential construction gate after the lanes
+  (for example build-and-test), and that is where `grant-autonomy` is offered.
+  Non-construction phases are untouched.
 
 ## Persona sessions
 

@@ -46,8 +46,13 @@ const constructionAutonomyApplies = ({ capabilities = {} } = {}) =>
   capabilities[CONSTRUCTION_AUTONOMY_CAPABILITY] === true;
 
 /**
- * The anchor: the first non-skipped construction stage of the WHOLE plan, whose
- * gate stays human in every stance.
+ * The anchor: the first non-skipped construction stage of the WHOLE plan that
+ * opens a sequential gate, whose gate stays human in every stance.
+ *
+ * A stage inside a parallel section (`parallelSection != null`) never opens a
+ * sequential gate: its human stop is the section's skeleton gate and lane
+ * ladder. Anchoring on it would leave the grant with no gate to be offered at,
+ * and let a create-time grant waive the first sequential construction gate.
  *
  * Read off the full plan rather than the stages a rewind happens to replay — a
  * backward jump must not move the anchor, or a relaunch that starts inside
@@ -57,7 +62,10 @@ const constructionAutonomyApplies = ({ capabilities = {} } = {}) =>
 const firstConstructionStageId = ({ stages = [], skippedStageIds = [] } = {}) => {
   const skipped = new Set(skippedStageIds.filter(Boolean));
   const first = stages.find(
-    (stage) => stage?.phase === 'construction' && !skipped.has(stage.stageId),
+    (stage) =>
+      stage?.phase === 'construction' &&
+      stage.parallelSection == null &&
+      !skipped.has(stage.stageId),
   );
   return first?.stageId ?? null;
 };
@@ -69,7 +77,8 @@ const firstConstructionStageId = ({ stages = [], skippedStageIds = [] } = {}) =>
  *   1. the grant is exactly `autonomous` (absent / `gated` / anything else = no);
  *   2. the catalog proves it has the protocol (`policy.constructionAutonomy`);
  *   3. the stage is in the construction phase;
- *   4. the stage is NOT the plan's first non-skipped construction stage;
+ *   4. the stage is NOT the anchor (the plan's first non-skipped construction
+ *      stage with a sequential gate);
  *   5. no fan-out approval rides this gate (the unit plan is the human's to
  *      shape, and a waived fan-out would commit a DAG nobody looked at);
  *   6. Plan Approval does not apply to this stage — upstream's hard human stop.

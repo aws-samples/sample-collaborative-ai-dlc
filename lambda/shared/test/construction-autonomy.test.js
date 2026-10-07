@@ -30,6 +30,28 @@ const PLAN = Object.freeze([
   stage('ci-pipeline'),
 ]);
 
+// A unit-lane scope: code generation runs per unit inside a parallel section,
+// whose own skeleton gate and lane ladder are the human stop there. The first
+// SEQUENTIAL construction gate is build-and-test.
+const LANE_PLAN = Object.freeze([
+  Object.freeze({ stageId: 'requirements', phase: 'inception', policy: NATIVE }),
+  stage('code-generation', { parallelSection: 0 }),
+  stage('build-and-test', { parallelSection: null }),
+  stage('ci-pipeline'),
+]);
+
+describe('unit-lane scopes', () => {
+  it('offers grant-autonomy at the first sequential construction gate', () => {
+    expect(grantAutonomyOffered({ mode: null, stage: LANE_PLAN[2], stages: LANE_PLAN })).toBe(true);
+  });
+
+  it('never lets a create-time grant waive the first sequential construction gate', () => {
+    const base = { mode: 'autonomous', stages: LANE_PLAN };
+    expect(autonomousGateApplies({ ...base, stage: LANE_PLAN[2] })).toBe(false);
+    expect(autonomousGateApplies({ ...base, stage: LANE_PLAN[3] })).toBe(true);
+  });
+});
+
 describe('constructionAutonomyApplies', () => {
   it.each([
     { capabilities: { [CONSTRUCTION_AUTONOMY_CAPABILITY]: true }, expected: true },
@@ -54,6 +76,10 @@ describe('firstConstructionStageId', () => {
     expect(firstConstructionStageId({ stages: PLAN, skippedStageIds: ['functional-design'] })).toBe(
       'code-generation',
     );
+  });
+
+  it('anchors on the first construction stage with a sequential gate', () => {
+    expect(firstConstructionStageId({ stages: LANE_PLAN })).toBe('build-and-test');
   });
 
   it('is null for a plan with no construction stage', () => {
