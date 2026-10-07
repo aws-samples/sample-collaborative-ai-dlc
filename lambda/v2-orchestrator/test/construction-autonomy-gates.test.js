@@ -171,7 +171,12 @@ beforeEach(() => {
         }
         return {};
       }),
+      // A conditional put, like the real store: an existing row is never
+      // overwritten, so a re-executed step cannot reopen an answered gate.
       createHumanTask: vi.fn(async (args) => {
+        if (storedGates.has(args.humanTaskId)) {
+          throw Object.assign(new Error('exists'), { name: 'ConditionalCheckFailedException' });
+        }
         const row = { ...args, status: 'pending' };
         storedGates.set(args.humanTaskId, row);
         return row;
@@ -1066,6 +1071,36 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     const out = await run();
     expect(out).toMatchObject({ ok: false, reason: 'retired' });
     expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+  });
+
+  // The Lambda can die after the jump's writes and before the step's checkpoint.
+  // The step then runs again: the row already exists and is no longer pending,
+  // so the create and the answer both refuse, and the step reads the row back.
+  it('converges on one jump when the jump step re-executes', async () => {
+    const answer = deps.store.getHumanTask;
+    deps.store.getHumanTask = vi.fn(async (executionId, humanTaskId, options) => {
+      const row = storedGates.get(humanTaskId);
+      return row && row.status !== 'pending' ? row : answer(executionId, humanTaskId, options);
+    });
+    ctx = makeCtx({
+      step: async (name, fn) => {
+        if (!name.startsWith('auto-loop-back-')) return fn();
+        await fn();
+        return fn();
+      },
+    });
+
+    const out = await run();
+
+    expect(out?.reason).not.toBe('retired');
+    expect(eventsOfType('v2.loopback.recorded')).toHaveLength(1);
+    expect(execution.loopBackCount).toBe(1);
+    expect(deps.store.answerHumanTask).toHaveBeenCalledTimes(2);
+    expect(deps.store.getHumanTask).toHaveBeenCalledWith(
+      'i1',
+      expect.stringMatching(/^eg-validation-si-build-and-test-/),
+      { consistentRead: true },
+    );
   });
 
   // Run-scoped like every engine gate id, so a relaunch that reaches the same
