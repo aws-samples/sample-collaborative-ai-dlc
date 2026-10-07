@@ -140,9 +140,19 @@ const answerWithOfferedOption = (decisionFor = null) => {
   });
 };
 
+// A clean stage result: the runner observed the stage's declared output. Without
+// `producedHeads` the outputs were never observed, which must not read as clean.
+const cleanVerdict = (stageId) => ({
+  ok: true,
+  state: 'SUCCEEDED',
+  producedHeads: [
+    { artifactType: `${stageId}-out`, logicalKey: `${stageId}-k`, snapshotHash: 'sha-1' },
+  ],
+});
+
 beforeEach(() => {
   ctx = makeCtx();
-  stageVerdicts = () => ({ ok: true, state: 'SUCCEEDED' });
+  stageVerdicts = cleanVerdict;
   execution = { ...META };
   deps = {
     store: {
@@ -304,12 +314,47 @@ describe('construction autonomy: an autonomous grant', () => {
       codes: ['review_advisory_findings'],
     },
   ])('halts and asks on $name', async ({ verdict, codes }) => {
-    stageVerdicts = (stageId) =>
-      stageId === 'build-and-test' ? verdict : { ok: true, state: 'SUCCEEDED' };
+    stageVerdicts = (stageId) => (stageId === 'build-and-test' ? verdict : cleanVerdict(stageId));
     await run();
     const gate = gateFor('si-build-and-test');
     expect(gate).not.toBeNull();
     expect(gate.findings.map((finding) => finding.code)).toEqual(codes);
+    expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: 'its produced outputs could not be observed',
+      verdict: { ...cleanVerdict('build-and-test'), producedHeadsUnavailable: true },
+    },
+    {
+      name: 'the runner reported no produced outputs at all',
+      verdict: { ok: true, state: 'SUCCEEDED' },
+    },
+  ])('does not waive a gate when $name', async ({ verdict }) => {
+    stageVerdicts = (stageId) => (stageId === 'build-and-test' ? verdict : cleanVerdict(stageId));
+    await run();
+    expect(gateFor('si-build-and-test')).not.toBeNull();
+    expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
+  });
+
+  it('does not waive a gate whose adversarial reviewer recorded no verdict', async () => {
+    stageVerdicts = (stageId) =>
+      stageId === 'build-and-test'
+        ? {
+            ...cleanVerdict(stageId),
+            reviewAdvisory: {
+              advisory: false,
+              verdict: 'INCONCLUSIVE',
+              reviewerAgent: 'arch-reviewer',
+              findings: 'arch-reviewer recorded no verdict',
+            },
+          }
+        : cleanVerdict(stageId);
+    await run();
+    const gate = gateFor('si-build-and-test');
+    expect(gate.findings.map((finding) => finding.code)).toEqual(['review_not_ready']);
+    expect(gate.options).toEqual(['request-changes', 'override-and-approve']);
     expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
   });
 

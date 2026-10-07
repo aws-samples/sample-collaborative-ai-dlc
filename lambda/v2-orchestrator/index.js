@@ -1616,8 +1616,15 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           try {
             // At the cap the option is withheld and upstream halts: the bound is
             // one of the two cases autonomy stops to consult the human, so the
-            // gate must open even though nothing in the evidence blocks.
-            autoApprove = autonomyWaivable && !loopBack.atCap && gateFindings.length === 0;
+            // gate must open even though nothing in the evidence blocks. "No
+            // finding" only means clean when the outputs were OBSERVED: the
+            // evaluator deliberately skips the required-output check for an
+            // unobserved set, so an unobserved set halts here instead.
+            const outputsObserved =
+              outcome.result?.producedHeadsUnavailable !== true &&
+              Array.isArray(outcome.result?.producedHeads);
+            autoApprove =
+              autonomyWaivable && outputsObserved && !loopBack.atCap && gateFindings.length === 0;
             autonomyGrantOffered = grantAutonomyOffered({
               mode: autonomyMode,
               stage,
@@ -1660,7 +1667,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   attempt: Number(outcome.result?.attempt ?? 0),
                   userInput: AUTONOMOUS_GATE_INPUT,
                   evidence: {
-                    producedArtifacts: producedArtifactTypes(outcome.result?.producedHeads) ?? [],
+                    producedArtifacts: producedArtifactTypes(outcome.result?.producedHeads),
                     gateSensorVerdicts: (outcome.result?.gateSensorVerdicts ?? []).map(
                       (verdict) => verdict?.sensorId ?? null,
                     ),
