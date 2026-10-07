@@ -320,7 +320,9 @@ all reproduced.
   construction stage with a sequential gate, every Code Generation Plan
   Approval, every fan-out approval, a stage failure, a blocking gate sensor,
   and an exhausted loop-back bound all still open a human gate. So does a gate
-  with learning candidates waiting for the learnings ritual. Losing the run to a cancel, a delete, or
+  with learning candidates waiting for the learnings ritual, and a gate whose
+  stage outputs the runner could not observe: "no finding" is only read as
+  clean when the outputs were actually checked. Losing the run to a cancel, a delete, or
   another orchestrator stops the walk — a waived gate opens no gate row, so that
   re-read is what keeps an autonomous run cancellable.
 - Two deviations, both stricter than upstream: the gate-precondition evaluation
