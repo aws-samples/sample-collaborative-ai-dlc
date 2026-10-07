@@ -842,6 +842,8 @@ const releasePlanInputs = async ({
     s3,
     bucket: artifactsBucket(),
     methodologyRelease,
+    ddb,
+    tableName: blocksTable(),
   });
   const resolvedLibrary = await resolveMethodologyLibrary({
     closure,

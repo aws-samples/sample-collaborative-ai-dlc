@@ -59,7 +59,8 @@
 //     --payload '{"importRelease":true,"profile":"v2.9.0","importerRevision":2}' \
 //     --cli-binary-format raw-in-base64-out /tmp/out.json
 //
-//   # Stage a CUSTOM FORK commit (import-only, never runnable). The fork must be
+//   # Stage a CUSTOM FORK commit (import-only until an admin promotes it through
+//   # the fidelity guard). The fork must be
 //   # pinned to an exact 40-hex SHA and must name the official profile whose
 //   # frontmatter dialect it is parsed with:
 //   aws lambda invoke \
@@ -303,7 +304,8 @@ const putObject = (key, body, contentType) =>
 //
 // Two mutually exclusive sources: an allowlisted official `profile` id, or a
 // `custom` fork pinned to an exact SHA. A custom import lands on its own
-// `custom/<owner>/<name>/` prefix, is recorded T0, and is never runnable.
+// `custom/<owner>/<name>/` prefix and is recorded T0 and import-only; only an
+// admin promotion through the fidelity guard makes it runnable.
 const importRelease = async ({ event, dryRun, reseed }) => {
   if (reseed) {
     throw new Error('seed-blocks: importRelease cannot be combined with reseed');

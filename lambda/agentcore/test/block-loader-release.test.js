@@ -4,8 +4,13 @@
 // resolves EXACTLY release A's methodology and conductor, even though the SYSTEM
 // DynamoDB rows and the mutable aidlc-runtime/ prefix both hold release B.
 
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetCommand } from '@aws-sdk/lib-dynamodb';
+import { customProfile, filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
+import { buildReleaseBundle, publishReleaseBundle } from '../../shared/aidlc-release.js';
+import { methodologyReleasePinFromManifest } from '../../shared/release-resolver.js';
 import {
   listReleaseBlocks,
   loadBlockBody,
@@ -22,6 +27,7 @@ import {
   installReleaseFixtures,
   pinA,
   pinB,
+  TABLE,
   WORKFLOW_ID,
 } from './helpers/release-fixture.js';
 
@@ -156,6 +162,52 @@ describe('loadLibrary — release mode', () => {
       }),
     ).rejects.toMatchObject({ code: 'workflow_not_found' });
     expect(fixtures.pksTouchingSystem()).toEqual([]);
+  });
+
+  // A fork pin runs only while its registry record is runnable, so the loader
+  // must hand the resolver the blocks table the record lives in.
+  it("reads a fork pin's release record from the blocks table before loading it", async () => {
+    const repository = 'acme/aidlc-fork';
+    const fork = buildReleaseBundle({
+      profile: customProfile({
+        repository,
+        sha: '0123456789abcdef0123456789abcdef01234567',
+        baseProfileId: 'current-stable',
+      }),
+      files: filesFromCompatibilityFixture({
+        profileId: 'current-stable',
+        fixture: JSON.parse(
+          readFileSync(
+            new URL(
+              '../../shared/test/fixtures/aidlc-compatibility/current-stable.json',
+              import.meta.url,
+            ),
+            'utf8',
+          ),
+        ),
+      }),
+    });
+    await publishReleaseBundle({ s3: new S3Client({}), bucket: BUCKET, bundle: fork });
+    const pin = {
+      ...methodologyReleasePinFromManifest(fork.manifest),
+      custom: true,
+      sourceRepository: repository,
+    };
+    const load = () =>
+      loadLibrary({ workflowId: WORKFLOW_ID, workflowVersion: 1, methodologyRelease: pin });
+
+    await expect(load()).rejects.toMatchObject({ code: 'release_not_runnable' });
+    fixtures.userBlockRows.set(`AIDLC_RELEASE#${pin.releaseId}|META`, { runnable: true });
+    const { workflow } = await load();
+
+    expect(workflow.sourceRef).toBe(fork.manifest.sourceSha);
+    expect(
+      fixtures.ddbMock
+        .commandCalls(GetCommand)
+        .map((call) => call.args[0].input)
+        .filter((input) => input.Key.pk === `AIDLC_RELEASE#${pin.releaseId}`)
+        .map((input) => input.TableName),
+    ).toEqual([TABLE, TABLE]);
   });
 });
 

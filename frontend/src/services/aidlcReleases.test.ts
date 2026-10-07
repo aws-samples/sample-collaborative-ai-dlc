@@ -192,9 +192,14 @@ describe('custom fork registration', () => {
 });
 
 describe('isReleaseSelectable for custom forks', () => {
-  it('refuses a custom record whatever else it claims', () => {
-    expect(isReleaseSelectable(release({ custom: true }))).toBe(false);
-    expect(isReleaseSelectable(release({ custom: true, supportState: 'certified' }))).toBe(false);
+  // The backend makes a fork runnable only when an admin promotes it through the
+  // fidelity guard, so `runnable` is what decides, as for any other record.
+  it('offers a fork once it is runnable, and not before', () => {
+    expect(isReleaseSelectable(release({ custom: true, runnable: false }))).toBe(false);
+    expect(
+      isReleaseSelectable(release({ custom: true, runnable: false, supportState: 'certified' })),
+    ).toBe(false);
+    expect(isReleaseSelectable(release({ custom: true }))).toBe(true);
     // A record written before custom forks existed carries no flag at all.
     expect(isReleaseSelectable(release({ custom: undefined }))).toBe(true);
   });

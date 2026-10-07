@@ -238,7 +238,13 @@ const assembleWorkflow = (items, { workflowId, workflowVersion }) => {
 const keyById = (items) => Object.fromEntries(items.map((b) => [b.id ?? b.blockId, b]));
 
 const releaseClosure = (methodologyRelease) =>
-  loadReleaseClosure({ s3, bucket: artifactsBucket(), methodologyRelease });
+  loadReleaseClosure({
+    s3,
+    bucket: artifactsBucket(),
+    methodologyRelease,
+    ddb,
+    tableName: blocksTable(),
+  });
 
 // Read one content-addressed release object and verify its sha256 before
 // returning it. Absent ref ⇒ '' (the block genuinely carries no body/script);

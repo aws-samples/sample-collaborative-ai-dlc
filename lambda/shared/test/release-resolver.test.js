@@ -671,9 +671,9 @@ describe('resolveRuntimeFile', () => {
   });
 });
 
-// Defense in depth (issue #482 follow-up). The property under test: runnability
-// is re-decided from the manifest at execution time, so a custom/T0 closure
-// cannot be started even by a pin that was forged directly onto a META row.
+// Defense in depth (issue #482 follow-up). The property under test: a fork's
+// closure resolves only through a pin that names it as a fork, from its own
+// custom prefix; under an official pin a custom or T0 manifest never executes.
 describe('import-only releases never execute', () => {
   const customBundle = () =>
     buildReleaseBundle({
@@ -744,6 +744,71 @@ describe('import-only releases never execute', () => {
         ...releaseArgs({ ...pinA, closureDigest: manifest.closureDigest }),
         cache: new Map(),
       }),
+    ).rejects.toMatchObject({ code: 'release_not_runnable' });
+  });
+
+  const forkPin = (bundle) => ({
+    releaseId: bundle.manifest.releaseId,
+    sourceSha: bundle.manifest.sourceSha,
+    importerRevision: bundle.manifest.importerRevision,
+    closureDigest: bundle.manifest.closureDigest,
+    catalogKey: bundle.manifest.catalog.key,
+    custom: true,
+    sourceRepository: 'acme/aidlc-fork',
+  });
+  const recordFork = (bundle, record) =>
+    userBlockRows.set(`AIDLC_RELEASE#${bundle.manifest.releaseId}|META`, {
+      releaseId: bundle.manifest.releaseId,
+      custom: true,
+      ...record,
+    });
+  const registryArgs = { ddb: ddbMock, tableName: TABLE };
+
+  // The registry stamps this pin only for a fork an admin promoted through the
+  // fidelity guard.
+  it('resolves a fork from its custom prefix through a pin that names it', async () => {
+    const bundle = customBundle();
+    await publishRelease(bundle);
+    recordFork(bundle, { runnable: true });
+    const pin = forkPin(bundle);
+
+    await expect(
+      loadReleaseClosure({ ...releaseArgs(pin), ...registryArgs, cache: new Map() }),
+    ).resolves.toMatchObject({ releaseId: bundle.manifest.releaseId });
+    await expect(
+      loadReleaseClosure({
+        ...releaseArgs({ ...pin, sourceRepository: 'acme/other-fork' }),
+        ...registryArgs,
+        cache: new Map(),
+      }),
+    ).rejects.toMatchObject({ code: 'release_not_found' });
+  });
+
+  // A pin can also come from a hand-edited META row or a restored backup, so the
+  // record it names must say an admin promoted the fork.
+  it.each([
+    ['imported but not promoted', { runnable: false }],
+    ['with no release record', null],
+  ])('throws release_not_runnable for a fork pin %s', async (_case, record) => {
+    const bundle = customBundle();
+    await publishRelease(bundle);
+    if (record) recordFork(bundle, record);
+
+    await expect(
+      loadReleaseClosure({ ...releaseArgs(forkPin(bundle)), ...registryArgs, cache: new Map() }),
+    ).rejects.toMatchObject({
+      code: 'release_not_runnable',
+      details: expect.objectContaining({ releaseId: bundle.manifest.releaseId }),
+    });
+  });
+
+  it('throws release_not_runnable for a fork pin it cannot check against the registry', async () => {
+    const bundle = customBundle();
+    await publishRelease(bundle);
+    recordFork(bundle, { runnable: true });
+
+    await expect(
+      loadReleaseClosure({ ...releaseArgs(forkPin(bundle)), cache: new Map() }),
     ).rejects.toMatchObject({ code: 'release_not_runnable' });
   });
 

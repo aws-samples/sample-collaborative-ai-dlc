@@ -376,7 +376,7 @@ describe('AidlcReleasesTab', () => {
 
 // Custom forks (issue #482 follow-up). The properties under test: a fork can be
 // registered only with a validated owner/name plus an exact SHA, it is labelled
-// import-only, and it is never offered to a channel selector.
+// import-only, and it is not offered to a channel selector until it is runnable.
 describe('AidlcReleasesTab custom forks', () => {
   // Radix Select needs the pointer-capture APIs jsdom does not implement.
   beforeAll(() => {
@@ -485,7 +485,7 @@ describe('AidlcReleasesTab custom forks', () => {
     expect(screen.queryByText('runnable')).not.toBeInTheDocument();
   });
 
-  it('never offers a fork to a channel selector, even when visible and certified', async () => {
+  it('does not offer an unpromoted fork to a channel selector, even when visible and certified', async () => {
     list.mockResolvedValue({
       releases: [fork({ supportState: 'certified', visible: true })],
     });

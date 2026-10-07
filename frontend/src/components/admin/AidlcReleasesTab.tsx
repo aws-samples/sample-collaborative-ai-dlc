@@ -754,7 +754,7 @@ export function AidlcReleasesTab() {
       <SettingsCard
         icon={<GitFork />}
         title="Register custom fork"
-        description="Import a fork of aidlc-workflows for inspection. Custom forks are import-only and can never be selected or run."
+        description="Import a fork of aidlc-workflows. It stays import-only until an admin promotes it."
       >
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="space-y-1">
@@ -811,8 +811,12 @@ export function AidlcReleasesTab() {
             The fork&apos;s closure must already be published by the seed lambda&apos;s
             <span className="font-mono"> importRelease </span>
             custom mode. The base dialect only says how the fork&apos;s frontmatter is parsed — it
-            grants no trust. The record is recorded T0, stays import-only, and is never offered to a
-            new intent until sandboxed execution and IAM isolation exist.
+            grants no trust. The record is recorded T0 and import-only. Promoting it to selectable
+            or certified runs the same guard as an official release: it is refused while the fork
+            authors behavior this build cannot honour, and the record lists those gaps. Once
+            promoted, the fork is offered to every project, and its sensor scripts and their
+            commands run in the agent runtime with the runtime&apos;s own permissions. Promote only
+            a fork whose sources you would run as your own sensors.
           </p>
         </div>
       </SettingsCard>

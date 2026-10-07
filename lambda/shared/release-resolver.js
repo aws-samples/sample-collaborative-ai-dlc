@@ -25,6 +25,7 @@ import { DEFAULT_TENANT, SYSTEM_TENANT } from './tenant.js';
 import { canonicalJson } from './workflow-checkpoint.js';
 import { workflowPk, workflowVersionPrefix } from './workflows.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION, readReleaseManifest } from './aidlc-release.js';
+import { getRelease } from './release-registry.js';
 
 // Immutable closures are safe to memoize for the life of a warm Lambda. The
 // bound keeps a long-lived container from pinning every release ever resolved.
@@ -190,6 +191,8 @@ const loadReleaseClosure = async ({
   s3,
   bucket,
   methodologyRelease,
+  ddb = null,
+  tableName = null,
   cache = releaseClosureCache,
 }) => {
   if (!methodologyRelease?.sourceSha || !methodologyRelease?.closureDigest) {
@@ -208,6 +211,32 @@ const loadReleaseClosure = async ({
   const cached = readCachedClosure(cache, cacheKey);
   if (cached) return cached;
 
+  // A fork's pin names it as one, so its manifest is read from the fork's own
+  // custom prefix; the reader asserts that the bytes there describe that fork.
+  const forkPin = methodologyRelease.custom === true;
+  // A fork becomes runnable only through an admin promotion, which the registry
+  // records. A fork pin is honoured only while that record says so; without a
+  // registry to ask, it is refused. Promotion is never revoked, so a closure
+  // cached after this check stays valid.
+  if (forkPin) {
+    const record =
+      ddb && tableName
+        ? await getRelease({ ddb, tableName, releaseId: methodologyRelease.releaseId })
+        : null;
+    if (record?.runnable !== true) {
+      throw new ReleaseResolverError(
+        'release_not_runnable',
+        `release-resolver: fork ${String(methodologyRelease.releaseId)} has not been promoted and must not execute`,
+        {
+          details: {
+            releaseId: methodologyRelease.releaseId ?? null,
+            sourceRepository: methodologyRelease.sourceRepository ?? null,
+            custom: true,
+          },
+        },
+      );
+    }
+  }
   const manifest = await readReleaseManifest({
     s3,
     bucket,
@@ -215,6 +244,7 @@ const loadReleaseClosure = async ({
     importerRevision: Number(
       methodologyRelease.importerRevision ?? AIDLC_RELEASE_IMPORTER_REVISION,
     ),
+    ...(forkPin ? { custom: true, sourceRepository: methodologyRelease.sourceRepository } : {}),
   });
   if (!manifest) {
     throw new ReleaseResolverError(
@@ -223,13 +253,14 @@ const loadReleaseClosure = async ({
       { details: { sourceSha: methodologyRelease.sourceSha } },
     );
   }
-  // Defense in depth. The registry already refuses to make a T0/custom release
-  // selectable, but selection and execution are separate surfaces: a pin can
-  // also arrive from a hand-edited META row, a restored backup, or a future
-  // code path. Runnability is re-decided here from the manifest's own
-  // provenance, so untrusted methodology can be imported and inspected but
-  // never executed until sandboxed execution and IAM isolation exist.
-  if (manifest.trustTier === 'T0' || manifest.custom === true) {
+  // Defense in depth. The registry stamps a fork pin only for a fork an admin
+  // promoted through the fidelity guard, but selection and execution are
+  // separate surfaces: a pin can also arrive from a hand-edited META row, a
+  // restored backup, or a future code path. So a custom or T0 manifest executes
+  // only through a pin that names it as a fork and was read from that fork's
+  // own prefix; under an official pin (even with the bytes copied onto the
+  // official key) it is refused.
+  if (!forkPin && (manifest.trustTier === 'T0' || manifest.custom === true)) {
     throw new ReleaseResolverError(
       'release_not_runnable',
       `release-resolver: release ${manifest.releaseId} is import-only (trustTier ${String(manifest.trustTier)}) and must never execute`,
