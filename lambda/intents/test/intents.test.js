@@ -8743,6 +8743,26 @@ describe('AI-DLC per-intent release selection', () => {
     expect(metaFor(intent.id).constructionGateAutonomyGrant).toBeNull();
   });
 
+  it('400s an autonomy grant on a pinned release that ships no construction protocol', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    procStore.delete(keyOf('WF#default#aidlc-v2', 'V#4#SCOPEREF#feature'));
+    seedRegistryRecord(bundleA, 'current-stable');
+    const before = structuredClone([...procStore]);
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      methodologyReleaseId: pinA.releaseId,
+      constructionGateAutonomy: 'autonomous',
+    });
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('construction_autonomy_unavailable');
+    // Refused before the execution exists.
+    expect([...procStore]).toEqual(before);
+  });
+
   it('freezes an autonomous construction autonomy grant onto a release-pinned intent', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
