@@ -330,9 +330,11 @@ all reproduced.
   generation to go back to) all still open a human gate. So does a gate
   with learning candidates waiting for the learnings ritual, and a gate whose
   stage outputs the runner could not observe: "no finding" is only read as
-  clean when the outputs were actually checked. Each gate re-reads the intent
-  before deciding, so a deleted intent, a cancelled run, or a run taken over by
-  another orchestrator (a rewind relaunch) stops the walk instead of approving.
+  clean when the outputs were actually checked. On an intent with a grant, each
+  construction gate re-reads the intent before deciding, so a deleted intent, a
+  cancelled run, or a run taken over by another orchestrator (a rewind relaunch)
+  stops the walk instead of approving. An intent without a grant, and every gate
+  outside construction, skips that read and keeps its durable history.
 - Two deviations, both stricter than upstream: the gate-precondition evaluation
   runs in full on a waived gate, so ANY finding (advisory included) opens the
   human gate; and a terminal adversarial `NOT-READY` blocks a waived gate instead

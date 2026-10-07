@@ -493,9 +493,13 @@ describe('construction autonomy: an autonomous grant', () => {
   });
 
   it('opens the human gate when the autonomy read fails (fail closed)', async () => {
+    // The run-start snapshot reads the grant; every read at a gate fails.
+    let reads = 0;
     deps.store.getExecution = vi.fn(async () => ({
       ...execution,
       get constructionGateAutonomy() {
+        reads += 1;
+        if (reads === 1) return 'autonomous';
         throw new Error('ddb attribute unreadable');
       },
     }));
@@ -715,6 +719,53 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
     expect(
       receiptsFor('si-functional-design').filter((receipt) => receipt.kind === 'stage-approval'),
     ).toHaveLength(1);
+  });
+});
+
+describe('construction autonomy: the grant read is a durable step only where a grant can apply', () => {
+  const INCEPTION = constructionStage('requirements-analysis', { phase: 'inception' });
+  const stepNames = [];
+  const autonomyReads = () => stepNames.filter((name) => name.startsWith('autonomy-mode-'));
+
+  beforeEach(() => {
+    stepNames.length = 0;
+    ctx = makeCtx({
+      step: async (name, fn) => {
+        stepNames.push(name);
+        return fn();
+      },
+    });
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: { stages: [INCEPTION, ANCHOR, SECOND] },
+    }));
+  });
+
+  it('records no autonomy read on an intent that has no grant', async () => {
+    execution = { ...META, constructionGateAutonomy: 'gated' };
+    await run();
+    expect(autonomyReads()).toEqual([]);
+    expect(gateFor('si-functional-design').options).toContain('grant-autonomy');
+  });
+
+  it('reads the grant at construction gates only on an intent granted at create', async () => {
+    execution = { ...META, constructionGateAutonomy: 'autonomous' };
+    await run();
+    expect(autonomyReads()).toEqual([
+      'autonomy-mode-si-functional-design-0',
+      'autonomy-mode-si-build-and-test-0',
+    ]);
+    expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
+  });
+
+  it('starts reading the grant after a grant-autonomy answer in the same run', async () => {
+    execution = { ...META, constructionGateAutonomy: 'gated' };
+    deps.store.getHumanTask = answerWithOfferedOption((options) =>
+      options.includes('grant-autonomy') ? 'grant-autonomy' : null,
+    );
+    await run();
+    expect(autonomyReads()).toEqual(['autonomy-mode-si-build-and-test-0']);
+    expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
   });
 });
 
