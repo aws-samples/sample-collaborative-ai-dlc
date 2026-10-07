@@ -6127,6 +6127,50 @@ describe('POST /rewind', () => {
     expect(JSON.parse(res.body).stages).toEqual(['design', 'implement']);
   });
 
+  it('relaunches a cancelled autonomous intent gated: cancel withdraws the grant', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedStageRow(intent.id, 'design');
+    seedStageRow(intent.id, 'implement', 'WAITING_FOR_HUMAN');
+    const grant = {
+      source: 'create',
+      grantedAt: '2026-01-01T00:00:00.000Z',
+      grantedBy: sub,
+      grantedByName: `${sub}@x`,
+    };
+    setStatus(intent.id, {
+      status: 'WAITING',
+      constructionGateAutonomy: 'autonomous',
+      constructionGateAutonomyGrant: grant,
+    });
+
+    const cancelled = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/cancel`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(cancelled.statusCode).toBe(200);
+    expect(JSON.parse(cancelled.body).constructionGateAutonomy).toBeNull();
+    const meta = procStore.get(keyOf(`EXEC#${intent.id}`, 'META'));
+    expect(meta.constructionGateAutonomy).toBeNull();
+    // The original grant stays on record, with who withdrew it, when, and how.
+    expect(meta.constructionGateAutonomyGrant).toEqual({
+      ...grant,
+      revokedAt: expect.any(String),
+      revokedBy: sub,
+      revokedByName: `${sub}@x`,
+      revokedSource: 'cancel',
+    });
+
+    const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body).intent.constructionGateAutonomy).toBeNull();
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).constructionGateAutonomy).toBeNull();
+  });
+
   it('accepts a guidance-less rewind as a plain retry (no steering row)', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

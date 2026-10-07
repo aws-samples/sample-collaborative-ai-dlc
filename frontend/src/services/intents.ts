@@ -830,8 +830,11 @@ export interface CreateIntentInput {
   // (failures, Plan Approval and blocking findings still halt). Omit — or send
   // 'gated', on any release — for a gate after every construction stage.
   // 'autonomous' is only accepted on an intent whose AI-DLC release authors the
-  // protocol; 400 code: construction_autonomy_unavailable. A grant cannot be
-  // withdrawn later; cancelling the intent is the only way to stop it.
+  // protocol; 400 code: construction_autonomy_unavailable. The grant holds for
+  // the rest of the intent, rewinds included, until the intent is cancelled.
+  // Cancel is only accepted while the intent is parked or failed: a waived gate
+  // never parks, so an autonomous run can be cancelled once it halts at a human
+  // gate, a question or a failure.
   constructionGateAutonomy?: 'gated' | 'autonomous';
   // Optional tracker provenance when seeded from a GitHub issue / Jira artifact.
   source?: {

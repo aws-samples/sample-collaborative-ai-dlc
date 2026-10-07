@@ -302,9 +302,13 @@ all reproduced.
   the human creating it, or escalated later by an explicit human answer: the
   `grant-autonomy` option, offered at the one construction gate that always stays
   human. The answer API rejects it on a gate that does not offer it.
-- Once given, the grant holds for the rest of the intent, rewinds included.
-  There is no route that sets it back to `gated`; to withdraw it, cancel the
-  intent. Every gate with a finding still halts and asks.
+- Once given, the grant holds for the rest of the intent, rewinds included,
+  until the intent is cancelled. Cancelling clears it and records who withdrew
+  it and when on the grant's provenance, so a rewind after a cancel relaunches
+  the intent gated. Cancel is only accepted while the intent is parked or
+  failed: a waived gate never parks, so an autonomous run can be cancelled once
+  it halts at a human gate, a question or a failure. Every gate with a finding
+  still halts and asks.
 - It lives on its own META attribute, `constructionGateAutonomy`. The
   per-section unit-lane ladder keeps `constructionAutonomyMode`: that question
   asks only about parallel lane batching, and reading it here would waive gates
@@ -323,9 +327,9 @@ all reproduced.
   generation to go back to) all still open a human gate. So does a gate
   with learning candidates waiting for the learnings ritual, and a gate whose
   stage outputs the runner could not observe: "no finding" is only read as
-  clean when the outputs were actually checked. Losing the run to a cancel, a delete, or
-  another orchestrator stops the walk — a waived gate opens no gate row, so that
-  re-read is what keeps an autonomous run cancellable.
+  clean when the outputs were actually checked. Each gate re-reads the intent
+  before deciding, so a deleted intent, a cancelled run, or a run taken over by
+  another orchestrator (a rewind relaunch) stops the walk instead of approving.
 - Two deviations, both stricter than upstream: the gate-precondition evaluation
   runs in full on a waived gate, so ANY finding (advisory included) opens the
   human gate; and a terminal adversarial `NOT-READY` blocks a waived gate instead

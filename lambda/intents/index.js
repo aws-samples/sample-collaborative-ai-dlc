@@ -3378,6 +3378,10 @@ export const handler = async (event, context) => {
       // The run is over — free the warm microVM now instead of waiting for the
       // idle reap (the persistent mount survives for a later rewind relaunch).
       await stopRuntimeSessions(intentId, meta);
+      // Cancelling withdraws a construction autonomy grant, so a later rewind
+      // relaunches the intent gated. The grant's provenance keeps who gave it and
+      // gains who withdrew it. An intent without a grant writes nothing extra.
+      const revokesAutonomy = meta.constructionGateAutonomy === 'autonomous';
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
@@ -3388,6 +3392,18 @@ export const handler = async (event, context) => {
         // A recorded answer whose callback failed is moot once the run ends.
         resumeRequired: null,
         completedAt: new Date().toISOString(),
+        ...(revokesAutonomy
+          ? {
+              constructionGateAutonomy: null,
+              constructionGateAutonomyGrant: {
+                ...meta.constructionGateAutonomyGrant,
+                revokedAt: new Date().toISOString(),
+                revokedBy: responder.sub,
+                revokedByName: responder.displayName || null,
+                revokedSource: 'cancel',
+              },
+            }
+          : {}),
       });
       await store
         .appendEvent({

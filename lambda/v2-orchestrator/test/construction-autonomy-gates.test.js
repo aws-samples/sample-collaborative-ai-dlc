@@ -466,8 +466,8 @@ describe('construction autonomy: an autonomous grant', () => {
     { name: 'another orchestrator took the run over', over: { orchestratorRunId: 'someone-else' } },
     { name: 'the intent was deleted', over: null },
   ])('stops instead of auto-approving once $name', async ({ over }) => {
-    // A waived gate opens no gate row, so cancel's `supersedeHumanTask` cannot
-    // reach it. This re-read is the only thing that stops the walk.
+    // A waived gate opens no gate row, so the parked-gate ownership test never
+    // runs for it. This re-read is what stops the walk.
     let reads = 0;
     deps.store.getExecution = vi.fn(async () => {
       reads += 1;

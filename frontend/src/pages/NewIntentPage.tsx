@@ -486,7 +486,9 @@ export default function NewIntentPage() {
                 <p className="mt-1.5 text-xs text-muted-foreground">
                   Build the remaining construction stages without stopping for approval. The first
                   construction stage, plan approvals, and anything that fails still stop and ask.
-                  Once granted it can only be withdrawn by cancelling the intent.
+                  The grant holds for the rest of the intent, rewinds included, until the intent is
+                  cancelled. An intent can be cancelled once its run stops at a gate, a question or
+                  a failure.
                 </p>
               </div>
             )}

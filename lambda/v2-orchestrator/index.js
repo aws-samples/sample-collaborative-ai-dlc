@@ -1417,11 +1417,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // history stays byte-identical. A failed read reads as gated, which is
           // the fail-closed direction: the human gate opens.
           //
-          // The SAME read carries the cancel/rewind check. A waived gate opens no
-          // gate row, so `supersedeHumanTask` has nothing to supersede and cancel
-          // cannot reach it — the live-ownership test that every parked gate does
-          // (`run-owner-*`) is this walk's only stopping point, so it has to happen
-          // here, before anything is auto-approved.
+          // The SAME read carries the ownership check. A waived gate opens no gate
+          // row, so the live-ownership test every parked gate does (`run-owner-*`)
+          // never runs for it: a deleted intent, a cancelled run or a rewind
+          // relaunch is only noticed here, before anything is auto-approved.
           const autonomyRead =
             stage.policy?.constructionAutonomy === 'native'
               ? await ctx.step(
