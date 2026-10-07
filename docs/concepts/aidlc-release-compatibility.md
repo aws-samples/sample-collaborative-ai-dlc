@@ -302,6 +302,9 @@ all reproduced.
   the human creating it, or escalated later by an explicit human answer: the
   `grant-autonomy` option, offered at the one construction gate that always stays
   human. The answer API rejects it on a gate that does not offer it.
+- Once given, the grant holds for the rest of the intent, rewinds included.
+  There is no route that sets it back to `gated`; to withdraw it, cancel the
+  intent. Every gate with a finding still halts and asks.
 - It lives on its own META attribute, `constructionGateAutonomy`. The
   per-section unit-lane ladder keeps `constructionAutonomyMode`: that question
   asks only about parallel lane batching, and reading it here would waive gates

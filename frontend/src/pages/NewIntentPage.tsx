@@ -486,6 +486,7 @@ export default function NewIntentPage() {
                 <p className="mt-1.5 text-xs text-muted-foreground">
                   Build the remaining construction stages without stopping for approval. The first
                   construction stage, plan approvals, and anything that fails still stop and ask.
+                  Once granted it can only be withdrawn by cancelling the intent.
                 </p>
               </div>
             )}
