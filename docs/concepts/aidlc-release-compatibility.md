@@ -255,8 +255,9 @@ stage fails with a rewind-eligible reason.
 
 Releases that ship the construction protocol (2.6.18 and later) let
 build-and-test send the work back to code generation. Upstream does this
-autonomously, up to three times per intent. Here the human decides, at the
-validation gate build-and-test already has.
+autonomously, up to three times per intent. Here a gated intent's human
+decides, at the validation gate build-and-test already has; an autonomous
+intent takes the jump.
 
 The capability is classified `approximated`: a gated intent is offered the
 loop-back at the gate rather than having it taken for it, and scopes that run code
