@@ -31,6 +31,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
 import type {
+  ComputeCapability,
   EnvironmentRevision,
   ManagedEnvironment,
   ManagedTool,
@@ -40,12 +41,14 @@ import { cn } from '@/lib/utils';
 import {
   RUNTIME_IMAGE_LIMIT_BYTES,
   environmentIdPreview,
+  isDefaultCompute,
   protectedRuntimeVersions,
   resolvedTools,
   validateEnvironmentForm,
   type EnvironmentForm,
   type KeyValueEntry,
 } from './model';
+import { ComputeBadge, ComputeSelector } from './ComputeSelector';
 import { ProcessOverview, Section } from './ui';
 
 interface Props {
@@ -58,6 +61,10 @@ interface Props {
   tools: ManagedTool[];
   disabled: boolean;
   showId: boolean;
+  // The (compute type × architecture) cells this deployment can build and
+  // run — from GET /environments/capabilities. The selector renders exactly
+  // these, so a draft can never be created against an unconfigured cell.
+  computeOptions: ComputeCapability[];
   actionLabel: string;
   actionBusy: boolean;
   actionDisabled: boolean;
@@ -253,6 +260,7 @@ export function EnvironmentBuilder({
   tools,
   disabled,
   showId,
+  computeOptions,
   actionLabel,
   actionBusy,
   actionDisabled,
@@ -459,6 +467,34 @@ export function EnvironmentBuilder({
                   </SelectContent>
                 </Select>
               </div>
+              {showId &&
+                (computeOptions.some((cell) => cell.available && !isDefaultCompute(cell)) ||
+                  !isDefaultCompute(form.compute)) && (
+                  <div className="max-w-md">
+                    <ComputeSelector
+                      value={form.compute}
+                      cells={computeOptions}
+                      disabled={disabled}
+                      onChange={(compute) =>
+                        onChange({
+                          ...form,
+                          compute,
+                          // Tool versions and bases are per-architecture builds,
+                          // so neither carries across an architecture change.
+                          ...(compute.architecture !== form.compute.architecture
+                            ? { toolVersionIds: [], baseEnvironmentId: 'standard' }
+                            : {}),
+                        })
+                      }
+                    />
+                  </div>
+                )}
+              {!showId && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>Compute</span>
+                  <ComputeBadge compute={form.compute} />
+                </div>
+              )}
               {baseLoading ? (
                 <Skeleton className="h-20" />
               ) : baseRevision ? (

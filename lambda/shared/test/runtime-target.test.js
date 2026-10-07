@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolveRuntimeTarget, runtimeTargetInput } from '../runtime-target.js';
-import { laneSessionIdFor, runtimeSessionIdFor, stopRuntimeSessions } from '../intent-deletion.js';
+import { laneSessionIdFor, runtimeSessionIdFor } from '../intent-deletion.js';
+import { stopSessions } from '../runtime-session.js';
 
 describe('runtime target snapshots', () => {
   it('resolves the immutable runtime ARN and endpoint from execution metadata', () => {
@@ -13,9 +14,28 @@ describe('runtime target snapshots', () => {
     expect(resolveRuntimeTarget(meta, 'fallback')).toEqual({
       agentRuntimeArn: meta.environment.runtimeArn,
       qualifier: 'revision_r_1',
+      capacityProviderArn: null,
     });
     expect(runtimeTargetInput(meta, 'fallback')).toEqual({
       agentRuntimeArn: meta.environment.runtimeArn,
+      qualifier: 'revision_r_1',
+    });
+  });
+
+  it('carries the capacity provider of an Instances-backed snapshot', () => {
+    const meta = {
+      environmentSnapshot: {
+        runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+        runtimeEndpoint: 'revision_r_1',
+        capacityProviderArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:capacity-provider/cp-1',
+      },
+    };
+    expect(resolveRuntimeTarget(meta).capacityProviderArn).toBe(
+      'arn:aws:bedrock-agentcore:eu-west-1:123:capacity-provider/cp-1',
+    );
+    // The SDK-shaped input never leaks the provider.
+    expect(runtimeTargetInput(meta)).toEqual({
+      agentRuntimeArn: meta.environmentSnapshot.runtimeArn,
       qualifier: 'revision_r_1',
     });
   });
@@ -32,9 +52,14 @@ describe('runtime target snapshots', () => {
       agentRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
       qualifier: 'revision_r_1',
     };
-    await stopRuntimeSessions(agentcore, target, 'intent-1', {
-      sectionIndexes: [2],
-      unitSlugs: ['api', 'ui'],
+    await stopSessions({
+      client: agentcore,
+      target,
+      sessionIds: [
+        runtimeSessionIdFor('intent-1'),
+        laneSessionIdFor('intent-1', 2, 'api'),
+        laneSessionIdFor('intent-1', 2, 'ui'),
+      ],
     });
 
     expect(agentcore.send).toHaveBeenCalledTimes(3);

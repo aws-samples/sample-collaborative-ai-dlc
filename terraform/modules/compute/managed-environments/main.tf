@@ -26,6 +26,24 @@ locals {
   managed_workload_identity_directory_arn = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:workload-identity-directory/default"
   managed_workload_identity_arn           = "${local.managed_workload_identity_directory_arn}/workload-identity/*"
   ecr_registry_host                       = split("/", var.environment_repository_url)[0]
+
+  # Instances compute configuration. ONE map, merged into both lambdas: the
+  # control lambda serves GET /environments/capabilities and validates
+  # environment creation from it, the status lambda provisions capacity
+  # providers from it, and the two must agree. The Lambda code has no
+  # defaults of its own for these values, so this is the only source.
+  # Subnets, security groups and the operator role are exposed only when the
+  # feature is enabled (empty = not configured); the allowlists always pass
+  # through as configured (an empty list disables that architecture).
+  instances_compute_environment = {
+    MANAGED_INSTANCES_OPERATOR_ROLE_ARN   = var.instances_compute_enabled ? aws_iam_role.instances_operator.arn : ""
+    MANAGED_INSTANCES_SUBNETS             = jsonencode(var.instances_compute_enabled ? var.runtime_subnet_ids : [])
+    MANAGED_INSTANCES_SECURITY_GROUPS     = jsonencode(var.instances_compute_enabled ? var.runtime_security_group_ids : [])
+    MANAGED_INSTANCES_ALLOWED_TYPES       = jsonencode(var.instances_allowed_instance_types)
+    MANAGED_INSTANCES_ALLOWED_TYPES_ARM64 = jsonencode(var.instances_allowed_instance_types_arm64)
+    MANAGED_INSTANCES_WORKSPACE_GIB       = tostring(var.instances_workspace_gib)
+    MANAGED_INSTANCES_CP_NAME_PREFIX      = replace("${var.project_name}_${var.environment}", "-", "_")
+  }
 }
 
 module "dynamodb_kms_runtime_access" {
@@ -275,7 +293,7 @@ resource "aws_codebuild_project" "managed_environments" {
           commands = [
             "cd \"$CODEBUILD_SRC_DIR/build-context\"",
             "export image_ref=$IMAGE_REPOSITORY_URI:$IMAGE_TAG",
-            "docker build --platform linux/arm64 --tag $image_ref .",
+            "docker build --platform \"$${IMAGE_PLATFORM:-linux/arm64}\" --tag $image_ref .",
             "./verification.sh $image_ref",
             "docker push $image_ref",
             "aws s3 cp verification.json s3://$CONTEXT_BUCKET/$CONTEXT_PREFIX/verification.json --sse AES256",
@@ -370,7 +388,7 @@ module "control_lambda" {
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
-  environment_variables = {
+  environment_variables = merge({
     POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT     = tostring(var.powertools_log_event)
@@ -387,7 +405,11 @@ module "control_lambda" {
     RUNTIME_COMPATIBILITY_VERSION   = var.runtime_compatibility_version
     MAX_ENVIRONMENT_IMAGE_MB        = "2048"
     CORS_ALLOWED_ORIGINS            = var.cors_allowed_origins
-  }
+
+    # amd64 core image for x86_64 environments (empty when not built)
+    CORE_IMAGE_URI_AMD64    = var.core_image_uri_amd64
+    CORE_IMAGE_DIGEST_AMD64 = var.core_image_digest_amd64
+  }, local.instances_compute_environment)
 
   depends_on = [aws_iam_role_policy_attachment.control_vpc]
 }
@@ -396,6 +418,116 @@ resource "aws_iam_role" "status" {
   name               = "${var.project_name}-environment-status-${var.environment}"
   assume_role_policy = local.lambda_assume_role_policy
   tags               = var.tags
+}
+
+# ---------------------------------------------------------------------------
+# Instances compute type (optional)
+#
+# The status lambda lazily creates one capacity provider per architecture the
+# first time an Instances environment reaches runtime creation. AgentCore
+# assumes the operator role to provision and manage the EC2 managed instances
+# in this account; the AWS managed policy scopes what it may touch (resources
+# tagged with the capacity provider id).
+#
+# The role is created UNCONDITIONALLY. Capacity providers are retained after
+# creation (see runtime-backends/capacity-provider.js) and keep referencing
+# this role for the lifetime of every runtime built on them — if the role
+# followed instances_compute_enabled, flipping the flag off after Instances
+# environments have been used would destroy the role under live capacity
+# providers and leave their published revisions unusable. Only the status
+# lambda's provisioning grants and the environment variables that expose the
+# feature to the API are gated; an idle role costs nothing. Session cleanup is
+# never gated (see status_session_cleanup).
+# ---------------------------------------------------------------------------
+
+resource "aws_iam_role" "instances_operator" {
+  name = "${var.project_name}-instances-operator-${var.environment}"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "bedrock-agentcore.${local.dns_suffix}" }
+    }]
+  })
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "instances_operator" {
+  role       = aws_iam_role.instances_operator.name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/BedrockAgentCoreRuntimeInstancesOperatorRolePolicy"
+}
+
+resource "aws_iam_role_policy" "status_instances" {
+  count = var.instances_compute_enabled ? 1 : 0
+
+  name = "managed-environment-status-instances"
+  role = aws_iam_role.status.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock-agentcore:CreateCapacityProvider",
+          "bedrock-agentcore:GetCapacityProvider",
+          "bedrock-agentcore:ListCapacityProviders",
+        ]
+        Resource = "*"
+      },
+      {
+        # CreateAgentRuntime with a capacityProviderConfiguration requires
+        # permission to "pass" the capacity provider to the runtime.
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:PassCapacityProvider"]
+        Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
+      },
+      {
+        # First capacity provider in an account creates the Instances
+        # service-linked role on the caller's behalf.
+        Effect   = "Allow"
+        Action   = ["iam:CreateServiceLinkedRole"]
+        Resource = "arn:${local.partition}:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/runtime-instances.bedrock-agentcore.${local.dns_suffix}/*"
+        Condition = {
+          StringEquals = {
+            "iam:AWSServiceName" = "runtime-instances.bedrock-agentcore.${local.dns_suffix}"
+          }
+        }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
+        Resource = aws_iam_role.instances_operator.arn
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "bedrock-agentcore.${local.dns_suffix}"
+          }
+        }
+      },
+    ]
+  })
+}
+
+# Releasing Instances workspaces is CLEANUP, not provisioning, so it is not
+# gated by instances_compute_enabled. Volumes created while the feature was on
+# outlive it: queued releases (SESSION_CLEANUP#) from failed validation or
+# intent deletions keep being retried by this poller after the flag is turned
+# off, and intents on retained Instances runtimes can still be deleted. On a
+# deployment that never enabled the feature no capacity provider exists and
+# the grant has nothing to act on.
+resource "aws_iam_role_policy" "status_session_cleanup" {
+  name = "managed-environment-status-session-cleanup"
+  role = aws_iam_role.status.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["bedrock-agentcore:DeleteCapacityProviderSession"]
+      Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
+    }]
+  })
 }
 
 resource "aws_iam_role_policy_attachment" "status_basic" {
@@ -439,6 +571,18 @@ resource "aws_iam_role_policy" "status" {
           "ecr:DescribeImageScanFindings",
         ]
         Resource = var.environment_repository_arn
+      },
+      {
+        # In accounts with ECR enhanced scanning, DescribeImageScanFindings is
+        # served by Amazon Inspector and the caller also needs inspector2 read
+        # access. Inspector2 does not support resource-level scoping for these
+        # list actions.
+        Effect = "Allow"
+        Action = [
+          "inspector2:ListCoverage",
+          "inspector2:ListFindings",
+        ]
+        Resource = "*"
       },
       {
         Effect = "Allow"
@@ -508,7 +652,7 @@ module "status_lambda" {
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
-  environment_variables = {
+  environment_variables = merge({
     POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
     ENVIRONMENT_REGISTRY_TABLE      = var.registry_table_name
@@ -521,7 +665,7 @@ module "status_lambda" {
     MANAGED_RUNTIME_ENVIRONMENT     = jsonencode(var.runtime_environment_variables)
     MANAGED_RUNTIME_TAGS            = jsonencode(var.tags)
     MAX_ENVIRONMENT_IMAGE_MB        = "2048"
-  }
+  }, local.instances_compute_environment)
 
   depends_on = [aws_iam_role_policy_attachment.status_vpc]
 }

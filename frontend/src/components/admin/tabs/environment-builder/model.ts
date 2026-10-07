@@ -1,10 +1,109 @@
 import type {
   CatalogEnvironmentRecipe,
+  ComputeCapability,
+  ComputeSelection,
   EnvironmentRecipeInput,
   EnvironmentRevision,
   EnvironmentToolSnapshot,
   ManagedEnvironment,
 } from '@/services/environments';
+
+export const DEFAULT_COMPUTE: ComputeSelection = { type: 'microvms', architecture: 'arm64' };
+
+// The effective compute of an environment record (absent field = default).
+export const computeOf = (environment: Pick<ManagedEnvironment, 'compute'> | null | undefined) =>
+  environment?.compute ?? DEFAULT_COMPUTE;
+
+export const sameCompute = (a: ComputeSelection, b: ComputeSelection) =>
+  a.type === b.type && a.architecture === b.architecture;
+
+export const isDefaultCompute = (compute: ComputeSelection) =>
+  sameCompute(compute, DEFAULT_COMPUTE);
+
+// Stable string form for <Select> values and React keys.
+export const computeKey = (compute: ComputeSelection) => `${compute.type}/${compute.architecture}`;
+export const computeFromKey = (key: string): ComputeSelection => {
+  const [type, architecture] = key.split('/');
+  return { type, architecture } as ComputeSelection;
+};
+
+// Compute type and architecture are independent axes: the compute type says
+// WHERE sessions run (serverless microVMs vs EC2 Instances in this account),
+// the architecture says WHICH image is built (arm64 / x86_64). The UI keeps
+// them as two separate controls; the capability matrix says which pairs this
+// deployment supports.
+export const COMPUTE_TYPE_OPTIONS: {
+  value: ComputeSelection['type'];
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: 'microvms',
+    label: 'microVMs',
+    description: 'Serverless AgentCore microVMs. 1 GiB session storage, billed per session.',
+  },
+  {
+    value: 'instances',
+    label: 'Instances',
+    description:
+      'EC2 managed instances in this account. Persistent EBS workspace per session, sessions up to 14 days.',
+  },
+];
+
+export const ARCHITECTURE_OPTIONS: { value: ComputeSelection['architecture']; label: string }[] = [
+  { value: 'arm64', label: 'arm64' },
+  { value: 'x86_64', label: 'x86_64' },
+];
+
+export const computeTypeLabel = (type: ComputeSelection['type']) =>
+  COMPUTE_TYPE_OPTIONS.find((option) => option.value === type)?.label ?? type;
+
+export const computeLabel = (compute: ComputeSelection) =>
+  `${computeTypeLabel(compute.type)} · ${compute.architecture}`;
+
+const REASON_TEXT: Record<string, string> = {
+  MICROVMS_ARCHITECTURE_UNSUPPORTED: 'not offered on microVMs yet',
+  INSTANCES_COMPUTE_NOT_CONFIGURED: 'Instances is not enabled on this deployment',
+  AMD64_CORE_IMAGE_MISSING: 'no x86_64 core image published',
+  NO_INSTANCE_TYPES: 'no instance types allowed for this architecture',
+};
+
+export const capabilityReason = (reason?: string) =>
+  reason ? (REASON_TEXT[reason] ?? reason) : null;
+
+export const cellFor = (
+  cells: ComputeCapability[],
+  type: ComputeSelection['type'],
+  architecture: ComputeSelection['architecture'],
+) => cells.find((cell) => cell.type === type && cell.architecture === architecture) ?? null;
+
+// A compute type is selectable when at least one architecture is available
+// for it. The reason shown for an unavailable type is its first cell's.
+export const computeTypeAvailability = (
+  cells: ComputeCapability[],
+  type: ComputeSelection['type'],
+) => {
+  const own = cells.filter((cell) => cell.type === type);
+  const available = own.some((cell) => cell.available);
+  return { available, reason: available ? null : capabilityReason(own[0]?.reason) };
+};
+
+// Changing one axis keeps the other when that pair is available, and
+// otherwise falls back to the first available architecture of the new type.
+export const selectComputeType = (
+  cells: ComputeCapability[],
+  current: ComputeSelection,
+  type: ComputeSelection['type'],
+): ComputeSelection => {
+  if (cellFor(cells, type, current.architecture)?.available) {
+    return { type, architecture: current.architecture };
+  }
+  const fallback = cells.find((cell) => cell.type === type && cell.available);
+  return { type, architecture: fallback?.architecture ?? current.architecture };
+};
+
+export const availableComputes = (capabilities: { combinations: ComputeCapability[] } | null) =>
+  (capabilities?.combinations ?? []).filter((cell) => cell.available);
 
 export const RUNTIME_IMAGE_LIMIT_BYTES = 2048 * 1024 * 1024;
 
@@ -18,6 +117,7 @@ export interface EnvironmentForm {
   name: string;
   description: string;
   baseEnvironmentId: string;
+  compute: ComputeSelection;
   toolVersionIds: string[];
   aptPackages: KeyValueEntry[];
   environmentVariables: KeyValueEntry[];
@@ -29,6 +129,7 @@ export const emptyEnvironmentForm = (): EnvironmentForm => ({
   name: '',
   description: '',
   baseEnvironmentId: 'standard',
+  compute: DEFAULT_COMPUTE,
   toolVersionIds: [],
   aptPackages: [],
   environmentVariables: [],
@@ -70,6 +171,7 @@ export const formFromRevision = (
       environment.environmentId === 'standard'
         ? ''
         : (recipe?.base?.environmentId ?? environment.baseEnvironmentId ?? 'standard'),
+    compute: computeOf(environment),
     toolVersionIds: directToolVersionIds(revision),
     aptPackages: (recipe?.aptPackages ?? []).map((pkg) => ({
       name: pkg.name,
