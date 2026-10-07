@@ -702,4 +702,45 @@ describe('managed environment status handler', () => {
       ),
     ).toBe(true);
   });
+
+  it('keeps draining queued workspace releases with the Instances feature turned off', async () => {
+    // A deployment that used Instances and then set enable_instances_compute
+    // = false: the lambda sees no Instances configuration, but releases queued
+    // earlier still own EBS volumes and must complete (IAM side:
+    // status_session_cleanup is ungated, see managed-environments.tftest.hcl).
+    for (const name of [
+      'MANAGED_INSTANCES_OPERATOR_ROLE_ARN',
+      'MANAGED_INSTANCES_SUBNETS',
+      'MANAGED_INSTANCES_SECURITY_GROUPS',
+    ]) {
+      vi.stubEnv(name, '');
+    }
+    const queued = {
+      sessionId: 'aidlc-intent-deleted-intent-session',
+      capacityProviderArn:
+        'arn:aws:bedrock-agentcore:us-east-1:111111111111:capacity-provider/cp-1',
+      attempts: 2,
+    };
+    const cleanupStore = {
+      ...cleanupStoreStub(),
+      listPending: vi.fn().mockResolvedValue([queued]),
+    };
+    const runtimeClient = { send: vi.fn().mockResolvedValue({}) };
+    const handler = createStatusHandler({
+      cleanupStore,
+      store: { listRevisionsByStatus: vi.fn().mockResolvedValue([]) },
+      ecrClient: { send: vi.fn() },
+      controlClient: { send: vi.fn() },
+      runtimeClient,
+    });
+
+    const result = await handler({ action: 'poll' });
+    expect(result.sessionCleanups).toEqual([{ sessionId: queued.sessionId, cleaned: true }]);
+    expect(runtimeClient.send.mock.calls[0][0].input).toEqual({
+      capacityProviderId: 'cp-1',
+      sessionId: queued.sessionId,
+    });
+    expect(cleanupStore.remove).toHaveBeenCalledWith(queued.sessionId);
+    vi.unstubAllEnvs();
+  });
 });

@@ -435,8 +435,9 @@ resource "aws_iam_role" "status" {
 # followed instances_compute_enabled, flipping the flag off after Instances
 # environments have been used would destroy the role under live capacity
 # providers and leave their published revisions unusable. Only the status
-# lambda's grants and the environment variables that expose the feature to
-# the API are gated; an idle role costs nothing.
+# lambda's provisioning grants and the environment variables that expose the
+# feature to the API are gated; an idle role costs nothing. Session cleanup is
+# never gated (see status_session_cleanup).
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "instances_operator" {
@@ -477,14 +478,9 @@ resource "aws_iam_role_policy" "status_instances" {
       },
       {
         # CreateAgentRuntime with a capacityProviderConfiguration requires
-        # permission to "pass" the capacity provider to the runtime. Validation
-        # sessions are disposable — deleting them releases their persistent
-        # EBS volumes.
-        Effect = "Allow"
-        Action = [
-          "bedrock-agentcore:PassCapacityProvider",
-          "bedrock-agentcore:DeleteCapacityProviderSession",
-        ]
+        # permission to "pass" the capacity provider to the runtime.
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:PassCapacityProvider"]
         Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
       },
       {
@@ -510,6 +506,27 @@ resource "aws_iam_role_policy" "status_instances" {
         }
       },
     ]
+  })
+}
+
+# Releasing Instances workspaces is CLEANUP, not provisioning, so it is not
+# gated by instances_compute_enabled. Volumes created while the feature was on
+# outlive it: queued releases (SESSION_CLEANUP#) from failed validation or
+# intent deletions keep being retried by this poller after the flag is turned
+# off, and intents on retained Instances runtimes can still be deleted. On a
+# deployment that never enabled the feature no capacity provider exists and
+# the grant has nothing to act on.
+resource "aws_iam_role_policy" "status_session_cleanup" {
+  name = "managed-environment-status-session-cleanup"
+  role = aws_iam_role.status.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["bedrock-agentcore:DeleteCapacityProviderSession"]
+      Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
+    }]
   })
 }
 
