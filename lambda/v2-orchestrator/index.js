@@ -1624,8 +1624,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             const outputsObserved =
               outcome.result?.producedHeadsUnavailable !== true &&
               Array.isArray(outcome.result?.producedHeads);
+            // Learning candidates are put to the human at the gate; a waived gate
+            // would drop them unseen, so a gate with any halts instead.
             autoApprove =
-              autonomyWaivable && outputsObserved && !loopBack.atCap && gateFindings.length === 0;
+              autonomyWaivable &&
+              outputsObserved &&
+              learningCandidates.length === 0 &&
+              !loopBack.atCap &&
+              gateFindings.length === 0;
             autonomyGrantOffered = grantAutonomyOffered({
               mode: autonomyMode,
               stage,

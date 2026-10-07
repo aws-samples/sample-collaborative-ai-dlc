@@ -358,6 +358,25 @@ describe('construction autonomy: an autonomous grant', () => {
     expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
   });
 
+  it('does not waive a gate that has learning candidates to put to the human', async () => {
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: {
+        stages: [ANCHOR, { ...SECOND, policy: { ...POLICY, learnings: 'on' } }],
+      },
+    }));
+    deps.store.listEvents = vi.fn(async () => [
+      {
+        type: 'v2.learning.candidate',
+        stageInstanceId: 'si-build-and-test',
+        summary: 'retry the flaky integration suite once before failing',
+      },
+    ]);
+    await run();
+    expect(gateFor('si-build-and-test')).toMatchObject({ learningsRitual: true });
+    expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
+  });
+
   it('never waives a Plan Approval stage', async () => {
     deps.loadPlan = vi.fn(async () => ({
       valid: true,

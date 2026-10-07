@@ -317,9 +317,10 @@ all reproduced.
   grant's own provenance — who, when, and whether at create or at a gate — is
   durable too, as `constructionGateAutonomyGrant`.
 - The halt-and-ask set is reproduced in full: the plan's first non-skipped
-  construction stage with a sequential gate, every Code Generation Plan Approval, every fan-out
-  approval, a stage failure, a blocking gate sensor, and an exhausted loop-back
-  bound all still open a human gate. Losing the run to a cancel, a delete, or
+  construction stage with a sequential gate, every Code Generation Plan
+  Approval, every fan-out approval, a stage failure, a blocking gate sensor,
+  and an exhausted loop-back bound all still open a human gate. So does a gate
+  with learning candidates waiting for the learnings ritual. Losing the run to a cancel, a delete, or
   another orchestrator stops the walk — a waived gate opens no gate row, so that
   re-read is what keeps an autonomous run cancellable.
 - Two deviations, both stricter than upstream: the gate-precondition evaluation
