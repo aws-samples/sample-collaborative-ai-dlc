@@ -203,7 +203,9 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
             {durations.waiting && (
               <>
                 {' '}
-                (<span className="font-medium text-foreground">{durations.active}</span> active,{' '}
+                (<span className="font-medium text-foreground">
+                  {durations.active}
+                </span> active,{' '}
                 <span className="font-medium text-foreground">{durations.waiting}</span> waiting on
                 answers)
               </>
