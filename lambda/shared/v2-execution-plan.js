@@ -31,6 +31,7 @@ import {
   unhandledCapabilities,
 } from './aidlc-capabilities.js';
 import { compileStageGraph, compileRules } from './compile.js';
+import { isLoopBackRecommenderStage, loopBackApplies } from './stage-loopback.js';
 import { stageSkipBlockReason } from './stage-skip.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
@@ -398,6 +399,18 @@ const resolveStagePolicy = ({ scopeBlock, stage, stageId, errors, capabilities =
     // frontmatter field, so it is keyed on the CATALOG's runtime files and the
     // stage's own declaration instead of on a (field, value) pair.
     planApproval: planApprovalApplies({ stage, capabilities }) ? 'required' : null,
+    // The Build-and-Test loop-back is construction-protocol prose upstream, so
+    // like Plan Approval it is keyed on the CATALOG rather than on a (field,
+    // value) pair. The catalog key says only "this release has a loop-back to
+    // reproduce", so the RECOMMENDING stage's own declaration is required too:
+    // this policy key is what opens the gate option AND what puts
+    // `loopBackRecommended` on the stage agent's `emit_stage_note`, and neither
+    // belongs to a stage that merely runs after code generation. The TARGET is
+    // still derived from the plan's stage order at the gate (stage-loopback.js).
+    loopBack:
+      loopBackApplies({ capabilities }) && isLoopBackRecommenderStage(stage)
+        ? 'human-offered'
+        : null,
   };
 };
 

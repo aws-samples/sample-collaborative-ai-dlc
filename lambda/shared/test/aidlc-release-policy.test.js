@@ -436,6 +436,54 @@ describe('Per-release adapters: learnings default', () => {
     ];
   };
 
+  // The loop-back capability is closure-wide, so resolving it into every stage's
+  // policy told every stage's agent it could recommend a jump back and let any
+  // stage that happened to follow code generation open the gate option. The
+  // recommender is the stage that authors `build-test-results`.
+  it.each(['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'])(
+    'resolves the loop-back policy for %s on the recommending stage alone',
+    (profileId) => {
+      const { blocks } = buildFromFiles(fixtureFiles(profileId));
+      const library = {
+        ...libraryFrom(blocks),
+        runtimeFilePaths: fixture(profileId).runtimeFiles.map((file) => file.path),
+      };
+      const capabilities = resolveCapabilities(library);
+      expect(capabilities['PROTOCOL:build-and-test-loopback']).toBe(true);
+      const scopeBlock = library.scopesById.bugfix;
+      const offered = Object.entries(library.stagesById)
+        .filter(
+          ([stageId, stage]) =>
+            resolveStagePolicy({ scopeBlock, stage, stageId, errors: [], capabilities })
+              ?.loopBack === 'human-offered',
+        )
+        .map(([stageId]) => stageId);
+      expect(offered).toEqual(['build-and-test']);
+    },
+  );
+
+  it('resolves no loop-back policy at all for a release without the construction protocol', () => {
+    const profileId = 'current-stable';
+    const { blocks } = buildFromFiles(fixtureFiles(profileId));
+    const library = {
+      ...libraryFrom(blocks),
+      runtimeFilePaths: fixture(profileId).runtimeFiles.map((file) => file.path),
+    };
+    const capabilities = resolveCapabilities(library);
+    expect(capabilities['PROTOCOL:build-and-test-loopback']).not.toBe(true);
+    const scopeBlock = library.scopesById.bugfix;
+    const loopBacks = [
+      ...new Set(
+        Object.entries(library.stagesById).map(
+          ([stageId, stage]) =>
+            resolveStagePolicy({ scopeBlock, stage, stageId, errors: [], capabilities })
+              ?.loopBack ?? null,
+        ),
+      ),
+    ];
+    expect(loopBacks).toEqual([null]);
+  });
+
   it.each(['v2.6.18', 'v2.7.0', 'v2.8.2'])(
     'does not turn the learnings ritual on for %s, which has no learnings switch',
     (profileId) => {

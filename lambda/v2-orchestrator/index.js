@@ -53,6 +53,14 @@ import {
   overridableFindings,
 } from '../shared/gate-preconditions.js';
 import { resolveSkipTo, skipTargetsFrom, resolveRecomposeSkips } from '../shared/stage-skip.js';
+import {
+  LOOP_BACK_LIMIT,
+  LOOP_BACK_OPTION,
+  LOOP_BACK_RECORDED_EVENT,
+  loopBackGateFields,
+  loopBackNote,
+  resolveLoopBackOffer,
+} from '../shared/stage-loopback.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import {
@@ -70,7 +78,10 @@ import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
 // capability cannot be declared handled without the code that handles it.
-export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['policy.learnings.ritual@v1']);
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
+  'policy.learnings.ritual@v1',
+  'protocol.loopback.gate-offered@v1',
+]);
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -86,13 +97,17 @@ const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
 // non-overridable block withholds `override-and-approve` even when other
 // blocking findings are overridable: offering it would let one answer waive a
 // finding no human is allowed to waive.
-export const buildGateOptions = ({ findings = [] } = {}) => {
+export const buildGateOptions = ({ findings = [], loopBackOffered = false } = {}) => {
   const blocking = findings.filter((item) => item.severity === 'blocking');
-  if (blocking.length === 0) return ['approve', 'request-changes'];
   const everyBlockOverridable = blocking.every((item) => item.overridable);
-  return everyBlockOverridable && overridableFindings(findings).length > 0
-    ? ['request-changes', 'override-and-approve']
-    : ['request-changes'];
+  return [
+    ...(blocking.length === 0
+      ? ['approve', 'request-changes']
+      : everyBlockOverridable && overridableFindings(findings).length > 0
+        ? ['request-changes', 'override-and-approve']
+        : ['request-changes']),
+    ...(loopBackOffered ? [LOOP_BACK_OPTION] : []),
+  ];
 };
 
 const RUNTIME_ARN = () => process.env.AGENTCORE_RUNTIME_ARN;
@@ -833,6 +848,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         initialResumeFrom = null,
         reviewFeedback = null,
         validationRound = 0,
+        validationGateId = null,
       } = opts;
       const label = `${unitSlug ? `${stage.stageId}-u-${unitSlug}` : stage.stageId}${suffix}`;
       const allSkipIds = [...intentSkipIds, ...dynamicSkipIds];
@@ -865,6 +881,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         cloneInputs: stageCloneInputs,
         reviewFeedback,
         validationRound,
+        // The gate whose "Request changes" opened this revision. Carried on EVERY
+        // leg of the revision, including the ones resumed from a checkpoint or a
+        // question, so the container never has to infer the feedback from the gate
+        // it happens to be resuming.
+        validationGateId,
       };
       let result = await runStage(ctxArg, invokeIntentRuntime, {
         ...stageOpts,
@@ -1167,6 +1188,15 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       // one gate approves the artifact AND the fan-out decisions, instead of a
       // second engine gate at section start.
       const nextSection = segments.slice(segIdx + 1).find((s) => s.kind === 'section') ?? null;
+      // How many Build-and-Test loop-backs this segment has taken.
+      // A backward jump RE-VISITS stages, and every durable step name in this walk
+      // is memoized by name — so without this token the second pass of a revisited
+      // stage would replay the first pass's memoized results instead of running.
+      // It is 0 on every run that never loops back, which is what keeps all of
+      // those step names, gate ids and checkpoint names byte-identical.
+      let loopBackPass = 0;
+      // The loop-back gate the target stage re-runs with (see the jump below).
+      let loopBackResumeFrom = null;
       for (let stageIdx = 0; stageIdx < segment.stages.length; stageIdx += 1) {
         const stage = segment.stages[stageIdx];
         // A stage deselected by an earlier gate's recompose delta is passed
@@ -1184,6 +1214,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // CONDITIONAL stages to deselect — validated below, applied after the
         // post-hooks alongside skipTo.
         let recomposeSkips = [];
+        // Gate-time "loop back to the code-generation stage": set
+        // by an approved `loop-back` answer below, applied after the stage's
+        // post-hooks — the BACKWARD twin of skipToIndex. Null on every run that
+        // does not offer it, which is every run without a resolved release
+        // policy.
+        let jumpBackIndex = null;
         const outputArtifactTypes = (stage.outputArtifacts ?? [])
           .map((o) => o.artifact ?? o)
           .filter(Boolean);
@@ -1196,14 +1232,27 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         const producesUnitDag = outputArtifactTypes.includes('unit-of-work-dependency');
         const fanoutSection = producesUnitDag ? nextSection : null;
         let validationRound = 0;
-        let resumeFromValidation = null;
+        let resumeFromValidation = loopBackResumeFrom;
+        // Set only by a "Request changes", so a loop-back's re-entry (round 0)
+        // never hands its own gate to the personas as revision feedback.
+        let validationGateId = null;
+        loopBackResumeFrom = null;
         for (;;) {
-          const suffix = validationRound ? `-validation-${validationRound}` : '';
-          const round = `${validationRound}`;
+          const passTag = loopBackPass ? `-loopback-${loopBackPass}` : '';
+          const suffix = `${passTag}${validationRound ? `-validation-${validationRound}` : ''}`;
+          // The gate/receipt/event step names are keyed on the validation round;
+          // after a loop-back the same stage runs its round 0 again, so the pass
+          // joins the key. Unchanged (`0`, `1`, …) until a loop-back happens.
+          // A function because the revision event below names the round it is
+          // about to enter, not the one this iteration opened its gate on.
+          const roundToken = (forRound) =>
+            loopBackPass ? `lb${loopBackPass}-${forRound}` : `${forRound}`;
+          const round = roundToken(validationRound);
           const outcome = await executeStage(ctx, stage, {
             suffix,
             initialResumeFrom: resumeFromValidation,
             validationRound,
+            validationGateId,
           });
           if (outcome.state === 'TERMINAL') return outcome.value;
           if (outcome.state === 'FAILED') {
@@ -1423,9 +1472,51 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                 },
               )
             : [];
+          // Build-and-Test loop-back. The offer is computed from durable state
+          // at the moment the gate opens: the recommendation the agent recorded
+          // on this stage's row, the plan's own stage order, and the per-intent
+          // tally on META. The step only reads: if the Lambda dies before its
+          // result is checkpointed, the replayed step must find the same
+          // recommendation. It is cleared in a later step, once the gate is open.
+          // Guarded outside the step so a run without the release policy records
+          // no extra durable step.
+          const loopBackLookup =
+            stage.policy?.loopBack === 'human-offered'
+              ? await ctx.step(
+                  `loop-back-offer-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+                  async () => {
+                    const [row, execution] = await Promise.all([
+                      store.getStage(executionId, stage.stageInstanceId, { consistentRead: true }),
+                      store.getExecution(executionId, { consistentRead: true }),
+                    ]);
+                    if (!execution) {
+                      throw new Error('Execution metadata missing during loop-back lookup');
+                    }
+                    const offer = resolveLoopBackOffer({
+                      stage,
+                      segmentStages: segment.stages,
+                      currentIndex: stageIdx,
+                      // The same union the forward walk and the gate's skip
+                      // targets read. Intent-level skips are no less skipped than
+                      // the ones a gate flipped, and a target derivation that saw
+                      // only the dynamic ones could name a stage this run never
+                      // enters.
+                      skippedStageIds: [...intentSkipIds, ...dynamicSkipIds],
+                      recommendation: row?.loopBackRecommendation ?? null,
+                      loopBackCount: Number(execution.loopBackCount ?? 0),
+                    });
+                    return { offer, recommended: Boolean(row?.loopBackRecommendation) };
+                  },
+                )
+              : { offer: { offered: false }, recommended: false };
+          const loopBack = loopBackLookup.offer;
           const overridable = overridableFindings(gateFindings);
-          // Blocking findings require an explicit override.
-          const gateOptions = buildGateOptions({ findings: gateFindings });
+          // Blocking findings require an explicit override; the loop-back, when
+          // offered, remains a third option on this same gate.
+          const gateOptions = buildGateOptions({
+            findings: gateFindings,
+            loopBackOffered: loopBack.offered,
+          });
           const validation = await awaitEngineGate(ctx, sectionToolkit, {
             name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
             kind: 'validation',
@@ -1440,6 +1531,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                 recomposeTargets: gateRecomposeTargets,
                 findings: gateFindings,
                 learnings: learningsRitual ? { candidates: learningCandidates } : null,
+                loopBack,
               }),
               // A2 rules 2/7/8: the unit-DAG stage's gate presents the fan-out
               // plan (units, waves, skeleton pick, skip matrix) and accepts
@@ -1462,7 +1554,25 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             ...(gateRecomposeTargets.length ? { recomposeTargets: gateRecomposeTargets } : {}),
             ...(gateFindings.length ? { findings: gateFindings } : {}),
             ...(learningsRitual ? { learningsRitual: true } : {}),
+            // The reason, the outcome and its one-sentence explanation, for every
+            // outcome the agent recommended — not only the one that offers the
+            // option. `loopBackTarget` stays offered-only: the answer endpoint and
+            // the container read it as the engine's offer.
+            ...loopBackGateFields({ loopBack, stageId: stage.stageId }),
           });
+          // The gate holds the offer now, so the next validation round starts
+          // without a recommendation unless the agent records a new one.
+          if (loopBackLookup.recommended) {
+            await ctx.step(
+              `loop-back-clear-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+              () =>
+                store.setLoopBackRecommendation({
+                  executionId,
+                  stageInstanceId: stage.stageInstanceId,
+                  reason: null,
+                }),
+            );
+          }
           if (validation.superseded) return { ok: false, reason: 'retired', intentId };
 
           const gateAnswer = validation.gate?.answer;
@@ -1484,6 +1594,85 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   // engine cannot interpret, and re-running the stage is the only
                   // safe reading of it.
                   (gateOptions.find((option) => option === 'approve') ?? 'request-changes'));
+          // The loop-back is neither an approval nor a revision of THIS stage: it
+          // sends the run back to the stage that produced the code. Handled before
+          // either of those paths so nothing downstream of an approve/reject runs.
+          if (answered === LOOP_BACK_OPTION && loopBack.offered) {
+            const target = loopBack.target;
+            const targetStage = segment.stages[target.index];
+            // Reset this stage, then the target: both under this gate's id, which
+            // is unique to the run, so each row is reset exactly once per decision
+            // however often the step replays. Only the target's reset tallies the
+            // loop-back on META — the cap counts decisions, not rows. Each attempt
+            // bump makes the stage's earlier receipts unreachable without deleting
+            // them, so the reset is the invalidation and a lost CAS must fail the
+            // loop-back rather than leave a rejected pass's receipts in force.
+            // A failed reset marks the stage whose OWN reset failed, never the
+            // other one: the recommending stage's reset runs first, so attribution
+            // starts there and moves to the target only once the target's reset is
+            // the one in flight. Marking the untouched target FAILED would report a
+            // stage that was never written.
+            let resetFailureStage = stage;
+            try {
+              const recommenderReset = await ctx.step(
+                `loop-back-reset-${stage.stageInstanceId}-${round}`,
+                () =>
+                  store.resetStageRow({
+                    executionId,
+                    stageInstanceId: stage.stageInstanceId,
+                    loopBackId: validation.gate.humanTaskId,
+                    countsAgainstCap: false,
+                  }),
+              );
+              if (!recommenderReset) {
+                throw new Error(
+                  `recommending stage row was not reset; ${stage.stageId}'s receipts from the rejected pass would stay reachable`,
+                );
+              }
+              resetFailureStage = targetStage;
+              const reset = await ctx.step(
+                `loop-back-reset-${targetStage.stageInstanceId}-${round}`,
+                () =>
+                  store.resetStageRow({
+                    executionId,
+                    stageInstanceId: targetStage.stageInstanceId,
+                    loopBackId: validation.gate.humanTaskId,
+                  }),
+              );
+              if (!reset) {
+                throw new Error('target stage row was not reset; loop-back cap was not recorded');
+              }
+            } catch (error) {
+              const detail = error?.message ?? String(error);
+              logger.error('Loop-back stage reset failed', error);
+              await ctx.step(
+                `loop-back-reset-failed-stage-${resetFailureStage.stageInstanceId}-${round}`,
+                () =>
+                  store.updateStageState({
+                    executionId,
+                    stageInstanceId: resetFailureStage.stageInstanceId,
+                    state: 'FAILED',
+                    runtimeError: `loopback_reset_failed: ${detail}`,
+                    completedAt: nowIso(),
+                  }),
+              );
+              return await fail('loopback_reset_failed', `${resetFailureStage.stageId}: ${detail}`);
+            }
+            await emitEvent(
+              ctx,
+              `loop-back-recorded-${stage.stageId}-${round}`,
+              LOOP_BACK_RECORDED_EVENT,
+              `${validation.gate?.answeredByName || 'Someone'} sent ${stage.stageId} back to ${
+                target.stageId
+              } (loop-back ${loopBack.spent + 1} of ${LOOP_BACK_LIMIT}): ${loopBack.reason}`,
+            );
+            // The target re-runs with this gate's answer, so code generation is
+            // told why it was sent back and what the reviewer added.
+            loopBackResumeFrom = validation.gate.humanTaskId;
+            jumpBackIndex = target.index;
+            loopBackPass += 1;
+            break;
+          }
           // Overriding IS approving, with the blocking findings and the human who
           // accepted them on the record. Recorded before the stage is marked
           // validated so the audit row exists even if a later step re-drives.
@@ -1815,7 +2004,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                 for (const rej of verdict.rejected) {
                   await emitEvent(
                     ctx,
-                    `recompose-rejected-${stage.stageId}-${validationRound}-${rej.stageId}`,
+                    `recompose-rejected-${stage.stageId}-${round}-${rej.stageId}`,
                     'v2.stage.recompose_rejected',
                     `Recompose skip of "${rej.stageId}" ignored: ${rej.reason}`,
                   );
@@ -1826,13 +2015,24 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           }
 
           resumeFromValidation = validation.gate.humanTaskId;
+          validationGateId = validation.gate.humanTaskId;
           validationRound += 1;
           await emitEvent(
             ctx,
-            `stage-validation-revision-${stage.stageId}-${validationRound}`,
+            `stage-validation-revision-${stage.stageId}-${roundToken(validationRound)}`,
             'v2.stage.revision_requested',
             `Human requested changes for ${stage.stageId}; re-running stage with feedback`,
           );
+        }
+
+        // Apply an approved loop-back: the rows are already reset (attempt
+        // bumped, receipts invalidated) and the decision is on the timeline, so
+        // all that remains is to move the walk back. No checkpoint is published
+        // for a stage the human just sent back — the next attempt publishes its
+        // own.
+        if (jumpBackIndex != null) {
+          stageIdx = jumpBackIndex - 1; // the walk resumes AT the target stage
+          continue;
         }
 
         // Apply an approved "skip to stage X": mark every intermediate SKIPPED
@@ -1900,7 +2100,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           dynamicSkipIds.push(flippedId);
         }
         await publishCheckpoint(
-          `checkpoint-stage-${stage.stageInstanceId ?? stage.stageId}`,
+          `checkpoint-stage-${stage.stageInstanceId ?? stage.stageId}${
+            loopBackPass ? `-loopback-${loopBackPass}` : ''
+          }`,
           stage.stageInstanceId ?? null,
         );
       }
@@ -2073,6 +2275,7 @@ const runStage = async (
     resumeFrom,
     reviewFeedback = null,
     validationRound = 0,
+    validationGateId = null,
     // Expected process-row identity for this attempt. The orchestrator already
     // has the resolved plan, so it can reconcile a dead worker even when no
     // callback result arrives to report the id.
@@ -2145,6 +2348,12 @@ const runStage = async (
         // only for a stage with a resolved release policy and only after a
         // "Request changes", so every other payload is unchanged.
         ...(stage.policy && validationRound ? { validationRound } : {}),
+        // The gate the revision's feedback lives on, sent under the same
+        // condition. A later leg of the revision resumes from whatever gate
+        // parked it, so the gate it resumes is not the one that asked for
+        // changes; naming the validation gate is what keeps the personas on the
+        // real feedback.
+        ...(stage.policy && validationRound && validationGateId ? { validationGateId } : {}),
         reviewFeedback: reviewFeedback
           ? {
               batchId: reviewFeedback.batchId ?? null,
@@ -2271,6 +2480,13 @@ const validationPrompt = ({
   // `null` renders NOTHING, which is what keeps every other run's prompt
   // byte-identical.
   learnings = null,
+  // The Build-and-Test loop-back offer (resolveLoopBackOffer). Without a
+  // recommendation it renders NOTHING, which is what keeps every other run's
+  // prompt byte-identical. A recommendation the gate cannot offer (cap spent, or
+  // no linear target) is still SHOWN with its reason: a withheld option the human
+  // cannot see the reason for is exactly the silent block §8.1 invariant 5
+  // forbids.
+  loopBack = null,
 }) => {
   const artifacts = outputArtifactTypes.length
     ? outputArtifactTypes.join(', ')
@@ -2334,6 +2550,19 @@ const validationPrompt = ({
             ? ['Candidates this stage surfaced:', ...learnings.candidates.map((c) => `  - ${c}`)]
             : ['This stage surfaced no candidates.']),
           'Your approve answer may carry { "learnings": "<text>" } to record a project guardrail for future intents — or leave it empty.',
+        ]
+      : []),
+    ...(loopBack?.reason
+      ? [
+          '',
+          loopBack.atCap
+            ? '## The agent recommends going back to the code, but the loop-back limit is spent'
+            : '## The agent recommends going back to the code',
+          '',
+          `Reason: ${loopBack.reason}`,
+          // The same sentence the gate row carries, so the prompt and the review
+          // UI cannot drift apart.
+          loopBackNote({ loopBack, stageId: stage.stageId }),
         ]
       : []),
   ].join('\n');

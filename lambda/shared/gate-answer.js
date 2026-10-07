@@ -6,12 +6,17 @@
 // The longest override reason kept on the receipt and the audit event.
 export const OVERRIDE_REASON_MAX = 300;
 
+// The build-and-test loop-back gate option. The frontend keys its button off the
+// same string, so it is spelled once.
+export const LOOP_BACK_OPTION = 'loop-back';
+
 // Every option an engine-opened gate can offer.
 export const GATE_CHOICES = Object.freeze([
   'approve',
   'request-changes',
   'override-and-approve',
   'accept-as-is',
+  LOOP_BACK_OPTION,
 ]);
 
 // Parse a gate answer into one of `allowed`, tolerating the shapes the answer
@@ -33,4 +38,4 @@ export const parseChoice = (answer, allowed) => {
   return null;
 };
 
-export default { GATE_CHOICES, OVERRIDE_REASON_MAX, parseChoice };
+export default { GATE_CHOICES, LOOP_BACK_OPTION, OVERRIDE_REASON_MAX, parseChoice };

@@ -4396,6 +4396,156 @@ describe('POST /gates/{humanTaskId}/answer', () => {
     expect(accepted.statusCode).toBe(200);
   });
 
+  // The reason, the outcome and its explanation are only on the gate row; the stage
+  // row's recommendation is cleared as soon as the gate opens. A DTO that drops
+  // them leaves the reviewer with a generic sentence when the option is offered and
+  // with nothing at all when it is not.
+  it('maps the loop-back reason, status and note onto the gate DTO', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const seed = (humanTaskId, fields) => {
+      const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+      seedGate(intent.id, humanTaskId);
+      procStore.set(humanKey, {
+        ...procStore.get(humanKey),
+        kind: 'validation',
+        options: ['approve', 'request-changes'],
+        ...fields,
+      });
+    };
+    seed('h-offered', {
+      options: ['approve', 'request-changes', 'loop-back'],
+      loopBackTarget: 'code-generation',
+      loopBackReason: 'integration tests fail',
+      loopBackStatus: 'offered',
+      loopBackNote: 'Choose loop-back to send this work back to code-generation.',
+    });
+    seed('h-at-cap', {
+      loopBackReason: 'integration tests fail',
+      loopBackStatus: 'at-cap',
+      loopBackNote: 'This intent has already used all 3 loop-backs.',
+    });
+    seed('h-none', {});
+
+    const res = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+
+    const gates = JSON.parse(res.body).gates;
+    const byId = (id) => gates.find((row) => row.humanTaskId === id);
+    expect(byId('h-offered')).toMatchObject({
+      loopBackTarget: 'code-generation',
+      loopBackReason: 'integration tests fail',
+      loopBackStatus: 'offered',
+      loopBackNote: 'Choose loop-back to send this work back to code-generation.',
+    });
+    expect(byId('h-at-cap')).toMatchObject({
+      loopBackReason: 'integration tests fail',
+      loopBackStatus: 'at-cap',
+      loopBackNote: 'This intent has already used all 3 loop-backs.',
+    });
+    expect(byId('h-at-cap')).not.toHaveProperty('loopBackTarget');
+    // Absent, not null: a gate with no recommendation says nothing about one.
+    expect(byId('h-none')).not.toHaveProperty('loopBackReason');
+    expect(byId('h-none')).not.toHaveProperty('loopBackStatus');
+    expect(byId('h-none')).not.toHaveProperty('loopBackNote');
+  });
+
+  it('accepts loop-back only where offered, and only recorded as rejected', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    // `awaitEngineGate` writes `loopBackTarget` in the SAME call that puts
+    // `loop-back` in the options, so a gate offering the option always names the
+    // target it would rewind to.
+    const seedValidation = (humanTaskId, options) => {
+      const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+      seedGate(intent.id, humanTaskId);
+      procStore.set(humanKey, {
+        ...procStore.get(humanKey),
+        kind: 'validation',
+        options,
+        ...(options.includes('loop-back') ? { loopBackTarget: 'code-generation' } : {}),
+      });
+      return humanKey;
+    };
+    const loopBack = { decision: 'loop-back', feedback: 'check the refund path' };
+
+    const plainKey = seedValidation('h-no-loop-back', ['approve', 'request-changes']);
+    const notOffered = await answerGate(sub, projectId, intent.id, 'h-no-loop-back', {
+      status: 'rejected',
+      answer: loopBack,
+    });
+    expect(notOffered.statusCode).toBe(400);
+    expect(JSON.parse(notOffered.body).code).toBe('gate_choice_not_offered');
+    expect(procStore.get(plainKey).status).toBe('pending');
+
+    // Code that predates the loop-back reads a rejected answer as request-changes,
+    // so any other status would be misread by it.
+    const offeredKey = seedValidation('h-loop-back', ['approve', 'request-changes', 'loop-back']);
+    const approved = await answerGate(sub, projectId, intent.id, 'h-loop-back', {
+      status: 'approved',
+      answer: loopBack,
+    });
+    expect(approved.statusCode).toBe(400);
+    expect(JSON.parse(approved.body).code).toBe('loop_back_status_invalid');
+    expect(procStore.get(offeredKey).status).toBe('pending');
+
+    const accepted = await answerGate(sub, projectId, intent.id, 'h-loop-back', {
+      status: 'rejected',
+      answer: loopBack,
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(procStore.get(offeredKey).answer).toEqual(loopBack);
+  });
+
+  // The engine's offer, not the human's text, is what makes an answer a loop-back:
+  // `parseChoice` reads `freeText` too, and the stage runner uses the same parser to
+  // decide a stage may re-enter with no parked session. A gate that never offered
+  // the jump carries no `loopBackTarget`, and the answer is refused whatever its
+  // kind and whatever option list it stored.
+  it('refuses a loop-back on any gate the engine never offered it on', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+
+    const refusals = [];
+    for (const [humanTaskId, row, answer] of [
+      // A `question` gate: no `kind: 'validation'`, no options, so the guarded
+      // branch above never ran. `freeText` is the field the agent's own questions
+      // are answered in.
+      ['h-question-freetext', { kind: 'question' }, { freeText: 'loop-back' }],
+      ['h-question-decision', { kind: 'question' }, { decision: 'loop-back' }],
+      // A validation gate whose option list was never stored.
+      ['h-validation-no-options', { kind: 'validation' }, { decision: 'loop-back' }],
+      // And one that stored an empty list.
+      ['h-validation-empty-options', { kind: 'validation', options: [] }, { mode: 'loop-back' }],
+    ]) {
+      const humanKey = keyOf(`EXEC#${intent.id}`, `HUMAN#${humanTaskId}`);
+      seedGate(intent.id, humanTaskId);
+      procStore.set(humanKey, { ...procStore.get(humanKey), ...row });
+      const refused = await answerGate(sub, projectId, intent.id, humanTaskId, {
+        status: 'rejected',
+        answer,
+      });
+      refusals.push([humanTaskId, refused.statusCode, JSON.parse(refused.body).code]);
+      // Nothing was recorded, so no orchestrator or stage runner ever reads it.
+      expect(procStore.get(humanKey).status).toBe('pending');
+      expect(procStore.get(humanKey).answer ?? null).toBeNull();
+    }
+
+    expect(refusals).toEqual([
+      ['h-question-freetext', 400, 'loop_back_not_offered'],
+      ['h-question-decision', 400, 'loop_back_not_offered'],
+      ['h-validation-no-options', 400, 'loop_back_not_offered'],
+      ['h-validation-empty-options', 400, 'loop_back_not_offered'],
+    ]);
+  });
+
   it('answers a pending gate (CAS) and resumes the durable callback when bound', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

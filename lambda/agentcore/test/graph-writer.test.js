@@ -1074,6 +1074,105 @@ describe('restart artifact versions', () => {
     });
   });
 
+  // A loop-back is a two-stage rewind: the walk sends build-and-test's work back to
+  // code generation, so BOTH stage instances' heads belong to the pass being
+  // abandoned. One archive call, keyed on the loop-back gate, has to cover both or
+  // the stage it does not cover keeps pass 0 as current and pass 1 overwrites it in
+  // place.
+  it('archives both stages of a loop-back in one call, and pass 1 rehabilitates each head', async () => {
+    await seedIntent();
+    const codeGen = createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageInstanceId: 'si-cg' },
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+    const buildTest = createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageInstanceId: 'si-bt' },
+      clock: () => '2026-01-01T00:00:00.000Z',
+    });
+    await codeGen.createArtifact({
+      artifactType: 'code-generation-plan',
+      id: 'cg-plan',
+      content: 'pass 0 plan',
+    });
+    await buildTest.createArtifact({
+      artifactType: 'build-test-results',
+      id: 'bt-results',
+      content: 'pass 0 results: 3 failing',
+    });
+
+    const archived = await archiveArtifactsForStages({
+      g,
+      intentId: SCOPE.intentId,
+      stageInstanceIds: ['si-cg', 'si-bt'],
+      restartId: 'loopback-eg-validation-si-bt-0-run-1',
+      reason: 'Loop-back to code-generation: payment integration tests fail',
+      actor: 'Ada',
+      clock: () => '2026-01-02T00:00:00.000Z',
+    });
+
+    expect(archived.map((row) => row.artifactId).toSorted()).toEqual(['bt-results', 'cg-plan']);
+    // Pass 0 is history now: an immutable version per head, and the head itself out
+    // of every current read until a re-run rewrites it.
+    for (const id of ['cg-plan', 'bt-results']) {
+      const [head] = (await g.V().has('Artifact', 'id', id).valueMap(true).toList()).map(
+        flattenValueMap,
+      );
+      expect(head.superseded_at).toBe('2026-01-02T00:00:00.000Z');
+      expect(head.superseded_by).toBe('loopback-eg-validation-si-bt-0-run-1');
+      const versions = (
+        await g.V().has('Artifact', 'id', id).out('HAS_VERSION').valueMap(true).toList()
+      ).map(flattenValueMap);
+      expect(versions).toHaveLength(1);
+      expect(versions[0]).toMatchObject({
+        id: `${id}:v1`,
+        generation: 1,
+        restart_id: 'loopback-eg-validation-si-bt-0-run-1',
+        archived_by: 'Ada',
+      });
+    }
+    // Out of the current-read surface the next stage consumes.
+    expect(await codeGen.lookupArtifacts({ artifactType: 'code-generation-plan' })).toEqual([]);
+    expect(await buildTest.lookupArtifacts({ artifactType: 'build-test-results' })).toEqual([]);
+
+    // Pass 1 writes the same logical outputs: each head is rehabilitated at the
+    // next generation, with pass 0 still readable as a version.
+    const codeGen1 = createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageInstanceId: 'si-cg', stageAttempt: 1 },
+      clock: () => '2026-01-03T00:00:00.000Z',
+    });
+    const buildTest1 = createGraphWriter({
+      g,
+      scope: { ...SCOPE, stageInstanceId: 'si-bt', stageAttempt: 1 },
+      clock: () => '2026-01-03T00:00:00.000Z',
+    });
+    await codeGen1.createArtifact({
+      artifactType: 'code-generation-plan',
+      id: 'cg-plan',
+      content: 'pass 1 plan',
+    });
+    await buildTest1.createArtifact({
+      artifactType: 'build-test-results',
+      id: 'bt-results',
+      content: 'pass 1 results: green',
+    });
+
+    expect(await codeGen1.getArtifact({ id: 'cg-plan' })).toMatchObject({
+      content: 'pass 1 plan',
+      generation: 2,
+    });
+    expect(await buildTest1.getArtifact({ id: 'bt-results' })).toMatchObject({
+      content: 'pass 1 results: green',
+      generation: 2,
+    });
+    const keptResults = (
+      await g.V().has('Artifact', 'id', 'bt-results').out('HAS_VERSION').valueMap(true).toList()
+    ).map(flattenValueMap);
+    expect(keptResults.map((row) => row.content)).toEqual(['pass 0 results: 3 failing']);
+  });
+
   it('different-id rerun returns the canonical id, records an alias, and keeps relationship history', async () => {
     await seedIntent();
     await writer.createArtifact({

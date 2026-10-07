@@ -800,7 +800,23 @@ export const createProcessBridge = ({
   };
 
   // Append a process/audit note and broadcast it live (progress feed).
-  const emitStageNote = async ({ summary, type = 'v2.stage.note' }) => {
+  //
+  // `loopBackRecommended` is the ONE structured field on this tool: a
+  // build-and-test agent that finds a code defect it must not fix itself says so
+  // here, and the platform writes the reason onto this stage's own row, where the
+  // orchestrator's validation gate reads it (and clears it). Honoured only when
+  // the pinned release has a construction loop-back; any other run records the
+  // plain note, which is what keeps its timeline byte-identical. A failed write
+  // fails the tool call, so the agent never believes a lost recommendation was
+  // recorded.
+  const emitStageNote = async ({ summary, type = 'v2.stage.note', loopBackRecommended = null }) => {
+    const reason =
+      policy?.loopBack === 'human-offered'
+        ? String(loopBackRecommended ?? '')
+            .trim()
+            .slice(0, 300)
+        : '';
+    if (reason) await store.setLoopBackRecommendation({ executionId, stageInstanceId, reason });
     const row = await store.appendEvent({
       executionId,
       type,
@@ -821,7 +837,7 @@ export const createProcessBridge = ({
       noteType: type,
       summary,
     });
-    return { eventId: row.eventId };
+    return { eventId: row.eventId, ...(reason ? { loopBackRecommended: true } : {}) };
   };
 
   const submitReview = async ({ reviewer, verdict, findings = '', round = 0 }) => {

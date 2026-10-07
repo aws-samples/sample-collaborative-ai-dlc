@@ -60,6 +60,9 @@ function Probe() {
       <div data-testid="ritual">
         {pendingGates.map((gate) => String(gate.learningsRitual ?? '')).join(',')}
       </div>
+      <div data-testid="loop-back">
+        {pendingGates.map((gate) => String(gate.loopBackTarget ?? '')).join(',')}
+      </div>
       <div data-testid="out" data-version={outputVersion}>
         {[...outputBuffers.entries()].map(([k, v]) => `${k}=${v}`).join('|')}
       </div>
@@ -390,6 +393,24 @@ describe('IntentContext', () => {
     });
 
     expect(screen.getByTestId('ritual')).toHaveTextContent('true');
+  });
+
+  it('keeps the loop-back target of a live validation gate', async () => {
+    get.mockResolvedValue(detail());
+    renderProvider();
+    await screen.findByTestId('pending');
+
+    act(() => {
+      capturedOnEvent?.({
+        action: 'agent.question',
+        humanTaskId: 'eg-validation-si-1-0',
+        kind: 'validation',
+        options: ['approve', 'request-changes', 'loop-back'],
+        loopBackTarget: 'code-generation',
+      });
+    });
+
+    expect(screen.getByTestId('loop-back')).toHaveTextContent('code-generation');
   });
 
   it('appends agent.output to per-stage buffers (null stage → intent bucket)', async () => {

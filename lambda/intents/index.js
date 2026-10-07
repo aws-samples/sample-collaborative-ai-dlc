@@ -134,7 +134,12 @@ import {
   pendingAttachmentDeletions,
   validateAttachmentDescriptor,
 } from '../shared/intent-attachments.js';
-import { GATE_CHOICES, OVERRIDE_REASON_MAX, parseChoice } from '../shared/gate-answer.js';
+import {
+  GATE_CHOICES,
+  LOOP_BACK_OPTION,
+  OVERRIDE_REASON_MAX,
+  parseChoice,
+} from '../shared/gate-answer.js';
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -2784,6 +2789,30 @@ export const handler = async (event, context) => {
             code: 'gate_choice_not_offered',
           });
         }
+        // Orchestrator code that predates the loop-back reads a rejected answer
+        // as request-changes; any other status would be misread on a rollback.
+        if (chosen === LOOP_BACK_OPTION && answerStatus !== 'rejected') {
+          return response(400, {
+            error: 'A loop-back answer must be recorded with status "rejected"',
+            code: 'loop_back_status_invalid',
+          });
+        }
+      }
+      // A loop-back is recordable ONLY on the gate the ENGINE offered it on, and
+      // `loopBackTarget` is the only proof of that offer: `awaitEngineGate` writes it
+      // when, and only when, the walk resolved a target. The branch above covers
+      // validation gates with a stored option list; this covers every other gate,
+      // because `loop-back` in a `question` gate's `freeText` is read as the choice
+      // by the same parser the orchestrator and the stage runner use, and would
+      // otherwise re-enter a stage as a fresh run on nothing but typed text.
+      if (
+        parseChoice(data.answer, [LOOP_BACK_OPTION]) === LOOP_BACK_OPTION &&
+        !gate.loopBackTarget
+      ) {
+        return response(400, {
+          error: 'This gate did not offer a loop-back',
+          code: 'loop_back_not_offered',
+        });
       }
       // The same parser the orchestrator reads the answer with, so an answer the
       // engine treats as an override is held to the override's requirements here.
@@ -6493,6 +6522,17 @@ const mapHumanTask = (h) => ({
   // Absent (not false) on every gate that does not run it, so the UI's own
   // default decides rather than a value the backend never computed.
   ...('learningsRitual' in h ? { learningsRitual: h.learningsRitual ?? false } : {}),
+  // The stage a `loop-back` answer sends the run back to. Absent
+  // (not null) on every gate that does not offer the option, so the review panel
+  // renders no third button rather than one with an empty target.
+  ...('loopBackTarget' in h ? { loopBackTarget: h.loopBackTarget ?? null } : {}),
+  // The agent's reason, the offer rule's outcome, and that outcome in one
+  // sentence. Present whenever the agent recommended a loop-back, INCLUDING the
+  // outcomes that offer no option — those are the ones the reviewer was shown
+  // nothing about. Absent (not null) on every other gate.
+  ...('loopBackReason' in h ? { loopBackReason: h.loopBackReason ?? null } : {}),
+  ...('loopBackStatus' in h ? { loopBackStatus: h.loopBackStatus ?? null } : {}),
+  ...('loopBackNote' in h ? { loopBackNote: h.loopBackNote ?? null } : {}),
   // The computed next stage a plain approve continues to (upstream 2.2.6):
   // string = stageId, null = approving completes the workflow. Omitted (not
   // null) on legacy rows / gates where it was never computed, so the UI can

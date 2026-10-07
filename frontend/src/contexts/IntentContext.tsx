@@ -631,6 +631,15 @@ export function IntentProvider({
             // The validation gate asks the learnings question only when the
             // engine says so; keep the flag the API copy may already carry.
             learningsRitual: evt.learningsRitual ?? existing?.learningsRitual ?? null,
+            // The loop-back target rides only the live event and the API copy;
+            // without it the review panel cannot show the loop-back button.
+            loopBackTarget: evt.loopBackTarget ?? existing?.loopBackTarget ?? null,
+            // The reason and the engine's verdict ride the same event. Without them
+            // a reviewer already on the page sees the generic sentence when the
+            // option is offered, and nothing at all when it is withheld.
+            loopBackReason: evt.loopBackReason ?? existing?.loopBackReason ?? null,
+            loopBackStatus: evt.loopBackStatus ?? existing?.loopBackStatus ?? null,
+            loopBackNote: evt.loopBackNote ?? existing?.loopBackNote ?? null,
             questions:
               typeof evt.questions === 'string'
                 ? evt.questions

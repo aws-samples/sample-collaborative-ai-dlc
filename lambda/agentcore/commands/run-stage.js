@@ -98,6 +98,7 @@ import { workspaceRelativePath } from '../repo-paths.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { CHECKPOINTS, chosenLabel } from '../mcp/process-bridge.js';
+import { LOOP_BACK_OPTION, parseChoice } from '../../shared/gate-answer.js';
 import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner, isReleaseDependencyError } from '../sensor-runner.js';
 import {
@@ -105,7 +106,10 @@ import {
   mergeFindings,
   sensorGateFindings,
 } from '../../shared/gate-preconditions.js';
-import { readCurrentArtifactHeadHashes as defaultReadArtifactHeadHashes } from '../../shared/artifact-versioning.js';
+import {
+  archiveArtifactsForStages as defaultArchiveArtifactsForStages,
+  readCurrentArtifactHeadHashes as defaultReadArtifactHeadHashes,
+} from '../../shared/artifact-versioning.js';
 import { compileContextPack as defaultCompileContextPack } from '../context-compiler.js';
 import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
 import {
@@ -820,6 +824,21 @@ const changeControlFingerprint = (changedInputs = []) =>
 const isChangeControlGate = (gate) =>
   typeof gate?.humanTaskId === 'string' && gate.humanTaskId.startsWith(CHANGE_CONTROL_GATE_PREFIX);
 
+// A build-and-test gate answered `loop-back` sends the run back to this
+// code-generation stage. The gate belongs to another stage, whose reset left this
+// row with no session, so the stage runs fresh with the answer in its prompt.
+//
+// Keyed on the ENGINE's offer, never on what the human typed: `loopBackTarget` is
+// written only by `awaitEngineGate`/`createHumanTask`, and only when the gate
+// actually offered the jump, and it names the stage the walk rewound to. Requiring
+// it to name THIS stage is what stops a `loop-back` string in any answer field of
+// any other gate — a `question` gate's `freeText`, for instance — from skipping the
+// `resume_no_session` guard below and re-entering a stage as a fresh run.
+const isLoopBackAnswer = (gate, stageId) =>
+  typeof gate?.loopBackTarget === 'string' &&
+  gate.loopBackTarget === stageId &&
+  parseChoice(gate?.answer, [LOOP_BACK_OPTION]) !== null;
+
 // The approved inputs whose bytes moved since an approval recorded them.
 // Identity is the artifact's LOGICAL key, not its type: a stage may consume
 // several artifacts of one type, and comparing by type would report the wrong
@@ -1257,7 +1276,7 @@ const runCheckpointLadder = async ({
 // The agent asked structured questions; we feed back the human's answer so it
 // continues from where it parked. Tolerant of the answer shapes the resume lambda
 // / phaseb-answer write (`perQuestion[]`, `freeText`, or a raw string).
-const formatResumeAnswer = (gate) => {
+const formatResumeAnswer = (gate, stageId) => {
   const a = gate?.answer ?? null;
   // A checkpoint gate (summary confirmation / plan approval) is a `question` row
   // carrying `detail.checkpoint`, so it must be recognised BEFORE the generic
@@ -1287,6 +1306,14 @@ const formatResumeAnswer = (gate) => {
       `Revise accordingly, then call ${
         checkpoint === 'plan-approval' ? '`request_plan_approval`' : '`confirm_summary`'
       } again with the revision.`
+    );
+  }
+  if (isLoopBackAnswer(gate, stageId)) {
+    const feedback = typeof a === 'string' ? '' : (a?.feedback ?? a?.freeText ?? '');
+    return (
+      `Build-and-test sent this work back to you: ${gate.loopBackReason || 'no reason recorded'}.` +
+      `${feedback ? `\nThe reviewer added: ${feedback}` : ''}\n\n` +
+      'Revise the generated code to address this, then finish again.'
     );
   }
   // Validation gates AND engine gates answered request-changes (skeleton /
@@ -1566,6 +1593,10 @@ export const runStage = async (
     // stage with a resolved release policy, where the checkpoint receipts are
     // scoped by it.
     validationRound = 0,
+    // The gate whose "Request changes" opened this revision, which is NOT the gate
+    // a later leg resumes: a leg parked on a checkpoint or a question resumes from
+    // that gate instead. Absent on an unpinned/2.3.3 run and on revision 0.
+    validationGateId = null,
     scope,
     // Per-run skip overlay (shared/stage-skip.js): intent-level deselections +
     // accumulated gate-time skips, forwarded by the orchestrator on EVERY
@@ -1692,6 +1723,7 @@ export const runStage = async (
     // like every other graph reader so the comparison is testable without a real
     // Gremlin traversal.
     readArtifactHeadHashes = defaultReadArtifactHeadHashes,
+    archiveArtifactsForStages = defaultArchiveArtifactsForStages,
     // Fetch project custom agent rules (.md bodies) from S3 → written into the
     // selected CLI's native rules dir by the materializer. Injected for tests.
     fetchCustomRules = defaultFetchCustomRules,
@@ -2209,8 +2241,65 @@ export const runStage = async (
     // is already durable and the change-control block below reads it from the
     // receipt, so nothing is lost and nothing is re-asked.
     const preAgentGate = isChangeControlGate(resumeGate);
-    if ((!cli || !priorSessionId) && !reviewFeedback && !preAgentGate) {
+    const freshFromGate = preAgentGate || isLoopBackAnswer(resumeGate, stageId);
+    if ((!cli || !priorSessionId) && !reviewFeedback && !freshFromGate) {
       return fail(stageInstanceId, 'resume_no_session', `stage has no persisted CLI session`);
+    }
+    // A loop-back is a two-stage rewind in all but name, so it owes the same
+    // artifact history: rewind runs `archiveArtifactsForStages` BEFORE it touches a
+    // stage row, which writes an immutable version of each current head and marks
+    // the head and its HAS_SECTION/HAS_ITEM items superseded. The loop-back only
+    // reset the rows. Left unarchived, `create_artifact` overwrites the pass-0 head
+    // in place (rehabilitation only happens for a superseded head), so the
+    // build-test-results the human acted on and the plan behind them are gone, and
+    // anything pass 1 does not rewrite stays current as if the new attempt had
+    // produced it.
+    //
+    // The orchestrator has no Neptune access, so the archive runs HERE, at the
+    // target's re-run, keyed on the same gate id as the resets, covering BOTH stage
+    // instances — the target this stage is, and the recommender the gate belongs to
+    // — and before the agent writes anything. It fails the stage closed, exactly as
+    // rewind aborts when the snapshot fails: a re-run that silently overwrote
+    // unversioned heads is the loss this guards.
+    if (isLoopBackAnswer(resumeGate, stageId)) {
+      const loopBackId = resumeGate.humanTaskId;
+      if (row?.loopBackArchiveId !== loopBackId) {
+        if (!openGraph) {
+          return fail(
+            stageInstanceId,
+            'loopback_archive_failed',
+            'no graph connection to archive the rewound stages',
+          );
+        }
+        let gArchive = null;
+        try {
+          gArchive = await openGraph();
+          await archiveArtifactsForStages({
+            g: gArchive,
+            intentId,
+            stageInstanceIds: [
+              ...new Set([stageInstanceId, resumeGate.stageInstanceId].filter(Boolean)),
+            ],
+            restartId: `loopback-${loopBackId}`,
+            reason: `Loop-back to ${stageId}: ${resumeGate.loopBackReason || 'no reason recorded'}`,
+            actor: resumeGate.answeredByName || resumeGate.answeredBy || 'unknown',
+          });
+        } catch (error) {
+          logger.error('loop-back artifact archive failed', { error, stageInstanceId });
+          return fail(stageInstanceId, 'loopback_archive_failed', error?.message ?? String(error));
+        } finally {
+          await closeGraphSource(gArchive).catch(() => {});
+        }
+        // Stamped only after the archive completed, so a crash mid-archive retries
+        // the whole archive rather than skipping it.
+        if (typeof store.markLoopBackArchived === 'function') {
+          await store
+            .markLoopBackArchived({ executionId, stageInstanceId, loopBackId })
+            .catch((error) =>
+              logger.error('loop-back archive marker not stamped', { error, stageInstanceId }),
+            );
+        }
+      }
     }
     if (cli && !availableClis.includes(cli)) {
       const detail = credentialFailureDetail({
@@ -2225,7 +2314,9 @@ export const runStage = async (
     // A pre-agent gate answer is NOT a reply to the agent: injecting "Reconfirm
     // and continue" as an answer to a question it never asked would be noise. The
     // change-control block renders the decision into the prompt instead.
-    resumeAnswer = preAgentGate ? null : reviewFeedbackPrompt || formatResumeAnswer(resumeGate);
+    resumeAnswer = preAgentGate
+      ? null
+      : reviewFeedbackPrompt || formatResumeAnswer(resumeGate, stageId);
     // A pre-agent gate re-enters as a fresh run even when the row names a
     // session: the conversation was never started, and resuming it would send
     // the CLI neither the stage prompt nor the change-control decision.
@@ -3643,6 +3734,32 @@ export const runStage = async (
       await publishGitEvidence(leadDraftGit, { label: 'lead draft' });
       // The attempt this leg wrote on the stage row (putStage above).
       const attempt = Number(priorStageRow?.attempt ?? 0);
+      // The feedback this revision is answering is the VALIDATION gate's answer,
+      // read from that gate by id. `resumeAnswer` is the answer to whatever gate
+      // THIS leg resumes, which on a leg that parked on a checkpoint or a question
+      // is a different gate entirely — passing it would hand the personas the
+      // checkpoint's answer as the human's requested changes. An older
+      // orchestrator sends no id, so that dispatch keeps the previous behaviour.
+      // A gate that cannot be read yields no feedback rather than the wrong one.
+      let revisionFeedback = null;
+      if (validationRound) {
+        if (validationGateId) {
+          const validationGate =
+            validationGateId === resumeFrom
+              ? resumeGate
+              : await store
+                  .getHumanTask(executionId, validationGateId, { consistentRead: true })
+                  .catch(() => null);
+          if (validationGate) revisionFeedback = formatResumeAnswer(validationGate, stageId);
+          else
+            logger.error('validation gate not readable for revision feedback', {
+              stageInstanceId,
+              validationGateId,
+            });
+        } else {
+          revisionFeedback = resumeAnswer ?? null;
+        }
+      }
       // A resume leg never materialized a prompt, so the lead persona is re-read
       // here. For a pinned intent a typed release failure (digest mismatch,
       // unreadable object, unresolvable overlay) must not seat the integration
@@ -3745,16 +3862,13 @@ export const runStage = async (
           attempt,
           validationRound,
           // On a "Request changes" revision the supports review the lead's
-          // response to the human, so they get the feedback the LEAD got — which
-          // is `resumeAnswer`: a validation revision reaches this stage as a
-          // RESUME of the answered validation gate (orchestrator: validationRound
-          // += 1 with initialResumeFrom = that gate), never as `reviewFeedback` —
-          // that is the PR-feedback lane's text, dispatched with no
-          // validationRound at all. A change-control gate is answered BEFORE the
-          // agent runs and leaves `resumeAnswer` null by construction, so a
-          // pre-agent decision is never handed to a persona as rejected-draft
+          // response to the human, so they get the feedback the LEAD got. Resolved
+          // above from the validation gate itself, never from the gate this leg
+          // happens to resume. The PR-feedback lane dispatches with no
+          // validationRound at all, and a change-control gate is answered BEFORE the
+          // agent runs, so neither is ever handed to a persona as rejected-draft
           // feedback.
-          humanFeedback: validationRound ? (resumeAnswer ?? null) : null,
+          humanFeedback: revisionFeedback,
           lead: { persona: leadPersona, block: agentBlock },
           dispatchContext,
           knowledgeFor: (agentRef) =>

@@ -2270,6 +2270,241 @@ describe('runStage — resume mode', () => {
     expect(res).toMatchObject({ ok: false, reason: 'resume_no_session' });
   });
 
+  it('re-runs a loop-back target fresh with the reason and the feedback in the prompt', async () => {
+    // The build-and-test gate sent the work back here: this stage's row was reset
+    // (no session), and the answer belongs to the build-and-test gate.
+    let argsSeen = null;
+    let promptSeen = null;
+    const deps = baseDeps({
+      availableClis: ['claude'],
+      spawnFn: (_command, args) => {
+        argsSeen = args.join(' ');
+        return { ...okSpawn(), stdin: { end: (prompt) => (promptSeen = prompt) } };
+      },
+      ids: () => 'fresh-uuid',
+      // The re-run archives both rewound stages before it writes anything, so the
+      // real path always has a graph here.
+      openGraph: async () => ({}),
+      archiveArtifactsForStages: async () => [],
+      store: spyStore({
+        humanTask: {
+          humanTaskId: 'eg-validation-si-bt-0-run-1',
+          kind: 'validation',
+          status: 'rejected',
+          answer: { decision: 'loop-back', feedback: 'check the null refund path' },
+          // Written by the engine when the gate offered the jump, naming the stage
+          // the walk rewound to. It is what authorizes the fresh re-entry below.
+          loopBackTarget: 'requirements-analysis',
+          loopBackReason: 'payment integration tests fail',
+        },
+        stage: { state: 'PENDING', attempt: 1, cli: null, cliSessionId: null },
+      }),
+    });
+    const res = await runStage({ ...baseArgs, resumeFrom: 'eg-validation-si-bt-0-run-1' }, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(promptSeen).toContain('payment integration tests fail');
+    expect(promptSeen).toContain('check the null refund path');
+    expect(argsSeen).not.toContain('--resume');
+    expect(deps.store.calls.find((c) => c[0] === 'putStage')[1]).toMatchObject({
+      state: 'RUNNING',
+      attempt: 1,
+    });
+  });
+
+  // A loop-back resets two stage rows but the GRAPH still holds pass 0 as current,
+  // so `create_artifact` would overwrite the head in place: no immutable version,
+  // no supersession, and pass 0's build-test-results — the evidence the human acted
+  // on — gone. Rewind archives before it touches a row; the orchestrator cannot
+  // (no Neptune access), so the target's re-run owes the same archive. The archive
+  // helper's own behaviour (version per head, superseded_at/superseded_by on the
+  // head and its HAS_SECTION/HAS_ITEM items, replay-safety, rehabilitation by the
+  // next write) is proven in graph-writer.test.js; what only THIS runner can show
+  // is that the loop-back reaches it at all, for both stages, before any write.
+  describe('loop-back artifact archive', () => {
+    const GATE_ID = 'eg-validation-si-bt-0-run-1';
+    const RECOMMENDER_INSTANCE_ID = 'si-bt';
+    const loopBackGate = {
+      humanTaskId: GATE_ID,
+      stageInstanceId: RECOMMENDER_INSTANCE_ID,
+      kind: 'validation',
+      status: 'rejected',
+      answer: { decision: 'loop-back', feedback: 'check the null refund path' },
+      loopBackTarget: 'requirements-analysis',
+      loopBackReason: 'payment integration tests fail',
+      answeredByName: 'Ada',
+    };
+    const archiveHarness = ({ archive, stage = {} } = {}) => {
+      const order = [];
+      const archiveArtifactsForStages = vi.fn(async (args) => {
+        order.push('archive');
+        return archive ? archive(args) : [];
+      });
+      const markLoopBackArchived = vi.fn(async () => ({}));
+      const store = spyStore({
+        humanTask: loopBackGate,
+        stage: { state: 'PENDING', attempt: 1, cli: null, cliSessionId: null, ...stage },
+      });
+      store.markLoopBackArchived = markLoopBackArchived;
+      const deps = baseDeps({
+        availableClis: ['claude'],
+        ids: () => 'fresh-uuid',
+        openGraph: async () => ({}),
+        archiveArtifactsForStages,
+        store,
+        spawnFn: () => {
+          order.push('spawn');
+          return okSpawn();
+        },
+      });
+      return { deps, archiveArtifactsForStages, markLoopBackArchived, order };
+    };
+
+    it('archives both rewound stages under the gate id before the agent runs', async () => {
+      const { deps, archiveArtifactsForStages, markLoopBackArchived, order } = archiveHarness();
+
+      const res = await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(archiveArtifactsForStages).toHaveBeenCalledTimes(1);
+      expect(archiveArtifactsForStages.mock.calls[0][0]).toMatchObject({
+        intentId: 'i1',
+        // The target this stage is, and the recommender the gate belongs to.
+        stageInstanceIds: [BASE_STAGE_INSTANCE_ID, RECOMMENDER_INSTANCE_ID],
+        restartId: `loopback-${GATE_ID}`,
+        actor: 'Ada',
+      });
+      expect(archiveArtifactsForStages.mock.calls[0][0].reason).toContain(
+        'payment integration tests fail',
+      );
+      // Nothing the agent writes may land on an unarchived head.
+      expect(order[0]).toBe('archive');
+      expect(order).toContain('spawn');
+      expect(markLoopBackArchived).toHaveBeenCalledWith({
+        executionId: 'e1',
+        stageInstanceId: BASE_STAGE_INSTANCE_ID,
+        loopBackId: GATE_ID,
+      });
+    });
+
+    it.each([
+      ['the archive fails', { archive: () => Promise.reject(new Error('Neptune unavailable')) }],
+    ])('fails the stage closed and never spawns when %s', async (_case, over) => {
+      const { deps, markLoopBackArchived, order } = archiveHarness(over);
+
+      const res = await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      expect(res).toMatchObject({ ok: false, reason: 'loopback_archive_failed' });
+      expect(order).not.toContain('spawn');
+      expect(markLoopBackArchived).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when there is no graph to archive through', async () => {
+      const { deps, order } = archiveHarness();
+      deps.openGraph = null;
+
+      const res = await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      expect(res).toMatchObject({ ok: false, reason: 'loopback_archive_failed' });
+      expect(order).not.toContain('spawn');
+    });
+
+    // The marker is stamped only after a COMPLETE archive, so a replay of a
+    // finished archive skips it and the pass-1 heads this attempt is about to write
+    // are not archived as if they were pass 0's.
+    it('does not archive again when this decision already archived', async () => {
+      const { deps, archiveArtifactsForStages } = archiveHarness({
+        stage: { loopBackArchiveId: GATE_ID },
+      });
+
+      const res = await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(archiveArtifactsForStages).not.toHaveBeenCalled();
+    });
+
+    it('archives again when the marker belongs to an earlier decision', async () => {
+      const { deps, archiveArtifactsForStages } = archiveHarness({
+        stage: { loopBackArchiveId: 'eg-validation-si-bt-0-run-0' },
+      });
+
+      await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      expect(archiveArtifactsForStages).toHaveBeenCalledTimes(1);
+    });
+
+    // An ordinary resume is not a rewind: archiving there would version a head the
+    // run is still building.
+    it('archives nothing on a resume that is not a loop-back', async () => {
+      const { deps, archiveArtifactsForStages } = archiveHarness();
+      deps.store = spyStore({
+        humanTask: {
+          humanTaskId: 'eg-question-si-ra-0-run-1',
+          kind: 'question',
+          status: 'answered',
+          answer: { perQuestion: [{ answer: 'yes' }] },
+        },
+        stage: { state: 'RUNNING', attempt: 0, cli: 'claude', cliSessionId: 'session-1' },
+      });
+
+      await runStage({ ...baseArgs, resumeFrom: 'eg-question-si-ra-0-run-1' }, deps);
+
+      expect(archiveArtifactsForStages).not.toHaveBeenCalled();
+    });
+  });
+
+  // The bypass is the engine's offer, not the human's words. `parseChoice` reads
+  // `freeText`, so a question gate answered "loop-back" used to look like a
+  // loop-back here and skip the fail-closed session guard, re-entering a stage as a
+  // fresh run with "Build-and-test sent this work back to you" in its prompt.
+  it('does not treat a loop-back answer on a gate without a target as a loop-back', async () => {
+    for (const [label, humanTask] of [
+      [
+        'question gate answered in free text',
+        {
+          humanTaskId: 'eg-question-si-ra-0-run-1',
+          kind: 'question',
+          status: 'answered',
+          answer: { freeText: 'loop-back' },
+        },
+      ],
+      [
+        'validation gate that never offered it',
+        {
+          humanTaskId: 'eg-validation-si-ra-0-run-1',
+          kind: 'validation',
+          status: 'rejected',
+          answer: { decision: 'loop-back' },
+        },
+      ],
+      [
+        'gate whose target names another stage',
+        {
+          humanTaskId: 'eg-validation-si-bt-0-run-1',
+          kind: 'validation',
+          status: 'rejected',
+          answer: { decision: 'loop-back' },
+          loopBackTarget: 'code-generation',
+        },
+      ],
+    ]) {
+      let promptSeen = null;
+      const deps = baseDeps({
+        availableClis: ['claude'],
+        spawnFn: () => ({
+          ...okSpawn(),
+          stdin: { end: (prompt) => (promptSeen = prompt) },
+        }),
+        store: spyStore({
+          humanTask,
+          stage: { state: 'PENDING', attempt: 1, cli: null, cliSessionId: null },
+        }),
+      });
+      const res = await runStage({ ...baseArgs, resumeFrom: humanTask.humanTaskId }, deps);
+      expect(res, label).toMatchObject({ ok: false, reason: 'resume_no_session' });
+      expect(promptSeen, label).toBeNull();
+    }
+  });
+
   it('explains a removed pinned credential when resuming a parked stage', async () => {
     const deps = baseDeps({
       availableClis: [],

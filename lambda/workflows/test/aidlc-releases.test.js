@@ -1328,35 +1328,47 @@ describe('`?release=` selectability gate for non-admins', () => {
 });
 
 describe('GET /aidlc-releases — gap lists stored before protocol evidence', () => {
-  it('shows an admin the gaps promotion would refuse', async () => {
-    await register(CANDIDATE_PROFILE);
+  // The candidate closure does not author `agent-team` and this build cannot
+  // honour it, so a stored list holding it reaches the admin only if the listing
+  // trusted that list instead of re-reading the closure.
+  const UNPRODUCIBLE_GAP = Object.freeze({
+    blockType: 'STAGE',
+    field: 'mode',
+    value: 'agent-team',
+  });
+  const makeLegacy = () => {
     const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
-    const row = { ...rows.get(key), fidelityGaps: [] };
+    const row = { ...rows.get(key), fidelityGaps: [UNPRODUCIBLE_GAP] };
     delete row.fidelityEvidenceRevision;
     rows.set(key, row);
+    return key;
+  };
+
+  it('shows an admin no gap once the loop-back is handled', async () => {
+    await register(CANDIDATE_PROFILE);
+    const key = makeLegacy();
+    const readsBefore = s3Mock.commandCalls(GetObjectCommand).length;
 
     const res = parse(await listReleases());
 
     const listed = res.body.releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
-    expect(listed.unhonouredValues).toEqual(
-      expect.arrayContaining([
-        { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' },
-      ]),
-    );
+    expect(listed.unhonouredValues).toEqual([]);
+    expect(listed.fidelityGaps).not.toContainEqual(UNPRODUCIBLE_GAP);
+    expect(rows.get(key).fidelityGaps).not.toContainEqual(UNPRODUCIBLE_GAP);
+    expect(s3Mock.commandCalls(GetObjectCommand).length).toBeGreaterThan(readsBefore);
   });
 
   it('records the recomputed evidence so a repeat listing costs no closure read', async () => {
     await register(CANDIDATE_PROFILE);
-    const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
-    const row = { ...rows.get(key), fidelityGaps: [] };
-    delete row.fidelityEvidenceRevision;
-    rows.set(key, row);
+    const key = makeLegacy();
+    const legacy = rows.get(key);
 
     const first = parse(await listReleases());
     const readsAfterFirst = s3Mock.commandCalls(GetObjectCommand).length;
     const second = parse(await listReleases());
 
     expect(rows.get(key).fidelityEvidenceRevision).toBe(2);
+    expect(rows.get(key).fidelityGaps).not.toEqual(legacy.fidelityGaps);
     expect(s3Mock.commandCalls(GetObjectCommand).length).toBe(readsAfterFirst);
     expect(second.body.releases).toEqual(first.body.releases);
   });

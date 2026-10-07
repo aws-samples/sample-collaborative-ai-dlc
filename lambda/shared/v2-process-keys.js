@@ -751,6 +751,18 @@ const buildHumanTaskRow = ({
   // instead of the human having to hand-craft `{ "learnings": … }`. Written only
   // when the ritual applies, so every other gate row is unchanged.
   learningsRitual = undefined,
+  // The stage a `loop-back` answer sends this run back to, named so
+  // the review UI can label its third button with the target instead of the human
+  // reading it out of the prompt prose. Written only when the option is actually
+  // offered, so every other gate row is unchanged.
+  loopBackTarget = undefined,
+  // Why the agent recommended the loop-back (written with the target).
+  loopBackReason = undefined,
+  // The offer rule's outcome ('offered' | 'at-cap' | 'unavailable') and that
+  // outcome in one sentence, so the review UI can state why the option is absent
+  // instead of showing nothing.
+  loopBackStatus = undefined,
+  loopBackNote = undefined,
   status = 'pending',
   now,
 }) => ({
@@ -772,6 +784,10 @@ const buildHumanTaskRow = ({
   ...(findings === undefined ? {} : { findings }),
   ...(detail === undefined ? {} : { detail }),
   ...(learningsRitual === undefined ? {} : { learningsRitual }),
+  ...(loopBackTarget === undefined ? {} : { loopBackTarget }),
+  ...(loopBackReason === undefined ? {} : { loopBackReason }),
+  ...(loopBackStatus === undefined ? {} : { loopBackStatus }),
+  ...(loopBackNote === undefined ? {} : { loopBackNote }),
   // The v1-shaped structured-questions payload (JSON) when kind==='question'.
   questions,
   answer: null,

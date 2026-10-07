@@ -121,19 +121,21 @@ distinction keeps newer imports inspectable without presenting them as
 safe-to-run releases.
 
 The gate handlers cover summary and plan-approval checkpoints, review policy,
-both sensor planes, change control, learnings, skeleton selection, and
-`AGENT.maxTurns`. The persona runtime dispatches `pipeline` and `mob` stages, and
-`subagent` stages that declare supports, in separate serial sessions with
-role-scoped briefs. A `subagent` stage gets separate sessions only when its
-release closure ships `core/aidlc-common/protocols/stage-protocol-ensemble.md`;
-without that file a `subagent` stage with a support stays a single delegated
-session, which is why 2.3.3 `reverse-engineering` is unchanged. `agent-team`
-remains unsupported because it requires concurrent sessions.
+both sensor planes, change control, learnings, skeleton selection,
+`AGENT.maxTurns`, and the build-and-test loop-back. The persona runtime
+dispatches `pipeline` and `mob` stages, and `subagent` stages that declare
+supports, in separate serial sessions with role-scoped briefs. A `subagent`
+stage gets separate sessions only when its release closure ships
+`core/aidlc-common/protocols/stage-protocol-ensemble.md`; without that file a
+`subagent` stage with a support stays a single delegated session, which is why
+2.3.3 `reverse-engineering` is unchanged. `agent-team` remains unsupported
+because it requires concurrent sessions.
 
 The 2.3.3 baseline remains promotable. The 2.6.18, 2.7.0, 2.8.2, and 2.9.0
-fixtures have runtime handlers for their authored persona modes, but they remain
-unpromotable: `PROTOCOL:build-and-test-loopback` stays `unsupported` until the
-loop-back handler lands, so the release-promotion guard still refuses them. Their
+fixtures have runtime handlers for their authored persona modes and for the
+build-and-test loop-back, so with this layer 2.6.18 through 2.9.0 become
+promotable: `PROTOCOL:build-and-test-loopback` is no longer `unsupported`, which
+is the gap that made the release-promotion guard refuse them. Their
 compatibility classification remains field-driven and reflects the supported
 runtime semantics rather than profile-version exceptions.
 
@@ -248,6 +250,39 @@ stage fails with a rewind-eligible reason.
   ordinary approval gate.
 - `AGENT.maxTurns` maps to the native OpenCode turn limit; it remains inert on
   CLIs that expose no equivalent.
+
+### Build-and-test loop-back
+
+Releases that ship the construction protocol (2.6.18 and later) let
+build-and-test send the work back to code generation. Upstream does this
+autonomously, up to three times per intent. Here the human decides, at the
+validation gate build-and-test already has.
+
+The capability is classified `approximated`: the loop-back is offered to a human
+at the gate rather than taken autonomously, and scopes that run code generation
+per unit get a gate note instead of the option.
+
+- The agent records a recommendation through the `loopBackRecommended` field of
+  `emit_stage_note`. The platform writes the reason on the stage's own row; the
+  gate reads it and clears it once the gate is answered, so a recommendation is
+  offered once. A failed write fails the tool call.
+- The gate offers a third option, `loop-back`, when the stage immediately before
+  build-and-test (passing over skipped stages) is code generation and the intent
+  has used fewer than three loop-backs. The tally lives on the execution META
+  row. It is updated in the same transaction as the code-generation reset, keyed
+  by the gate id, so a replayed step does not count twice and a rewound run
+  starts new ids.
+- Choosing it resets code generation and build-and-test. Their attempts are
+  bumped, which makes earlier plan-approval and review receipts unreachable.
+  Code generation then runs fresh with the agent's reason and the reviewer's
+  feedback in its prompt. If a reset fails, code generation is marked `FAILED`
+  and the run fails in a rewindable state.
+- The answer is recorded as `rejected`, so orchestrator code that predates the
+  loop-back reads it as request-changes. The answer API rejects any other
+  status for a loop-back, and rejects loop-back on a gate that does not offer it.
+- At the cap, and in scopes that run code generation per unit (classic,
+  enterprise, feature, mvp, workshop), the gate shows the recommendation and why
+  the option is not offered. Those cases use request-changes or rewind.
 
 An answered gate whose durable callback failed to resume can be retried through
 the intent's Resume action. Callback-consumption markers and answered gate state

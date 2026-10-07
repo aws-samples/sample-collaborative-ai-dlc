@@ -48,6 +48,15 @@ const TABLE = 'blocks-test';
 // selectable); v2.9.0 is an ordinary candidate that must be certified first.
 const BASELINE_PROFILE = 'current-stable';
 const CANDIDATE_PROFILE = 'v2.9.0';
+// Neither fixture authors `agent-team`, and the current build cannot honour it,
+// so a stale list holding it can only reach a caller that TRUSTED that list. It
+// is what makes a "no gap" result evidence of recomputation rather than a value
+// the recomputation would have produced anyway.
+const UNPRODUCIBLE_GAP = Object.freeze({
+  blockType: 'STAGE',
+  field: 'mode',
+  value: 'agent-team',
+});
 
 const s3Mock = mockClient(S3Client);
 const ddbMock = mockClient(DynamoDBDocumentClient);
@@ -1654,26 +1663,22 @@ describe('promotion of a record registered before protocol evidence existed', ()
     return row;
   };
 
-  it('re-evaluates the closure, so the loop-back protocol is judged too', async () => {
+  it('re-evaluates the closure, and promotes it once the loop-back is handled', async () => {
     const row = await registeredEarlier();
 
-    await expect(
-      updateRelease({
-        ...registryArgs(),
-        s3,
-        bucket: BUCKET,
-        releaseId: CANDIDATE_RELEASE_ID,
-        expectedRevision: row.revision,
-        patch: { supportState: 'selectable' },
-        actor: 'admin-1',
-      }),
-    ).rejects.toMatchObject({
-      code: 'release_capability_unhandled',
-      details: {
-        gaps: expect.arrayContaining([
-          { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' },
-        ]),
-      },
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: CANDIDATE_RELEASE_ID,
+      expectedRevision: row.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
+    expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
+      fidelityEvidenceRevision: 2,
     });
   });
 
@@ -1688,11 +1693,11 @@ describe('promotion of a record registered before protocol evidence existed', ()
   // Pointing a channel at a release is a promotion gate too, so it must hold the
   // same evidence bar. Were it to trust a pre-protocol list, the decision would
   // depend on whether an admin listing had refreshed that record first.
-  it('refuses a channel pointer at a record whose stored evidence predates the protocol', async () => {
+  it('points a channel at a record whose stored evidence predates the protocol, once the loop-back is handled', async () => {
     await registerRelease(registerArgs(CANDIDATE_PROFILE));
     const promoted = await promote(CANDIDATE_RELEASE_ID, 'certified');
     const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
-    const row = { ...rows.get(key), fidelityGaps: [] };
+    const row = { ...rows.get(key), fidelityGaps: [UNPRODUCIBLE_GAP] };
     delete row.fidelityEvidenceRevision;
     rows.set(key, row);
 
@@ -1705,30 +1710,19 @@ describe('promotion of a record registered before protocol evidence existed', ()
         releaseId: CANDIDATE_RELEASE_ID,
         actor: 'admin-1',
       }),
-    ).rejects.toMatchObject({
-      code: 'release_capability_unhandled',
-      details: {
-        gaps: expect.arrayContaining([
-          { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' },
-        ]),
-      },
-    });
+    ).resolves.toMatchObject({ releaseId: CANDIDATE_RELEASE_ID });
     expect(promoted.supportState).toBe('certified');
   });
 });
 
 describe('admin listing of a record registered before protocol evidence existed', () => {
-  const LOOPBACK_GAP = {
-    blockType: 'PROTOCOL',
-    field: 'build-and-test-loopback',
-    value: 'present',
-  };
-
   // Drop the protocol evidence from a registered row, the shape an earlier build
-  // left behind: a stored gap list with no `fidelityEvidenceRevision`.
+  // left behind: a stored gap list with no `fidelityEvidenceRevision`. The stored
+  // list holds a value this closure does not author, so every assertion below
+  // distinguishes a recomputed answer from a trusted one.
   const makeLegacy = (releaseId) => {
     const key = keyOf(`AIDLC_RELEASE#${releaseId}`, 'META');
-    const row = { ...rows.get(key), fidelityGaps: [] };
+    const row = { ...rows.get(key), fidelityGaps: [UNPRODUCIBLE_GAP] };
     delete row.fidelityEvidenceRevision;
     rows.set(key, row);
     return key;
@@ -1755,13 +1749,15 @@ describe('admin listing of a record registered before protocol evidence existed'
     await registerRelease(registerArgs(CANDIDATE_PROFILE));
   });
 
-  it('reports what promotion would refuse instead of the stored list', async () => {
-    makeLegacy(CANDIDATE_RELEASE_ID);
+  it('reports what promotion decides once the loop-back is handled', async () => {
+    const key = makeLegacy(CANDIDATE_RELEASE_ID);
 
     const releases = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
 
     const listed = releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
-    expect(listed.unhonouredValues).toEqual(expect.arrayContaining([LOOPBACK_GAP]));
+    expect(listed.unhonouredValues).toEqual([]);
+    expect(listed.fidelityGaps).not.toContainEqual(UNPRODUCIBLE_GAP);
+    expect(rows.get(key).fidelityGaps).not.toContainEqual(UNPRODUCIBLE_GAP);
   });
 
   it('verifies one closure at a time however many records are stale', async () => {
@@ -1790,6 +1786,7 @@ describe('admin listing of a record registered before protocol evidence existed'
     const listed = first.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
     expect(cached.fidelityEvidenceRevision).toBe(2);
     expect(cached.fidelityGaps).toEqual(listed.fidelityGaps);
+    expect(cached.fidelityGaps).not.toEqual(legacy.fidelityGaps);
     // Evidence is derived from an immutable closure, never a decision, so the
     // cache write must leave the record's revision and audit trail alone.
     expect(cached.revision).toBe(legacy.revision);
@@ -1821,7 +1818,8 @@ describe('admin listing of a record registered before protocol evidence existed'
     const releases = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
 
     const listed = releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
-    expect(listed.unhonouredValues).toEqual(expect.arrayContaining([LOOPBACK_GAP]));
+    expect(listed.unhonouredValues).toEqual([]);
+    expect(listed.fidelityGaps).not.toContainEqual(UNPRODUCIBLE_GAP);
     expect(rows.get(key)).toEqual(stale);
   });
 });

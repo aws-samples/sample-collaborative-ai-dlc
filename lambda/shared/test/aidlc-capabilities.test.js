@@ -444,8 +444,8 @@ describe('the build-and-test loop-back protocol', () => {
     ).not.toBe(true);
   });
 
-  it('refuses promotion while no runtime handler reproduces it', () => {
+  it('allows promotion once the gate offers the loop-back', () => {
     const gap = { blockType: 'PROTOCOL', field: 'build-and-test-loopback', value: 'present' };
-    expect(unhonouredValues({ fidelityGaps: [gap] })).toEqual([gap]);
+    expect(unhonouredValues({ fidelityGaps: [gap] })).toEqual([]);
   });
 });
