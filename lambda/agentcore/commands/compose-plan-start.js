@@ -30,6 +30,7 @@ import {
   PROPOSAL_CONTRACT,
 } from '../../shared/compose-match.js';
 import { resolveCliSelection } from './discussion-assist-start.js';
+import { neutralizeHarnessDir } from '../stage-materializer.js';
 import { closeGraphSource } from '../mcp/graph-writer.js';
 
 const logger = new Logger({
@@ -121,6 +122,22 @@ const MODE_TASKS = {
   ].join('\n'),
 };
 
+// The upstream composer persona is written for the local AI-DLC harness: it
+// runs `detect`/`validate-grid`, writes proposal files, and must STOP when those
+// tools are missing. None of them exist in this one-shot, so without this note
+// a literal-minded model declares failure (or searches the filesystem) instead
+// of proposing. The grounding replaces detection and the repertoire read; the
+// plan resolver re-validates every proposal after the answer.
+const PLATFORM_ENVIRONMENT = [
+  'Execution environment (overrides the procedure above):',
+  '- You are running inside the platform composer, not the AI-DLC harness. The harness tools (`aidlc-utility.ts detect`, `aidlc-graph.ts validate-grid`/`compile`) and `<runtime-managed>` paths do not exist here. Do not search for, install, or run them, and do not read or write files.',
+  '- The grounding below replaces the Detect and Read-the-repertoire steps: it lists every offered scope with its authoritative compiled run shape, plus the stage catalog.',
+  '- The platform replaces the Validate step: after you answer, it re-validates your proposal with the same deterministic resolver and computes the stage and gate summary itself. Do not add a summary.',
+  '- The approval gate and any scope write happen in the platform after a human approves. Return only the proposal.',
+  '- When no workspace signals are attached, the project type (greenfield/brownfield) is unknown: say so in the rationale and prefer a shape that is correct either way.',
+  '- Unavailable harness tools are never a reason to answer with mode "failed". Use "failed" only when neither a stock scope nor a custom grid can be justified from the intent and the grounding.',
+].join('\n');
+
 const buildComposePrompt = ({
   mode,
   persona,
@@ -137,10 +154,11 @@ const buildComposePrompt = ({
     if (t && parts.join('\n').length < CONTEXT_LIMIT) parts.push(String(t));
   };
   push(
-    persona ||
+    neutralizeHarnessDir(persona || '') ||
       'You are the AI-DLC composer agent: you propose workflow projections; you never route, advance, gate, or write workflow state.',
   );
-  push(knowledge);
+  push(neutralizeHarnessDir(knowledge || ''));
+  push(PLATFORM_ENVIRONMENT);
   push(MODE_TASKS[mode]);
   push(`Intent:\n${intentPrompt || '(none provided)'}`);
   if (instructions) push(`Requester instructions:\n${instructions}`);
