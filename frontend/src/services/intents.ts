@@ -446,7 +446,11 @@ export interface SensorDetail {
   consumes?: string[];
   reason?: string;
   error?: string;
+  notApplicable?: boolean;
   findings_count?: number;
+  // A `script` sensor runs once per matching file, so the runner aggregates the
+  // per-file verdicts here and the explanation sits on the entry, not the top.
+  files?: { file?: string; result?: string; timedOut?: boolean; detail?: SensorDetail | null }[];
   [key: string]: unknown;
 }
 

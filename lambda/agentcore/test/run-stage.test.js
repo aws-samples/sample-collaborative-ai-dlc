@@ -21,7 +21,8 @@ import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
 } from '../../shared/v2-execution-plan.js';
-import { evaluateGatePreconditions } from '../../shared/gate-preconditions.js';
+import { evaluateGatePreconditions, sensorGateFindings } from '../../shared/gate-preconditions.js';
+import { MAX_SENSOR_REASON_LENGTH } from '../../shared/sensor-verdict.js';
 
 // A flat-frontmatter STAGE block + a minimal library/workflow that resolves to a
 // single in-scope stage.
@@ -1407,6 +1408,85 @@ describe('runStage — deterministic sensors', () => {
     } finally {
       await rm(workspaceDir, { recursive: true, force: true });
     }
+  });
+
+  // A script reports per file, and its `reason` is whatever JSON it printed. The
+  // activity-feed note carries the same bounded string the gate finding quotes.
+  // `scriptOutput` is what every spawn prints, or, with several files, a map from
+  // file path to what the script prints for that file (the agent CLI's own spawn
+  // prints `{}`).
+  const flaggedRunFor = async (scriptOutput, files = ['a.ts']) => {
+    const workspaceDir = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-sensor-note-'));
+    for (const file of files) {
+      await writeFile(nodePath.join(workspaceDir, file), 'export const value = 1;');
+    }
+    const outputFor = (args) => {
+      const file = args[args.indexOf('--file-path') + 1];
+      return files.length > 1 ? (scriptOutput[file] ?? {}) : scriptOutput;
+    };
+    const printingSpawn = (_file, args) => ({
+      stdout: {
+        on: (ev, cb) => ev === 'data' && cb(Buffer.from(JSON.stringify(outputFor(args)))),
+      },
+      on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+      stdin: { end() {} },
+    });
+    const deps = baseDeps({
+      spawnFn: printingSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: libWithScriptSensor('advisory') }),
+      loadBlockScript: async () => 'console.log("{}")',
+    });
+    try {
+      await runStage({ ...baseArgs, workspaceDir }, deps);
+      return {
+        summary: deps.store.calls.find(
+          (c) => c[0] === 'appendEvent' && c[1].type === 'v2.sensor.flagged',
+        )?.[1].summary,
+        verdict: deps.store.calls.find((c) => c[0] === 'recordSensorRun')?.[1],
+      };
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  };
+  const flaggedNoteFor = async (scriptOutput) => (await flaggedRunFor(scriptOutput)).summary;
+
+  it("notes a script sensor's per-file reason, bounded", async () => {
+    const summary = await flaggedNoteFor({ pass: false, reason: `  ${'e'.repeat(2000)}` });
+
+    expect(summary).toMatch(/^Sensor type-check \(advisory\) → FAIL — a\.ts: e+…$/);
+    expect(summary.split(' — ')[1]).toHaveLength(MAX_SENSOR_REASON_LENGTH);
+  });
+
+  // The aggregate FAILs because of b.ts; a.ts failed without saying why. The
+  // note must explain the FAIL with the same file the gate finding quotes.
+  it('notes the per-file reason the gate finding quotes', async () => {
+    const { summary, verdict } = await flaggedRunFor(
+      { 'a.ts': { pass: false }, 'b.ts': { pass: false, reason: 'type error' } },
+      ['a.ts', 'b.ts'],
+    );
+
+    expect(summary).toBe('Sensor type-check (advisory) → FAIL — b.ts: type error');
+    const [finding] = sensorGateFindings({ sensorVerdicts: [verdict] });
+    expect(finding.detail.reason).toBe('b.ts: type error');
+  });
+
+  it('notes no reason when the script printed a non-string one', async () => {
+    const summary = await flaggedNoteFor({ pass: false, reason: { errors: 2 } });
+
+    expect(summary).toBe('Sensor type-check (advisory) → FAIL');
+  });
+
+  // Only the reason is read from the script's per-file JSON: its own `error`,
+  // `artifacts` or `unreferenced` never reach the note, bounded or not.
+  it.each([
+    ['an object error', { pass: false, error: { code: 2 } }],
+    ['a long error', { pass: false, error: 'x'.repeat(5000) }],
+    [
+      'unreferenced names',
+      { pass: false, unreferenced: Array.from({ length: 400 }, (_, i) => `n${i}`) },
+    ],
+  ])('notes nothing of %s a script printed', async (_label, output) => {
+    expect(await flaggedNoteFor(output)).toBe('Sensor type-check (advisory) → FAIL');
   });
 
   // Regression: the session process is long-lived and reused across every stage.

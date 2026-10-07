@@ -106,6 +106,7 @@ import {
   mergeFindings,
   sensorGateFindings,
 } from '../../shared/gate-preconditions.js';
+import { resolveSensorVerdict } from '../../shared/sensor-verdict.js';
 import {
   archiveArtifactsForStages as defaultArchiveArtifactsForStages,
   readCurrentArtifactHeadHashes as defaultReadArtifactHeadHashes,
@@ -594,9 +595,13 @@ const runReviewer = async ({
 // activity-feed note (the full structured detail is on the SensorRun row for the
 // drill-down). Handles the shapes the evaluators emit: missing artifacts
 // (`artifacts[].reason`), unreferenced upstreams (`unreferenced[]`), a bare
-// `reason`, or an `error`. Returns '' when there is nothing terse worth adding.
-const summarizeSensorDetail = (detail) => {
+// `reason`, or an `error`. A `script` sensor's detail is a per-file aggregate, so
+// the shared resolver reads the bounded reason of the entry that explains the
+// result; nothing else from a script's own output reaches the note. Returns ''
+// when there is nothing terse worth adding.
+const summarizeSensorDetail = ({ result, detail }) => {
   if (!detail || typeof detail !== 'object') return '';
+  const { reason, error } = resolveSensorVerdict({ result, detail });
   const missing = Array.isArray(detail.artifacts)
     ? detail.artifacts.filter((a) => a?.reason === 'not found in graph').map((a) => a.artifact)
     : [];
@@ -604,8 +609,8 @@ const summarizeSensorDetail = (detail) => {
   if (Array.isArray(detail.unreferenced) && detail.unreferenced.length) {
     return ` — unreferenced: ${detail.unreferenced.join(', ')}`;
   }
-  if (detail.error) return ` — ${detail.error}`;
-  if (detail.reason) return ` — ${detail.reason}`;
+  if (error) return ` — ${error}`;
+  if (reason) return ` — ${reason}`;
   return '';
 };
 
@@ -767,7 +772,7 @@ const runSensorsWithGraph = async ({
           actor: 'agentcore',
           summary: `Sensor ${v.sensorId} (${v.severity}) → ${v.result}${
             v.held ? ' — blocking' : ''
-          }${summarizeSensorDetail(v.detail)}`,
+          }${summarizeSensorDetail(v)}`,
         })
         .catch(() => {});
     }
