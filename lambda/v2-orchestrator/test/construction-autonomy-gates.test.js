@@ -522,6 +522,12 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
   });
 
   it('records the grant, approves the stage, and waives the next gate', async () => {
+    // A slow row write, so a second clock read after it would differ.
+    const write = deps.store.updateExecution.getMockImplementation();
+    deps.store.updateExecution = vi.fn(async (args) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return write(args);
+    });
     await run();
     expect(deps.store.updateExecution).toHaveBeenCalledWith(
       expect.objectContaining({ constructionGateAutonomy: 'autonomous' }),
@@ -548,6 +554,11 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
         }),
       }),
     );
+    // One grant, one timestamp: the event repeats what the row recorded.
+    const recorded = deps.store.updateExecution.mock.calls
+      .map(([args]) => args.constructionGateAutonomyGrant)
+      .find(Boolean);
+    expect(set[0].detail.grantedAt).toBe(recorded.grantedAt);
     // Only the anchor gate was ever opened; the grant waived the one after it.
     expect(openedGates().map((gate) => gate.stageInstanceId)).toEqual(['si-functional-design']);
     expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);

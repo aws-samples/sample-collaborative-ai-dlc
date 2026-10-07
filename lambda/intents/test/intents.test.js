@@ -8689,6 +8689,7 @@ describe('AI-DLC per-intent release selection', () => {
     expect(meta.constructionGateAutonomyGrant).toMatchObject({
       source: 'create',
       grantedBy: sub,
+      grantedByName: `${sub}@x`,
       grantedAt: expect.any(String),
     });
     expect(meta.startedBy).toBe(sub);

@@ -5958,7 +5958,7 @@ export const handler = async (event, context) => {
               source: 'create',
               grantedAt: new Date().toISOString(),
               grantedBy: sub,
-              grantedByName: null,
+              grantedByName: getResponder(event).displayName || null,
             }
           : null,
         stageSkipping,

@@ -1940,33 +1940,38 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // rather than an approval whose grant was lost. The write is by value, so
           // a durable replay of this step converges on the same mode.
           if (answered === GRANT_AUTONOMY_OPTION && autonomyGrantOffered) {
-            await ctx.step(
+            // The step returns the grant it wrote, so the event below repeats the
+            // recorded timestamp instead of reading the clock a second time.
+            const grant = await ctx.step(
               `autonomy-grant-${stage.stageInstanceId ?? stage.stageId}-${round}`,
-              () =>
-                store.updateExecution({
+              async () => {
+                const recorded = {
+                  source: 'gate',
+                  stageId: stage.stageId,
+                  grantedAt: nowIso(),
+                  grantedBy: validation.gate?.answeredBy ?? null,
+                  grantedByName: validation.gate?.answeredByName ?? null,
+                };
+                await store.updateExecution({
                   executionId,
                   constructionGateAutonomy: 'autonomous',
-                  constructionGateAutonomyGrant: {
-                    source: 'gate',
-                    stageId: stage.stageId,
-                    grantedAt: nowIso(),
-                    grantedBy: validation.gate?.answeredBy ?? null,
-                    grantedByName: validation.gate?.answeredByName ?? null,
-                  },
-                }),
+                  constructionGateAutonomyGrant: recorded,
+                });
+                return recorded;
+              },
             );
             await emitEvent(
               ctx,
               `autonomy-grant-event-${stage.stageInstanceId ?? stage.stageId}-${round}`,
               AUTONOMY_MODE_SET_EVENT,
-              `${validation.gate?.answeredByName || 'Someone'} set construction autonomy to autonomous at ${stage.stageId}`,
+              `${grant.grantedByName || 'Someone'} set construction autonomy to autonomous at ${stage.stageId}`,
               {
                 stageInstanceId: stage.stageInstanceId ?? null,
                 detail: {
                   mode: 'autonomous',
-                  grantedAt: nowIso(),
-                  grantedBy: validation.gate?.answeredBy ?? null,
-                  grantedByName: validation.gate?.answeredByName ?? null,
+                  grantedAt: grant.grantedAt,
+                  grantedBy: grant.grantedBy,
+                  grantedByName: grant.grantedByName,
                   stageId: stage.stageId,
                 },
               },
