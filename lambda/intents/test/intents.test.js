@@ -798,9 +798,9 @@ describe('POST /projects/{id}/intents', () => {
     expect(res.statusCode).toBe(201);
     const created = JSON.parse(res.body);
     expect(created.constructionGateAutonomy).toBeNull();
-    expect(
-      procStore.get(keyOf(`EXEC#${created.executionId}`, 'META')).constructionGateAutonomyGrant,
-    ).toBeNull();
+    const meta = procStore.get(keyOf(`EXEC#${created.executionId}`, 'META'));
+    expect(meta).not.toHaveProperty('constructionGateAutonomy');
+    expect(meta).not.toHaveProperty('constructionGateAutonomyGrant');
   });
 
   it('snapshots the resolved tools from a published managed environment', async () => {
@@ -8740,7 +8740,8 @@ describe('AI-DLC per-intent release selection', () => {
     expect(res.statusCode).toBe(201);
     const intent = JSON.parse(res.body);
     expect(intent.constructionGateAutonomy).toBeNull();
-    expect(metaFor(intent.id).constructionGateAutonomyGrant).toBeNull();
+    expect(metaFor(intent.id)).not.toHaveProperty('constructionGateAutonomy');
+    expect(metaFor(intent.id)).not.toHaveProperty('constructionGateAutonomyGrant');
   });
 
   it('400s an autonomy grant on a pinned release that ships no construction protocol', async () => {
@@ -8793,6 +8794,32 @@ describe('AI-DLC per-intent release selection', () => {
     expect(meta.startedBy).toBe(sub);
     expect(meta.startedAt).toEqual(expect.any(String));
   });
+
+  it.each([
+    ['the stable channel', () => seedStableChannel(pinB.releaseId), SCOPE_ONLY_IN_B, undefined],
+    ['the deployment ref', () => {}, 'feature', shaB],
+  ])(
+    'freezes an autonomous grant onto an intent pinned through %s with no release selected',
+    async (_label, seedSelection, scope, deploymentSha) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1(deploymentSha ? 'feature' : undefined, deploymentSha);
+      seedRegistryRecord(bundleB, 'v2.9.0');
+      seedSelection();
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope,
+        constructionGateAutonomy: 'autonomous',
+      });
+
+      expect(res.statusCode).toBe(201);
+      const meta = metaFor(JSON.parse(res.body).id);
+      expect(meta.methodologyRelease).toEqual(pinB);
+      expect(meta.constructionGateAutonomy).toBe('autonomous');
+    },
+  );
 
   it('auto-pins when the release CAN reproduce the plan, and persists no SYSTEM pins', async () => {
     const sub = `u-${randomUUID()}`;

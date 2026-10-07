@@ -1000,6 +1000,29 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
     expect(unpinned).not.toHaveProperty('methodologyRelease');
   });
 
+  it('adds the construction autonomy grant attributes only for a granted intent', () => {
+    const base = {
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      startedAt: 'T',
+    };
+    const grant = { source: 'create', grantedAt: 'T', grantedBy: 'u1', grantedByName: 'Ada' };
+    const granted = buildExecutionMeta({
+      ...base,
+      constructionGateAutonomy: 'autonomous',
+      constructionGateAutonomyGrant: grant,
+    });
+    const ungranted = buildExecutionMeta(base);
+
+    expect(granted.constructionGateAutonomy).toBe('autonomous');
+    expect(granted.constructionGateAutonomyGrant).toEqual(grant);
+    expect(ungranted).not.toHaveProperty('constructionGateAutonomy');
+    expect(ungranted).not.toHaveProperty('constructionGateAutonomyGrant');
+  });
+
   it('carries prompt/branch/baseBranch/repos and supports DRAFT status', () => {
     const meta = buildExecutionMeta({
       executionId: 'e1',
@@ -1564,6 +1587,21 @@ describe('steering store methods', () => {
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe('orchestratorRunId = :ifOrid');
     expect(input.ExpressionAttributeValues[':ifOrid']).toBe('run-1');
+  });
+
+  it('updateExecution can require a run that has not ended (ifNotCompleted)', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.updateExecution({
+      executionId: 'e1',
+      constructionGateAutonomy: 'autonomous',
+      ifOrchestratorRunId: 'run-1',
+      ifNotCompleted: true,
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe(
+      'orchestratorRunId = :ifOrid AND (attribute_not_exists(completedAt) OR attribute_type(completedAt, :nullType))',
+    );
+    expect(input.ExpressionAttributeValues[':nullType']).toBe('NULL');
   });
 
   it('getExecutionRecords groups STEER rows', async () => {

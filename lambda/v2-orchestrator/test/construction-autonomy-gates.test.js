@@ -273,6 +273,19 @@ describe('construction autonomy: a gated or absent grant changes nothing', () =>
     expect(gateFor('si-build-and-test').options).toEqual(['approve', 'request-changes']);
   });
 
+  it('never offers grant-autonomy at a first construction gate with a blocking finding', async () => {
+    execution = { ...META, constructionGateAutonomy: 'gated' };
+    stageVerdicts = (stageId) =>
+      stageId === 'functional-design'
+        ? { ...cleanVerdict(stageId), gateSensorVerdicts: [BLOCKING_SENSOR] }
+        : cleanVerdict(stageId);
+    await run();
+    expect(gateFor('si-functional-design').options).toEqual([
+      'request-changes',
+      'override-and-approve',
+    ]);
+  });
+
   it('never offers grant-autonomy without a resolved construction-autonomy policy', async () => {
     execution = { ...META, constructionGateAutonomy: 'gated' };
     deps.loadPlan = vi.fn(async () => ({
@@ -516,9 +529,13 @@ describe('construction autonomy: an autonomous grant', () => {
   });
 
   it('opens the human gate when the autonomy read fails (fail closed)', async () => {
+    // The run-start snapshot reads the grant; every read at a gate fails.
+    let reads = 0;
     deps.store.getExecution = vi.fn(async () => ({
       ...execution,
       get constructionGateAutonomy() {
+        reads += 1;
+        if (reads === 1) return 'autonomous';
         throw new Error('ddb attribute unreadable');
       },
     }));
@@ -691,6 +708,50 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
     expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
   });
 
+  it('writes no grant when the intent is cancelled between the answer and the resume', async () => {
+    // Cancel is accepted while META still reads WAITING, after the answer was
+    // recorded. It ends the run (`completedAt`) and finds no grant to withdraw.
+    const answer = deps.store.getHumanTask;
+    deps.store.getHumanTask = vi.fn(async (...args) => {
+      const gate = await answer(...args);
+      if (gate?.answer?.decision === 'grant-autonomy') {
+        execution = { ...execution, status: 'CANCELLED', completedAt: 'T-cancel' };
+      }
+      return gate;
+    });
+    const write = deps.store.updateExecution.getMockImplementation();
+    deps.store.updateExecution = vi.fn(async (args) => {
+      if (args.ifNotCompleted && execution.completedAt) {
+        throw Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' });
+      }
+      return write(args);
+    });
+
+    const result = await run();
+
+    expect(result).toMatchObject({ ok: false, reason: 'retired' });
+    expect(execution.constructionGateAutonomy).toBe('gated');
+    expect(eventsOfType('v2.autonomy.mode_set')).toEqual([]);
+    expect(
+      receiptsFor('si-functional-design').filter((receipt) => receipt.kind === 'stage-approval'),
+    ).toEqual([]);
+  });
+
+  it('writes no grant for a grant-autonomy answer on a gate that did not offer it', async () => {
+    // The answer endpoint refuses this answer; a row carrying it anyway parses to
+    // nothing against the gate's options and takes the ordinary fallback.
+    deps.store.getHumanTask = answerWithOfferedOption((options) =>
+      options.includes('grant-autonomy') ? 'approve' : 'grant-autonomy',
+    );
+    await run();
+    expect(
+      deps.store.updateExecution.mock.calls.filter(
+        ([args]) => args.constructionGateAutonomy !== undefined,
+      ),
+    ).toEqual([]);
+    expect(eventsOfType('v2.autonomy.mode_set')).toEqual([]);
+  });
+
   it('records the grant and its event once across a durable replay', async () => {
     // Same memoization as the create-time replay test: only the steps this
     // feature adds replay their recorded result.
@@ -723,6 +784,53 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
     expect(
       receiptsFor('si-functional-design').filter((receipt) => receipt.kind === 'stage-approval'),
     ).toHaveLength(1);
+  });
+});
+
+describe('construction autonomy: the grant read is a durable step only where a grant can apply', () => {
+  const INCEPTION = constructionStage('requirements-analysis', { phase: 'inception' });
+  const stepNames = [];
+  const autonomyReads = () => stepNames.filter((name) => name.startsWith('autonomy-mode-'));
+
+  beforeEach(() => {
+    stepNames.length = 0;
+    ctx = makeCtx({
+      step: async (name, fn) => {
+        stepNames.push(name);
+        return fn();
+      },
+    });
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: { stages: [INCEPTION, ANCHOR, SECOND] },
+    }));
+  });
+
+  it('records no autonomy read on an intent that has no grant', async () => {
+    execution = { ...META, constructionGateAutonomy: 'gated' };
+    await run();
+    expect(autonomyReads()).toEqual([]);
+    expect(gateFor('si-functional-design').options).toContain('grant-autonomy');
+  });
+
+  it('reads the grant at construction gates only on an intent granted at create', async () => {
+    execution = { ...META, constructionGateAutonomy: 'autonomous' };
+    await run();
+    expect(autonomyReads()).toEqual([
+      'autonomy-mode-si-functional-design-0',
+      'autonomy-mode-si-build-and-test-0',
+    ]);
+    expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
+  });
+
+  it('starts reading the grant after a grant-autonomy answer in the same run', async () => {
+    execution = { ...META, constructionGateAutonomy: 'gated' };
+    deps.store.getHumanTask = answerWithOfferedOption((options) =>
+      options.includes('grant-autonomy') ? 'grant-autonomy' : null,
+    );
+    await run();
+    expect(autonomyReads()).toEqual(['autonomy-mode-si-build-and-test-0']);
+    expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
   });
 });
 

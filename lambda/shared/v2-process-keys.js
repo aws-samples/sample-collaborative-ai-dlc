@@ -577,8 +577,9 @@ const buildExecutionMeta = ({
   maxParallelUnits,
   prStrategy,
   constructionAutonomyMode,
-  constructionGateAutonomy,
-  constructionGateAutonomyGrant,
+  // Only a granted intent carries the grant, so every other row keeps exactly
+  // the attributes it always had.
+  ...(constructionGateAutonomy ? { constructionGateAutonomy, constructionGateAutonomyGrant } : {}),
   projectType,
   source,
   planWarnings,

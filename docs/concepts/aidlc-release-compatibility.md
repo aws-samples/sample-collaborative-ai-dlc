@@ -325,7 +325,11 @@ all reproduced.
   human. The answer API rejects it on a gate that does not offer it. The
   release listing reports `constructionAutonomy` for each release, read from
   the record's stored protocol evidence, so the create page offers the opt-in
-  only for a selected release that has it.
+  only for a selected release that has it. The non-admin listing never
+  re-verifies a closure, so a record whose stored evidence predates the
+  protocol entries lists `false` there until an admin listing or a promotion
+  re-verifies and caches it. The opt-in is then hidden, never wrongly offered,
+  and creating an intent still decides from the release's closure.
 - Once given, the grant holds for the rest of the intent, rewinds included,
   until the intent is cancelled. Cancelling clears it and records who withdrew
   it and when on the grant's provenance, so a rewind after a cancel relaunches
@@ -354,9 +358,11 @@ all reproduced.
   back to, opens the gate. So does a gate
   with learning candidates waiting for the learnings ritual, and a gate whose
   stage outputs the runner could not observe: "no finding" is only read as
-  clean when the outputs were actually checked. Each gate re-reads the intent
-  before deciding, so a deleted intent, a cancelled run, or a run taken over by
-  another orchestrator (a rewind relaunch) stops the walk instead of approving.
+  clean when the outputs were actually checked. On an intent with a grant, each
+  construction gate re-reads the intent before deciding, so a deleted intent, a
+  cancelled run, or a run taken over by another orchestrator (a rewind relaunch)
+  stops the walk instead of approving. An intent without a grant, and every gate
+  outside construction, skips that read and keeps its durable history.
 - Two deviations, both stricter than upstream: the gate-precondition evaluation
   runs in full on a waived gate, so ANY finding (advisory included) opens the
   human gate; and a terminal adversarial `NOT-READY` blocks a waived gate instead
@@ -369,6 +375,11 @@ all reproduced.
   always stays human is the first sequential construction gate after the lanes
   (for example build-and-test), and that is where `grant-autonomy` is offered.
   Non-construction phases are untouched.
+- Residual: a waived gate judges the stage's evidence, not its test results. A
+  build-and-test stage that succeeds with failing tests but raises no finding
+  and records no loop-back recommendation has clean evidence, so an autonomous
+  intent approves it. A blocking results sensor is what turns those failures
+  into a halt.
 
 ## Persona sessions
 

@@ -676,6 +676,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // recompute of this intent's plan (create check, this walk, rewinds, the
     // container's stage resolution) applies the same overlay or plans drift.
     const intentSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
+    // A construction autonomy grant is written at create, so it is already on this
+    // snapshot, or by a `grant-autonomy` answer earlier in this run, which sets
+    // this flag. A gate reads the grant only when one of the two happened.
+    let constructionGrantPossible = meta.constructionGateAutonomy === 'autonomous';
     // Per-intent composed EXECUTE/SKIP grid (Adaptive Workflows): pinned on
     // META at create/start and threaded into every plan recompute exactly like
     // the skip overlay — the grid, not the scope name, is the projection.
@@ -1413,16 +1417,19 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // The intent's construction autonomy grant, RE-READ at the gate rather
           // than taken from the META snapshot this run started with: a
           // `grant-autonomy` answer at an earlier gate of this same run changes it.
-          // Guarded on the resolved policy so an unpinned gate — or a release with
-          // no construction protocol — records no extra durable operation and its
-          // history stays byte-identical. A failed read reads as gated, which is
-          // the fail-closed direction: the human gate opens.
+          // Guarded so that only a construction gate of a release with the
+          // protocol, on an intent that has or just received a grant, records the
+          // extra durable operation. Every other gate keeps the history it had and
+          // reads as gated. A failed read reads as gated, which is the fail-closed
+          // direction: the human gate opens.
           //
           // The SAME read carries the ownership check. A waived gate opens no gate
           // row, so the live-ownership test every parked gate does (`run-owner-*`)
           // never runs for it: a deleted intent, a cancelled run or a rewind
           // relaunch is only noticed here, before anything is auto-approved.
           const autonomyRead =
+            constructionGrantPossible &&
+            stage.phase === 'construction' &&
             stage.policy?.constructionAutonomy === 'native'
               ? await ctx.step(
                   `autonomy-mode-${stage.stageInstanceId ?? stage.stageId}-${round}`,
@@ -2009,7 +2016,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // validated, so a crash between the two leaves the grant on the record
           // rather than an approval whose grant was lost. The write is by value, so
           // a durable replay of this step converges on the same mode.
-          if (answered === GRANT_AUTONOMY_OPTION && autonomyGrantOffered) {
+          //
+          // `answered` is parsed against this gate's own options, so it can only be
+          // `grant-autonomy` where the gate offered it. An answer naming an option
+          // the gate never offered parses to nothing and takes the fallback above;
+          // the answer endpoint refuses such an answer before it reaches the run.
+          if (answered === GRANT_AUTONOMY_OPTION) {
             // The step returns the grant it wrote, so the event below repeats the
             // recorded timestamp instead of reading the clock a second time.
             const grant = await ctx.step(
@@ -2022,14 +2034,33 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   grantedBy: validation.gate?.answeredBy ?? null,
                   grantedByName: validation.gate?.answeredByName ?? null,
                 };
-                await store.updateExecution({
-                  executionId,
-                  constructionGateAutonomy: 'autonomous',
-                  constructionGateAutonomyGrant: recorded,
-                });
+                // A cancel is accepted while META still reads WAITING, so it can
+                // land after this answer and before the run resumes. It ends the
+                // run and finds no grant to withdraw, so the grant is written only
+                // while this run still owns an intent that has not ended.
+                try {
+                  await store.updateExecution({
+                    executionId,
+                    constructionGateAutonomy: 'autonomous',
+                    constructionGateAutonomyGrant: recorded,
+                    ifOrchestratorRunId: runId || null,
+                    ifNotCompleted: true,
+                  });
+                } catch (error) {
+                  if (error?.name === 'ConditionalCheckFailedException') return null;
+                  throw error;
+                }
                 return recorded;
               },
             );
+            if (!grant) {
+              logger.info('run retired before the autonomy grant was written', {
+                executionId,
+                stageId: stage.stageId,
+              });
+              return { ok: false, reason: 'retired', intentId };
+            }
+            constructionGrantPossible = true;
             await emitEvent(
               ctx,
               `autonomy-grant-event-${stage.stageInstanceId ?? stage.stageId}-${round}`,
@@ -2048,15 +2079,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             );
           }
           const choice =
-            answered === 'override-and-approve' ||
-            (answered === GRANT_AUTONOMY_OPTION && autonomyGrantOffered)
+            answered === 'override-and-approve' || answered === GRANT_AUTONOMY_OPTION
               ? 'approve'
-              : answered === GRANT_AUTONOMY_OPTION
-                ? // The grant was not on offer at this gate, so the answer carries no
-                  // approval either: re-running the stage is the only safe reading,
-                  // exactly as for any other option the gate never presented.
-                  'request-changes'
-                : answered;
+              : answered;
           if (choice === 'approve') {
             await emitEvent(
               ctx,
