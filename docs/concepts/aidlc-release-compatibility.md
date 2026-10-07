@@ -301,7 +301,10 @@ all reproduced.
   only `autonomous` waives anything. It is frozen onto the intent at create by
   the human creating it, or escalated later by an explicit human answer: the
   `grant-autonomy` option, offered at the one construction gate that always stays
-  human. The answer API rejects it on a gate that does not offer it.
+  human. The answer API rejects it on a gate that does not offer it. The
+  release listing reports `constructionAutonomy` for each release, read from
+  the record's stored protocol evidence, so the create page offers the opt-in
+  only for a selected release that has it.
 - Once given, the grant holds for the rest of the intent, rewinds included,
   until the intent is cancelled. Cancelling clears it and records who withdrew
   it and when on the grant's provenance, so a rewind after a cancel relaunches

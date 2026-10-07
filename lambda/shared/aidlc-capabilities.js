@@ -578,6 +578,30 @@ const resolveCapabilities = (library = {}) =>
   );
 
 /**
+ * The protocol capabilities a release record's stored evidence proves, for a
+ * reader that has the record but not the closure (the release listing).
+ *
+ * The evidence names each PROTOCOL capability the closure ships, and each is
+ * keyed on one runtime file. Those files are recovered and resolved again, so a
+ * capability registered after the evidence was computed is still reported when
+ * it is keyed on a file the evidence already proves. No evidence proves nothing.
+ */
+const protocolCapabilitiesFromEvidence = (fidelityGaps) => {
+  const present = new Set(
+    (Array.isArray(fidelityGaps) ? fidelityGaps : [])
+      .filter((gap) => gap?.blockType === 'PROTOCOL' && gap.value === 'present')
+      .map((gap) => gap.field),
+  );
+  const runtimeFilePaths = AIDLC_CAPABILITIES.filter(
+    (entry) =>
+      entry.blockType === 'PROTOCOL' &&
+      present.has(entry.field) &&
+      String(entry.capabilityPresentIf).startsWith('runtimeFilePresent:'),
+  ).map((entry) => entry.capabilityPresentIf.slice('runtimeFilePresent:'.length));
+  return resolveCapabilities({ runtimeFilePaths });
+};
+
+/**
  * The release-mode default for a field the catalog OMITS: the registry's
  * `defaultWhenAbsent`, but only where the capability is present. `null` means
  * "stay inert", which is what every field but SCOPE.change_control does.
@@ -673,6 +697,7 @@ export {
   defaultWhenAbsent,
   isQuestionChannelOutput,
   planApprovalApplies,
+  protocolCapabilitiesFromEvidence,
   resolveCapabilities,
   unhandledCapabilities,
   unhonouredValues,
@@ -693,6 +718,7 @@ export default {
   defaultWhenAbsent,
   isQuestionChannelOutput,
   planApprovalApplies,
+  protocolCapabilitiesFromEvidence,
   resolveCapabilities,
   unhandledCapabilities,
   unhonouredValues,

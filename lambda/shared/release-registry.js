@@ -48,7 +48,8 @@ import {
   customProfile,
   profileFor,
 } from './aidlc-compatibility-profiles.js';
-import { unhonouredValues } from './aidlc-capabilities.js';
+import { protocolCapabilitiesFromEvidence, unhonouredValues } from './aidlc-capabilities.js';
+import { constructionAutonomyApplies } from './construction-autonomy.js';
 import { mapWithConcurrency } from './concurrency.js';
 
 const logger = new Logger({ persistentKeys: { component: 'release-registry' } });
@@ -166,6 +167,12 @@ const isImporterStale = (item) =>
   Number(item?.importerRevision ?? AIDLC_RELEASE_IMPORTER_REVISION) <
   AIDLC_RELEASE_IMPORTER_REVISION;
 
+// Whether an intent pinned to this release may be created with an autonomous
+// construction grant: the same capability the create path checks, read from the
+// record's stored evidence so the listing never loads a closure.
+const offersConstructionAutonomy = (fidelityGaps) =>
+  constructionAutonomyApplies({ capabilities: protocolCapabilitiesFromEvidence(fidelityGaps) });
+
 const releaseToApi = (item) =>
   item
     ? {
@@ -185,6 +192,7 @@ const releaseToApi = (item) =>
         structurallyValid: item.structurallyValid === true,
         visible: item.visible === true,
         runnable: item.runnable === true,
+        constructionAutonomy: offersConstructionAutonomy(item.fidelityGaps),
         notes: item.notes ?? null,
         registeredAt: item.registeredAt ?? null,
         registeredBy: item.registeredBy ?? null,
@@ -222,6 +230,7 @@ const releaseToSelectionApi = (item) =>
         trustTier: item.trustTier ?? null,
         visible: item.visible === true,
         runnable: item.runnable === true,
+        constructionAutonomy: offersConstructionAutonomy(item.fidelityGaps),
         ...(item.certifiedAt ? { certifiedAt: item.certifiedAt } : {}),
       }
     : null;
@@ -344,6 +353,7 @@ const listReleases = async ({ ddb, tableName, visibleOnly = false, s3 = null, bu
         ...release,
         fidelityGaps,
         unhonouredValues: fidelityGaps ? unhonouredValues({ fidelityGaps }) : null,
+        constructionAutonomy: offersConstructionAutonomy(fidelityGaps),
       };
     },
   );

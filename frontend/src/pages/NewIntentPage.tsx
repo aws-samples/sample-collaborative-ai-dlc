@@ -155,6 +155,11 @@ export default function NewIntentPage() {
   }, [sourceIntent, releasesSettled, prefilled, releases, selectedReleaseId]);
 
   const showReleaseSelector = pinningEnabled && releases.length > 0 && !releaseSelectionDisabled;
+  // The opt-in is offered only for a selected release that authors the protocol;
+  // anywhere else the server would refuse it at submit.
+  const releaseOffersAutonomy = (releaseId: string | null) =>
+    releases.find((r) => r.releaseId === releaseId)?.constructionAutonomy === true;
+  const showAutonomyOptIn = showReleaseSelector && releaseOffersAutonomy(selectedReleaseId);
 
   // Lazily fetch each repo's branch list (+ its actual default branch) the
   // first time the base-branch picker is expanded — most intents never open
@@ -232,10 +237,10 @@ export default function NewIntentPage() {
           showReleaseSelector && selectedReleaseId && selectedReleaseId !== stableReleaseId
             ? selectedReleaseId
             : undefined,
-        // Sent only as an explicit opt-in, and only where a release pin is on
-        // offer — the server refuses the field on an unpinned intent.
+        // Sent only as an explicit opt-in, and only for a selected release that
+        // authors the protocol — the server refuses it anywhere else.
         constructionGateAutonomy:
-          showReleaseSelector && autonomousConstruction ? 'autonomous' : undefined,
+          showAutonomyOptIn && autonomousConstruction ? 'autonomous' : undefined,
         source: source
           ? {
               bindingId: source.binding.id,
@@ -446,7 +451,11 @@ export default function NewIntentPage() {
                 <Label htmlFor="intent-methodology-release">AI-DLC version</Label>
                 <Select
                   value={selectedReleaseId ?? '__default__'}
-                  onValueChange={(v) => setSelectedReleaseId(v === '__default__' ? null : v)}
+                  onValueChange={(v) => {
+                    const next = v === '__default__' ? null : v;
+                    setSelectedReleaseId(next);
+                    if (!releaseOffersAutonomy(next)) setAutonomousConstruction(false);
+                  }}
                 >
                   <SelectTrigger id="intent-methodology-release" className="mt-1.5">
                     <SelectValue placeholder="Platform default" />
@@ -473,7 +482,7 @@ export default function NewIntentPage() {
               </div>
             )}
 
-            {showReleaseSelector && (
+            {showAutonomyOptIn && (
               <div>
                 <label className="inline-flex items-center gap-2 text-sm">
                   <input
