@@ -99,6 +99,7 @@ let deps;
 let ctx;
 let stageVerdicts;
 let execution;
+let recommendations;
 
 const makeRuntime = () =>
   vi.fn(async (payload) => {
@@ -147,18 +148,17 @@ const answerWithOfferedOption = (decisionFor = null) => {
 
 // A clean stage result: the runner observed the stage's declared output. Without
 // `producedHeads` the outputs were never observed, which must not read as clean.
-const cleanVerdict = (stageId) => ({
+const cleanVerdict = (stageId, artifactType = `${stageId}-out`) => ({
   ok: true,
   state: 'SUCCEEDED',
-  producedHeads: [
-    { artifactType: `${stageId}-out`, logicalKey: `${stageId}-k`, snapshotHash: 'sha-1' },
-  ],
+  producedHeads: [{ artifactType, logicalKey: `${stageId}-k`, snapshotHash: 'sha-1' }],
 });
 
 beforeEach(() => {
   ctx = makeCtx();
   stageVerdicts = cleanVerdict;
   execution = { ...META };
+  recommendations = new Map();
   deps = {
     store: {
       getExecution: vi.fn(async () => execution),
@@ -177,7 +177,19 @@ beforeEach(() => {
       failRunningStageAttempt: vi.fn(async () => null),
       listUnits: vi.fn(async () => []),
       getUnit: vi.fn(async () => null),
-      getStage: vi.fn(async (_e, stageInstanceId) => ({ stageInstanceId, attempt: 0 })),
+      // Upstream keeps the loop-back recommendation on the STAGE ROW and clears it
+      // in its own step after the gate; the offer step itself is read-only.
+      getStage: vi.fn(async (_e, stageInstanceId) => ({
+        stageInstanceId,
+        attempt: 0,
+        ...(recommendations.has(stageInstanceId)
+          ? { loopBackRecommendation: recommendations.get(stageInstanceId) }
+          : {}),
+      })),
+      setLoopBackRecommendation: vi.fn(async ({ stageInstanceId, reason }) => {
+        if (reason) recommendations.set(stageInstanceId, reason);
+        else recommendations.delete(stageInstanceId);
+      }),
       listReceipts: vi.fn(async () => []),
       listEvents: vi.fn(async () => []),
       putReceipt: vi.fn(async (args) => args),
@@ -185,7 +197,11 @@ beforeEach(() => {
       // so the fake has to bump it too — otherwise an autonomous run keeps
       // re-taking a jump that is never spent.
       resetStageRow: vi.fn(async (args) => {
-        if (args.loopBackId) {
+        // Matches the real store: `loopBackId` supplies the guards for EITHER row,
+        // and `countsAgainstCap` is what spends the bound. The cap counts
+        // decisions, not rows, so a double that tallied both resets of one jump
+        // would report two.
+        if (args.loopBackId && (args.countsAgainstCap ?? true)) {
           execution = { ...execution, loopBackCount: Number(execution.loopBackCount ?? 0) + 1 };
         }
         return args;
@@ -720,5 +736,178 @@ describe('construction autonomy: the lane ladder must not confer the sequential 
     expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
     // The lane field was never touched by the sequential walk.
     expect(execution.constructionAutonomyMode).toBe('gated');
+  });
+});
+
+describe('construction autonomy: the build-and-test loop-back', () => {
+  // `build-test-results` is the authored output that declares which stage may
+  // recommend the jump, so the fixture carries it for the same reason a real plan
+  // does: the offer is withheld from any stage that does not author it.
+  const LOOPBACK_PLAN = () => ({
+    valid: true,
+    plan: {
+      stages: [
+        ANCHOR,
+        constructionStage('code-generation', {
+          outputArtifacts: [{ artifact: 'code-generation-plan' }],
+        }),
+        constructionStage('build-and-test', {
+          outputArtifacts: [{ artifact: 'build-test-results' }],
+          policy: { ...POLICY, loopBack: 'human-offered' },
+        }),
+      ],
+    },
+  });
+
+  // Each stage reports the output its plan entry declares, so the gate checks
+  // real, observed outputs.
+  const DECLARED = {
+    'functional-design': 'functional-design-out',
+    'code-generation': 'code-generation-plan',
+    'build-and-test': 'build-test-results',
+  };
+  const observed = (stageId, extra = {}) => ({
+    ...cleanVerdict(stageId, DECLARED[stageId]),
+    ...extra,
+  });
+
+  beforeEach(() => {
+    execution = { ...META, constructionGateAutonomy: 'autonomous', loopBackCount: 0 };
+    deps.loadPlan = vi.fn(async () => LOOPBACK_PLAN());
+    stageVerdicts = (stageId) => observed(stageId);
+    // The agent recorded a recommendation on build-and-test's row. The engine
+    // clears it in its own step after the gate, so it is offered exactly once —
+    // which is also what keeps this fixture from looping to the cap.
+    recommendations.set('si-build-and-test', 'three suites fail');
+  });
+
+  it('takes the jump itself, with the protocol marker as the recorded answer', async () => {
+    await run();
+    const recorded = eventsOfType('v2.loopback.recorded');
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].summary).toContain(
+      'Autonomous loop-back 1 per construction protocol module',
+    );
+    expect(execution.loopBackCount).toBe(1);
+    // The jump was taken without ever opening build-and-test's gate.
+    expect(gateFor('si-build-and-test')).toBeNull();
+  });
+
+  it.each([
+    {
+      name: 'a blocking gate sensor',
+      verdict: { gateSensorVerdicts: [BLOCKING_SENSOR] },
+      code: 'sensor_gate_blocking',
+    },
+    {
+      name: 'an INCONCLUSIVE blocking sensor',
+      verdict: { gateSensorVerdicts: [{ ...BLOCKING_SENSOR, result: 'INCONCLUSIVE' }] },
+      code: 'sensor_gate_blocking',
+    },
+    {
+      name: 'a terminal adversarial NOT-READY',
+      verdict: {
+        reviewAdvisory: { advisory: false, verdict: 'NOT-READY', reviewerAgent: 'arch-reviewer' },
+      },
+      code: 'review_not_ready',
+    },
+  ])(
+    'refuses to auto-rewind on $name and opens the human gate instead',
+    async ({ verdict, code }) => {
+      // The jump answers failing tests, never a blocking finding: rewinding here
+      // would discard the finding and silently re-run the work.
+      stageVerdicts = (stageId) => observed(stageId, stageId === 'build-and-test' ? verdict : {});
+      await run();
+      expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+      const gate = gateFor('si-build-and-test');
+      expect(gate).not.toBeNull();
+      expect(gate.findings.map((item) => item.code)).toContain(code);
+      expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+      // code-generation is legitimately waived; build-and-test must NOT be.
+      expect(
+        eventsOfType('v2.gate.auto_approved').map((event) => event.detail.stageId),
+      ).not.toContain('build-and-test');
+    },
+  );
+
+  it('still takes the jump when only ADVISORY findings accompany the failure', async () => {
+    stageVerdicts = (stageId) =>
+      observed(
+        stageId,
+        stageId === 'build-and-test'
+          ? { reviewAdvisory: { advisory: true, verdict: 'NOT-READY', reviewerAgent: 'r' } }
+          : {},
+      );
+    await run();
+    // The jump is taken on the advisory evidence. (The later re-run then parks on
+    // its own gate, because `autoApprove` needs ZERO findings — advisory included.)
+    expect(eventsOfType('v2.loopback.recorded')).toHaveLength(1);
+    expect(deps.store.resetStageRow).toHaveBeenCalled();
+    expect(eventsOfType('v2.loopback.recorded')[0].summary).toContain(
+      'Autonomous loop-back 1 per construction protocol module',
+    );
+  });
+
+  it('halts at the cap instead of approving', async () => {
+    execution = { ...execution, loopBackCount: 3 };
+    await run();
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    const gate = gateFor('si-build-and-test');
+    expect(gate).not.toBeNull();
+    expect(
+      eventsOfType('v2.gate.auto_approved').map((event) => event.detail.stageId),
+    ).not.toContain('build-and-test');
+  });
+
+  // The autonomous path shares ONE offer resolution with the gated path, so the
+  // recommender rule holds here too: a stage that does not author
+  // `build-test-results` is not the stage the release lets recommend the jump, and
+  // no autonomy grant may promote its position in the plan into a jump.
+  it('refuses the autonomous jump from a stage the release never declared', async () => {
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: {
+        stages: [
+          ANCHOR,
+          constructionStage('code-generation', {
+            outputArtifacts: [{ artifact: 'code-generation-plan' }],
+          }),
+          constructionStage('build-and-test', {
+            outputArtifacts: [{ artifact: 'build-and-test-out' }],
+            policy: { ...POLICY, loopBack: 'human-offered' },
+          }),
+        ],
+      },
+    }));
+    stageVerdicts = (stageId) =>
+      stageId === 'build-and-test' ? cleanVerdict(stageId) : observed(stageId);
+
+    await run();
+
+    expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    expect(Number(execution.loopBackCount ?? 0)).toBe(0);
+  });
+
+  // A waived jump invalidates the same two rows under the same guards a human
+  // decision uses, and names the target it resolved. Both resets carry the one
+  // decision id; only the target's spends the bound, because the cap counts
+  // decisions rather than rows.
+  it('resets both rows with the guards a human jump uses, and tallies once', async () => {
+    await run();
+
+    const [[recommender], [target]] = deps.store.resetStageRow.mock.calls;
+    expect(recommender).toMatchObject({
+      stageInstanceId: 'si-build-and-test',
+      countsAgainstCap: false,
+    });
+    expect(recommender.loopBackId).toMatch(/^auto-loopback-si-build-and-test-/);
+    expect(target).toMatchObject({
+      stageInstanceId: 'si-code-generation',
+      loopBackId: recommender.loopBackId,
+    });
+    expect(target.countsAgainstCap ?? true).toBe(true);
+    expect(deps.store.resetStageRow).toHaveBeenCalledTimes(2);
+    expect(Number(execution.loopBackCount ?? 0)).toBe(1);
   });
 });

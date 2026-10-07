@@ -258,9 +258,12 @@ build-and-test send the work back to code generation. Upstream does this
 autonomously, up to three times per intent. Here the human decides, at the
 validation gate build-and-test already has.
 
-The capability is classified `approximated`: the loop-back is offered to a human
-at the gate rather than taken autonomously, and scopes that run code generation
-per unit get a gate note instead of the option.
+The capability is classified `approximated`: a gated intent is offered the
+loop-back at the gate rather than having it taken for it, and scopes that run code
+generation per unit get a gate note instead of the option. Under `Construction
+Autonomy Mode: autonomous` the jump IS taken for the intent, recorded with the
+protocol's `Autonomous loop-back N per construction protocol module` answer and
+bounded by the same three per intent.
 
 - The agent records a recommendation through the `loopBackRecommended` field of
   `emit_stage_note`. The platform writes the reason on the stage's own row; the
@@ -282,7 +285,13 @@ per unit get a gate note instead of the option.
   status for a loop-back, and rejects loop-back on a gate that does not offer it.
 - At the cap, and in scopes that run code generation per unit (classic,
   enterprise, feature, mvp, workshop), the gate shows the recommendation and why
-  the option is not offered. Those cases use request-changes or rewind.
+  the option is not offered. Those cases use request-changes or rewind. An
+  autonomous intent halts to that same human gate at the cap.
+- An autonomous intent takes the jump only in answer to the recommendation
+  itself. Any blocking finding — a blocking gate sensor that did not pass, a
+  missing required output, or a reviewer still not ready — opens the human gate
+  instead, because rewinding would discard the finding and silently re-run the
+  work. Advisory findings do not withhold the jump.
 
 An answered gate whose durable callback failed to resume can be retried through
 the intent's Resume action. Callback-consumption markers and answered gate state
