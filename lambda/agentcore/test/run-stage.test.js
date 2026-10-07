@@ -1292,6 +1292,7 @@ describe('runStage — deterministic sensors', () => {
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(deps.store.calls.some((c) => c[0] === 'recordSensorRun')).toBe(true);
   });
 
   it('surfaces a NON-PASS advisory verdict as a v2.sensor.flagged event (does not hold)', async () => {
