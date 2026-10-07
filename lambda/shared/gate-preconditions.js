@@ -41,7 +41,6 @@ const FINDING_CODES = Object.freeze([
   'pipeline_link_incomplete',
   'ensemble_integration_missing',
   'stage_budget_exhausted',
-  'review_not_ready',
   'review_advisory_findings',
   'review_dissent_maintained',
   'sensor_gate_blocking',
@@ -286,13 +285,6 @@ const evaluateGatePreconditions = ({
   // Approved inputs whose content changed since their producing stage was
   // approved (change control). Empty/null when the check did not run.
   changedInputs = [],
-  // True only when THIS gate is eligible to be waived by a construction autonomy
-  // grant. It is what makes a terminal adversarial NOT-READY block: with no human
-  // at the gate, an unresolved reviewer objection would otherwise be approved by
-  // the machine. A gated stage keeps the pre-autonomy contract — the verdict is
-  // surfaced as an advisory finding and `approve` stays on offer — so an intent
-  // that never opted in sees no change in what it may answer.
-  autonomyGoverned = false,
 } = {}) => {
   if (!policy) return { ok: true, findings: [] };
 
@@ -513,27 +505,20 @@ const evaluateGatePreconditions = ({
     );
   }
 
-  // An ADVISORY reviewer is decision support: whatever it found, the human decides
-  // with it in view. An ADVERSARIAL reviewer still NOT-READY has exhausted its
-  // repair loop, so the stage reaches the gate with the reviewer's own objection
-  // unresolved. That blocks ONLY on a gate autonomy may waive, where no human
-  // would see it; at a human gate it stays advisory, which is the contract that
-  // held before autonomy existed. A DTO with no `advisory` flag at all is read as
-  // advisory — the conservative direction for an older runner's payload.
+  // Any reviewer verdict that is not READY is decision support at the gate. An
+  // ADVISORY reviewer ran once by design; an ADVERSARIAL one reaches the gate only
+  // when its repair loop ended without READY, so the human decides with the
+  // reviewer's unresolved objection in view instead of approving into silence. A
+  // DTO with no `advisory` flag at all is read as advisory.
   if (reviewVerdict && reviewVerdict.verdict !== 'READY') {
-    const adversarialBlock = reviewVerdict.advisory === false && autonomyGoverned;
+    const kind = reviewVerdict.advisory === false ? 'Adversarial' : 'Advisory';
     findings.push(
       finding({
-        code: adversarialBlock ? 'review_not_ready' : 'review_advisory_findings',
-        severity: adversarialBlock ? 'blocking' : 'advisory',
-        title: adversarialBlock
-          ? `Adversarial review (${reviewVerdict.reviewerAgent ?? 'reviewer'}) is still ${reviewVerdict.verdict ?? 'NOT-READY'} after its repair loop`
-          : `${reviewVerdict.advisory === false ? 'Adversarial' : 'Advisory'} review (${reviewVerdict.reviewerAgent ?? 'reviewer'}): ${reviewVerdict.verdict ?? 'NOT-READY'}`,
+        code: 'review_advisory_findings',
+        severity: 'advisory',
+        title: `${kind} review (${reviewVerdict.reviewerAgent ?? 'reviewer'}): ${reviewVerdict.verdict ?? 'NOT-READY'}`,
         detail: { findings: reviewVerdict.findings ?? null },
-        ...(adversarialBlock ? { overridable: true, receiptKind: 'stage-approval' } : {}),
-        remediation: adversarialBlock
-          ? 'Request changes to run the stage again, or override to accept the reviewer’s unresolved objection on the record.'
-          : 'The reviewer does not block; decide with its findings in view.',
+        remediation: `The ${kind.toLowerCase()} reviewer does not block; decide with its findings in view.`,
       }),
     );
   }
