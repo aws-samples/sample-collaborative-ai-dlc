@@ -373,13 +373,15 @@ describe('construction autonomy: an autonomous grant', () => {
   it.each([
     { name: 'the run was cancelled', over: { status: 'CANCELLED' } },
     { name: 'another orchestrator took the run over', over: { orchestratorRunId: 'someone-else' } },
+    { name: 'the intent was deleted', over: null },
   ])('stops instead of auto-approving once $name', async ({ over }) => {
     // A waived gate opens no gate row, so cancel's `supersedeHumanTask` cannot
     // reach it. This re-read is the only thing that stops the walk.
     let reads = 0;
     deps.store.getExecution = vi.fn(async () => {
       reads += 1;
-      return reads > 2 ? { ...execution, ...over } : execution;
+      if (reads <= 2) return execution;
+      return over === null ? null : { ...execution, ...over };
     });
     const out = await run();
     expect(out).toMatchObject({ ok: false, reason: 'retired' });

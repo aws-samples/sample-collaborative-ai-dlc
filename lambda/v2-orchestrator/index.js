@@ -140,9 +140,9 @@ const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
 const MAX_STAGE_APPROVAL_DETAIL_BYTES = 300 * 1024;
 // Statuses that mean this run is over, checked by a waived construction gate
 // because it opens no gate row for `supersedeHumanTask` to reach. Cancel writes
-// CANCELLED. Delete removes the whole EXEC# partition instead, so the companion
-// `orchestratorRunId` check — not this set — is what catches a deleted or
-// relaunched intent.
+// CANCELLED. Delete removes the whole EXEC# partition instead, so a missing META
+// row is what catches a deleted intent, and the companion `orchestratorRunId`
+// check catches a relaunched one.
 const RETIRED_STATUSES = new Set(['CANCELLED', 'SUCCEEDED']);
 
 // AgentCore requires a session id >= 33 chars; reuse ONE per intent so the
@@ -1435,6 +1435,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                       return {
                         mode: execution?.constructionGateAutonomy ?? null,
                         retired:
+                          !execution ||
                           (Boolean(runId) && Boolean(ownerRunId) && ownerRunId !== runId) ||
                           RETIRED_STATUSES.has(String(execution?.status ?? '')),
                       };
