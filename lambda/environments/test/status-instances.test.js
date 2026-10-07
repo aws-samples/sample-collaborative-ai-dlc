@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRuntimeForRevision, verifyRuntime } from '../status.js';
+import { withVerificationLease } from './helpers/verification-lease.js';
 import { retryQueuedReleases } from '../../shared/runtime-session.js';
 import { capacityProviderName } from '../runtime-backends/capacity-provider.js';
 
@@ -160,7 +161,7 @@ const verifyingRevision = {
 
 const mutableStore = (initialRevision) => {
   let current = initialRevision;
-  return {
+  return withVerificationLease({
     get current() {
       return current;
     },
@@ -170,7 +171,7 @@ const mutableStore = (initialRevision) => {
       return current;
     }),
     updateEnvironment: vi.fn().mockResolvedValue(instancesEnvironment),
-  };
+  });
 };
 
 // The shared session-cleanup store (durable queue of failed releases).
@@ -510,77 +511,184 @@ describe('validation-session cleanup retention and retry', () => {
   });
 });
 
-describe('overlapping validation polls', () => {
-  it('does not fail a revision that an overlapping poll already marked READY', async () => {
-    // Poll A reattaches to the persisted validation session while poll B
-    // finishes validation, marks the revision READY and releases the session.
-    // A's invoke then fails on the released session (non-transient) and it
-    // tries to fail the revision from its stale VERIFYING view.
-    const stale = {
-      ...verifyingRevision,
-      status: 'VERIFYING',
-      validationSessionId: 'managed-environment-r-1-shared-session',
-      validationAttempts: 1,
-    };
-    const updates = [];
-    const store = {
-      getRevision: vi
-        .fn()
-        .mockResolvedValue({ ...stale, status: 'READY', validationSessionId: null }),
-      updateRevision: vi.fn().mockImplementation(async (_e, _r, patch, options) => {
-        updates.push(patch);
-        throw Object.assign(new Error(`Revision is READY, expected ${options?.fromStatus}`), {
-          name: 'ConditionalCheckFailedException',
-        });
-      }),
-      updateEnvironment: vi.fn(),
-    };
-    const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
-    const runtimeClient = {
-      send: vi.fn().mockImplementation(async (command) => {
-        if (command.constructor.name === 'InvokeAgentRuntimeCommand') {
-          throw Object.assign(new Error('session is being deprovisioned'), {
-            name: 'ValidationException',
-          });
-        }
-        return {};
-      }),
-    };
+describe('verification lease (overlapping polls)', () => {
+  it('a poll that cannot take the lease leaves the revision alone', async () => {
+    const store = mutableStore({ ...verifyingRevision });
+    // Another poll holds the lease.
+    await store.acquireVerificationLease('x86-build', 'r-1', {
+      owner: 'other-poll',
+      ttlMs: 60_000,
+    });
+    const controlClient = { send: vi.fn() };
+    const runtimeClient = { send: vi.fn() };
     const result = await withEnv(() =>
       verifyRuntime({
         store,
         environment: instancesEnvironment,
-        revision: stale,
+        revision: store.current,
         controlClient,
         runtimeClient,
         cleanupStore: cleanupStoreStub(),
       }),
     );
-    // The stale poll went through failRevision (a FAILED patch was attempted)…
-    expect(updates.some((patch) => patch.status === 'FAILED')).toBe(true);
-    // …and resolved to the winner's outcome instead of throwing.
-    expect(result.revision.status).toBe('READY');
-    expect(store.updateEnvironment).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ pending: true, leaseHeld: false });
+    expect(controlClient.send).not.toHaveBeenCalled();
+    expect(runtimeClient.send).not.toHaveBeenCalled();
+    expect(store.updateRevision).not.toHaveBeenCalled();
   });
 
-  it('treats a revision another poll already marked READY as handled, not failed', async () => {
-    // Poll A holds a stale VERIFYING view while poll B completes validation.
-    const stale = { ...verifyingRevision, status: 'VERIFYING' };
-    const store = {
-      getRevision: vi.fn().mockResolvedValue({ ...stale, status: 'READY' }),
-      updateRevision: vi.fn().mockImplementation(async () => {
-        throw Object.assign(new Error('Revision is READY, expected VERIFYING'), {
-          name: 'ConditionalCheckFailedException',
-        });
+  it('a stale VERIFYING view of a revision that is already READY does nothing', async () => {
+    const store = mutableStore({ ...verifyingRevision, status: 'READY' });
+    const runtimeClient = { send: vi.fn() };
+    const result = await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: instancesEnvironment,
+        revision: { ...verifyingRevision, status: 'VERIFYING' },
+        controlClient: { send: vi.fn() },
+        runtimeClient,
+        cleanupStore: cleanupStoreStub(),
       }),
-      updateEnvironment: vi.fn(),
-    };
-    const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
+    );
+    expect(result.leaseHeld).toBe(false);
+    expect(runtimeClient.send).not.toHaveBeenCalled();
+    expect(store.current.status).toBe('READY');
+  });
+
+  it('releases the lease after the poll, so the next poll can verify', async () => {
+    const store = mutableStore({ ...verifyingRevision });
+    const runtimeClient = { send: vi.fn().mockRejectedValue(transientError()) };
+    await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: instancesEnvironment,
+        revision: store.current,
+        controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
+        runtimeClient,
+        cleanupStore: cleanupStoreStub(),
+      }),
+    );
+    expect(store.releaseVerificationLease).toHaveBeenCalledTimes(1);
+    expect(
+      await store.acquireVerificationLease('x86-build', 'r-1', { owner: 'next', ttlMs: 60_000 }),
+    ).not.toBeNull();
+  });
+});
+
+describe('validation session ownership on unexpected failures', () => {
+  it('releases the minted session when a registry write fails mid-validation', async () => {
+    const store = mutableStore({ ...verifyingRevision });
+    const original = store.updateRevision.getMockImplementation();
+    store.updateRevision.mockImplementation(async (environmentId, revisionId, patch, options) => {
+      if (Object.hasOwn(patch, 'validationAttempts') && patch.validationAttempts > 0) {
+        throw new Error('registry write failed');
+      }
+      return original(environmentId, revisionId, patch, options);
+    });
     const runtimeClient = {
       send: vi.fn().mockImplementation(async (command) => {
+        if (command.constructor.name === 'InvokeAgentRuntimeCommand') throw transientError();
+        return {};
+      }),
+    };
+    await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: instancesEnvironment,
+        revision: store.current,
+        controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
+        runtimeClient,
+        cleanupStore: cleanupStoreStub(),
+      }),
+    );
+    const invoked = runtimeClient.send.mock.calls.find(
+      (call) => call[0].constructor.name === 'InvokeAgentRuntimeCommand',
+    )[0].input.runtimeSessionId;
+    const deletion = runtimeClient.send.mock.calls.find(
+      (call) => call[0].constructor.name === 'DeleteCapacityProviderSessionCommand',
+    );
+    expect(deletion[0].input.sessionId).toBe(invoked);
+  });
+});
+
+describe('validation session ownership when the release cannot be handed off', () => {
+  const failingQueue = () => ({
+    ...cleanupStoreStub(),
+    enqueue: vi.fn().mockRejectedValue(new Error('registry write throttled')),
+  });
+
+  it('keeps the session id on the revision (still VERIFYING) and retries next poll', async () => {
+    const store = mutableStore({ ...verifyingRevision });
+    const controlClient = { send: vi.fn().mockResolvedValue({ status: 'READY' }) };
+    const [capabilities, deterministic] = validationOk();
+    let invokes = 0;
+    const deleteFails = {
+      send: vi.fn().mockImplementation(async (command) => {
         if (command.constructor.name === 'InvokeAgentRuntimeCommand') {
-          throw Object.assign(new Error('session gone'), { name: 'ResourceNotFoundException' });
+          invokes += 1;
+          return invokes % 2 === 1 ? capabilities : deterministic;
         }
+        if (command.constructor.name === 'DeleteCapacityProviderSessionCommand') {
+          throw deleteFailure();
+        }
+        return {};
+      }),
+    };
+
+    const first = await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: instancesEnvironment,
+        revision: store.current,
+        controlClient,
+        runtimeClient: deleteFails,
+        cleanupStore: failingQueue(),
+      }),
+    );
+    expect(first.pending).toBe(true);
+    const sessionId = deleteFails.send.mock.calls[0][0].input.runtimeSessionId;
+    // Ownership was NOT dropped: the revision still names the session.
+    expect(store.current.status).toBe('VERIFYING');
+    expect(store.current.validationSessionId).toBe(sessionId);
+
+    // Next poll, storage healthy again: same session, released, then READY.
+    const healthy = {
+      send: vi
+        .fn()
+        .mockResolvedValueOnce(capabilities)
+        .mockResolvedValueOnce(deterministic)
+        .mockResolvedValue({}),
+    };
+    const second = await withEnv(() =>
+      verifyRuntime({
+        store,
+        environment: instancesEnvironment,
+        revision: store.current,
+        controlClient,
+        runtimeClient: healthy,
+        cleanupStore: cleanupStoreStub(),
+      }),
+    );
+    expect(second.revision.status).toBe('READY');
+    const deletion = healthy.send.mock.calls.find(
+      (call) => call[0].constructor.name === 'DeleteCapacityProviderSessionCommand',
+    );
+    expect(deletion[0].input.sessionId).toBe(sessionId);
+    expect(store.current.validationSessionId).toBeNull();
+  });
+
+  it('does not fail the revision on a validation failure whose release cannot be handed off', async () => {
+    const store = mutableStore({
+      ...verifyingRevision,
+      validationSessionId: 'managed-environment-r-1-persisted-session',
+      validationAttempts: 30,
+    });
+    const runtimeClient = {
+      send: vi.fn().mockImplementation(async (command) => {
+        if (command.constructor.name === 'DeleteCapacityProviderSessionCommand') {
+          throw deleteFailure();
+        }
+        if (command.constructor.name === 'InvokeAgentRuntimeCommand') throw transientError();
         return {};
       }),
     };
@@ -588,13 +696,14 @@ describe('overlapping validation polls', () => {
       verifyRuntime({
         store,
         environment: instancesEnvironment,
-        revision: stale,
-        controlClient,
+        revision: store.current,
+        controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
         runtimeClient,
-        cleanupStore: cleanupStoreStub(),
+        cleanupStore: failingQueue(),
       }),
     );
-    expect(result.ignored).toBe(true);
-    expect(result.revision.status).toBe('READY');
+    expect(result.pending).toBe(true);
+    expect(store.current.status).toBe('VERIFYING');
+    expect(store.current.validationSessionId).toBe('managed-environment-r-1-persisted-session');
   });
 });

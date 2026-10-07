@@ -813,6 +813,58 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     return getRevision('standard', revisionId);
   };
 
+  // Verification lease. The status poll runs every minute and may take up to
+  // its Lambda timeout, so two polls can see the same VERIFYING revision. The
+  // lease makes one of them the revision's only verifier until it finishes or
+  // the lease expires (a crashed holder never blocks the revision for longer
+  // than the TTL): only the holder may mint, reuse, retain or release the
+  // revision's validation session. Atomic: one conditional write. Returns the
+  // revision as the holder now sees it, or null when another poll holds it.
+  const acquireVerificationLease = async (environmentId, revisionId, { owner, ttlMs }) => {
+    const nowMs = Date.parse(now());
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: revisionKey(environmentId, revisionId),
+          UpdateExpression:
+            'SET verificationLeaseOwner = :owner, verificationLeaseExpiresAt = :expires',
+          ConditionExpression:
+            '#status = :verifying AND (attribute_not_exists(verificationLeaseExpiresAt) OR verificationLeaseExpiresAt < :now)',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':owner': owner,
+            ':expires': nowMs + ttlMs,
+            ':now': nowMs,
+            ':verifying': 'VERIFYING',
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  // Ends the lease, only if this owner still holds it.
+  const releaseVerificationLease = async (environmentId, revisionId, owner) => {
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: revisionKey(environmentId, revisionId),
+          UpdateExpression: 'REMOVE verificationLeaseOwner, verificationLeaseExpiresAt',
+          ConditionExpression: 'verificationLeaseOwner = :owner',
+          ExpressionAttributeValues: { ':owner': owner },
+        }),
+      );
+    } catch (error) {
+      if (error?.name !== 'ConditionalCheckFailedException') throw error;
+    }
+  };
+
   return {
     getEnvironment,
     getRevision,
@@ -823,6 +875,8 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     updateEnvironment,
     updateRevision,
     publishRevision,
+    acquireVerificationLease,
+    releaseVerificationLease,
     listRevisionsByStatus,
     markDependentsUpdateAvailable,
     reconcileBaseUpdates,

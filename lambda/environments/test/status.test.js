@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createStatusHandler, runtimeNameFor } from '../status.js';
+import { withVerificationLease } from './helpers/verification-lease.js';
 
 const environment = {
   environmentId: 'custom',
@@ -15,7 +16,7 @@ const revision = {
 
 const mutableStore = (initialRevision = revision) => {
   let current = initialRevision;
-  return {
+  return withVerificationLease({
     get current() {
       return current;
     },
@@ -30,7 +31,7 @@ const mutableStore = (initialRevision = revision) => {
     listRevisionsByStatus: vi
       .fn()
       .mockImplementation(async (status) => (current.status === status ? [current] : [])),
-  };
+  });
 };
 
 // Shared session-cleanup store (durable queue of failed releases); the poller

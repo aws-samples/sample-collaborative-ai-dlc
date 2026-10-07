@@ -10,6 +10,8 @@
 //   backend.validation.maxAttempts          retry budget for transient invokes
 //   backend.validation.isTransientInvokeError(error)
 //   backend.releaseValidationSession({ runtimeClient, revision, sessionId, cleanupStore, environmentId })
+//       resolves once the session is released or durably queued; throws
+//       SessionReleaseHandoffError otherwise (the caller keeps the session id)
 //
 // Adding a compute type means adding a file here, not editing the poller.
 

@@ -62,7 +62,7 @@ export const createMicrovmsBackend = ({ architecture = 'arm64' } = {}) => ({
       target: { agentRuntimeArn: revision.runtimeArn, qualifier: revision.runtimeEndpoint },
       sessionId,
     });
-    return { released: true, retained: false };
+    return { released: true };
   },
 });
 

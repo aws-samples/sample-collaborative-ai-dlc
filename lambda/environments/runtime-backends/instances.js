@@ -87,7 +87,7 @@ export const createInstancesBackend = ({ architecture = 'x86_64' } = {}) => ({
       target: { agentRuntimeArn: revision.runtimeArn, qualifier: revision.runtimeEndpoint },
       sessionId,
     });
-    const outcome = await releaseSession({
+    return releaseSession({
       client: runtimeClient,
       capacityProviderArn: revision.capacityProviderArn,
       sessionId,
@@ -95,7 +95,6 @@ export const createInstancesBackend = ({ architecture = 'x86_64' } = {}) => ({
       source: 'environment-validation',
       context: { environmentId, revisionId: revision.revisionId },
     });
-    return { ...outcome, retained: !outcome.released };
   },
 });
 

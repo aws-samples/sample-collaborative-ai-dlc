@@ -28,7 +28,7 @@ import { createEnvironmentStore } from './store.js';
 import { evaluateScanFindings } from './fixed-tool-recipe.js';
 import { runtimeBackendFor } from './runtime-backends/index.js';
 import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
-import { retryQueuedReleases } from '../shared/runtime-session.js';
+import { SessionReleaseHandoffError, retryQueuedReleases } from '../shared/runtime-session.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ecr = new ECRClient({});
@@ -393,16 +393,22 @@ const inspectImage = async ({
   }
 };
 
-// Validation-session identity. Backends that reuse one session across polls
-// (Instances: the first invoke provisions an EC2 instance) persist it on the
-// revision so the next poll reattaches instead of restarting the cold start;
-// per-poll backends (microVMs) mint a fresh one every time.
-const acquireValidationSession = async ({ store, backend, environment, revision }) => {
-  const reuse = backend.validation.reuseSession;
-  let session = reuse ? revision.validationSessionId : null;
-  if (session) return { session, revision };
-  session = `managed-environment-${revision.revisionId}-${randomUUID()}`.padEnd(33, '0');
-  if (!reuse) return { session, revision };
+// A poll holds a revision's verification lease for at most this long. It is
+// above the status Lambda's 300 s timeout, so a live holder never loses the
+// lease mid-poll and a crashed one blocks the revision for one extra minute.
+const VERIFICATION_LEASE_MS = 6 * 60 * 1000;
+
+// Validation-session identity, minted under the verification lease. Backends
+// that reuse one session across polls (Instances: the first invoke provisions
+// an EC2 instance) persist it on the revision so the next poll reattaches
+// instead of restarting the cold start; the lease guarantees no other poll
+// mints a competing id. Per-poll backends (microVMs) use a fresh one.
+const validationSessionFor = async ({ store, backend, environment, revision }) => {
+  if (backend.validation.reuseSession && revision.validationSessionId) {
+    return { session: revision.validationSessionId, revision };
+  }
+  const session = `managed-environment-${revision.revisionId}-${randomUUID()}`.padEnd(33, '0');
+  if (!backend.validation.reuseSession) return { session, revision };
   const updated = await store.updateRevision(
     environment.environmentId,
     revision.revisionId,
@@ -412,22 +418,9 @@ const acquireValidationSession = async ({ store, backend, environment, revision 
   return { session, revision: updated };
 };
 
-// Runs the two validation commands on the session and applies the backend's
-// session policy on the way out: a transient invoke error on a reusable
-// session keeps it alive for the next poll (bounded by maxAttempts); every
-// other outcome — success, hard failure, exhausted budget — releases it. The
-// poller itself never decides what a transient error is or what "release"
-// means for the compute type.
-const runValidationCommands = async ({
-  store,
-  backend,
-  environment,
-  revision,
-  runtimeClient,
-  cleanupStore,
-  session,
-}) => {
-  let retain = false;
+// The two validation commands. Returns the outcome instead of throwing, so
+// the caller decides retain vs release before anything else happens.
+const attemptValidation = async ({ runtimeClient, revision, session }) => {
   try {
     const capabilities = await invokeValidationCommand({
       runtimeClient,
@@ -455,40 +448,39 @@ const runValidationCommands = async ({
     }
     return { capabilities, deterministic };
   } catch (error) {
-    const transient =
-      backend.validation.reuseSession &&
-      (backend.validation.isTransientInvokeError(error) ||
-        RETRYABLE_CONTROL_ERRORS.has(error?.name));
-    if (!transient) throw error;
-    const attempts = Number(revision.validationAttempts ?? 0) + 1;
-    if (attempts > backend.validation.maxAttempts) {
-      throw new Error(
-        `runtime validation did not complete within ${backend.validation.maxAttempts} polls: ${error?.message ?? error}`,
-        { cause: error },
-      );
-    }
-    retain = true;
-    await store.updateRevision(
-      environment.environmentId,
-      revision.revisionId,
-      { validationAttempts: attempts },
-      { fromStatus: 'VERIFYING' },
-    );
-    throw error;
-  } finally {
-    if (!retain) {
-      await backend.releaseValidationSession({
-        runtimeClient,
-        revision,
-        sessionId: session,
-        cleanupStore,
-        environmentId: environment.environmentId,
-      });
-    }
+    return { error };
   }
 };
 
-const verifyRuntime = async ({
+const isRetryableValidationError = (backend, error) =>
+  RETRYABLE_CONTROL_ERRORS.has(error?.name) || backend.validation.isTransientInvokeError(error);
+
+const verifyRuntime = async (args) => {
+  const { store, environment, revision } = args;
+  const owner = randomUUID();
+  const leased = await store.acquireVerificationLease(
+    environment.environmentId,
+    revision.revisionId,
+    { owner, ttlMs: VERIFICATION_LEASE_MS },
+  );
+  // Another poll is verifying this revision (or it already left VERIFYING).
+  if (!leased) return { environment, revision, pending: true, leaseHeld: false };
+  try {
+    return await verifyLeasedRuntime({ ...args, revision: leased });
+  } finally {
+    await store
+      .releaseVerificationLease(environment.environmentId, revision.revisionId, owner)
+      .catch((error) =>
+        logger.warn('verification lease release failed — it expires on its own', {
+          environmentId: environment.environmentId,
+          revisionId: revision.revisionId,
+          error: error?.message ?? String(error),
+        }),
+      );
+  }
+};
+
+const verifyLeasedRuntime = async ({
   store,
   environment,
   revision,
@@ -497,6 +489,35 @@ const verifyRuntime = async ({
   cleanupStore = defaultCleanupStore,
 }) => {
   const backend = runtimeBackendFor(environment);
+  // The validation session this poll owns and has not discharged yet. Every
+  // exit that does not retain it releases it first (see dischargeSession).
+  let heldSession = null;
+  const dischargeSession = async () => {
+    if (!heldSession) return true;
+    try {
+      await backend.releaseValidationSession({
+        runtimeClient,
+        revision,
+        sessionId: heldSession,
+        cleanupStore,
+        environmentId: environment.environmentId,
+      });
+      heldSession = null;
+      return true;
+    } catch (error) {
+      if (!(error instanceof SessionReleaseHandoffError)) throw error;
+      logger.error(
+        'Validation session release could not be handed off — keeping ownership',
+        error,
+        {
+          environmentId: environment.environmentId,
+          revisionId: revision.revisionId,
+          sessionId: heldSession,
+        },
+      );
+      return false;
+    }
+  };
   try {
     if (!revision.runtimeArn || !revision.runtimeId || !revision.runtimeVersion) {
       throw new Error('runtime identity is incomplete');
@@ -570,22 +591,54 @@ const verifyRuntime = async ({
     if (endpoint.status !== 'READY') {
       throw new Error(endpoint.failureReason || `endpoint is ${endpoint.status}`);
     }
-    const { session, revision: sessionRevision } = await acquireValidationSession({
-      store,
-      backend,
-      environment,
-      revision,
-    });
-    revision = sessionRevision;
-    const { capabilities, deterministic } = await runValidationCommands({
-      store,
-      backend,
-      environment,
-      revision,
-      runtimeClient,
-      cleanupStore,
-      session,
-    });
+    const minted = await validationSessionFor({ store, backend, environment, revision });
+    revision = minted.revision;
+    const { session } = minted;
+    heldSession = session;
+    let outcome = await attemptValidation({ runtimeClient, revision, session });
+
+    // A reusable session that hit a transient error (the instance is still
+    // booting) is RETAINED for the next poll, within the backend's budget.
+    if (
+      outcome.error &&
+      backend.validation.reuseSession &&
+      isRetryableValidationError(backend, outcome.error)
+    ) {
+      const attempts = Number(revision.validationAttempts ?? 0) + 1;
+      if (attempts <= backend.validation.maxAttempts) {
+        await store.updateRevision(
+          environment.environmentId,
+          revision.revisionId,
+          { validationAttempts: attempts },
+          { fromStatus: 'VERIFYING' },
+        );
+        // Retained: the revision row owns it until the next poll.
+        heldSession = null;
+        return { environment, revision, pending: true };
+      }
+      outcome = {
+        error: new Error(
+          `runtime validation did not complete within ${backend.validation.maxAttempts} polls: ${outcome.error?.message ?? outcome.error}`,
+          { cause: outcome.error },
+        ),
+      };
+    }
+
+    // Every other outcome ends the session. It is discharged BEFORE the
+    // revision forgets its id: if the release can be neither completed nor
+    // handed off, the revision keeps the id (still VERIFYING) and the next
+    // poll repeats the attempt — see the ownership contract in
+    // shared/runtime-session.js.
+    if (!(await dischargeSession())) return { environment, revision, pending: true };
+
+    if (outcome.error) {
+      // microVMs: a fresh session next poll.
+      if (isRetryableValidationError(backend, outcome.error)) {
+        return { environment, revision, pending: true };
+      }
+      throw outcome.error;
+    }
+    const { capabilities, deterministic } = outcome;
     const completedAt = new Date().toISOString();
     const elevatedFindings =
       Number(revision.scanFindings?.severityCounts?.CRITICAL ?? 0) +
@@ -626,10 +679,11 @@ const verifyRuntime = async ({
     });
     return { environment, revision: ready };
   } catch (error) {
-    if (
-      RETRYABLE_CONTROL_ERRORS.has(error?.name) ||
-      backend.validation.isTransientInvokeError(error)
-    ) {
+    // An unexpected failure while this poll still owns the session (e.g. a
+    // registry write) must not drop its id: release it first, or leave the
+    // revision as it is when the release cannot be handed off.
+    if (!(await dischargeSession())) return { environment, revision, pending: true };
+    if (RETRYABLE_CONTROL_ERRORS.has(error?.name)) {
       return { environment, revision, pending: true };
     }
     if (isConditionalFailure(error)) {

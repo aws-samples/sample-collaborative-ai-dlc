@@ -93,7 +93,7 @@ describe('microVMs backend', () => {
       revision,
       sessionId: 's-1',
     });
-    expect(out).toEqual({ released: true, retained: false });
+    expect(out).toEqual({ released: true });
     expect(runtimeClient.send).toHaveBeenCalledTimes(1);
     expect(runtimeClient.send.mock.calls[0][0].constructor.name).toBe('StopRuntimeSessionCommand');
   });
@@ -165,7 +165,7 @@ describe('Instances backend', () => {
       cleanupStore,
       environmentId: 'x86-build',
     });
-    expect(out).toMatchObject({ released: false, queued: true, retained: true });
+    expect(out).toMatchObject({ released: false, queued: true });
     expect(runtimeClient.send.mock.calls.map((c) => c[0].constructor.name)).toEqual([
       'StopRuntimeSessionCommand',
       'DeleteCapacityProviderSessionCommand',
