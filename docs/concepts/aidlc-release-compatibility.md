@@ -299,6 +299,12 @@ bounded by the same three per intent.
   agent's reason. Code generation resumes from that row, so the same resets,
   archive of both stages, reason in the prompt and cap tally apply, and a
   relaunch takes a new decision rather than reusing the earlier one.
+- An autonomous jump does not run on to build-and-test unattended. Code
+  generation runs again under a new attempt, so it asks for Plan Approval
+  again, and its validation gate opens for a human again: the grant never
+  waives a gate that carries Plan Approval, and the reset leaves no earlier
+  approval in force. The jump replaces the human's loop-back answer at
+  build-and-test, not those two stops.
 - Residual: the jump, like upstream's, depends on the agent's recommendation. A
   build-and-test stage that succeeds with failing tests but records no
   recommendation and raises no finding has clean evidence, so an autonomous

@@ -868,6 +868,13 @@ describe('construction autonomy: the lane ladder must not confer the sequential 
 });
 
 describe('construction autonomy: the build-and-test loop-back', () => {
+  // The loop-back target authors `code-generation-plan`, which is exactly what
+  // makes `resolveStagePolicy` require Plan Approval on it in every release that
+  // ships the construction protocol. Its gate is therefore never waived.
+  const CODE_GENERATION = constructionStage('code-generation', {
+    outputArtifacts: [{ artifact: 'code-generation-plan' }],
+    policy: { ...POLICY, planApproval: 'required' },
+  });
   // `build-test-results` is the authored output that declares which stage may
   // recommend the jump, so the fixture carries it for the same reason a real plan
   // does: the offer is withheld from any stage that does not author it.
@@ -876,9 +883,7 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     plan: {
       stages: [
         ANCHOR,
-        constructionStage('code-generation', {
-          outputArtifacts: [{ artifact: 'code-generation-plan' }],
-        }),
+        CODE_GENERATION,
         constructionStage('build-and-test', {
           outputArtifacts: [{ artifact: 'build-test-results' }],
           policy: { ...POLICY, loopBack: 'human-offered' },
@@ -899,14 +904,81 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     ...extra,
   });
 
+  // Each stage row's attempt, bumped by its reset like the real store does, and
+  // the attempts whose plan the human approved at code generation's Plan
+  // Approval, which the container records as a `plan-approval` receipt.
+  let attempts;
+  let planApprovedAttempts;
+  let approvesPlanAt;
+
   beforeEach(() => {
     execution = { ...META, constructionGateAutonomy: 'autonomous', loopBackCount: 0 };
     deps.loadPlan = vi.fn(async () => LOOPBACK_PLAN());
     stageVerdicts = (stageId) => observed(stageId);
+    attempts = new Map();
+    planApprovedAttempts = new Set();
+    approvesPlanAt = () => true;
+    const attemptOf = (stageInstanceId) => attempts.get(stageInstanceId) ?? 0;
+    const stageRow = deps.store.getStage.getMockImplementation();
+    deps.store.getStage = vi.fn(async (executionId, stageInstanceId) => ({
+      ...(await stageRow(executionId, stageInstanceId)),
+      attempt: attemptOf(stageInstanceId),
+    }));
+    const reset = deps.store.resetStageRow.getMockImplementation();
+    deps.store.resetStageRow = vi.fn(async (args) => {
+      attempts.set(args.stageInstanceId, attemptOf(args.stageInstanceId) + 1);
+      return reset(args);
+    });
+    deps.store.listReceipts = vi.fn(async (_executionId, { stageInstanceId, attempt }) =>
+      stageInstanceId === 'si-code-generation' && planApprovedAttempts.has(attempt)
+        ? [{ kind: 'plan-approval', stageInstanceId, attempt, decidedAt: 'T' }]
+        : [],
+    );
+    const runtime = deps.invokeRuntime.getMockImplementation();
+    deps.invokeRuntime = vi.fn(async (payload) => {
+      const attempt = attemptOf('si-code-generation');
+      if (
+        payload.command === 'run-stage-start' &&
+        payload.stageId === 'code-generation' &&
+        approvesPlanAt(attempt)
+      ) {
+        planApprovedAttempts.add(attempt);
+      }
+      return runtime(payload);
+    });
     // The agent recorded a recommendation on build-and-test's row. The engine
     // clears it in its own step after the gate, so it is offered exactly once —
     // which is also what keeps this fixture from looping to the cap.
     recommendations.set('si-build-and-test', 'three suites fail');
+  });
+
+  const codeGenerationGates = () =>
+    openedGates().filter((gate) => gate.stageInstanceId === 'si-code-generation');
+
+  // What an autonomous loop-back leads to: code generation runs again under a new
+  // attempt, so it asks for Plan Approval again, and its validation gate (never
+  // waivable, because Plan Approval applies) opens for a human again.
+  it("stops at code generation's Plan Approval and its gate before and after the jump", async () => {
+    await run();
+    expect(eventsOfType('v2.loopback.recorded')).toHaveLength(1);
+    expect([...planApprovedAttempts]).toEqual([0, 1]);
+    const gates = codeGenerationGates();
+    expect(gates).toHaveLength(2);
+    for (const gate of gates) {
+      expect(gate.options).toEqual(['approve', 'request-changes']);
+      expect(gate.findings ?? []).toEqual([]);
+    }
+    expect(
+      eventsOfType('v2.gate.auto_approved').map((event) => event.detail.stageId),
+    ).not.toContain('code-generation');
+  });
+
+  it('does not carry the first Plan Approval over to the re-run', async () => {
+    approvesPlanAt = (attempt) => attempt === 0;
+    await run();
+    const [first, rerun] = codeGenerationGates();
+    expect(first.findings ?? []).toEqual([]);
+    expect(rerun.findings.map((item) => item.code)).toEqual(['plan_approval_missing']);
   });
 
   it('takes the jump itself, with the protocol marker as the recorded answer', async () => {
@@ -1089,9 +1161,7 @@ describe('construction autonomy: the build-and-test loop-back', () => {
       plan: {
         stages: [
           ANCHOR,
-          constructionStage('code-generation', {
-            outputArtifacts: [{ artifact: 'code-generation-plan' }],
-          }),
+          CODE_GENERATION,
           constructionStage('build-and-test', {
             outputArtifacts: [{ artifact: 'build-and-test-out' }],
             policy: { ...POLICY, loopBack: 'human-offered' },
