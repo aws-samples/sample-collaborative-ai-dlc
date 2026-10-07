@@ -8794,6 +8794,32 @@ describe('AI-DLC per-intent release selection', () => {
     expect(meta.startedAt).toEqual(expect.any(String));
   });
 
+  it.each([
+    ['the stable channel', () => seedStableChannel(pinB.releaseId), SCOPE_ONLY_IN_B, undefined],
+    ['the deployment ref', () => {}, 'feature', shaB],
+  ])(
+    'freezes an autonomous grant onto an intent pinned through %s with no release selected',
+    async (_label, seedSelection, scope, deploymentSha) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedDeploymentWorkflowAtV1(deploymentSha ? 'feature' : undefined, deploymentSha);
+      seedRegistryRecord(bundleB, 'v2.9.0');
+      seedSelection();
+
+      const res = await createIntent(sub, projectId, {
+        title: 'I',
+        prompt: 'Build X',
+        scope,
+        constructionGateAutonomy: 'autonomous',
+      });
+
+      expect(res.statusCode).toBe(201);
+      const meta = metaFor(JSON.parse(res.body).id);
+      expect(meta.methodologyRelease).toEqual(pinB);
+      expect(meta.constructionGateAutonomy).toBe('autonomous');
+    },
+  );
+
   it('auto-pins when the release CAN reproduce the plan, and persists no SYSTEM pins', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
