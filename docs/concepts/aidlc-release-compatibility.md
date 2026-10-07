@@ -347,6 +347,11 @@ all reproduced.
   always stays human is the first sequential construction gate after the lanes
   (for example build-and-test), and that is where `grant-autonomy` is offered.
   Non-construction phases are untouched.
+- Residual: a waived gate judges the stage's evidence, not its test results. A
+  build-and-test stage that succeeds with failing tests but raises no finding
+  and records no loop-back recommendation has clean evidence, so an autonomous
+  intent approves it. A blocking results sensor is what turns those failures
+  into a halt.
 
 ## Persona sessions
 
