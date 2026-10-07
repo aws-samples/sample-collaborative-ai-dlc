@@ -337,6 +337,73 @@ describe('validation gate with findings', () => {
     expect(eventTypes()).toContain('v2.stage.validated');
   });
 
+  it("keeps a SCRIPT sensor's per-file reason on the override audit row", async () => {
+    // A script sensor reports once per matching file, so its reason lives inside
+    // `detail.files[]`. Reading only the top level recorded `reason: null` — an
+    // audit row that cannot say what the human waved through.
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      gateSensorVerdicts: [
+        {
+          sensorId: 'linter',
+          result: 'FAIL',
+          severity: 'blocking',
+          detail: {
+            files: [
+              { file: 'src/ok.ts', result: 'PASS', detail: { pass: true } },
+              { file: 'src/app.ts', result: 'FAIL', detail: { pass: false, reason: '2 problems' } },
+            ],
+          },
+        },
+      ],
+    });
+    deps.store.getHumanTask = answeredGate({
+      decision: 'override-and-approve',
+      reason: 'Accepted for this gate test.',
+    });
+
+    expect((await run()).ok).toBe(true);
+    const override = deps.store.appendEvent.mock.calls
+      .map(([args]) => args)
+      .find((args) => args.type === 'v2.gate.override');
+    expect(override.detail.sensors).toEqual([
+      { sensorId: 'linter', result: 'FAIL', reason: 'src/app.ts: 2 problems' },
+    ]);
+  });
+
+  it('records the reason of the file that failed, not of one that timed out silently', async () => {
+    stageVerdict = () => ({
+      ok: true,
+      state: 'SUCCEEDED',
+      gateSensorVerdicts: [
+        {
+          sensorId: 'linter',
+          result: 'FAIL',
+          severity: 'blocking',
+          detail: {
+            files: [
+              { file: 'src/a.ts', result: 'INCONCLUSIVE', timedOut: true, detail: null },
+              { file: 'src/b.ts', result: 'FAIL', timedOut: false, detail: { reason: '2 errors' } },
+            ],
+          },
+        },
+      ],
+    });
+    deps.store.getHumanTask = answeredGate({
+      decision: 'override-and-approve',
+      reason: 'Accepted for this gate test.',
+    });
+
+    expect((await run()).ok).toBe(true);
+    const override = deps.store.appendEvent.mock.calls
+      .map(([args]) => args)
+      .find((args) => args.type === 'v2.gate.override');
+    expect(override.detail.sensors).toEqual([
+      { sensorId: 'linter', result: 'FAIL', reason: 'src/b.ts: 2 errors' },
+    ]);
+  });
+
   it('records the override reason on every receipt and on the audit event', async () => {
     stageVerdict = () => ({ ok: true, state: 'SUCCEEDED', gateSensorVerdicts: [BLOCKING_SENSOR] });
     deps.store.getHumanTask = answeredGate({
@@ -507,6 +574,11 @@ describe('validation gate with findings', () => {
       blockingSensorOverride: true,
       sensorIds: ['claim-sources'],
     });
+    // The audit row names WHAT was overridden, not just that something was: the
+    // sensor's own reason has to survive onto it (upstream §2.6).
+    expect(sensorReceipt.detail.sensors).toEqual([
+      { sensorId: 'claim-sources', result: 'FAIL', reason: 'unsourced claim' },
+    ]);
     const override = deps.store.appendEvent.mock.calls
       .map(([args]) => args)
       .find((args) => args.type === 'v2.gate.override');

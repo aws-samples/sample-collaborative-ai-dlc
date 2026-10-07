@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { createSensorRunner, __test } from '../sensor-runner.js';
+import { sensorGateFindings } from '../../shared/gate-preconditions.js';
 
 const { globToRegExp, resultFromScript } = __test;
 
@@ -235,6 +236,42 @@ describe('runStageSensors — script kind', () => {
     });
     expect(verdicts[0]).toMatchObject({ kind: 'script', result: 'PASS', held: false });
     expect(verdicts[0].detail.files[0].file).toBe('src/a.ts');
+  });
+
+  // PRODUCER → CONSUMER: the runner's own verdict, handed straight to the gate
+  // evaluator that renders it for the human. A script sensor reports per file, so
+  // the script's `reason` lives inside `detail.files[]` — a consumer reading only
+  // the top level shows "Sensor linter (gate) → FAIL" with nothing else, which is
+  // the whole decision the reviewer is being asked to make.
+  it("hands the script's reason to the gate finding a reviewer reads", async () => {
+    await mkdir(path.join(ws, 'src'), { recursive: true });
+    await writeFile(path.join(ws, 'src', 'a.ts'), 'export const x = 1;');
+    const runner = createSensorRunner({
+      graph: null,
+      loadBlockScript: async () => 'SENSOR_SCRIPT_BODY',
+      workspaceDir: ws,
+      spawnFn: fakeSpawn('{"pass":false,"reason":"2 problems (2 errors, 0 warnings)"}'),
+    });
+    const verdicts = await runner.runStageSensors({
+      sensors: [
+        {
+          sensorId: 'linter',
+          severity: 'blocking',
+          runtime: 'bun',
+          command: 'bun <runtime-managed>/tools/aidlc-sensor-linter.ts',
+          matches: '**/*.{ts,js}',
+          timeoutSeconds: 5,
+        },
+      ],
+      stageId: 'code-generation',
+    });
+    expect(verdicts[0]).toMatchObject({ result: 'FAIL', held: true });
+    expect(verdicts[0].detail.reason).toBeUndefined();
+
+    const findings = sensorGateFindings({ sensorVerdicts: verdicts });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].quote).toBe('src/a.ts: 2 problems (2 errors, 0 warnings)');
+    expect(findings[0].detail.reason).toBe('src/a.ts: 2 problems (2 errors, 0 warnings)');
   });
 
   it('BLOCKED when a script sensor has no script bytes', async () => {
