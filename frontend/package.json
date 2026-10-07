@@ -76,6 +76,14 @@
     "vite": "^8.0.16",
     "vitest": "^4.1.11"
   },
+  "overrides": {
+    "@tailwindcss/typography": {
+      "postcss-selector-parser": "^7.1.6"
+    },
+    "mermaid": {
+      "katex": "^0.18.2"
+    }
+  },
   "engines": {
     "node": ">=22.22.0"
   }
