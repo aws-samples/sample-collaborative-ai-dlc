@@ -100,6 +100,8 @@ let ctx;
 let stageVerdicts;
 let execution;
 let recommendations;
+// Every gate row the run wrote, keyed by id, as the store would hold it.
+let storedGates;
 
 const makeRuntime = () =>
   vi.fn(async (payload) => {
@@ -159,6 +161,7 @@ beforeEach(() => {
   stageVerdicts = cleanVerdict;
   execution = { ...META };
   recommendations = new Map();
+  storedGates = new Map();
   deps = {
     store: {
       getExecution: vi.fn(async () => execution),
@@ -168,7 +171,19 @@ beforeEach(() => {
         }
         return {};
       }),
-      createHumanTask: vi.fn(async (args) => ({ ...args, status: 'pending' })),
+      createHumanTask: vi.fn(async (args) => {
+        const row = { ...args, status: 'pending' };
+        storedGates.set(args.humanTaskId, row);
+        return row;
+      }),
+      // Same CAS as the real store: only a pending row can be answered.
+      answerHumanTask: vi.fn(async ({ humanTaskId, ...answer }) => {
+        const row = storedGates.get(humanTaskId);
+        if (!row || row.status !== 'pending') return null;
+        const answered = { ...row, ...answer };
+        storedGates.set(humanTaskId, answered);
+        return answered;
+      }),
       setGateCallbackId: vi.fn(async () => ({})),
       supersedeHumanTask: vi.fn(async () => ({})),
       getHumanTask: answerWithOfferedOption(),
@@ -789,8 +804,78 @@ describe('construction autonomy: the build-and-test loop-back', () => {
       'Autonomous loop-back 1 per construction protocol module',
     );
     expect(execution.loopBackCount).toBe(1);
-    // The jump was taken without ever opening build-and-test's gate.
-    expect(gateFor('si-build-and-test')).toBeNull();
+    // The jump was taken without parking on build-and-test's gate: its row was
+    // written already answered, and no callback ever waited on it.
+    const row = storedGates.get(gateFor('si-build-and-test').humanTaskId);
+    expect(row.status).toBe('rejected');
+    expect(deps.store.setGateCallbackId).not.toHaveBeenCalledWith(
+      expect.objectContaining({ humanTaskId: row.humanTaskId }),
+    );
+  });
+
+  const dispatchedResumes = () =>
+    deps.invokeRuntime.mock.calls
+      .map(([payload]) => payload)
+      .filter((payload) => payload.command === 'run-stage-start' && payload.resumeFrom)
+      .map((payload) => [payload.stageId, payload.resumeFrom]);
+  const runIdOf = (call = 0) =>
+    deps.store.updateExecution.mock.calls.map(([args]) => args.orchestratorRunId).filter(Boolean)[
+      call
+    ];
+
+  // The container re-reads the gate it resumes from. A jump whose gate exists
+  // only in the orchestrator's memory fails the target's re-run with
+  // gate_not_found, and loses the archive and the reason that hang off the row.
+  it('names a stored, answered gate row in every resumeFrom it dispatches', async () => {
+    await run();
+    const resumes = dispatchedResumes();
+    expect(resumes.map(([stageId]) => stageId)).toEqual(['code-generation']);
+    for (const [, resumeFrom] of resumes) {
+      expect(storedGates.get(resumeFrom)).toMatchObject({
+        stageInstanceId: 'si-build-and-test',
+        kind: 'validation',
+        status: 'rejected',
+        answer: {
+          decision: 'loop-back',
+          userInput: 'Autonomous loop-back 1 per construction protocol module',
+        },
+        answeredBy: null,
+        loopBackTarget: 'code-generation',
+        loopBackReason: 'three suites fail',
+      });
+    }
+  });
+
+  it('retires instead of jumping when a cancel superseded the row first', async () => {
+    const create = deps.store.createHumanTask.getMockImplementation();
+    deps.store.createHumanTask = vi.fn(async (args) => {
+      const row = await create(args);
+      if (args.options?.length === 1 && args.options[0] === 'loop-back') {
+        storedGates.set(args.humanTaskId, { ...row, status: 'superseded' });
+      }
+      return row;
+    });
+    deps.store.getHumanTask = vi.fn(async (_e, id) => storedGates.get(id) ?? null);
+    const out = await run();
+    expect(out).toMatchObject({ ok: false, reason: 'retired' });
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+  });
+
+  // Run-scoped like every engine gate id, so a relaunch that reaches the same
+  // stage and round takes a NEW decision: both rows reset again and the cap is
+  // spent again, instead of the store reading the earlier jump as already done.
+  it('takes a distinct, run-scoped decision on a relaunch', async () => {
+    await run();
+    const [, first] = dispatchedResumes()[0];
+    recommendations.set('si-build-and-test', 'three suites fail');
+    deps.invokeRuntime.mockClear();
+    ctx = makeCtx();
+    await run();
+    const [, second] = dispatchedResumes()[0];
+    expect(first).toContain(runIdOf(0));
+    expect(second).toContain(runIdOf(1));
+    expect(second).not.toBe(first);
+    expect(execution.loopBackCount).toBe(2);
   });
 
   it.each([
@@ -901,7 +986,7 @@ describe('construction autonomy: the build-and-test loop-back', () => {
       stageInstanceId: 'si-build-and-test',
       countsAgainstCap: false,
     });
-    expect(recommender.loopBackId).toMatch(/^auto-loopback-si-build-and-test-/);
+    expect(recommender.loopBackId).toMatch(/^eg-validation-si-build-and-test-/);
     expect(target).toMatchObject({
       stageInstanceId: 'si-code-generation',
       loopBackId: recommender.loopBackId,

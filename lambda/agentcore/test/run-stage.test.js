@@ -22,6 +22,7 @@ import {
   stageInstanceId as planStageInstanceId,
 } from '../../shared/v2-execution-plan.js';
 import { evaluateGatePreconditions } from '../../shared/gate-preconditions.js';
+import { autonomousLoopBackGate } from '../../shared/construction-autonomy.js';
 
 // A flat-frontmatter STAGE block + a minimal library/workflow that resolves to a
 // single in-scope stage.
@@ -2488,6 +2489,40 @@ describe('runStage — resume mode', () => {
     // The marker is stamped only after a COMPLETE archive, so a replay of a
     // finished archive skips it and the pass-1 heads this attempt is about to write
     // are not archived as if they were pass 0's.
+    // The jump an autonomous run takes itself writes the same kind of row a human
+    // loop-back leaves, so the target's re-run finds it, archives, and is told why.
+    it('re-enters fresh from the gate row an autonomous loop-back stores', async () => {
+      const AUTO_ID = 'eg-validation-si-bt-lb0-0-run-1';
+      const { open, answer } = autonomousLoopBackGate({
+        humanTaskId: AUTO_ID,
+        stage: { stageId: 'build-and-test', stageInstanceId: RECOMMENDER_INSTANCE_ID },
+        loopBack: {
+          offered: true,
+          target: { stageId: 'requirements-analysis' },
+          reason: 'payment integration tests fail',
+          spent: 0,
+        },
+      });
+      const { deps, archiveArtifactsForStages, order } = archiveHarness();
+      deps.store.getHumanTask = async (_executionId, humanTaskId) =>
+        humanTaskId === AUTO_ID ? { ...open, ...answer } : null;
+      let promptSeen = null;
+      deps.spawnFn = () => {
+        order.push('spawn');
+        return { ...okSpawn(), stdin: { end: (prompt) => (promptSeen = prompt) } };
+      };
+
+      const res = await runStage({ ...baseArgs, resumeFrom: AUTO_ID }, deps);
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(archiveArtifactsForStages.mock.calls[0][0]).toMatchObject({
+        stageInstanceIds: [BASE_STAGE_INSTANCE_ID, RECOMMENDER_INSTANCE_ID],
+        restartId: `loopback-${AUTO_ID}`,
+      });
+      expect(order[0]).toBe('archive');
+      expect(promptSeen).toContain('payment integration tests fail');
+    });
+
     it('does not archive again when this decision already archived', async () => {
       const { deps, archiveArtifactsForStages } = archiveHarness({
         stage: { loopBackArchiveId: GATE_ID },

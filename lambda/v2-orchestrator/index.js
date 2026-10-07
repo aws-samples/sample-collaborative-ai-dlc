@@ -67,7 +67,7 @@ import {
   GATE_AUTO_APPROVED_EVENT,
   GRANT_AUTONOMY_OPTION,
   autonomousGateApplies,
-  autonomousLoopBackInput,
+  autonomousLoopBackGate,
   grantAutonomyOffered,
 } from '../shared/construction-autonomy.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
@@ -1710,9 +1710,6 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
               },
             );
           }
-          const autonomousLoopBackMarker = autoLoopBack
-            ? autonomousLoopBackInput(loopBack.spent + 1)
-            : null;
           const validation = autoApprove
             ? {
                 gate: {
@@ -1724,31 +1721,41 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                 },
               }
             : autoLoopBack
-              ? {
-                  gate: {
-                    // The cap is keyed on this id (`resetStageRow`'s `loopBackId`), so a
-                    // waived jump MUST carry one or the bound would never be recorded and
-                    // an autonomous run could loop past three. Derived from the stage and
-                    // the validation round, so it is stable across a durable replay and
-                    // distinct per jump — the same two properties a human gate id has.
-                    humanTaskId: `auto-loopback-${stage.stageInstanceId ?? stage.stageId}-${round}`,
-                    status: 'answered',
-                    answer: {
-                      decision: LOOP_BACK_OPTION,
-                      userInput: autonomousLoopBackMarker,
+              ? // The jump autonomy takes is STORED as the validation gate row a
+                // human loop-back leaves, already answered, under the id this gate
+                // would have had. The target's re-run resumes from that row (it
+                // archives the rewound stages and reads the reason from it), the
+                // stage resets are keyed on its id, and the id carries the run, so
+                // a relaunch at the same stage and round is a new decision. From
+                // here the run takes the human loop-back path unchanged. One step:
+                // a replay finds the row answered and reads it back. A cancel that
+                // superseded the row before it was answered retires the run, as it
+                // does for any engine gate.
+                asEngineGateResult(
+                  await ctx.step(
+                    `auto-loop-back-${stage.stageInstanceId ?? stage.stageId}-${round}`,
+                    async () => {
+                      const { open, answer } = autonomousLoopBackGate({
+                        humanTaskId: `eg-validation-${stage.stageInstanceId ?? stage.stageId}-${round}-${runId}`,
+                        stage,
+                        loopBack,
+                      });
+                      await store.createHumanTask({ executionId, ...open }).catch((error) => {
+                        if (error?.name !== 'ConditionalCheckFailedException') throw error;
+                      });
+                      return (
+                        (await store.answerHumanTask({
+                          executionId,
+                          humanTaskId: open.humanTaskId,
+                          ...answer,
+                        })) ??
+                        (await store.getHumanTask(executionId, open.humanTaskId, {
+                          consistentRead: true,
+                        }))
+                      );
                     },
-                    answeredBy: null,
-                    answeredByName: autonomousLoopBackMarker,
-                    // Stamped for the same reason the human gate carries it: the
-                    // target's resume bypass is keyed on the ENGINE's offer, not on
-                    // the answer, so a jump the engine took itself must name the
-                    // stage it resolved. Without it the autonomous jump is the one
-                    // loop-back whose answer cannot be told apart from an answer no
-                    // engine ever offered.
-                    loopBackTarget: loopBack.target.stageId,
-                    loopBackReason: loopBack.reason,
-                  },
-                }
+                  ),
+                )
               : await awaitEngineGate(ctx, sectionToolkit, {
                   name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
                   kind: 'validation',
@@ -2744,6 +2751,10 @@ const producedArtifactTypes = (producedHeads) =>
   Array.isArray(producedHeads)
     ? [...new Set(producedHeads.map((head) => head?.artifactType).filter(Boolean))]
     : null;
+
+// The `awaitEngineGate` result shape for a gate row read directly.
+const asEngineGateResult = (gate) =>
+  !gate || gate.status === 'superseded' ? { superseded: true } : { gate };
 
 const findingLine = (item) =>
   [
