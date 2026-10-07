@@ -1578,6 +1578,26 @@ describe('runStage — LLM reviewer axis', () => {
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    // Unpinned: the stage result, and so the durable history, is unchanged.
+    expect(res.reviewAdvisory).toBeUndefined();
+  });
+
+  // Release mode with a scope policy: the plan stage carries a resolved policy.
+  const gatedReleaseLibrary = () => {
+    const lib = libWithReviewer({ humanValidation: 'required' });
+    lib.fromRelease = true;
+    lib.scopesById = { feature: { id: 'feature', reviewCap: 'adversarial' } };
+    return lib;
+  };
+
+  it('hands a terminal NOT-READY to the gate of a gated release-mode stage', async () => {
+    const deps = baseDeps({
+      store: storeWithVerdict('NOT-READY', 'human should decide'),
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: gatedReleaseLibrary() }),
+    });
+    const res = await runStage(baseArgs, deps);
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
     expect(res.reviewAdvisory).toMatchObject({
       reviewerAgent: 'aidlc-reviewer-agent',
       advisory: false,
@@ -1590,10 +1610,7 @@ describe('runStage — LLM reviewer axis', () => {
     const deps = baseDeps({
       store: storeWithVerdict('READY'),
       spawnFn: okSpawn,
-      loadLibrary: async () => ({
-        workflow: workflow(),
-        library: libWithReviewer({ humanValidation: 'required' }),
-      }),
+      loadLibrary: async () => ({ workflow: workflow(), library: gatedReleaseLibrary() }),
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });

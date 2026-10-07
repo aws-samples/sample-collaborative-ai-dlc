@@ -4590,12 +4590,14 @@ export const runStage = async (
         'reviewer_not_ready',
         verdict?.detail?.findings ?? `${reviewerAgent} returned NOT-READY`,
       );
-    } else if (notReady) {
+    } else if (notReady && stage.policy) {
       // A gated stage does not fail on a terminal NOT-READY — the human decides.
       // But the decision has to CARRY the verdict, so the same DTO is handed to the
       // gate with `advisory: false`, which the precondition evaluator surfaces as
       // an advisory finding; `approve` stays on offer. Without this the
-      // reviewer's unresolved objection reached the gate as silence.
+      // reviewer's unresolved objection reached the gate as silence. Release mode
+      // only: an unpinned gate reads no preconditions, so the DTO would change the
+      // durable stage result and nothing else.
       reviewAdvisory = {
         reviewerAgent,
         advisory: false,
