@@ -1746,6 +1746,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                         humanTaskId: `eg-validation-${stage.stageInstanceId ?? stage.stageId}-${round}-${runId}`,
                         stage,
                         loopBack,
+                        findings: gateFindings,
                       });
                       await store.createHumanTask({ executionId, ...open }).catch((error) => {
                         if (error?.name !== 'ConditionalCheckFailedException') throw error;

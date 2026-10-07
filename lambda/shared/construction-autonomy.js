@@ -50,7 +50,7 @@ const autonomousLoopBackInput = (ordinal) =>
  * the jump has to be stored, not held in memory. `open` is what
  * `createHumanTask` writes; `answer` is what `answerHumanTask` records on it.
  */
-const autonomousLoopBackGate = ({ humanTaskId, stage, loopBack }) => {
+const autonomousLoopBackGate = ({ humanTaskId, stage, loopBack, findings = [] }) => {
   const marker = autonomousLoopBackInput(Number(loopBack.spent ?? 0) + 1);
   return {
     open: {
@@ -59,6 +59,9 @@ const autonomousLoopBackGate = ({ humanTaskId, stage, loopBack }) => {
       kind: 'validation',
       prompt: `${marker}: ${stage.stageId} sent back to ${loopBack.target.stageId}. ${loopBack.reason}`,
       options: [LOOP_BACK_OPTION],
+      // The advisory findings the jump was taken over, kept as a human gate
+      // keeps them, so the record says what autonomy did not stop for.
+      ...(findings.length ? { findings } : {}),
       ...loopBackGateFields({ loopBack, stageId: stage.stageId }),
     },
     answer: {

@@ -1138,6 +1138,15 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     expect(eventsOfType('v2.loopback.recorded')[0].summary).toContain(
       'Autonomous loop-back 1 per construction protocol module',
     );
+    // The stored row keeps the findings the jump was taken over.
+    const row = storedGates.get(gateFor('si-build-and-test').humanTaskId);
+    expect(row.findings.map((item) => item.code)).toEqual(['review_advisory_findings']);
+  });
+
+  it('stores no findings on the jump row when there were none', async () => {
+    await run();
+    const row = storedGates.get(gateFor('si-build-and-test').humanTaskId);
+    expect(row).not.toHaveProperty('findings');
   });
 
   it('halts at the cap instead of approving', async () => {

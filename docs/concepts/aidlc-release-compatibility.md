@@ -370,10 +370,13 @@ all reproduced.
   stops the walk instead of approving. An intent without a grant, and every gate
   outside construction, skips that read and keeps its durable history.
 - Two deviations, both stricter than upstream: the gate-precondition evaluation
-  runs in full on a waived gate, so ANY finding (advisory included) opens the
-  human gate; and a terminal adversarial `NOT-READY` blocks a waived gate instead
-  of being auto-approved. On a gate the grant does not cover, that same verdict
+  runs in full on a waived gate, so ANY finding (advisory included) keeps it
+  from being approved; and a terminal adversarial `NOT-READY` blocks a waived
+  gate instead of being auto-approved. On a gate the grant does not cover, that same verdict
   stays an advisory finding and `approve` remains on offer, exactly as before.
+  An offered loop-back is the one place an advisory finding does not open the
+  human gate: only a blocking finding withholds the autonomous jump, and the
+  advisory findings it is taken over are stored on the jump's gate row.
 - Residual: the grant governs only the once-per-workflow sequential gates.
   Per-unit stages inside a parallel section keep their own ceremony — the
   walking-skeleton gate and the section autonomy ladder — so a scope with a unit
