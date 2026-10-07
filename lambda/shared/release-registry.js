@@ -169,7 +169,10 @@ const isImporterStale = (item) =>
 
 // Whether an intent pinned to this release may be created with an autonomous
 // construction grant: the same capability the create path checks, read from the
-// record's stored evidence so the listing never loads a closure.
+// record's stored evidence so the listing never loads a closure. Evidence stored
+// before the protocol entries existed reads as false until an admin listing or a
+// promotion re-verifies it; the admin listing below recomputes it, the non-admin
+// one does not, which only ever hides the opt-in.
 const offersConstructionAutonomy = (fidelityGaps) =>
   constructionAutonomyApplies({ capabilities: protocolCapabilitiesFromEvidence(fidelityGaps) });
 

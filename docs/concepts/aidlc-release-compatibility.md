@@ -304,7 +304,11 @@ all reproduced.
   human. The answer API rejects it on a gate that does not offer it. The
   release listing reports `constructionAutonomy` for each release, read from
   the record's stored protocol evidence, so the create page offers the opt-in
-  only for a selected release that has it.
+  only for a selected release that has it. The non-admin listing never
+  re-verifies a closure, so a record whose stored evidence predates the
+  protocol entries lists `false` there until an admin listing or a promotion
+  re-verifies and caches it. The opt-in is then hidden, never wrongly offered,
+  and creating an intent still decides from the release's closure.
 - Once given, the grant holds for the rest of the intent, rewinds included,
   until the intent is cancelled. Cancelling clears it and records who withdrew
   it and when on the grant's provenance, so a rewind after a cancel relaunches
