@@ -242,6 +242,19 @@ describe('construction autonomy: a gated or absent grant changes nothing', () =>
     expect(gateFor('si-build-and-test').options).toEqual(['approve', 'request-changes']);
   });
 
+  it('never offers grant-autonomy at a first construction gate with a blocking finding', async () => {
+    execution = { ...META, constructionGateAutonomy: 'gated' };
+    stageVerdicts = (stageId) =>
+      stageId === 'functional-design'
+        ? { ...cleanVerdict(stageId), gateSensorVerdicts: [BLOCKING_SENSOR] }
+        : cleanVerdict(stageId);
+    await run();
+    expect(gateFor('si-functional-design').options).toEqual([
+      'request-changes',
+      'override-and-approve',
+    ]);
+  });
+
   it('never offers grant-autonomy without a resolved construction-autonomy policy', async () => {
     execution = { ...META, constructionGateAutonomy: 'gated' };
     deps.loadPlan = vi.fn(async () => ({
