@@ -597,11 +597,14 @@ const registerCustomRelease = async ({
 // The revision of the evidence a record's stored `fidelityGaps` was computed
 // with. Revision 2 includes the protocol capabilities the closure ships (the
 // build-and-test loop-back), which a gap list stored by an earlier build never
-// judged. Promotion therefore re-evaluates such a list from the immutable
-// closure, exactly like a record with no list at all. Other readers (the
-// intent-creation eligibility check) keep using the stored list: a record can
-// only be selected after a promotion has written current evidence.
-const FIDELITY_EVIDENCE_REVISION = 2;
+// judged. Revision 3 reads engine commands only from what reaches a prompt: a
+// list stored by an earlier build also holds the commands the engine CLI's own
+// sources quote, and would keep refusing a release for them. Promotion therefore
+// re-evaluates such a list from the immutable closure, exactly like a record
+// with no list at all. Other readers (the intent-creation eligibility check) keep
+// using the stored list: a record can only be selected after a promotion has
+// written current evidence.
+const FIDELITY_EVIDENCE_REVISION = 3;
 
 const hasCurrentFidelityEvidence = (release) =>
   Array.isArray(release.fidelityGaps) &&

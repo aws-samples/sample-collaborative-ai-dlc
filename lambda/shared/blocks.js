@@ -33,6 +33,20 @@ const BLOCK_TYPES = [
   'TEMPLATE',
 ];
 
+// The block types a release closure resolves into the methodology library an
+// execution reads (release-resolver.js), keyed to the library field each one
+// fills. SKILL and TEMPLATE are imported and shown in the library but no agent
+// prompt ever renders them, so release evidence about prompts reads only these.
+const RELEASE_LIBRARY_TYPES = Object.freeze({
+  STAGE: 'stagesById',
+  AGENT: 'agentsById',
+  SENSOR: 'sensorsById',
+  RULE: 'rulesById',
+  ARTIFACT: 'artifactsById',
+  KNOWLEDGE: 'knowledgeById',
+  SCOPE: 'scopesById',
+});
+
 // Knowledge tiers: the methodology tier ships in the SYSTEM baseline (authored,
 // forkable); the team tier is accumulated per-project at execution time (the
 // learning-loop / team-knowledge write-back seam) and is not seeded.
@@ -356,6 +370,7 @@ const validateId = (id) => {
 };
 
 export {
+  RELEASE_LIBRARY_TYPES,
   BLOCK_TYPES,
   KNOWLEDGE_TIERS,
   AGENT_TIERS,
@@ -380,6 +395,7 @@ export {
   validateId,
 };
 export default {
+  RELEASE_LIBRARY_TYPES,
   BLOCK_TYPES,
   KNOWLEDGE_TIERS,
   AGENT_TIERS,

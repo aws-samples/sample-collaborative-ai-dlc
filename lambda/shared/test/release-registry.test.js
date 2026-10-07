@@ -24,6 +24,8 @@ import {
   publishReleaseBundle,
 } from '../aidlc-release.js';
 import { AIDLC_COMPATIBILITY_PROFILES } from '../aidlc-compatibility-profiles.js';
+import { loadReleaseClosure, resolveMethodologyLibrary } from '../release-resolver.js';
+import { buildExecutionPlan } from '../v2-execution-plan.js';
 import {
   __test,
   RELEASE_CHANNELS,
@@ -1644,6 +1646,115 @@ describe('a cancelled transaction reports the channel guard over the revision ch
   });
 });
 
+// Acceptance: a deployment of this build, starting from an empty registry, can
+// promote and run 2.8.2 and 2.9.0. The compatibility fixtures omit every body,
+// so each is rebuilt with every `{{INVOKE}} engine` line its real release
+// carries, verbatim, in every file (prompts, skills, templates, the engine's
+// hooks, protocols and tools).
+const INVOKE_LINES = JSON.parse(
+  readFileSync(new URL('./fixtures/aidlc-release-invoke-lines.json', import.meta.url), 'utf8'),
+);
+
+const filesWithInvokeLines = (profileId, linesFrom = profileId) => {
+  const files = filesFromCompatibilityFixture({
+    profileId,
+    fixture: JSON.parse(
+      readFileSync(
+        new URL(`./fixtures/aidlc-compatibility/${profileId}.json`, import.meta.url),
+        'utf8',
+      ),
+    ),
+  });
+  for (const [path, lines] of Object.entries(INVOKE_LINES[linesFrom]?.files ?? {})) {
+    expect(files.has(path), path).toBe(true);
+    files.set(path, `${files.get(path)}\n${lines.join('\n')}\n`);
+  }
+  return files;
+};
+
+// The plan of every scope the release offers resolves from the pinned closure.
+const expectPinnedPlansResolve = async (release) => {
+  const closure = await loadReleaseClosure({
+    s3,
+    bucket: BUCKET,
+    methodologyRelease: releasePinFromRecord(release),
+    ...registryArgs(),
+    cache: new Map(),
+  });
+  const resolved = await resolveMethodologyLibrary({
+    closure,
+    ddb: ddbMock,
+    tableName: TABLE,
+    workflowId: closure.catalog.workflow.id,
+    workflowVersion: closure.catalog.workflow.workflowVersion,
+  });
+  const scopes = Object.keys(resolved.library.scopesById);
+  expect(scopes.length).toBeGreaterThan(0);
+  for (const scope of scopes) {
+    const { valid, errors } = buildExecutionPlan({
+      workflow: resolved.workflow,
+      scope,
+      library: resolved.library,
+    });
+    expect({ scope, valid, errors }).toEqual({ scope, valid: true, errors: [] });
+  }
+  return resolved;
+};
+
+describe.each(['v2.8.2', 'v2.9.0'])('a deployment promoting the real %s', (profileId) => {
+  const bundle = buildReleaseBundle({ profileId, files: filesWithInvokeLines(profileId) });
+  const { releaseId } = bundle.manifest;
+  const engineCommand = (value) => ({
+    blockType: 'BODY',
+    field: '{{INVOKE}}',
+    value,
+    annexed: true,
+  });
+
+  beforeEach(async () => {
+    installFakes();
+    await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+  });
+
+  it('registers it with only the engine commands its prompts invoke, and none unhonoured', async () => {
+    const { release } = await registerRelease(registerArgs(profileId));
+
+    expect(release.fidelityGaps.filter((gap) => gap.blockType === 'BODY')).toEqual(
+      ['engine graph ars', 'engine orchestrate', 'engine recompose', 'engine state'].map(
+        engineCommand,
+      ),
+    );
+    expect(release.unhonouredValues).toEqual([]);
+  });
+
+  it('promotes it to selectable, offers it, and resolves every pinned plan', async () => {
+    await registerRelease(registerArgs(profileId));
+    const stated = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId,
+      expectedRevision: 1,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+    await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId,
+      expectedRevision: stated.revision,
+      patch: { visible: true },
+      actor: 'admin-1',
+    });
+
+    const selected = await resolveSelectableRelease({ ...registryArgs(), releaseId });
+
+    expect(selected).toMatchObject({ supportState: 'selectable', visible: true, runnable: true });
+    await expectPinnedPlansResolve(selected);
+  });
+});
+
 describe('promotion of a record registered before protocol evidence existed', () => {
   // A record imported by an earlier build stored only its frontmatter gaps; the
   // build-and-test loop-back is a protocol the closure ships, not an authored
@@ -1678,7 +1789,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
 
     expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
     expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
-      fidelityEvidenceRevision: 2,
+      fidelityEvidenceRevision: 3,
     });
   });
 
@@ -1686,7 +1797,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
     await registerRelease(registerArgs(CANDIDATE_PROFILE));
 
     expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
-      fidelityEvidenceRevision: 2,
+      fidelityEvidenceRevision: 3,
     });
   });
 
@@ -1712,6 +1823,36 @@ describe('promotion of a record registered before protocol evidence existed', ()
       }),
     ).resolves.toMatchObject({ releaseId: CANDIDATE_RELEASE_ID });
     expect(promoted.supportState).toBe('certified');
+  });
+});
+
+describe('promotion of a record whose evidence read the engine sources', () => {
+  // An earlier build stored, at evidence revision 2, the engine commands the
+  // engine CLI's own sources quote. The closure's prompts author none of them, so
+  // trusting that list would keep refusing the release for behavior it never
+  // asks an agent for.
+  it('re-evaluates the closure instead of trusting that list', async () => {
+    await registerRelease(registerArgs(CANDIDATE_PROFILE));
+    const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
+    const row = {
+      ...rows.get(key),
+      fidelityGaps: [{ blockType: 'BODY', field: '{{INVOKE}}', value: 'engine swarm prepare' }],
+      fidelityEvidenceRevision: 2,
+    };
+    rows.set(key, row);
+
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: CANDIDATE_RELEASE_ID,
+      expectedRevision: row.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
+    expect(rows.get(key).fidelityGaps).not.toContainEqual(row.fidelityGaps[0]);
   });
 });
 
@@ -1784,7 +1925,7 @@ describe('admin listing of a record registered before protocol evidence existed'
     const second = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
 
     const listed = first.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
-    expect(cached.fidelityEvidenceRevision).toBe(2);
+    expect(cached.fidelityEvidenceRevision).toBe(3);
     expect(cached.fidelityGaps).toEqual(listed.fidelityGaps);
     expect(cached.fidelityGaps).not.toEqual(legacy.fidelityGaps);
     // Evidence is derived from an immutable closure, never a decision, so the

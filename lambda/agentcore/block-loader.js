@@ -13,6 +13,7 @@ import { ddb, s3 } from './clients.js';
 import { blockPk, catalogGsi1Pk, LATEST, sha256, versionSk } from '../shared/blocks.js';
 import { workflowPk, workflowVersionPrefix } from '../shared/workflows.js';
 import { DEFAULT_TENANT, SYSTEM_TENANT } from '../shared/tenant.js';
+import { CONDUCTOR_REPO_PATH } from '../shared/block-mappers.js';
 import {
   loadReleaseClosure,
   ReleaseResolverError,
@@ -22,10 +23,6 @@ import {
 
 const blocksTable = () => process.env.BLOCKS_TABLE;
 const artifactsBucket = () => process.env.ARTIFACTS_BUCKET;
-
-// Repo-relative path of the conductor persona: read from the intent's immutable
-// release closure when pinned, from the mutable `aidlc-runtime/<ref>/` otherwise.
-const CONDUCTOR_REPO_PATH = 'core/aidlc-common/conductor.md';
 
 const streamToString = async (body) => {
   if (!body) return '';

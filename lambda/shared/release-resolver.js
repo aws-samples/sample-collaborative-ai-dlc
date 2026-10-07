@@ -19,22 +19,12 @@
 
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { blockPk, sha256, versionSk } from './blocks.js';
+import { blockPk, RELEASE_LIBRARY_TYPES, sha256, versionSk } from './blocks.js';
 import { bodyToString, bodyToStringWithin, isNotFound } from './methodology-catalog.js';
 import { DEFAULT_TENANT, SYSTEM_TENANT } from './tenant.js';
 import { canonicalJson } from './workflow-checkpoint.js';
 import { workflowPk, workflowVersionPrefix } from './workflows.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION, readReleaseManifest } from './aidlc-release.js';
-
-const LIBRARY_TYPES = Object.freeze({
-  STAGE: 'stagesById',
-  AGENT: 'agentsById',
-  SENSOR: 'sensorsById',
-  RULE: 'rulesById',
-  ARTIFACT: 'artifactsById',
-  KNOWLEDGE: 'knowledgeById',
-  SCOPE: 'scopesById',
-});
 
 // Immutable closures are safe to memoize for the life of a warm Lambda. The
 // bound keeps a long-lived container from pinning every release ever resolved.
@@ -304,7 +294,7 @@ const getUserBlock = async ({ ddb, tableName, tenantId, type, blockId, version }
 const loadUserOverlay = async ({ ddb, tableName, methodologyPins }) => {
   const requests = [];
   for (const [type, pins] of Object.entries(methodologyPins ?? {})) {
-    if (!LIBRARY_TYPES[type]) continue;
+    if (!RELEASE_LIBRARY_TYPES[type]) continue;
     for (const [blockId, pin] of Object.entries(pins ?? {})) {
       if (!pin || pin.tenantId === SYSTEM_TENANT) continue;
       const version = positiveVersion(pin.version);
@@ -495,7 +485,7 @@ const resolveMethodologyLibrary = async ({
   const overlay = await loadUserOverlay({ ddb, tableName, methodologyPins });
   const blocksByType = {};
   const library = {};
-  for (const [type, libraryKey] of Object.entries(LIBRARY_TYPES)) {
+  for (const [type, libraryKey] of Object.entries(RELEASE_LIBRARY_TYPES)) {
     const merged = { ...keyById(closure.blocksByType?.[type]), ...overlay[type] };
     library[libraryKey] = merged;
     blocksByType[type] = Object.values(merged);

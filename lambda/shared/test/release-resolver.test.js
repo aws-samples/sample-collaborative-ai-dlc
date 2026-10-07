@@ -321,6 +321,58 @@ describe('resolveMethodologyLibrary against a reseeded SYSTEM catalog', () => {
     expect(ddbCallsTouchingSystem()).toEqual([]);
   });
 
+  // A user's copy of one release stage, placed by a user workflow over a pinned
+  // official release. From 2.8.2 on the copy carries the release's
+  // `{{INVOKE}} engine …` lines verbatim; the stage materializer answers them off
+  // the body, so only the placement has to resolve the copy.
+  it('places a pinned user STAGE copy of a release stage over a pinned release', async () => {
+    const forkedStage = {
+      pk: 'BLOCK#default#STAGE#intent-capture',
+      sk: 'V#3',
+      tenantId: 'default',
+      blockId: 'intent-capture',
+      id: 'intent-capture',
+      version: 3,
+      sourceRef: 'fork-ref',
+      body: 'Run `{{INVOKE}} engine orchestrate report --stage intent-capture` when done.',
+    };
+    userBlockRows.set(`${forkedStage.pk}|${forkedStage.sk}`, forkedStage);
+    userWorkflowRows.push(
+      { pk: 'WF#default#aidlc-v2', sk: 'V#4#META', sourceRef: 'fork-ref' },
+      {
+        pk: 'WF#default#aidlc-v2',
+        sk: 'V#4#PLACEMENT#intent-capture',
+        stageId: 'intent-capture',
+        stageTenant: 'default',
+        pinnedVersion: 3,
+        order: 0,
+        scopeMembership: { feature: 'EXECUTE' },
+      },
+      { pk: 'WF#default#aidlc-v2', sk: 'V#4#SCOPEREF#feature', scopeId: 'feature' },
+    );
+    const closure = await loadReleaseClosure({ ...releaseArgs(pinA), cache: new Map() });
+
+    const resolved = await resolveMethodologyLibrary({
+      closure,
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 4,
+    });
+
+    expect(resolved.workflowSource).toBe('ddb-user-fork');
+    expect(resolved.library.stagesById['intent-capture']).toEqual(forkedStage);
+    const otherReleaseStages = closure.blocksByType.STAGE.filter(
+      (block) => block.blockId !== 'intent-capture',
+    );
+    expect(otherReleaseStages.length).toBeGreaterThan(0);
+    for (const releaseStage of otherReleaseStages) {
+      expect(resolved.library.stagesById[releaseStage.blockId]).toEqual(releaseStage);
+    }
+    expect(resolved.methodologySourceRefs).toEqual([bundleA.manifest.sourceSha]);
+    expect(ddbCallsTouchingSystem()).toEqual([]);
+  });
+
   it('overlays an explicitly pinned user block over the release base', async () => {
     const forkedAgent = {
       pk: 'BLOCK#default#AGENT#aidlc-product-agent',

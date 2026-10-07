@@ -24,8 +24,8 @@ import {
   profileFor,
 } from './aidlc-compatibility.js';
 import { parseRepositorySlug } from './aidlc-custom-source.js';
-import { buildFromFiles } from './block-mappers.js';
-import { buildBodyRef, buildScriptRef, sha256 } from './blocks.js';
+import { buildFromFiles, CONDUCTOR_REPO_PATH } from './block-mappers.js';
+import { buildBodyRef, buildScriptRef, RELEASE_LIBRARY_TYPES, sha256 } from './blocks.js';
 import { isCommitSha } from './aidlc-ref.js';
 import { mapWithConcurrency } from './concurrency.js';
 import {
@@ -36,6 +36,7 @@ import {
   isPreconditionFailed,
 } from './methodology-catalog.js';
 import { canonicalJson } from './workflow-checkpoint.js';
+import { COMPOSER_AGENT_ID } from './compose-match.js';
 import {
   AIDLC_RELEASE_IMPORTER_REVISION,
   FIRST_FINGERPRINTED_IMPORTER_REVISION,
@@ -501,6 +502,8 @@ const getObjectText = async ({
   return bodyToStringWithin(result.Body, maxBytes, tooLarge);
 };
 
+const bodyKeys = (blocks) => blocks.map((block) => block?.bodyRef?.s3Key).filter(Boolean);
+
 // Preserve the published manifest bytes while recovering the analyzer's
 // promotion evidence from its immutable closure. The catalog holds mapped
 // frontmatter values; content-addressed objects hold the source bodies that
@@ -541,6 +544,32 @@ const readReleaseFidelityGaps = async ({ s3, bucket, manifest }) => {
   // RELEASE_EVIDENCE_IO_CONCURRENCY objects are resident at a time. Retaining all
   // of them made the capability check cost the whole closure in heap at once,
   // which a 128 MB Lambda cannot afford for a multi-release page.
+  //
+  // Only what reaches a prompt is engine-command evidence: the bodies of the
+  // blocks a release library resolves (stages, agents, knowledge, rules, …) and
+  // the conductor, which every stage prompt renders. Other `runtime` objects are
+  // the upstream engine's own sources, hooks and protocols; SKILL and TEMPLATE
+  // bodies are imported for the library but never rendered into a prompt; and a
+  // `script` object is a sensor's script. The `{{INVOKE}}` strings those carry
+  // are not behavior the release authors for an agent. Block types, `role` and
+  // `path` are covered by the closure digest, and the digest check below still
+  // covers EVERY object.
+  const promptBodyKeys = new Set(
+    Object.keys(RELEASE_LIBRARY_TYPES).flatMap((type) => bodyKeys(catalog.blocks[type] ?? [])),
+  );
+  // A prompt carries the engine-command annex only when a part that instructs
+  // the agent carries the token: the stage body or the conductor in a stage
+  // prompt (stage-materializer), the composer persona or its knowledge in the
+  // compose prompt (compose-plan-start). A command the annex answers is answered
+  // only in those bodies; in any other (a persona, a rule) it reaches a prompt
+  // that may have no annex, and keeps holding promotion.
+  const annexBodyKeys = new Set(
+    bodyKeys([
+      ...(catalog.blocks.STAGE ?? []),
+      ...(catalog.blocks.AGENT ?? []).filter((block) => block?.blockId === COMPOSER_AGENT_ID),
+      ...(catalog.blocks.KNOWLEDGE ?? []).filter((block) => block?.agentRef === COMPOSER_AGENT_ID),
+    ]),
+  );
   const invokes = invokeCommandCollector();
   await mapWithConcurrency(
     manifest.objects ?? [],
@@ -584,7 +613,12 @@ const readReleaseFidelityGaps = async ({ s3, bucket, manifest }) => {
           { keys: [object.key] },
         );
       }
-      invokes.add(`closure/body-${index}.md`, body);
+      const conductor = object.path === CONDUCTOR_REPO_PATH;
+      if (promptBodyKeys.has(object.key) || conductor) {
+        invokes.add(`closure/body-${index}.md`, body, {
+          annexReaches: conductor || annexBodyKeys.has(object.key),
+        });
+      }
     },
   );
 
