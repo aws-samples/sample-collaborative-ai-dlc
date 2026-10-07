@@ -298,6 +298,11 @@ bounded by the same three per intent.
   agent's reason. Code generation resumes from that row, so the same resets,
   archive of both stages, reason in the prompt and cap tally apply, and a
   relaunch takes a new decision rather than reusing the earlier one.
+- Residual: the jump, like upstream's, depends on the agent's recommendation. A
+  build-and-test stage that succeeds with failing tests but records no
+  recommendation and raises no finding has clean evidence, so an autonomous
+  intent approves it. A blocking results sensor is what turns those failures
+  into a halt.
 
 An answered gate whose durable callback failed to resume can be retried through
 the intent's Resume action. Callback-consumption markers and answered gate state
