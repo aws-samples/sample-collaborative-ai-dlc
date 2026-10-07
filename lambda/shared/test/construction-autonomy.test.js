@@ -11,7 +11,6 @@ import {
   GATE_AUTO_APPROVED_EVENT,
   GRANT_AUTONOMY_OPTION,
   autonomousGateApplies,
-  autonomousLoopBackInput,
   constructionAutonomyApplies,
   firstConstructionStageId,
   grantAutonomyOffered,
@@ -217,9 +216,6 @@ describe('audit vocabulary', () => {
   it('spells the protocol markers once', () => {
     expect(AUTONOMOUS_GATE_INPUT).toBe(
       'Autonomous construction gate per construction protocol module',
-    );
-    expect(autonomousLoopBackInput(2)).toBe(
-      'Autonomous loop-back 2 per construction protocol module',
     );
     expect(GRANT_AUTONOMY_OPTION).toBe('grant-autonomy');
     expect(AUTONOMY_MODE_SET_EVENT).toBe('v2.autonomy.mode_set');

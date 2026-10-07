@@ -32,10 +32,8 @@ const GATE_AUTO_APPROVED_EVENT = 'v2.gate.auto_approved';
 
 // The approval receipt's recorded answer. Upstream mandates a marker string on an
 // autonomous completion so an audit reader can tell a waived gate from a human
-// one; these are that marker, and the loop-back form carries its ordinal.
+// one; this is that marker.
 const AUTONOMOUS_GATE_INPUT = 'Autonomous construction gate per construction protocol module';
-const autonomousLoopBackInput = (ordinal) =>
-  `Autonomous loop-back ${ordinal} per construction protocol module`;
 
 /**
  * Whether this catalog proves it has construction autonomy at all. Consumed by
@@ -129,7 +127,6 @@ export {
   GATE_AUTO_APPROVED_EVENT,
   GRANT_AUTONOMY_OPTION,
   autonomousGateApplies,
-  autonomousLoopBackInput,
   constructionAutonomyApplies,
   firstConstructionStageId,
   grantAutonomyOffered,
@@ -141,7 +138,6 @@ export default {
   GATE_AUTO_APPROVED_EVENT,
   GRANT_AUTONOMY_OPTION,
   autonomousGateApplies,
-  autonomousLoopBackInput,
   constructionAutonomyApplies,
   firstConstructionStageId,
   grantAutonomyOffered,
