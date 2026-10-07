@@ -828,9 +828,9 @@ export interface CreateIntentInput {
   // Freeze the construction autonomy grant at create: 'autonomous' lets the run
   // complete the construction stage gates after the first one without stopping
   // (failures, Plan Approval and blocking findings still halt). Omit — or send
-  // 'gated' — for a gate after every construction stage. Only accepted on an
-  // intent whose AI-DLC release authors the protocol; 400 code:
-  // construction_autonomy_unavailable.
+  // 'gated', on any release — for a gate after every construction stage.
+  // 'autonomous' is only accepted on an intent whose AI-DLC release authors the
+  // protocol; 400 code: construction_autonomy_unavailable.
   constructionGateAutonomy?: 'gated' | 'autonomous';
   // Optional tracker provenance when seeded from a GitHub issue / Jira artifact.
   source?: {

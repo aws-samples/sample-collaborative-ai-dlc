@@ -5423,11 +5423,10 @@ export const handler = async (event, context) => {
           code: 'construction_autonomy_mode_invalid',
         });
       }
-      const requestedAutonomyMode = CONSTRUCTION_AUTONOMY_MODES.includes(
-        data.constructionGateAutonomy,
-      )
-        ? data.constructionGateAutonomy
-        : null;
+      // Only `autonomous` is a grant. `gated` is the default every intent already
+      // has, so it is stored as no grant and accepted on any release.
+      const requestedAutonomyMode =
+        data.constructionGateAutonomy === 'autonomous' ? 'autonomous' : null;
       if (requestedReleaseId && AIDLC_RELEASE_PINNING() !== 'on') {
         return response(400, {
           error: 'Per-intent AI-DLC release selection is disabled',

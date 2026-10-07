@@ -783,6 +783,7 @@ describe('POST /projects/{id}/intents', () => {
   it.each([
     ['absent', {}],
     ['explicitly null', { constructionGateAutonomy: null }],
+    ['explicitly gated', { constructionGateAutonomy: 'gated' }],
   ])('leaves the intent gated when the field is %s', async (_label, over) => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -8644,41 +8645,55 @@ describe('AI-DLC per-intent release selection', () => {
     expect(metaFor(JSON.parse(res.body).id).methodologyRelease).toEqual(pinB);
   });
 
-  it.each([
-    { label: 'autonomous', mode: 'autonomous' },
-    { label: 'gated', mode: 'gated' },
-  ])(
-    'freezes a $label construction autonomy grant onto a release-pinned intent',
-    async ({ mode }) => {
-      const sub = `u-${randomUUID()}`;
-      const projectId = await seedV2Project(sub);
-      seedDeploymentWorkflowAtV1();
-      seedRegistryRecord(bundleB, 'v2.9.0');
+  it('stores an explicit gated choice on a release-pinned intent as no grant', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0');
 
-      const res = await createIntent(sub, projectId, {
-        title: 'I',
-        prompt: 'Build X',
-        scope: SCOPE_ONLY_IN_B,
-        methodologyReleaseId: pinB.releaseId,
-        constructionGateAutonomy: mode,
-      });
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_B,
+      methodologyReleaseId: pinB.releaseId,
+      constructionGateAutonomy: 'gated',
+    });
 
-      expect(res.statusCode).toBe(201);
-      const intent = JSON.parse(res.body);
-      expect(intent.constructionGateAutonomy).toBe(mode);
-      // The grant is frozen on META with durable attribution — who gave it, when,
-      // and through which door — so an audit never depends on the timeline event.
-      const meta = metaFor(intent.id);
-      expect(meta.constructionGateAutonomy).toBe(mode);
-      expect(meta.constructionGateAutonomyGrant).toMatchObject({
-        source: 'create',
-        grantedBy: sub,
-        grantedAt: expect.any(String),
-      });
-      expect(meta.startedBy).toBe(sub);
-      expect(meta.startedAt).toEqual(expect.any(String));
-    },
-  );
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.constructionGateAutonomy).toBeNull();
+    expect(metaFor(intent.id).constructionGateAutonomyGrant).toBeNull();
+  });
+
+  it('freezes an autonomous construction autonomy grant onto a release-pinned intent', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0');
+
+    const res = await createIntent(sub, projectId, {
+      title: 'I',
+      prompt: 'Build X',
+      scope: SCOPE_ONLY_IN_B,
+      methodologyReleaseId: pinB.releaseId,
+      constructionGateAutonomy: 'autonomous',
+    });
+
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.constructionGateAutonomy).toBe('autonomous');
+    // The grant is frozen on META with durable attribution — who gave it, when,
+    // and through which door — so an audit never depends on the timeline event.
+    const meta = metaFor(intent.id);
+    expect(meta.constructionGateAutonomy).toBe('autonomous');
+    expect(meta.constructionGateAutonomyGrant).toMatchObject({
+      source: 'create',
+      grantedBy: sub,
+      grantedAt: expect.any(String),
+    });
+    expect(meta.startedBy).toBe(sub);
+    expect(meta.startedAt).toEqual(expect.any(String));
+  });
 
   it('auto-pins when the release CAN reproduce the plan, and persists no SYSTEM pins', async () => {
     const sub = `u-${randomUUID()}`;
