@@ -672,6 +672,35 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
     expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
   });
 
+  it('writes no grant when the intent is cancelled between the answer and the resume', async () => {
+    // Cancel is accepted while META still reads WAITING, after the answer was
+    // recorded. It ends the run (`completedAt`) and finds no grant to withdraw.
+    const answer = deps.store.getHumanTask;
+    deps.store.getHumanTask = vi.fn(async (...args) => {
+      const gate = await answer(...args);
+      if (gate?.answer?.decision === 'grant-autonomy') {
+        execution = { ...execution, status: 'CANCELLED', completedAt: 'T-cancel' };
+      }
+      return gate;
+    });
+    const write = deps.store.updateExecution.getMockImplementation();
+    deps.store.updateExecution = vi.fn(async (args) => {
+      if (args.ifNotCompleted && execution.completedAt) {
+        throw Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' });
+      }
+      return write(args);
+    });
+
+    const result = await run();
+
+    expect(result).toMatchObject({ ok: false, reason: 'retired' });
+    expect(execution.constructionGateAutonomy).toBe('gated');
+    expect(eventsOfType('v2.autonomy.mode_set')).toEqual([]);
+    expect(
+      receiptsFor('si-functional-design').filter((receipt) => receipt.kind === 'stage-approval'),
+    ).toEqual([]);
+  });
+
   it('writes no grant for a grant-autonomy answer on a gate that did not offer it', async () => {
     // The answer endpoint refuses this answer; a row carrying it anyway parses to
     // nothing against the gate's options and takes the ordinary fallback.

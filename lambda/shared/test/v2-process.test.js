@@ -1589,6 +1589,21 @@ describe('steering store methods', () => {
     expect(input.ExpressionAttributeValues[':ifOrid']).toBe('run-1');
   });
 
+  it('updateExecution can require a run that has not ended (ifNotCompleted)', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: {} });
+    await store.updateExecution({
+      executionId: 'e1',
+      constructionGateAutonomy: 'autonomous',
+      ifOrchestratorRunId: 'run-1',
+      ifNotCompleted: true,
+    });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe(
+      'orchestratorRunId = :ifOrid AND (attribute_not_exists(completedAt) OR attribute_type(completedAt, :nullType))',
+    );
+    expect(input.ExpressionAttributeValues[':nullType']).toBe('NULL');
+  });
+
   it('getExecutionRecords groups STEER rows', async () => {
     ddb.on(QueryCommand).resolves({ Items: [{ sk: 'META' }, { sk: 'STEER#T#st-1' }] });
     const grouped = await store.getExecutionRecords('e1');
