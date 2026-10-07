@@ -40,6 +40,29 @@ const run = (file, args, options = {}) =>
 
 const writeJson = (path, value) => writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 
+// deploy-terraform.sh runs the notifications pre-flight and secret seed through
+// node, and both scripts call AWS. This shim records those two invocations to
+// $AIDLC_TERRAFORM_LOG (so their order relative to terraform can be asserted)
+// and hands every other node invocation to the real binary.
+const writeNodeShim = (bin) =>
+  writeFileSync(
+    join(bin, 'node'),
+    `#!/usr/bin/env bash
+case "\${1:-}" in
+  */notifications-preflight.mjs)
+    printf 'node notifications-preflight %s\\n' "\${*:2}" >> "\${AIDLC_TERRAFORM_LOG:-/dev/null}"
+    exit "\${AIDLC_FAKE_PREFLIGHT_STATUS:-0}"
+    ;;
+  */seed-notifications-secret.mjs)
+    printf 'node seed-notifications-secret %s\\n' "\${*:2}" >> "\${AIDLC_TERRAFORM_LOG:-/dev/null}"
+    exit 0
+    ;;
+esac
+exec ${JSON.stringify(process.execPath)} "$@"
+`,
+    { mode: 0o755 },
+  );
+
 test('release process helper preserves shell metacharacters in script paths and arguments', () => {
   const fixture = mkdtempSync(join(tmpdir(), 'aidlc-process-args-'));
   const marker = join(fixture, 'injected');
@@ -536,6 +559,8 @@ fi
     { mode: 0o755 },
   );
 
+  writeNodeShim(bin);
+
   const deployed = run(
     'bash',
     [deployTerraform, 'summary', '--plan-file', join(dir, 'summary.tfplan')],
@@ -626,6 +651,8 @@ fi
     { mode: 0o755 },
   );
 
+  writeNodeShim(bin);
+
   return {
     env: {
       PATH: `${bin}:${process.env.PATH}`,
@@ -705,6 +732,67 @@ test('standalone deployment can skip the post-apply baseline seed', () => {
   assert.equal(deployed.status, 0, deployed.stderr);
   assert.match(deployed.stdout, /Skipping AI-DLC default workflow/);
   assert.doesNotMatch(readFileSync(awsLog, 'utf8'), /lambda invoke/);
+});
+
+test('notifications pre-flight runs before plan and apply, and the secret seed after apply', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-notifications-'));
+  const { env, terraformLog, planFile } = standaloneDeployEnv(dir);
+
+  const deployed = run(
+    'bash',
+    [deployTerraform, 'summary', '--plan-file', planFile, '--var', 'project_name=override'],
+    { env },
+  );
+  assert.equal(deployed.status, 0, deployed.stderr);
+
+  const lines = readFileSync(terraformLog, 'utf8').split('\n');
+  const position = (predicate, label) => {
+    const index = lines.findIndex(predicate);
+    assert.ok(index >= 0, `missing ${label}`);
+    return index;
+  };
+  const init = position((line) => line.startsWith('init '), 'terraform init');
+  const firstCheck = position(
+    (line) => line.startsWith('node notifications-preflight --table'),
+    'pre-plan check',
+  );
+  const plan = position((line) => line.startsWith('plan '), 'terraform plan');
+  const secondCheck = position(
+    (line) => line.startsWith('node notifications-preflight --plan-json'),
+    'pre-apply check',
+  );
+  const apply = position((line) => line.startsWith('apply '), 'terraform apply');
+  const seed = position((line) => line.startsWith('node seed-notifications-secret'), 'secret seed');
+  assert.ok(init < firstCheck && firstCheck < plan, 'pre-flight must run after init, before plan');
+  assert.ok(plan < secondCheck && secondCheck < apply, 'pre-flight must run again before apply');
+  assert.ok(apply < seed, 'the secret seed must run after apply');
+
+  // The pre-plan check uses the effective --var override and the tfvars region.
+  assert.match(lines[firstCheck], /--table override-notifications-summary --region eu-west-1$/);
+});
+
+test('notifications pre-flight halt stops the deploy before plan and before apply', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-preflight-halt-'));
+  const { env, terraformLog, planFile } = standaloneDeployEnv(dir);
+  const haltingEnv = { ...env, AIDLC_FAKE_PREFLIGHT_STATUS: '1' };
+
+  const planned = run('bash', [deployTerraform, 'summary', '--plan-file', planFile], {
+    env: haltingEnv,
+  });
+  assert.equal(planned.status, 1);
+  assert.doesNotMatch(readFileSync(terraformLog, 'utf8'), /^(plan|apply) /m);
+
+  writeFileSync(planFile, '');
+  const applied = run(
+    'bash',
+    [deployTerraform, 'summary', '--phase', 'apply', '--plan-file', planFile],
+    { env: haltingEnv },
+  );
+  assert.equal(applied.status, 1);
+  const log = readFileSync(terraformLog, 'utf8');
+  assert.match(log, /^node notifications-preflight --plan-json/m);
+  assert.doesNotMatch(log, /^apply /m);
+  assert.doesNotMatch(log, /^node seed-notifications-secret/m);
 });
 
 test('standalone deployment rejects malformed and misplaced --var', () => {

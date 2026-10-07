@@ -59,10 +59,10 @@ const kmsAuthorizedRoles = (text) =>
 
 test('all DynamoDB tables support CMK encryption and durable tables are recoverable', () => {
   const applicationTables = read('terraform/modules/data/dynamodb/main.tf');
-  assert.equal(count(applicationTables, /resource "aws_dynamodb_table"/g), 10);
-  assert.equal(count(applicationTables, /server_side_encryption \{/g), 10);
-  assert.equal(count(applicationTables, /deletion_protection_enabled/g), 8);
-  assert.equal(count(applicationTables, /point_in_time_recovery/g), 8);
+  assert.equal(count(applicationTables, /resource "aws_dynamodb_table"/g), 11);
+  assert.equal(count(applicationTables, /server_side_encryption \{/g), 11);
+  assert.equal(count(applicationTables, /deletion_protection_enabled/g), 9);
+  assert.equal(count(applicationTables, /point_in_time_recovery/g), 9);
 
   const integrationTables = read('terraform/modules/git/main.tf');
   assert.equal(count(integrationTables, /resource "aws_dynamodb_table"/g), 4);

@@ -184,6 +184,22 @@ output "notifications_table_arn" {
   value       = module.dynamodb.notifications_table_arn
 }
 
+output "preferences_table_name" {
+  description = "Name of the namespaced preferences table"
+  value       = module.dynamodb.preferences_table_name
+}
+
+# Read by scripts/seed-notifications-secret.mjs after apply.
+output "notifications_unsubscribe_secret_arn" {
+  description = "ARN of the notification unsubscribe HMAC signing secret"
+  value       = module.notifications.unsubscribe_secret_arn
+}
+
+output "notifications_escalation_queue_url" {
+  description = "URL of the notification escalation queue"
+  value       = module.notifications.escalation_queue_url
+}
+
 output "agent_questions_table_name" {
   description = "Name of the agent questions table"
   value       = module.dynamodb.agent_questions_table_name

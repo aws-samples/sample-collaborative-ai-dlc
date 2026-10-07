@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Data plane for attention notifications. The existing, previously unused `notifications` table becomes the per-user inbox, with 30-day retention. A new `preferences` table stores per-user and platform settings. This release also adds a change stream on the v2 executions table, an escalation queue with dead-letter queues, and an unsubscribe signing secret. Nothing reads or writes these resources yet. The inbox, alerts and email features that use them ship separately.
+
+### Upgrade notes — Attention Notifications data plane
+
+- **In-place table change.** The existing `notifications` table gains TTL on `expiresAt` and two sparse global secondary indexes, `SourceIndex` and `DigestIndex`. Its key schema does not change, so the table is updated in place. It is not replaced, and deletion protection does not need to be turned off. Terraform creates the indexes one at a time during the apply. The table stays available throughout.
+- **New `preferences` table.** `${project}-preferences-${env}` is created with point-in-time recovery, encryption and the same `deletion_protection` setting as the other durable tables.
+- **New stream on v2 executions.** `v2_executions` now has a `NEW_AND_OLD_IMAGES` stream. Stream records are kept for 24 hours. Enabling the stream does not interrupt writes. Running and parked intents continue unchanged, because no orchestrator step name or order changes.
+- **Pre-flight check.** Before `terraform plan` and again before `terraform apply`, `deploy-terraform.sh` runs `scripts/notifications-preflight.mjs`. `install.sh` calls `deploy-terraform.sh`, so the check covers installs and upgrades through either script. The check passes when:
+  - the table does not exist yet;
+  - the table already has `SourceIndex` (it was already upgraded);
+  - the table is empty.
+
+  If the table holds rows written before this release, the deploy halts with `notifications-preflight: HALT`. Those rows have no `eventKey` or `expiresAt`, so they would never expire and would never be listed. To continue, either:
+  - back up the table (point-in-time recovery or an export) and delete the rows, then re-run the deploy; or
+  - leave the rows in place by re-running with `AIDLC_NOTIFICATIONS_PREFLIGHT=acknowledge-legacy`. You can delete them later.
+
+  The check also halts when it cannot verify the table, for example because of missing permissions or repeated throttling. The override does not bypass this case. The deploy role needs `dynamodb:DescribeTable` and `dynamodb:Scan` on the table.
+
+- **New queues and secret.** The release creates the following resources:
+  - SQS queues `${project}-notifications-escalation-${env}`, its dead-letter queue, and `${project}-notifications-capture-dlq-${env}`;
+  - a Secrets Manager secret named `${project}-${env}-notifications-unsubscribe-hmac-*`.
+
+  After the apply, `scripts/seed-notifications-secret.mjs` stores a random 32-byte key in the secret once. Later deploys leave the key unchanged, and it never enters Terraform state. If the seed fails, re-run the deploy; the seed is idempotent. To rotate the key, put a new version shaped `{"current":{"kid":"k2","key":"<base64url 32 bytes>"},"previous":{"kid":"k1","key":"<old key>"}}`. Links signed with either key remain valid.
+
+- **Email stays off.** Notification email is disabled until a platform administrator configures it. New AWS accounts start in the SES sandbox, which can send only to verified addresses. Request SES production access before enabling email for all users.
+
 ## [2.2.0] - 2026-09-29
 
 This release adds AWS CodeCommit support, custom Cognito login domains, code-file traceability, and direct unit branch and pull-request links in reviews, alongside data-store protection, structured logging, workflow reliability fixes, and usability improvements.

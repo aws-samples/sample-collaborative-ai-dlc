@@ -101,6 +101,7 @@ PROTECTION_TARGETS=(
     -target=module.neptune.aws_neptune_cluster.main
     -target=module.dynamodb.aws_dynamodb_table.sessions
     -target=module.dynamodb.aws_dynamodb_table.notifications
+    -target=module.dynamodb.aws_dynamodb_table.preferences
     -target=module.dynamodb.aws_dynamodb_table.agent_questions
     -target=module.dynamodb.aws_dynamodb_table.agent_outputs
     -target=module.dynamodb.aws_dynamodb_table.blocks

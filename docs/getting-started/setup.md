@@ -643,6 +643,10 @@ For advanced manual installations:
 
 A domain change needs both steps: Terraform updates the distribution and the OAuth redirect URIs, then the frontend has to be rebuilt because the endpoint URLs are inlined into the bundle at build time.
 
+### Notifications pre-flight check
+
+Before `terraform plan` and again before `terraform apply`, every deploy runs `scripts/notifications-preflight.mjs`. The check makes sure the existing `notifications` table can be upgraded in place. It passes on fresh installs, on tables that were already upgraded, and on empty tables. If it reports `notifications-preflight: HALT`, the table holds rows written before the notifications inbox existed. Either delete those rows after taking a backup, or re-run with `AIDLC_NOTIFICATIONS_PREFLIGHT=acknowledge-legacy` to leave them in place. The check always halts when it cannot read the table, for example because the deploy role is missing permissions. The override does not bypass that case. For details, see the "Upgrade notes — Attention Notifications data plane" section of the [changelog](https://github.com/aws-samples/sample-collaborative-ai-dlc/blob/main/CHANGELOG.md).
+
 ### One-time tracker-data migration (only relevant for installs with pre-#194 data)
 
 If you're upgrading an install that ran before issue #194 (tracker provider abstraction) landed, existing projects keep working without intervention — but to bind Jira (or any future tracker) to them, their sprint and project records need a one-time backfill onto the new polymorphic shape.
