@@ -415,7 +415,9 @@ describe('construction autonomy: an autonomous grant', () => {
 
   it.each([
     {
-      name: 'an offered loop-back',
+      // An offered loop-back is taken autonomously instead (see the loop-back
+      // tests below); only the recommendations it cannot act on open the gate.
+      name: 'a loop-back recommendation at the cap',
       stages: () => [
         ANCHOR,
         constructionStage('code-generation', {
@@ -423,16 +425,19 @@ describe('construction autonomy: an autonomous grant', () => {
         }),
         BUILD_AND_TEST,
       ],
-      options: ['approve', 'request-changes', 'loop-back'],
-      status: 'offered',
+      loopBackCount: 3,
+      options: ['approve', 'request-changes'],
+      status: 'at-cap',
     },
     {
       name: 'a loop-back recommendation with no code generation to go back to',
       stages: () => [ANCHOR, BUILD_AND_TEST],
+      loopBackCount: 0,
       options: ['approve', 'request-changes'],
       status: 'unavailable',
     },
-  ])('opens the human gate on $name', async ({ stages, options, status }) => {
+  ])('opens the human gate on $name', async ({ stages, loopBackCount, options, status }) => {
+    execution = { ...execution, loopBackCount };
     // The agent's "this code must be revised" is not a finding, so without this
     // rule the gate would be waived and the recommendation cleared unseen.
     deps.loadPlan = vi.fn(async () => ({ valid: true, plan: { stages: stages() } }));
@@ -826,6 +831,28 @@ describe('construction autonomy: the build-and-test loop-back', () => {
   // The container re-reads the gate it resumes from. A jump whose gate exists
   // only in the orchestrator's memory fails the target's re-run with
   // gate_not_found, and loses the archive and the reason that hang off the row.
+  // A recorded recommendation keeps a waivable gate from being approved. The
+  // jump is the one answer to it that does not open a human gate, and it is
+  // never an approval: build-and-test is approved only on the re-run, which has
+  // no recommendation left.
+  it('answers the recommendation with the jump, never with an approval', async () => {
+    await run();
+    const [first] = openedGates().filter((gate) => gate.stageInstanceId === 'si-build-and-test');
+    expect(first.options).toEqual(['loop-back']);
+    expect(storedGates.get(first.humanTaskId)).toMatchObject({
+      status: 'rejected',
+      answer: { decision: 'loop-back' },
+    });
+    const types = events().map((event) => event.type);
+    const jumped = types.indexOf('v2.loopback.recorded');
+    const approved = events().findIndex(
+      (event) =>
+        event.type === 'v2.gate.auto_approved' && event.detail?.stageId === 'build-and-test',
+    );
+    expect(jumped).toBeGreaterThanOrEqual(0);
+    expect(approved).toBeGreaterThan(jumped);
+  });
+
   it('names a stored, answered gate row in every resumeFrom it dispatches', async () => {
     await run();
     const resumes = dispatchedResumes();

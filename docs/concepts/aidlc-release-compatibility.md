@@ -286,7 +286,8 @@ bounded by the same three per intent.
 - At the cap, and in scopes that run code generation per unit (classic,
   enterprise, feature, mvp, workshop), the gate shows the recommendation and why
   the option is not offered. Those cases use request-changes or rewind. An
-  autonomous intent halts to that same human gate at the cap.
+  autonomous intent halts to that same human gate in both cases: a
+  recommendation is never approved over.
 - An autonomous intent takes the jump only in answer to the recommendation
   itself. Any blocking finding — a blocking gate sensor that did not pass, a
   missing required output, or a reviewer still not ready — opens the human gate
@@ -346,8 +347,11 @@ all reproduced.
 - The halt-and-ask set is reproduced in full: the plan's first non-skipped
   construction stage with a sequential gate, every Code Generation Plan
   Approval, every fan-out approval, a stage failure, a blocking gate sensor,
-  and a loop-back recommendation (offered, at the bound, or with no code
-  generation to go back to) all still open a human gate. So does a gate
+  and a loop-back recommendation all still open a human gate. The one
+  exception is an offered loop-back with no blocking finding, which takes the
+  autonomous jump described under the build-and-test loop-back; it is never
+  approved. A recommendation at the bound, or with no code generation to go
+  back to, opens the gate. So does a gate
   with learning candidates waiting for the learnings ritual, and a gate whose
   stage outputs the runner could not observe: "no finding" is only read as
   clean when the outputs were actually checked. Each gate re-reads the intent
