@@ -1000,6 +1000,29 @@ describe('buildExecutionMeta intent-config + DRAFT', () => {
     expect(unpinned).not.toHaveProperty('methodologyRelease');
   });
 
+  it('adds the construction autonomy grant attributes only for a granted intent', () => {
+    const base = {
+      executionId: 'e1',
+      projectId: 'p1',
+      intentId: 'i1',
+      workflowId: 'aidlc-v2',
+      workflowVersion: 1,
+      startedAt: 'T',
+    };
+    const grant = { source: 'create', grantedAt: 'T', grantedBy: 'u1', grantedByName: 'Ada' };
+    const granted = buildExecutionMeta({
+      ...base,
+      constructionGateAutonomy: 'autonomous',
+      constructionGateAutonomyGrant: grant,
+    });
+    const ungranted = buildExecutionMeta(base);
+
+    expect(granted.constructionGateAutonomy).toBe('autonomous');
+    expect(granted.constructionGateAutonomyGrant).toEqual(grant);
+    expect(ungranted).not.toHaveProperty('constructionGateAutonomy');
+    expect(ungranted).not.toHaveProperty('constructionGateAutonomyGrant');
+  });
+
   it('carries prompt/branch/baseBranch/repos and supports DRAFT status', () => {
     const meta = buildExecutionMeta({
       executionId: 'e1',

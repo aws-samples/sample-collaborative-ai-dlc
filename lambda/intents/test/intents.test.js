@@ -798,9 +798,9 @@ describe('POST /projects/{id}/intents', () => {
     expect(res.statusCode).toBe(201);
     const created = JSON.parse(res.body);
     expect(created.constructionGateAutonomy).toBeNull();
-    expect(
-      procStore.get(keyOf(`EXEC#${created.executionId}`, 'META')).constructionGateAutonomyGrant,
-    ).toBeNull();
+    const meta = procStore.get(keyOf(`EXEC#${created.executionId}`, 'META'));
+    expect(meta).not.toHaveProperty('constructionGateAutonomy');
+    expect(meta).not.toHaveProperty('constructionGateAutonomyGrant');
   });
 
   it('snapshots the resolved tools from a published managed environment', async () => {
@@ -8740,7 +8740,8 @@ describe('AI-DLC per-intent release selection', () => {
     expect(res.statusCode).toBe(201);
     const intent = JSON.parse(res.body);
     expect(intent.constructionGateAutonomy).toBeNull();
-    expect(metaFor(intent.id).constructionGateAutonomyGrant).toBeNull();
+    expect(metaFor(intent.id)).not.toHaveProperty('constructionGateAutonomy');
+    expect(metaFor(intent.id)).not.toHaveProperty('constructionGateAutonomyGrant');
   });
 
   it('400s an autonomy grant on a pinned release that ships no construction protocol', async () => {
