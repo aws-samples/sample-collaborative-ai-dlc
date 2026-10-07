@@ -430,6 +430,70 @@ describe('construction autonomy: an autonomous grant', () => {
   });
 });
 
+describe('construction autonomy: a terminal adversarial NOT-READY at the gate', () => {
+  const NOT_READY = {
+    advisory: false,
+    verdict: 'NOT-READY',
+    reviewerAgent: 'arch-reviewer',
+    findings: 'the retry budget is still unbounded',
+  };
+  const notReadyAt = (target) => (stageId) =>
+    stageId === target
+      ? { ...cleanVerdict(stageId), reviewAdvisory: NOT_READY }
+      : cleanVerdict(stageId);
+
+  it('blocks a gate the grant would waive and records the human override', async () => {
+    execution = { ...META, constructionGateAutonomy: 'autonomous' };
+    stageVerdicts = notReadyAt('build-and-test');
+    await run();
+    const gate = gateFor('si-build-and-test');
+    expect(gate.options).toEqual(['request-changes', 'override-and-approve']);
+    expect(gate.findings).toEqual([
+      expect.objectContaining({
+        code: 'review_not_ready',
+        severity: 'blocking',
+        overridable: true,
+        receiptKind: 'stage-approval',
+      }),
+    ]);
+    const approvals = receiptsFor('si-build-and-test').filter(
+      (receipt) => receipt.kind === 'stage-approval',
+    );
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({ choice: 'override-and-approve', decidedBy: 'u1' });
+    expect(approvals[0].detail).toMatchObject({
+      findingCodes: ['review_not_ready'],
+      reason: 'Accepted for this gate test.',
+    });
+    expect(approvals[0].detail.autonomous).toBeUndefined();
+    expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: 'on a gated intent',
+      mode: 'gated',
+      target: 'build-and-test',
+      options: ['approve', 'request-changes'],
+    },
+    {
+      name: 'at the anchor gate the grant never waives',
+      mode: 'autonomous',
+      target: 'functional-design',
+      options: ['approve', 'request-changes'],
+    },
+  ])('stays advisory, with approve on offer, $name', async ({ mode, target, options }) => {
+    execution = { ...META, constructionGateAutonomy: mode };
+    stageVerdicts = notReadyAt(target);
+    await run();
+    const gate = gateFor(`si-${target}`);
+    expect(gate.options).toEqual(options);
+    expect(gate.findings).toEqual([
+      expect.objectContaining({ code: 'review_advisory_findings', severity: 'advisory' }),
+    ]);
+  });
+});
+
 describe('construction autonomy: the grant-autonomy escalation', () => {
   beforeEach(() => {
     execution = { ...META, constructionGateAutonomy: 'gated' };
