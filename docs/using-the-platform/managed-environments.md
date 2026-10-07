@@ -531,15 +531,18 @@ The compute type is opt-in per deployment:
 ```hcl
 enable_instances_compute = true
 
-# Optional overrides
+# Optional overrides (these are the defaults)
 instances_allowed_instance_types       = ["m6i.large"] # x86_64; burstable (t-family) is not supported
-instances_allowed_instance_types_arm64 = ["m7g.large"] # arm64 (Graviton)
-instances_workspace_gib          = 50
+instances_allowed_instance_types_arm64 = ["m7g.large"] # arm64 (Graviton); [] disables arm64 Instances
+instances_workspace_gib                = 50
 ```
 
 Enabling the flag provisions the x86_64 (amd64) build of the platform core
 image and the VPC wiring the instances attach to, and grants the status lambda
-the capacity-provider permissions. When the flag is off (the default), the
+the capacity-provider provisioning permissions. The Terraform variables are the
+only source of this configuration: both the API (capability matrix and draft
+validation) and the status poller (capacity-provider creation) read the same
+values, and the Lambda code has no defaults of its own. When the flag is off (the default), the
 Instances cells are unavailable in the capability matrix, the compute selector
 only offers microVMs, and the API rejects Instances drafts with
 `INSTANCES_COMPUTE_NOT_CONFIGURED`.
@@ -550,8 +553,13 @@ operator role is created unconditionally (capacity providers are retained and
 keep referencing it), and existing capacity providers, runtimes, and published
 revisions are left in place. New Instances drafts are refused and existing
 Instances revisions stop being rebuilt/validated until the flag is re-enabled.
+Workspace cleanup is not gated by the flag: the poller keeps its
+`DeleteCapacityProviderSession` permission, so queued releases still complete
+and intents on retained Instances runtimes can still be deleted.
 An instance family is built for one architecture only, so each architecture
-has its own allowlist; the capability matrix reports the list per cell.
+has its own allowlist; the capability matrix reports the list per cell, and an
+architecture whose list is empty is reported as `NO_INSTANCE_TYPES` and cannot
+be selected.
 Changing an allowlist or `instances_workspace_gib`
 produces a new capacity provider on the next runtime creation; runtimes
 created earlier keep the provider they were built with.
@@ -579,7 +587,9 @@ types, with one difference on Instances: runtime validation first has to
 provision an EC2 instance, so a cold start can take several minutes. The revision stays
 `VERIFYING` while the poller re-attaches to the same validation session until
 the instance is up (bounded by `MANAGED_INSTANCES_VALIDATION_MAX_POLLS`,
-30 polls by default).
+30 polls by default). The poll runs every minute and can outlast that
+interval, so each revision's verification is leased to one poll at a time;
+only the lease holder creates, reuses or releases the validation session.
 
 #### Persistent workspaces and cost
 
@@ -611,8 +621,11 @@ including lanes from earlier plans) is stopped and released. A release that
 fails for any reason other than the session already being gone is queued as
 durable cleanup work (`SESSION_CLEANUP#` records on the environment registry
 table) and retried by the environments status poller until the volume is gone
-— the same mechanism covers validation sessions, so no path can leak a volume
-on a transient error.
+— the same mechanism covers validation sessions. Whoever holds a session id
+keeps it until the release is completed or queued: if queueing itself fails,
+an intent delete returns `503` with nothing deleted, and a validation stays
+`VERIFYING` with its session until the next poll, so the identity of a volume
+is never dropped.
 
 EC2 instances themselves start on demand and are reclaimed by the capacity
 provider; you pay for instance time while sessions are active plus EBS storage
