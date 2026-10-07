@@ -668,6 +668,21 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
     expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
   });
 
+  it('writes no grant for a grant-autonomy answer on a gate that did not offer it', async () => {
+    // The answer endpoint refuses this answer; a row carrying it anyway parses to
+    // nothing against the gate's options and takes the ordinary fallback.
+    deps.store.getHumanTask = answerWithOfferedOption((options) =>
+      options.includes('grant-autonomy') ? 'approve' : 'grant-autonomy',
+    );
+    await run();
+    expect(
+      deps.store.updateExecution.mock.calls.filter(
+        ([args]) => args.constructionGateAutonomy !== undefined,
+      ),
+    ).toEqual([]);
+    expect(eventsOfType('v2.autonomy.mode_set')).toEqual([]);
+  });
+
   it('records the grant and its event once across a durable replay', async () => {
     // Same memoization as the create-time replay test: only the steps this
     // feature adds replay their recorded result.

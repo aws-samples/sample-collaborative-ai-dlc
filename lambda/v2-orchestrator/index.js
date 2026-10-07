@@ -1943,7 +1943,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // validated, so a crash between the two leaves the grant on the record
           // rather than an approval whose grant was lost. The write is by value, so
           // a durable replay of this step converges on the same mode.
-          if (answered === GRANT_AUTONOMY_OPTION && autonomyGrantOffered) {
+          //
+          // `answered` is parsed against this gate's own options, so it can only be
+          // `grant-autonomy` where the gate offered it. An answer naming an option
+          // the gate never offered parses to nothing and takes the fallback above;
+          // the answer endpoint refuses such an answer before it reaches the run.
+          if (answered === GRANT_AUTONOMY_OPTION) {
             // The step returns the grant it wrote, so the event below repeats the
             // recorded timestamp instead of reading the clock a second time.
             const grant = await ctx.step(
@@ -1982,15 +1987,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             );
           }
           const choice =
-            answered === 'override-and-approve' ||
-            (answered === GRANT_AUTONOMY_OPTION && autonomyGrantOffered)
+            answered === 'override-and-approve' || answered === GRANT_AUTONOMY_OPTION
               ? 'approve'
-              : answered === GRANT_AUTONOMY_OPTION
-                ? // The grant was not on offer at this gate, so the answer carries no
-                  // approval either: re-running the stage is the only safe reading,
-                  // exactly as for any other option the gate never presented.
-                  'request-changes'
-                : answered;
+              : answered;
           if (choice === 'approve') {
             await emitEvent(
               ctx,
