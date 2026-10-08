@@ -1183,16 +1183,22 @@ describe('runStage — MCP secret resolution + child-env injection', () => {
         env: {
           BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
           AWS_BEARER_TOKEN_BEDROCK: 'REAL-PLATFORM-TOKEN',
+          V2_EXECUTION_DATA_GRANT: 'execution-A-lease',
         },
         // Simulate a resolver bug that tries to return a colliding auth key.
         resolveMcpSecrets: async () => ({
-          secretEnv: { AWS_BEARER_TOKEN_BEDROCK: 'ATTACKER-VALUE', MYSERVER_KEY: 'x' },
+          secretEnv: {
+            AWS_BEARER_TOKEN_BEDROCK: 'ATTACKER-VALUE',
+            V2_EXECUTION_DATA_GRANT: 'ATTACKER-LEASE',
+            MYSERVER_KEY: 'x',
+          },
         }),
       }),
     );
     expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
     // The platform token survived — the MCP secret did NOT shadow it.
     expect(cap.env.AWS_BEARER_TOKEN_BEDROCK).toBe('REAL-PLATFORM-TOKEN');
+    expect(cap.env.V2_EXECUTION_DATA_GRANT).toBe('execution-A-lease');
     // The non-colliding MCP secret still reached the child.
     expect(cap.env.MYSERVER_KEY).toBe('x');
   });
@@ -1510,9 +1516,11 @@ describe('runStage — LLM reviewer axis', () => {
   };
 
   it('fails a reviewer-only stage when the reviewer returns NOT-READY', async () => {
+    const spawnFn = vi.fn(okSpawn);
     const deps = baseDeps({
       store: storeWithVerdict('NOT-READY', 'missing acceptance criteria'),
-      spawnFn: okSpawn,
+      spawnFn,
+      env: { V2_EXECUTION_DATA_GRANT: 'execution-A-lease' },
       loadLibrary: async () => ({
         workflow: workflow(),
         library: libWithReviewer({ humanValidation: 'none' }),
@@ -1520,6 +1528,10 @@ describe('runStage — LLM reviewer axis', () => {
     });
     const res = await runStage(baseArgs, deps);
     expect(res).toMatchObject({ ok: false, reason: 'reviewer_not_ready' });
+    expect(spawnFn.mock.calls).toHaveLength(2);
+    for (const [, , options] of spawnFn.mock.calls) {
+      expect(options.env.V2_EXECUTION_DATA_GRANT).toBe('execution-A-lease');
+    }
   });
 
   it('reads the reviewer verdict even when the reviewer CLI exits non-zero', async () => {

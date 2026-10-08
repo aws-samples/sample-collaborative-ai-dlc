@@ -93,7 +93,12 @@ variable "runtime_compatibility_version" {
 }
 
 variable "runtime_role_arn" {
-  description = "Execution role used by managed AgentCore runtimes"
+  description = "Legacy execution role for managed runtimes built on a pre-isolation core image"
+  type        = string
+}
+
+variable "runtime_scoped_role_arn" {
+  description = "Execution role for managed runtimes that use broker-issued execution-data credentials"
   type        = string
 }
 

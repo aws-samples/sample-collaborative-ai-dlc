@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
-import { STSClient } from '@aws-sdk/client-sts';
+import { AssumeRoleCommand, STSClient } from '@aws-sdk/client-sts';
 import { executionMetaKey } from '../shared/v2-process-keys.js';
 import {
   ACTIVE,
@@ -14,7 +15,11 @@ import {
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
 import { repoUrl, repoProvider } from '../shared/repo-provider.js';
 import { readCredentialBindingValue } from '../shared/agent-credentials.js';
-import { verifyIssuedAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import {
+  loadAgentCredentialGrantSecret,
+  verifyExecutionDataGrant,
+  verifyIssuedAgentCredentialGrant,
+} from '../shared/agent-credential-grants.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
 const logger = new Logger({ persistentKeys: { component: 'credential-broker' } });
@@ -166,10 +171,71 @@ const authorizeAgentCredentialRequest = async (
   };
 };
 
+export const RESOLVE_EXECUTION_DATA = 'resolve-execution-data';
+// The role limits DynamoDB access to EXEC#${aws:PrincipalTag/execution_id}.
+export const EXECUTION_ID_TAG = 'execution_id';
+// Role chaining caps sessions at 1h. Sessions are issued only while the signed
+// lease is valid, so a session may outlive its lease by at most this duration.
+const SESSION_SECONDS = 3600;
+
+// Grants accept 128-character IDs; preserve UUIDs and hash longer IDs to fit
+// STS's 64-character session-name limit without dropping their distinguishing suffix.
+const executionRoleSessionName = (executionId) =>
+  `exec-${
+    executionId.length <= 59
+      ? executionId
+      : createHash('sha256').update(executionId).digest('base64url')
+  }`;
+
+export const authorizeExecutionDataRequest = async (
+  { grant, executionId },
+  { ssmClient, stsClient, env = process.env, secret, now = Date.now },
+) => {
+  const claims = verifyExecutionDataGrant(
+    grant,
+    secret ?? (await loadAgentCredentialGrantSecret(ssmClient, { env })),
+    { now },
+  );
+  if (claims.executionId !== executionId) {
+    throw Object.assign(new Error('Execution data scope mismatch'), {
+      code: 'EXECUTION_DATA_GRANT_INVALID',
+    });
+  }
+  if (!env.EXECUTION_DATA_ROLE_ARN) {
+    throw Object.assign(new Error('Execution data credentials unavailable'), {
+      code: 'EXECUTION_DATA_UNAVAILABLE',
+    });
+  }
+  const result = await stsClient.send(
+    new AssumeRoleCommand({
+      RoleArn: env.EXECUTION_DATA_ROLE_ARN,
+      RoleSessionName: executionRoleSessionName(claims.executionId),
+      DurationSeconds: SESSION_SECONDS,
+      Tags: [{ Key: EXECUTION_ID_TAG, Value: claims.executionId }],
+    }),
+  );
+  const credentials = result.Credentials;
+  return {
+    executionId: claims.executionId,
+    credentials: {
+      accessKeyId: credentials.AccessKeyId,
+      secretAccessKey: credentials.SecretAccessKey,
+      sessionToken: credentials.SessionToken,
+      expiration: credentials.Expiration.toISOString(),
+    },
+  };
+};
+
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   const action = event?.action || 'source-control';
   try {
+    if (action === RESOLVE_EXECUTION_DATA) {
+      return {
+        ok: true,
+        ...(await authorizeExecutionDataRequest(event, { ssmClient: ssm, stsClient: sts })),
+      };
+    }
     if (action === RESOLVE_AGENT_CREDENTIALS) {
       return {
         ok: true,
@@ -191,10 +257,9 @@ export const handler = async (event, context) => {
   } catch (error) {
     // Both code helpers return only allowlisted constants — never provider-
     // derived error text, which can carry credential material.
-    const code =
-      action === RESOLVE_AGENT_CREDENTIALS
-        ? loggableAgentCredentialErrorCode(error)
-        : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
+    let code = loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
+    if (action === RESOLVE_EXECUTION_DATA) code = 'EXECUTION_DATA_DENIED';
+    if (action === RESOLVE_AGENT_CREDENTIALS) code = loggableAgentCredentialErrorCode(error);
     logger.error('request denied', {
       code,
       action,

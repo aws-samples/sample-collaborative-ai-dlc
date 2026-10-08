@@ -70,9 +70,9 @@
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import http from 'node:http';
-import { createProcessStore } from '../shared/v2-process-store.js';
-import { commandDefinition } from './command-registry.js';
 import { installProcessGroupShutdown } from './cli/spawn.js';
+import { createExecutionStore, EXECUTION_DATA_GRANT_ENV } from './execution-store.js';
+import { commandDefinition, executionDataId } from './command-registry.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -93,9 +93,9 @@ export const createBusyTracker = () => {
 };
 
 export const createRecordLearningHandler =
-  ({ recordLearning, store, openGraph, broadcast }) =>
-  (payload) =>
-    recordLearning(payload, { store, openGraph, broadcast });
+  ({ recordLearning, openGraph, broadcast }) =>
+  (payload, context) =>
+    recordLearning(payload, { store: context.store, openGraph, broadcast });
 
 // Dispatch one parsed invocation to the right command handler. PURE of HTTP —
 // returns { statusCode, body }. `handlers` = { initWs, runStage }; `busy` is the
@@ -121,12 +121,10 @@ export const dispatchInvocation = async ({
 
   busy?.enter();
   try {
-    const context =
-      prepareInvocation && definition.agentAuth
-        ? await prepareInvocation(payload, definition.agentAuth)
-        : {};
+    const context = prepareInvocation ? await prepareInvocation(payload, definition.agentAuth) : {};
     const handlerPayload = { ...payload };
     delete handlerPayload.agentCredentialGrant;
+    delete handlerPayload.executionDataGrant;
     const result = await handler(handlerPayload, context);
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
@@ -206,16 +204,39 @@ export const createServer = ({
   });
 };
 
+export const createInvocationContext =
+  ({ installedClis, resolveInvocationAgentAuth, authenticatedClisForEnv }) =>
+  async (payload, authMode) => {
+    const env = { ...process.env };
+    delete env[EXECUTION_DATA_GRANT_ENV];
+    let store = null;
+    const executionId = executionDataId(payload);
+    if (commandDefinition(payload.command)?.executionData && !executionId) {
+      throw new Error('executionId or intentId is required for execution data');
+    }
+    if (executionId) {
+      store = await createExecutionStore({ executionId, grant: payload.executionDataGrant, env });
+      // Child CLIs and the MCP server renew their own credentials with this grant.
+      env[EXECUTION_DATA_GRANT_ENV] = payload.executionDataGrant;
+    }
+    if (!authMode) return { store, env };
+    const auth = await resolveInvocationAgentAuth({
+      payload,
+      authMode,
+      store,
+      env,
+    });
+    return {
+      ...auth,
+      store,
+      availableClis: authenticatedClisForEnv({ installed: installedClis, env: auth.env }),
+    };
+  };
+
 // Container entry: wire the real commands + clients, then listen on 8080.
 const main = async () => {
-  const {
-    ddb,
-    s3,
-    openGraph,
-    broadcastToIntent,
-    sendStageCallbackSuccess,
-    sendStageCallbackHeartbeat,
-  } = await import('./clients.js');
+  const { s3, openGraph, broadcastToIntent, sendStageCallbackSuccess, sendStageCallbackHeartbeat } =
+    await import('./clients.js');
   const { initWs } = await import('./commands/init-ws.js');
   const { runStage } = await import('./commands/run-stage.js');
   const { createRunStageStart } = await import('./commands/run-stage-start.js');
@@ -247,20 +268,12 @@ const main = async () => {
 
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
-  const store = createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE });
   const installedClis = await discoverInstalledClis();
-  const invocationContext = async (payload, authMode) => {
-    const auth = await resolveInvocationAgentAuth({
-      payload,
-      authMode,
-      store,
-      env: process.env,
-    });
-    return {
-      ...auth,
-      availableClis: authenticatedClisForEnv({ installed: installedClis, env: auth.env }),
-    };
-  };
+  const invocationContext = createInvocationContext({
+    installedClis,
+    resolveInvocationAgentAuth,
+    authenticatedClisForEnv,
+  });
 
   // Publish a process-state payload on the intent's realtime channel. The
   // payload carries its own intentId (the command stamps it), so fan-out is keyed
@@ -268,12 +281,13 @@ const main = async () => {
   const broadcast = (payload) => broadcastToIntent(payload?.intentId, payload);
 
   const handlers = {
-    initWs: (p) => initWs(p, { store, openGraph, checkoutRepos, workspaceDir, broadcast }),
+    initWs: (p, context) =>
+      initWs(p, { store: context.store, openGraph, checkoutRepos, workspaceDir, broadcast }),
     runStage: (p, context) =>
       runStage(
         { ...p, workspaceDir },
         {
-          store,
+          store: context.store,
           loadLibrary,
           loadBlockBody,
           loadBlockScript,
@@ -300,34 +314,36 @@ const main = async () => {
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).
-    promoteUnits: (p) => promoteUnits(p, { store, openGraph, broadcast }),
+    promoteUnits: (p, context) => promoteUnits(p, { store: context.store, openGraph, broadcast }),
     deriveArtifacts: (p, context) =>
       deriveArtifacts(p, {
-        store,
+        store: context.store,
         openGraph,
         broadcast,
         availableClis: context.availableClis,
         env: context.env,
       }),
-    createWorkflowCheckpoint: (p) =>
+    createWorkflowCheckpoint: (p, context) =>
       createWorkflowCheckpoint(p, {
-        store,
+        store: context.store,
         openGraph,
         s3,
         bucket: process.env.ARTIFACTS_BUCKET,
       }),
     // Fan-in PR record: write the opened PR(s) into the graph (the orchestrator
     // has no Neptune access, so it forwards the structured PR data here).
-    recordPr: (p) => recordPr(p, { store, openGraph, broadcast }),
+    recordPr: (p, context) => recordPr(p, { store: context.store, openGraph, broadcast }),
     // Learnings ritual: the human's gate answer becomes a durable
     // project learning here, because the orchestrator has no Neptune access.
-    recordLearning: createRecordLearningHandler({ recordLearning, store, openGraph, broadcast }),
-    recordUnitPr: (p) => recordUnitPr(p, { store, openGraph, broadcast }),
+    recordLearning: createRecordLearningHandler({ recordLearning, openGraph, broadcast }),
+    recordUnitPr: (p, context) => recordUnitPr(p, { store: context.store, openGraph, broadcast }),
     // WP5 unit lanes: engine-owned lane git (docs/v2-parallel.md A3). init-lane
     // runs in the lane's own session; merge-lane in the intent session.
-    initLane: (p) => initLane({ ...p, workspaceDir }, { store, broadcast }),
-    mergeLane: (p) => mergeLane({ ...p, workspaceDir }, { store, broadcast }),
-    reconcileLane: (p) => reconcileLane({ ...p, workspaceDir }, { store, broadcast }),
+    initLane: (p, context) => initLane({ ...p, workspaceDir }, { store: context.store, broadcast }),
+    mergeLane: (p, context) =>
+      mergeLane({ ...p, workspaceDir }, { store: context.store, broadcast }),
+    reconcileLane: (p, context) =>
+      reconcileLane({ ...p, workspaceDir }, { store: context.store, broadcast }),
     refreshIntent: (p) => refreshIntentWorkspace({ ...p, workspaceDir }, {}),
     // WP6: the scoped conflict-resolution stage (lane session). The engine
     // merges/verifies/concludes; the agent CLI only edits conflicted files.
@@ -335,7 +351,7 @@ const main = async () => {
       resolveConflict(
         { ...p, workspaceDir },
         {
-          store,
+          store: context.store,
           availableClis: context.availableClis,
           mcpEntry,
           broadcast,
@@ -360,7 +376,7 @@ const main = async () => {
   handlers.discussionAssistStart = (p, context) =>
     createDiscussionAssistStart({
       openGraph,
-      store,
+      store: context.store,
       broadcast,
       availableClis: context.availableClis,
       env: context.env,
@@ -375,7 +391,7 @@ const main = async () => {
   handlers.composePlanStart = (p, context) =>
     createComposePlanStart({
       openGraph,
-      store,
+      store: context.store,
       broadcast,
       availableClis: context.availableClis,
       env: context.env,
@@ -389,7 +405,7 @@ const main = async () => {
   handlers.quorumEditPlanStart = (p, context) =>
     createQuorumEditPlanStart({
       openGraph,
-      store,
+      store: context.store,
       broadcast,
       availableClis: context.availableClis,
       env: context.env,
@@ -402,7 +418,7 @@ const main = async () => {
   handlers.quorumEditApplyStart = (p, context) =>
     createQuorumEditApplyStart({
       openGraph,
-      store,
+      store: context.store,
       broadcast,
       availableClis: context.availableClis,
       env: context.env,
@@ -416,7 +432,7 @@ const main = async () => {
   handlers.repairStructure = (p, context) =>
     repairStructure(p, {
       openGraph,
-      store,
+      store: context.store,
       broadcast,
       availableClis: context.availableClis,
       deriveArtifacts: (q) => handlers.deriveArtifacts(q, context),

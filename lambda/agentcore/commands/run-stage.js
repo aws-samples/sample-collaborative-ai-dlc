@@ -39,6 +39,7 @@ import {
   parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild, captureChild } from '../cli/spawn.js';
+import { executionDataEnv } from '../execution-store.js';
 import { isCredentialFailure } from '../cli/credential-errors.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
@@ -3339,6 +3340,7 @@ export const runStage = async (
     ...mcpSecretEnv,
     ...invocation.env,
     ...driver.envForAuth(env),
+    ...executionDataEnv(env),
   };
   // Disk preflight — a nearly-full mount is loud BEFORE the CLI burns tokens.
   await warnIfDiskLow('before the agent run');

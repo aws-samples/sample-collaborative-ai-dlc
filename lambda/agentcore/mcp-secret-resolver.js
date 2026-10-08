@@ -98,6 +98,8 @@ export const RESERVED_MCP_ENV_KEYS = new Set([
   'AWS_CONTAINER_CREDENTIALS_FULL_URI',
   'AWS_WEB_IDENTITY_TOKEN_FILE',
   'AWS_ROLE_ARN',
+  'V2_EXECUTION_DATA_GRANT',
+  'CREDENTIAL_BROKER_FUNCTION',
   // Runtime-owned local integration endpoint.
   'DYNAMODB_LOCAL_ENDPOINT',
   // Package-manager / system env the runtime controls (OFF_MOUNT_CACHE_ENV +

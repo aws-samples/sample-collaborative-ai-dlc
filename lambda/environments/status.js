@@ -25,7 +25,7 @@ import {
   streamToString,
   summarizeScanFindings,
 } from './build-lifecycle.js';
-import { createEnvironmentStore } from './store.js';
+import { createEnvironmentStore, usesExecutionDataScope } from './store.js';
 import { evaluateScanFindings } from './fixed-tool-recipe.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -132,6 +132,9 @@ const createRuntimeForRevision = async ({
 }) => {
   let created;
   try {
+    const roleArn = (await usesExecutionDataScope(store, revision))
+      ? process.env.MANAGED_RUNTIME_SCOPED_ROLE_ARN
+      : process.env.MANAGED_RUNTIME_ROLE_ARN;
     const resourceTags = {
       ...parseJsonEnv('MANAGED_RUNTIME_TAGS', {}),
       ManagedEnvironment: environment.environmentId,
@@ -152,7 +155,7 @@ const createRuntimeForRevision = async ({
             containerUri: `${revision.imageUri}@${revision.imageDigest}`,
           },
         },
-        roleArn: process.env.MANAGED_RUNTIME_ROLE_ARN,
+        roleArn,
         protocolConfiguration: { serverProtocol: 'HTTP' },
         networkConfiguration: {
           networkMode,

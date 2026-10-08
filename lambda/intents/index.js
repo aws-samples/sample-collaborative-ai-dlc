@@ -113,7 +113,10 @@ import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import { resolveEffectiveCredentialBindingsViaBroker } from '../shared/agent-credential-metadata.js';
-import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import {
+  issueAgentCredentialGrant,
+  issueExecutionDataGrant,
+} from '../shared/agent-credential-grants.js';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
@@ -2526,6 +2529,7 @@ export const handler = async (event, context) => {
               payload: Buffer.from(
                 JSON.stringify({
                   command: 'derive-artifacts',
+                  executionDataGrant: await issueExecutionDataGrant(ssm, { executionId: intentId }),
                   projectId,
                   intentId,
                   executionId: intentId,
@@ -3824,6 +3828,7 @@ export const handler = async (event, context) => {
             payload: Buffer.from(
               JSON.stringify({
                 command: 'compose-plan-start',
+                executionDataGrant: await issueExecutionDataGrant(ssm, { executionId: intentId }),
                 projectId,
                 intentId,
                 executionId: intentId,
@@ -4107,6 +4112,7 @@ export const handler = async (event, context) => {
             payload: Buffer.from(
               JSON.stringify({
                 ...payload,
+                executionDataGrant: await issueExecutionDataGrant(ssm, { executionId: intentId }),
                 ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
               }),
             ),

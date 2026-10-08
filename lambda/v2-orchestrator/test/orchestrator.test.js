@@ -1,5 +1,41 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { __durableHandler } from '../index.js';
+import { __durableHandler, defaultInvokeRuntime } from '../index.js';
+import {
+  BedrockAgentCoreClient,
+  InvokeAgentRuntimeCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
+import { mockClient } from 'aws-sdk-client-mock';
+import { verifyExecutionDataGrant } from '../../shared/agent-credential-grants.js';
+
+describe('runtime execution data authorization', () => {
+  it('issues fresh data leases for engine-only invocations and resumed stages without model bindings', async () => {
+    const runtime = mockClient(BedrockAgentCoreClient);
+    const secret = 'd'.repeat(48);
+    vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', secret);
+    runtime.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => '{"ok":true}' },
+    });
+    try {
+      for (const payload of [
+        { command: 'init-ws', executionId: 'A' },
+        { command: 'run-stage-start', executionId: 'A', resumeFrom: 'answered-gate' },
+        { command: 'create-workflow-checkpoint', executionId: 'A' },
+      ]) {
+        await defaultInvokeRuntime(payload, 'test-session', { agentRuntimeArn: 'test-runtime' });
+      }
+      const payloads = runtime
+        .commandCalls(InvokeAgentRuntimeCommand)
+        .map((call) => JSON.parse(Buffer.from(call.args[0].input.payload).toString()));
+      for (const payload of payloads) {
+        expect(verifyExecutionDataGrant(payload.executionDataGrant, secret).executionId).toBe('A');
+        expect(payload).not.toHaveProperty('agentCredentialGrant');
+      }
+    } finally {
+      runtime.restore();
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 // The orchestrator's control flow is driven through an injected `deps` bag and a
 // fake DurableContext — no real AWS/Neptune. This isolates the sequencing logic

@@ -138,35 +138,40 @@ export const signAgentCredentialGrant = (
   return `${encodedClaims}.${signature}`;
 };
 
-export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now() } = {}) => {
+const verifySignedClaims = (token, secret, onInvalid) => {
   if (typeof token !== 'string' || !token || Buffer.byteLength(token) > MAX_TOKEN_BYTES) {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+    throw onInvalid();
   }
   const parts = token.split('.');
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+    throw onInvalid();
   }
   const [encodedClaims, encodedSignature] = parts;
   let suppliedSignature;
   try {
     suppliedSignature = Buffer.from(encodedSignature, 'base64url');
   } catch {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+    throw onInvalid();
   }
   const expectedSignature = signatureFor(encodedClaims, secret);
   if (
     suppliedSignature.length !== expectedSignature.length ||
     !timingSafeEqual(suppliedSignature, expectedSignature)
   ) {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+    throw onInvalid();
   }
 
-  let parsed;
   try {
-    parsed = JSON.parse(Buffer.from(encodedClaims, 'base64url').toString('utf8'));
+    return JSON.parse(Buffer.from(encodedClaims, 'base64url').toString('utf8'));
   } catch {
-    throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
+    throw onInvalid();
   }
+};
+
+export const verifyAgentCredentialGrant = (token, secret, { now = () => Date.now() } = {}) => {
+  const parsed = verifySignedClaims(token, secret, () =>
+    grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid'),
+  );
   if (parsed?.version !== 1 || parsed?.audience !== AGENT_CREDENTIAL_GRANT_AUDIENCE) {
     throw grantError('AGENT_CREDENTIAL_GRANT_INVALID', 'Agent credential grant is invalid');
   }
@@ -232,6 +237,54 @@ export const verifyIssuedAgentCredentialGrant = async (
     secret ?? (await loadAgentCredentialGrantSecret(ssm, { env })),
     options,
   );
+
+// Execution-data grant: a data-only lease, independent of model credentials and
+// agent-writable META. Trusted API/orchestrator code signs the authorized
+// execution ID; the broker renews STS sessions within this fixed window but
+// cannot extend it.
+export const EXECUTION_DATA_LEASE_SECONDS = 8 * 60 * 60;
+const EXECUTION_DATA_AUDIENCE = 'aidlc-execution-data';
+const executionDataInvalid = () =>
+  grantError('EXECUTION_DATA_GRANT_INVALID', 'Execution data grant is invalid or expired');
+// Also a valid STS session-tag value.
+const validExecutionId = (value) =>
+  typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+
+export const signExecutionDataGrant = ({ executionId }, secret, { now = Date.now } = {}) => {
+  if (!validExecutionId(executionId)) throw executionDataInvalid();
+  const issuedAt = Math.floor(now() / 1000);
+  const encodedClaims = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      audience: EXECUTION_DATA_AUDIENCE,
+      executionId,
+      issuedAt,
+      expiresAt: issuedAt + EXECUTION_DATA_LEASE_SECONDS,
+    }),
+  ).toString('base64url');
+  return `${encodedClaims}.${signatureFor(encodedClaims, secret).toString('base64url')}`;
+};
+
+export const verifyExecutionDataGrant = (token, secret, { now = Date.now } = {}) => {
+  const claims = verifySignedClaims(token, secret, executionDataInvalid);
+  const current = Math.floor(now() / 1000);
+  if (
+    claims?.version !== 1 ||
+    claims.audience !== EXECUTION_DATA_AUDIENCE ||
+    !validExecutionId(claims.executionId) ||
+    !Number.isInteger(claims.issuedAt) ||
+    !Number.isInteger(claims.expiresAt) ||
+    claims.issuedAt > current + CLOCK_SKEW_SECONDS ||
+    claims.expiresAt <= current ||
+    claims.expiresAt - claims.issuedAt !== EXECUTION_DATA_LEASE_SECONDS
+  ) {
+    throw executionDataInvalid();
+  }
+  return Object.freeze({ executionId: claims.executionId, expiresAt: claims.expiresAt });
+};
+
+export const issueExecutionDataGrant = async (ssm, claims, options = {}) =>
+  signExecutionDataGrant(claims, await loadAgentCredentialGrantSecret(ssm, options), options);
 
 export default {
   issueAgentCredentialGrant,

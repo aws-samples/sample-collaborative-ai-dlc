@@ -105,6 +105,8 @@ describe('local E2E shell safety contract', () => {
   it('includes the internal harness dependency closure in the AgentCore image', () => {
     expect(dockerignore).toContain('!agentcore/test/local-e2e-harness.mjs');
     expect(dockerignore).toContain('!agentcore/test/local-e2e-config.js');
+    expect(dockerignore).toContain('!agentcore/test/fixtures/');
+    expect(dockerignore).toContain('!agentcore/test/fixtures/mcp-stdio-entry.js');
     expect(dockerignore).toContain('!agentcore/test/helpers/v2-table.js');
   });
 

@@ -172,6 +172,7 @@ describe('resolveConflict', () => {
     const store = spyStore();
     let promptSeen = null;
     const spawnFn = (command, args, opts) => {
+      expect(opts.env.V2_EXECUTION_DATA_GRANT).toBe('execution-A-lease');
       const child = fakeCliSpawn(async (cwd) => {
         // The "agent" resolves the conflicted file (markers gone, both kept).
         await writeFile(path.join(cwd, 'shared.txt'), 'intent version + unit version\n');
@@ -180,7 +181,10 @@ describe('resolveConflict', () => {
       child.stdin = { end: (v) => (promptSeen = v) };
       return child;
     };
-    const res = await resolveConflict(basePayload(ws), baseDeps(remote, store, spawnFn));
+    const res = await resolveConflict(basePayload(ws), {
+      ...baseDeps(remote, store, spawnFn),
+      env: { V2_EXECUTION_DATA_GRANT: 'execution-A-lease' },
+    });
     expect(res.ok).toBe(true);
     expect(res.resolvedFiles).toEqual(['o/r:shared.txt']);
     // The agent got the focused prompt with the actual conflicted file.

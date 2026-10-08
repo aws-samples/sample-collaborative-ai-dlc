@@ -2,7 +2,8 @@
 //
 // Test seam mirrors the discussions lambda: GREMLIN_PROTOCOL=ws (plain, no IAM)
 // for a local gremlin-server; wss + SigV4 in production Neptune. The DDB/S3/WS
-// clients use the default credential chain (the ECS/AgentCore task role).
+// shared-table/S3/WS clients use the default credential chain (the runtime role).
+// Execution state MUST use execution-store.js: the runtime role denies that table.
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import gremlin from 'gremlin';

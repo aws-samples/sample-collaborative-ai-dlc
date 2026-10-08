@@ -1726,6 +1726,7 @@ describe('intent-scoped discussions', () => {
       },
     });
     expect(typeof payload.agentCredentialGrant).toBe('string');
+    expect(typeof payload.executionDataGrant).toBe('string');
     expect(JSON.stringify(payload)).not.toContain(forbiddenCredentialValue);
 
     const again = await call('POST', intentPath('/discussions/{discussionId}/assist'), {

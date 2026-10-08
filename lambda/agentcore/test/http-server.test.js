@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createBusyTracker, dispatchInvocation, createServer } from '../http-server.js';
-import { createRecordLearningHandler } from '../http-server.js';
+import {
+  createBusyTracker,
+  createInvocationContext,
+  createRecordLearningHandler,
+  dispatchInvocation,
+  createServer,
+} from '../http-server.js';
 import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
 
 describe('createBusyTracker', () => {
@@ -15,6 +20,53 @@ describe('createBusyTracker', () => {
     b.leave();
     expect(b.status).toBe('Healthy');
   });
+});
+
+describe('invocation context validation', () => {
+  it.each(['init-ws', 'run-stage'])(
+    'rejects %s without an execution or intent ID before auth or handler execution',
+    async (command) => {
+      const resolveInvocationAgentAuth = vi.fn(async () => ({ env: {} }));
+      const prepareInvocation = createInvocationContext({
+        installedClis: [],
+        resolveInvocationAgentAuth,
+        authenticatedClisForEnv: () => [],
+      });
+      const handler = vi.fn(async () => ({ ok: true }));
+      const busy = createBusyTracker();
+      const result = await dispatchInvocation({
+        payload: { command },
+        handlers: { [COMMANDS[command].handler]: handler },
+        busy,
+        prepareInvocation,
+      });
+
+      expect(result).toEqual({
+        statusCode: 500,
+        body: { error: 'executionId or intentId is required for execution data', command },
+      });
+      expect(handler).not.toHaveBeenCalled();
+      expect(resolveInvocationAgentAuth).not.toHaveBeenCalled();
+      expect(busy.status).toBe('Healthy');
+    },
+  );
+
+  it('allows commands that do not need execution data without either ID', async () => {
+    const prepareInvocation = createInvocationContext({});
+    await expect(prepareInvocation({ command: 'inspect' }, false)).resolves.toMatchObject({
+      store: null,
+    });
+  });
+
+  it.each([{ executionId: 'e1' }, { intentId: 'i1' }])(
+    'requires a grant once either identity is present: %j',
+    async (identity) => {
+      const prepareInvocation = createInvocationContext({});
+      await expect(prepareInvocation({ command: 'init-ws', ...identity }, false)).rejects.toThrow(
+        'Execution data grant is required',
+      );
+    },
+  );
 });
 
 describe('dispatchInvocation', () => {
@@ -35,10 +87,15 @@ describe('dispatchInvocation', () => {
   });
 
   it('keeps routing and authentication metadata in one command registry', () => {
-    expect(COMMANDS['init-ws']).toEqual({ handler: 'initWs', agentAuth: false });
+    expect(COMMANDS['init-ws']).toEqual({
+      handler: 'initWs',
+      agentAuth: false,
+      executionData: true,
+    });
     expect(COMMANDS['run-stage']).toEqual({
       handler: 'runStage',
       agentAuth: AGENT_AUTH_MODES.EXECUTION,
+      executionData: true,
     });
     expect(COMMANDS['compose-plan-start'].agentAuth).toBe(AGENT_AUTH_MODES.COMPOSE);
     expect(COMMANDS['discussion-assist-start'].agentAuth).toBe(AGENT_AUTH_MODES.DISCUSSION);
@@ -71,10 +128,8 @@ describe('dispatchInvocation', () => {
     });
   });
 
-  it('does not prepare agent credentials for engine-only commands', async () => {
-    const prepareInvocation = vi.fn(async () => {
-      throw new Error('SSM unavailable');
-    });
+  it('prepares execution data independently of model auth for engine-only commands', async () => {
+    const prepareInvocation = vi.fn(async () => ({ store: {} }));
     const result = await dispatchInvocation({
       payload: { command: 'init-ws', intentId: 'i1' },
       handlers,
@@ -85,7 +140,7 @@ describe('dispatchInvocation', () => {
       statusCode: 200,
       body: { ok: true, intentId: 'i1', command: 'init-ws' },
     });
-    expect(prepareInvocation).not.toHaveBeenCalled();
+    expect(prepareInvocation).toHaveBeenCalledWith({ command: 'init-ws', intentId: 'i1' }, false);
   });
 
   it('prepares agent credentials for CLI-consuming commands', async () => {
@@ -99,6 +154,7 @@ describe('dispatchInvocation', () => {
         command: 'run-stage',
         stageId: 's1',
         agentCredentialGrant: 'signed-grant',
+        executionDataGrant: 'signed-data-grant',
       },
       handlers: { runStage },
       prepareInvocation,
@@ -113,6 +169,7 @@ describe('dispatchInvocation', () => {
         command: 'run-stage',
         stageId: 's1',
         agentCredentialGrant: 'signed-grant',
+        executionDataGrant: 'signed-data-grant',
       },
       AGENT_AUTH_MODES.EXECUTION,
     );
@@ -120,6 +177,38 @@ describe('dispatchInvocation', () => {
       { command: 'run-stage', stageId: 's1' },
       { availableClis: ['kiro'] },
     );
+  });
+
+  it('fails closed before dispatch when execution data preparation fails', async () => {
+    const initWs = vi.fn();
+    const result = await dispatchInvocation({
+      payload: { command: 'init-ws', executionId: 'e1' },
+      handlers: { initWs },
+      prepareInvocation: async () => {
+        throw new Error('Execution data grant is required');
+      },
+    });
+    expect(result.statusCode).toBe(500);
+    expect(initWs).not.toHaveBeenCalled();
+  });
+
+  it('keeps simultaneous background handlers bound to their invocation context', async () => {
+    const jobs = [];
+    const prepareInvocation = async (payload) => ({ store: { executionId: payload.executionId } });
+    const runStageStart = async (_payload, context) => {
+      jobs.push(() => context.store.executionId);
+      return { accepted: true };
+    };
+    await Promise.all(
+      ['A', 'B'].map((executionId) =>
+        dispatchInvocation({
+          payload: { command: 'run-stage-start', executionId },
+          handlers: { runStageStart },
+          prepareInvocation,
+        }),
+      ),
+    );
+    expect(jobs.map((job) => job()).toSorted()).toEqual(['A', 'B']);
   });
 
   it('routes promote-units (WP3 unit DAG promotion)', async () => {
@@ -191,17 +280,17 @@ describe('dispatchInvocation', () => {
     );
   });
 
-  it('binds record-learning to the project-scoped runtime dependencies', async () => {
+  it('binds record-learning to the invocation-scoped store and runtime dependencies', async () => {
     const store = { name: 'store' };
     const openGraph = vi.fn(async () => ({ name: 'graph' }));
     const broadcast = vi.fn();
     const recordLearning = vi.fn(async () => ({ ok: true, recorded: true }));
     const response = await dispatchInvocation({
       payload: { command: 'record-learning', learnings: ['Prefer explicit retries'] },
+      prepareInvocation: async () => ({ store }),
       handlers: {
         recordLearning: createRecordLearningHandler({
           recordLearning,
-          store,
           openGraph,
           broadcast,
         }),

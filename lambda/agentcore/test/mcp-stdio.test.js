@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
-const entrypoint = fileURLToPath(new URL('../mcp/index.js', import.meta.url));
+const entrypoint = fileURLToPath(new URL('./fixtures/mcp-stdio-entry.js', import.meta.url));
 const clients = [];
 
 afterEach(async () => {

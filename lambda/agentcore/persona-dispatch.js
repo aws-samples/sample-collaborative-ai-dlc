@@ -24,6 +24,7 @@ import { runChild } from './cli/spawn.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './cli/opencode-store.js';
 import { resolveStageModel } from './model-resolver.js';
 import { neutralizeTokens } from './stage-materializer.js';
+import { executionDataEnv } from './execution-store.js';
 
 // Package-manager caches use container-local /tmp; the working tree stays on the
 // session mount so cache growth cannot consume space needed for durable changes.
@@ -171,7 +172,12 @@ export const dispatchPersona = async ({
       runChild({
         command: invocation.command,
         args: invocation.args,
-        env: { ...OFF_MOUNT_CACHE_ENV, ...invocation.env, ...driver.envForAuth(env) },
+        env: {
+          ...OFF_MOUNT_CACHE_ENV,
+          ...invocation.env,
+          ...driver.envForAuth(env),
+          ...executionDataEnv(env),
+        },
         cwd: workspaceDir,
         prompt,
         promptViaStdin: invocation.promptViaStdin,

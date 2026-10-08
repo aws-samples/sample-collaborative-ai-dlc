@@ -738,6 +738,7 @@ module "managed_environments" {
   core_runtime_version          = module.agentcore.runtime_version
   runtime_compatibility_version = module.agentcore.runtime_compatibility_version
   runtime_role_arn              = module.agentcore.role_arn
+  runtime_scoped_role_arn       = module.agentcore.scoped_role_arn
   runtime_network_mode          = module.agentcore.network_mode
   runtime_subnet_ids            = module.agentcore.runtime_subnet_ids
   runtime_security_group_ids    = module.agentcore.runtime_security_group_ids

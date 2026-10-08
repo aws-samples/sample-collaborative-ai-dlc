@@ -71,6 +71,7 @@ module "dynamodb_kms_runtime_access" {
     blocks               = aws_iam_role.blocks.name
     codecommit_connector = aws_iam_role.codecommit_connector.name
     credential_broker    = aws_iam_role.credential_broker.name
+    execution_data       = aws_iam_role.execution_data.name
     discussions          = aws_iam_role.discussions.name
     github_connector     = aws_iam_role.github_connector.name
     gitlab_connector     = aws_iam_role.gitlab_connector.name
@@ -1192,12 +1193,70 @@ resource "aws_iam_role_policy_attachment" "credential_broker_vpc" {
   policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
+# This role is never assigned to a container and AgentCore cannot assume it.
+# The credential broker assumes it with an execution_id session tag taken from
+# a signed execution-data grant; the policy below scopes every call to that
+# execution's partition.
+resource "aws_iam_role" "execution_data" {
+  name                 = "${var.project_name}-execution-data-${var.environment}"
+  max_session_duration = 3600
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { AWS = aws_iam_role.credential_broker.arn }
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
+      Condition = {
+        # An untagged session (e.g. the broker's generic CodeCommit path) is
+        # refused here, and would match no partition below anyway.
+        Null = { "aws:RequestTag/execution_id" = "false" }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "execution_data" {
+  name = "execution-data"
+  role = aws_iam_role.execution_data.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      # IAM has no TransactWriteItems action: a transaction is authorized per
+      # item as PutItem/UpdateItem/ConditionCheckItem, each against the condition
+      # below. No Scan, batch APIs or indexes: runtime process-store calls query
+      # pk directly; project/maintenance GSIs belong to backend Lambdas.
+      Action = [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:Query",
+        "dynamodb:ConditionCheckItem",
+      ]
+      Resource = var.v2_executions_table_arn
+      # Every partition key in the request must be this session's execution.
+      # ForAllValues alone also matches a request with no partition key at all,
+      # so Null = false additionally requires the key to be present.
+      Condition = {
+        "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["EXEC#$${aws:PrincipalTag/execution_id}"] }
+        Null                        = { "dynamodb:LeadingKeys" = "false" }
+      }
+    }]
+  })
+}
+
 resource "aws_iam_role_policy" "credential_broker" {
   name = "agentcore-credential-resolution"
   role = aws_iam_role.credential_broker.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+      {
+        # Execution-scoped DDB sessions; the role's trust policy requires the tag.
+        Effect   = "Allow"
+        Action   = ["sts:AssumeRole", "sts:TagSession"]
+        Resource = aws_iam_role.execution_data.arn
+      },
       {
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
@@ -1309,6 +1368,7 @@ module "credential_broker_lambda" {
     BITBUCKET_OAUTH_SECRET_NAME         = var.bitbucket_oauth_secret_name
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
+    EXECUTION_DATA_ROLE_ARN             = aws_iam_role.execution_data.arn
   }
 
   depends_on = [aws_iam_role_policy_attachment.credential_broker_vpc]

@@ -58,6 +58,56 @@ describe('extractJsonObject', () => {
 });
 
 describe('runOneShotPrompt', () => {
+  it.each([
+    ['claude', {}],
+    ['kiro', {}],
+    ['opencode', {}],
+    ['opencode', { opencodeConfigContent: '{"share":"disabled"}' }],
+    ['codex', {}],
+  ])('withholds the execution grant from %s without the MCP bridge (%j)', async (cli, config) => {
+    vi.stubEnv('V2_EXECUTION_DATA_GRANT', 'ambient-lease');
+    try {
+      const spawnFn = vi.fn(() => fakeChild());
+      await runOneShotPrompt({
+        prompt: 'summarize',
+        availableClis: [cli],
+        env: { V2_EXECUTION_DATA_GRANT: 'execution-A-lease' },
+        ...config,
+        spawnFn,
+        restoreKiroStore: async () => {},
+        persistKiroStore: async () => {},
+        withOpenCodeStore: ({ operation }) => operation(),
+        cleanupCodexHome: async () => {},
+      });
+      expect(spawnFn.mock.calls[0][2].env.V2_EXECUTION_DATA_GRANT).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([
+    ['kiro', { agentName: 'aidlc' }],
+    ['opencode', { opencodeConfigContent: '{"mcp":{"aidlc":{"type":"local"}}}' }],
+    ['codex', { codexHome: '/tmp/one-shot-codex' }],
+  ])(
+    'forwards the execution grant to %s with its native MCP configuration',
+    async (cli, config) => {
+      const spawnFn = vi.fn(() => fakeChild());
+      await runOneShotPrompt({
+        prompt: 'review',
+        availableClis: [cli],
+        env: { V2_EXECUTION_DATA_GRANT: 'execution-A-lease' },
+        ...config,
+        spawnFn,
+        restoreKiroStore: async () => {},
+        persistKiroStore: async () => {},
+        withOpenCodeStore: ({ operation }) => operation(),
+        cleanupCodexHome: async () => {},
+      });
+      expect(spawnFn.mock.calls[0][2].env.V2_EXECUTION_DATA_GRANT).toBe('execution-A-lease');
+    },
+  );
+
   it('returns no_cli when nothing usable is installed', async () => {
     const out = await runOneShotPrompt({ prompt: 'p', availableClis: [] });
     expect(out).toMatchObject({ ok: false, reason: 'no_cli', cli: null });
@@ -116,10 +166,13 @@ describe('runOneShotPrompt', () => {
       prompt: 'review',
       availableClis: ['claude'],
       mcpConfigPath: '/tmp/quorum/.aidlc/mcp-config.json',
+      env: { V2_EXECUTION_DATA_GRANT: 'execution-A-lease' },
       spawnFn,
     });
 
     expect(out).toMatchObject({ ok: true, text: 'ok' });
+    expect(spawnFn.mock.calls[0][2].env.V2_EXECUTION_DATA_GRANT).toBe('execution-A-lease');
+    expect(JSON.stringify(out)).not.toContain('execution-A-lease');
     expect(argv.args).toContain('--mcp-config');
     expect(argv.args[argv.args.indexOf('--mcp-config') + 1]).toBe(
       '/tmp/quorum/.aidlc/mcp-config.json',
