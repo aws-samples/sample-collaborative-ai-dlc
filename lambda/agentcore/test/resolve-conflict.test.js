@@ -224,16 +224,26 @@ describe('resolveConflict', () => {
     const { remote, ws } = await conflictWorld();
     const codexHome = path.join(root, 'codex-runs', 'conflict');
     const cleanupCodexHome = vi.fn(async () => true);
+    const materializeCodexHome = vi.fn(async () => codexHome);
     const spawnFn = fakeCliSpawn(async (cwd) => {
       await writeFile(path.join(cwd, 'shared.txt'), 'intent version + unit version\n');
     });
     const res = await resolveConflict(basePayload(ws, { requestedCli: 'codex' }), {
       ...baseDeps(remote, spyStore(), spawnFn),
       availableClis: ['codex'],
-      materializeCodexHome: async () => codexHome,
+      materializeCodexHome,
       cleanupCodexHome,
     });
     expect(res.ok).toBe(true);
+    expect(materializeCodexHome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: expect.objectContaining({
+          mode: 'conflict',
+          role: 'reviewer',
+          stageInstanceId: null,
+        }),
+      }),
+    );
     expect(cleanupCodexHome).toHaveBeenCalledWith({
       codexHome,
       env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },

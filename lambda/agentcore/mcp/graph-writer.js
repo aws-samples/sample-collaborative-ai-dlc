@@ -336,28 +336,20 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     created_at: now(),
   });
 
-  // Upsert a vertex by (label,id): create it only if absent, then return the
-  // traversal positioned on it for property writes.
-  //
-  // Labels whose `id` prop is only unique WITHIN an intent — agents choose
-  // Artifact ids freely and Section ids embed the artifact id (`section:<id>:
-  // <slug>`), so two intents can pick the SAME id and, without scoping, share
-  // (and overwrite/delete) one vertex — the field incident that lost a run's
-  // items. Every lookup/edge/upsert of these MUST additionally match the
-  // trusted `intent_id` prop (from stamp()). Project-scoped labels
-  // (TeamKnowledge/LearningRule), the Intent anchor, and UUID/deterministic-id
-  // labels (Question/Steering/UnitOfWork/typed items — ids are globally unique
-  // or embed the intentId) are safe without it.
+  // Agent-selected IDs are local to their owning intent or project. Apply the
+  // same ownership key to lookup, creation, property updates, and edge endpoints.
   const INTENT_SCOPED_LABELS = new Set([ARTIFACT_LABEL, SECTION_LABEL]);
-
-  // Append the intent_id match iff the label's id space is intent-local. Works
-  // on any traversal (`g.V()...`, `__.V()...`, `__.inV()...`).
-  const scopeByIntent = (traversal, label) =>
-    INTENT_SCOPED_LABELS.has(label) ? traversal.has('intent_id', scope.intentId) : traversal;
-
-  // Position a fresh traversal on the (label,id) vertex, intent-scoped when the
-  // label needs it. The one lookup helper the write/read sites share.
-  const vAt = (label, id) => scopeByIntent(g.V().has(label, 'id', id), label);
+  const PROJECT_SCOPED_LABELS = new Set([TEAM_KNOWLEDGE_LABEL, LEARNING_RULE_LABEL]);
+  const ownership = (label) => {
+    if (INTENT_SCOPED_LABELS.has(label)) return ['intent_id', scope.intentId];
+    if (PROJECT_SCOPED_LABELS.has(label)) return ['project_id', scope.projectId];
+    return null;
+  };
+  const scopeVertex = (traversal, label) => {
+    const key = ownership(label);
+    return key ? traversal.has(...key) : traversal;
+  };
+  const vAt = (label, id) => scopeVertex(g.V().has(label, 'id', id), label);
 
   // Derived-row lookup by id alone (Section/item ids gathered from a scoped
   // artifact's edges). These rows always carry intent_id, so scope defensively
@@ -406,27 +398,23 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   };
 
   const upsertVertex = async (label, id) => {
-    const scoped = INTENT_SCOPED_LABELS.has(label);
-    // The coalesce key must include intent_id for scoped labels so a second
-    // intent reusing an id creates a NEW vertex instead of adopting the
-    // existing one. The new vertex carries intent_id immediately (the full
-    // stamp is written by the caller right after).
+    const key = ownership(label);
     let create = __.addV(label).property(cardinality.single, 'id', id);
-    if (scoped) create = create.property(cardinality.single, 'intent_id', scope.intentId);
+    if (key) create = create.property(cardinality.single, ...key);
     await vAt(label, id).fold().coalesce(__.unfold(), create).next();
   };
 
   // Idempotent edge create between two existing vertices, each end matched with
-  // intent scoping appropriate to its label.
+  // ownership scoping appropriate to its label.
   const ensureEdge = async ({ fromLabel, fromId, toLabel, toId, edge }) => {
-    const exists = await scopeByIntent(g.V().has(fromLabel, 'id', fromId), fromLabel)
+    const exists = await scopeVertex(g.V().has(fromLabel, 'id', fromId), fromLabel)
       .outE(edge)
-      .where(scopeByIntent(__.inV().has(toLabel, 'id', toId), toLabel))
+      .where(scopeVertex(__.inV().has(toLabel, 'id', toId), toLabel))
       .hasNext();
     if (!exists) {
-      await scopeByIntent(g.V().has(fromLabel, 'id', fromId), fromLabel)
+      await scopeVertex(g.V().has(fromLabel, 'id', fromId), fromLabel)
         .addE(edge)
-        .to(scopeByIntent(__.V().has(toLabel, 'id', toId), toLabel))
+        .to(scopeVertex(__.V().has(toLabel, 'id', toId), toLabel))
         .next();
     }
     return !exists;
@@ -1039,7 +1027,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       ...knowledgeStamp(),
       id,
     };
-    let q = g.V().has(TEAM_KNOWLEDGE_LABEL, 'id', id);
+    let q = vAt(TEAM_KNOWLEDGE_LABEL, id);
     for (const [k, v] of Object.entries(stamped)) q = q.property(cardinality.single, k, v);
     await q.next();
 
@@ -1066,6 +1054,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .has(PROJECT_LABEL, 'id', scope.projectId)
       .out(KNOWLEDGE_EDGE)
       .hasLabel(TEAM_KNOWLEDGE_LABEL)
+      .has('project_id', scope.projectId)
       .valueMap(true)
       .toList();
     const rows = list.map(flattenValueMap);
@@ -1109,7 +1098,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       ...knowledgeStamp(),
       id,
     };
-    let q = g.V().has(LEARNING_RULE_LABEL, 'id', id);
+    let q = vAt(LEARNING_RULE_LABEL, id);
     for (const [k, v] of Object.entries(stamped)) q = q.property(cardinality.single, k, v);
     await q.next();
 
@@ -1136,6 +1125,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .has(PROJECT_LABEL, 'id', scope.projectId)
       .out(LEARNING_EDGE)
       .hasLabel(LEARNING_RULE_LABEL)
+      .has('project_id', scope.projectId)
       .valueMap(true)
       .toList();
     return list

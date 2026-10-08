@@ -275,9 +275,21 @@ describe('buildMcpConfig', () => {
     });
   });
 
-  it('defaults the role to author', () => {
+  it('does not promote a missing role to author', () => {
     const cfg = buildMcpConfig({ mcpEntry: 'x', scope: { executionId: 'e', intentId: 'i' } });
-    expect(cfg.mcpServers.aidlc.env.V2_MCP_ROLE).toBe('author');
+    expect(cfg.mcpServers.aidlc.env.V2_MCP_ROLE).toBe('');
+    expect(cfg.mcpServers.aidlc.env.V2_MCP_MODE).toBe('stage');
+  });
+
+  it.each([
+    ['discussion', 'reader'],
+    ['conflict', 'reviewer'],
+  ])('passes the explicit %s mode and role', (mode, role) => {
+    const cfg = buildMcpConfig({
+      mcpEntry: 'x',
+      scope: { intentId: 'i', projectId: 'p', mode, role },
+    });
+    expect(cfg.mcpServers.aidlc.env).toMatchObject({ V2_MCP_MODE: mode, V2_MCP_ROLE: role });
   });
 
   it('passes the trusted reviewer identity on reviewer scopes (empty otherwise)', () => {

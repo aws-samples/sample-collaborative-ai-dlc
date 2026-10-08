@@ -234,6 +234,7 @@ export const resolveConflict = async (
       unitSlug,
       sectionIndex,
       role: 'reviewer',
+      mode: 'conflict',
       model,
     };
     const driver = getDriver(cli);

@@ -526,6 +526,7 @@ const runReviewer = async ({
     .catch(() => {});
   const dispatch = await dispatchPersona({
     role: 'reviewer',
+    stageId: stage.stageId,
     personaScope: { agentRef: reviewerAgent },
     agentBlock: reviewerBlock,
     persona: reviewerPersona,
