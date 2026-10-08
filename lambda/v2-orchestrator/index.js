@@ -2035,32 +2035,16 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   grantedBy: validation.gate?.answeredBy ?? null,
                   grantedByName: validation.gate?.answeredByName ?? null,
                 };
-                // A cancel is accepted while META still reads WAITING, so it can
-                // land after this answer and before the run resumes. It ends the
-                // run and finds no grant to withdraw, so the grant is written only
-                // while this run still owns an intent that has not ended.
-                try {
-                  await store.updateExecution({
-                    executionId,
-                    constructionGateAutonomy: 'autonomous',
-                    constructionGateAutonomyGrant: recorded,
-                    ifOrchestratorRunId: runId || null,
-                    ifNotCompleted: true,
-                  });
-                } catch (error) {
-                  if (error?.name === 'ConditionalCheckFailedException') return null;
-                  throw error;
-                }
+                // A cancel that lands after the answer fails the gate's un-park,
+                // which writes RUNNING only from WAITING, so the run retires there.
+                await store.updateExecution({
+                  executionId,
+                  constructionGateAutonomy: 'autonomous',
+                  constructionGateAutonomyGrant: recorded,
+                });
                 return recorded;
               },
             );
-            if (!grant) {
-              logger.info('run retired before the autonomy grant was written', {
-                executionId,
-                stageId: stage.stageId,
-              });
-              return { ok: false, reason: 'retired', intentId };
-            }
             constructionGrantPossible = true;
             await emitEvent(
               ctx,

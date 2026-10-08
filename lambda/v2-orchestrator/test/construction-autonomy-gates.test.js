@@ -117,8 +117,9 @@ const makeRuntime = () =>
 
 // Answer every gate this run opens with the first option that actually ENDS the
 // walk — `approve` when it is offered, otherwise the override. A gate answered
-// with an option it never offered degrades to `request-changes`, which re-runs
-// the stage forever when the stage verdict is deterministic.
+// with an option it never offered falls back to `approve` when the gate offers
+// it and to `request-changes` on a blocked gate, which re-runs the stage forever
+// when the stage verdict is deterministic.
 const answerWithOfferedOption = (decisionFor = null) => {
   const seen = new Set();
   return vi.fn(async (_executionId, humanTaskId) => {
@@ -165,7 +166,22 @@ beforeEach(() => {
   deps = {
     store: {
       getExecution: vi.fn(async () => execution),
+      // Honours `fromStatus` and `ifOrchestratorRunId` as the real store's
+      // conditions do, so a cancel or a relaunch that lands while the gate is
+      // parked makes the gate's un-park fail.
       updateExecution: vi.fn(async (args) => {
+        if (
+          (args.fromStatus && execution.status !== args.fromStatus) ||
+          (args.ifOrchestratorRunId && execution.orchestratorRunId !== args.ifOrchestratorRunId)
+        ) {
+          throw Object.assign(new Error('conditional'), {
+            name: 'ConditionalCheckFailedException',
+          });
+        }
+        if (args.status !== undefined) execution = { ...execution, status: args.status };
+        if (args.orchestratorRunId !== undefined) {
+          execution = { ...execution, orchestratorRunId: args.orchestratorRunId };
+        }
         if (args.constructionGateAutonomy !== undefined) {
           execution = { ...execution, constructionGateAutonomy: args.constructionGateAutonomy };
         }
@@ -552,10 +568,11 @@ describe('construction autonomy: an autonomous grant', () => {
   it('writes the receipt and the event once across a durable replay', async () => {
     // A durable replay re-enters the handler with every completed step's result
     // already recorded, so the side effects inside those steps must not repeat.
-    // Only the steps this feature adds are memoized — memoizing the stage
-    // dispatch too would leave its callback promise with nobody to resolve it.
+    // Only the steps this feature adds are memoized, plus `mark-running`, whose
+    // CAS from CREATED a re-run would fail — memoizing the stage dispatch too
+    // would leave its callback promise with nobody to resolve it.
     const REPLAYED =
-      /^(autonomy-mode-|autonomy-grant-|gate-auto-approved-|stage-approval-receipt-)/;
+      /^(mark-running$|autonomy-mode-|autonomy-grant-|gate-auto-approved-|stage-approval-receipt-)/;
     const results = new Map();
     const replayCtx = () =>
       makeCtx({
@@ -713,9 +730,23 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
     expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
   });
 
-  it('writes no grant when the intent is cancelled between the answer and the resume', async () => {
-    // Cancel is accepted while META still reads WAITING, after the answer was
-    // recorded. It ends the run (`completedAt`) and finds no grant to withdraw.
+  it('records the grant on a retried intent whose earlier failure left completedAt', async () => {
+    // A relaunch through `/start` does not clear `completedAt`, so every intent
+    // that ever failed and was retried carries a stale one.
+    execution = { ...execution, completedAt: 'T-earlier-failure' };
+
+    const result = await run();
+
+    expect(result).not.toMatchObject({ reason: 'retired' });
+    expect(execution.constructionGateAutonomy).toBe('autonomous');
+    expect(eventsOfType('v2.autonomy.mode_set')).toHaveLength(1);
+    expect(openedGates().map((gate) => gate.stageInstanceId)).toEqual(['si-functional-design']);
+    expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
+  });
+
+  it('retires before the grant step when the intent is cancelled between the answer and the resume', async () => {
+    // Cancel is accepted while META still reads WAITING. The gate's un-park only
+    // writes RUNNING from WAITING, so it fails and the run retires there.
     const answer = deps.store.getHumanTask;
     deps.store.getHumanTask = vi.fn(async (...args) => {
       const gate = await answer(...args);
@@ -723,13 +754,6 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
         execution = { ...execution, status: 'CANCELLED', completedAt: 'T-cancel' };
       }
       return gate;
-    });
-    const write = deps.store.updateExecution.getMockImplementation();
-    deps.store.updateExecution = vi.fn(async (args) => {
-      if (args.ifNotCompleted && execution.completedAt) {
-        throw Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' });
-      }
-      return write(args);
     });
 
     const result = await run();
@@ -740,6 +764,21 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
     expect(
       receiptsFor('si-functional-design').filter((receipt) => receipt.kind === 'stage-approval'),
     ).toEqual([]);
+  });
+
+  it('resumes a gate whose park write never landed', async () => {
+    // Parking META is best-effort, so it can still read RUNNING at the un-park.
+    const write = deps.store.updateExecution.getMockImplementation();
+    deps.store.updateExecution = vi.fn(async (args) => {
+      if (args.status === 'WAITING') throw new Error('throttled');
+      return write(args);
+    });
+
+    const result = await run();
+
+    expect(result).toMatchObject({ ok: true });
+    expect(execution.constructionGateAutonomy).toBe('autonomous');
+    expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
   });
 
   it('writes no grant for a grant-autonomy answer on a gate that did not offer it', async () => {
@@ -759,9 +798,9 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
 
   it('records the grant and its event once across a durable replay', async () => {
     // Same memoization as the create-time replay test: only the steps this
-    // feature adds replay their recorded result.
+    // feature adds, and `mark-running`, replay their recorded result.
     const REPLAYED =
-      /^(autonomy-mode-|autonomy-grant-|gate-auto-approved-|stage-approval-receipt-)/;
+      /^(mark-running$|autonomy-mode-|autonomy-grant-|gate-auto-approved-|stage-approval-receipt-)/;
     const results = new Map();
     const replayCtx = () =>
       makeCtx({
@@ -1111,6 +1150,8 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     const [, first] = dispatchedResumes()[0];
     recommendations.set('si-build-and-test', 'three suites fail');
     deps.invokeRuntime.mockClear();
+    // The relaunch puts META back to CREATED, as `/start` does.
+    execution = { ...execution, status: 'CREATED' };
     ctx = makeCtx();
     await run();
     const [, second] = dispatchedResumes()[0];
@@ -1243,5 +1284,96 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     expect(target.countsAgainstCap ?? true).toBe(true);
     expect(deps.store.resetStageRow).toHaveBeenCalledTimes(2);
     expect(Number(execution.loopBackCount ?? 0)).toBe(1);
+  });
+});
+
+describe('an answered engine gate resumes only while this run still waits on it', () => {
+  // No release pins these stages: the un-park applies to every intent.
+  const UNPINNED = { ...ANCHOR, policy: null };
+  const UNPINNED_SECOND = { ...SECOND, policy: null };
+  const isUnpark = (args) => args.status === 'RUNNING' && args.fromStatus === 'WAITING';
+
+  beforeEach(() => {
+    deps.loadPlan = vi.fn(async () => ({
+      valid: true,
+      plan: { stages: [UNPINNED, UNPINNED_SECOND] },
+    }));
+  });
+
+  const onAnswer = (change) => {
+    const answer = deps.store.getHumanTask;
+    deps.store.getHumanTask = vi.fn(async (...args) => {
+      const gate = await answer(...args);
+      if (gate?.answer && gate.humanTaskId.includes('si-functional-design')) change();
+      return gate;
+    });
+  };
+
+  it.each([
+    { name: 'is running', status: 'RUNNING' },
+    { name: 'is parked at its own gate', status: 'WAITING' },
+  ])('retires when a relaunch that $name owns the intent after the answer', async ({ status }) => {
+    // A rewind or `/start` relaunch does not supersede an answered gate, so this
+    // run still wakes with the answer while another run owns META.
+    onAnswer(() => {
+      execution = { ...execution, status, orchestratorRunId: 'run-relaunched' };
+    });
+
+    const result = await run();
+
+    expect(result).toMatchObject({ ok: false, reason: 'retired' });
+    expect(openedGates().map((gate) => gate.stageInstanceId)).toEqual(['si-functional-design']);
+    expect(execution).toMatchObject({ status, orchestratorRunId: 'run-relaunched' });
+  });
+
+  it('resumes when a re-executed un-park finds its own earlier write behind a stale read', async () => {
+    // The first attempt's write landed and its result was lost, so the
+    // re-executed write fails its WAITING condition. An eventually consistent
+    // read can still return the parked row.
+    let stale = false;
+    const read = deps.store.getExecution.getMockImplementation();
+    deps.store.getExecution = vi.fn(async (executionId, options) => {
+      if (stale) {
+        stale = false;
+        if (!options?.consistentRead) return { ...execution, status: 'WAITING' };
+      }
+      return read(executionId, options);
+    });
+    const write = deps.store.updateExecution.getMockImplementation();
+    let unparks = 0;
+    deps.store.updateExecution = vi.fn(async (args) => {
+      if (isUnpark(args) && unparks++ === 0) {
+        await write({ ...args, fromStatus: undefined });
+        stale = true;
+        throw Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' });
+      }
+      return write(args);
+    });
+
+    const result = await run();
+
+    expect(result).toMatchObject({ ok: true });
+    expect(openedGates().map((gate) => gate.stageInstanceId)).toEqual([
+      'si-functional-design',
+      'si-build-and-test',
+    ]);
+  });
+
+  it('resumes when the un-park write fails for a reason other than its condition', async () => {
+    // The un-park is best-effort: a throttled write is not a lost ownership.
+    const write = deps.store.updateExecution.getMockImplementation();
+    deps.store.updateExecution = vi.fn(async (args) => {
+      if (isUnpark(args))
+        throw Object.assign(new Error('throttled'), { name: 'ThrottlingException' });
+      return write(args);
+    });
+
+    const result = await run();
+
+    expect(result).toMatchObject({ ok: true });
+    expect(openedGates().map((gate) => gate.stageInstanceId)).toEqual([
+      'si-functional-design',
+      'si-build-and-test',
+    ]);
   });
 });
