@@ -114,8 +114,9 @@ const makeRuntime = () =>
 
 // Answer every gate this run opens with the first option that actually ENDS the
 // walk — `approve` when it is offered, otherwise the override. A gate answered
-// with an option it never offered degrades to `request-changes`, which re-runs
-// the stage forever when the stage verdict is deterministic.
+// with an option it never offered falls back to `approve` when the gate offers
+// it and to `request-changes` on a blocked gate, which re-runs the stage forever
+// when the stage verdict is deterministic.
 const answerWithOfferedOption = (decisionFor = null) => {
   const seen = new Set();
   return vi.fn(async (_executionId, humanTaskId) => {
