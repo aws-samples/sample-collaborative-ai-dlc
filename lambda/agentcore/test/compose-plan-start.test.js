@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
+  buildComposePrompt,
+  COMPOSER_PERSONA_TRUNCATED,
   createComposePlanStart,
   buildScopeGrounding,
   scopeGridFor,
 } from '../commands/compose-plan-start.js';
+import { INVOKE_DIALECT_ANNEX } from '../stage-materializer.js';
+import { PROPOSAL_CONTRACT } from '../../shared/compose-match.js';
 
 // A minimal three-stage workflow: init (initialization) → analyze → build.
 const stage = (id, extra = {}) => ({
@@ -239,6 +243,113 @@ describe('compose-plan-start', () => {
     expect(prompt).toContain('PERSONA');
     expect(prompt).toContain('KNOWLEDGE');
     expect(prompt).toContain('bugfix: runs 2 of 3 stages');
+  });
+
+  // From 2.8.2 the composer persona tells the agent to run `{{INVOKE}} engine
+  // graph ars` and `graph validate-grid`. No engine exists here, so the compose
+  // prompt neutralizes the token and carries the annex that says what to do
+  // instead, exactly like a stage prompt.
+  it('neutralizes engine commands in the composer persona and appends the annex', async () => {
+    const deps = makeDeps({
+      oneShotText:
+        '```json\n{"mode":"matched","scope":"bugfix","rationale":["fits"],"confidence":0.8}\n```',
+    });
+    deps.loadBlockBodyFn = vi.fn(async (b) =>
+      b?.bodyRef?.s3Key === 'persona'
+        ? 'Run {{INVOKE}} engine graph ars --iae <s> and copy its numbers.'
+        : 'Then {{INVOKE}} engine graph validate-grid --proposal <path>.',
+    );
+    const start = createComposePlanStart(deps);
+    await start(basePayload);
+    await waitForFinish(deps.store);
+
+    const prompt = deps.oneShot.mock.calls[0][0].prompt;
+    expect(prompt).not.toContain('{{INVOKE}}');
+    expect(prompt).toContain('<runtime-managed-engine> engine graph ars --iae <s>');
+    expect(prompt).toContain('<runtime-managed-engine> engine graph validate-grid');
+    expect(prompt).toContain(INVOKE_DIALECT_ANNEX);
+  });
+
+  // The release guard answers a command in the composer's knowledge as it does in
+  // its persona, so the compose prompt carries the annex for either.
+  it('appends the annex when only the composer knowledge names an engine command', () => {
+    const prompt = buildComposePrompt({
+      mode: 'front',
+      persona: 'PERSONA',
+      knowledge: 'Then {{INVOKE}} engine graph validate-grid --proposal <path>.',
+      intentPrompt: 'i',
+    });
+
+    expect(prompt).not.toContain('{{INVOKE}}');
+    expect(prompt).toContain('<runtime-managed-engine> engine graph validate-grid');
+    expect(prompt).toContain(INVOKE_DIALECT_ANNEX);
+  });
+
+  // The 2.6.18+ composer persona alone is ~46-48 KB, the whole compose budget.
+  it('keeps the task, the intent and the output contract when the persona fills the budget', async () => {
+    const deps = makeDeps({
+      oneShotText:
+        '```json\n{"mode":"matched","scope":"bugfix","rationale":["fits"],"confidence":0.8}\n```',
+    });
+    deps.loadBlockBodyFn = vi.fn(async (b) =>
+      b?.bodyRef?.s3Key === 'persona'
+        ? `{{INVOKE}} engine graph ars\n${'p'.repeat(48 * 1024)}`
+        : 'KNOWLEDGE',
+    );
+    const start = createComposePlanStart(deps);
+    await start(basePayload);
+    await waitForFinish(deps.store);
+
+    const prompt = deps.oneShot.mock.calls[0][0].prompt;
+    expect(prompt.length).toBeLessThanOrEqual(48 * 1024);
+    expect(prompt).toContain(INVOKE_DIALECT_ANNEX);
+    expect(prompt).toContain('Intent:\n');
+    expect(prompt).toContain('bugfix: runs 2 of 3 stages');
+    expect(prompt).toContain('Respond with EXACTLY ONE fenced JSON block');
+    expect(prompt).toContain(`${'p'.repeat(64)}\n${COMPOSER_PERSONA_TRUNCATED}\n\n`);
+  });
+
+  // A replan can carry a 24 KB report excerpt and a long grounding on top of the
+  // annex, so the part after the persona can fill the budget on its own.
+  it('keeps the mode task and ends with the output contract when the rest fills the budget', () => {
+    const prompt = buildComposePrompt({
+      mode: 'front',
+      persona: `{{INVOKE}} engine graph ars\n${'P'.repeat(46000)}`,
+      knowledge: 'K'.repeat(2000),
+      intentPrompt: 'i',
+      reportExcerpt: 'r'.repeat(24576),
+      grounding: 'g'.repeat(26624),
+      progressContext: 'x',
+    });
+
+    expect(prompt.length).toBeLessThanOrEqual(48 * 1024);
+    expect(prompt).toContain('Task: propose the workflow projection that fits this intent.');
+    expect(prompt).toContain(COMPOSER_PERSONA_TRUNCATED);
+    expect(prompt.endsWith(`\n\n${PROPOSAL_CONTRACT}`)).toBe(true);
+  });
+
+  it('marks no truncation when the whole prompt fits', async () => {
+    const deps = makeDeps({
+      oneShotText:
+        '```json\n{"mode":"matched","scope":"bugfix","rationale":["fits"],"confidence":0.8}\n```',
+    });
+    const start = createComposePlanStart(deps);
+    await start(basePayload);
+    await waitForFinish(deps.store);
+
+    expect(deps.oneShot.mock.calls[0][0].prompt).not.toContain(COMPOSER_PERSONA_TRUNCATED);
+  });
+
+  it('adds no annex to a composer persona that names no engine command', async () => {
+    const deps = makeDeps({
+      oneShotText:
+        '```json\n{"mode":"matched","scope":"bugfix","rationale":["fits"],"confidence":0.8}\n```',
+    });
+    const start = createComposePlanStart(deps);
+    await start(basePayload);
+    await waitForFinish(deps.store);
+
+    expect(deps.oneShot.mock.calls[0][0].prompt).not.toContain(INVOKE_DIALECT_ANNEX);
   });
 
   it('loads scope, persona, and knowledge from the intent release and user pins', async () => {

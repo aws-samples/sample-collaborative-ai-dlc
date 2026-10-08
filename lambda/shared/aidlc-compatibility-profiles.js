@@ -99,9 +99,11 @@ const CUSTOM_BASE_PROFILE_IDS = Object.freeze(Object.keys(AIDLC_COMPATIBILITY_PR
  * closed means a custom fork can be analyzed and imported by passing this
  * object explicitly, while no id lookup anywhere can ever resurface it.
  *
- * The result is always T0 and `custom: true`, which is what makes it
- * permanently non-runnable (see release-registry `profileIsRunnable` and the
- * release-resolver `release_not_runnable` guard).
+ * The result is always T0 and `custom: true`, so the fork is registered
+ * non-runnable (release-registry `profileIsRunnable`). It becomes runnable only
+ * when an admin promotes it and the same fidelity guard as an official release
+ * accepts it, and its closure then resolves only through a pin that names it as
+ * a fork (release-resolver `release_not_runnable`).
  */
 const customProfile = ({ repository, sha, baseProfileId }) => {
   const { owner, repo, repository: slug } = parseRepositorySlug(repository);

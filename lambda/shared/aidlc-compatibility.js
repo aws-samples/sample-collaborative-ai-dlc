@@ -146,18 +146,71 @@ const INFORMATIONAL_UNMAPPED_FIELDS = new Map([
 // never disagree about which values exist or how faithfully each is honoured.
 
 // `{{INVOKE}} engine <family>` command families, classified by what this runtime
-// can actually do with them. STATE-MUTATING families are unsupported: the annex
-// instructs the agent to record a recommendation instead, which is a different
-// outcome from upstream, not a reproduction of it. Read-only reporting families
-// are approximated (the same information is already in the prompt), and the
-// per-sensor commands are native (they resolve to our own sensor runner).
+// can actually do with them. Unsupported families have no platform equivalent;
+// for the `annexed` ones the annex (agentcore/prompts/invoke-dialect-annex.md)
+// still tells the agent what to do instead (for a state-mutating command, record
+// a recommendation for the human), which is a different outcome from upstream,
+// not a reproduction of it. Approximated families have a platform equivalent the
+// annex names; the per-sensor commands are native (our own sensor runner).
+//
+// Each pattern matches exactly the subcommands the annex answers by name. The
+// engine CLI has others (`orchestrate next`, `state approve`, `worktree remove`,
+// `graph compile`, `gen runners`, …); each of those stays its own unsupported
+// family, so the promotion guard keeps refusing a release that invokes one.
+// `annexed` marks the entries the annex answers by name; only a gap carrying it
+// can be honoured, so a command no pattern matches can never pass under the name
+// it happens to share.
 const INVOKE_FAMILY_FIDELITY = Object.freeze([
   Object.freeze({ pattern: /^sensor-[a-z0-9-]+$/, family: 'sensor-<id>', handling: 'native' }),
-  Object.freeze({ pattern: /^gen\b/, family: 'gen', handling: 'approximated' }),
-  Object.freeze({ pattern: /^workspace\b/, family: 'workspace', handling: 'approximated' }),
-  Object.freeze({ pattern: /^orchestrate\b/, family: 'orchestrate', handling: 'unsupported' }),
-  Object.freeze({ pattern: /^recompose\b/, family: 'recompose', handling: 'unsupported' }),
-  Object.freeze({ pattern: /^state\b/, family: 'state', handling: 'unsupported' }),
+  Object.freeze({
+    pattern: /^gen (?:scope-table|stage-table)$/,
+    family: 'gen',
+    handling: 'approximated',
+    note: 'Read-only reporting; the scope, stage list, inputs and outputs are already in the prompt.',
+  }),
+  Object.freeze({
+    pattern: /^workspace (?:detect|codekb|codekb-scope-diff)$/,
+    family: 'workspace',
+    handling: 'approximated',
+    note: 'Read-only reporting; the compose prompt carries the workspace signals the platform detected, and code knowledge reaches a stage through the compiled context and the checked-out working tree. No scope-diff identifier is minted.',
+  }),
+  Object.freeze({
+    pattern: /^worktree(?: (?:create|merge|info))?$/,
+    family: 'worktree',
+    handling: 'approximated',
+    note: 'The platform performs the worktree lifecycle itself. A per-unit lane runs on a unit branch the platform creates from the intent branch and checks out before the stage starts (agentcore/commands/lane.js init-lane); any other stage runs on the intent branch. The platform merges each unit branch back into the intent branch with a --no-ff merge after the unit (merge-lane), and the intent branch reaches main through its pull request; that stands in for upstream merging the Bolt branch into main. The agent never creates, merges or inspects a worktree.',
+  }),
+  Object.freeze({
+    pattern: /^graph validate-grid$/,
+    family: 'graph validate-grid',
+    handling: 'approximated',
+    note: 'The platform validates every compose proposal with its plan resolver (strict for an in-flight proposal) before anything is applied, and rejects an invalid grid. Not reproduced: the validator summary the agent would copy, the nearest_stock ranking, and the keyword collision check.',
+  }),
+  Object.freeze({
+    pattern: /^graph ars$/,
+    family: 'graph ars',
+    handling: 'unsupported',
+    annexed: true,
+    note: "Upstream's Autonomy Risk Score is an advisory composite of five component scores shown to the human at the compose gate. The platform computes no composite and shows none; the annex tells the agent to justify each EXECUTE/SKIP with evidence in the proposal rationale and never to present a composite score or band. Nothing routes on the score upstream either.",
+  }),
+  Object.freeze({
+    pattern: /^orchestrate report$/,
+    family: 'orchestrate',
+    handling: 'unsupported',
+    annexed: true,
+  }),
+  Object.freeze({
+    pattern: /^recompose --add$/,
+    family: 'recompose',
+    handling: 'unsupported',
+    annexed: true,
+  }),
+  Object.freeze({
+    pattern: /^state (?:set-construction-iteration|practices-event|practices-promote)$/,
+    family: 'state',
+    handling: 'unsupported',
+    annexed: true,
+  }),
 ]);
 
 const sha256 = (value = '') => {
@@ -555,7 +608,10 @@ const invokeFamilyHandling = (command) => {
 // Collect every `{{INVOKE}} engine <command>` a catalog carries, keyed by the
 // command family, so the report can classify the engine dialect by what the
 // release actually invokes instead of by the token's mere presence.
-const INVOKE_COMMAND_RE = /\{\{INVOKE\}\}\s+engine\s+([a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*)?)/g;
+// The second word may be a `--flag`, so `recompose --add` and `recompose --remove`
+// stay distinct commands.
+const INVOKE_COMMAND_RE =
+  /\{\{INVOKE\}\}\s+engine\s+([a-z][a-z0-9-]*(?:\s+(?:--)?[a-z][a-z0-9-]*)?)/g;
 
 /**
  * Accumulates the same evidence one file at a time, so a caller that reads very
@@ -565,20 +621,29 @@ const INVOKE_COMMAND_RE = /\{\{INVOKE\}\}\s+engine\s+([a-z][a-z0-9-]*(?:\s+[a-z]
  * The result is independent of the order the bodies are folded in: every family,
  * command and path list is sorted on the way out, and a family's `handling` is a
  * property of the family rather than of the body it was first seen in.
+ *
+ * `annexReaches: false` says the prompt this body is rendered into does not carry
+ * the engine-command annex, so a command found there is not answered even when
+ * the annex names it.
  */
 const invokeCommandCollector = () => {
   const byFamily = new Map();
   return {
-    add: (path, content) => {
+    add: (path, content, { annexReaches = true } = {}) => {
       if (typeof content !== 'string') return;
       for (const match of content.matchAll(INVOKE_COMMAND_RE)) {
-        const { family, handling } = invokeFamilyHandling(match[1]);
+        const { family, handling, note = null, annexed = false } = invokeFamilyHandling(match[1]);
         const entry = byFamily.get(family) ?? {
           family,
           handling,
+          note,
+          annexed,
           commands: new Set(),
           paths: new Set(),
         };
+        // A family is answered only if every command filed under it is, and only
+        // where the annex reaches the prompt.
+        entry.annexed &&= annexed && annexReaches;
         entry.commands.add(match[1]);
         entry.paths.add(path);
         byFamily.set(family, entry);
@@ -589,6 +654,8 @@ const invokeCommandCollector = () => {
         .map((entry) => ({
           family: entry.family,
           handling: entry.handling,
+          ...(entry.note ? { note: entry.note } : {}),
+          ...(entry.annexed ? { annexed: true } : {}),
           commands: [...entry.commands].toSorted(),
           paths: [...entry.paths].toSorted(),
         }))
@@ -653,8 +720,13 @@ const fidelityReport = (adapterFieldValues, invokeCommands) => {
         blockType: 'BODY',
         field: '{{INVOKE}}',
         value: `engine ${entry.family}`,
+        ...(entry.annexed ? { annexed: true } : {}),
         paths: entry.paths,
-        note: 'State-mutating engine commands have no equivalent seam; the agent records a recommendation for the human instead of performing the action.',
+        note:
+          entry.note ??
+          (entry.annexed
+            ? 'State-mutating engine commands have no equivalent seam; the agent records a recommendation for the human instead of performing the action.'
+            : 'The annex does not answer this command: the agent is told it is unavailable, so the authored step is not performed.'),
       })),
   ].toSorted((left, right) =>
     `${left.blockType}:${left.field}:${left.value}`.localeCompare(
@@ -704,7 +776,12 @@ const fidelityGapsFromCatalog = ({
   const fieldGaps = fidelityReport(
     adapterFieldValues,
     invokeCommands ?? collectInvokeCommands(bodyFiles),
-  ).gaps.map(({ blockType, field, value }) => ({ blockType, field, value }));
+  ).gaps.map(({ blockType, field, value, annexed }) => ({
+    blockType,
+    field,
+    value,
+    ...(annexed ? { annexed } : {}),
+  }));
   const presentCapabilities = resolveCapabilities({ runtimeFilePaths });
   const protocolGaps = AIDLC_CAPABILITIES.filter(
     (capability) =>

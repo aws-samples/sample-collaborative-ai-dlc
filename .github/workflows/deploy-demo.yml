@@ -99,6 +99,7 @@ jobs:
       name: ${{ inputs.github_environment || 'demo-release' }}
     env:
       ACM_CERTIFICATE_ARN: ${{ secrets.ACM_CERTIFICATE_ARN }}
+      AIDLC_RELEASE_PINNING: ${{ vars.AIDLC_RELEASE_PINNING }}
       APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
       APP_DOMAIN_ALIASES: ${{ secrets.APP_DOMAIN_ALIASES }}
       AUTH_CERTIFICATE_ARN: ${{ secrets.AUTH_CERTIFICATE_ARN }}
@@ -365,6 +366,11 @@ jobs:
 
           if [[ -n "$BEDROCK_REGION" ]]; then
             printf 'bedrock_region = %s\n' "$(hcl_string "$BEDROCK_REGION")" \
+              >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+          fi
+
+          if [[ -n "$AIDLC_RELEASE_PINNING" ]]; then
+            printf 'aidlc_release_pinning = %s\n' "$(hcl_string "$AIDLC_RELEASE_PINNING")" \
               >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
           fi
 

@@ -296,6 +296,37 @@ describe('POST /aidlc-releases', () => {
     expect(res.body.code).toBe('release_not_published');
   });
 
+  // This role has no s3:ListBucket, so S3 answers the read of a manifest that
+  // was never published with 403 rather than 404. Registration does not guess
+  // which of the two it is, but it must not answer 500 either.
+  it('502s with the manifest it could not read when S3 denies the read', async () => {
+    s3Mock.on(GetObjectCommand).callsFake(() => {
+      const error = new Error('Access Denied');
+      error.name = 'AccessDenied';
+      error.$metadata = { httpStatusCode: 403 };
+      throw error;
+    });
+    const res = await register(CANDIDATE_PROFILE);
+
+    expect(res.status).toBe(502);
+    expect(res.body.code).toBe('release_manifest_unreadable');
+    expect(res.body.error).toMatch(/s3:ListBucket/);
+    expect(res.body.error).toMatch(/not been published/);
+  });
+
+  it('does not blame S3 when another service denies the request', async () => {
+    ddbMock.on(PutCommand).callsFake(() => {
+      const error = new Error('not authorized to perform dynamodb:PutItem');
+      error.name = 'AccessDeniedException';
+      error.$metadata = { httpStatusCode: 403 };
+      throw error;
+    });
+    const res = await register(CANDIDATE_PROFILE);
+
+    expect(res.body.code).not.toBe('release_manifest_unreadable');
+    expect(JSON.stringify(res.body)).not.toMatch(/S3 denied/);
+  });
+
   it('400s an unknown profile and a missing profileId', async () => {
     expect((await register('nope')).body.code).toBe('release_profile_unknown');
     const missing = parse(
@@ -703,22 +734,13 @@ describe('POST /aidlc-releases with a custom fork', () => {
     expect(res.body.code).toBe('release_not_published');
   });
 
-  it('is idempotent and never becomes selectable or channel-eligible', async () => {
+  it('is idempotent and becomes selectable or channel-eligible only through an admin promotion', async () => {
     await registerCustom(validCustom());
     expect((await registerCustom(validCustom())).status).toBe(200);
 
     const registered = parse(await listReleases()).body.releases.find(
       (release) => release.releaseId === FORK_RELEASE_ID,
     );
-    const promoted = parse(
-      await patchRelease(FORK_RELEASE_ID, {
-        expectedRevision: registered.revision,
-        supportState: 'selectable',
-      }),
-    );
-    expect(promoted.status).toBe(400);
-    expect(promoted.body.code).toBe('release_not_selectable');
-
     const visible = parse(
       await patchRelease(FORK_RELEASE_ID, {
         expectedRevision: registered.revision,
@@ -732,11 +754,48 @@ describe('POST /aidlc-releases with a custom fork', () => {
     expect(channel.status).toBe(400);
     expect(channel.body.code).toBe('release_not_selectable');
 
-    // A non-admin never sees it, however visible the flag is.
+    // A non-admin never sees it, however visible the flag is, until it is promoted.
     const memberList = parse(await listReleases(memberClaims));
     expect(memberList.body.releases.map((release) => release.releaseId)).not.toContain(
       FORK_RELEASE_ID,
     );
+
+    const promoted = parse(
+      await patchRelease(FORK_RELEASE_ID, {
+        expectedRevision: visible.body.release.revision,
+        supportState: 'selectable',
+      }),
+    );
+    expect(promoted.status).toBe(200);
+    expect(promoted.body.release).toMatchObject({ supportState: 'selectable', runnable: true });
+    expect(
+      parse(await listReleases(memberClaims)).body.releases.map((release) => release.releaseId),
+    ).toContain(FORK_RELEASE_ID);
+    expect(
+      parse(await putChannel('preview', { releaseId: FORK_RELEASE_ID, expectedRevision: null }))
+        .status,
+    ).toBe(200);
+  });
+
+  // The preview reads the fork's closure through the resolver, which refuses a
+  // fork pin unless it can read the fork's release record from the blocks table.
+  it('compiles a promoted fork for a preview, and only once it is promoted', async () => {
+    await registerCustom(validCustom());
+    seedWorkflowMeta();
+    const before = parse(await compiledFor('aidlc-v2', { release: FORK_RELEASE_ID }));
+    const registered = parse(await listReleases()).body.releases.find(
+      (release) => release.releaseId === FORK_RELEASE_ID,
+    );
+    await patchRelease(FORK_RELEASE_ID, {
+      expectedRevision: registered.revision,
+      supportState: 'selectable',
+    });
+
+    const after = parse(await compiledFor('aidlc-v2', { release: FORK_RELEASE_ID }));
+
+    expect(before.body.code).toBe('release_not_runnable');
+    expect(after.status).toBe(200);
+    expect(after.body.graph.nodes.length).toBeGreaterThan(0);
   });
 });
 
@@ -1367,7 +1426,7 @@ describe('GET /aidlc-releases — gap lists stored before protocol evidence', ()
     const readsAfterFirst = s3Mock.commandCalls(GetObjectCommand).length;
     const second = parse(await listReleases());
 
-    expect(rows.get(key).fidelityEvidenceRevision).toBe(2);
+    expect(rows.get(key).fidelityEvidenceRevision).toBe(3);
     expect(rows.get(key).fidelityGaps).not.toEqual(legacy.fidelityGaps);
     expect(s3Mock.commandCalls(GetObjectCommand).length).toBe(readsAfterFirst);
     expect(second.body.releases).toEqual(first.body.releases);

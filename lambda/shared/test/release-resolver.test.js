@@ -321,6 +321,58 @@ describe('resolveMethodologyLibrary against a reseeded SYSTEM catalog', () => {
     expect(ddbCallsTouchingSystem()).toEqual([]);
   });
 
+  // A user's copy of one release stage, placed by a user workflow over a pinned
+  // official release. From 2.8.2 on the copy carries the release's
+  // `{{INVOKE}} engine …` lines verbatim; the stage materializer answers them off
+  // the body, so only the placement has to resolve the copy.
+  it('places a pinned user STAGE copy of a release stage over a pinned release', async () => {
+    const forkedStage = {
+      pk: 'BLOCK#default#STAGE#intent-capture',
+      sk: 'V#3',
+      tenantId: 'default',
+      blockId: 'intent-capture',
+      id: 'intent-capture',
+      version: 3,
+      sourceRef: 'fork-ref',
+      body: 'Run `{{INVOKE}} engine orchestrate report --stage intent-capture` when done.',
+    };
+    userBlockRows.set(`${forkedStage.pk}|${forkedStage.sk}`, forkedStage);
+    userWorkflowRows.push(
+      { pk: 'WF#default#aidlc-v2', sk: 'V#4#META', sourceRef: 'fork-ref' },
+      {
+        pk: 'WF#default#aidlc-v2',
+        sk: 'V#4#PLACEMENT#intent-capture',
+        stageId: 'intent-capture',
+        stageTenant: 'default',
+        pinnedVersion: 3,
+        order: 0,
+        scopeMembership: { feature: 'EXECUTE' },
+      },
+      { pk: 'WF#default#aidlc-v2', sk: 'V#4#SCOPEREF#feature', scopeId: 'feature' },
+    );
+    const closure = await loadReleaseClosure({ ...releaseArgs(pinA), cache: new Map() });
+
+    const resolved = await resolveMethodologyLibrary({
+      closure,
+      ddb: ddbMock,
+      tableName: TABLE,
+      workflowId: 'aidlc-v2',
+      workflowVersion: 4,
+    });
+
+    expect(resolved.workflowSource).toBe('ddb-user-fork');
+    expect(resolved.library.stagesById['intent-capture']).toEqual(forkedStage);
+    const otherReleaseStages = closure.blocksByType.STAGE.filter(
+      (block) => block.blockId !== 'intent-capture',
+    );
+    expect(otherReleaseStages.length).toBeGreaterThan(0);
+    for (const releaseStage of otherReleaseStages) {
+      expect(resolved.library.stagesById[releaseStage.blockId]).toEqual(releaseStage);
+    }
+    expect(resolved.methodologySourceRefs).toEqual([bundleA.manifest.sourceSha]);
+    expect(ddbCallsTouchingSystem()).toEqual([]);
+  });
+
   it('overlays an explicitly pinned user block over the release base', async () => {
     const forkedAgent = {
       pk: 'BLOCK#default#AGENT#aidlc-product-agent',
@@ -619,9 +671,9 @@ describe('resolveRuntimeFile', () => {
   });
 });
 
-// Defense in depth (issue #482 follow-up). The property under test: runnability
-// is re-decided from the manifest at execution time, so a custom/T0 closure
-// cannot be started even by a pin that was forged directly onto a META row.
+// Defense in depth (issue #482 follow-up). The property under test: a fork's
+// closure resolves only through a pin that names it as a fork, from its own
+// custom prefix; under an official pin a custom or T0 manifest never executes.
 describe('import-only releases never execute', () => {
   const customBundle = () =>
     buildReleaseBundle({
@@ -692,6 +744,71 @@ describe('import-only releases never execute', () => {
         ...releaseArgs({ ...pinA, closureDigest: manifest.closureDigest }),
         cache: new Map(),
       }),
+    ).rejects.toMatchObject({ code: 'release_not_runnable' });
+  });
+
+  const forkPin = (bundle) => ({
+    releaseId: bundle.manifest.releaseId,
+    sourceSha: bundle.manifest.sourceSha,
+    importerRevision: bundle.manifest.importerRevision,
+    closureDigest: bundle.manifest.closureDigest,
+    catalogKey: bundle.manifest.catalog.key,
+    custom: true,
+    sourceRepository: 'acme/aidlc-fork',
+  });
+  const recordFork = (bundle, record) =>
+    userBlockRows.set(`AIDLC_RELEASE#${bundle.manifest.releaseId}|META`, {
+      releaseId: bundle.manifest.releaseId,
+      custom: true,
+      ...record,
+    });
+  const registryArgs = { ddb: ddbMock, tableName: TABLE };
+
+  // The registry stamps this pin only for a fork an admin promoted through the
+  // fidelity guard.
+  it('resolves a fork from its custom prefix through a pin that names it', async () => {
+    const bundle = customBundle();
+    await publishRelease(bundle);
+    recordFork(bundle, { runnable: true });
+    const pin = forkPin(bundle);
+
+    await expect(
+      loadReleaseClosure({ ...releaseArgs(pin), ...registryArgs, cache: new Map() }),
+    ).resolves.toMatchObject({ releaseId: bundle.manifest.releaseId });
+    await expect(
+      loadReleaseClosure({
+        ...releaseArgs({ ...pin, sourceRepository: 'acme/other-fork' }),
+        ...registryArgs,
+        cache: new Map(),
+      }),
+    ).rejects.toMatchObject({ code: 'release_not_found' });
+  });
+
+  // A pin can also come from a hand-edited META row or a restored backup, so the
+  // record it names must say an admin promoted the fork.
+  it.each([
+    ['imported but not promoted', { runnable: false }],
+    ['with no release record', null],
+  ])('throws release_not_runnable for a fork pin %s', async (_case, record) => {
+    const bundle = customBundle();
+    await publishRelease(bundle);
+    if (record) recordFork(bundle, record);
+
+    await expect(
+      loadReleaseClosure({ ...releaseArgs(forkPin(bundle)), ...registryArgs, cache: new Map() }),
+    ).rejects.toMatchObject({
+      code: 'release_not_runnable',
+      details: expect.objectContaining({ releaseId: bundle.manifest.releaseId }),
+    });
+  });
+
+  it('throws release_not_runnable for a fork pin it cannot check against the registry', async () => {
+    const bundle = customBundle();
+    await publishRelease(bundle);
+    recordFork(bundle, { runnable: true });
+
+    await expect(
+      loadReleaseClosure({ ...releaseArgs(forkPin(bundle)), cache: new Map() }),
     ).rejects.toMatchObject({ code: 'release_not_runnable' });
   });
 

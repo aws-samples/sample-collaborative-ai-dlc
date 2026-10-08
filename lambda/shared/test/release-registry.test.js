@@ -25,6 +25,13 @@ import {
 } from '../aidlc-release.js';
 import { AIDLC_COMPATIBILITY_PROFILES } from '../aidlc-compatibility-profiles.js';
 import {
+  __test as releaseResolverTest,
+  loadReleaseClosure,
+  resolveMethodologyLibrary,
+} from '../release-resolver.js';
+import { loadExecutionPlan, loadWorkflowScopes } from '../v2-workflow-plan.js';
+import { buildExecutionPlan } from '../v2-execution-plan.js';
+import {
   __test,
   RELEASE_CHANNELS,
   SUPPORT_STATES,
@@ -32,6 +39,7 @@ import {
   getChannel,
   getChannels,
   getRelease,
+  isAccessDenied,
   listRegistrableProfiles,
   listReleases,
   registerCustomRelease,
@@ -884,9 +892,9 @@ describe('padded version ordering', () => {
   });
 });
 
-// Custom fork records (issue #482 follow-up). The property under test: a fork is
-// recorded as evidence only, and NO sequence of registry calls can make it
-// offerable to a new intent.
+// Custom fork records. The property under test: a fork is recorded as evidence
+// only, and the one way to make it offerable is the explicit admin promotion,
+// through the same fidelity guard an official release passes.
 describe('registerCustomRelease', () => {
   const FORK_SHA = '0123456789abcdef0123456789abcdef01234567';
   const FORK_REPOSITORY = 'acme/aidlc-fork';
@@ -1002,28 +1010,64 @@ describe('registerCustomRelease', () => {
     });
   });
 
-  it('cannot be promoted to selectable or certified', async () => {
+  it('is made runnable only by an explicit promotion through the fidelity guard', async () => {
     const { release } = await registerFork();
+    expect(release).toMatchObject({ runnable: false, unhonouredValues: [] });
 
-    for (const supportState of ['selectable', 'certified']) {
-      await expect(
-        updateRelease({
-          ...registryArgs(),
-          releaseId: FORK_RELEASE_ID,
-          expectedRevision: release.revision,
-          patch: { supportState },
-        }),
-      ).rejects.toMatchObject({ code: 'release_not_selectable' });
-    }
-    // The support states that do not widen selection remain patchable.
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: FORK_RELEASE_ID,
+      expectedRevision: release.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+    const visible = await updateRelease({
+      ...registryArgs(),
+      releaseId: FORK_RELEASE_ID,
+      expectedRevision: promoted.revision,
+      patch: { visible: true },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'selectable', runnable: true, custom: true });
+    expect(visible.visible).toBe(true);
     await expect(
-      updateRelease({
+      resolveSelectableRelease({ ...registryArgs(), releaseId: FORK_RELEASE_ID }),
+    ).resolves.toMatchObject({ releaseId: FORK_RELEASE_ID, custom: true, runnable: true });
+    await expect(
+      setChannel({
         ...registryArgs(),
+        channel: 'candidate',
         releaseId: FORK_RELEASE_ID,
-        expectedRevision: release.revision,
-        patch: { supportState: 'existing-only', visible: true },
+        actor: 'admin-1',
       }),
-    ).resolves.toMatchObject({ supportState: 'existing-only', runnable: false, custom: true });
+    ).resolves.toMatchObject({ releaseId: FORK_RELEASE_ID });
+  });
+
+  it('pins a promoted fork to its own custom closure', async () => {
+    await registerFork();
+    await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: FORK_RELEASE_ID,
+      expectedRevision: 1,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+    const pin = releasePinFromRecord(
+      await getRelease({ ...registryArgs(), releaseId: FORK_RELEASE_ID }),
+    );
+
+    expect(pin).toMatchObject({
+      releaseId: FORK_RELEASE_ID,
+      custom: true,
+      sourceRepository: FORK_REPOSITORY,
+      manifestKey: expect.stringContaining(`/custom/${FORK_REPOSITORY}/`),
+    });
   });
 
   it('cannot hold a channel pointer, even when visible', async () => {
@@ -1400,6 +1444,238 @@ describe('listRegistrableProfiles tolerates a masked 403', () => {
       name: 'AccessDenied',
     });
   });
+
+  it('takes only an S3 AccessDenied for a masked read, not another 403', () => {
+    expect(isAccessDenied(accessDenied())).toBe(true);
+    expect(isAccessDenied({ Code: 'AccessDenied' })).toBe(true);
+    expect(
+      isAccessDenied({ name: 'AccessDeniedException', $metadata: { httpStatusCode: 403 } }),
+    ).toBe(false);
+    expect(isAccessDenied({ name: 'Forbidden', $metadata: { httpStatusCode: 403 } })).toBe(false);
+  });
+});
+
+// A customer's own fork that keeps 2.9.0's foundations but not its content: a
+// new scope, a new blocking sensor with its script, and a new stage that runs in
+// that scope. Promotion asks the same question as for an official release:
+// does this build have a handler for everything the fork authors?
+describe('a custom fork of 2.9.0 with its own stages, scopes and sensors', () => {
+  const FORK_SHA = 'fedcba9876543210fedcba9876543210fedcba98';
+  const FORK_REPOSITORY = 'acme/aidlc-own';
+  // `invokeLines: false` leaves out the engine commands the real 2.9.0 bodies carry.
+  const forkFiles = ({ invokeLines = true } = {}) => {
+    const files = filesWithInvokeLines(CANDIDATE_PROFILE, invokeLines ? CANDIDATE_PROFILE : null);
+    const lines = (...parts) => `${parts.join('\n')}\n`;
+    files.set(
+      'core/scopes/acme-hotfix.md',
+      lines(
+        '---',
+        'name: hotfix',
+        'depth: Minimal',
+        'keywords: []',
+        'description: Ship one urgent fix behind a security review',
+        'skeleton: off',
+        'runner: true',
+        'change_control: relaxed',
+        '---',
+        'Hotfix scope.',
+      ),
+    );
+    files.set(
+      'core/sensors/acme-secrets.md',
+      lines(
+        '---',
+        'id: secrets',
+        'kind: deterministic',
+        'command: {{INVOKE}} engine sensor-secrets',
+        'default_severity: blocking',
+        'description: Refuses committed credentials',
+        'category: security',
+        'matches: "**/*.{ts,js}"',
+        'input_schema:',
+        '  file_path: string',
+        'output_schema:',
+        '  pass: boolean',
+        'timeout_seconds: 30',
+        '---',
+        'Secrets sensor.',
+      ),
+    );
+    files.set('core/tools/aidlc-sensor-secrets.ts', 'export const secrets = true;\n');
+    files.set(
+      'core/aidlc-common/stages/construction/acme-security-review.md',
+      lines(
+        '---',
+        'slug: acme-security-review',
+        'name: Security Review',
+        'phase: construction',
+        'execution: ALWAYS',
+        'condition: Always',
+        'lead_agent: aidlc-devsecops-agent',
+        'support_agents: []',
+        'mode: inline',
+        'produces:',
+        '  - security-review',
+        'consumes: []',
+        'sensors:',
+        '  - secrets',
+        'scopes:',
+        '  - hotfix',
+        '  - feature',
+        'inputs: the working tree',
+        'outputs: security-review.md',
+        '---',
+        'Review the change for security issues.',
+      ),
+    );
+    return files;
+  };
+  const publishFork = async (files) => {
+    const profile = customProfile({
+      repository: FORK_REPOSITORY,
+      sha: FORK_SHA,
+      baseProfileId: CANDIDATE_PROFILE,
+    });
+    const bundle = buildReleaseBundle({ profile, files });
+    await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+    const { release } = await registerCustomRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      repository: FORK_REPOSITORY,
+      sha: FORK_SHA,
+      baseProfileId: CANDIDATE_PROFILE,
+      actor: 'admin-1',
+    });
+    return release;
+  };
+  const promoteFork = (release) =>
+    updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: release.releaseId,
+      expectedRevision: release.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+  it("is promoted and its pinned plan runs the fork's own stage and sensor", async () => {
+    const registered = await publishFork(forkFiles());
+    const promoted = await promoteFork(registered);
+    await updateRelease({
+      ...registryArgs(),
+      releaseId: registered.releaseId,
+      expectedRevision: promoted.revision,
+      patch: { visible: true },
+      actor: 'admin-1',
+    });
+    const selected = await resolveSelectableRelease({
+      ...registryArgs(),
+      releaseId: registered.releaseId,
+    });
+
+    const resolved = await expectPinnedPlansResolve(selected);
+    const { plan } = buildExecutionPlan({
+      workflow: resolved.workflow,
+      scope: 'hotfix',
+      library: resolved.library,
+    });
+
+    expect(registered).toMatchObject({ runnable: false, unhonouredValues: [] });
+    expect(promoted).toMatchObject({ supportState: 'selectable', runnable: true });
+    const review = plan.stages.find((stage) => stage.stageId === 'acme-security-review');
+    expect(review.sensors.map((sensor) => sensor.sensorId)).toEqual(['secrets']);
+  });
+
+  // Production reaches a closure through the plan and scope loaders, which must
+  // hand the resolver the registry: without it every fork pin is refused.
+  it('resolves its pin through the plan and scope loaders intents and the orchestrator use', async () => {
+    const registered = await publishFork(forkFiles());
+    await promoteFork(registered);
+    const methodologyRelease = releasePinFromRecord(
+      await getRelease({ ...registryArgs(), releaseId: registered.releaseId }),
+    );
+    const { catalog } = await loadReleaseClosure({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      methodologyRelease,
+      cache: new Map(),
+    });
+    const args = {
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      methodologyRelease,
+      workflowId: catalog.workflow.id,
+      workflowVersion: catalog.workflow.workflowVersion,
+    };
+
+    releaseResolverTest.releaseClosureCache.clear();
+    expect(await loadWorkflowScopes(args)).toContain('hotfix');
+    releaseResolverTest.releaseClosureCache.clear();
+    const { valid, errors } = await loadExecutionPlan({ ...args, scope: 'hotfix' });
+    expect({ valid, errors }).toEqual({ valid: true, errors: [] });
+  });
+
+  it('stays import-only, and the admin sees why, when it authors behavior this build cannot honour', async () => {
+    const files = forkFiles();
+    const path = 'core/aidlc-common/stages/construction/acme-security-review.md';
+    files.set(path, files.get(path).replace('mode: inline', 'mode: agent-team'));
+    const registered = await publishFork(files);
+    const gap = { blockType: 'STAGE', field: 'mode', value: 'agent-team' };
+
+    expect(registered.unhonouredValues).toEqual([gap]);
+    await expect(promoteFork(registered)).rejects.toMatchObject({
+      code: 'release_capability_unhandled',
+      details: { gaps: [gap] },
+    });
+    expect(await getRelease({ ...registryArgs(), releaseId: registered.releaseId })).toMatchObject({
+      runnable: false,
+      supportState: 'structurally-valid',
+    });
+  });
+
+  // The annex is appended to a stage prompt only when the stage body or the
+  // conductor carries the token, and this fork's carry none. A persona's engine
+  // command would reach that prompt with no annex, so it is not answered.
+  it('refuses an answered engine command that only a persona outside the compose prompt invokes', async () => {
+    const files = forkFiles({ invokeLines: false });
+    const persona = 'core/agents/aidlc-devsecops-agent.md';
+    expect(files.has(persona)).toBe(true);
+    files.set(
+      persona,
+      `${files.get(persona)}\nRecord it: {{INVOKE}} engine state practices-event --type override\n`,
+    );
+    const registered = await publishFork(files);
+    const gap = { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine state' };
+
+    expect(registered.unhonouredValues).toEqual([gap]);
+    await expect(promoteFork(registered)).rejects.toMatchObject({
+      code: 'release_capability_unhandled',
+      details: { gaps: [gap] },
+    });
+  });
+
+  it('honours the same command in a stage body, and graph ars in the composer persona', async () => {
+    const files = forkFiles({ invokeLines: false });
+    const stage = 'core/aidlc-common/stages/construction/acme-security-review.md';
+    const composer = 'core/agents/aidlc-composer-agent.md';
+    expect(files.has(composer)).toBe(true);
+    files.set(
+      stage,
+      `${files.get(stage)}\nRecord it: {{INVOKE}} engine state practices-event --type override\n`,
+    );
+    files.set(composer, `${files.get(composer)}\n{{INVOKE}} engine graph ars --iae <s>\n`);
+    const registered = await publishFork(files);
+
+    expect(registered.fidelityGaps.filter((gap) => gap.blockType === 'BODY')).toEqual([
+      { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine graph ars', annexed: true },
+      { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine state', annexed: true },
+    ]);
+    await expect(promoteFork(registered)).resolves.toMatchObject({ runnable: true });
+  });
 });
 
 describe('registration asserts manifest identity', () => {
@@ -1644,6 +1920,115 @@ describe('a cancelled transaction reports the channel guard over the revision ch
   });
 });
 
+// Acceptance: a deployment of this build, starting from an empty registry, can
+// promote and run 2.8.2 and 2.9.0. The compatibility fixtures omit every body,
+// so each is rebuilt with every `{{INVOKE}} engine` line its real release
+// carries, verbatim, in every file (prompts, skills, templates, the engine's
+// hooks, protocols and tools).
+const INVOKE_LINES = JSON.parse(
+  readFileSync(new URL('./fixtures/aidlc-release-invoke-lines.json', import.meta.url), 'utf8'),
+);
+
+const filesWithInvokeLines = (profileId, linesFrom = profileId) => {
+  const files = filesFromCompatibilityFixture({
+    profileId,
+    fixture: JSON.parse(
+      readFileSync(
+        new URL(`./fixtures/aidlc-compatibility/${profileId}.json`, import.meta.url),
+        'utf8',
+      ),
+    ),
+  });
+  for (const [path, lines] of Object.entries(INVOKE_LINES[linesFrom]?.files ?? {})) {
+    expect(files.has(path), path).toBe(true);
+    files.set(path, `${files.get(path)}\n${lines.join('\n')}\n`);
+  }
+  return files;
+};
+
+// The plan of every scope the release offers resolves from the pinned closure.
+const expectPinnedPlansResolve = async (release) => {
+  const closure = await loadReleaseClosure({
+    s3,
+    bucket: BUCKET,
+    methodologyRelease: releasePinFromRecord(release),
+    ...registryArgs(),
+    cache: new Map(),
+  });
+  const resolved = await resolveMethodologyLibrary({
+    closure,
+    ddb: ddbMock,
+    tableName: TABLE,
+    workflowId: closure.catalog.workflow.id,
+    workflowVersion: closure.catalog.workflow.workflowVersion,
+  });
+  const scopes = Object.keys(resolved.library.scopesById);
+  expect(scopes.length).toBeGreaterThan(0);
+  for (const scope of scopes) {
+    const { valid, errors } = buildExecutionPlan({
+      workflow: resolved.workflow,
+      scope,
+      library: resolved.library,
+    });
+    expect({ scope, valid, errors }).toEqual({ scope, valid: true, errors: [] });
+  }
+  return resolved;
+};
+
+describe.each(['v2.8.2', 'v2.9.0'])('a deployment promoting the real %s', (profileId) => {
+  const bundle = buildReleaseBundle({ profileId, files: filesWithInvokeLines(profileId) });
+  const { releaseId } = bundle.manifest;
+  const engineCommand = (value) => ({
+    blockType: 'BODY',
+    field: '{{INVOKE}}',
+    value,
+    annexed: true,
+  });
+
+  beforeEach(async () => {
+    installFakes();
+    await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+  });
+
+  it('registers it with only the engine commands its prompts invoke, and none unhonoured', async () => {
+    const { release } = await registerRelease(registerArgs(profileId));
+
+    expect(release.fidelityGaps.filter((gap) => gap.blockType === 'BODY')).toEqual(
+      ['engine graph ars', 'engine orchestrate', 'engine recompose', 'engine state'].map(
+        engineCommand,
+      ),
+    );
+    expect(release.unhonouredValues).toEqual([]);
+  });
+
+  it('promotes it to selectable, offers it, and resolves every pinned plan', async () => {
+    await registerRelease(registerArgs(profileId));
+    const stated = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId,
+      expectedRevision: 1,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+    await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId,
+      expectedRevision: stated.revision,
+      patch: { visible: true },
+      actor: 'admin-1',
+    });
+
+    const selected = await resolveSelectableRelease({ ...registryArgs(), releaseId });
+
+    expect(selected).toMatchObject({ supportState: 'selectable', visible: true, runnable: true });
+    await expectPinnedPlansResolve(selected);
+  });
+});
+
 describe('promotion of a record registered before protocol evidence existed', () => {
   // A record imported by an earlier build stored only its frontmatter gaps; the
   // build-and-test loop-back is a protocol the closure ships, not an authored
@@ -1678,7 +2063,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
 
     expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
     expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
-      fidelityEvidenceRevision: 2,
+      fidelityEvidenceRevision: 3,
     });
   });
 
@@ -1686,7 +2071,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
     await registerRelease(registerArgs(CANDIDATE_PROFILE));
 
     expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
-      fidelityEvidenceRevision: 2,
+      fidelityEvidenceRevision: 3,
     });
   });
 
@@ -1712,6 +2097,36 @@ describe('promotion of a record registered before protocol evidence existed', ()
       }),
     ).resolves.toMatchObject({ releaseId: CANDIDATE_RELEASE_ID });
     expect(promoted.supportState).toBe('certified');
+  });
+});
+
+describe('promotion of a record whose evidence read the engine sources', () => {
+  // An earlier build stored, at evidence revision 2, the engine commands the
+  // engine CLI's own sources quote. The closure's prompts author none of them, so
+  // trusting that list would keep refusing the release for behavior it never
+  // asks an agent for.
+  it('re-evaluates the closure instead of trusting that list', async () => {
+    await registerRelease(registerArgs(CANDIDATE_PROFILE));
+    const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
+    const row = {
+      ...rows.get(key),
+      fidelityGaps: [{ blockType: 'BODY', field: '{{INVOKE}}', value: 'engine swarm prepare' }],
+      fidelityEvidenceRevision: 2,
+    };
+    rows.set(key, row);
+
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: CANDIDATE_RELEASE_ID,
+      expectedRevision: row.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
+    expect(rows.get(key).fidelityGaps).not.toContainEqual(row.fidelityGaps[0]);
   });
 });
 
@@ -1784,7 +2199,7 @@ describe('admin listing of a record registered before protocol evidence existed'
     const second = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
 
     const listed = first.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
-    expect(cached.fidelityEvidenceRevision).toBe(2);
+    expect(cached.fidelityEvidenceRevision).toBe(3);
     expect(cached.fidelityGaps).toEqual(listed.fidelityGaps);
     expect(cached.fidelityGaps).not.toEqual(legacy.fidelityGaps);
     // Evidence is derived from an immutable closure, never a decision, so the

@@ -155,10 +155,11 @@ const assertRevision = (revision, field) => {
 };
 
 /**
- * Runnability is a property of provenance, decided once at registration and
- * never patchable: only an allowlisted official profile above T0 may ever be
- * offered for a new intent. Custom, preview, and T0 content stays non-runnable
- * however complete its files look.
+ * Runnability at registration is a property of provenance: an allowlisted
+ * official profile above T0 is runnable as imported. A custom fork (T0) is
+ * recorded non-runnable; the only way it becomes runnable is the explicit admin
+ * promotion in `updateRelease`, which first passes it through the same fidelity
+ * guard as an official release. It is never patchable directly.
  */
 const profileIsRunnable = (profile) => Boolean(profile) && profile.trustTier !== 'T0';
 
@@ -245,6 +246,8 @@ const channelToSelectionApi = (item) =>
  * Identical in shape to `methodologyReleasePinFromManifest` (release-resolver),
  * because the runtime re-verifies every field of it against the manifest.
  */
+// A fork's closure lives under its own custom prefix, so its pin says so; an
+// official pin keeps exactly the shape it always had.
 const releasePinFromRecord = (release) => ({
   releaseId: release.releaseId,
   sourceSha: release.sourceSha,
@@ -252,6 +255,9 @@ const releasePinFromRecord = (release) => ({
   closureDigest: release.closureDigest,
   catalogKey: release.catalogKey,
   manifestKey: release.manifestKey,
+  ...(release.custom === true
+    ? { custom: true, sourceRepository: release.sourceRepository ?? null }
+    : {}),
 });
 
 const getRelease = async ({ ddb, tableName, releaseId }) => {
@@ -530,10 +536,11 @@ const registerRelease = async ({ ddb, tableName, s3, bucket, profileId, actor = 
 };
 
 /**
- * Registers a PUBLISHED custom fork closure. The record is import-only by
- * construction: the synthesized profile is T0, so `runnable` is false and both
- * `updateRelease` and `setChannel` will refuse to make it offerable. There is
- * deliberately no parameter that could override that.
+ * Registers a PUBLISHED custom fork closure. The record starts import-only: the
+ * synthesized profile is T0, so `runnable` is false and `setChannel` refuses it.
+ * Registration has no parameter that makes it runnable; only an admin promotion
+ * in `updateRelease`, which runs the same fidelity guard as an official release,
+ * does.
  */
 const registerCustomRelease = async ({
   ddb,
@@ -597,11 +604,14 @@ const registerCustomRelease = async ({
 // The revision of the evidence a record's stored `fidelityGaps` was computed
 // with. Revision 2 includes the protocol capabilities the closure ships (the
 // build-and-test loop-back), which a gap list stored by an earlier build never
-// judged. Promotion therefore re-evaluates such a list from the immutable
-// closure, exactly like a record with no list at all. Other readers (the
-// intent-creation eligibility check) keep using the stored list: a record can
-// only be selected after a promotion has written current evidence.
-const FIDELITY_EVIDENCE_REVISION = 2;
+// judged. Revision 3 reads engine commands only from what reaches a prompt: a
+// list stored by an earlier build also holds the commands the engine CLI's own
+// sources quote, and would keep refusing a release for them. Promotion therefore
+// re-evaluates such a list from the immutable closure, exactly like a record
+// with no list at all. Other readers (the intent-creation eligibility check) keep
+// using the stored list: a record can only be selected after a promotion has
+// written current evidence.
+const FIDELITY_EVIDENCE_REVISION = 3;
 
 const hasCurrentFidelityEvidence = (release) =>
   Array.isArray(release.fidelityGaps) &&
@@ -781,11 +791,13 @@ const assertSelectableRecord = (release) => {
 
 /**
  * Only a support decision is patchable: `supportState`, `visible`, `notes`.
- * Identity, provenance, and runnability are import evidence and are immutable.
+ * Identity and provenance are import evidence and are immutable.
  *
- * `selectable` and `certified` both require a runnable, structurally-valid
- * release — the registry refuses to make importable or non-allowlisted content
- * offerable no matter what the caller asks for.
+ * `selectable` and `certified` both require a structurally-valid release whose
+ * authored behavior this build honours. An official release must also be
+ * runnable by provenance. A custom fork becomes runnable here, and only here,
+ * once that guard accepts it; it stays runnable afterwards, like any record
+ * existing intents may still be pinned to.
  *
  * A transition that would STRAND a channel pointer — taking it from satisfied to
  * unsatisfied (non-selectable, or for `stable` non-certifiable) — is refused with
@@ -856,14 +868,17 @@ const updateRelease = async ({
     current.visible !== true &&
     SELECTABLE_SUPPORT_STATES.includes(next.supportState);
   if (supportStatePromotion || visibilityPromotion) {
-    if (next.runnable !== true || next.structurallyValid !== true) {
+    // A fork is made runnable by this promotion, once the guard below accepts
+    // it; an official release must already be runnable by provenance.
+    const runnable = next.runnable === true || current.custom === true;
+    if (!runnable || next.structurallyValid !== true) {
       throw new ReleaseRegistryError(
         'release_not_selectable',
         `release-registry: ${current.releaseId} cannot become selectable — it is not a runnable, structurally-valid release`,
         {
           details: {
             releaseId: current.releaseId,
-            runnable: next.runnable === true,
+            runnable,
             structurallyValid: next.structurallyValid === true,
           },
         },
@@ -876,6 +891,7 @@ const updateRelease = async ({
       requireCurrentEvidence: true,
     });
     next.fidelityEvidenceRevision = FIDELITY_EVIDENCE_REVISION;
+    next.runnable = true;
   }
 
   const channelsByName = await getChannels({ ddb, tableName });
@@ -1401,16 +1417,19 @@ const resolveSelectableRelease = async ({ ddb, tableName, releaseId = null }) =>
  * probe over keys that are USUALLY absent, so a masked 403 there means "not
  * published", not "broken", and must not 500 the whole listing.
  *
+ * Registration and a closure upgrade let the 403 propagate, and the admin API
+ * answers it as 502 `release_manifest_unreadable`, naming both possible causes
+ * rather than guessing between them.
+ *
  * This tolerance is deliberately scoped to the probe. Every execution path
  * (loadReleaseClosure, registerRelease, the auto-pin lookup) keeps treating an
  * unreadable manifest as a hard failure: there, "cannot read" must never be
  * downgraded to "does not exist", or a genuine permissions regression would
  * silently unpin intents.
  */
-const isAccessDenied = (error) =>
-  error?.name === 'AccessDenied' ||
-  error?.Code === 'AccessDenied' ||
-  error?.$metadata?.httpStatusCode === 403;
+// S3's own code only: DynamoDB, STS and KMS also answer 403, as
+// `AccessDeniedException`, and those are not a masked "not published".
+const isAccessDenied = (error) => error?.name === 'AccessDenied' || error?.Code === 'AccessDenied';
 
 const probePublishedManifest = async ({ s3, bucket, profile }) => {
   try {
@@ -1487,6 +1506,7 @@ export {
   getChannel,
   getChannels,
   getRelease,
+  isAccessDenied,
   isReleaseRegistryError,
   isSelectableRecord,
   listRegistrableProfiles,
@@ -1514,6 +1534,7 @@ export default {
   getChannel,
   getChannels,
   getRelease,
+  isAccessDenied,
   isReleaseRegistryError,
   isSelectableRecord,
   listRegistrableProfiles,
