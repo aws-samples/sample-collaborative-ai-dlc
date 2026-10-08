@@ -23,9 +23,19 @@ export function sensorNeedsAttention(r: IntentSensorRun): boolean {
 
 // Condense a sensor's structured `detail` into a short human explanation, the
 // same shapes the backend summarizer handles: missing artifacts, unreferenced
-// upstreams, a bare reason, or an error. Returns null when there is nothing
-// terse worth showing.
-export function summarizeSensorDetail(detail: SensorDetail | null): string | null {
+// upstreams, an error, or a bare reason. A `script` sensor reports once per
+// matching file, so its detail is a `files[]` aggregate and the reason sits on
+// the entry that produced the result — mirrors `lambda/shared/sensor-verdict.js`,
+// which reads only the `reason` and `file` of an entry (the rest is the script's
+// own output). Returns null when there is nothing terse worth showing.
+// Same ceiling as `MAX_SENSOR_REASON_LENGTH` in `lambda/shared/sensor-verdict.js`.
+const MAX_SENSOR_REASON_LENGTH = 500;
+const bounded = (value: string) =>
+  value.length <= MAX_SENSOR_REASON_LENGTH
+    ? value
+    : `${value.slice(0, MAX_SENSOR_REASON_LENGTH - 1)}…`;
+
+export function summarizeSensorDetail(detail: SensorDetail | null, result?: string): string | null {
   if (!detail || typeof detail !== 'object') return null;
   const missing = Array.isArray(detail.artifacts)
     ? detail.artifacts.filter((a) => a?.reason === 'not found in graph').map((a) => a.artifact)
@@ -34,9 +44,25 @@ export function summarizeSensorDetail(detail: SensorDetail | null): string | nul
   if (Array.isArray(detail.unreferenced) && detail.unreferenced.length) {
     return `unreferenced: ${detail.unreferenced.join(', ')}`;
   }
-  if (detail.error) return String(detail.error);
-  if (detail.reason) return String(detail.reason);
-  return null;
+  if (typeof detail.error === 'string' && detail.error) return bounded(detail.error);
+  const explains =
+    detail.reason !== undefined ||
+    detail.artifact !== undefined ||
+    detail.error !== undefined ||
+    detail.notApplicable !== undefined;
+  const candidates = explains
+    ? []
+    : (detail.files?.filter((f) => f && typeof f === 'object' && f.result !== 'PASS') ?? []);
+  const applicable = candidates.filter((f) => f.detail?.notApplicable !== true);
+  const reasonOf = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const entry =
+    applicable.find((f) => f.result === result && reasonOf(f.detail?.reason)) ??
+    applicable[0] ??
+    candidates[0];
+  if (!entry) return reasonOf(detail.reason) || null;
+  const reason = reasonOf(entry.detail?.reason);
+  if (!reason) return null;
+  return bounded(entry.file ? `${entry.file}: ${reason}` : reason);
 }
 
 // A stage can accumulate multiple runs per sensor across attempts — the row
@@ -57,7 +83,7 @@ export function SensorChips({ runs, className }: { runs: IntentSensorRun[]; clas
   return (
     <span className={cn('inline-flex flex-wrap items-center gap-1', className)}>
       {latest.map((r) => {
-        const explain = summarizeSensorDetail(r.detail);
+        const explain = summarizeSensorDetail(r.detail, r.result);
         const attention = sensorNeedsAttention(r);
         return (
           <Badge

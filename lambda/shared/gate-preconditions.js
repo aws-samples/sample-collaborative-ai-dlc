@@ -21,6 +21,7 @@
 // what keeps the gate prompt byte-identical for those runs.
 
 import { isQuestionChannelOutput } from './aidlc-capabilities.js';
+import { resolveSensorVerdict } from './sensor-verdict.js';
 import { eventTypeOf } from './v2-process-keys.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
@@ -237,6 +238,10 @@ const sensorGateFindings = ({ sensorVerdicts = [], receipts = [], attempt = 0 } 
     const integrityFailure = isReleaseIntegrityFailure(verdict);
     if (!integrityFailure && overridden.has(verdict?.sensorId)) continue;
     if (!integrityFailure && verdict?.detail?.notApplicable === true) continue;
+    // A `script` sensor reports per matching file, so its reason lives one level
+    // down; resolve it once so a script verdict is explained on the same terms as
+    // a graph one.
+    const effective = resolveSensorVerdict(verdict);
     const blocking = integrityFailure || verdict?.severity === 'blocking';
     const overridable = blocking && !integrityFailure;
     const onArtifact = verdict.detail?.artifact ? ` on ${verdict.detail.artifact}` : '';
@@ -250,9 +255,12 @@ const sensorGateFindings = ({ sensorVerdicts = [], receipts = [], attempt = 0 } 
         detail: {
           sensorId: verdict.sensorId,
           result: verdict.result,
-          reason: verdict.detail?.reason ?? null,
+          reason: effective.reason,
           ...(integrityFailure ? { releaseIntegrityFailure: true } : {}),
         },
+        // The sensor's own words, rendered as a quote (the only field a renderer
+        // shows verbatim) — without it the human decides on a bare "→ FAIL".
+        quote: effective.reason,
         overridable,
         ...(overridable ? { receiptKind: 'sensor-override' } : {}),
         remediation: integrityFailure
