@@ -46,7 +46,11 @@ const dynamodbCallerRoles = (text) =>
   [
     ...new Set(
       resourceBlocks(text, 'aws_iam_role_policy')
-        .filter(({ body }) => body.includes('"dynamodb:'))
+        // AgentCore's legacy and scoped roles share a local action list.
+        .filter(
+          ({ body }) =>
+            body.includes('"dynamodb:') || body.includes('local.agentcore_dynamodb_actions'),
+        )
         .flatMap(({ body }) =>
           [...body.matchAll(/aws_iam_role\.([^.]+)\./g)].map((match) => match[1]),
         ),
