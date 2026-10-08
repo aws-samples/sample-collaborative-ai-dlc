@@ -688,6 +688,20 @@ describe('construction autonomy: the grant-autonomy escalation', () => {
     expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
   });
 
+  it('records the grant on a retried intent whose earlier failure left completedAt', async () => {
+    // A relaunch through `/start` does not clear `completedAt`, so every intent
+    // that ever failed and was retried carries a stale one.
+    execution = { ...execution, completedAt: 'T-earlier-failure' };
+
+    const result = await run();
+
+    expect(result).not.toMatchObject({ reason: 'retired' });
+    expect(execution.constructionGateAutonomy).toBe('autonomous');
+    expect(eventsOfType('v2.autonomy.mode_set')).toHaveLength(1);
+    expect(openedGates().map((gate) => gate.stageInstanceId)).toEqual(['si-functional-design']);
+    expect(eventsOfType('v2.gate.auto_approved')).toHaveLength(1);
+  });
+
   it('retires before the grant step when the intent is cancelled between the answer and the resume', async () => {
     // Cancel is accepted while META still reads WAITING. The gate's un-park only
     // writes RUNNING from WAITING, so it fails and the run retires there.

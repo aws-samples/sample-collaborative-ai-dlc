@@ -236,10 +236,6 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     // clearing a resolved marker never drops a newer one for another gate.
     ifResumeRequiredFor = null,
     ifDraftRevision = null,
-    // Apply the write only while the run has not ended. Every end of a run
-    // (cancel, success, failure) stamps `completedAt`, and a later write to
-    // `status` does not clear it, so this still holds after a gate's un-park.
-    ifNotCompleted = false,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -549,12 +545,6 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
           : 'draftRevision = :ifDraftRevision',
       );
       values[':ifDraftRevision'] = ifDraftRevision;
-    }
-    if (ifNotCompleted) {
-      conditions.push(
-        '(attribute_not_exists(completedAt) OR attribute_type(completedAt, :nullType))',
-      );
-      values[':nullType'] = 'NULL';
     }
     if (conditions.length) params.ConditionExpression = conditions.join(' AND ');
     const { Attributes } = await ddb.send(new UpdateCommand(params));
