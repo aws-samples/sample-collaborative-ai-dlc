@@ -280,7 +280,13 @@ export const awaitEngineGate = async (
     store.getHumanTask(executionId, humanTaskId).catch(() => null),
   );
   if (!gate || gate.status === 'superseded') return { superseded: true };
-  await ctxArg.step(`gate-unpark-${name}`, async () => {
+  // An answered gate is not superseded, and META reads WAITING until this
+  // un-park, so a cancel, a rewind or a relaunch can still land after the
+  // answer. The un-park therefore writes RUNNING only from WAITING and only
+  // while this run owns META. A park write that never landed, or this step's
+  // own earlier write, leaves META RUNNING under this run, which is not a
+  // retirement.
+  const unparked = await ctxArg.step(`gate-unpark-${name}`, async () => {
     try {
       // The answer reached the run, so any resume marker for it is resolved.
       await store.updateExecution({
@@ -288,11 +294,19 @@ export const awaitEngineGate = async (
         status: 'RUNNING',
         pendingHumanTaskId: null,
         resumeRequired: null,
+        fromStatus: 'WAITING',
+        ifOrchestratorRunId: runId,
       });
-    } catch {
-      /* best-effort un-park */
+      return true;
+    } catch (error) {
+      if (error?.name !== 'ConditionalCheckFailedException') return true;
+      const meta = await store
+        .getExecution(executionId, { consistentRead: true })
+        .catch(() => null);
+      return meta?.status === 'RUNNING' && (!runId || meta.orchestratorRunId === runId);
     }
   });
+  if (!unparked) return { superseded: true };
   return { gate };
 };
 
