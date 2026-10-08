@@ -211,6 +211,8 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
     credentialBinding,
     mcpServersByTier,
     constructionAutonomyMode,
+    constructionGateAutonomy,
+    constructionGateAutonomyGrant,
     projectType,
     // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
     // this: rewinding TO a skipped stage UN-skips it (list shrinks, or null).
@@ -397,6 +399,25 @@ const createProcessStore = ({ ddb, tableName, clock, ids } = {}) => {
       }
       sets.push('constructionAutonomyMode = :cam');
       values[':cam'] = constructionAutonomyMode;
+    }
+    // The sequential construction-gate grant. Validated against the same two-value
+    // vocabulary, but kept as its own attribute: the field above is the unit-lane
+    // ladder's decision and must not be overwritten by this grant (or vice versa).
+    if (constructionGateAutonomy !== undefined) {
+      if (
+        constructionGateAutonomy !== null &&
+        !CONSTRUCTION_AUTONOMY_MODES.includes(constructionGateAutonomy)
+      ) {
+        throw new Error(`invalid constructionGateAutonomy: ${constructionGateAutonomy}`);
+      }
+      sets.push('constructionGateAutonomy = :cga');
+      values[':cga'] = constructionGateAutonomy;
+    }
+    // Written in the same update as the grant it describes, so the row can never
+    // carry a grant with no recorded author.
+    if (constructionGateAutonomyGrant !== undefined) {
+      sets.push('constructionGateAutonomyGrant = :cgag');
+      values[':cgag'] = constructionGateAutonomyGrant;
     }
     if (projectType !== undefined) {
       if (projectType !== 'greenfield' && projectType !== 'brownfield') {

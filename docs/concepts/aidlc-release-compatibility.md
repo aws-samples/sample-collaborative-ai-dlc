@@ -289,6 +289,74 @@ the intent's Resume action. Callback-consumption markers and answered gate state
 prevent a duplicate resume; an expired callback transitions the intent to a
 rewind-recoverable `FAILED` state rather than leaving it indefinitely `WAITING`.
 
+### Construction autonomy
+
+Releases that ship the construction protocol also carry `Construction Autonomy
+Mode`: the human's standing permission to complete the remaining construction
+stage gates without stopping. The capability is classified `native` — the grant,
+its two-value vocabulary, the first-stage carve-out and the halt-and-ask set are
+all reproduced.
+
+- The grant is per-intent and two-valued. Absent and `gated` both read as gated;
+  only `autonomous` waives anything. It is frozen onto the intent at create by
+  the human creating it, or escalated later by an explicit human answer: the
+  `grant-autonomy` option, offered at the one construction gate that always stays
+  human. The answer API rejects it on a gate that does not offer it. The
+  release listing reports `constructionAutonomy` for each release, read from
+  the record's stored protocol evidence, so the create page offers the opt-in
+  only for a selected release that has it. The non-admin listing never
+  re-verifies a closure, so a record whose stored evidence predates the
+  protocol entries lists `false` there until an admin listing or a promotion
+  re-verifies and caches it. The opt-in is then hidden, never wrongly offered,
+  and creating an intent still decides from the release's closure.
+- Once given, the grant holds for the rest of the intent, rewinds included,
+  until the intent is cancelled. Cancelling clears it and records who withdrew
+  it and when on the grant's provenance, so a rewind after a cancel relaunches
+  the intent gated. Cancel is only accepted while the intent is parked or
+  failed: a waived gate never parks, so an autonomous run can be cancelled once
+  it halts at a human gate, a question or a failure. Every gate with a finding
+  still halts and asks.
+- It lives on its own META attribute, `constructionGateAutonomy`. The
+  per-section unit-lane ladder keeps `constructionAutonomyMode`: that question
+  asks only about parallel lane batching, and reading it here would waive gates
+  the human was never asked about.
+- A waived gate is never opened. The approved answer is synthesized and the run
+  takes the ordinary approval path, so the durable record is the ordinary
+  attempt-scoped `stage-approval` receipt, carrying `autonomous: true` and the
+  protocol's marker input. The `v2.gate.auto_approved` timeline event is
+  best-effort telemetry on top of that receipt, never the record itself. The
+  grant's own provenance — who, when, and whether at create or at a gate — is
+  durable too, as `constructionGateAutonomyGrant`.
+- The halt-and-ask set is reproduced in full: the plan's first non-skipped
+  construction stage with a sequential gate, every Code Generation Plan
+  Approval, every fan-out approval, a stage failure, a blocking gate sensor,
+  and a loop-back recommendation (offered, at the bound, or with no code
+  generation to go back to) all still open a human gate. So does a gate
+  with learning candidates waiting for the learnings ritual, and a gate whose
+  stage outputs the runner could not observe: "no finding" is only read as
+  clean when the outputs were actually checked. On an intent with a grant, each
+  construction gate re-reads the intent before deciding, so a deleted intent, a
+  cancelled run, or a run taken over by another orchestrator (a rewind relaunch)
+  stops the walk instead of approving. An intent without a grant, and every gate
+  outside construction, skips that read and keeps its durable history.
+- Two deviations, both stricter than upstream: the gate-precondition evaluation
+  runs in full on a waived gate, so ANY finding (advisory included) opens the
+  human gate; and a terminal adversarial `NOT-READY` blocks a waived gate instead
+  of being auto-approved. On a gate the grant does not cover, that same verdict
+  stays an advisory finding and `approve` remains on offer, exactly as before.
+- Residual: the grant governs only the once-per-workflow sequential gates.
+  Per-unit stages inside a parallel section keep their own ceremony — the
+  walking-skeleton gate and the section autonomy ladder — so a scope with a unit
+  DAG still batches its lane approvals there. In those scopes the gate that
+  always stays human is the first sequential construction gate after the lanes
+  (for example build-and-test), and that is where `grant-autonomy` is offered.
+  Non-construction phases are untouched.
+- Residual: a waived gate judges the stage's evidence, not its test results. A
+  build-and-test stage that succeeds with failing tests but raises no finding
+  and records no loop-back recommendation has clean evidence, so an autonomous
+  intent approves it. A blocking results sensor is what turns those failures
+  into a halt.
+
 ## Persona sessions
 
 Pinned releases that declare `pipeline` or `mob` stages, or `subagent` stages

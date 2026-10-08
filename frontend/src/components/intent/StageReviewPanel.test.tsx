@@ -214,6 +214,45 @@ describe('StageReviewPanel — learnings ritual', () => {
     });
     confirm.mockRestore();
   });
+
+  it('records grant-autonomy as an approval and asks for confirmation first', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderPanel(gate({ options: ['approve', 'request-changes', 'grant-autonomy'] }));
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Approve and continue autonomously' }),
+    );
+
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(String(confirm.mock.calls[0][0])).toContain('without stopping');
+    expect(String(confirm.mock.calls[0][0])).toContain(
+      'This applies for the rest of the intent, rewinds included, until the intent is cancelled.',
+    );
+    expect(onAnswer).toHaveBeenCalledWith(expect.anything(), {
+      status: 'approved',
+      answer: { decision: 'grant-autonomy' },
+    });
+    confirm.mockRestore();
+  });
+
+  it('sends nothing when the autonomy confirmation is dismissed', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    renderPanel(gate({ options: ['approve', 'request-changes', 'grant-autonomy'] }));
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Approve and continue autonomously' }),
+    );
+
+    expect(onAnswer).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('offers no autonomy button when the gate does not list the option', () => {
+    renderPanel(gate({ options: ['approve', 'request-changes'] }));
+    expect(
+      screen.queryByRole('button', { name: 'Approve and continue autonomously' }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 const run = (over: Partial<IntentSensorRun> = {}): IntentSensorRun =>

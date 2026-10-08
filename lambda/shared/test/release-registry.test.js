@@ -1442,6 +1442,7 @@ describe('non-admin projection', () => {
     expect(Object.keys(release).toSorted()).toEqual(
       [
         'certifiedAt',
+        'constructionAutonomy',
         'profileId',
         'releaseId',
         'runnable',
@@ -1472,6 +1473,54 @@ describe('non-admin projection', () => {
 
     expect(Object.keys(asUser.stable).toSorted()).toEqual(['channel', 'releaseId', 'revision']);
     expect(asAdmin.stable.updatedBy).toBe('admin-1');
+  });
+});
+
+describe('construction autonomy on the release listing', () => {
+  // Selectable as registered, so each record keeps the evidence its own closure
+  // produced instead of the emptied list the transition tests use.
+  const offer = (releaseId, over = {}) => {
+    const key = keyOf(`AIDLC_RELEASE#${releaseId}`, 'META');
+    rows.set(key, { ...rows.get(key), supportState: 'selectable', visible: true, ...over });
+  };
+  const listed = async (releaseId, visibleOnly = true) =>
+    (await listReleases({ ...registryArgs(), visibleOnly })).find(
+      (release) => release.releaseId === releaseId,
+    );
+
+  beforeEach(async () => {
+    await registerRelease(registerArgs(BASELINE_PROFILE));
+    await registerRelease(registerArgs(CANDIDATE_PROFILE));
+  });
+
+  it('is true for a release that ships the construction protocol, for users and admins', async () => {
+    offer(CANDIDATE_RELEASE_ID);
+    expect((await listed(CANDIDATE_RELEASE_ID)).constructionAutonomy).toBe(true);
+    expect((await listed(CANDIDATE_RELEASE_ID, false)).constructionAutonomy).toBe(true);
+  });
+
+  it('is false for a release without the construction protocol', async () => {
+    offer(BASELINE_RELEASE_ID);
+    expect((await listed(BASELINE_RELEASE_ID)).constructionAutonomy).toBe(false);
+  });
+
+  it('reads evidence stored before the capability was registered', async () => {
+    const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
+    const fidelityGaps = rows
+      .get(key)
+      .fidelityGaps.filter((gap) => gap.field !== 'construction-autonomy');
+    expect(fidelityGaps).toContainEqual({
+      blockType: 'PROTOCOL',
+      field: 'build-and-test-loopback',
+      value: 'present',
+    });
+    offer(CANDIDATE_RELEASE_ID, { fidelityGaps });
+    expect((await listed(CANDIDATE_RELEASE_ID)).constructionAutonomy).toBe(true);
+  });
+
+  it('is false when the record carries no evidence', async () => {
+    offer(CANDIDATE_RELEASE_ID, { fidelityGaps: null });
+    expect((await listed(CANDIDATE_RELEASE_ID)).constructionAutonomy).toBe(false);
   });
 });
 
