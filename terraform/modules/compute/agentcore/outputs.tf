@@ -54,8 +54,13 @@ output "runtime_id" {
 }
 
 output "role_arn" {
-  description = "IAM execution role ARN for the runtime"
+  description = "Legacy execution role for runtimes built before execution-data isolation"
   value       = aws_iam_role.agentcore.arn
+}
+
+output "scoped_role_arn" {
+  description = "Execution role for runtimes that use broker-issued execution-data credentials"
+  value       = aws_iam_role.agentcore_scoped.arn
 }
 
 output "runtime_version" {

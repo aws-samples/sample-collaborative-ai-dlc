@@ -306,15 +306,33 @@ describe('buildMcpConfig', () => {
     expect(cfg.mcpServers.fetch).toEqual({
       command: 'uvx',
       args: ['mcp-server-fetch'],
-      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '', V2_EXECUTION_DATA_GRANT: '' },
     });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
+  });
+
+  it('keeps the data lease out of every on-disk config and forwards only its name for Codex', () => {
+    const args = {
+      mcpEntry: '/opt/mcp/index.js',
+      scope: { executionId: 'A', intentId: 'A' },
+      env: { V2_EXECUTION_DATA_GRANT: 'secret-lease', CREDENTIAL_BROKER_FUNCTION: 'broker' },
+    };
+    const configs = [
+      buildMcpConfig(args),
+      buildKiroAgentConfig(args),
+      buildOpenCodeConfig(args),
+      buildCodexConfigToml(args),
+    ];
+    for (const config of configs) expect(JSON.stringify(config)).not.toContain('secret-lease');
+    expect(configs[3]).toContain('"V2_EXECUTION_DATA_GRANT"');
+    expect(configs[0].mcpServers.aidlc.env.CREDENTIAL_BROKER_FUNCTION).toBe('broker');
   });
 
   it("prevents custom stdio servers from observing the selected user's model credential", () => {
     const parentEnv = {
       AWS_BEARER_TOKEN_BEDROCK: 'personal-bedrock-token',
       KIRO_API_KEY: 'personal-kiro-key',
+      V2_EXECUTION_DATA_GRANT: 'secret-lease',
     };
     const cfg = buildMcpConfig({
       mcpEntry: 'x',
@@ -328,6 +346,7 @@ describe('buildMcpConfig', () => {
             SAFE_SERVER_KEY: '${SAFE_SERVER_KEY}',
             AWS_BEARER_TOKEN_BEDROCK: 'try-to-restore-it',
             KIRO_API_KEY: 'try-to-restore-it',
+            V2_EXECUTION_DATA_GRANT: 'try-to-restore-it',
           },
         },
         remote: { type: 'http', url: 'https://mcp.example' },
@@ -341,6 +360,7 @@ describe('buildMcpConfig', () => {
       const observedChildEnv = { ...parentEnv, ...cfg.mcpServers[name].env };
       expect(observedChildEnv.AWS_BEARER_TOKEN_BEDROCK).toBe('');
       expect(observedChildEnv.KIRO_API_KEY).toBe('');
+      expect(observedChildEnv.V2_EXECUTION_DATA_GRANT).toBe('');
     }
     expect(cfg.mcpServers.hostile.env.SAFE_SERVER_KEY).toBe('${SAFE_SERVER_KEY}');
     // Remote servers do not spawn a child and keep their original shape.
@@ -434,7 +454,7 @@ describe('materializeStage (workspace write)', () => {
     expect(cfg.mcpServers.fetch).toEqual({
       command: 'uvx',
       args: ['mcp-server-fetch'],
-      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '', V2_EXECUTION_DATA_GRANT: '' },
     });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
     // Custom rules go into the CLI's NATIVE rules dir (auto-loaded), NOT the prompt.
@@ -529,7 +549,7 @@ describe('buildKiroAgentConfig', () => {
     expect(cfg.mcpServers.git).toEqual({
       command: 'uvx',
       args: ['mcp-server-git'],
-      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '' },
+      env: { AWS_BEARER_TOKEN_BEDROCK: '', KIRO_API_KEY: '', V2_EXECUTION_DATA_GRANT: '' },
     });
     expect(cfg.mcpServers.aidlc.command).toBe('node');
   });
@@ -579,6 +599,7 @@ describe('OpenCode inline config', () => {
         MIXED: 'Bearer {env:LOCAL_KEY}',
         AWS_BEARER_TOKEN_BEDROCK: '',
         KIRO_API_KEY: '',
+        V2_EXECUTION_DATA_GRANT: '',
       },
     });
     expect(cfg.mcp.remote).toEqual({

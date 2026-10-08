@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createHandler } from '../index.js';
+import { createHandler, startBuild } from '../index.js';
 
 const BASE = {
   environmentId: 'standard',
@@ -59,6 +59,65 @@ describe('managed environment handler', () => {
       '111111111111.dkr.ecr.eu-west-1.amazonaws.com/environments',
     );
     vi.stubEnv('ENVIRONMENT_ECR_REPOSITORY_NAME', 'environments');
+  });
+
+  it.each([true, false])(
+    'stamps the pinned base capability (%s) when queuing a build',
+    async (scoped) => {
+      const environment = { environmentId: 'custom', name: 'Custom' };
+      const draft = {
+        environmentId: 'custom',
+        revisionId: 'r-new',
+        status: 'DRAFT',
+        recipe: CATALOG_RECIPE,
+        flattenedRecipe: CATALOG_RECIPE,
+        executionDataScoped: !scoped,
+      };
+      const store = {
+        getRevision: vi.fn().mockResolvedValue({ ...BASE, executionDataScoped: scoped }),
+        updateRevision: vi.fn(async (_environmentId, _revisionId, patch) => ({
+          ...draft,
+          ...patch,
+        })),
+        updateEnvironment: vi.fn(),
+        getEnvironment: vi.fn().mockResolvedValue(environment),
+      };
+      await startBuild({
+        store,
+        environment,
+        revision: draft,
+        actor: 'admin',
+        deps: {
+          s3: { send: vi.fn().mockResolvedValue({}) },
+          codebuild: { send: vi.fn().mockResolvedValue({ build: { id: 'build-1' } }) },
+        },
+      });
+      expect(store.getRevision).toHaveBeenCalledWith(BASE.environmentId, BASE.revisionId);
+      expect(store.updateRevision).toHaveBeenNthCalledWith(
+        1,
+        'custom',
+        'r-new',
+        expect.objectContaining({ status: 'QUEUED', executionDataScoped: scoped }),
+        { fromStatus: 'DRAFT' },
+      );
+    },
+  );
+
+  it('rejects a build with unresolved provenance before uploading or queuing it', async () => {
+    const store = { getRevision: vi.fn().mockResolvedValue(null), updateRevision: vi.fn() };
+    const deps = { s3: { send: vi.fn() }, codebuild: { send: vi.fn() } };
+    await expect(
+      startBuild({
+        store,
+        environment: { environmentId: 'custom' },
+        revision: { status: 'DRAFT', recipe: CATALOG_RECIPE, flattenedRecipe: CATALOG_RECIPE },
+        actor: 'admin',
+        deps,
+      }),
+    ).rejects.toMatchObject({ code: 'EXECUTION_DATA_SCOPE_UNRESOLVED' });
+    expect(store.updateRevision).not.toHaveBeenCalled();
+    expect(deps.s3.send).not.toHaveBeenCalled();
+    expect(deps.codebuild.send).not.toHaveBeenCalled();
   });
 
   it('logs a sanitized API Gateway event when event logging is enabled', async () => {
@@ -337,7 +396,9 @@ describe('managed environment handler', () => {
     const store = {
       ...storeBase(),
       getEnvironment: vi.fn().mockResolvedValue(environment),
-      getRevision: vi.fn().mockResolvedValue(failed),
+      getRevision: vi.fn(async (environmentId) =>
+        environmentId === 'standard' ? { ...BASE, executionDataScoped: true } : failed,
+      ),
       createRevision: vi.fn().mockResolvedValue(replacement),
       updateRevision: vi.fn().mockImplementation(async (_environmentId, _revisionId, patch) => ({
         ...replacement,
@@ -412,7 +473,9 @@ describe('managed environment handler', () => {
     const store = {
       ...storeBase(),
       getEnvironment: vi.fn().mockResolvedValue(environment),
-      getRevision: vi.fn().mockResolvedValue(draft),
+      getRevision: vi.fn(async (environmentId) =>
+        environmentId === 'standard' ? { ...BASE, executionDataScoped: true } : draft,
+      ),
       updateRevision: vi.fn().mockImplementation(async (_environmentId, _revisionId, patch) => ({
         ...draft,
         ...patch,

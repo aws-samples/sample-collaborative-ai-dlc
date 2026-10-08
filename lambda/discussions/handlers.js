@@ -10,7 +10,10 @@ import { signRealtimeToken } from '../shared/realtime-token.js';
 import { fetchMembershipRole } from '../shared/trackers.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import { resolveEffectiveCredentialBindingsViaBroker } from '../shared/agent-credential-metadata.js';
-import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import {
+  issueAgentCredentialGrant,
+  issueExecutionDataGrant,
+} from '../shared/agent-credential-grants.js';
 import { executionMetaKey } from '../shared/v2-process-keys.js';
 import { ddb, ssm, query, cardinality, TextP, __, locksTable } from './clients.js';
 import {
@@ -698,6 +701,7 @@ export const assistDiscussion = async (event, res) => {
         intentId: scope.rootId,
         payload: {
           command: 'discussion-assist-start',
+          executionDataGrant: await issueExecutionDataGrant(ssm, { executionId: scope.rootId }),
           projectId: auth.projectId,
           intentId: scope.rootId,
           discussionId,

@@ -37,6 +37,7 @@ import {
 import { ensureWorkspaceSource as defaultEnsureWorkspaceSource } from '../workspace.js';
 import { getDriver, selectCli } from '../cli/drivers.js';
 import { runChild as defaultRunChild } from '../cli/spawn.js';
+import { executionDataEnv } from '../execution-store.js';
 import { resolveStageModel } from '../model-resolver.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
@@ -271,7 +272,7 @@ export const resolveConflict = async (
       runChild({
         command: invocation.command,
         args: invocation.args,
-        env: { ...invocation.env, ...driver.envForAuth(env) },
+        env: { ...invocation.env, ...driver.envForAuth(env), ...executionDataEnv(env) },
         cwd: workspaceDir,
         prompt,
         promptViaStdin: invocation.promptViaStdin,

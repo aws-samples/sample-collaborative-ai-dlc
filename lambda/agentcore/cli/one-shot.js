@@ -19,6 +19,7 @@
 
 import { getDriver, selectCli, parseKiroCredits } from './drivers.js';
 import { captureChild } from './spawn.js';
+import { EXECUTION_DATA_GRANT_ENV } from '../execution-store.js';
 import { resolveStageModel } from '../model-resolver.js';
 import {
   restoreKiroStore as defaultRestoreKiroStore,
@@ -100,6 +101,21 @@ const stripAnsi = (text = '') =>
 // bounded raw `sample` for field diagnosis.
 export const DEFAULT_ONE_SHOT_TIMEOUT_MS = 120_000;
 
+const hasMcpBridge = ({ cli, mcpConfigPath, agentName, opencodeConfigContent, codexHome }) => {
+  if (cli === 'claude') return Boolean(mcpConfigPath);
+  if (cli === 'kiro') return agentName === 'aidlc';
+  if (cli === 'codex') return Boolean(codexHome);
+  if (cli === 'opencode') {
+    try {
+      const bridge = JSON.parse(opencodeConfigContent)?.mcp?.aidlc;
+      return bridge?.type === 'local' && bridge.enabled !== false;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+};
+
 export const runOneShotPrompt = async ({
   prompt,
   requestedCli = null,
@@ -131,6 +147,13 @@ export const runOneShotPrompt = async ({
     opencodeConfigContent,
     codexHome,
   });
+  const mcpAttached = hasMcpBridge({
+    cli,
+    mcpConfigPath,
+    agentName,
+    opencodeConfigContent,
+    codexHome,
+  });
   // Kiro's SQLite conversation store: bracket exactly like resolve-conflict —
   // restore (mount → local) before the spawn so we never run against a stale
   // local store after a microVM reap, persist after so lane conversations the
@@ -142,7 +165,12 @@ export const runOneShotPrompt = async ({
     captureChild({
       command: invocation.command,
       args: invocation.args,
-      env: { ...invocation.env, ...driver.envForAuth(env) },
+      env: {
+        ...invocation.env,
+        ...driver.envForAuth(env),
+        // Override ambient inheritance too: tool-free prompts need no data lease.
+        [EXECUTION_DATA_GRANT_ENV]: mcpAttached ? env[EXECUTION_DATA_GRANT_ENV] : undefined,
+      },
       cwd,
       prompt: invocation.prompt,
       promptViaStdin: invocation.promptViaStdin,

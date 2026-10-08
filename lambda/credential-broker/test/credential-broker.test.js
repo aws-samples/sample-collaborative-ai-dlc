@@ -8,9 +8,13 @@ import {
   CREDENTIAL_ACTIVE_EXECUTION_STATUSES,
   authorizeAgentCredentialRequest,
   authorizeCredentialRequest,
+  authorizeExecutionDataRequest,
   executionIncludesRepository,
 } from '../index.js';
-import { signAgentCredentialGrant } from '../../shared/agent-credential-grants.js';
+import {
+  signAgentCredentialGrant,
+  signExecutionDataGrant,
+} from '../../shared/agent-credential-grants.js';
 
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const ssmMock = mockClient(SSMClient);
@@ -18,6 +22,120 @@ const secretsMock = mockClient(SecretsManagerClient);
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
+
+describe('execution data credential issuance and renewal', () => {
+  const secret = 'd'.repeat(48);
+  const start = Date.parse('2026-09-29T12:00:00Z');
+  const env = {
+    EXECUTION_DATA_ROLE_ARN: 'arn:aws:iam::123456789012:role/execution-data',
+  };
+  const grant = signExecutionDataGrant({ executionId: 'A' }, secret, {
+    now: () => start,
+  });
+  const sts = () => ({
+    send: vi.fn(async ({ input }) => ({
+      Credentials: {
+        AccessKeyId: 'test-access',
+        SecretAccessKey: 'test-secret',
+        SessionToken: 'test-session',
+        Expiration: new Date(start + input.DurationSeconds * 1000),
+      },
+    })),
+  });
+
+  it('tags the session with the signed execution, ignoring caller-supplied role or policy', async () => {
+    const stsClient = sts();
+    const ssmClient = { send: vi.fn() };
+    const result = await authorizeExecutionDataRequest(
+      {
+        grant,
+        executionId: 'A',
+        policy: '*',
+        roleArn: 'untrusted',
+        tags: [{ Key: 'x' }],
+      },
+      { secret, env, stsClient, ssmClient, now: () => start },
+    );
+    const { input } = stsClient.send.mock.calls[0][0];
+    expect(input).toEqual({
+      RoleArn: env.EXECUTION_DATA_ROLE_ARN,
+      RoleSessionName: 'exec-A',
+      DurationSeconds: 3600,
+      Tags: [{ Key: 'execution_id', Value: 'A' }],
+    });
+    expect(ssmClient.send).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      executionId: 'A',
+      credentials: { sessionToken: 'test-session' },
+    });
+  });
+
+  it.each(['6099969a-c67a-4bdd-8557-8f87350bf18d', 'A'.repeat(59)])(
+    'includes the execution ID in the session name when it fits: %s',
+    async (executionId) => {
+      const stsClient = sts();
+      await authorizeExecutionDataRequest(
+        {
+          executionId,
+          grant: signExecutionDataGrant({ executionId }, secret, { now: () => start }),
+        },
+        { secret, env, stsClient, now: () => start },
+      );
+      expect(stsClient.send.mock.calls[0][0].input.RoleSessionName).toBe(`exec-${executionId}`);
+    },
+  );
+
+  it('keeps long accepted IDs distinct within the STS session-name limit', async () => {
+    const stsClient = sts();
+    const executionIds = ['A'.repeat(60), `${'A'.repeat(127)}B`, `${'A'.repeat(127)}C`];
+    for (const executionId of executionIds) {
+      await authorizeExecutionDataRequest(
+        {
+          executionId,
+          grant: signExecutionDataGrant({ executionId }, secret, { now: () => start }),
+        },
+        { secret, env, stsClient, now: () => start },
+      );
+    }
+    const requests = stsClient.send.mock.calls.map(([command]) => command.input);
+    const names = requests.map((request) => request.RoleSessionName);
+    expect(new Set(names).size).toBe(executionIds.length);
+    for (const name of names) {
+      expect(name).toMatch(/^exec-[A-Za-z0-9_-]+$/);
+      expect(name.length).toBeLessThanOrEqual(64);
+    }
+    expect(requests.map((request) => request.Tags)).toEqual(
+      executionIds.map((executionId) => [{ Key: 'execution_id', Value: executionId }]),
+    );
+  });
+
+  it('renews within the lease and refuses after it expires, before STS', async () => {
+    const stsClient = sts();
+    await authorizeExecutionDataRequest(
+      { grant, executionId: 'A' },
+      { secret, env, stsClient, now: () => start + 7.9 * 3600_000 },
+    );
+    expect(stsClient.send).toHaveBeenCalledTimes(1);
+    await expect(
+      authorizeExecutionDataRequest(
+        { grant, executionId: 'A' },
+        { secret, env, stsClient, now: () => start + 8 * 3600_000 },
+      ),
+    ).rejects.toThrow('invalid or expired');
+    expect(stsClient.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a request to use or renew A authorization for B before STS', async () => {
+    const stsClient = sts();
+    await expect(
+      authorizeExecutionDataRequest(
+        { grant, executionId: 'B' },
+        { secret, env, stsClient, now: () => start },
+      ),
+    ).rejects.toThrow('scope mismatch');
+    expect(stsClient.send).not.toHaveBeenCalled();
+  });
+});
 
 describe('credential broker authorization', () => {
   beforeEach(() => {

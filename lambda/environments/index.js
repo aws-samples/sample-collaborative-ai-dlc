@@ -27,7 +27,7 @@ import {
   requireUser,
   responseError,
 } from './request.js';
-import { createEnvironmentStore } from './store.js';
+import { createEnvironmentStore, usesExecutionDataScope } from './store.js';
 import { createToolStore } from './tool-store.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -147,6 +147,8 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
   const flattenedRecipe = catalogRecipe
     ? revision.flattenedRecipe
     : applyToolPrerequisites(revision.flattenedRecipe);
+  // Resolve the pinned build input, not any stale capability on the draft.
+  const executionDataScoped = await usesExecutionDataScope(store, { recipe });
   const context = catalogRecipe
     ? generateCatalogEnvironmentBuildContext({
         environment,
@@ -168,6 +170,7 @@ const startBuild = async ({ store, environment, revision, actor, deps }) => {
       status: 'QUEUED',
       recipe,
       flattenedRecipe,
+      executionDataScoped,
       contextPrefix: prefix,
       generatedDockerfile: context.dockerfile,
       failure: null,

@@ -354,7 +354,9 @@ export const buildStagePrompt = ({
 // cannot restore the selected user's token. Custom MCP `${VAR}` refs use their
 // own non-reserved names and remain intact.
 export const CUSTOM_MCP_AUTH_ENV_SCRUB = Object.freeze(
-  Object.fromEntries(AGENT_CREDENTIAL_ENV_NAMES.map((name) => [name, ''])),
+  Object.fromEntries(
+    [...AGENT_CREDENTIAL_ENV_NAMES, 'V2_EXECUTION_DATA_GRANT'].map((name) => [name, '']),
+  ),
 );
 
 const scrubCustomMcpAuth = (customServers = {}) =>
@@ -435,6 +437,7 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         // byte-identical.
         ...(scope.agentRef ? { V2_AGENT_REF: scope.agentRef } : {}),
         V2_PROCESS_TABLE: env.V2_PROCESS_TABLE ?? '',
+        CREDENTIAL_BROKER_FUNCTION: env.CREDENTIAL_BROKER_FUNCTION ?? '',
         // Local E2E only. Production leaves this empty and uses the normal AWS
         // endpoint; the MCP child does not reliably inherit arbitrary CLI env.
         DYNAMODB_LOCAL_ENDPOINT: env.DYNAMODB_LOCAL_ENDPOINT ?? '',
@@ -643,6 +646,8 @@ const FULL_REF_TOKEN = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 // this list (a user-configured server must not silently inherit runtime
 // credentials).
 const CODEX_AIDLC_FORWARD_ENV = [
+  // Forward the lease by name only; never serialize it to workspace/config.
+  'V2_EXECUTION_DATA_GRANT',
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',

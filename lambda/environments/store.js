@@ -32,6 +32,28 @@ const revisionStatusIndex = (status, updatedAt, environmentId, revisionId) => ({
   GSI1SK: `${updatedAt}#${environmentId}#${revisionId}`,
 });
 
+// New builds record this capability on their own revision. Walk ancestry only
+// for historical, unmarked revisions; an existing unmarked Standard core is
+// legacy, but missing provenance must never select the broad runtime role.
+export const usesExecutionDataScope = async (store, revision) => {
+  let current = revision;
+  for (let depth = 0; current && depth < 10; depth += 1) {
+    if (typeof current.executionDataScoped === 'boolean') return current.executionDataScoped;
+    if (current.executionDataScoped !== undefined) break;
+    if (current.environmentId === 'standard') return false;
+    const base = current.recipe?.base;
+    if (!base?.environmentId || !base?.revisionId) break;
+    current = await store.getRevision(base.environmentId, base.revisionId);
+    if (current?.environmentId !== base.environmentId || current?.revisionId !== base.revisionId) {
+      break;
+    }
+  }
+  throw Object.assign(new Error('Execution data scope cannot be resolved from the revision base'), {
+    statusCode: 409,
+    code: 'EXECUTION_DATA_SCOPE_UNRESOLVED',
+  });
+};
+
 export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
   if (!ddb) throw new Error('createEnvironmentStore requires a DynamoDB DocumentClient');
   const table = () => tableName ?? process.env.ENVIRONMENT_REGISTRY_TABLE;
@@ -305,6 +327,16 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
   const updateRevision = async (environmentId, revisionId, patch, { fromStatus = null } = {}) => {
     const existing = await getRevision(environmentId, revisionId);
     if (!existing) throw new Error('Environment revision not found');
+    if (Object.hasOwn(patch, 'executionDataScoped')) {
+      if (typeof patch.executionDataScoped !== 'boolean') {
+        throw new Error('Execution data scope must be a boolean');
+      }
+      if (existing.status !== 'DRAFT') {
+        throw Object.assign(new Error('Execution data scope is immutable after queuing'), {
+          statusCode: 409,
+        });
+      }
+    }
     if (
       existing.status !== 'DRAFT' &&
       (Object.hasOwn(patch, 'recipe') || Object.hasOwn(patch, 'flattenedRecipe'))
@@ -327,6 +359,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       'status',
       'recipe',
       'flattenedRecipe',
+      'executionDataScoped',
       'buildId',
       'buildArn',
       'buildLogUrl',
@@ -644,6 +677,8 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         runtimeArn: template.id === 'standard' ? coreRuntimeArn : null,
         runtimeVersion: template.id === 'standard' ? coreRuntimeVersion : null,
         runtimeEndpoint: null,
+        // Derived revisions inherit the pinned base capability when queued.
+        ...(template.id === 'standard' ? { executionDataScoped: true } : {}),
         generatedDockerfile: revisionDockerfile(recipe, flattenedRecipe),
         verification:
           template.id === 'standard'
@@ -742,6 +777,8 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
       runtimeArn: coreRuntimeArn,
       runtimeVersion: coreRuntimeVersion,
       runtimeEndpoint: null,
+      // Read by status.js to pick the managed runtime role for dependents.
+      executionDataScoped: true,
       generatedDockerfile: revisionDockerfile(recipe, flattenedRecipe),
       verification: {
         status: 'PASSED',

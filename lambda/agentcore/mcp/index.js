@@ -21,12 +21,12 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { ddb, openGraph, broadcastToIntent } from '../clients.js';
+import { openGraph, broadcastToIntent } from '../clients.js';
+import { createExecutionStore, EXECUTION_DATA_GRANT_ENV } from '../execution-store.js';
 import { createGraphWriter, closeGraphSource } from './graph-writer.js';
 import { createGraphManager } from './graph-manager.js';
 import { createProcessBridge } from './process-bridge.js';
 import { buildToolHandlers, registerTools } from './server.js';
-import { createProcessStore } from '../../shared/v2-process-store.js';
 
 // The stage policy arrives as JSON on the trusted container ENV, exactly like the
 // rest of the scope: the agent cannot influence which checkpoints it must pass.
@@ -76,10 +76,18 @@ const scopeFromEnv = (env = process.env) => ({
   policy: policyFromEnv(env),
 });
 
-export const startMcpServer = async ({ env = process.env } = {}) => {
+export const startMcpServer = async ({ env = process.env, store: injectedStore } = {}) => {
   const scope = scopeFromEnv(env);
   const role =
     env.V2_MCP_ROLE === 'reviewer' || env.V2_MCP_ROLE === 'reader' ? env.V2_MCP_ROLE : 'author';
+  const store =
+    injectedStore !== undefined
+      ? injectedStore
+      : await createExecutionStore({
+          executionId: scope.executionId,
+          grant: env[EXECUTION_DATA_GRANT_ENV],
+          env,
+        });
 
   const graph = createGraphManager({
     openGraph,
@@ -87,7 +95,6 @@ export const startMcpServer = async ({ env = process.env } = {}) => {
     closeGraphSource,
     scope,
   });
-  const store = createProcessStore({ ddb, tableName: env.V2_PROCESS_TABLE });
   const bridge = createProcessBridge({
     store,
     graphWriter: {

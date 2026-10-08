@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { dispatchPersona, composePersonaPrompt } from '../persona-dispatch.js';
+import { EXECUTION_DATA_GRANT_ENV } from '../execution-store.js';
 
 // A child mock that resolves 'close' with exit code 0 and records whatever was
 // piped to stdin — every driver here (claude/kiro/opencode) delivers its prompt
@@ -45,6 +46,32 @@ const baseDeps = (overrides = {}) => ({
   sectionIndex: null,
   ids: () => 'sess-1',
   ...overrides,
+});
+
+describe('dispatchPersona — execution data grant', () => {
+  it.each(['claude', 'kiro', 'opencode', 'codex'])(
+    'passes the invocation grant to the %s child',
+    async (cli) => {
+      let childEnv;
+      const result = await dispatchPersona({
+        ...baseDeps({
+          cli,
+          env: { [EXECUTION_DATA_GRANT_ENV]: 'invocation-data-grant' },
+          spawnFn: (_command, _args, options) => {
+            childEnv = options.env;
+            return okSpawn();
+          },
+          withOpenCodeStore: async ({ operation }) => operation(),
+        }),
+        role: 'reviewer',
+        personaScope: { agentRef: 'reviewer' },
+        brief: 'Review the artifacts.',
+      });
+
+      expect(result.ok).toBe(true);
+      expect(childEnv[EXECUTION_DATA_GRANT_ENV]).toBe('invocation-data-grant');
+    },
+  );
 });
 
 describe('dispatchPersona — role: reviewer', () => {

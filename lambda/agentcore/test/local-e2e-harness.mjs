@@ -29,7 +29,7 @@ const command = process.argv[2];
 const cli = process.argv[3] || process.env.E2E_CLI;
 const tableName = process.env.V2_PROCESS_TABLE || 'aidlc-local-e2e';
 const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
-const mcpEntry = process.env.V2_MCP_ENTRY || '/opt/agentcore/mcp/index.js';
+const mcpEntry = process.env.V2_MCP_ENTRY || '/opt/agentcore/test/fixtures/mcp-stdio-entry.js';
 
 const loadSecretFile = async () => {
   const filename = process.env.E2E_SECRET_FILE || '/run/secrets/aidlc-e2e.env';

@@ -135,7 +135,8 @@ module "dynamodb_kms_runtime_access" {
   kms_key_arn = var.kms_key_arn
   dns_suffix  = local.dns_suffix
   role_names = {
-    agentcore = aws_iam_role.agentcore.name
+    agentcore        = aws_iam_role.agentcore.name
+    agentcore_scoped = aws_iam_role.agentcore_scoped.name
   }
 }
 
@@ -359,120 +360,168 @@ resource "aws_iam_role" "agentcore" {
   tags = var.tags
 }
 
+# Runtimes whose image reads execution state through broker-issued credentials.
+# The legacy role above keeps its execution-table grant only for runtimes built
+# from an earlier core image (pinned managed-environment revisions and sessions
+# started before the upgrade); new code never relies on it.
+resource "aws_iam_role" "agentcore_scoped" {
+  name = "${var.project_name}-agentcore-scoped-${var.environment}"
+
+  assume_role_policy = aws_iam_role.agentcore.assume_role_policy
+
+  tags = var.tags
+}
+
+locals {
+  # Shared blocks and realtime connections, used by both runtime roles.
+  agentcore_shared_tables = compact([
+    var.blocks_table_arn,
+    var.blocks_table_arn != "" ? "${var.blocks_table_arn}/index/*" : "",
+    var.connections_table_arn,
+    var.connections_table_arn != "" ? "${var.connections_table_arn}/index/*" : "",
+  ])
+  agentcore_dynamodb_actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:ConditionCheckItem"]
+
+  # Everything except DynamoDB, identical for both runtime roles.
+  agentcore_policy_statements = concat(
+    [
+      {
+        # Pull the container image.
+        Effect = "Allow"
+        Action = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
+        Resource = [
+          aws_ecr_repository.agentcore.arn,
+          aws_ecr_repository.managed_environments.arn,
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        # Git and agent credentials are fetched just-in-time from the broker.
+        # Provider review operations use the token-owning source-control service.
+        Effect = "Allow"
+        Action = ["lambda:InvokeFunction"]
+        Resource = [
+          local.credential_broker_function_arn,
+          local.source_control_function_arn,
+        ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
+        Resource = "arn:${local.partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
+      },
+      {
+        # Business graph (Neptune) read + write.
+        Effect   = "Allow"
+        Action   = ["neptune-db:ReadDataViaQuery", "neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery", "neptune-db:connect"]
+        Resource = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
+      },
+      {
+        # Block bodies + the commit-pinned runtime snapshot (read).
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"]
+        Resource = [var.artifacts_bucket_arn, "${var.artifacts_bucket_arn}/*"]
+      },
+    ],
+    var.websocket_execution_arn != "" ? [
+      {
+        # Push live output/questions to the realtime websocket.
+        Effect   = "Allow"
+        Action   = ["execute-api:ManageConnections"]
+        Resource = "${var.websocket_execution_arn}/*"
+      },
+    ] : [],
+    [
+      {
+        # Read non-secret agent model settings. Agent credentials are resolved
+        # only through the credential broker using a signed invocation grant.
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParameters"]
+        Resource = [
+          aws_ssm_parameter.cli_models.arn,
+          aws_ssm_parameter.tier_models.arn,
+        ]
+      },
+      {
+        # MCP secrets: at stage start (and verify) the runtime resolves the
+        # `${VAR}` refs in a config from SSM SecureString, tier-scoped — global at
+        # {prefix}/mcp-secrets/*, project at {prefix}/projects/<id>/mcp-secrets/*.
+        # WithDecryption uses the account-default aws/ssm key, so no explicit
+        # kms:Decrypt statement is needed (implicit for the reader).
+        Effect = "Allow"
+        Action = ["ssm:GetParameter", "ssm:GetParameters"]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+        ]
+      },
+      {
+        # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
+        # background job completes/heartbeats the durable callback the
+        # orchestrator suspended on. ARN constructed from naming convention
+        # (module dependency direction forbids passing the function ARN in:
+        # api → agentcore would become a cycle). Mirrors the intents policy.
+        Effect = "Allow"
+        Action = [
+          "lambda:SendDurableExecutionCallbackSuccess",
+          "lambda:SendDurableExecutionCallbackFailure",
+          "lambda:SendDurableExecutionCallbackHeartbeat",
+        ]
+        Resource = [
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
+          "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
+        ]
+      },
+    ],
+  )
+}
+
 resource "aws_iam_role_policy" "agentcore" {
   name = "agentcore-policy"
   role = aws_iam_role.agentcore.id
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = concat(
-      [
-        {
-          # Pull the container image.
-          Effect = "Allow"
-          Action = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage", "ecr:BatchCheckLayerAvailability"]
-          Resource = [
-            aws_ecr_repository.agentcore.arn,
-            aws_ecr_repository.managed_environments.arn,
-          ]
-        },
-        {
-          Effect   = "Allow"
-          Action   = ["ecr:GetAuthorizationToken"]
-          Resource = "*"
-        },
-        {
-          # Git and agent credentials are fetched just-in-time from the broker.
-          # Provider review operations use the token-owning source-control service.
-          Effect = "Allow"
-          Action = ["lambda:InvokeFunction"]
-          Resource = [
-            local.credential_broker_function_arn,
-            local.source_control_function_arn,
-          ]
-        },
-        {
-          Effect   = "Allow"
-          Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
-          Resource = "arn:${local.partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
-        },
-        {
-          # Business graph (Neptune) read + write.
-          Effect   = "Allow"
-          Action   = ["neptune-db:ReadDataViaQuery", "neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery", "neptune-db:connect"]
-          Resource = "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*"
-        },
-        {
-          # v2 process state table (+ its indexes) and the blocks table (read).
-          Effect = "Allow"
-          Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:ConditionCheckItem"]
-          Resource = compact([
-            aws_dynamodb_table.v2_executions.arn,
-            "${aws_dynamodb_table.v2_executions.arn}/index/*",
-            var.blocks_table_arn,
-            var.blocks_table_arn != "" ? "${var.blocks_table_arn}/index/*" : "",
-            var.connections_table_arn,
-            var.connections_table_arn != "" ? "${var.connections_table_arn}/index/*" : "",
-          ])
-        },
-        {
-          # Block bodies + the commit-pinned runtime snapshot (read).
-          Effect   = "Allow"
-          Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"]
-          Resource = [var.artifacts_bucket_arn, "${var.artifacts_bucket_arn}/*"]
-        },
-      ],
-      var.websocket_execution_arn != "" ? [
-        {
-          # Push live output/questions to the realtime websocket.
-          Effect   = "Allow"
-          Action   = ["execute-api:ManageConnections"]
-          Resource = "${var.websocket_execution_arn}/*"
-        },
-      ] : [],
-      [
-        {
-          # Read non-secret agent model settings. Agent credentials are resolved
-          # only through the credential broker using a signed invocation grant.
-          Effect = "Allow"
-          Action = ["ssm:GetParameter", "ssm:GetParameters"]
-          Resource = [
-            aws_ssm_parameter.cli_models.arn,
-            aws_ssm_parameter.tier_models.arn,
-          ]
-        },
-        {
-          # MCP secrets: at stage start (and verify) the runtime resolves the
-          # `${VAR}` refs in a config from SSM SecureString, tier-scoped — global at
-          # {prefix}/mcp-secrets/*, project at {prefix}/projects/<id>/mcp-secrets/*.
-          # WithDecryption uses the account-default aws/ssm key, so no explicit
-          # kms:Decrypt statement is needed (implicit for the reader).
-          Effect = "Allow"
-          Action = ["ssm:GetParameter", "ssm:GetParameters"]
-          Resource = [
-            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
-            "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
-          ]
-        },
-        {
-          # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
-          # background job completes/heartbeats the durable callback the
-          # orchestrator suspended on. ARN constructed from naming convention
-          # (module dependency direction forbids passing the function ARN in:
-          # api → agentcore would become a cycle). Mirrors the intents policy.
-          Effect = "Allow"
-          Action = [
-            "lambda:SendDurableExecutionCallbackSuccess",
-            "lambda:SendDurableExecutionCallbackFailure",
-            "lambda:SendDurableExecutionCallbackHeartbeat",
-          ]
-          Resource = [
-            "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}",
-            "arn:${local.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-v2-orchestrator-${var.environment}:*",
-          ]
-        },
-      ],
-    )
+    Statement = concat(local.agentcore_policy_statements, [
+      {
+        # v2 process state table (+ its indexes) and the shared tables.
+        Effect = "Allow"
+        Action = local.agentcore_dynamodb_actions
+        Resource = concat(
+          [aws_dynamodb_table.v2_executions.arn, "${aws_dynamodb_table.v2_executions.arn}/index/*"],
+          local.agentcore_shared_tables,
+        )
+      },
+    ])
+  })
+}
+
+resource "aws_iam_role_policy" "agentcore_scoped" {
+  name = "agentcore-policy"
+  role = aws_iam_role.agentcore_scoped.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat(local.agentcore_policy_statements, [
+      {
+        # Execution data uses broker-issued credentials in a separate role.
+        Effect   = "Allow"
+        Action   = local.agentcore_dynamodb_actions
+        Resource = local.agentcore_shared_tables
+      },
+      {
+        # Includes agent-generated SDK calls and the local credential endpoint.
+        # Explicit deny also prevents a table resource policy from restoring
+        # execution-table access to this ambient runtime identity.
+        Effect   = "Deny"
+        Action   = ["dynamodb:*"]
+        Resource = [aws_dynamodb_table.v2_executions.arn, "${aws_dynamodb_table.v2_executions.arn}/index/*"]
+      },
+    ])
   })
 }
 
@@ -703,8 +752,10 @@ locals {
 }
 
 resource "awscc_bedrockagentcore_runtime" "stage_executor" {
+  depends_on = [aws_iam_role_policy.agentcore_scoped, module.dynamodb_kms_runtime_access]
+
   agent_runtime_name = replace("${var.project_name}_agentcore_${var.environment}", "-", "_")
-  role_arn           = aws_iam_role.agentcore.arn
+  role_arn           = aws_iam_role.agentcore_scoped.arn
   # The container speaks the HTTP contract (POST /invocations + GET /ping on 8080).
   protocol_configuration = "HTTP"
 

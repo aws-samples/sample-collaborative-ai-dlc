@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createStatusHandler, runtimeNameFor } from '../status.js';
+import { usesExecutionDataScope } from '../store.js';
 
 const environment = {
   environmentId: 'custom',
@@ -11,6 +12,7 @@ const revision = {
   revisionId: 'r-1',
   status: 'BUILDING',
   runtimeCompatibilityVersion: '1',
+  executionDataScoped: false,
 };
 
 const mutableStore = (initialRevision = revision) => {
@@ -152,6 +154,140 @@ describe('managed environment status handler', () => {
       ManagedEnvironmentRevision: 'r-1',
     });
     expect(runtimeInput.clientToken).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  describe('runtime role', () => {
+    const standardRevision = (revisionId, executionDataScoped) => ({
+      environmentId: 'standard',
+      revisionId,
+      recipe: { base: { environmentId: 'core', revisionId } },
+      ...(executionDataScoped ? { executionDataScoped } : {}),
+    });
+    const onBase = (environmentId, revisionId, base) => ({
+      environmentId,
+      revisionId,
+      recipe: {
+        base: {
+          environmentId: base.environmentId,
+          revisionId: base.revisionId,
+        },
+      },
+    });
+    const storeWith = (...revisions) => ({
+      getRevision: vi.fn(
+        async (environmentId, revisionId) =>
+          revisions.find(
+            (candidate) =>
+              candidate.environmentId === environmentId && candidate.revisionId === revisionId,
+          ) ?? null,
+      ),
+    });
+
+    it('scopes images built on an isolation-aware Standard core', async () => {
+      const core = standardRevision('core-1-new', true);
+      const parent = onBase('team-base', 'r-2', core);
+      const child = onBase('custom', 'r-3', parent);
+      await expect(usesExecutionDataScope(storeWith(core, parent), child)).resolves.toBe(true);
+    });
+
+    it.each([true, false])(
+      'uses a stamped capability (%s) without reading ancestry',
+      async (scoped) => {
+        const store = storeWith();
+        await expect(
+          usesExecutionDataScope(store, { ...revision, executionDataScoped: scoped }),
+        ).resolves.toBe(scoped);
+        expect(store.getRevision).not.toHaveBeenCalled();
+      },
+    );
+
+    it('keeps the legacy role for images on a known older core', async () => {
+      const oldCore = standardRevision('core-1-old');
+      await expect(
+        usesExecutionDataScope(storeWith(oldCore), onBase('custom', 'r-1', oldCore)),
+      ).resolves.toBe(false);
+    });
+
+    it('rejects missing base revisions and missing ancestry', async () => {
+      const oldCore = standardRevision('core-1-old');
+      await expect(
+        usesExecutionDataScope(storeWith(), onBase('custom', 'r-1', oldCore)),
+      ).rejects.toMatchObject({ code: 'EXECUTION_DATA_SCOPE_UNRESOLVED' });
+      await expect(
+        usesExecutionDataScope(storeWith(), { environmentId: 'custom' }),
+      ).rejects.toMatchObject({ code: 'EXECUTION_DATA_SCOPE_UNRESOLVED' });
+    });
+
+    it('stops on a base cycle', async () => {
+      const a = {
+        environmentId: 'a',
+        revisionId: 'r',
+        recipe: { base: { environmentId: 'b', revisionId: 'r' } },
+      };
+      const b = {
+        environmentId: 'b',
+        revisionId: 'r',
+        recipe: { base: { environmentId: 'a', revisionId: 'r' } },
+      };
+      await expect(usesExecutionDataScope(storeWith(a, b), a)).rejects.toMatchObject({
+        code: 'EXECUTION_DATA_SCOPE_UNRESOLVED',
+      });
+    });
+
+    it('does not create a runtime when an unmarked revision has unresolved ancestry', async () => {
+      const store = mutableStore({ ...revision, executionDataScoped: undefined });
+      const controlClient = { send: vi.fn() };
+      const handler = createStatusHandler({
+        store,
+        ecrClient: imageClient({}),
+        controlClient,
+        runtimeClient: { send: vi.fn() },
+      });
+      await handler(buildEvent);
+      expect(controlClient.send).not.toHaveBeenCalled();
+      expect(store.current).toMatchObject({
+        status: 'FAILED',
+        failure: {
+          reason: 'runtime_creation_failed',
+          detail: 'Execution data scope cannot be resolved from the revision base',
+        },
+      });
+    });
+
+    it('creates the runtime with the role selected for its base image', async () => {
+      vi.stubEnv('MANAGED_RUNTIME_ROLE_ARN', 'arn:aws:iam::111111111111:role/legacy');
+      vi.stubEnv('MANAGED_RUNTIME_SCOPED_ROLE_ARN', 'arn:aws:iam::111111111111:role/scoped');
+      try {
+        const core = standardRevision('core-1-new', true);
+        const scoped = {
+          ...revision,
+          executionDataScoped: true,
+          recipe: {
+            base: { environmentId: 'standard', revisionId: 'core-1-new' },
+          },
+        };
+        for (const [candidate, expected] of [
+          [scoped, 'arn:aws:iam::111111111111:role/scoped'],
+          [revision, 'arn:aws:iam::111111111111:role/legacy'],
+        ]) {
+          const store = mutableStore(candidate);
+          store.getRevision.mockImplementation(async (environmentId) =>
+            environmentId === 'standard' ? core : store.current,
+          );
+          const controlClient = { send: vi.fn().mockResolvedValue({}) };
+          const handler = createStatusHandler({
+            store,
+            ecrClient: imageClient({}),
+            controlClient,
+            runtimeClient: { send: vi.fn() },
+          });
+          await handler(buildEvent);
+          expect(controlClient.send.mock.calls[0][0].input.roleArn).toBe(expected);
+        }
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
   });
 
   it('waits for runtime readiness before creating the endpoint', async () => {

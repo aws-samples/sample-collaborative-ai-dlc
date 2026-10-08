@@ -2681,6 +2681,7 @@ describe('POST /compose — composer sessions', () => {
         methodologyPins,
       });
       expect(typeof payload.agentCredentialGrant).toBe('string');
+      expect(typeof payload.executionDataGrant).toBe('string');
       expect(payload.prompt).toContain('Do something ambiguous');
     } finally {
       delete process.env.AGENTCORE_RUNTIME_ARN;

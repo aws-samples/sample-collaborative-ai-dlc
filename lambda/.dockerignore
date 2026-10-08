@@ -14,6 +14,9 @@ test
 agentcore/test/*
 !agentcore/test/local-e2e-config.js
 !agentcore/test/local-e2e-harness.mjs
+!agentcore/test/fixtures/
+agentcore/test/fixtures/*
+!agentcore/test/fixtures/mcp-stdio-entry.js
 !agentcore/test/helpers/
 agentcore/test/helpers/*
 !agentcore/test/helpers/v2-table.js

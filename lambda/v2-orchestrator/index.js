@@ -35,8 +35,11 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
-import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
-import { commandDefinition } from '../shared/agent-command-registry.js';
+import {
+  issueAgentCredentialGrant,
+  issueExecutionDataGrant,
+} from '../shared/agent-credential-grants.js';
+import { commandDefinition, executionDataId } from '../shared/agent-command-registry.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { eventTypeOf } from '../shared/v2-process-keys.js';
@@ -127,18 +130,24 @@ const sessionIdFor = (intentId) => `aidlc-intent-${intentId}`.padEnd(33, '0');
 
 // One AgentCore /invocations call. Returns the parsed JSON body the command
 // handler returned (init-ws / run-stage). Throws on a non-2xx transport.
-const defaultInvokeRuntime = async (
+export const defaultInvokeRuntime = async (
   payload,
   sessionId,
   target = { agentRuntimeArn: RUNTIME_ARN() },
 ) => {
+  let invocationPayload = payload;
+  const executionId = executionDataId(payload);
+  if (executionId) {
+    const executionDataGrant = await issueExecutionDataGrant(ssm, { executionId });
+    invocationPayload = { ...payload, executionDataGrant };
+  }
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
       ...target,
       runtimeSessionId: sessionId,
       contentType: 'application/json',
       accept: 'application/json',
-      payload: Buffer.from(JSON.stringify(payload)),
+      payload: Buffer.from(JSON.stringify(invocationPayload)),
     }),
   );
   const text = res.response ? await streamToString(res.response) : '';

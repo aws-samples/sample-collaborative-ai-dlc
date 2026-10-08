@@ -470,7 +470,7 @@ resource "aws_iam_role_policy" "status" {
       {
         Effect   = "Allow"
         Action   = ["iam:PassRole"]
-        Resource = var.runtime_role_arn
+        Resource = [var.runtime_role_arn, var.runtime_scoped_role_arn]
         Condition = {
           StringEquals = {
             "iam:PassedToService" = "bedrock-agentcore.${local.dns_suffix}"
@@ -515,6 +515,7 @@ module "status_lambda" {
     ENVIRONMENT_ECR_REPOSITORY_NAME = var.environment_repository_name
     ENVIRONMENT_ECR_REPOSITORY_URI  = var.environment_repository_url
     MANAGED_RUNTIME_ROLE_ARN        = var.runtime_role_arn
+    MANAGED_RUNTIME_SCOPED_ROLE_ARN = var.runtime_scoped_role_arn
     MANAGED_RUNTIME_NETWORK_MODE    = var.runtime_network_mode
     MANAGED_RUNTIME_SUBNETS         = jsonencode(var.runtime_subnet_ids)
     MANAGED_RUNTIME_SECURITY_GROUPS = jsonencode(var.runtime_security_group_ids)

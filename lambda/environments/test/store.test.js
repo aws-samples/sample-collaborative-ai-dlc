@@ -96,8 +96,11 @@ describe('environment registry store', () => {
       status: 'READY',
       imageDigest: newDigest,
       runtimeCompatibilityVersion: '2',
+      executionDataScoped: true,
       verification: { status: 'PASSED', source: 'core-runtime' },
     });
+    // The pre-upgrade core stays unscoped: dependents built on it keep the legacy role.
+    expect(items.get('ENV#standard|REV#core-1').executionDataScoped).toBeUndefined();
     expect(items.get('ENV#standard|META')).toMatchObject({
       publishedRevisionId: 'core-1',
       currentRevisionId: `core-2-${'b'.repeat(12)}`,
@@ -279,6 +282,7 @@ describe('environment registry store', () => {
         status: 'QUEUED',
         recipe,
         flattenedRecipe: recipe,
+        executionDataScoped: true,
       },
       { fromStatus: 'DRAFT' },
     );
@@ -289,6 +293,7 @@ describe('environment registry store', () => {
         ':status': 'QUEUED',
         ':recipe': recipe,
         ':flattenedRecipe': recipe,
+        ':executionDataScoped': true,
         ':fromStatus': 'DRAFT',
       },
     });
@@ -313,6 +318,24 @@ describe('environment registry store', () => {
     ).rejects.toMatchObject({
       statusCode: 409,
     });
+    expect(ddb.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects execution data capability changes after a revision is queued', async () => {
+    const ddb = {
+      send: vi.fn().mockResolvedValue({
+        Item: {
+          environmentId: 'custom',
+          revisionId: 'r-1',
+          status: 'BUILDING',
+          executionDataScoped: true,
+        },
+      }),
+    };
+    const store = createEnvironmentStore({ ddb, tableName: 'registry' });
+    await expect(
+      store.updateRevision('custom', 'r-1', { executionDataScoped: false }),
+    ).rejects.toThrow('Execution data scope is immutable after queuing');
     expect(ddb.send).toHaveBeenCalledTimes(1);
   });
 
