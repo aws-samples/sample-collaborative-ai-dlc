@@ -340,6 +340,15 @@ describe('role gating', () => {
 });
 
 describe('registerTools', () => {
+  it.each(['admin', '', undefined])(
+    'rejects unsupported role %s without registering tools',
+    (role) => {
+      const server = { tool: vi.fn() };
+      expect(() => registerTools({ server, handlers: {}, role })).toThrow('Invalid MCP role');
+      expect(server.tool).not.toHaveBeenCalled();
+      expect(() => handlersForRole({}, role)).toThrow('Invalid MCP role');
+    },
+  );
   // A fake MCP server + a minimal zod stand-in (registerTools only needs the
   // schema-shape values to exist; it never invokes zod here).
   const fakeZod = {

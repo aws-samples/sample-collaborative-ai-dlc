@@ -413,6 +413,7 @@ export const createDiscussionAssistStart = ({
           projectId,
           stageInstanceId: null,
           role: 'reader',
+          mode: 'discussion',
           discussionId,
           messageId,
         };

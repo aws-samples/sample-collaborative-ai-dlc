@@ -404,7 +404,8 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
         // this on every gate/output/metric/event row it writes. Empty → null.
         V2_UNIT_SLUG: scope.unitSlug ?? '',
         V2_RESOLVED_MODEL: scope.model ?? '',
-        V2_MCP_ROLE: scope.role ?? 'author',
+        V2_MCP_ROLE: scope.role ?? '',
+        V2_MCP_MODE: scope.mode ?? 'stage',
         // The resolved release policy, so the MCP server registers the checkpoint
         // tools the policy requires and withholds the ones it turns off. Written
         // ONLY when the plan resolved a policy, so an unpinned or 2.3.3-era run

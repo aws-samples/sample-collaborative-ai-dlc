@@ -104,6 +104,73 @@ describe('createGraphWriter — guards', () => {
   });
 });
 
+describe('project knowledge ownership', () => {
+  it.each([
+    ['TeamKnowledge', 'HAS_KNOWLEDGE', 'recordTeamKnowledge', 'getTeamKnowledge'],
+    ['LearningRule', 'HAS_LEARNING', 'recordLearningRule', 'getLearningRules'],
+  ])(
+    '%s IDs are project-local, idempotent, and shared across intents',
+    async (label, edge, write, read) => {
+      const foreign = createGraphWriter({
+        g,
+        scope: { ...SCOPE, projectId: 'proj-2', intentId: 'intent-2' },
+      });
+      const sibling = createGraphWriter({ g, scope: { ...SCOPE, intentId: 'intent-3' } });
+      await writer[write]({ id: 'same-id', content: 'ours' });
+      await foreign[write]({ id: 'same-id', content: 'theirs' });
+      await sibling[write]({ id: 'same-id', content: 'shared update' });
+      expect(await writer[read]()).toMatchObject([
+        { content: 'shared update', project_id: 'proj-1' },
+      ]);
+      expect(await foreign[read]()).toMatchObject([{ content: 'theirs', project_id: 'proj-2' }]);
+      expect((await g.V().hasLabel(label).count().next()).value).toBe(2);
+      expect((await g.V().has('Project', 'id', 'proj-1').outE(edge).count().next()).value).toBe(1);
+
+      // A corrupt project edge must not grant access to a foreign or ownerless row.
+      await g
+        .V()
+        .has('Project', 'id', 'proj-1')
+        .addE(edge)
+        .to(anon.V().has(label, 'project_id', 'proj-2'))
+        .next();
+      await g
+        .addV(label)
+        .property('id', 'ownerless')
+        .property('content', 'legacy')
+        .as('k')
+        .V()
+        .has('Project', 'id', 'proj-1')
+        .addE(edge)
+        .to('k')
+        .next();
+      expect(await writer[read]()).toHaveLength(1);
+      await writer[write]({ id: 'ownerless', content: 'new owned row' });
+      expect((await g.V().has(label, 'id', 'ownerless').count().next()).value).toBe(2);
+      expect(
+        await g.V().has(label, 'id', 'ownerless').hasNot('project_id').values('content').toList(),
+      ).toEqual(['legacy']);
+    },
+  );
+});
+
+describe('intent artifact access', () => {
+  it('keeps prior-stage and prior-execution artifacts accessible in the same intent', async () => {
+    await seedIntent();
+    await writer.createArtifact({ id: 'prior', artifactType: 'requirements', content: 'reusable' });
+    const nextStage = createGraphWriter({
+      g,
+      scope: { ...SCOPE, executionId: 'new-execution', stageInstanceId: 'next-stage' },
+    });
+    expect((await nextStage.getArtifact({ id: 'prior' })).content).toBe('reusable');
+    await nextStage.createArtifact({
+      id: 'next',
+      artifactType: 'design',
+      links: [{ toId: 'prior', edge: 'CONSUMES' }],
+    });
+    expect((await nextStage.getNeighbors({ id: 'next' })).map((a) => a.id)).toEqual(['prior']);
+  });
+});
+
 describe('createArtifact', () => {
   it('changes the collaboration epoch for external replacements but preserves human editing sessions', async () => {
     await seedIntent();

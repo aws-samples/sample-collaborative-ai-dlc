@@ -1798,6 +1798,9 @@ describe('runStage — LLM reviewer axis', () => {
   it('keeps Codex reviewer sessions ephemeral and persists only the author rollout', async () => {
     const persistCodexRollout = vi.fn(async () => ({ ok: true, status: 'persisted' }));
     const cleanupCodexHome = vi.fn(async () => true);
+    const materializeCodexHome = vi.fn(
+      async ({ scope }) => `/home/node/.codex-runs/${scope.role}-${scope.reviewerAgent ?? 'stage'}`,
+    );
     let invocation = 0;
     const spawnFn = vi.fn(() => {
       invocation += 1;
@@ -1830,8 +1833,7 @@ describe('runStage — LLM reviewer axis', () => {
         spawnFn,
         persistCodexRollout,
         cleanupCodexHome,
-        materializeCodexHome: async ({ scope }) =>
-          `/home/node/.codex-runs/${scope.role}-${scope.reviewerAgent ?? 'stage'}`,
+        materializeCodexHome,
         loadLibrary: async () => ({
           workflow: workflow(),
           library: libWithReviewer({ humanValidation: 'none' }),
@@ -1846,6 +1848,12 @@ describe('runStage — LLM reviewer axis', () => {
       expect.objectContaining({ threadId: 'author-thread' }),
     );
     expect(cleanupCodexHome).toHaveBeenCalledTimes(2);
+    const scopes = materializeCodexHome.mock.calls.map(([args]) => args.scope);
+    expect(scopes.map((scope) => scope.role)).toEqual(['author', 'reviewer']);
+    for (const scope of scopes) {
+      expect(scope.stageId).toBe(baseArgs.stageId);
+      expect(scope.stageInstanceId).toBeTruthy();
+    }
   });
 });
 

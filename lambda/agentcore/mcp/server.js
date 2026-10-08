@@ -284,7 +284,12 @@ const policyTools = (policy, { checkpointOwner = true } = {}) => {
   return { add, remove: policy.learnings === 'off' ? LEARNING_TOOLS : [] };
 };
 
+export const assertMcpRole = (role) => {
+  if (!['author', 'reviewer', 'reader'].includes(role)) throw new Error('Invalid MCP role');
+};
+
 export const toolsForRole = (role, stageId = null, policy = null, options = {}) => {
+  assertMcpRole(role);
   if (role === 'reader') return READ_TOOLS;
   if (role === 'reviewer') return REVIEWER_TOOLS;
   const base =
@@ -553,8 +558,8 @@ export const registerTools = ({
   z,
   env = process.env,
 }) => {
-  const schemas = toolSchemas(z, policy);
   const names = toolsForRole(role, stageId, policy, { checkpointOwner, canAsk });
+  const schemas = toolSchemas(z, policy);
   const enabled = env.V2_MCP_TRACE !== 'off';
   for (const name of names) {
     const { description, shape } = schemas[name];
