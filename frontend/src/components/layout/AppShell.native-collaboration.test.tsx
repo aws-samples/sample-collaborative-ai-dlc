@@ -37,7 +37,7 @@ const service = vi.hoisted(() => ({
 }));
 const transport = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn() }));
 const who = vi.hoisted(() => ({
-  current: { id: 'ada', username: 'ada', displayName: 'Ada', groups: [] as string[] },
+  current: { userId: 'ada', username: 'ada', displayName: 'Ada', groups: [] as string[] },
 }));
 vi.mock('@/hooks/useYjsDocument', async () => await import('@/test/collaborationFakes'));
 vi.mock(
@@ -73,6 +73,7 @@ vi.mock('@/services/realtime', () => {
   return {
     realtimeService: {
       connect: service.connect,
+      disconnect: vi.fn(),
       getStatus: () => 'connected',
       on: subscribe,
       onStatusChange: (fn: (value: any) => void) => subscribe('status', fn),
@@ -164,7 +165,7 @@ const receipt = (text: string): NativeUserReply => ({
 
 function member(name: string) {
   who.current = {
-    id: name.toLowerCase(),
+    userId: name.toLowerCase(),
     username: name.toLowerCase(),
     displayName: name,
     groups: [],
@@ -458,6 +459,94 @@ describe('task-3 structured native answers', () => {
       },
     ],
   };
+  it('freezes an uncertain shared choice and starts the revised approval with an empty draft for both members', async () => {
+    service.interaction.mockResolvedValue({ ...interaction(), pendingInput: gateInput });
+    const ada = member('Ada');
+    await within(ada.container).findByText('Request Changes');
+    const grace = member('Grace');
+    fireEvent.click(await within(grace.container).findByText('Request Changes'));
+    fireEvent.change(await within(grace.container).findByRole('textbox'), {
+      target: { value: 'Add offline mode.' },
+    });
+    const submitAda = within(ada.container).getByRole('button', { name: 'Submit Answer' });
+    await waitFor(() => expect(submitAda).toBeEnabled());
+    service.respond.mockRejectedValueOnce(new Error('Lost acknowledgement'));
+    fireEvent.click(submitAda);
+    await within(ada.container).findByText(/Your answer could not be confirmed/);
+    const frozen = structuredClone(service.respond.mock.calls[0][2]);
+    expect(frozen).toMatchObject({
+      text: 'Request Changes\n\nAdd offline mode.',
+      selection: { answers: [{ selectedOptions: [1], freeText: 'Add offline mode.' }] },
+    });
+    // Another member continues editing while Ada retries the already-frozen request.
+    fireEvent.click(within(grace.container).getByText('Approve'));
+    service.respond.mockResolvedValueOnce({
+      execution: waiting({ status: 'DISPATCHING', responsePending: true, turnSequence: 3 })
+        .execution,
+      response: receipt(frozen.text),
+    });
+    fireEvent.click(within(ada.container).getByRole('button', { name: 'Submit Answer' }));
+    await waitFor(() => expect(service.respond).toHaveBeenCalledTimes(2));
+    expect(service.respond.mock.calls[1][2]).toEqual(frozen);
+    await within(ada.container).findByText('Reply accepted. Delivery pending.');
+
+    const next = 'f'.repeat(64);
+    const revision = {
+      ...interaction(null, next),
+      sequence: 3,
+      publicationId: 'revised-publication',
+      contentSha256: '9'.repeat(64),
+      pendingInput: gateInput,
+      messages: [
+        {
+          type: 'text' as const,
+          text: 'Revised plan includes offline mode. Approve or request changes.',
+        },
+      ],
+    };
+    service.get.mockResolvedValue(
+      waiting({
+        interactionId: next,
+        publicationId: revision.publicationId,
+        turnSequence: 3,
+        revision: 12,
+      }),
+    );
+    service.publication.mockResolvedValue({
+      id: revision.publicationId,
+      sequence: 3,
+      createdAt: time,
+      files: [FILE],
+      question: null,
+      projectionStatus: 'complete',
+    });
+    service.interaction.mockResolvedValue(revision);
+    for (const view of [ada, grace]) {
+      fireEvent.click(within(view.container).getByRole('button', { name: 'Refresh status' }));
+      await within(view.container).findByText(revision.messages[0].text);
+      expect(within(view.container).getByRole('button', { name: 'Submit Answer' })).toBeDisabled();
+    }
+    expect(openedDocuments.map((d) => d.documentId)).toContain(`native-answer-${DIGEST}-${next}-3`);
+    fireEvent.click(within(ada.container).getByText('Approve'));
+    const submitGrace = within(grace.container).getByRole('button', { name: 'Submit Answer' });
+    await waitFor(() => expect(submitGrace).toBeEnabled());
+    service.respond.mockResolvedValueOnce({
+      execution: waiting({ status: 'DISPATCHING', responsePending: true, turnSequence: 4 })
+        .execution,
+      response: { ...receipt('Approve'), actorId: 'grace', interactionId: next, sequence: 4 },
+    });
+    fireEvent.click(submitGrace);
+    await waitFor(() => expect(service.respond).toHaveBeenCalledTimes(3));
+    expect(service.respond.mock.calls[2][2]).toMatchObject({
+      interactionId: next,
+      contentSha256: revision.contentSha256,
+      text: 'Approve',
+      selection: { answers: [{ selectedOptions: [0] }] },
+    });
+    expect(service.respond.mock.calls[2][2].requestId).not.toBe(frozen.requestId);
+    await within(grace.container).findByText('Reply accepted. Delivery pending.');
+  });
+
   it('two members choose together and one submits the exact label, never a number', async () => {
     service.interaction.mockResolvedValue({ ...interaction(), pendingInput: gateInput });
     const ada = member('Ada');

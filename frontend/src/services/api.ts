@@ -1,6 +1,7 @@
 import { authService } from './auth';
 import {
   currentSessionEpoch,
+  isSessionActive,
   isSessionExpiryNotified,
   notifySessionExpired,
 } from './sessionExpiry';
@@ -26,7 +27,13 @@ async function fetchWithAuth(path: string, options: RequestInit = {}): Promise<R
   // Tagging the request with the current epoch keeps a late 401 from a
   // previous session from signing out a user who has since re-authenticated.
   const epoch = currentSessionEpoch();
+  const checkSession = () => {
+    if (epoch !== currentSessionEpoch() || !isSessionActive())
+      throw new ApiError(401, 'Request session ended');
+  };
+  checkSession();
   const { session, expired } = await authService.resolveSession();
+  checkSession();
   if (!session) {
     // A transient refresh failure (offline) leaves the refresh token valid, so
     // only a definitive expiry signs the user out.
@@ -44,6 +51,7 @@ async function fetchWithAuth(path: string, options: RequestInit = {}): Promise<R
       ...options.headers,
     },
   });
+  checkSession();
 
   if (!response.ok) {
     // A 401 is not proof the Cognito session is dead: endpoints forward
@@ -77,34 +85,39 @@ async function fetchWithAuth(path: string, options: RequestInit = {}): Promise<R
   return response;
 }
 
+async function requestJson<T>(path: string, options?: RequestInit): Promise<T> {
+  const epoch = currentSessionEpoch();
+  const response = await fetchWithAuth(path, options);
+  const value = await response.json();
+  if (epoch !== currentSessionEpoch() || !isSessionActive())
+    throw new ApiError(401, 'Request session ended');
+  return value;
+}
+
 export const api = {
   async get<T>(path: string): Promise<T> {
-    const response = await fetchWithAuth(path);
-    return response.json();
+    return requestJson<T>(path);
   },
 
   async post<T>(path: string, body: unknown): Promise<T> {
-    const response = await fetchWithAuth(path, {
+    return requestJson<T>(path, {
       method: 'POST',
       body: JSON.stringify(body),
     });
-    return response.json();
   },
 
   async put<T>(path: string, body: unknown): Promise<T> {
-    const response = await fetchWithAuth(path, {
+    return requestJson<T>(path, {
       method: 'PUT',
       body: JSON.stringify(body),
     });
-    return response.json();
   },
 
   async patch<T>(path: string, body: unknown): Promise<T> {
-    const response = await fetchWithAuth(path, {
+    return requestJson<T>(path, {
       method: 'PATCH',
       body: JSON.stringify(body),
     });
-    return response.json();
   },
 
   // `body` is optional so existing body-less callers keep their exact

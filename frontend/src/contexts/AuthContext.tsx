@@ -10,7 +10,13 @@ import React, {
 import type { ReactNode } from 'react';
 import { authService } from '../services/auth';
 import type { User } from '../services/auth';
-import { armSessionExpiry, onSessionExpired, resetSessionExpiry } from '../services/sessionExpiry';
+import {
+  armSessionExpiry,
+  currentSessionEpoch,
+  isSessionActive,
+  onSessionExpired,
+  resetSessionExpiry,
+} from '../services/sessionExpiry';
 
 interface AuthContextType {
   user: User | null;
@@ -74,13 +80,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   );
 
   const checkAuthState = useCallback(async () => {
+    const epoch = currentSessionEpoch();
     try {
       const isAuth = await authService.isAuthenticated();
-      if (isAuth) {
+      if (isAuth && epoch === currentSessionEpoch() && isSessionActive()) {
         // Re-arm without a new epoch: requests fired at mount carry the current
         // one and their 401s must still be able to report an expiry.
         armSessionExpiry();
         const currentUser = await authService.getCurrentUser();
+        if (epoch !== currentSessionEpoch() || !isSessionActive()) return;
         setUser(currentUser);
         setNeedsDisplayName(!currentUser.displayName);
       }
@@ -169,8 +177,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const logout = useCallback(async () => {
     setIsLoading(true);
+    const pending = authService.logout();
+    // logout invalidates synchronously, before waiting for Cognito. Its late
+    // completion must not clear a replacement login in this browser.
+    const epoch = currentSessionEpoch();
     try {
-      await authService.logout();
+      await pending;
+      if (epoch !== currentSessionEpoch()) return;
       setUser(null);
       setNeedsNewPassword(false);
       setNeedsDisplayName(false);
@@ -178,7 +191,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       console.error('Logout failed:', error);
       throw error;
     } finally {
-      setIsLoading(false);
+      if (epoch === currentSessionEpoch()) setIsLoading(false);
     }
   }, []);
 

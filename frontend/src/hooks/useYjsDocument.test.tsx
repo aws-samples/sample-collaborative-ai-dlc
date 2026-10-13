@@ -18,10 +18,23 @@ vi.mock('../services/auth', () => ({
   authService: { resolveSession: mocks.resolveSession },
 }));
 
-vi.mock('../services/sessionExpiry', () => ({
-  currentSessionEpoch: () => 7,
-  notifySessionExpired: mocks.notifySessionExpired,
-}));
+vi.mock('../services/sessionExpiry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../services/sessionExpiry')>();
+  return {
+    ...actual,
+    notifySessionExpired: (epoch: number) => {
+      mocks.notifySessionExpired(epoch);
+      actual.notifySessionExpired(epoch);
+    },
+  };
+});
+
+import {
+  currentSessionEpoch,
+  resetSessionExpiry,
+  notifySessionExpired,
+} from '../services/sessionExpiry';
+import { clearPersistedCache } from '@/lib/persistentCache';
 
 vi.mock('../services/realtime', () => ({
   realtimeService: { getYjsUrl: mocks.getYjsUrl },
@@ -82,6 +95,7 @@ const completeSync = (ws: MockWebSocket, doc: Y.Doc) =>
 
 describe('useYjsDocument', () => {
   beforeEach(() => {
+    resetSessionExpiry();
     instances.length = 0;
     mocks.resolveSession
       .mockReset()
@@ -98,6 +112,73 @@ describe('useYjsDocument', () => {
     if (vi.isFakeTimers()) await vi.runOnlyPendingTimersAsync();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it.each(['logout', 'expiry', 'account'])(
+    'detaches a draft on %s without broadcasting a deletion or saving as the next user',
+    async (boundary) => {
+      const target = { projectId: 'p', intentId: 'i', executionBackend: 'native' as const };
+      const { result, unmount } = renderHook(() =>
+        useYjsDocument('native-reply-test', 'Ada', undefined, target),
+      );
+      await waitFor(() => expect(instances).toHaveLength(1));
+      const ws = instances[0];
+      act(() => ws.open());
+      const peer = new Y.Doc();
+      peer.getText('reply').insert(0, 'Grace’s legitimate draft');
+      act(() => completeSync(ws, peer));
+      const oldDoc = result.current.doc;
+      const lateMessage = ws.onmessage!;
+      const save = vi.fn(async () => {});
+      result.current.beforeDisconnect(save);
+      const sent = ws.sent.length;
+      act(() => {
+        if (boundary === 'logout') clearPersistedCache();
+        else if (boundary === 'expiry') notifySessionExpired();
+        else resetSessionExpiry();
+      });
+      expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+      expect(save).not.toHaveBeenCalled();
+      expect(ws.sent).toHaveLength(sent);
+      expect(result.current.doc).not.toBe(oldDoc);
+      expect(result.current.doc.getText('reply').toString()).toBe('');
+      const encoder = encoding.createEncoder();
+      encoding.writeVarUint(encoder, 0);
+      syncProtocol.writeSyncStep2(encoder, peer);
+      act(() =>
+        lateMessage(new MessageEvent('message', { data: encoding.toUint8Array(encoder).buffer })),
+      );
+      expect(result.current.synced).toBe(false);
+      expect(result.current.doc.getText('reply').toString()).toBe('');
+      act(() => resetSessionExpiry());
+      await waitFor(() => expect(instances.length).toBeGreaterThan(1));
+      // A separately authorized reconnect rehydrates the peer's preserved data.
+      const next = instances.at(-1)!;
+      act(() => {
+        next.open();
+        completeSync(next, peer);
+      });
+      expect(result.current.doc.getText('reply').toString()).toBe('Grace’s legitimate draft');
+      unmount();
+      peer.destroy();
+    },
+  );
+
+  it('rejects a late authentication result after logout before requesting a document token', async () => {
+    let finish!: (value: unknown) => void;
+    mocks.resolveSession.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const { unmount } = renderHook(() => useYjsDocument('inception-project-1', 'Ada'));
+    act(() => clearPersistedCache());
+    await act(async () => {
+      finish({ session: { idToken: 'old-member' }, expired: false });
+    });
+    expect(mocks.getRealtimeToken).not.toHaveBeenCalled();
+    expect(instances).toHaveLength(0);
+    unmount();
   });
 
   it('publishes the current user awareness state as soon as the socket opens', async () => {
@@ -135,11 +216,12 @@ describe('useYjsDocument', () => {
   });
 
   it('notifies when Cognito reports definitive session expiry', async () => {
+    const epoch = currentSessionEpoch();
     mocks.resolveSession.mockResolvedValue({ session: null, expired: true });
 
     const { unmount } = renderHook(() => useYjsDocument('inception-project-1', 'Alice'));
 
-    await waitFor(() => expect(mocks.notifySessionExpired).toHaveBeenCalledWith(7));
+    await waitFor(() => expect(mocks.notifySessionExpired).toHaveBeenCalledWith(epoch));
     expect(instances).toHaveLength(0);
     unmount();
   });
@@ -345,6 +427,57 @@ describe('useYjsDocument', () => {
     expect(newSocket.readyState).toBe(MockWebSocket.OPEN);
     await act(async () => finishSave());
     await waitFor(() => expect(oldDoc.isDestroyed).toBe(true));
+    unmount();
+  });
+
+  it('aborts a retiring document’s checkpoint barrier on logout instead of saving it under a new login', async () => {
+    const { result, rerender, unmount } = renderHook(
+      ({ documentId }) => useYjsDocument(documentId, 'Ada'),
+      { initialProps: { documentId: 'inception-project-1' } },
+    );
+    await waitFor(() => expect(instances).toHaveLength(1));
+    const ws = instances[0];
+    act(() => {
+      ws.open();
+      deliver(ws, 4, (encoder) => {
+        encoding.writeVarUint(encoder, 0);
+        encoding.writeVarUint(encoder, 1);
+      });
+      completeSync(ws, result.current.doc);
+    });
+    const flush = result.current.flushDocument;
+    const save = vi.fn();
+    const failed = vi.fn();
+    result.current.beforeDisconnect(async () => {
+      try {
+        await flush();
+        save();
+      } catch (error) {
+        failed(error);
+      }
+    });
+    const count = ws.sent.length;
+    rerender({ documentId: 'inception-project-2' });
+    await waitFor(() => expect(ws.sent.length).toBeGreaterThan(count));
+    const lateMessage = ws.onmessage!;
+    const request = decoding.createDecoder(ws.sent.at(-1)!);
+    expect(decoding.readVarUint(request)).toBe(4);
+    expect(decoding.readVarUint(request)).toBe(1);
+    const id = decoding.readVarUint(request);
+    act(() => {
+      clearPersistedCache();
+      resetSessionExpiry();
+    });
+    const ack = encoding.createEncoder();
+    encoding.writeVarUint(ack, 4);
+    encoding.writeVarUint(ack, 2);
+    encoding.writeVarUint(ack, id);
+    await act(async () =>
+      lateMessage(new MessageEvent('message', { data: encoding.toUint8Array(ack).buffer })),
+    );
+    expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+    expect(failed).toHaveBeenCalledOnce();
+    expect(save).not.toHaveBeenCalled();
     unmount();
   });
 });

@@ -42,6 +42,45 @@ afterEach(async () => {
 });
 
 describe('collaboration transport', () => {
+  it('isolates native answer revisions and identities across two-member edits, expiry and reconnect', async () => {
+    const server = await start();
+    const document = `native-answer-${'a'.repeat(64)}-${'b'.repeat(64)}-2`;
+    const nextDocument = `native-answer-${'a'.repeat(64)}-${'c'.repeat(64)}-3`;
+    const adaToken = signRealtimeToken(
+      {
+        sub: 'ada',
+        scopes: [requiredScopeForYjsDoc(document)],
+        ttlSeconds: 2,
+      },
+      SECRET,
+    ).token;
+    const ada = await join(server, document, { user: 'ada', token: adaToken });
+    const grace = await join(server, document, { user: 'grace' });
+    ada.doc.getMap('selections').set('0', [1]);
+    await vi.waitFor(() => expect(grace.doc.getMap('selections').get('0')).toEqual([1]));
+    grace.doc.getMap('feedback').set('0', 'Add offline mode');
+    await vi.waitFor(() => expect(ada.doc.getMap('feedback').get('0')).toBe('Add offline mode'));
+    await expect(
+      connectClient(server, document, { user: 'grace', token: adaToken }),
+    ).rejects.toThrow('403');
+    await expect(
+      connectClient(server, nextDocument, { user: 'ada', token: adaToken }),
+    ).rejects.toThrow('403');
+    const closed = new Promise((resolve) => ada.ws.once('close', resolve));
+    expect(await closed).toBe(4401);
+    await expect(connectClient(server, document, { user: 'ada', token: adaToken })).rejects.toThrow(
+      '403',
+    );
+    expect(grace.doc.getMap('feedback').get('0')).toBe('Add offline mode');
+    const rejoined = await join(server, document, { user: 'ada' });
+    expect(rejoined.doc.getMap('selections').get('0')).toEqual([1]);
+    expect(rejoined.doc.getMap('feedback').get('0')).toBe('Add offline mode');
+    const next = await join(server, nextDocument, { user: 'grace' });
+    expect(next.doc.getMap('selections').size).toBe(0);
+    expect(next.doc.getMap('feedback').size).toBe(0);
+    expect(grace.doc.getMap('selections').get('0')).toEqual([1]);
+  });
+
   it('keeps an independent edit journal through disconnection and verifies fresh recovery', async () => {
     const store = new MemoryStore();
     const server = await start({ store, id: 'a', config: { saveMs: 50 } });

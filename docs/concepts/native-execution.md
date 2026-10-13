@@ -444,6 +444,43 @@ release criteria before widening support; later capabilities are separate scope.
       Include old artifact discussions and Quorum success/failure/retry. Done when
       drafts, connections, and accepted actions remain identity- and revision-scoped
       across reconnect, and advisory output cannot accept an answer.
+      **Local verification complete (2026-10-13):** sign-out, expiry and replacement
+      invalidate the session before further authenticated work. Pending token grants
+      cannot repopulate another login's cache; API requests cannot send an old answer
+      with newly resolved credentials. Application channels detach on navigation or
+      access loss. Yjs disconnects and rejects late callbacks, including checkpoint
+      acknowledgements during final-save retirement, without deleting a peer's draft.
+      Discussions discard stale loads, roles, pending messages and Quorum results
+      across account, project, thread and access changes, including project-disabled
+      denials. A reply retry retains the exact submitted choice while collaborators
+      edit; a revised question gets a fresh draft.
+      Deterministic slices cover two members in the shared Intent shell, real
+      signed-scope Yjs connections and expiry, graph-backed membership and historical
+      discussions, and Quorum failure/retry/stale completion. The actual native
+      runtime, supervisor, authority store and immutable codecs run a scripted
+      subprocess through change request, revision and approval, including a lost
+      acknowledgement and competing submissions. Acceptance, delivery and the
+      fixture's applied decision are checked separately; advice never writes a
+      native answer or command. Publication storage and model ports remain fakes;
+      an additional DynamoDB Local slice verifies the actual SDK transaction,
+      immutable receipt and command, losing member, retry and revocation.
+      **Evidence:** Node 24.21.0 with `NODE_OPTIONS=--no-experimental-webstorage`;
+      1,675 frontend tests (130 files) and build, 3,956 native-runtime-control/discussions/Yjs/
+      AgentCore tests, and an earlier 5,442-test shared/native/realtime/backend run
+      passed, plus 27 serial checks including the DynamoDB Local slice.
+      Three unrelated real-Bun sensor tests were skipped because Bun was
+      unavailable. Lint, formatting, secretlint, dependency and architecture checks,
+      21 native wiring tests and five architecture script tests passed; lint,
+      dependency and bundle-size warnings remain. Docker access required the
+      permitted sandbox escalation.
+      **Deployed qualification remains open:** use an authorized isolated deployment
+      with exact frontend/API/Yjs/runtime/package pins, two separate authenticated
+      browser profiles and configured harness/Quorum credentials. Verify actual
+      Cognito logout/login and account switching, membership removal through token
+      renewal, reconnect with pending choices and old discussions, and real-model
+      revision/approval plus Quorum success/failure/retry. Local scripted decisions
+      do not establish those browser, deployment, IAM or model outcomes. No AWS
+      mutation, deployment or real model call was performed.
 - [ ] **Capability and verification — activity and observability.** Add useful
       lifecycle history, reviewer progress/failures, incident actions, and cost/latency
       attribution. Verify pagination beyond one batch, reconnect gaps, redaction

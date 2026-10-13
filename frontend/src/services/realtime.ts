@@ -1,5 +1,10 @@
 import { authService } from './auth';
-import { currentSessionEpoch, notifySessionExpired } from './sessionExpiry';
+import {
+  currentSessionEpoch,
+  isSessionActive,
+  notifySessionExpired,
+  onSessionChanged,
+} from './sessionExpiry';
 import {
   getRealtimeToken,
   invalidateRealtimeToken,
@@ -18,6 +23,7 @@ interface ConnectionRequest {
   documentId: string;
   scopeTarget: RealtimeScopeTarget;
   generation: number;
+  epoch: number;
 }
 
 const targetKey = (target: RealtimeScopeTarget): string => {
@@ -40,6 +46,7 @@ export class RealtimeService {
   private reconnectTimer: number | null = null;
   private tokenExp: number | null = null;
   private cancelPendingHandshake: (() => void) | null = null;
+  private unsubscribeSession: (() => void) | null = null;
 
   constructor(listenForResume = true) {
     if (!listenForResume || typeof window === 'undefined' || typeof document === 'undefined')
@@ -50,6 +57,8 @@ export class RealtimeService {
   }
 
   async connect(documentId: string, explicitTarget?: RealtimeScopeTarget): Promise<void> {
+    if (!isSessionActive()) throw new Error('Not authenticated');
+    this.unsubscribeSession ??= onSessionChanged(() => this.disconnect());
     const existingTarget =
       this.request?.documentId === documentId ? this.request.scopeTarget : null;
     const scopeTarget = explicitTarget ?? existingTarget ?? scopeTargetForChannel(documentId);
@@ -77,6 +86,7 @@ export class RealtimeService {
       documentId,
       scopeTarget,
       generation: ++this.generation,
+      epoch: currentSessionEpoch(),
     };
     this.request = request;
     this.closeTransport();
@@ -102,6 +112,7 @@ export class RealtimeService {
     const { session, expired } = await authService.resolveSession();
     if (expired) notifySessionExpired(epoch);
     if (!session?.idToken) throw new Error('Not authenticated');
+    if (!this.isCurrent(request)) return;
 
     const docToken = await getRealtimeToken(request.scopeTarget);
     if (!this.isCurrent(request)) return;
@@ -184,7 +195,10 @@ export class RealtimeService {
     });
   }
 
-  disconnect(): void {
+  disconnect(documentId?: string): void {
+    if (documentId && this.request?.documentId !== documentId) return;
+    this.unsubscribeSession?.();
+    this.unsubscribeSession = null;
     this.request = null;
     this.generation++;
     this.reconnectAttempts = 0;
@@ -243,6 +257,8 @@ export class RealtimeService {
 
   private isCurrent(request: ConnectionRequest): boolean {
     return (
+      isSessionActive() &&
+      request.epoch === currentSessionEpoch() &&
       this.request?.generation === request.generation &&
       this.request.documentId === request.documentId
     );

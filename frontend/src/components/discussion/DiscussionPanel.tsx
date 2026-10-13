@@ -56,6 +56,23 @@ const ENTITY_LABELS: Record<string, string> = {
 
 export function DiscussionPanel() {
   const ctx = useDiscussions();
+  const { user } = useAuth();
+  return (
+    <DiscussionPanelContent
+      key={JSON.stringify([ctx?.scope, ctx?.activeDiscussion?.id, user?.userId])}
+    />
+  );
+}
+
+function DiscussionPanelContent() {
+  const ctx = useDiscussions();
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   // The discussion scope (sprint or intent) comes from the provider, derived
   // from the route. A null scope (off a scoped route) disables the hook's I/O.
   const scope = ctx?.scope ?? null;
@@ -91,6 +108,7 @@ export function DiscussionPanel() {
     open: !!ctx?.isOpen,
     user: currentUser,
     agentCli: ctx?.assistAgentCli ?? null,
+    onAccessFailure: ctx?.onAccessFailure,
   });
 
   const [resolveOpen, setResolveOpen] = useState(false);
@@ -148,7 +166,10 @@ export function DiscussionPanel() {
     setStatusBusy(true);
     try {
       const updated = await discussionsService.update(scope, discussion.id, input);
+      if (!alive.current) return;
       ctx.setActiveDiscussion(updated);
+    } catch (err) {
+      if (alive.current) ctx.onAccessFailure(err);
     } finally {
       setStatusBusy(false);
     }
@@ -159,8 +180,11 @@ export function DiscussionPanel() {
     setRedactError(null);
     try {
       const redacted = await discussionsService.redact(scope, discussion.id, messageId);
+      if (!alive.current) return;
       applyMessages([redacted]);
     } catch (err) {
+      if (!alive.current) return;
+      ctx?.onAccessFailure(err);
       console.error('Redact failed:', err);
       setRedactError(
         err instanceof Error

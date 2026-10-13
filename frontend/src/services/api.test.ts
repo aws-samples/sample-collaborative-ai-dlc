@@ -13,6 +13,7 @@ vi.mock('./auth', () => ({
 
 vi.mock('./sessionExpiry', () => ({
   currentSessionEpoch: mocks.currentSessionEpoch,
+  isSessionActive: () => true,
   isSessionExpiryNotified: mocks.isSessionExpiryNotified,
   notifySessionExpired: mocks.notifySessionExpired,
 }));
@@ -28,9 +29,32 @@ const session = {
 describe('authenticated API session expiry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.currentSessionEpoch.mockReturnValue(7);
   });
 
   afterEach(() => vi.unstubAllGlobals());
+
+  it('does not send an old answer with credentials resolved after account switching', async () => {
+    let resolve!: (value: unknown) => void;
+    mocks.resolveSession.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetch);
+    const result = api
+      .post('/projects/p/native-intents/i/response', {
+        requestId: 'old-member-request',
+        text: 'Approve',
+      })
+      .catch((error) => error);
+    mocks.currentSessionEpoch.mockReturnValue(8);
+    resolve({ session: { ...session, idToken: 'new-member' }, expired: false });
+    expect(await result).toBeInstanceOf(ApiError);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(mocks.notifySessionExpired).not.toHaveBeenCalled();
+  });
 
   it('sends the revision when deleting a workflow source and accepts an empty 204', async () => {
     mocks.resolveSession.mockResolvedValue({ session, expired: false });

@@ -150,6 +150,7 @@ export interface AuthResult {
 export const authService = {
   async login(username: string, password: string): Promise<AuthResult> {
     try {
+      clearPersistedCache();
       // In hybrid mode signOut redirects through the hosted UI. Clear only the
       // local token store so credential login can replace a partial SSO session.
       if (authConfiguration.mode === 'local') {

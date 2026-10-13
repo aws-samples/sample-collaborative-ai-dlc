@@ -19,7 +19,7 @@ import { ACTOR } from './fixtures.js';
 // storage validators. Only external AWS/model/initialization ports are fakes.
 // The inert harness is a real subprocess with a large tool event before its
 // ordered composer messages. It performs no network or model invocation.
-it('publishes a composer turn, accepts one member reply and continues the same native session', async () => {
+it.each([false, true])('native interaction cycle (structured: %s)', async (structured) => {
   const f = executionFixture();
   const temp = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-interaction-loop-')));
   const root = join(temp, 'mount');
@@ -29,16 +29,30 @@ it('publishes a composer turn, accepts one member reply and continues the same n
   await fs.writeFile(
     script,
     `
+    import * as fs from 'node:fs/promises';
     let input = '';
     for await (const part of process.stdin) input += part.toString();
     const turn = Number(process.argv[2]);
+    if (${structured}) {
+      // Deterministic engine stand-in: consume the delivered choice, revise,
+      // and only mark the stage applied on the subsequent approval turn.
+      if (turn === 2 && input !== 'Request Changes\\n\\nAdd an accessibility check.') throw Error('Wrong revision answer');
+      if (turn === 3 && input !== 'Approve') throw Error('Wrong approval answer');
+      const dir = 'aidlc/spaces/default/intents/pipes';
+      await fs.mkdir(dir, { recursive: true });
+      await fs.writeFile('aidlc/active-space', 'default\\n');
+      await fs.writeFile('aidlc/spaces/default/intents/active-intent', 'pipes\\n');
+      await fs.writeFile(dir + '/aidlc-state.md',
+        '- **Current Stage**: requirements-analysis\\n- [' + (turn === 3 ? 'x' : '?') + '] requirements-analysis — EXECUTE\\n');
+      await fs.writeFile(dir + '/plan.md', turn === 1 ? 'Original plan\\n' : 'Revised plan: accessibility check\\n');
+    }
     console.log(JSON.stringify({ type: 'thread.started', thread_id: 'composer-session' }));
     console.log(JSON.stringify({ type: 'turn.started' }));
     console.log(JSON.stringify({
       type: 'item.completed',
       item: { type: 'command_execution', aggregated_output: 'unretained tool output'.repeat(20000) },
     }));
-    const texts = turn === 1
+    const texts = ${structured} && turn === 3 ? ['Approval applied by the deterministic fixture.'] : turn === 1
       ? ['| Stage | Purpose |\\n|---|---|\\n| Design | Improve the pipes |',
          'Would you like to approve or edit this workflow?']
       : ['Which pipe appearance should the design use?'];
@@ -63,7 +77,11 @@ it('publishes a composer turn, accepts one member reply and continues the same n
       expect(command).toBeInstanceOf(GetObjectCommand);
       const bytes = objects.get(`${p.Key}\0${p.VersionId}`);
       if (!bytes) throw new Error('Missing immutable object version');
-      return { VersionId: p.VersionId, ContentLength: bytes.length, Body: Readable.from([bytes]) };
+      return {
+        VersionId: p.VersionId,
+        ContentLength: bytes.length,
+        Body: Readable.from([bytes]),
+      };
     }),
   };
   const storage = {
@@ -200,18 +218,34 @@ it('publishes a composer turn, accepts one member reply and continues the same n
     expect(firstRow.publication.question).toBeNull();
     expect(firstRow.publication.outcome).toBe('STOPPED');
     expect(firstRow.interaction.publicationId).toBe(firstRow.publication.id);
-    expect((await api.publication(f.prepared, recheck)).files.map((file) => file.path)).toEqual([
+    expect((await api.publication(f.prepared, recheck)).files.map((file) => file.path)).toContain(
       'index.html',
-    ]);
+    );
     const reply = {
       requestId: randomUUID(),
       interactionId: first.id,
       contentSha256: first.contentSha256,
-      text: 'Please edit the workflow to include an accessibility check.\r\n',
+      text: structured
+        ? 'Request Changes\n\nAdd an accessibility check.'
+        : 'Please edit the workflow to include an accessibility check.\r\n',
+      ...(structured
+        ? {
+            selection: {
+              answers: [{ selectedOptions: [1], freeText: 'Add an accessibility check.' }],
+            },
+          }
+        : {}),
     };
+    if (structured)
+      expect(first.pendingInput).toMatchObject({
+        kind: 'approval',
+        stage: 'requirements-analysis',
+      });
     const accepted = await api.respond(f.prepared, ACTOR, reply, recheck);
     expect(accepted.response.text).toBe(reply.text);
     expect(accepted.response.actorId).toBe(ACTOR);
+    expect(accepted.response.deliveryStatus).toBe('pending');
+    expect(modelTurns).toBe(1); // Acceptance itself did not run/apply the choice.
     const duplicate = await api.respond(f.prepared, ACTOR, reply, recheck);
     expect(duplicate.response.id).toBe(accepted.response.id);
     await expect(
@@ -266,6 +300,60 @@ it('publishes a composer turn, accepts one member reply and continues the same n
       accepted.response.id,
     );
     expect(modelTurns).toBe(2);
+    if (structured) {
+      const second = await api.interaction(f.prepared, recheck);
+      expect(second.pendingInput.kind).toBe('approval');
+      expect(second.contentSha256).not.toBe(first.contentSha256);
+      const approval = {
+        requestId: randomUUID(),
+        interactionId: second.id,
+        contentSha256: second.contentSha256,
+        text: 'Approve',
+        selection: { answers: [{ selectedOptions: [0] }] },
+      };
+      await expect(
+        api.respond(
+          f.prepared,
+          'second-member',
+          {
+            ...approval,
+            contentSha256: first.contentSha256,
+          },
+          recheck,
+        ),
+      ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CONFLICT' });
+      const competingApproval = { ...approval, requestId: randomUUID() };
+      const outcomes = await Promise.allSettled([
+        api.respond(f.prepared, 'second-member', approval, recheck),
+        api.respond(f.prepared, ACTOR, competingApproval, recheck),
+      ]);
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+      expect(outcomes.find((outcome) => outcome.status === 'rejected').reason.code).toBe(
+        'NATIVE_EXECUTION_CONFLICT',
+      );
+      const winner = outcomes.find((outcome) => outcome.status === 'fulfilled').value.response;
+      expect(winner.deliveryStatus).toBe('pending');
+      expect(modelTurns).toBe(2);
+      await supervisor(f.identity);
+      await runtime.settle();
+      await supervisor(f.identity);
+      await supervisor(f.identity);
+      expect(modelTurns).toBe(3);
+      const applied = await api.interaction(f.prepared, recheck);
+      expect(applied.pendingInput).toBeNull();
+      const publication = await api.publication(f.prepared, recheck);
+      const stateFile = publication.files.find((file) => file.path.endsWith('/aidlc-state.md'));
+      expect((await api.file(f.prepared, stateFile.id, recheck)).content).toContain(
+        '[x] requirements-analysis',
+      );
+      expect((await f.store.response(f.row(), first.id)).text).toBe(reply.text);
+      expect((await f.store.response(f.row(), second.id)).text).toBe('Approve');
+      const winningRequest = winner.actorId === 'second-member' ? approval : competingApproval;
+      expect(
+        (await api.respond(f.prepared, winner.actorId, winningRequest, recheck)).response.id,
+      ).toBe(winner.id);
+      expect(modelTurns).toBe(3);
+    }
   } finally {
     if (runtime.isBusy()) await runtime.cancel(executionIdentity(f.row()));
     await runtime.settle();

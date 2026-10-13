@@ -68,6 +68,7 @@ vi.mock('@/services/realtime', () => {
   return {
     realtimeService: {
       connect: service.connect,
+      disconnect: vi.fn(),
       getStatus: () => 'connected',
       on: subscribe,
       onStatusChange: (fn: (value: any) => void) => subscribe('status', fn),

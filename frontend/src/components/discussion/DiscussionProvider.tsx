@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import type { ReactNode } from 'react';
 import { useParams } from 'react-router';
@@ -15,6 +16,13 @@ import { projectsService } from '@/services/projects';
 import type { AgentCli, Member } from '@/services/projects';
 import { realtimeService } from '@/services/realtime';
 import { useAuth } from '@/contexts/AuthContext';
+import { ApiError } from '@/services/api';
+import { currentSessionEpoch, isSessionActive, onSessionChanged } from '@/services/sessionExpiry';
+import {
+  clearNativeIntents,
+  getNativeListing,
+  useNativeListingVersion,
+} from '@/hooks/useNativeIntents';
 import { useNativeCollaborationDigest } from '@/lib/nativeCollaboration';
 import { MentionToasts } from './MentionToasts';
 import type { MentionToast } from './MentionToasts';
@@ -67,6 +75,7 @@ interface DiscussionContextValue {
   /** Explicit CLI selected on the DRAFT compose page for Quorum assists. */
   assistAgentCli: AgentCli | null;
   setAssistAgentCli: (cli: AgentCli | null) => void;
+  onAccessFailure: (error: unknown) => void;
 }
 
 const DiscussionContext = createContext<DiscussionContextValue | null>(null);
@@ -89,10 +98,41 @@ export function DiscussionProvider({
   backend = 'platform',
 }: {
   children: ReactNode;
+  onDiscussionOpen?: () => void;
+  backend?: 'platform' | 'native';
+}) {
+  const { projectId, intentId, sprintId } = useParams();
+  const { user } = useAuth();
+  const epoch = useSyncExternalStore(onSessionChanged, currentSessionEpoch);
+  useNativeListingVersion();
+  const listing = backend === 'native' && projectId ? getNativeListing(projectId) : null;
+  const accessDenied = listing?.denied || (listing?.disabled && !!listing.accessRevision);
+  // The provider and its thread share one lifetime. Replacing identity/access
+  // detaches drafts, pending mutations, member roles and every old callback.
+  return (
+    <ScopedDiscussionProvider
+      key={JSON.stringify([backend, projectId, intentId, sprintId, user?.userId, epoch])}
+      backend={backend}
+      enabled={!!user && isSessionActive() && !accessDenied}
+      onDiscussionOpen={onDiscussionOpen}
+    >
+      {children}
+    </ScopedDiscussionProvider>
+  );
+}
+
+function ScopedDiscussionProvider({
+  children,
+  onDiscussionOpen,
+  backend = 'platform',
+  enabled,
+}: {
+  children: ReactNode;
   /** Called whenever a thread opens — the shell uses it to show the activity panel. */
   onDiscussionOpen?: () => void;
   /** Native routes use protected native ownership and their own API paths. */
   backend?: 'platform' | 'native';
+  enabled: boolean;
 }) {
   const {
     sprintId = '',
@@ -110,6 +150,7 @@ export function DiscussionProvider({
     backend === 'native' ? intentId : null,
   );
   const scope = useMemo<DiscussionScope | null>(() => {
+    if (!enabled) return null;
     if (backend === 'native') {
       // Never fall back to the platform intent scope for a native route.
       return intentId && projectId && digest
@@ -119,7 +160,7 @@ export function DiscussionProvider({
     if (sprintId) return { kind: 'sprint', sprintId };
     if (intentId && projectId) return { kind: 'intent', projectId, intentId };
     return null;
-  }, [backend, digest, sprintId, intentId, projectId]);
+  }, [backend, digest, sprintId, intentId, projectId, enabled]);
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -130,6 +171,50 @@ export function DiscussionProvider({
   const [members, setMembers] = useState<Member[]>([]);
   const [toasts, setToasts] = useState<MentionToast[]>([]);
   const [assistAgentCli, setAssistAgentCli] = useState<AgentCli | null>(null);
+  const alive = useRef(true);
+  const epoch = useRef(currentSessionEpoch()).current;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const scopeCurrent = useCallback(
+    () =>
+      alive.current &&
+      scope !== null &&
+      scopeRef.current === scope &&
+      epoch === currentSessionEpoch() &&
+      isSessionActive(),
+    [scope, epoch],
+  );
+  const openGeneration = useRef(0);
+  const listGeneration = useRef(0);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      openGeneration.current++;
+      listGeneration.current++;
+    };
+  }, []);
+  const onAccessFailure = useCallback(
+    (err: unknown) => {
+      if (
+        !alive.current ||
+        epoch !== currentSessionEpoch() ||
+        !isSessionActive() ||
+        !(err instanceof ApiError) ||
+        ![401, 403, 404].includes(err.status)
+      )
+        return;
+      openGeneration.current++;
+      listGeneration.current++;
+      setDiscussion(null);
+      setDiscussions([]);
+      setMembers([]);
+      setToasts([]);
+      setOpen(false);
+      if (backend === 'native') clearNativeIntents(projectId, true);
+    },
+    [backend, projectId, epoch],
+  );
 
   useEffect(() => {
     setAssistAgentCli(null);
@@ -137,13 +222,15 @@ export function DiscussionProvider({
 
   // ── Discussions list (badges + ActivityPanel tab) ──
   const reloadDiscussions = useCallback(async () => {
-    if (!scope) return;
+    const generation = ++listGeneration.current;
+    if (!scope || !scopeCurrent()) return;
     try {
-      setDiscussions(await discussionsService.list(scope));
-    } catch {
-      /* non-member or transient — badges just stay empty */
+      const all = await discussionsService.list(scope);
+      if (scopeCurrent() && generation === listGeneration.current) setDiscussions(all);
+    } catch (err) {
+      if (scopeCurrent() && generation === listGeneration.current) onAccessFailure(err);
     }
-  }, [scope]);
+  }, [scope, onAccessFailure, scopeCurrent]);
 
   useEffect(() => {
     setDiscussions([]);
@@ -181,15 +268,26 @@ export function DiscussionProvider({
 
   // ── Project members (mention combobox + caller role) ──
   useEffect(() => {
-    if (!projectId) {
+    if (!projectId || !enabled) {
       setMembers([]);
       return;
     }
+    let cancelled = false;
     projectsService
       .listMembers(projectId)
-      .then(setMembers)
-      .catch(() => setMembers([]));
-  }, [projectId]);
+      .then((value) => {
+        if (!cancelled) setMembers(value);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setMembers([]);
+          onAccessFailure(err);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, enabled, onAccessFailure]);
 
   const role = useMemo(
     () => members.find((m) => m.userId === user?.userId)?.role ?? null,
@@ -198,7 +296,10 @@ export function DiscussionProvider({
 
   // ── Mention toasts ──
   useEffect(() => {
+    if (!enabled) setToasts([]);
+    if (!scope) return;
     const unsub = realtimeService.on('notification', (data) => {
+      if (!scopeCurrent()) return;
       if (data.type !== 'discussion.mention') return;
       const id = `${data.messageId}-${Date.now()}`;
       setToasts((prev) => [
@@ -213,7 +314,7 @@ export function DiscussionProvider({
       setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), TOAST_TTL_MS);
     });
     return unsub;
-  }, []);
+  }, [scope, scopeCurrent, enabled]);
 
   const dismissToast = useCallback(
     (id: string) => setToasts((prev) => prev.filter((t) => t.id !== id)),
@@ -223,7 +324,9 @@ export function DiscussionProvider({
   // ── Thread open/close ──
   const openDiscussion = useCallback(
     (args: OpenDiscussionArgs) => {
-      if (!scope) return;
+      if (!scope || !scopeCurrent()) return;
+      const generation = ++openGeneration.current;
+      const current = () => scopeCurrent() && generation === openGeneration.current;
       setOpen(true);
       setLoading(true);
       setError(null);
@@ -236,6 +339,7 @@ export function DiscussionProvider({
         discussionsService
           .list(scope)
           .then((all) => {
+            if (!current()) return;
             const existing = all.find(
               (d) =>
                 d.entityType === args.entityType &&
@@ -246,10 +350,14 @@ export function DiscussionProvider({
             setDiscussions(all);
           })
           .catch((err) => {
+            if (!current()) return;
+            onAccessFailure(err);
             console.error('Failed to open discussion:', err);
             setError(err instanceof Error ? err.message : 'Failed to open discussion');
           })
-          .finally(() => setLoading(false));
+          .finally(() => {
+            if (current()) setLoading(false);
+          });
         return;
       }
       discussionsService
@@ -261,43 +369,55 @@ export function DiscussionProvider({
           ...(args.publicationSequence ? { publicationSequence: args.publicationSequence } : {}),
         })
         .then((d) => {
+          if (!current()) return;
           setDiscussion(d);
           reloadDiscussions();
         })
         .catch((err) => {
+          if (!current()) return;
+          onAccessFailure(err);
           console.error('Failed to open discussion:', err);
           setError(err instanceof Error ? err.message : 'Failed to open discussion');
         })
-        .finally(() => setLoading(false));
+        .finally(() => {
+          if (current()) setLoading(false);
+        });
     },
-    [scope, reloadDiscussions, onDiscussionOpen],
+    [scope, reloadDiscussions, onDiscussionOpen, onAccessFailure, scopeCurrent],
   );
 
   const openDiscussionById = useCallback(
     async (discussionId: string) => {
-      if (!scope) return;
+      if (!scope || !scopeCurrent()) return;
+      const generation = ++openGeneration.current;
+      const current = () => scopeCurrent() && generation === openGeneration.current;
       setOpen(true);
       setLoading(true);
       setError(null);
+      setDiscussion(null);
       setPendingTitle('');
       onDiscussionOpen?.();
       try {
         const known =
           discussions.find((d) => d.id === discussionId) ||
           (await discussionsService.list(scope)).find((d) => d.id === discussionId);
+        if (!current()) return;
         if (!known) throw new Error('Discussion not found');
         setDiscussion(known);
       } catch (err) {
+        if (!current()) return;
+        onAccessFailure(err);
         console.error('Failed to open discussion:', err);
         setError(err instanceof Error ? err.message : 'Failed to open discussion');
       } finally {
-        setLoading(false);
+        if (current()) setLoading(false);
       }
     },
-    [scope, discussions, onDiscussionOpen],
+    [scope, discussions, onDiscussionOpen, onAccessFailure, scopeCurrent],
   );
 
   const close = useCallback(() => {
+    openGeneration.current++;
     setOpen(false);
     setDiscussion(null);
     setError(null);
@@ -307,7 +427,8 @@ export function DiscussionProvider({
 
   const setActiveDiscussion = useCallback(
     (d: Discussion) => {
-      setDiscussion(d);
+      if (!alive.current) return;
+      setDiscussion((current) => (current?.id === d.id ? d : current));
       reloadDiscussions();
     },
     [reloadDiscussions],
@@ -352,6 +473,7 @@ export function DiscussionProvider({
       role,
       assistAgentCli,
       setAssistAgentCli,
+      onAccessFailure,
     }),
     [
       scope,
@@ -371,6 +493,7 @@ export function DiscussionProvider({
       members,
       role,
       assistAgentCli,
+      onAccessFailure,
     ],
   );
 

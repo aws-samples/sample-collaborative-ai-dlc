@@ -42,6 +42,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 beforeEach(() => {
+  resetSessionExpiry();
   clearNativeIntents();
   vi.resetAllMocks();
   sessionStorage.clear();
@@ -52,6 +53,21 @@ beforeEach(() => {
 });
 
 describe('shared native discovery cache', () => {
+  it('does not restart discovery while signed out, then reloads under the new session', async () => {
+    list.mockResolvedValue(page('one'));
+    const { result } = renderHook(() => useNativeIntents('p1'));
+    await waitFor(() => expect(result.current.items).toHaveLength(1));
+    act(() => clearPersistedCache());
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.items).toEqual([]);
+    expect(list).toHaveBeenCalledTimes(1);
+    act(() => resetSessionExpiry());
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.items).toHaveLength(1));
+  });
+
   const execution = (status: NativeExecution['status'], revision = 1): NativeExecution => ({
     status,
     revision,

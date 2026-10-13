@@ -1,7 +1,16 @@
 import { randomUUID } from 'node:crypto';
-import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+  ScanCommand,
+  TransactWriteCommand,
+} from '@aws-sdk/lib-dynamodb';
+import { CreateTableCommand, DeleteTableCommand, DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { describe, expect, it } from 'vitest';
 import { executionIdentity } from '../execution-runtime.js';
+import { createNativeExecutionStore } from '../execution-store.js';
+import { createNativeExecutionApi } from '../execution-api.js';
 import { serialFixture } from './execution-serial-fixtures.js';
 import { TABLE } from './fixtures.js';
 
@@ -360,6 +369,115 @@ describe('task-3 structured answers', () => {
       pendingInput,
       text: 'Requirements complete.\n1. **Approve**\n2. **Request Changes**',
     });
+
+  it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
+    'commits one structured member answer and command atomically in DynamoDB Local',
+    async () => {
+      const f = await gated();
+      const tableName = `native-answers-${randomUUID()}`;
+      const raw = new DynamoDBClient({
+        endpoint: process.env.DYNAMODB_LOCAL_ENDPOINT,
+        region: 'us-east-1',
+        credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+      });
+      const ddb = DynamoDBDocumentClient.from(raw, {
+        marshallOptions: { removeUndefinedValues: true },
+      });
+      await raw.send(
+        new CreateTableCommand({
+          TableName: tableName,
+          BillingMode: 'PAY_PER_REQUEST',
+          KeySchema: [
+            { AttributeName: 'pk', KeyType: 'HASH' },
+            { AttributeName: 'sk', KeyType: 'RANGE' },
+          ],
+          AttributeDefinitions: [
+            { AttributeName: 'pk', AttributeType: 'S' },
+            { AttributeName: 'sk', AttributeType: 'S' },
+          ],
+        }),
+      );
+      try {
+        // Reuse the admitted publication fixture, then cross the actual SDK and
+        // transaction boundary for acceptance, losing races and replay.
+        await ddb.send(new PutCommand({ TableName: tableName, Item: f.row() }));
+        const store = createNativeExecutionStore({
+          ddb,
+          tableName,
+          preparationStore: f.preparationStore,
+          now: f.now,
+        });
+        const api = createNativeExecutionApi({
+          enabled: true,
+          store,
+          publications: f.publications,
+          interactions: f.interactions,
+          configure: f.configure,
+          enqueue: f.enqueue,
+          authorizeSource: async () => {},
+        });
+        const members = new Set(['ada', 'grace']);
+        const submit = (actorId, request) =>
+          api.respond(
+            f.prepared,
+            actorId,
+            request,
+            async () => {
+              if (!members.has(actorId))
+                throw Object.assign(new Error('Revoked'), { code: 'NATIVE_PREPARATION_FORBIDDEN' });
+            },
+            { membershipId: `edge-${actorId}`, projectIdentity: f.prepared.projectIdentity },
+          );
+        const approve = f.replyRequest({
+          text: 'Approve',
+          selection: { answers: [{ selectedOptions: [0] }] },
+        });
+        const changes = f.replyRequest({
+          text: 'Request Changes\n\nAdd offline mode.',
+          selection: { answers: [{ selectedOptions: [1], freeText: 'Add offline mode.' }] },
+        });
+        const outcomes = await Promise.allSettled([
+          submit('ada', approve),
+          submit('grace', changes),
+        ]);
+        expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+        expect(outcomes.find((outcome) => outcome.status === 'rejected').reason.code).toBe(
+          'NATIVE_EXECUTION_CONFLICT',
+        );
+        const accepted = outcomes.find((outcome) => outcome.status === 'fulfilled').value.response;
+        const request = accepted.actorId === 'ada' ? approve : changes;
+        expect((await submit(accepted.actorId, request)).response).toEqual(accepted);
+        const row = await store.get(f.identity);
+        const ledger = await store.response(row, request.interactionId);
+        expect(row.response.commandId).toBe(ledger.commandId);
+        expect(ledger).toMatchObject({
+          actorId: accepted.actorId,
+          requestId: request.requestId,
+          text: request.text,
+          contentSha256: request.contentSha256,
+          selection: request.selection,
+          member: { membershipId: `edge-${accepted.actorId}` },
+          publicationId: f.first.receipt.id,
+        });
+        const { Items } = await ddb.send(
+          new ScanCommand({ TableName: tableName, ConsistentRead: true }),
+        );
+        expect(Items.map((item) => item.sk).sort()).toEqual([
+          'EXECUTION',
+          `RESPONSE#${request.interactionId}`,
+          expect.stringMatching(/^RESPONSE_REQUEST#/),
+        ]);
+        members.delete(accepted.actorId);
+        await expect(submit(accepted.actorId, request)).rejects.toMatchObject({
+          code: 'NATIVE_PREPARATION_FORBIDDEN',
+        });
+        expect(await store.response(row, request.interactionId)).toEqual(ledger);
+      } finally {
+        await raw.send(new DeleteTableCommand({ TableName: tableName }));
+        raw.destroy();
+      }
+    },
+  );
 
   it('accepts a selection whose text is the exact label and records both', async () => {
     const f = await gated();

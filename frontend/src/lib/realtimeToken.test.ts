@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { clearPersistedCache } from './persistentCache';
+import { resetSessionExpiry } from '../services/sessionExpiry';
 
 // Mock the api module BEFORE importing the unit under test so getRealtimeToken's
 // `api.post` is the spy. This asserts the token PATH the client builds — the
@@ -18,6 +20,28 @@ import {
 
 const UUID = '0f8fad5b-d9cb-469f-a165-70867728950e';
 const PID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
+
+it('does not reuse or resurrect another login’s pending realtime grant', async () => {
+  const target = { intentId: UUID, projectId: PID, executionBackend: 'native' as const };
+  let finishOld!: (value: unknown) => void;
+  post.mockReset().mockReturnValueOnce(
+    new Promise((resolve) => {
+      finishOld = resolve;
+    }),
+  );
+  const old = getRealtimeToken(target).catch((error) => error);
+  clearPersistedCache();
+  resetSessionExpiry();
+  post.mockResolvedValue({ token: 'member-b', exp: Date.now() / 1000 + 600, scopes: [] });
+  const current = getRealtimeToken(target);
+  // The second login must issue its own request before the first has completed.
+  expect(post).toHaveBeenCalledTimes(2);
+  expect((await current).token).toBe('member-b');
+  finishOld({ token: 'member-a', exp: Date.now() / 1000 + 600, scopes: [] });
+  expect(await old).toBeInstanceOf(Error);
+  expect((await getRealtimeToken(target)).token).toBe('member-b');
+  invalidateRealtimeToken(target);
+});
 
 describe('scope extractors (client mirror of the backend)', () => {
   it('maps sprint channel + bare projectId; intent channel is caller-supplied (null)', () => {

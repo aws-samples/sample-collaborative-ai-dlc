@@ -7,11 +7,13 @@ const state = vi.hoisted(() => ({
   outputs: vi.fn(),
   handlers: new Map<string, (value: any) => void>(),
   connect: vi.fn(async () => {}),
+  disconnect: vi.fn(),
 }));
 vi.mock('@/services/nativeIntents', () => ({ nativeIntentsService: { outputs: state.outputs } }));
 vi.mock('@/services/realtime', () => ({
   realtimeService: {
     connect: state.connect,
+    disconnect: state.disconnect,
     on: (name: string, handler: (value: any) => void) => {
       state.handlers.set(name, handler);
       return () => state.handlers.delete(name);
@@ -80,6 +82,7 @@ describe('native durable transcript adapter', () => {
     expect(result.current.rows.map((r) => r.content)).toEqual(['Output 1.']);
     rerender({ value: { ...current, intent: null } });
     expect(result.current.rows).toEqual([]);
+    expect(state.disconnect).toHaveBeenCalledWith('native-intent:p1:i1');
   });
   it('ignores old run responses and foreign project invalidations', async () => {
     let finish!: (value: any) => void;
@@ -93,6 +96,7 @@ describe('native durable transcript adapter', () => {
     });
     await waitFor(() => expect(state.outputs).toHaveBeenCalledTimes(1));
     rerender({ value: adapter('i2') });
+    expect(state.disconnect).toHaveBeenCalledWith('native-intent:p1:i1');
     await act(async () => finish({ outputs: [row(1)], nextAfter: null }));
     expect(result.current.rows).toEqual([]);
     const calls = state.outputs.mock.calls.length;

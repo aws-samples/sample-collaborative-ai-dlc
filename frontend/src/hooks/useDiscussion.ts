@@ -13,6 +13,7 @@ import {
 } from '../lib/discussion';
 import { generateColor } from '../utils/colors';
 import { nativeDiscussionDocument } from '../lib/nativeCollaboration';
+import { currentSessionEpoch, isSessionActive } from '../services/sessionExpiry';
 
 // Core discussion hook.
 //
@@ -39,6 +40,7 @@ interface UseDiscussionArgs {
   open: boolean;
   user: { id: string; name: string };
   agentCli?: AgentCli | null;
+  onAccessFailure?: (error: unknown) => void;
 }
 
 const SEED_PAGE_SIZE = 100;
@@ -64,6 +66,7 @@ export function useDiscussion({
   open,
   user,
   agentCli = null,
+  onAccessFailure,
 }: UseDiscussionArgs) {
   const docId = open && discussionId && scope ? discussionDocId(scope, discussionId) : null;
   const scopeTarget = !scope
@@ -94,6 +97,38 @@ export function useDiscussion({
   const changeCursorRef = useRef<string | null>(null);
 
   const messagesMap = useMemo(() => doc.getMap<DiscussionMessage>('messages'), [doc]);
+  // Pending REST/Quorum results belong to this reader, not whichever thread
+  // happens to be open when they complete. Never relay them into a retired doc.
+  const owner = useMemo(() => ({ active: true }), [doc, docId, user.id]);
+  const epoch = currentSessionEpoch();
+  const ownerRef = useRef(owner);
+  ownerRef.current = owner;
+  const current = useCallback(
+    () =>
+      owner.active &&
+      ownerRef.current === owner &&
+      !!docId &&
+      epoch === currentSessionEpoch() &&
+      isSessionActive(),
+    [owner, docId, epoch],
+  );
+  useEffect(() => {
+    owner.active = true;
+    setPending([]);
+    setSeeded(false);
+    setHasMoreOlder(false);
+    setLoadingOlder(false);
+    changeCursorRef.current = null;
+    return () => {
+      owner.active = false;
+    };
+  }, [owner]);
+  const reportFailure = useCallback(
+    (err: unknown) => {
+      if (current()) onAccessFailure?.(err);
+    },
+    [current, onAccessFailure],
+  );
 
   // ── Single render path: mirror Y.Map('messages') → sorted state ──
   useEffect(() => {
@@ -120,7 +155,7 @@ export function useDiscussion({
   // Idempotent upsert with (updatedAt, id) precedence, batched per transact.
   const upsertMessages = useCallback(
     (incoming: DiscussionMessage[]) => {
-      if (incoming.length === 0) return;
+      if (!current() || incoming.length === 0) return;
       doc.transact(() => {
         for (const m of incoming) {
           const next = newerOf(messagesMap.get(m.id), toPlain(m));
@@ -128,7 +163,7 @@ export function useDiscussion({
         }
       });
     },
-    [doc, messagesMap],
+    [doc, messagesMap, current],
   );
 
   // ── Seeding: the latest page on sync (Yjs docs evaporate 60 s after the
@@ -140,20 +175,22 @@ export function useDiscussion({
     discussionsService
       .listMessages(scope, discussionId, { limit: SEED_PAGE_SIZE })
       .then((page) => {
-        if (cancelled) return;
+        if (cancelled || !current()) return;
         upsertMessages(page.messages);
         setHasMoreOlder(page.hasMore);
         setSeeded(true);
       })
-      .catch((err) => console.error('Discussion seed failed:', err));
+      .catch((err) => {
+        if (!cancelled) reportFailure(err);
+      });
     return () => {
       cancelled = true;
     };
-  }, [docId, discussionId, synced, seeded, scope, upsertMessages]);
+  }, [docId, discussionId, synced, seeded, scope, upsertMessages, current, reportFailure]);
 
   // ── Older history on demand (?before= display-order keyset) ──
   const loadOlder = useCallback(async () => {
-    if (!discussionId || loadingOlder || !scope) return;
+    if (!current() || !discussionId || loadingOlder || !scope) return;
     const oldest = sortMessages([...messagesMap.values()])[0];
     if (!oldest) return;
     setLoadingOlder(true);
@@ -162,20 +199,22 @@ export function useDiscussion({
         before: displayCursorOf(oldest),
         limit: SEED_PAGE_SIZE,
       });
+      if (!current()) return;
       upsertMessages(page.messages);
       setHasMoreOlder(page.hasMore);
     } catch (err) {
+      reportFailure(err);
       console.error('Load older failed:', err);
     } finally {
-      setLoadingOlder(false);
+      if (current()) setLoadingOlder(false);
     }
-  }, [discussionId, loadingOlder, messagesMap, scope, upsertMessages]);
+  }, [discussionId, loadingOlder, messagesMap, scope, upsertMessages, current, reportFailure]);
 
   // ── Change-delta reconciliation backstop: on focus/visibility
   // regain, fetch everything with (updatedAt, id) past what we saw — new
   // messages AND redactions of older ones ──
   const reconcile = useCallback(async () => {
-    if (!discussionId || !scope) return;
+    if (!current() || !discussionId || !scope) return;
     const after = changeCursorRef.current;
     try {
       const page = after
@@ -185,9 +224,10 @@ export function useDiscussion({
           });
       upsertMessages(page.messages);
     } catch (err) {
+      reportFailure(err);
       console.error('Discussion reconciliation failed:', err);
     }
-  }, [discussionId, scope, upsertMessages]);
+  }, [discussionId, scope, upsertMessages, current, reportFailure]);
 
   useEffect(() => {
     if (!docId) return;
@@ -231,7 +271,7 @@ export function useDiscussion({
   // ── Send ──
   const sendMessage = useCallback(
     async (content: string, mentions: string[] = []) => {
-      if (!discussionId || !scope) return;
+      if (!current() || !discussionId || !scope) return;
       const trimmed = content.trim();
       if (!trimmed) return;
       const id = makeMessageId();
@@ -242,23 +282,26 @@ export function useDiscussion({
           content: trimmed,
           mentions,
         });
+        if (!current()) return;
         // Fast path: the WS broadcast also delivers this — idempotent by id.
         upsertMessages([persisted]);
         setPending((prev) => prev.filter((p) => p.id !== id));
       } catch (err) {
+        if (!current()) return;
+        reportFailure(err);
         console.error('Send failed:', err);
         setPending((prev) =>
           prev.map((p) => (p.id === id ? { ...p, status: 'failed' as const } : p)),
         );
       }
     },
-    [discussionId, scope, upsertMessages],
+    [discussionId, scope, upsertMessages, current, reportFailure],
   );
 
   // Failed bubbles retry with the SAME id — idempotent on the server.
   const retryMessage = useCallback(
     async (id: string) => {
-      if (!discussionId || !scope) return;
+      if (!current() || !discussionId || !scope) return;
       const failed = pending.find((p) => p.id === id);
       if (!failed) return;
       setPending((prev) => prev.map((p) => (p.id === id ? { ...p, status: 'sending' } : p)));
@@ -267,16 +310,19 @@ export function useDiscussion({
           id,
           content: failed.content,
         });
+        if (!current()) return;
         upsertMessages([persisted]);
         setPending((prev) => prev.filter((p) => p.id !== id));
       } catch (err) {
+        if (!current()) return;
+        reportFailure(err);
         console.error('Retry failed:', err);
         setPending((prev) =>
           prev.map((p) => (p.id === id ? { ...p, status: 'failed' as const } : p)),
         );
       }
     },
-    [discussionId, pending, scope, upsertMessages],
+    [discussionId, pending, scope, upsertMessages, current, reportFailure],
   );
 
   const requestAssist = useCallback(
@@ -285,7 +331,7 @@ export function useDiscussion({
       instructions = '',
       opts: { requestId?: string; selectedMessageIds?: string[] } = {},
     ) => {
-      if (!discussionId || !scope || scope.kind === 'sprint') return;
+      if (!current() || !discussionId || !scope || scope.kind === 'sprint') return;
       const requestId = opts.requestId || makeAssistRequestId();
       try {
         const { message } = await discussionsService.assist(scope, discussionId, {
@@ -297,10 +343,11 @@ export function useDiscussion({
         });
         upsertMessages([message]);
       } catch (err) {
+        reportFailure(err);
         console.error('Discussion assist failed:', err);
       }
     },
-    [agentCli, discussionId, scope, upsertMessages],
+    [agentCli, discussionId, scope, upsertMessages, current, reportFailure],
   );
 
   // ── Typing awareness ──

@@ -23,12 +23,13 @@ import {
 } from '../services/sessionExpiry';
 
 function SsoLoginHarness() {
-  const { user, isLoading, loginWithSso, completeSsoLogin } = useAuth();
+  const { user, isLoading, loginWithSso, completeSsoLogin, logout } = useAuth();
 
   return (
     <>
       <span>{isLoading ? 'loading' : 'idle'}</span>
       <span>{user?.username ?? 'anonymous'}</span>
+      <button onClick={() => void logout()}>Logout</button>
       <button
         type="button"
         onClick={() => {
@@ -58,6 +59,54 @@ beforeEach(() => {
 });
 
 describe('AuthProvider SSO state', () => {
+  it('keeps the replacement identity when an earlier logout finishes late', async () => {
+    let finish!: () => void;
+    mocks.logout.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    mocks.completeSsoLogin.mockResolvedValue({
+      userId: 'new',
+      username: 'new@example.com',
+      groups: [],
+    });
+    render(
+      <AuthProvider>
+        <SsoLoginHarness />
+      </AuthProvider>,
+    );
+    expect(await screen.findByText('idle')).toBeInTheDocument();
+    await userEvent.click(screen.getByText('Logout'));
+    await userEvent.click(screen.getByText('Complete SSO'));
+    expect(await screen.findByText('new@example.com')).toBeInTheDocument();
+    await act(async () => {
+      finish();
+    });
+    expect(screen.getByText('new@example.com')).toBeInTheDocument();
+  });
+
+  it('does not restore an identity from a startup lookup completed after session expiry', async () => {
+    let finish!: (value: unknown) => void;
+    mocks.isAuthenticated.mockResolvedValue(true);
+    mocks.getCurrentUser.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    render(
+      <AuthProvider>
+        <SsoLoginHarness />
+      </AuthProvider>,
+    );
+    await act(async () => {});
+    act(() => notifySessionExpired());
+    await act(async () => {
+      finish({ userId: 'old', username: 'old@example.com', groups: [] });
+    });
+    expect(screen.getByText('anonymous')).toBeInTheDocument();
+  });
+
   it('releases the loading state when an SSO redirect fails', async () => {
     let rejectRedirect!: (reason?: unknown) => void;
     mocks.loginWithSso.mockImplementation(

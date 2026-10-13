@@ -103,6 +103,7 @@ export function useNativeActivity(adapter: NativeIntentAdapter) {
       off();
       statusOff();
       clearInterval(timer);
+      realtimeService.disconnect(`native-intent:${projectId}:${intentId}`);
     };
   }, [projectId, intentId, Boolean(intent)]);
   return { rows: intent ? rows : [], loading, replay };

@@ -162,11 +162,13 @@ let close;
 let conn;
 let g;
 let resetRevisions;
+let createAssistResultHandler;
 
 beforeAll(async () => {
   vi.stubEnv('GREMLIN_PARTITION', PARTITION);
   vi.stubEnv('AWS_PROFILE', undefined);
   ({ handler, close } = await import('../index.js'));
+  ({ createAssistResultHandler } = await import('../assist-result.js'));
   ({ resetNativeArtifactRevisionsForTest: resetRevisions } = await import('../services.js'));
   conn = new gremlin.driver.DriverRemoteConnection(
     `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`,
@@ -560,6 +562,73 @@ describe('native Quorum assistance', () => {
       discussionId,
       body: { requestId: `assist-${randomUUID()}`, command: 'explain', agentCli: 'kiro', ...body },
     });
+
+  it('keeps failure, retry and out-of-order Quorum completions on the old revision without accepting workflow answers', async () => {
+    const f = await setup();
+    const old = json(
+      await f.createArtifactThread(f.firstPlan, f.first, { publicationSequence: 1 }),
+    );
+    const current = json(await f.createArtifactThread(f.secondPlan, f.second));
+    const protectedBefore = structuredClone([...nativeRows]);
+    const requestId = `assist-${randomUUID()}`;
+    expect((await assist(f, old.id, { requestId })).statusCode).toBe(202);
+    const invocation = () =>
+      JSON.parse(
+        Buffer.from(
+          agentcoreMock.commandCalls(InvokeAgentRuntimeCommand).at(-1).args[0].input.payload,
+        ).toString(),
+      );
+    const first = invocation();
+    const complete = createAssistResultHandler((read) => read(g));
+    const result = (payload, status = 'completed') => ({
+      native: true,
+      intentId: payload.intentId,
+      discussionId: payload.discussionId,
+      messageId: payload.messageId,
+      requestId: payload.requestId,
+      attemptId: payload.attemptId,
+      status,
+      content:
+        status === 'failed'
+          ? 'Explanation failed; retry available.'
+          : 'Advisory: approve the old plan.',
+    });
+    const failed = await complete(result(first, 'failed'));
+    expect(failed.message.assistStatus).toBe('failed');
+    const retry = await assist(f, old.id, { requestId }, SECOND);
+    expect(retry.statusCode).toBe(202);
+    const second = invocation();
+    expect(second.messageId).toBe(first.messageId);
+    expect(second.attemptId).not.toBe(first.attemptId);
+    expect(second.nativeContext.artifact.content).toBe('# Plan v1\nGravity 9.8\n');
+    expect(await complete(result(first))).toMatchObject({ ok: true, message: null });
+    expect(await complete({ ...result(second), discussionId: current.id })).toMatchObject({
+      message: null,
+    });
+    expect(await complete({ ...result(second), requestId: 'another-request' })).toMatchObject({
+      message: null,
+    });
+    expect(await complete(result(second))).toMatchObject({
+      message: { assistStatus: 'completed', content: 'Advisory: approve the old plan.' },
+    });
+    expect(await complete({ ...result(second), content: 'late overwrite' })).toMatchObject({
+      message: null,
+    });
+    const history = json(
+      await call('GET', '/discussions/{discussionId}/messages', {
+        ...f.at,
+        discussionId: old.id,
+        sub: SECOND,
+      }),
+    );
+    expect(history.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: first.messageId, assistStatus: 'completed' }),
+      ]),
+    );
+    // Quorum may update its discussion message, never a native answer/command.
+    expect([...nativeRows]).toEqual(protectedBefore);
+  });
 
   it('sends only the selected verified revision to the shared advisory runtime', async () => {
     const f = await setup();

@@ -18,6 +18,8 @@ vi.mock('../services/auth', () => ({
 
 vi.mock('../services/sessionExpiry', () => ({
   currentSessionEpoch: () => 7,
+  isSessionActive: () => true,
+  onSessionChanged: () => () => {},
   notifySessionExpired: mocks.notifySessionExpired,
 }));
 

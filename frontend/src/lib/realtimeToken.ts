@@ -1,4 +1,5 @@
 import { api } from '../services/api';
+import { currentSessionEpoch, isSessionActive, onSessionChanged } from '../services/sessionExpiry';
 
 // Realtime scope tokens.
 //
@@ -105,6 +106,10 @@ export const isIntentChannel = (documentId: string): string | null =>
 
 const cache = new Map<string, RealtimeToken>();
 const inflight = new Map<string, Promise<RealtimeToken>>();
+onSessionChanged(() => {
+  cache.clear();
+  inflight.clear();
+});
 
 const cacheKey = (target: RealtimeScopeTarget): string => {
   if ('sprintId' in target) return `sprint:${target.sprintId}`;
@@ -138,6 +143,8 @@ const isUsable = (token: RealtimeToken): boolean =>
  * Fetch (or reuse) a realtime scope token for the given target.
  */
 export async function getRealtimeToken(target: RealtimeScopeTarget): Promise<RealtimeToken> {
+  const epoch = currentSessionEpoch();
+  if (!isSessionActive()) throw new Error('Realtime session ended');
   const key = cacheKey(target);
 
   const cached = cache.get(key);
@@ -149,11 +156,13 @@ export async function getRealtimeToken(target: RealtimeScopeTarget): Promise<Rea
   const request = api
     .post<RealtimeToken>(tokenPath(target), tokenBody(target))
     .then((token) => {
+      if (epoch !== currentSessionEpoch() || !isSessionActive() || inflight.get(key) !== request)
+        throw new Error('Realtime authorization changed');
       cache.set(key, token);
       return token;
     })
     .finally(() => {
-      inflight.delete(key);
+      if (inflight.get(key) === request) inflight.delete(key);
     });
   inflight.set(key, request);
   return request;
@@ -164,6 +173,7 @@ export async function getRealtimeToken(target: RealtimeScopeTarget): Promise<Rea
  */
 export function invalidateRealtimeToken(target: RealtimeScopeTarget): void {
   cache.delete(cacheKey(target));
+  inflight.delete(cacheKey(target));
 }
 
 /**

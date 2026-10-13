@@ -29,7 +29,12 @@ vi.mock('@/services/workflows', () => ({
   workflowsService: { compiled: state.compiled, get: async () => ({ phases: [] }) },
 }));
 vi.mock('@/services/realtime', () => ({
-  realtimeService: { onStatusChange: () => () => {}, connect: async () => {}, on: () => () => {} },
+  realtimeService: {
+    onStatusChange: () => () => {},
+    connect: async () => {},
+    disconnect: vi.fn(),
+    on: () => () => {},
+  },
 }));
 vi.mock('@/hooks/useIntentEvents', () => ({
   useIntentEvents: (projectId: string, intentId: string) => {

@@ -5,7 +5,12 @@ import {
   type NativeIntent,
   type NativeIntentSummary,
 } from '@/services/nativeIntents';
-import { currentSessionEpoch, onSessionExpired, onSessionReset } from '@/services/sessionExpiry';
+import {
+  currentSessionEpoch,
+  isSessionActive,
+  onSessionExpired,
+  onSessionReset,
+} from '@/services/sessionExpiry';
 import { onCacheCleared } from '@/lib/persistentCache';
 import type { NativeDiscoveredIntent } from '@/lib/intentDiscovery';
 
@@ -240,6 +245,7 @@ export async function refreshNativeIntents(
   mode: 'refresh' | 'more' = 'refresh',
   force = false,
 ): Promise<void> {
+  if (!isSessionActive()) return;
   let entry = entries.get(projectId);
   if (!entry || entry.epoch !== currentSessionEpoch()) {
     entry = { state: EMPTY, fetchedAt: 0, epoch: currentSessionEpoch(), cursors: new Set() };

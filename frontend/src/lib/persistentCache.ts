@@ -1,5 +1,6 @@
 // TODO(#276): fold into the Tanstack Query migration when it replaces the
 // hand-rolled module caches — this sessionStorage layer is preview-era glue.
+import { invalidateSession } from '@/services/sessionExpiry';
 const VERSION = 1;
 const PREFIX = `aidlc-cache:v${VERSION}:`;
 const MAX_AGE_MS = 10 * 60 * 1000;
@@ -58,6 +59,7 @@ export function persist<T>(key: string, entry: { data: T; fetchedAt: number }): 
 
 /** Remove all `aidlc-cache:*` keys from sessionStorage. Call on logout. */
 export function clearPersistedCache(): void {
+  invalidateSession();
   clearListeners.forEach((listener) => listener());
   try {
     const toRemove: string[] = [];

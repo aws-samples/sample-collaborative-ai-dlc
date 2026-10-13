@@ -12,10 +12,19 @@ vi.mock('./auth', () => ({
   authService: { resolveSession: (...args: unknown[]) => mocks.resolveSession(...args) },
 }));
 
-vi.mock('./sessionExpiry', () => ({
-  currentSessionEpoch: () => 7,
-  notifySessionExpired: mocks.notifySessionExpired,
-}));
+vi.mock('./sessionExpiry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./sessionExpiry')>();
+  return {
+    ...actual,
+    notifySessionExpired: (epoch: number) => {
+      mocks.notifySessionExpired(epoch);
+      actual.notifySessionExpired(epoch);
+    },
+  };
+});
+
+import { currentSessionEpoch, resetSessionExpiry, notifySessionExpired } from './sessionExpiry';
+import { clearPersistedCache } from '@/lib/persistentCache';
 
 vi.mock('../lib/realtimeToken', () => ({
   getRealtimeToken: (...args: unknown[]) => mocks.getRealtimeToken(...args),
@@ -73,6 +82,7 @@ const flushPromises = async () => {
 
 describe('RealtimeService', () => {
   beforeEach(() => {
+    resetSessionExpiry();
     vi.useFakeTimers();
     MockWebSocket.instances = [];
     vi.stubGlobal('WebSocket', MockWebSocket);
@@ -88,8 +98,61 @@ describe('RealtimeService', () => {
   });
 
   afterEach(() => {
+    resetSessionExpiry();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it.each(['logout', 'expiry', 'account'])(
+    'detaches the old native channel on %s and ignores queued frames',
+    async (boundary) => {
+      const service = new RealtimeService(false);
+      const target = { intentId: 'native', projectId: 'p', executionBackend: 'native' as const };
+      const received = vi.fn();
+      service.on('discussion.message', received);
+      const connecting = service.connect('native-intent:p:native', target);
+      await flushPromises();
+      const ws = MockWebSocket.instances[0];
+      ws.open();
+      await connecting;
+      const lateMessage = ws.onmessage!;
+      if (boundary === 'logout') clearPersistedCache();
+      else if (boundary === 'expiry') notifySessionExpired();
+      else resetSessionExpiry();
+      expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+      lateMessage({ data: JSON.stringify({ action: 'discussion.message', content: 'old-user' }) });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(received).not.toHaveBeenCalled();
+      expect(MockWebSocket.instances).toHaveLength(1);
+      resetSessionExpiry();
+      const next = service.connect('native-intent:p:native', target);
+      await flushPromises();
+      MockWebSocket.instances[1].open();
+      await next;
+      expect(service.getStatus()).toBe('connected');
+      service.disconnect();
+    },
+  );
+
+  it('discards a delayed token and does not open the previous account’s channel', async () => {
+    let finish!: (value: unknown) => void;
+    mocks.getRealtimeToken.mockReturnValueOnce(
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+    );
+    const service = new RealtimeService(false);
+    const pending = service.connect('native-intent:p:i', {
+      intentId: 'i',
+      projectId: 'p',
+      executionBackend: 'native',
+    });
+    await flushPromises();
+    resetSessionExpiry();
+    finish({ token: 'old-member', exp: 123, scopes: [] });
+    await pending;
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(service.getStatus()).toBe('disconnected');
   });
 
   it('preserves the explicit intent scope target during token-refresh reconnect', async () => {
@@ -110,6 +173,7 @@ describe('RealtimeService', () => {
   });
 
   it('notifies when Cognito reports definitive session expiry', async () => {
+    const epoch = currentSessionEpoch();
     mocks.resolveSession.mockResolvedValue({ session: null, expired: true });
     const service = new RealtimeService(false);
 
@@ -120,7 +184,7 @@ describe('RealtimeService', () => {
       }),
     ).rejects.toThrow('Not authenticated');
 
-    expect(mocks.notifySessionExpired).toHaveBeenCalledWith(7);
+    expect(mocks.notifySessionExpired).toHaveBeenCalledWith(epoch);
   });
 
   it('reconnects an unexpectedly closed intent channel with the same target', async () => {
@@ -157,6 +221,10 @@ describe('RealtimeService', () => {
 
     expect(MockWebSocket.instances).toHaveLength(2);
     expect(MockWebSocket.instances[1].url).toContain('documentId=intent%3Aintent-2');
+    service.disconnect('intent:intent-1');
+    expect(MockWebSocket.instances[1].readyState).toBe(MockWebSocket.OPEN);
+    service.disconnect('intent:intent-2');
+    expect(MockWebSocket.instances[1].readyState).toBe(MockWebSocket.CLOSED);
   });
 
   it('ignores malformed frames and isolates a failing message handler', async () => {

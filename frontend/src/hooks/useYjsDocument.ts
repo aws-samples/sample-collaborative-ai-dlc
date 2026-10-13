@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo, useSyncExternalStore } from 'react';
 import * as Y from 'yjs';
 import * as encoding from 'lib0/encoding';
 import * as decoding from 'lib0/decoding';
@@ -6,7 +6,12 @@ import * as syncProtocol from 'y-protocols/sync';
 import * as awarenessProtocol from 'y-protocols/awareness';
 import { realtimeService } from '../services/realtime';
 import { authService } from '../services/auth';
-import { currentSessionEpoch, notifySessionExpired } from '../services/sessionExpiry';
+import {
+  currentSessionEpoch,
+  isSessionActive,
+  notifySessionExpired,
+  onSessionChanged,
+} from '../services/sessionExpiry';
 import {
   getRealtimeToken,
   invalidateRealtimeToken,
@@ -42,10 +47,11 @@ export function useYjsDocument(
   // name via scopeTargetForYjsDoc (the v1 sprint/project path).
   scopeTarget?: RealtimeScopeTarget,
 ) {
+  const sessionEpoch = useSyncExternalStore(onSessionChanged, currentSessionEpoch);
   // Intentionally keyed on documentId: a new document must get a FRESH Y.Doc even
   // though the factory doesn't read documentId (the rule flags it as unnecessary).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const doc = useMemo(() => new Y.Doc(), [documentId]);
+  const doc = useMemo(() => new Y.Doc(), [documentId, sessionEpoch]);
   const currentDocRef = useRef(doc);
   currentDocRef.current = doc;
   const awareness = useMemo(() => new awarenessProtocol.Awareness(doc), [doc]);
@@ -117,7 +123,7 @@ export function useYjsDocument(
   }, [awareness, userName, userColor]);
 
   useEffect(() => {
-    if (!documentId) {
+    if (!documentId || !isSessionActive()) {
       setSynced(false);
       setRemoteUsers(new Map());
       return;
@@ -129,6 +135,21 @@ export function useYjsDocument(
     let reconnectAttempts = 0;
     let awarenessTimer: ReturnType<typeof setTimeout> | null = null;
     const awarenessProt = awareness;
+    const sessionCurrent = () => sessionEpoch === currentSessionEpoch() && isSessionActive();
+    const abortSession = () => {
+      cancelled = true;
+      lifetime.closing = true;
+      setSynced(false);
+      if (currentDocRef.current === doc) setRemoteUsers(new Map());
+      if (pendingFlushRef.current) {
+        clearTimeout(pendingFlushRef.current.timer);
+        pendingFlushRef.current.reject(new Error('Collaboration session ended'));
+        pendingFlushRef.current = null;
+      }
+      wsRef.current?.close();
+      wsRef.current = null;
+      readySocketRef.current = null;
+    };
     setSynced(false);
     setRemoteUsers(new Map());
 
@@ -141,6 +162,7 @@ export function useYjsDocument(
       console.error('Yjs: unknown doc-name format, cannot authorize:', documentId);
       return;
     }
+    const unsubscribeSession = onSessionChanged(abortSession);
 
     let connect: () => Promise<void>;
     const scheduleReconnect = () => {
@@ -438,7 +460,7 @@ export function useYjsDocument(
       const retiringSocket = wsRef.current;
       // Start registered saves while this connection can still acknowledge them.
       // Keeping their entire REST promise alive also keeps the source Y.Doc alive.
-      const saves = [...lifetime.saves].map((save) => {
+      const saves = (sessionCurrent() ? [...lifetime.saves] : []).map((save) => {
         try {
           return save();
         } catch (error) {
@@ -470,6 +492,7 @@ export function useYjsDocument(
         timeout = setTimeout(resolve, 30_000);
       });
       lifetime.settled = Promise.race([Promise.allSettled(saves), deadline]).finally(() => {
+        unsubscribeSession();
         clearTimeout(timeout);
         cancelled = true;
         if (pendingFlushRef.current) {
@@ -488,7 +511,7 @@ export function useYjsDocument(
     // (same identity across renders for a given doc) and re-running on a new
     // object reference would needlessly recycle the socket.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentId, doc, awareness, setSynced]);
+  }, [documentId, doc, awareness, setSynced, sessionEpoch]);
 
   // Registered after the connection effect so its cleanup runs only after the
   // socket listeners have released the old document and awareness instance.
