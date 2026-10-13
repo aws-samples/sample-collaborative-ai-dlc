@@ -682,7 +682,7 @@ it.each(['publication', 'file', 'graph'] as const)(
   },
 );
 
-it('polls active execution through the first question and continues while graph projection is pending', async () => {
+it('observes another member cancelling a legacy wait after graph projection catches up', async () => {
   vi.useFakeTimers();
   api.get
     .mockResolvedValueOnce({
@@ -707,10 +707,183 @@ it('polls active execution through the first question and continues while graph 
   expect(api.graph).not.toHaveBeenCalled();
   await act(async () => vi.advanceTimersByTimeAsync(3000));
   expect(api.graph).toHaveBeenCalledTimes(1);
+  api.get.mockResolvedValueOnce({
+    ...waiting,
+    execution: {
+      ...execution,
+      status: 'CANCEL_REQUESTED',
+      updatedAt: '2026-09-29T09:05:00Z',
+    },
+  });
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
+  expect(screen.getByRole('status')).toHaveTextContent('Cancellation requested');
+  expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeDisabled();
+  api.get.mockResolvedValueOnce({
+    ...waiting,
+    execution: { ...execution, status: 'CANCELLED', updatedAt: '2026-09-29T09:06:00Z' },
+  });
+  await act(async () => vi.advanceTimersByTimeAsync(3000));
+  expect(screen.getByRole('status')).toHaveTextContent('Execution cancelled');
+  expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
+  expect(api.cancel).not.toHaveBeenCalled();
   const requests = api.get.mock.calls.length;
   await act(async () => vi.advanceTimersByTimeAsync(15000));
   expect(api.get).toHaveBeenCalledTimes(requests);
 });
+
+it.each(['legacy timestamps', 'server revision', 'missing revision'] as const)(
+  'ignores an older refresh after polling confirms cancellation using %s',
+  async (ordering) => {
+    vi.useFakeTimers();
+    const revision = ordering === 'legacy timestamps' ? undefined : 8;
+    const stale: NativeIntent = {
+      ...waiting,
+      execution: {
+        ...execution,
+        revision: ordering === 'server revision' ? 7 : undefined,
+        // A server revision takes precedence even over a later timestamp.
+        updatedAt: ordering === 'legacy timestamps' ? execution.updatedAt : '2027-01-01T00:00:00Z',
+      },
+    };
+    api.get.mockResolvedValueOnce(waiting);
+    await act(async () => renderPage());
+    const oldRefresh = deferred<NativeIntent>();
+    api.get.mockReturnValueOnce(oldRefresh.promise);
+    await click('Refresh status');
+    api.get.mockResolvedValueOnce({
+      ...waiting,
+      execution: {
+        ...execution,
+        revision,
+        status: 'CANCEL_REQUESTED',
+        updatedAt: '2026-09-29T09:05:00Z',
+      },
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(screen.getByRole('status')).toHaveTextContent('Cancellation requested');
+    await act(async () => oldRefresh.resolve(stale));
+    expect(screen.getByRole('status')).toHaveTextContent('Cancellation requested');
+    expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeDisabled();
+    api.get.mockResolvedValueOnce({
+      ...waiting,
+      execution: {
+        ...execution,
+        revision: revision === undefined ? undefined : revision + 1,
+        status: 'CANCELLED',
+        updatedAt: '2026-09-29T09:06:00Z',
+      },
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(screen.getByRole('status')).toHaveTextContent('Execution cancelled');
+    expect(api.cancel).not.toHaveBeenCalled();
+  },
+);
+
+it.each(['legacy', 'revisioned'] as const)(
+  'does not let an outstanding %s poll overwrite a cancellation acknowledgement',
+  async (contract) => {
+    vi.useFakeTimers();
+    const oldPoll = deferred<NativeIntent>();
+    api.get.mockResolvedValueOnce(waiting).mockReturnValueOnce(oldPoll.promise);
+    await act(async () => renderPage());
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(api.get).toHaveBeenCalledTimes(2);
+    api.cancel.mockResolvedValueOnce({
+      ...waiting,
+      execution: {
+        ...execution,
+        revision: contract === 'revisioned' ? 8 : undefined,
+        status: 'CANCEL_REQUESTED',
+        updatedAt: '2026-09-29T09:05:00Z',
+      },
+    });
+    await click('Cancel execution');
+    await act(async () => oldPoll.resolve(waiting));
+    expect(screen.getByRole('status')).toHaveTextContent('Cancellation requested');
+    expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeDisabled();
+    expect(screen.getByText('Which pipe style?')).toBeInTheDocument();
+    api.get.mockResolvedValueOnce({
+      ...waiting,
+      execution: {
+        ...execution,
+        revision: contract === 'revisioned' ? 9 : undefined,
+        status: 'CANCELLED',
+        updatedAt: '2026-09-29T09:06:00Z',
+      },
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(screen.getByRole('status')).toHaveTextContent('Execution cancelled');
+    const requests = api.get.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(15000));
+    expect(api.get).toHaveBeenCalledTimes(requests);
+  },
+);
+
+it.each(['legacy', 'revisioned'] as const)(
+  'does not let a late %s cancellation acknowledgement overwrite terminal status from polling',
+  async (contract) => {
+    vi.useFakeTimers();
+    api.get.mockResolvedValueOnce(waiting);
+    await act(async () => renderPage());
+    const oldCancel = deferred<NativeIntent>();
+    api.cancel.mockReturnValueOnce(oldCancel.promise);
+    await click('Cancel execution');
+    api.get.mockResolvedValueOnce({
+      ...waiting,
+      execution: {
+        ...execution,
+        revision: contract === 'revisioned' ? 9 : undefined,
+        status: 'CANCELLED',
+        updatedAt: '2026-09-29T09:06:00Z',
+      },
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(screen.getByRole('status')).toHaveTextContent('Execution cancelled');
+    await act(async () =>
+      oldCancel.resolve({
+        ...waiting,
+        execution: {
+          ...execution,
+          revision: contract === 'revisioned' ? 8 : undefined,
+          status: 'CANCEL_REQUESTED',
+          updatedAt: '2026-09-29T09:05:00Z',
+        },
+      }),
+    );
+    expect(screen.getByRole('status')).toHaveTextContent('Execution cancelled');
+    expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
+    const requests = api.get.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(15000));
+    expect(api.get).toHaveBeenCalledTimes(requests);
+  },
+);
+
+it.each(['success', 'denial'] as const)(
+  'discards an outstanding waiting poll %s after the account changes',
+  async (outcome) => {
+    vi.useFakeTimers();
+    const oldPoll = deferred<NativeIntent>();
+    api.get.mockResolvedValueOnce(waiting).mockReturnValueOnce(oldPoll.promise);
+    await act(async () => renderPage());
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(api.get).toHaveBeenCalledTimes(2);
+    const nextAccount = { ...ready, title: 'New account', prompt: 'New account content' };
+    api.get.mockResolvedValueOnce(nextAccount);
+    await act(async () => resetSessionExpiry());
+    expect(screen.getByText(nextAccount.prompt)).toBeVisible();
+    expect(screen.queryByText(ready.prompt)).not.toBeInTheDocument();
+    await act(async () => {
+      if (outcome === 'success') oldPoll.resolve(waiting);
+      else oldPoll.reject(new ApiError(403, 'Previous account denied'));
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(15000));
+    expect(api.get).toHaveBeenCalledTimes(3);
+    expect(screen.getByText(nextAccount.prompt)).toBeVisible();
+    expect(screen.getByRole('status')).toHaveTextContent('Workspace ready');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText('Which pipe style?')).not.toBeInTheDocument();
+  },
+);
 
 it('keeps polling after a stale preparation-only response and accepts the later committed question', async () => {
   vi.useFakeTimers();
@@ -752,13 +925,23 @@ it('cancels explicitly and disables cancellation while the server acknowledges t
 });
 
 it.each(['STOPPED', 'FAILED', 'CANCELLED'] as const)(
-  'keeps %s distinct from workflow completion and never enables another Start',
+  'polls %s only until projection catches up and never enables another Start',
   async (status) => {
-    api.get.mockResolvedValue({ ...waiting, execution: { ...execution, status } });
-    renderPage();
-    await screen.findByText('Which pipe style?');
+    vi.useFakeTimers();
+    api.get
+      .mockResolvedValueOnce({
+        ...waiting,
+        execution: { ...execution, status, projectionStatus: 'pending' },
+      })
+      .mockResolvedValue({ ...waiting, execution: { ...execution, status } });
+    await act(async () => renderPage());
+    expect(screen.getByText('Which pipe style?')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
     expect(screen.queryByText('Succeeded')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(api.get).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(15000));
+    expect(api.get).toHaveBeenCalledTimes(2);
   },
 );

@@ -57,6 +57,8 @@ const needsPolling = (intent: NativeIntent) =>
   intent.status === 'PREPARING' ||
   (intent.execution &&
     (activeExecution.has(intent.execution.status) ||
+      // Waiting runs remain cancellable after their publication is projected.
+      intent.execution.status === 'WAITING_FOR_INPUT' ||
       intent.execution.status === 'AWAITING_USER' ||
       intent.execution.projectionStatus === 'pending'));
 const accessFailure = (error: unknown): error is ApiError =>

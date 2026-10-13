@@ -1,11 +1,11 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Link, MemoryRouter, Route, Routes } from 'react-router';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
 import { clearNativeIntents } from '@/hooks/useNativeIntents';
 import { invalidateProjects } from '@/hooks/useProjectsCache';
-import { resetSessionExpiry } from '@/services/sessionExpiry';
+import { notifySessionExpired, resetSessionExpiry } from '@/services/sessionExpiry';
 import { ApiError } from '@/services/api';
 import type { IntentOutput } from '@/services/intents';
 import type { NativeIntent } from '@/services/nativeIntents';
@@ -36,6 +36,7 @@ vi.mock('@/services/nativeIntents', async (importOriginal) => ({
 vi.mock('@/services/auth', () => ({
   authService: {
     isAuthenticated: async () => true,
+    logout: async () => {},
     getCurrentUser: async () => ({
       id: 'owner',
       username: 'owner',
@@ -106,10 +107,12 @@ const row = (seq: number, content = `Visible activity ${seq}.`): IntentOutput =>
 const page = (...outputs: IntentOutput[]) => ({ outputs, nextAfter: null });
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((r, fail) => {
     resolve = r;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 function emit(name: string, value: unknown) {
   act(() => {
@@ -124,6 +127,7 @@ function workspace() {
       <AuthProvider>
         <MemoryRouter initialEntries={['/space/project/native-intent/one']}>
           <Link to="/space/project/native-intent/two">Switch run</Link>
+          <Link to="/space/other-project/native-intent/one">Switch project</Link>
           <Routes>
             <Route element={<AppShell />}>
               <Route path="/space/:projectId/native-intent/:intentId" element={<IntentView />} />
@@ -136,7 +140,8 @@ function workspace() {
 }
 beforeEach(() => {
   vi.stubGlobal('localStorage', window.localStorage);
-  vi.clearAllMocks();
+  vi.resetAllMocks();
+  service.connect.mockResolvedValue(undefined);
   service.handlers.clear();
   localStorage.clear();
   resetSessionExpiry();
@@ -163,6 +168,117 @@ beforeEach(() => {
   );
   Element.prototype.scrollIntoView = vi.fn();
 });
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
+
+function waitingDetail(status: 'WAITING_FOR_INPUT' | 'AWAITING_USER' | 'RECOVERY_REQUIRED') {
+  const waiting = detail();
+  waiting.execution = {
+    ...waiting.execution!,
+    status,
+    publicationId: 'publication',
+    projectionStatus: 'complete',
+    ...(status === 'AWAITING_USER' ? { interactionId: INTERACTION_ID, turnSequence: 1 } : {}),
+  };
+  service.get.mockResolvedValue(waiting);
+  service.publication.mockResolvedValue({
+    id: 'publication',
+    sequence: 1,
+    createdAt: time,
+    files: [],
+    question: null,
+    projectionStatus: 'complete',
+  });
+  service.interaction.mockResolvedValue({
+    id: INTERACTION_ID,
+    sequence: 1,
+    kind: 'assistant_turn',
+    harness: 'codex',
+    publicationId: 'publication',
+    messages: [{ type: 'text', text: 'Committed workflow question.' }],
+    contentSha256: 'a'.repeat(64),
+    createdAt: time,
+    response: null,
+  });
+  return waiting;
+}
+
+it.each(['WAITING_FOR_INPUT', 'AWAITING_USER', 'RECOVERY_REQUIRED'] as const)(
+  'refreshes a projected %s wait in the shared workspace without an activity notification',
+  async (status) => {
+    vi.useFakeTimers();
+    const waiting = waitingDetail(status);
+    await act(async () => workspace());
+    expect(service.get).toHaveBeenCalledTimes(1);
+    service.get.mockResolvedValueOnce({
+      ...waiting,
+      execution: { ...waiting.execution!, status: 'CANCELLED', revision: 8 },
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(screen.getByText('Execution cancelled')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
+    expect(service.get).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(15000));
+    expect(service.get).toHaveBeenCalledTimes(2);
+  },
+);
+
+const waitingCleanupCases = (['run', 'project', 'expiry', 'unmount'] as const).flatMap((boundary) =>
+  (['success', 'denial'] as const).map((outcome) => ({ boundary, outcome })),
+);
+it.each(waitingCleanupCases)(
+  'discards a waiting poll $outcome across a $boundary boundary and cleans up its subscription',
+  async ({ boundary, outcome }) => {
+    vi.useFakeTimers();
+    const waiting = waitingDetail('WAITING_FOR_INPUT');
+    let view!: ReturnType<typeof workspace>;
+    await act(async () => {
+      view = workspace();
+    });
+    expect(service.handlers.get('agent.output')?.size).toBe(1);
+    const oldPoll = deferred<NativeIntent>();
+    service.get.mockReturnValueOnce(oldPoll.promise);
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
+    expect(service.get).toHaveBeenCalledTimes(2);
+    const replaced = boundary === 'run' || boundary === 'project';
+    const next = {
+      ...detail(boundary === 'run' ? 'two' : 'one'),
+      projectId: boundary === 'project' ? 'other-project' : 'project',
+      title: 'Newly authorized run',
+      prompt: 'Newly authorized task',
+      execution: { ...detail().execution!, status: 'STOPPED' as const },
+    };
+    service.get.mockResolvedValueOnce(next);
+    await act(async () => {
+      if (boundary === 'run' || boundary === 'project') {
+        fireEvent.click(
+          screen.getByRole('link', { name: boundary === 'run' ? 'Switch run' : 'Switch project' }),
+        );
+      } else if (boundary === 'expiry') notifySessionExpired();
+      else view.unmount();
+    });
+    expect(screen.queryByText(waiting.prompt)).not.toBeInTheDocument();
+    if (replaced) {
+      expect(screen.getByText(next.prompt)).toBeVisible();
+      expect(service.get).toHaveBeenLastCalledWith(next.projectId, next.id);
+    }
+    await act(async () => {
+      if (outcome === 'success') oldPoll.resolve(waiting);
+      else oldPoll.reject(new ApiError(403, 'Old identity denied'));
+    });
+    const reads = service.get.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(15000));
+    expect(service.get).toHaveBeenCalledTimes(reads);
+    expect(screen.queryByText(waiting.prompt)).not.toBeInTheDocument();
+    expect(service.handlers.get('agent.output')?.size).toBe(replaced ? 1 : 0);
+    if (replaced) expect(screen.getByText(next.prompt)).toBeVisible();
+    view.unmount();
+    expect(service.handlers.get('agent.output')?.size).toBe(0);
+  },
+);
+
 it('renders paginated history in the real Agent transcript while running, and replays reconnect and reload', async () => {
   service.outputs
     .mockResolvedValueOnce({

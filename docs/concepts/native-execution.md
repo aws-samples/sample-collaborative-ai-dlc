@@ -333,10 +333,18 @@ release criteria before widening support; later capabilities are separate scope.
       the form locked to the rejected request. Provide pre-start correction or
       validation, including existing drafts. Done when invalid input is repairable
       while uncertain acceptance still retries the same identity and body.
-- [ ] **Issue — legacy waiting-state refresh.** Detail polling omits
-      `WAITING_FOR_INPUT` once projection catches up. Refresh all nonterminal waits.
-      Done when another member's cancellation appears without a manual reload and
-      older responses cannot overwrite newer status.
+- [x] **Issue — legacy waiting-state refresh.** Detail polling now includes
+      `WAITING_FOR_INPUT` after projection catches up, alongside current waits.
+      Another member's cancellation appears without a manual reload. Existing
+      revision and legacy timestamp guards reject older detail and command replies;
+      terminal runs stop polling once projection completes. Deterministic regressions
+      cover cancellation, response ordering, and run/project/account/expiry/unmount
+      cleanup in the native page and shared workspace. Local verification on Node
+      24.21.0: 79 focused tests and all 1,506 frontend tests passed; frontend build,
+      lint, formatting, and secret scanning passed (lint/build warnings remain).
+      An unchanged interaction test failed intermittently with
+      duplicate draft text in one focused run, then passed alone and in the full suite.
+      These checks do not establish live two-member or deployed qualification.
 - [ ] **Issue — transient reads during restoration.** Unreadable runtime reports
       during `RECOVERING` can become `RESTORE_FAILED`; running-turn status retries
       do not cover that path. Keep transient reads within the protected restore
