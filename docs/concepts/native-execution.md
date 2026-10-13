@@ -444,8 +444,9 @@ release criteria before widening support; later capabilities are separate scope.
       Include old artifact discussions and Quorum success/failure/retry. Done when
       drafts, connections, and accepted actions remain identity- and revision-scoped
       across reconnect, and advisory output cannot accept an answer.
-      **Local verification complete (2026-10-13):** sign-out, expiry and replacement
-      invalidate the session before further authenticated work. Pending token grants
+      **Local verification complete after review corrections (2026-10-13):**
+      sign-out, expiry and replacement invalidate the session before further
+      authenticated work. Pending token grants
       cannot repopulate another login's cache; API requests cannot send an old answer
       with newly resolved credentials. Application channels detach on navigation or
       access loss. Yjs disconnects and rejects late callbacks, including checkpoint
@@ -454,6 +455,17 @@ release criteria before widening support; later capabilities are separate scope.
       across account, project, thread and access changes, including project-disabled
       denials. A reply retry retains the exact submitted choice while collaborators
       edit; a revised question gets a fresh draft.
+      Review exposed two discussion regressions, now corrected: failed resolution
+      saves retain the summary and selected outcome and display the failure;
+      failed Reopen displays an error and permits retry. Discussion action or
+      resource 403/404 responses no longer imply project-wide access loss.
+      Existing protected discussion-list and membership reads distinguish missing
+      anchors/messages and lost moderation roles from denied scope or membership.
+      Unknown execution ownership detaches only that discussion scope; confirmed
+      membership loss clears project data. Delayed checks and status failures
+      cannot affect a replacement thread, project or identity. Restored membership
+      can reopen discussions through the existing protected native listing retry.
+      Platform intent and read-only sprint discussions retain their contracts.
       Deterministic slices cover two members in the shared Intent shell, real
       signed-scope Yjs connections and expiry, graph-backed membership and historical
       discussions, and Quorum failure/retry/stale completion. The actual native
@@ -465,11 +477,14 @@ release criteria before widening support; later capabilities are separate scope.
       an additional DynamoDB Local slice verifies the actual SDK transaction,
       immutable receipt and command, losing member, retry and revocation.
       **Evidence:** Node 24.21.0 with `NODE_OPTIONS=--no-experimental-webstorage`;
-      1,675 frontend tests (130 files) and build, 3,956 native-runtime-control/discussions/Yjs/
-      AgentCore tests, and an earlier 5,442-test shared/native/realtime/backend run
-      passed, plus 27 serial checks including the DynamoDB Local slice.
+      the review regressions first reproduced as two failures. After correction,
+      68 focused frontend tests and all 1,713 frontend tests (130 files), build,
+      lint, formatting and secretlint passed. Backend contracts did not change in
+      the correction. Earlier validation passed 3,956 native-runtime-control/discussions/Yjs/
+      AgentCore tests, a 5,442-test shared/native/realtime/backend run, and 27 serial
+      checks including the DynamoDB Local slice.
       Three unrelated real-Bun sensor tests were skipped because Bun was
-      unavailable. Lint, formatting, secretlint, dependency and architecture checks,
+      unavailable. Earlier dependency and architecture checks,
       21 native wiring tests and five architecture script tests passed; lint,
       dependency and bundle-size warnings remain. Docker access required the
       permitted sandbox escalation.

@@ -91,6 +91,8 @@ export function useDiscussions(): DiscussionContextValue | null {
 const TOAST_TTL_MS = 8000;
 // Trailing-debounce window for fanout-triggered list refreshes (see below).
 const RELOAD_DEBOUNCE_MS = 600;
+const accessError = (error: unknown): error is ApiError =>
+  error instanceof ApiError && [401, 403, 404].includes(error.status);
 
 export function DiscussionProvider({
   children,
@@ -149,8 +151,14 @@ function ScopedDiscussionProvider({
     backend === 'native' ? projectId : null,
     backend === 'native' ? intentId : null,
   );
+  const [scopeDenied, setScopeDenied] = useState(false);
+  // A later successful native listing retry can restore project access. Local
+  // ownership denial otherwise lasts until this route/identity is replaced.
+  useEffect(() => {
+    if (!enabled) setScopeDenied(false);
+  }, [enabled]);
   const scope = useMemo<DiscussionScope | null>(() => {
-    if (!enabled) return null;
+    if (!enabled || scopeDenied) return null;
     if (backend === 'native') {
       // Never fall back to the platform intent scope for a native route.
       return intentId && projectId && digest
@@ -160,7 +168,7 @@ function ScopedDiscussionProvider({
     if (sprintId) return { kind: 'sprint', sprintId };
     if (intentId && projectId) return { kind: 'intent', projectId, intentId };
     return null;
-  }, [backend, digest, sprintId, intentId, projectId, enabled]);
+  }, [backend, digest, sprintId, intentId, projectId, enabled, scopeDenied]);
   const { user } = useAuth();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -186,6 +194,8 @@ function ScopedDiscussionProvider({
   );
   const openGeneration = useRef(0);
   const listGeneration = useRef(0);
+  const memberGeneration = useRef(0);
+  const accessGeneration = useRef(0);
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -194,26 +204,54 @@ function ScopedDiscussionProvider({
       listGeneration.current++;
     };
   }, []);
+  const denyScope = useCallback(() => {
+    // Fence callbacks synchronously, before React detaches the thread/Yjs reader.
+    scopeRef.current = null;
+    openGeneration.current++;
+    listGeneration.current++;
+    memberGeneration.current++;
+    setScopeDenied(true);
+    setDiscussion(null);
+    setDiscussions([]);
+    setMembers([]);
+    setToasts([]);
+    setOpen(false);
+    setLoading(false);
+  }, []);
+
   const onAccessFailure = useCallback(
-    (err: unknown) => {
+    async (err: unknown, scopeReadFailed = false) => {
+      if (!scope || !scopeCurrent() || !accessError(err)) return;
+      const generation = ++accessGeneration.current;
+      const threadGeneration = openGeneration.current;
+      const membersGeneration = ++memberGeneration.current;
+      // Action/anchor 403s and 404s do not prove scope denial. These existing
+      // reads authorize the whole discussion scope and project membership.
+      const [scopeAccess, projectAccess] = await Promise.allSettled([
+        scopeReadFailed ? Promise.reject(err) : discussionsService.list(scope),
+        projectId ? projectsService.listMembers(projectId) : Promise.resolve<Member[]>([]),
+      ]);
       if (
-        !alive.current ||
-        epoch !== currentSessionEpoch() ||
-        !isSessionActive() ||
-        !(err instanceof ApiError) ||
-        ![401, 403, 404].includes(err.status)
+        !scopeCurrent() ||
+        generation !== accessGeneration.current ||
+        threadGeneration !== openGeneration.current
       )
         return;
-      openGeneration.current++;
-      listGeneration.current++;
-      setDiscussion(null);
-      setDiscussions([]);
-      setMembers([]);
-      setToasts([]);
-      setOpen(false);
-      if (backend === 'native') clearNativeIntents(projectId, true);
+      const projectDenied =
+        projectAccess.status === 'rejected' && accessError(projectAccess.reason);
+      if (projectDenied || (scopeAccess.status === 'rejected' && accessError(scopeAccess.reason))) {
+        denyScope();
+        // Missing execution ownership denies only this scope. Only a protected
+        // project read may evict all of the project's native listings.
+        if (projectDenied && backend === 'native') clearNativeIntents(projectId, true);
+      } else if (
+        projectAccess.status === 'fulfilled' &&
+        membersGeneration === memberGeneration.current
+      ) {
+        setMembers(projectAccess.value);
+      }
     },
-    [backend, projectId, epoch],
+    [scope, scopeCurrent, backend, projectId, denyScope],
   );
 
   useEffect(() => {
@@ -228,7 +266,7 @@ function ScopedDiscussionProvider({
       const all = await discussionsService.list(scope);
       if (scopeCurrent() && generation === listGeneration.current) setDiscussions(all);
     } catch (err) {
-      if (scopeCurrent() && generation === listGeneration.current) onAccessFailure(err);
+      if (scopeCurrent() && generation === listGeneration.current) onAccessFailure(err, true);
     }
   }, [scope, onAccessFailure, scopeCurrent]);
 
@@ -273,21 +311,31 @@ function ScopedDiscussionProvider({
       return;
     }
     let cancelled = false;
+    const generation = ++memberGeneration.current;
+    const current = () =>
+      !cancelled &&
+      alive.current &&
+      generation === memberGeneration.current &&
+      epoch === currentSessionEpoch() &&
+      isSessionActive();
     projectsService
       .listMembers(projectId)
       .then((value) => {
-        if (!cancelled) setMembers(value);
+        if (current()) setMembers(value);
       })
       .catch((err) => {
-        if (!cancelled) {
+        if (current()) {
           setMembers([]);
-          onAccessFailure(err);
+          if (accessError(err)) {
+            denyScope();
+            if (backend === 'native') clearNativeIntents(projectId, true);
+          }
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [projectId, enabled, onAccessFailure]);
+  }, [projectId, enabled, backend, epoch, denyScope]);
 
   const role = useMemo(
     () => members.find((m) => m.userId === user?.userId)?.role ?? null,
@@ -351,7 +399,7 @@ function ScopedDiscussionProvider({
           })
           .catch((err) => {
             if (!current()) return;
-            onAccessFailure(err);
+            onAccessFailure(err, true);
             console.error('Failed to open discussion:', err);
             setError(err instanceof Error ? err.message : 'Failed to open discussion');
           })
@@ -406,7 +454,7 @@ function ScopedDiscussionProvider({
         setDiscussion(known);
       } catch (err) {
         if (!current()) return;
-        onAccessFailure(err);
+        onAccessFailure(err, true);
         console.error('Failed to open discussion:', err);
         setError(err instanceof Error ? err.message : 'Failed to open discussion');
       } finally {

@@ -18,6 +18,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { useAuth } from '@/contexts/AuthContext';
 import { useDiscussion } from '@/hooks/useDiscussion';
 import { discussionsService } from '@/services/discussions';
+import { currentSessionEpoch, isSessionActive } from '@/services/sessionExpiry';
 import { generateColor } from '@/utils/colors';
 import { firstUnreadIndex } from '@/lib/discussion';
 import { DiscussionThread } from './DiscussionThread';
@@ -67,6 +68,8 @@ export function DiscussionPanel() {
 function DiscussionPanelContent() {
   const ctx = useDiscussions();
   const alive = useRef(true);
+  const epoch = useRef(currentSessionEpoch()).current;
+  const current = () => alive.current && epoch === currentSessionEpoch() && isSessionActive();
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -113,6 +116,7 @@ function DiscussionPanelContent() {
 
   const [resolveOpen, setResolveOpen] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
   // Redaction is a security / legal / compliance action — a silent failure
   // would leave the operator believing sensitive content was removed when it
   // wasn't, so surface failures in a dismissible banner.
@@ -140,7 +144,8 @@ function DiscussionPanelContent() {
   // lastReadAt + lastReadMessageId) ──
   const lastMarkedRef = useRef<string>('');
   const markRead = () => {
-    if (!ctx || !discussion || !scope || document.visibilityState !== 'visible') return;
+    if (!ctx || !discussion || !scope || !current() || document.visibilityState !== 'visible')
+      return;
     const newest = messages[messages.length - 1];
     if (!newest) return;
     const cursor = `${newest.createdAt},${newest.id}`;
@@ -151,7 +156,9 @@ function DiscussionPanelContent() {
         lastReadAt: newest.createdAt,
         lastReadMessageId: newest.id,
       })
-      .then(() => ctx.reloadDiscussions())
+      .then(() => {
+        if (current()) return ctx.reloadDiscussions();
+      })
       .catch(() => {
         lastMarkedRef.current = '';
       });
@@ -162,28 +169,32 @@ function DiscussionPanelContent() {
     resolutionSummary?: string;
     outcomeMessageId?: string;
   }) => {
-    if (!ctx || !discussion || !scope) return;
+    if (!ctx || !discussion || !scope || !current()) return;
     setStatusBusy(true);
+    setStatusError(null);
     try {
       const updated = await discussionsService.update(scope, discussion.id, input);
-      if (!alive.current) return;
+      if (!current()) return;
       ctx.setActiveDiscussion(updated);
     } catch (err) {
-      if (alive.current) ctx.onAccessFailure(err);
+      if (!current()) return;
+      ctx.onAccessFailure(err);
+      // ResolveDialog owns the draft and must see failure to retain it.
+      throw err;
     } finally {
-      setStatusBusy(false);
+      if (current()) setStatusBusy(false);
     }
   };
 
   const redact = async (messageId: string) => {
-    if (!discussion || !scope) return;
+    if (!discussion || !scope || !current()) return;
     setRedactError(null);
     try {
       const redacted = await discussionsService.redact(scope, discussion.id, messageId);
-      if (!alive.current) return;
+      if (!current()) return;
       applyMessages([redacted]);
     } catch (err) {
-      if (!alive.current) return;
+      if (!current()) return;
       ctx?.onAccessFailure(err);
       console.error('Redact failed:', err);
       setRedactError(
@@ -252,7 +263,14 @@ function DiscussionPanelContent() {
                 size="sm"
                 className="h-6 text-xs shrink-0"
                 disabled={statusBusy}
-                onClick={() => setStatus({ status: 'open' })}
+                onClick={() => {
+                  void setStatus({ status: 'open' }).catch((err) => {
+                    if (current())
+                      setStatusError(
+                        err instanceof Error ? err.message : 'Failed to reopen discussion',
+                      );
+                  });
+                }}
               >
                 <RotateCcw className="h-3 w-3 mr-1" />
                 Reopen
@@ -293,6 +311,11 @@ function DiscussionPanelContent() {
 
       {discussion && !loading && !error && (
         <>
+          {statusError && (
+            <p role="alert" className="px-3 py-2 text-xs text-destructive">
+              {statusError}
+            </p>
+          )}
           {resolved && discussion.resolutionSummary && (
             <div className="border-b bg-muted/50 px-3 py-2">
               <p className="text-[10px] font-medium text-muted-foreground uppercase">Resolution</p>
