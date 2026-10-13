@@ -104,17 +104,16 @@ export const statusOwnerErrors = new Set([
   'native_execution_cancelled',
 ]);
 // Transport provenance is local controller state, never an agent-supplied
-// property or a diagnostic logger result. Keep the original thrown error so
-// dispatch/recovery behavior outside acknowledged RUNNING status reads stays
-// unchanged.
+// property or a diagnostic logger result. Keep the original thrown error and
+// any structured rejection separate from the unreadable-response category.
 export const runtimeReadFailures = new WeakMap();
-export const markRuntimeReadFailure = (error, kind) => {
+export const markRuntimeReadFailure = (error, kind, runtimeCode) => {
   if (error && (typeof error === 'object' || typeof error === 'function'))
-    runtimeReadFailures.set(error, kind);
+    runtimeReadFailures.set(error, { kind, runtimeCode });
   return error;
 };
-export const failRuntimeRead = (code, kind) => {
-  throw markRuntimeReadFailure(Object.assign(new Error(code), { code }), kind);
+export const failRuntimeRead = (code, kind, runtimeCode) => {
+  throw markRuntimeReadFailure(Object.assign(new Error(code), { code }), kind, runtimeCode);
 };
 export const shortTransportRetry = (error) =>
   error?.code === 'NATIVE_RECOVERY_UNAVAILABLE' ||
@@ -130,7 +129,7 @@ export const shortTransportRetry = (error) =>
   ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE'].includes(error?.code);
 export const statusReadFailure = (error) => {
   if (statusOwnerErrors.has(error?.code)) return null;
-  const kind = runtimeReadFailures.get(error);
+  const kind = runtimeReadFailures.get(error)?.kind;
   if (kind === 'OWNER_REJECTED') return null;
   if (kind) return kind;
   // Injected SDK ports can throw the same transport errors without going
@@ -138,6 +137,12 @@ export const statusReadFailure = (error) => {
   if (error?.name === 'RuntimeClientError' || shortTransportRetry(error)) return 'SDK_FAILURE';
   return null;
 };
+export const recoveryReadRejected = (error) =>
+  // SDK errors carry the code directly; parsed HTTP rejections retain it in
+  // controller provenance. Never infer a runtime rejection from message text.
+  [error?.code, runtimeReadFailures.get(error)?.runtimeCode].some(
+    (code) => typeof code === 'string' && /^native_execution_[a-z_]+$/.test(code),
+  );
 export const phaseError = (error) => {
   // A closed fence on a still-active protected row means earlier failure
   // cleanup was interrupted. Retry stop/persistence, never reopen dispatch.
@@ -209,6 +214,7 @@ export const reconcileNativeRecovery = async ({
   yieldPending,
   observedInvoke,
   status,
+  observe,
 }) => {
   const recovery = state.row.recovery;
   try {
@@ -244,25 +250,47 @@ export const reconcileNativeRecovery = async ({
     checkpointId: state.row.recoveryCheckpoint.id,
   });
   await check();
-  const ack = await observedInvoke({
-    execution: state.row,
-    payload: {
-      command: 'native-recover',
-      schemaVersion: 1,
-      ...writerPayload(state.row),
-      recoveryId: recovery.id,
-      sequence: state.row.publication.sequence,
-      checkpoint: state.row.recoveryCheckpoint,
-      publication: state.row.publication,
-      interaction: state.row.interaction,
-      configuration: executionRuntimeConfiguration(draft, state.row),
-      imageDigest: state.row.configuration.image.digest,
-      package: { candidate: draft.candidate, archiveReceipt: draft.archiveReceipt },
-    },
-  });
-  await check();
-  checkReportIdentity(state.row, ack);
-  const report = ack.status === 'recovery_ready' ? ack : await status();
+  let report;
+  let phase = 'recover';
+  try {
+    const ack = await observedInvoke({
+      execution: state.row,
+      payload: {
+        command: 'native-recover',
+        schemaVersion: 1,
+        ...writerPayload(state.row),
+        recoveryId: recovery.id,
+        sequence: state.row.publication.sequence,
+        checkpoint: state.row.recoveryCheckpoint,
+        publication: state.row.publication,
+        interaction: state.row.interaction,
+        configuration: executionRuntimeConfiguration(draft, state.row),
+        imageDigest: state.row.configuration.image.digest,
+        package: { candidate: draft.candidate, archiveReceipt: draft.archiveReceipt },
+      },
+    });
+    await check();
+    checkReportIdentity(state.row, ack);
+    phase = 'status';
+    report = ack.status === 'recovery_ready' ? ack : await status();
+  } catch (error) {
+    if (recoveryReadRejected(error)) return requireRecovery('RESTORE_FAILED');
+    const failureClass = statusReadFailure(error);
+    if (!failureClass) throw error;
+    // Recovery deduplicates the exact episode/generation/checkpoint. An
+    // unreadable acknowledgement or status does not prove restore failure.
+    // Recheck authority and yield the lease; the next worker repeats only
+    // that restore, never an accepted answer or a new writer admission.
+    await check();
+    observe({
+      phase,
+      stage: 'decision',
+      code: 'STATUS_READ_RETRY',
+      failureClass,
+      controlStatus: state.row.status,
+    });
+    return yieldPending();
+  }
   await check();
   checkReportIdentity(state.row, report);
   if (

@@ -11,7 +11,7 @@ import { createNativePublications } from '../../shared/native-publication.js';
 import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeRecoveryCheckpoints } from '../../shared/native-recovery-checkpoint.js';
 import { createNativeExecutionFence } from '../../shared/native-execution-fence.js';
-import { createNativeExecutionSupervisor } from '../execution-worker.js';
+import { createNativeExecutionSupervisor, readNativeRuntimeReport } from '../execution-worker.js';
 import { createNativeExecutionApi } from '../execution-api.js';
 import { executionIdentity } from '../execution-runtime.js';
 import { executionFixture } from './execution-fixtures.js';
@@ -24,7 +24,10 @@ it.each([
   { loseAck: false, failRestore: false },
   { loseAck: true, failRestore: false },
   { loseAck: false, failRestore: true },
-])('restores the exact session after local state loss: %j', async ({ loseAck, failRestore }) => {
+  { loseAck: false, restoreRead: 'native-status', unreadableReads: 1 },
+  { loseAck: true, restoreRead: 'native-recover', unreadableReads: 3 },
+])('restores the exact session after local state loss: %j', async (scenario) => {
+  const { loseAck, failRestore, restoreRead, unreadableReads = 0 } = scenario;
   const f = executionFixture();
   await f.start();
   const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-recovery-loop-')));
@@ -184,6 +187,9 @@ it.each([
   let lastRuntimeResult;
   let beforeStop;
   let loseNextAck = loseAck;
+  let remainingUnreadable = unreadableReads;
+  let restoreEpisode;
+  const restoreReports = [];
   const stop = vi.fn(async ({ execution, recoveryId }) => {
     expect(recoveryId).toBeTruthy();
     expect((await fence.read(executionIdentity(execution))).state).toBe('FENCED');
@@ -228,6 +234,20 @@ it.each([
       } catch (error) {
         lastInvocationError = { code: error.code, name: error.name };
         throw error;
+      }
+      if (f.row().status === 'RECOVERING') {
+        restoreEpisode ??= f.row().recovery;
+        expect(f.row().recovery).toEqual(restoreEpisode);
+        if (payload.command === 'native-recover') restoreReports.push(result);
+        if (payload.command === restoreRead && remainingUnreadable > 0) {
+          remainingUnreadable--;
+          // The actual restore ran. Only its response was lost in transport.
+          return readNativeRuntimeReport({
+            statusCode: 200,
+            contentType: 'application/json',
+            response: Readable.from(['{"partial":']),
+          });
+        }
       }
       if (payload.command === 'native-continue' && loseNextAck) {
         loseNextAck = false;
@@ -280,13 +300,28 @@ it.each([
     expect(f.row().status).toBe('RECOVERING');
     expect((await api.interaction(f.prepared, recheck)).response.text).toBe(request.text);
     expect((await api.publication(f.prepared, recheck)).id).toBe(first.publication.id);
-    for (let i = 0; i < 12 && !['AWAITING_USER', 'RECOVERY_REQUIRED'].includes(f.row().status); i++)
+    for (
+      let i = 0;
+      i < 12 && !['AWAITING_USER', 'RECOVERY_REQUIRED'].includes(f.row().status);
+      i++
+    ) {
+      if (unreadableReads && f.row().status === 'RECOVERING') {
+        const before = f.row();
+        await api.recover(
+          f.prepared,
+          { requestId: randomUUID(), recoveryId: before.recovery.id },
+          recheck,
+        );
+        expect(f.row()).toEqual(before);
+      }
       await step();
+    }
     if (failRestore) {
       expect(f.row().status).toBe('RECOVERY_REQUIRED');
       expect(f.row().recovery).toMatchObject({ reason: 'RESTORE_FAILED', canRecover: true });
       expect(modelTurns).toBe(1);
       const recoveryRequest = { requestId: randomUUID(), recoveryId: f.row().recovery.id };
+      restoreEpisode = undefined;
       const resumed = await api.recover(f.prepared, recoveryRequest, recheck);
       expect(resumed.execution.status).toBe('RECOVERING');
       expect(await api.recover(f.prepared, recoveryRequest, recheck)).toEqual(resumed);
@@ -307,6 +342,20 @@ it.each([
     expect(f.row().writerGeneration).toBe(finalGeneration);
     expect(stop).toHaveBeenCalledTimes(failRestore ? 3 : 1);
     expect(modelTurns).toBe(2);
+    expect(remainingUnreadable).toBe(0);
+    if (unreadableReads) {
+      expect(restoreReports.length).toBeGreaterThan(1);
+      expect(restoreReports.slice(1).every((report) => report.duplicate === true)).toBe(true);
+      const recovered = f.row();
+      await api.recover(
+        f.prepared,
+        { requestId: randomUUID(), recoveryId: restoreEpisode.id },
+        recheck,
+      );
+      expect(f.row()).toEqual(recovered);
+      await step(); // A duplicate work pointer cannot deliver the answer again.
+      expect(modelTurns).toBe(2);
+    }
     expect(f.row().attemptId).toBe(first.attemptId);
     expect(f.row().runtimeSessionId).toBe(first.runtimeSessionId);
     expect(f.row().epoch).toBe(first.epoch);

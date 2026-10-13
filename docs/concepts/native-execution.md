@@ -345,11 +345,28 @@ release criteria before widening support; later capabilities are separate scope.
       An unchanged interaction test failed intermittently with
       duplicate draft text in one focused run, then passed alone and in the full suite.
       These checks do not establish live two-member or deployed qualification.
-- [ ] **Issue — transient reads during restoration.** Unreadable runtime reports
-      during `RECOVERING` can become `RESTORE_FAILED`; running-turn status retries
-      do not cover that path. Keep transient reads within the protected restore
-      episode. Done when unreadable → ready, repeated restore requests, and resumed
-      delivery pass while genuine checkpoint or ownership failures remain explicit.
+- [x] **Issue — transient reads during restoration.** The recovery supervisor
+      retries unreadable restore acknowledgements and status reports through the
+      existing short queue and conditional lease release. It retains the recovery
+      ID, writer generation, checkpoint/session identity, pinned configuration, and
+      accepted answer. Repeated restore requests observe the same admitted restore;
+      they do not replay a model turn. Structured runtime rejections, checkpoint
+      failures, identity mismatches, and lost ownership remain explicit. Confirmed
+      stop, cancellation, and membership/image revocation checks remain in force.
+      Deterministic regressions cover unreadable → ready, repeated unreadable reads,
+      duplicate/concurrent work and restore requests, stale owners, and resumed
+      answer delivery once through the real local runtime and checkpoint codecs.
+      Local verification on Node 24.21.0: 137 focused tests and all 5,720 native
+      foundation tests passed; wiring (21 tests), architecture regressions (5 tests),
+      architecture checks, lint, formatting, secret scanning, and dependency checks
+      passed. Two broader runs across `native-runtime-control`, `agentcore`, `shared`,
+      and `intents` each passed 7,609 tests with 3 skipped and one failure: an unchanged
+      authentication inventory test timed out at five seconds, then an unchanged
+      source-transport deadline assertion failed on retry. Both suites passed in
+      isolation (13 and 162 tests). An intervening Docker port-binding failure ran no
+      tests. Lint and dependency warnings remain. Docker/loopback access was required;
+      Node 22 was not locally available. These checks do not establish deployed AWS,
+      pinned CLI/model, or live release qualification.
 - [ ] **Capability — uncertain and abandoned work.** Provide inspect/export and
       safe new-run choices with lineage after confirmed stop; define archive and
       reference-aware cleanup for drafts and terminal runs. Done when members have a

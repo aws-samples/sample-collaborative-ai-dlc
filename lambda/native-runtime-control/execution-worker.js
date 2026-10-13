@@ -377,6 +377,7 @@ export const createNativeExecutionSupervisor =
           yieldPending,
           observedInvoke,
           status,
+          observe,
         });
       }
       if (state.row.status === 'DISPATCHING') {
@@ -567,6 +568,7 @@ export const readNativeRuntimeReport = async (
         value?.ok === false && statusOwnerErrors.has(value.code)
           ? 'OWNER_REJECTED'
           : 'HTTP_NON_200',
+        value?.ok === false ? value.code : undefined,
       );
     }
     return value;

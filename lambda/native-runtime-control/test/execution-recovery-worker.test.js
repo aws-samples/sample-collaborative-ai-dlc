@@ -1,9 +1,10 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { RuntimeClientError } from '@aws-sdk/client-bedrock-agentcore';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createNativeExecutionSupervisor,
+  invokeNativeExecutionRuntime,
   stopNativeExecutionSession,
 } from '../execution-worker.js';
 import { executionIdentity, executionRuntimeConfiguration } from '../execution-runtime.js';
@@ -16,6 +17,49 @@ import {
 import { serialFixture, SERIAL_SOURCE } from './execution-serial-fixtures.js';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
+const unreadable = (kind, input) =>
+  invokeNativeExecutionRuntime({
+    ...input,
+    runtime: {
+      async send() {
+        if (kind === 'sdk')
+          throw new RuntimeClientError({
+            $metadata: { httpStatusCode: 424 },
+            message: 'private recovery acknowledgement unavailable',
+          });
+        if (kind === 'timeout')
+          throw Object.assign(new Error('transport timed out'), { name: 'TimeoutError' });
+        const response =
+          kind === 'stream'
+            ? Readable.from(
+                (async function* () {
+                  yield '{"status":';
+                  throw new Error('private partial body');
+                })(),
+              )
+            : Readable.from([
+                kind === 'json'
+                  ? '{"private":'
+                  : JSON.stringify(kind === 'oversized' ? 'x'.repeat(270000) : {}),
+              ]);
+        return {
+          contentType: kind === 'content' ? 'text/plain' : 'application/json',
+          statusCode: kind === 'http' ? 503 : 200,
+          response,
+        };
+      },
+    },
+  });
+
+const interruptRestoreRead = (f, phase, read) => {
+  const invoke = f.ports.invoke.getMockImplementation();
+  f.ports.invoke.mockImplementationOnce(async (input) => {
+    const ack = await invoke(input);
+    return phase === 'recover' ? read(input) : { ...ack, status: 'recovering' };
+  });
+  if (phase === 'status') f.ports.invoke.mockImplementationOnce(read);
+};
+
 const fixture = async ({ checkpoint = true } = {}) => {
   const f = serialFixture();
   await f.ready();
@@ -95,6 +139,7 @@ const fixture = async ({ checkpoint = true } = {}) => {
     interactions: f.interactions,
     checkpoints: { read: vi.fn(async () => structuredClone(checkpointManifest)) },
     authorize: vi.fn(async () => {}),
+    diagnostics: vi.fn(),
     project: vi.fn(async () => {}),
     credentials: vi.fn(async (row) => ({
       ok: true,
@@ -556,30 +601,269 @@ describe('same-session native writer recovery', () => {
       expect((await f.ports.fence.read(executionIdentity(f.row()))).state).toBe('FENCED');
     },
   );
-  it('keeps an unconfirmed native-recover delivery in recovery review, not the RUNNING status retry path', async () => {
+  it.each(
+    ['recover', 'status'].flatMap((phase) =>
+      ['sdk', 'timeout', 'content', 'json', 'stream', 'oversized', 'http'].map((kind) => ({
+        phase,
+        kind,
+      })),
+    ),
+  )(
+    'retries unreadable $phase/$kind within the admitted restore episode',
+    async ({ phase, kind }) => {
+      const f = await fixture();
+      await f.reconcile(f.identity);
+      await f.reconcile(f.identity);
+      const before = f.row();
+      const answer = await f.store.response(before, before.interaction.id);
+      interruptRestoreRead(f, phase, (input) => unreadable(kind, input));
+      expect(await f.reconcile(f.identity)).toEqual({ pending: true, status: 'RECOVERING' });
+      expect(f.row()).toMatchObject({
+        ...before,
+        version: expect.any(Number),
+        fence: before.fence + 1,
+      });
+      expect(f.row().leaseToken).toBeUndefined();
+      expect(f.row().dispatch).toBeUndefined();
+      expect(await f.ports.fence.read(executionIdentity(before))).toMatchObject({
+        state: 'ACTIVE',
+        writerGeneration: 2,
+        recoveryId: before.recovery.id,
+        checkpointId: before.recoveryCheckpoint.id,
+      });
+      expect(f.ports.stop).toHaveBeenCalledTimes(1);
+      expect(f.ports.credentials).not.toHaveBeenCalled();
+      expect(f.ports.diagnostics).toHaveBeenLastCalledWith(
+        expect.objectContaining({ phase, code: 'STATUS_READ_RETRY', controlStatus: 'RECOVERING' }),
+      );
+      for (let index = 0; index < 2; index++) {
+        const current = f.row();
+        await f.api.recover(
+          f.prepared,
+          { requestId: randomUUID(), recoveryId: before.recovery.id },
+          f.recheck,
+        );
+        expect(f.row()).toEqual(current);
+      }
+      await f.reconcile(f.identity);
+      expect(f.row()).toMatchObject({
+        status: 'DISPATCHING',
+        lastRecoveryId: before.recovery.id,
+        writerGeneration: 2,
+        response: before.response,
+      });
+      await f.reconcile(f.identity);
+      expect(f.row()).toMatchObject({
+        status: 'RUNNING',
+        response: { commandId: answer.commandId, deliveryStatus: 'delivered' },
+      });
+      expect(await f.store.response(f.row(), before.interaction.id)).toEqual(answer);
+      const payloads = f.ports.invoke.mock.calls.map(([call]) => call.payload);
+      const restores = payloads.filter((p) => p.command === 'native-recover');
+      expect(restores).toHaveLength(2);
+      expect(restores[0]).toEqual(restores[1]);
+      expect(payloads.filter((p) => p.command === 'native-continue')).toEqual([
+        expect.objectContaining({
+          requestId: answer.commandId,
+          text: answer.text,
+          writerGeneration: 2,
+        }),
+      ]);
+      expect(payloads.some((p) => p.command === 'native-start')).toBe(false);
+    },
+  );
+  it('keeps repeated unreadable work and concurrent delivery in one restore without a retry cutoff', async () => {
     const f = await fixture();
     await f.reconcile(f.identity);
     await f.reconcile(f.identity);
-    expect(f.row()).toMatchObject({
-      status: 'RECOVERING',
-      recovery: { phase: 'RESTORING' },
-      writerGeneration: 2,
-    });
-    f.ports.invoke.mockRejectedValueOnce(
-      new RuntimeClientError({
-        $metadata: { httpStatusCode: 424 },
-        message: 'private recovery acknowledgement unavailable',
-      }),
-    );
+    const before = f.row();
+    for (let index = 0; index < 12; index++) {
+      f.tick(24 * 60 * 60 * 1000);
+      interruptRestoreRead(f, index % 2 ? 'status' : 'recover', async (input) => {
+        const invocations = f.ports.invoke.mock.calls.length;
+        expect(await f.reconcile(f.identity)).toEqual({ pending: true, status: 'busy' });
+        expect(f.ports.invoke).toHaveBeenCalledTimes(invocations);
+        return unreadable('sdk', input);
+      });
+      expect(await f.reconcile(f.identity)).toEqual({ pending: true, status: 'RECOVERING' });
+      expect(f.row()).toMatchObject({
+        recovery: before.recovery,
+        writerGeneration: 2,
+        configuration: before.configuration,
+        response: before.response,
+      });
+      expect(f.row().leaseToken).toBeUndefined();
+    }
+    await f.reconcile(f.identity);
+    await f.reconcile(f.identity);
+    expect(f.row()).toMatchObject({ status: 'RUNNING', writerGeneration: 2 });
+    expect(f.calls.filter((command) => command === 'native-continue')).toHaveLength(1);
+    expect(f.ports.stop).toHaveBeenCalledTimes(1);
+  });
+  it.each(
+    ['recover', 'status'].flatMap((phase) =>
+      [
+        'native_execution_owner_conflict',
+        'native_execution_scope_mismatch',
+        'native_execution_local_record_invalid',
+        'native_execution_recovery_failed',
+        'native_execution_configuration_invalid',
+      ].flatMap((code) => ['sdk', 'http'].map((transport) => ({ phase, code, transport }))),
+    ),
+  )(
+    'requires recovery for $phase $transport rejection $code after a transient read',
+    async ({ phase, code, transport }) => {
+      const f = await fixture();
+      await f.reconcile(f.identity);
+      await f.reconcile(f.identity);
+      interruptRestoreRead(f, phase, (input) => unreadable('json', input));
+      await f.reconcile(f.identity);
+      interruptRestoreRead(f, phase, (input) =>
+        invokeNativeExecutionRuntime({
+          ...input,
+          runtime: {
+            async send() {
+              if (transport === 'sdk')
+                throw Object.assign(
+                  new RuntimeClientError({ $metadata: {}, message: 'rejected' }),
+                  { code },
+                );
+              return {
+                contentType: 'application/json',
+                statusCode: 409,
+                response: Readable.from([JSON.stringify({ ok: false, code })]),
+              };
+            },
+          },
+        }),
+      );
+      expect(await f.reconcile(f.identity)).toMatchObject({
+        pending: false,
+        status: 'RECOVERY_REQUIRED',
+        reason: 'RESTORE_FAILED',
+      });
+      expect((await f.ports.fence.read(executionIdentity(f.row()))).state).toBe('FENCED');
+      expect(f.ports.stop).toHaveBeenCalledTimes(2);
+      expect(f.calls).not.toContain('native-continue');
+    },
+  );
+  it.each([
+    'writerGeneration',
+    'bindingId',
+    'recoveryId',
+    'checkpointId',
+    'sequence',
+    'nativeSessionId',
+  ])('does not retry a readable restored report with mismatched %s', async (field) => {
+    const f = await fixture();
+    await f.reconcile(f.identity);
+    await f.reconcile(f.identity);
+    interruptRestoreRead(f, 'recover', (input) => unreadable('sdk', input));
+    await f.reconcile(f.identity);
+    const invoke = f.ports.invoke.getMockImplementation();
+    f.ports.invoke.mockImplementationOnce(async (input) => ({
+      ...(await invoke(input)),
+      [field]: ['writerGeneration', 'sequence'].includes(field) ? 999 : 'wrong-identity',
+    }));
     expect(await f.reconcile(f.identity)).toMatchObject({
-      pending: false,
       status: 'RECOVERY_REQUIRED',
       reason: 'RESTORE_FAILED',
     });
-    expect(f.ports.invoke.mock.calls.at(-1)[0].payload.command).toBe('native-recover');
-    expect((await f.ports.fence.read(executionIdentity(f.row()))).state).toBe('FENCED');
-    expect(f.ports.stop).toHaveBeenCalledTimes(2);
-    expect(f.ports.credentials).not.toHaveBeenCalled();
+    expect(f.calls).not.toContain('native-continue');
+  });
+  it.each(['NATIVE_RECOVERY_INVALID', 'NATIVE_RECOVERY_MISSING'])(
+    'blocks %s discovered after an unreadable restore without resuming the answer',
+    async (code) => {
+      const f = await fixture();
+      await f.reconcile(f.identity);
+      await f.reconcile(f.identity);
+      interruptRestoreRead(f, 'recover', (input) => unreadable('sdk', input));
+      await f.reconcile(f.identity);
+      f.ports.checkpoints.read.mockRejectedValueOnce(Object.assign(new Error(code), { code }));
+      expect(await f.reconcile(f.identity)).toMatchObject({
+        status: 'RECOVERY_REQUIRED',
+        reason: 'CHECKPOINT_UNAVAILABLE',
+      });
+      expect(f.row().recovery.canRecover).toBe(false);
+      expect(f.ports.stop).toHaveBeenCalledTimes(2);
+      expect(f.calls).not.toContain('native-continue');
+    },
+  );
+  it.each(
+    ['recover', 'status'].flatMap((phase) =>
+      ['cancel', 'lease-takeover'].map((change) => ({ phase, change })),
+    ),
+  )(
+    'lets $change during an unreadable $phase win over the old worker',
+    async ({ phase, change }) => {
+      const f = await fixture();
+      await f.reconcile(f.identity);
+      await f.reconcile(f.identity);
+      let successor;
+      interruptRestoreRead(f, phase, async (input) => {
+        if (change === 'cancel') await f.store.cancel(f.bindingIdentity);
+        else {
+          f.tick();
+          expect((await f.store.claim(f.bindingIdentity)).kind).toBe('claimed');
+        }
+        successor = f.row();
+        return unreadable('sdk', input);
+      });
+      await expect(f.reconcile(f.identity)).rejects.toMatchObject({
+        code: 'NATIVE_EXECUTION_LEASE_LOST',
+      });
+      expect(f.row()).toEqual(successor);
+      expect(f.ports.stop).toHaveBeenCalledTimes(1);
+      expect(f.calls).not.toContain('native-continue');
+      expect(
+        f.ports.diagnostics.mock.calls.some(([event]) => event.code === 'STATUS_READ_RETRY'),
+      ).toBe(false);
+      if (change === 'cancel') {
+        f.ports.stop.mockImplementation(async () => ({ confirmed: true }));
+        expect(await f.reconcile(f.identity)).toEqual({ pending: false, status: 'CANCELLED' });
+        expect((await f.ports.fence.read(executionIdentity(f.row()))).state).toBe('CANCELLED');
+      }
+    },
+  );
+  it.each(['recover', 'status'])(
+    'lets membership revocation during unreadable %s stop restoration',
+    async (phase) => {
+      const f = await fixture();
+      await f.reconcile(f.identity);
+      await f.reconcile(f.identity);
+      interruptRestoreRead(f, phase, async (input) => {
+        f.ports.authorize.mockRejectedValue(
+          Object.assign(new Error('revoked'), { code: 'NATIVE_EXECUTION_FORBIDDEN' }),
+        );
+        return unreadable('sdk', input);
+      });
+      f.ports.stop.mockImplementation(async () => ({ confirmed: true }));
+      expect(await f.reconcile(f.identity)).toMatchObject({
+        pending: false,
+        status: 'FAILED',
+        failureCode: 'native_execution_access_denied',
+      });
+      expect(f.calls).not.toContain('native-continue');
+      expect((await f.ports.fence.read(executionIdentity(f.row()))).state).toBe('CANCELLED');
+    },
+  );
+  it('checks image revocation again before retrying an unreadable restore', async () => {
+    const f = await fixture();
+    const imagePolicy = { revocation: vi.fn(async () => false) };
+    const reconcile = createNativeExecutionSupervisor({ ...f.ports, imagePolicy });
+    await reconcile(f.identity);
+    await reconcile(f.identity);
+    interruptRestoreRead(f, 'recover', (input) => unreadable('sdk', input));
+    await reconcile(f.identity);
+    imagePolicy.revocation.mockResolvedValue(true);
+    f.ports.stop.mockImplementation(async () => ({ confirmed: true }));
+    const invocations = f.ports.invoke.mock.calls.length;
+    expect(await reconcile(f.identity)).toMatchObject({
+      status: 'FAILED',
+      failureCode: 'native_execution_image_revoked',
+    });
+    expect(f.ports.invoke).toHaveBeenCalledTimes(invocations);
+    expect(f.calls).not.toContain('native-continue');
   });
   it.each([
     'packageId',
