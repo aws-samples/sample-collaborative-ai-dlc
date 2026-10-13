@@ -6,6 +6,7 @@ import { useOptionalAuth } from '@/contexts/AuthContext';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { nativeArtifactRevisionId } from '@/lib/nativeCollaboration';
+import { nativeGraphMatchesPublication } from '@/lib/nativeTraceability';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -67,6 +68,7 @@ function NativePublicationContent({
   const [files, setFiles] = useState<Record<string, NativeFileContent>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [graph, setGraph] = useState<NativeGraph | null>(null);
+  const [graphError, setGraphError] = useState<string | null>(null);
   const [interaction, setInteraction] = useState<NativeInteractionView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reloadRevision, setReloadRevision] = useState(0);
@@ -245,22 +247,21 @@ function NativePublicationContent({
       .then((value) => {
         if (!active || !current(requestGeneration)) return;
         if (
-          value.publicationId !== publication.id ||
-          value.nodes.some(
-            (node) =>
-              (node.artifactId && !publication.files.some((file) => file.id === node.artifactId)) ||
-              (node.interactionId && node.interactionId !== interactionId) ||
-              (node.publicationId !== undefined && node.publicationId !== publication.id) ||
-              (node.intentId !== undefined && node.intentId !== intentId) ||
-              (node.projectId !== undefined && node.projectId !== projectId),
-          )
+          !nativeGraphMatchesPublication(value, publication, projectId, intentId, interactionId)
         ) {
           throw new Error('The graph does not match the committed revision. Refresh status.');
         }
+        setGraphError(null);
         setGraph(value);
       })
       .catch((err) => {
-        if (active || nativeAccessDenied(err)) failed(err, requestGeneration);
+        if (nativeAccessDenied(err)) failed(err, requestGeneration);
+        else if (active && current(requestGeneration)) {
+          setGraph(null);
+          setGraphError(
+            'The graph could not be verified or loaded. Files and replies remain available. Reopen Graph to retry.',
+          );
+        }
       });
     return () => {
       active = false;
@@ -289,6 +290,7 @@ function NativePublicationContent({
     setInteraction(null);
     setFiles({});
     setGraph(null);
+    setGraphError(null);
     setSelectedId(null);
     setError(null);
     setReloadRevision((value) => value + 1);
@@ -420,7 +422,24 @@ function NativePublicationContent({
         </WorkProductsCard>
       </TabsContent>
       <TabsContent value="graph">
+        {graphError && (
+          <p role="alert" className="text-sm text-destructive">
+            {graphError}
+          </p>
+        )}
+        {graph?.traceability && (
+          <p className="mb-2 text-xs text-muted-foreground">
+            Derived from published content. Phase and stage links describe file locations; item
+            claims do not verify completion or approval.
+            {(graph.traceability.relationships === 'structure_limit' ||
+              graph.traceability.files.some((file) =>
+                ['incompatible', 'byte_limit', 'structure_limit'].includes(file.status),
+              )) &&
+              ' Some files have generic or limited structure; their original content remains available in Files.'}
+          </p>
+        )}
         {!error &&
+          !graphError &&
           (publication ? (
             projectionComplete ? (
               <div className="h-[36rem] min-h-80 overflow-hidden rounded-md border">
@@ -430,11 +449,11 @@ function NativePublicationContent({
                     edges={graph?.edges ?? []}
                     title="Native intent graph"
                     loading={!graph}
+                    emptyState={<p>No graph nodes are included in this revision.</p>}
                     onOpenArtifact={openFile}
                     onOpenInteraction={(id) => {
                       if (interactionId === id) setTab('overview');
                     }}
-                    emptyState={<p>No graph nodes are included in this revision.</p>}
                   />
                 </TooltipProvider>
               </div>

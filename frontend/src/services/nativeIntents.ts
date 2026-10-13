@@ -194,6 +194,15 @@ export interface NativeGraph {
   publicationId: string;
   nodes: (IntentGraphNode & { interactionId?: string | null })[];
   edges: IntentGraphEdge[];
+  traceability?: {
+    contract: string;
+    enrichment: 'off';
+    relationships?: 'indexed' | 'structure_limit';
+    files: {
+      fileId: string;
+      status: 'generic' | 'extracted' | 'incompatible' | 'byte_limit' | 'structure_limit';
+    }[];
+  };
 }
 
 export interface NativeDraftRequest {

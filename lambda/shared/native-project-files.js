@@ -13,6 +13,21 @@ export const canonicalNativePath = (value) =>
   ) &&
   value.split('/').every((part) => part && part !== '.' && part !== '..');
 
+// Existing private-recovery credential classification. Kept separate from
+// public admission: changing historical visibility is an independent policy
+// decision. Derived indexes also avoid copying these files' content.
+export const nativeCredentialPath = (path) => {
+  const parts = path.split('/');
+  return (
+    parts.some((part) => ['.aws', '.ssh'].includes(part)) ||
+    ['.git-credentials', '.netrc', '.npmrc', '.pypirc'].includes(parts.at(-1)) ||
+    (/^\.env(?:\.|$)/.test(parts.at(-1)) &&
+      !/\.env(?:\.[\w-]+)*\.(?:example|sample|template)$/.test(parts.at(-1))) ||
+    /^\.codex\/auth\.json$/.test(path) ||
+    /^\.claude\/(?:\.credentials\.json|credentials\.json)$/.test(path)
+  );
+};
+
 // Independent of .gitignore: normal workflow state, directives, questions,
 // audit, verification and unknown artifact formats remain public run content.
 export const nativeFileExclusion = (path) => {

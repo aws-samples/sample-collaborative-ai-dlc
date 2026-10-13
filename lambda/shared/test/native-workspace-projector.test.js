@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { projectNativeWorkspace } from '../native-workspace-projector.js';
+import { projectNativeWorkspace, nativeArtifactLocation } from '../native-workspace-projector.js';
+
+it('describes only established record layouts without interpreting workflow status or artifact type', () => {
+  expect(nativeArtifactLocation('aidlc-docs/inception/requirements-analysis/anything.md')).toEqual({
+    recordRoot: 'aidlc-docs',
+    phase: 'inception',
+    stage: 'requirements-analysis',
+    unit: null,
+    contract: 'native-record-layout-v1',
+  });
+  expect(
+    nativeArtifactLocation(
+      'aidlc/spaces/team/intents/task/construction/unit-a/design/anything.txt',
+    ),
+  ).toMatchObject({
+    recordRoot: 'aidlc/spaces/team/intents/task',
+    phase: 'construction',
+    unit: 'unit-a',
+    stage: 'design',
+  });
+  for (const path of [
+    'requirements.md',
+    'src/inception/design/notes.md',
+    'aidlc-docs/unknown/design/notes.md',
+    'aidlc-docs/inception/notes.md',
+    'aidlc/spaces/team/codekb/repo/requirements.md',
+  ])
+    expect(nativeArtifactLocation(path)).toBeNull();
+});
 
 const input = () => ({
   intent: {

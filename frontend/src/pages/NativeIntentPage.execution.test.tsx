@@ -628,7 +628,7 @@ it('discards loaded detail on expiry instead of revealing it when expiry is rear
   expect(screen.queryByText('Which pipe style?')).not.toBeInTheDocument();
 });
 
-it('honors a late file denial even after a graph transport error cleared publication data', async () => {
+it('honors a late file denial after an isolated graph transport error', async () => {
   const pending = deferred<NativeFileContent>();
   api.get.mockResolvedValue(waiting);
   api.file.mockReturnValueOnce(pending.promise);
@@ -641,6 +641,52 @@ it('honors a late file denial even after a graph transport error cleared publica
   expect(screen.getByText(ready.title)).toBeInTheDocument();
   await act(async () => pending.reject(new ApiError(403, 'Membership revoked')));
   cleared();
+});
+
+it('opens a source file from a verified derived node and preserves it after a graph outage', async () => {
+  api.get.mockResolvedValue(waiting);
+  const file = publication.files[1];
+  api.graph.mockResolvedValueOnce({
+    publicationId: publication.id,
+    nodes: [
+      {
+        id: 'derived',
+        type: 'Section',
+        label: 'Source section',
+        artifactId: file.id,
+        path: file.path,
+        sha256: file.sha256,
+        publicationId: publication.id,
+        provenance: {
+          projectId: 'project-1',
+          executionId: 'run-1',
+          publicationId: publication.id,
+          publicationSequence: publication.sequence,
+          fileId: file.id,
+          sha256: file.sha256,
+          path: file.path,
+          revisionId: `${file.id}:${file.sha256}`,
+          contract: 'native-trace-v1',
+          method: 'deterministic',
+          sourceKind: 'markdown-section',
+          startLine: 1,
+          endLine: 1,
+        },
+      },
+    ],
+    edges: [],
+  });
+  const user = userEvent.setup();
+  renderPage();
+  await screen.findByText('Which pipe style?');
+  await user.click(screen.getByRole('tab', { name: 'Graph' }));
+  await user.click(await screen.findByRole('button', { name: 'Open file for Source section' }));
+  expect(api.file).toHaveBeenLastCalledWith('project-1', 'run-1', file.id);
+  api.graph.mockRejectedValueOnce(new Error('Graph unavailable'));
+  await user.click(screen.getByRole('tab', { name: 'Graph' }));
+  await screen.findByRole('alert');
+  await user.click(screen.getByRole('tab', { name: 'Overview' }));
+  expect(await screen.findByText('Which pipe style?')).toBeInTheDocument();
 });
 
 it('keeps a different native route isolated from an old publication denial', async () => {
@@ -681,7 +727,10 @@ it.each(['publication', 'file', 'graph'] as const)(
     expect(screen.getByText(ready.title)).toBeInTheDocument();
     expect(screen.queryByText('Which pipe style?')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Open file for/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Reload publication' })).toBeEnabled();
+    if (operation === 'graph') {
+      await user.click(screen.getByRole('tab', { name: 'Overview' }));
+      expect(await screen.findByText('Which pipe style?')).toBeInTheDocument();
+    } else expect(screen.getByRole('button', { name: 'Reload publication' })).toBeEnabled();
   },
 );
 

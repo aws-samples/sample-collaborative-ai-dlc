@@ -99,7 +99,10 @@ export default defineConfig({
       'frontend/src/services/api.test.ts',
     ],
     // DynamoDB-backed Yjs coverage belongs to the container-backed root suite.
-    exclude: ['lambda/yjs-server/test/dynamodb.integration.test.js'],
+    exclude: [
+      'lambda/yjs-server/test/dynamodb.integration.test.js',
+      'lambda/native-runtime-control/test/native-trace.integration.test.js',
+    ],
     setupFiles: [fileURLToPath(new URL('./test/setup.js', import.meta.url))],
     env: {
       POWERTOOLS_SERVICE_NAME: 'collaborative-aidlc',

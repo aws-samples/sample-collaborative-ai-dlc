@@ -241,19 +241,66 @@ answers automatically.
 
 The independent projector reads admitted publication history in sequence,
 verifies the referenced S3 bytes, rechecks authorization, and updates Neptune.
-Today it projects the native intent, generic file artifacts, the presented
-interaction, and legacy file questions with containment and relationship edges.
-It uses revision predicates to prevent stale work from overwriting newer views.
-Its lease and cursor are separate from execution admission; the UI can report
-projection lag while committed files remain readable.
+The graph read API rebuilds the same view from the protected current publication;
+Neptune never determines file access. Alongside generic files, the presented
+interaction and legacy questions, `native-trace-v1` adds H2–H6 sections and
+content-declared items through the shared artifact extraction registry. Headings
+inside fenced examples are ignored. Registered YAML blocks must meet the
+registry's field shapes; malformed blocks retain generic sections. A filename
+alone never selects a semantic artifact type.
 
-This deterministic projection is different from the platform backend's richer
-artifact derivation. That pipeline extracts sections, typed items, citations,
-and traceability, and can optionally use model-based enrichment. Native
-publication projection does not call that pipeline or consume its enrichment
-setting. Native semantic extraction and optional enrichment are integration work
-still to do. The workflow's own internal graph files also do not replace the
-platform's knowledge graph or control execution scheduling.
+The established record paths under `aidlc/spaces/<space>/intents/<record>/` and
+legacy `aidlc-docs/` identify **phase and stage locations**, including separate
+construction units. `LOCATED_IN` links describe that layout, not a stage invocation
+or its progress. Unknown layouts remain generic. Explicit `covers`, `persona`,
+`depends_on` and story-map fields create item relationships only when their target
+is unique within the same publication and record scope, with compatible unit
+scope. Ambiguous references remain unlinked. Runtime graphs, checkmarks, authored
+decision status and discussion advice confer no approval, completion or scheduling
+authority. Authored item fields are namespaced separately from execution status.
+
+Every derived node carries project/execution identity, package ID, immutable
+publication ID/sequence, file ID/hash, the existing `fileId:sha256` revision
+identity, source path and extraction contract. Sections identify line ranges;
+items identify their complete YAML block and item slug/order. Locations name the
+record-layout contract and an exact supporting file. IDs include publication and
+scope, so identical bytes in different revisions cannot share derived ownership.
+Retries reuse IDs; conditional writes and endpoint checks fence newer publications
+and foreign owners. Superseded structure is disconnected from current intent/file
+heads while old nodes and exact publication history remain retained. The frontend
+checks revision provenance against the current inventory and opens the source file
+from a derived node in both native presentations.
+
+Extraction reads only already admitted public Markdown/plain-text work products.
+It applies the existing public exclusions and private-recovery credential-path
+classifier without changing historical raw-file visibility. Private checkpoints,
+harness databases, runtime-state JSON and debug archives are not extraction inputs.
+The inline/context 3 MiB bound applies to each extracted file and to aggregate
+extraction reads per publication, in deterministic path order. The existing
+1,000-file and 1 MiB manifest bounds also bound derived node count and serialized
+structure. YAML nesting/node limits and rejection of aliases prevent expansion.
+An over-budget document contributes no partial structure; per-file `byte_limit`,
+`structure_limit`, `incompatible` or `generic` status explains the fallback.
+Relationship-budget exhaustion omits that relationship pass explicitly. Raw files
+remain canonical and readable through their existing transport limits.
+
+Projection owns its lease, retry and cursor independently of admission and turn
+dispatch. Cursor projection version 2 rebuilds an older completed projection's
+current immutable head; periodic repair discovers it without rewriting execution
+pins or replaying old publications over a newer graph. Integrity/ownership failures
+retry without acknowledgement; unknown content formats do not block the cursor.
+Graph transport/validation errors are isolated in the UI while file/reply access
+continues; access denials still clear protected content. Deploy the controller,
+authority/projector bundles and frontend together. No runtime protocol, retained
+publication schema, route or IAM change is required.
+
+Native enrichment remains explicitly **off**, with no model calls or mutable
+settings lookup. The platform backend's Admin `derive-enrichment=off|llm` setting
+is captured on its own execution META and forwarded to its derive-time CLI
+summary pipeline; native configuration does not capture it. A future native
+opt-in still needs a decision on capture timing (draft or Start), whose pinned
+CLI/model/credential pays for it, and whether enrichment runs per publication or
+on demand. That optional decision does not gate deterministic extraction.
 
 ## Recovery, compatibility, and operation
 
@@ -399,6 +446,36 @@ release criteria before widening support; later capabilities are separate scope.
       Define optional enrichment settings and provenance explicitly. Done when
       rebuildable native traceability is useful without delaying raw-file visibility,
       publication admission, or next-turn dispatch; unknown formats stay readable.
+      **Deterministic implementation complete locally (2026-10-13):** shared
+      content-declared sections/items, scoped item relationships and record-layout
+      phase/stage links; immutable publication/file/source provenance; replay-safe
+      projection and versioned cursor rebuild; exact-revision frontend validation,
+      source-file navigation and isolated graph failures. Unknown/incompatible/
+      over-budget content remains readable through existing file transports.
+      Credential-path classification is reused only to prevent derived-content
+      expansion; the separate historical public-file policy is unchanged.
+      **Validation:** Node 24.21.0 with
+      `NODE_OPTIONS=--no-experimental-webstorage`; focused graph/controller tests
+      passed 59. The Docker-backed shared/AgentCore/native-control/intents suites
+      passed 7,693 tests; three existing real-Bun sensor tests were skipped because
+      Bun is absent. The final dedicated string-ID Gremlin suite passed six tests,
+      including partial writes/lost acknowledgement, stale projectors, deletion
+      and replacement by plain text, identical bytes across revisions/scopes and
+      foreign ownership. Frontend tests passed 1,743 and the production build passed.
+      Release tests passed 232 (including five architecture regressions), native
+      wiring passed 21, and lint, format, secretlint, dependency and architecture
+      checks passed. All seven native controller Lambda bundles built with the
+      declared YAML dependency; release archive paths and runtime shared-file
+      inclusion were checked. Existing lint/dependency and bundle-size warnings
+      remain. Docker/loopback escalation was required; Node 22 is not installed.
+      **Remaining decisions/evidence:** native enrichment stays off; specify opt-in
+      capture timing, pinned payer/CLI/model/credential and per-publication versus
+      on-demand timing before enabling it. Qualify authenticated navigation in both
+      native presentations, actual S3-version/Neptune/IAM behavior, quiet-run cursor
+      rebuild across deployment, revocation and graph-outage continuation with a
+      current pinned runtime/package, and projection capacity at the documented
+      limits. Local fixtures do not establish those deployed outcomes. No push,
+      deployment, AWS mutation or real model call was performed.
 
 ### Resolve known issues and recovery gaps
 

@@ -1,4 +1,5 @@
 import { nativePublicationView } from '../shared/native-publication.js';
+import { readNativePublicationTrace } from './publication-trace.js';
 import {
   nativePublicationGraph,
   readNativePublicationInteraction,
@@ -362,13 +363,26 @@ export const createNativeExecutionApi = ({
         manifest,
         interactions,
       });
+      const trace = await readNativePublicationTrace({
+        draft,
+        publication: row.publication,
+        manifest,
+        publications,
+        authorize: () => recheck(draft),
+      });
       const current = await read(draft, recheck);
       if (!sameNativePublicationRevision(row, current))
         fail(
           'NATIVE_EXECUTION_CONFLICT',
           'Native graph publication changed; refresh before reading',
         );
-      return nativePublicationGraph({ draft, publication: row.publication, manifest, interaction });
+      return nativePublicationGraph({
+        draft,
+        publication: row.publication,
+        manifest,
+        interaction,
+        trace,
+      });
     },
   };
 };

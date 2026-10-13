@@ -497,7 +497,7 @@ it('retains an uncertain reply without exposing raw errors from the follow-up st
   ).toBeInTheDocument();
 });
 
-it('reloads publication data after a graph transport error without dropping an uncertain reply or request ID', async () => {
+it('retries graph loading without dropping an uncertain reply or request ID', async () => {
   renderPage();
   await typeReply('keep this exact draft');
   transport.post.mockRejectedValueOnce(new ApiError(502, 'lost reply acknowledgement'));
@@ -505,8 +505,10 @@ it('reloads publication data after a graph transport error without dropping an u
   const first = transport.post.mock.calls[0];
   readGraph.mockRejectedValueOnce(new ApiError(502, 'transient graph error'));
   await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
-  await screen.findByRole('button', { name: 'Reload publication' });
-  await click('Reload publication');
+  await screen.findByRole('alert');
+  await userEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+  expect(screen.getByRole('textbox')).toHaveValue('keep this exact draft');
+  await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
   await screen.findByRole('button', { name: 'Open response for AI-DLC turn' });
   await click('Open response for AI-DLC turn');
   await loaded();
@@ -562,7 +564,7 @@ it('rejects graph nodes pointing to a different interaction', async () => {
   await screen.findByRole('alert');
   expect(screen.queryByRole('button', { name: /Open response for/ })).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole('tab', { name: 'Overview' }));
-  expect(screen.queryByText(messages[0].text)).not.toBeInTheDocument();
+  expect(screen.getByText(messages[0].text)).toBeInTheDocument();
 });
 
 function requireRecovery(patch: Partial<NativeExecution> = {}) {

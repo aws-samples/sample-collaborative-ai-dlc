@@ -46,6 +46,8 @@ export const memoryGraph = () => {
     let selectedEdges;
     let removing = false;
     const edgeFilters = [];
+    let outLabel;
+    let parentFilters = [];
     const q = {
       fold: () => q,
       coalesce: (...branches) => {
@@ -69,8 +71,13 @@ export const memoryGraph = () => {
         );
         return q;
       },
-      outE: (label) => {
-        selectedEdges = label;
+      outE: (...labels) => {
+        selectedEdges = labels;
+        return q;
+      },
+      out: (label) => {
+        outLabel = label;
+        parentFilters = filters.splice(0);
         return q;
       },
       drop: () => {
@@ -123,14 +130,23 @@ export const memoryGraph = () => {
             writes.push({ kind: 'edge', id });
           }
         }
-        if (kind === 'V' && !filters.every((filter) => filter(vertices.get(id)))) {
+        if (
+          kind === 'V' &&
+          !(outLabel ? parentFilters : filters).every((filter) => filter(vertices.get(id)))
+        ) {
           return { done: true, value: null };
         }
         if (removing) {
+          const sources = outLabel
+            ? [...edges.values()]
+                .filter((edge) => edge.source === id && edge.label === outLabel)
+                .map((edge) => edge.target)
+                .filter((target) => filters.every((filter) => filter(vertices.get(target))))
+            : [id];
           for (const [edgeId, edge] of edges) {
             if (
-              edge.source === id &&
-              edge.label === selectedEdges &&
+              sources.includes(edge.source) &&
+              selectedEdges.includes(edge.label) &&
               edgeFilters.every((filter) => filter(vertices.get(edge.target)))
             ) {
               edges.delete(edgeId);

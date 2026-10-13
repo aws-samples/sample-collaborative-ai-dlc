@@ -4,7 +4,58 @@ import {
   validateStructuredBlock,
   extractCitations,
   splitSections,
+  extractDeclaredArtifactStructure,
 } from '../artifact-extractors.js';
+import { REGISTRY } from '../artifact-extractors.js';
+import { renderStructureContract } from '../artifact-structure-contract.js';
+
+describe('content-declared structure', () => {
+  it.each(Object.keys(REGISTRY))(
+    'reads the established %s authoring contract without a filename hint',
+    (type) => {
+      const content = `\uFEFF# Exact document\r\n${renderStructureContract(type).replaceAll('\n', '\r\n')}`;
+      const result = extractDeclaredArtifactStructure({ artifactId: 'file', content });
+      expect(result.incompatible).toBe(false);
+      expect(result.items.some((item) => item.artifactType === type)).toBe(true);
+      for (const item of result.items) {
+        const source = content
+          .split(/\r?\n/)
+          .slice(item.startLine - 1, item.endLine)
+          .join('\n');
+        expect(source).toMatch(/^```yaml\n/);
+        expect(source).toMatch(/\n```$/);
+      }
+    },
+  );
+
+  it('ignores headings and nested examples in fences, preserving exact source line numbers', () => {
+    const content =
+      '\uFEFF# T\r\n## Real\r\n````text\r\n## Fake\r\n```yaml\r\nrequirements:\r\n  - id: r1\r\n    title: Fake\r\n```\r\n````\r\n## Other\r\ntext';
+    const result = extractDeclaredArtifactStructure({ content });
+    expect(result.sections.map((section) => [section.heading, section.startLine])).toEqual([
+      ['Real', 2],
+      ['Other', 11],
+    ]);
+    expect(result.items).toEqual([]);
+  });
+
+  it.each([
+    'requirements: [null]',
+    'requirements: [{title: Missing id}]',
+    'requirements: [{id: r1, title: [not, text]}]',
+    'requirements: {id: not-a-list}',
+    'requirements:\n  - &a {id: req-one, title: One}\n  - *a',
+    'requirements: [{id: a, title: A, extra: &x [*x]}]',
+    'requirements: [invalid',
+  ])('keeps generic sections when the declared block is incompatible: %s', (body) => {
+    const result = extractDeclaredArtifactStructure({
+      content: `## Readable\n\`\`\`yaml\n${body}\n\`\`\``,
+    });
+    expect(result.incompatible).toBe(true);
+    expect(result.sections[0].heading).toBe('Readable');
+    expect(result.items).toEqual([]);
+  });
+});
 
 describe('artifact extractors', () => {
   it('splits markdown into H2+ sections with stable slugs and hashes', () => {

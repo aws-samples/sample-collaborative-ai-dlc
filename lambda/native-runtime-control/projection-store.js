@@ -4,6 +4,7 @@ import { nativeExecutionKey, publicationHistoryKey } from './execution-store.js'
 import { nativeRuntimeBindingKey } from '../shared/native-runtime-binding.js';
 
 const key = (scope) => ({ ...nativeExecutionKey(scope), sk: 'PROJECTION' });
+const PROJECTION_VERSION = 2;
 const conflict = () => {
   throw Object.assign(new Error('Native projection ownership changed'), {
     code: 'NATIVE_PROJECTION_CONFLICT',
@@ -15,8 +16,8 @@ const read = async (ddb, tableName, Key) =>
 export const nativeProjectionStatus = async (ddb, tableName, row) => {
   if (!row.publication) return null;
   const progress = await read(ddb, tableName, key(row.scope));
-  // Historical complete heads are valid migration receipts until a cursor exists.
-  if (!progress) return row.projectionStatus ?? 'pending';
+  // Older generic projections must rebuild under the current extraction contract.
+  if (progress?.projectionVersion !== PROJECTION_VERSION) return 'pending';
   return progress.sequence >= row.publication.sequence ? 'complete' : 'pending';
 };
 
@@ -124,15 +125,22 @@ export const createNativeProjectionStore = ({
         return { kind: 'missing' };
       const prior = await get(key(scope));
       if (prior?.bindingId && prior.bindingId !== row.bindingId) conflict();
-      const sequence = prior?.sequence ?? 0;
-      if (sequence >= row.publication.sequence) return { kind: 'complete' };
       if (prior?.leaseExpiresAt > now()) return { kind: 'busy' };
-      const revision = await nextRevision(row, sequence);
+      // Upgrade a completed old projection by rebuilding its current immutable
+      // head. Replaying old history into a newer graph head would correctly be
+      // rejected by the graph's publication-sequence fence.
+      const rebuild =
+        prior?.projectionVersion !== PROJECTION_VERSION &&
+        ((prior?.sequence ?? 0) > 0 || row.projectionStatus === 'complete');
+      const sequence = rebuild ? row.publication.sequence - 1 : (prior?.sequence ?? 0);
+      if (sequence >= row.publication.sequence) return { kind: 'complete' };
+      const revision = rebuild ? { ...row } : await nextRevision(row, sequence);
       const progress = await commit(
         prior,
         {
           ...key(scope),
           schemaVersion: 1,
+          projectionVersion: PROJECTION_VERSION,
           bindingId: row.bindingId,
           version: (prior?.version ?? 0) + 1,
           sequence,

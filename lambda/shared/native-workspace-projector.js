@@ -3,6 +3,24 @@ import { parseBoltDag } from './v2-sensor-contract.js';
 import { repoCheckoutPath } from './repo-validation.js';
 
 const PHASES = ['initialization', 'ideation', 'inception', 'construction', 'operation'];
+
+// Inverse of artifactPath's documented record layouts. This describes a
+// location only: neither a directory nor its contents prove a stage ran.
+export const nativeArtifactLocation = (path) => {
+  const match = /^(aidlc\/spaces\/[^/]+\/intents\/[^/]+|aidlc-docs)\/(.+)$/.exec(path);
+  if (!match) return null;
+  const [phase, ...parts] = match[2].split('/');
+  if (!PHASES.includes(phase)) return null;
+  if (parts.length !== 2 && !(phase === 'construction' && parts.length === 3)) return null;
+  if (!parts.every((part) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(part))) return null;
+  return {
+    recordRoot: match[1],
+    phase,
+    stage: parts.at(-2),
+    unit: parts.length === 3 ? parts[0] : null,
+    contract: 'native-record-layout-v1',
+  };
+};
 const ACTIVE_STAGE_MARKERS = new Set(['-', '?', 'R']);
 const PHASE_LABELS = {
   initialization: 'INITIALIZATION PHASE',

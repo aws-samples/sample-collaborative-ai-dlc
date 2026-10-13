@@ -284,6 +284,36 @@ export const NODE_TYPES: Record<
     label: 'Unit Pull Request',
     shortLabel: 'Unit PR',
   },
+  Section: {
+    color: '#64748b',
+    darkColor: '#475569',
+    gradientFrom: '#94a3b8',
+    gradientTo: '#475569',
+    textColor: '#fff',
+    icon: FileText,
+    label: 'Section',
+    shortLabel: 'Section',
+  },
+  NativePhase: {
+    color: '#6366f1',
+    darkColor: '#4f46e5',
+    gradientFrom: '#818cf8',
+    gradientTo: '#4f46e5',
+    textColor: '#fff',
+    icon: Layers,
+    label: 'Phase location',
+    shortLabel: 'Phase',
+  },
+  NativeStage: {
+    color: '#0891b2',
+    darkColor: '#0e7490',
+    gradientFrom: '#22d3ee',
+    gradientTo: '#0e7490',
+    textColor: '#fff',
+    icon: Compass,
+    label: 'Stage location',
+    shortLabel: 'Stage',
+  },
 };
 
 const UNKNOWN_NODE_CFG = {
@@ -317,6 +347,11 @@ export const EDGE_LABELS: Record<string, string> = {
   DERIVED_FROM: 'derived from',
   INFORMS: 'informs',
   HAS_ITEM: 'has item',
+  HAS_SECTION: 'has section',
+  LOCATED_IN: 'located in',
+  COVERS: 'covers',
+  FOR_PERSONA: 'for persona',
+  IMPLEMENTS: 'implements',
   CITES: 'cites',
 };
 

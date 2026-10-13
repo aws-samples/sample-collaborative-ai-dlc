@@ -251,6 +251,35 @@ function DetailText({ value, limit = 600 }: { value: string; limit?: number }) {
 // ---------------------------------------------------------------------------
 
 function NodeDetailContent({ node }: { node: GraphNode }) {
+  if (node.provenance && typeof node.provenance === 'object') {
+    const p = node.provenance as Record<string, unknown>;
+    return (
+      <div className="space-y-3">
+        <DetailField label="Published source">
+          <p className="text-xs break-all">{String(p.path ?? '')}</p>
+          {p.startLine !== undefined && (
+            <p className="text-xs">
+              Lines {String(p.startLine)}–{String(p.endLine)} ({String(p.sourceKind)})
+            </p>
+          )}
+          <p className="text-xs">Publication {String(p.publicationSequence)}</p>
+        </DetailField>
+        <DetailField label="Derivation">
+          <p className="text-xs">Deterministic · {String(p.contract)}</p>
+          <p className="text-xs text-muted-foreground">
+            Content claims and locations do not verify approval or completion.
+          </p>
+        </DetailField>
+        {Boolean(node.declared) && typeof node.declared === 'object' && (
+          <DetailField label="Authored fields">
+            <pre className="text-xs whitespace-pre-wrap break-words">
+              {JSON.stringify(node.declared, null, 2)}
+            </pre>
+          </DetailField>
+        )}
+      </div>
+    );
+  }
   const type = node.type;
 
   switch (type) {

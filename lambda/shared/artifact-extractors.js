@@ -14,12 +14,31 @@ const sha256 = (value = '') =>
     .update(String(value ?? ''))
     .digest('hex');
 
-const splitSections = (content = '') => {
+const splitSections = (content = '', maxSections = Infinity) => {
   const lines = String(content ?? '').split(/\r?\n/);
   const headings = [];
+  let fence = null;
   lines.forEach((line, index) => {
+    const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (
+        marker?.[0] === fence[0] &&
+        marker.length >= fence.length &&
+        new RegExp(`^\\s{0,3}${marker}\\s*$`).test(line)
+      )
+        fence = null;
+      return;
+    }
+    if (marker) {
+      fence = marker;
+      return;
+    }
     const m = /^(#{2,6})\s+(.+?)\s*$/.exec(line);
-    if (m) headings.push({ level: m[1].length, heading: m[2].trim(), line: index });
+    if (m) {
+      if (headings.length >= maxSections)
+        throw Object.assign(new Error('Section limit'), { code: 'ARTIFACT_STRUCTURE_LIMIT' });
+      headings.push({ level: m[1].length, heading: m[2].trim(), line: index });
+    }
   });
   if (!headings.length) return [];
   return headings.map((h, i) => {
@@ -36,6 +55,104 @@ const splitSections = (content = '') => {
       contentHash: sha256(bodyLines.join('\n').trim()),
     };
   });
+};
+
+// Content-declared structure for documents without a trusted artifact type.
+// Reuse the registry, but require its authoring contract rather than guessing
+// a type from a file name. Locations name the complete source YAML block.
+// Malformed/unsupported blocks leave the document's generic sections readable.
+export const extractDeclaredArtifactStructure = ({ artifactId, content = '', maxNodes = 1000 }) => {
+  let result;
+  try {
+    result = extractArtifactStructure({ artifactId, content, maxSections: maxNodes });
+  } catch (error) {
+    if (error.code !== 'ARTIFACT_STRUCTURE_LIMIT') throw error;
+    return { artifactId, sections: [], items: [], limited: true };
+  }
+  const items = [];
+  let incompatible = false;
+  const lines = content.split(/\r?\n/);
+  let fence = null;
+  let start = 0;
+  let isYaml = false;
+  for (let line = 0; line < lines.length; line += 1) {
+    const marker = /^\s{0,3}(`{3,}|~{3,})(.*)$/.exec(lines[line]);
+    if (!fence) {
+      if (marker) {
+        fence = marker[1];
+        start = line;
+        isYaml = /^ya?ml\s*$/i.test(marker[2]);
+      }
+      continue;
+    }
+    if (!marker || marker[1][0] !== fence[0] || marker[1].length < fence.length || marker[2].trim())
+      continue;
+    fence = null;
+    if (!isYaml) continue;
+    try {
+      let depth = 0;
+      let count = 0;
+      const parsed = yaml.load(lines.slice(start + 1, line).join('\n'), {
+        schema: yaml.JSON_SCHEMA,
+        listener: (event) => {
+          if (event === 'open' && (++depth > 64 || ++count > 10000))
+            throw new Error('Structured block resource limit');
+          if (event === 'close') depth -= 1;
+        },
+      });
+      // Reject aliases/cycles and non-JSON values before registry mappers
+      // stringify them. Expansion must never amplify a bounded source.
+      const seen = new Set();
+      const check = (value) => {
+        if (!value || typeof value !== 'object') return;
+        if (seen.has(value)) throw new Error('Aliased structured block');
+        seen.add(value);
+        for (const child of Object.values(value)) check(child);
+      };
+      check(parsed);
+      for (const [artifactType, spec] of Object.entries(REGISTRY)) {
+        if (!parsed || !Object.hasOwn(parsed, spec.key)) continue;
+        const rows = parsed[spec.key];
+        if (
+          !Array.isArray(rows) ||
+          rows.some(
+            (row) =>
+              !row ||
+              typeof row !== 'object' ||
+              Array.isArray(row) ||
+              spec.doc.fields.some((field) => {
+                const value = row[field.name];
+                if (value === undefined || value === null) return field.required;
+                if (Array.isArray(field.example))
+                  return !Array.isArray(value) || value.some((entry) => typeof entry !== 'string');
+                return typeof value !== 'string' || (field.required && !value.trim());
+              }) ||
+              typeof row.id !== 'string' ||
+              !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(row.id) ||
+              (row.title !== undefined && typeof row.title !== 'string') ||
+              (row.name !== undefined && typeof row.name !== 'string'),
+          )
+        ) {
+          incompatible = true;
+          continue;
+        }
+        items.push(
+          ...normalizeItems(artifactType, parsed, spec).map((item) => ({
+            ...item,
+            startLine: start + 1,
+            endLine: line + 1,
+            sourceKind: 'yaml-block',
+          })),
+        );
+        if (items.length + result.sections.length > maxNodes)
+          return { artifactId, sections: [], items: [], limited: true };
+      }
+    } catch {
+      incompatible = true;
+    }
+  }
+  if (fence && isYaml) incompatible = true;
+  return { ...result, items, incompatible };
 };
 
 const extractCitations = (content = '') => {
@@ -415,9 +532,14 @@ const validateStructuredBlock = ({ artifactType, content = '' } = {}) => {
   }
 };
 
-const extractArtifactStructure = ({ artifactType, artifactId, content = '' } = {}) => {
+const extractArtifactStructure = ({
+  artifactType,
+  artifactId,
+  content = '',
+  maxSections = Infinity,
+} = {}) => {
   const type = text(artifactType);
-  const sections = splitSections(content);
+  const sections = splitSections(content, maxSections);
   const citations = extractCitations(content);
   const spec = REGISTRY[type];
   let items = [];

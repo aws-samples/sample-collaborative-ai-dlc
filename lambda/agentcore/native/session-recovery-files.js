@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { canonicalNativePath } from './execution-files.js';
+import { nativeCredentialPath } from '../../shared/native-project-files.js';
 
 export const NATIVE_RECOVERY_FILE_LIMITS = Object.freeze({
   maxFiles: 100_000,
@@ -67,15 +68,7 @@ export const nativeRecoveryProjectExclusion = (path) => {
   const parts = path.split('/');
   if (parts.some((p) => ['.native-control', '.native-homes'].includes(p)))
     return 'platform-control';
-  if (parts.some((p) => ['.aws', '.ssh'].includes(p))) return 'credentials';
-  if (
-    ['.git-credentials', '.netrc', '.npmrc', '.pypirc'].includes(parts.at(-1)) ||
-    (/^\.env(?:\.|$)/.test(parts.at(-1)) &&
-      !/\.env(?:\.[\w-]+)*\.(?:example|sample|template)$/.test(parts.at(-1))) ||
-    /^\.codex\/auth\.json$/.test(path) ||
-    /^\.claude\/(?:\.credentials\.json|credentials\.json)$/.test(path)
-  )
-    return 'credentials';
+  if (nativeCredentialPath(path)) return 'credentials';
   return null;
 };
 

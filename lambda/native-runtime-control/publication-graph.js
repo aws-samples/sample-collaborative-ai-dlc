@@ -3,6 +3,7 @@ import gremlin from 'gremlin';
 import { isDeepStrictEqual } from 'node:util';
 import { executionIdentity } from './execution-runtime.js';
 import { nativeInteractionReceipt } from '../shared/native-interaction.js';
+import { verifiedNativeTrace } from './publication-trace.js';
 
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const intentVertexId = (draft) =>
@@ -80,7 +81,7 @@ export const readNativePublicationInteraction = async ({ draft, row, manifest, i
 // The member-facing graph is derived from the protected committed manifest.
 // Neptune is a replayable projection; an agent-written graph row never
 // determines which file or revision a native member is allowed to read.
-export const nativePublicationGraph = ({ draft, publication, manifest, interaction }) => {
+export const nativePublicationGraph = ({ draft, publication, manifest, interaction, trace }) => {
   const intentId = intentVertexId(draft);
   const nodes = [
     {
@@ -152,7 +153,74 @@ export const nativePublicationGraph = ({ draft, publication, manifest, interacti
     edges.push({ source: intentId, target: id, label: 'CONTAINS' });
     edges.push({ source: id, target: manifest.question.fileId, label: 'RELATES_TO' });
   }
-  return { publicationId: publication.id, nodes, edges };
+  if (trace) {
+    verifiedNativeTrace(trace, { draft, publication, manifest });
+    nodes.push(...trace.nodes);
+    edges.push(
+      ...trace.edges,
+      ...trace.nodes.map((node) => ({
+        source: intentId,
+        target: node.id,
+        label: 'CONTAINS',
+      })),
+    );
+  }
+  return {
+    publicationId: publication.id,
+    nodes,
+    edges,
+    ...(trace ? { traceability: trace.traceability } : {}),
+  };
+};
+
+const cleanupNativePublication = async ({
+  g,
+  draft,
+  publication,
+  trace,
+  authorize,
+  protectedScope,
+}) => {
+  const { statics: __ } = gremlin.process;
+  if (publication.sequence > 1) {
+    await authorize();
+    // The protected publication history retains old exact bytes. Neptune is
+    // the current projection: disconnect superseded files/questions/responses only when
+    // both the parent and target still prove this execution's unique scope.
+    let parent = g
+      .V(intentVertexId(draft))
+      .hasLabel('Intent')
+      .has('native_publication_sequence', publication.sequence);
+    for (const [key, value] of Object.entries({ id: intentVertexId(draft), ...protectedScope })) {
+      parent = parent.has(key, value).filter(__.properties(key).count().is(1));
+    }
+    let stale = __.inV();
+    for (const [key, value] of Object.entries(protectedScope)) {
+      stale = stale.has(key, value).filter(__.properties(key).count().is(1));
+    }
+    stale = stale
+      .has('publication_id')
+      .filter(__.properties('publication_id').count().is(1))
+      .not(__.has('publication_id', publication.id));
+    // Gremlin 3.8's iterate() appends discard, which this Neptune engine does
+    // not support. Consume the drop traversal without adding a terminal step.
+    await parent.outE('CONTAINS').filter(stale).drop().toList();
+    if (trace) {
+      // Stable file heads must also disconnect old structure. The derived
+      // nodes/relationships retain their immutable revision provenance, but
+      // must never look like items of the current file bytes.
+      let files = g
+        .V(intentVertexId(draft))
+        .hasLabel('Intent')
+        .has('native_publication_sequence', publication.sequence);
+      for (const [key, value] of Object.entries({ id: intentVertexId(draft), ...protectedScope }))
+        files = files.has(key, value).filter(__.properties(key).count().is(1));
+      files = files.out('CONTAINS').hasLabel('Artifact').has('publication_id', publication.id);
+      for (const [key, value] of Object.entries(protectedScope))
+        files = files.has(key, value).filter(__.properties(key).count().is(1));
+      await files.outE('HAS_SECTION', 'HAS_ITEM', 'LOCATED_IN').filter(stale).drop().toList();
+    }
+  }
 };
 
 export const projectNativePublication = async ({
@@ -161,10 +229,11 @@ export const projectNativePublication = async ({
   publication,
   manifest,
   interaction,
+  trace,
   authorize,
 }) => {
   const { t, cardinality, statics: __ } = gremlin.process;
-  const graph = nativePublicationGraph({ draft, publication, manifest, interaction });
+  const graph = nativePublicationGraph({ draft, publication, manifest, interaction, trace });
   const protectedScope = {
     project_id: draft.projectId,
     intent_id: intentVertexId(draft),
@@ -180,6 +249,14 @@ export const projectNativePublication = async ({
         ? {
             interaction_id: node.interactionId,
             publication_id: publication.id,
+          }
+        : {}),
+      ...(node.provenance
+        ? {
+            publication_id: publication.id,
+            artifact_id: node.artifactId,
+            content_hash: node.sha256,
+            extraction_contract: node.provenance.contract,
           }
         : {}),
     };
@@ -211,46 +288,44 @@ export const projectNativePublication = async ({
     if (node.sha256) query = query.property(cardinality.single, 'content_hash', node.sha256);
     if (node.artifactType)
       query = query.property(cardinality.single, 'artifact_type', node.artifactType);
+    if (node.provenance)
+      query = query.property(
+        cardinality.single,
+        'native_provenance',
+        JSON.stringify(node.provenance),
+      );
+    if (node.declared)
+      query = query.property(cardinality.single, 'native_declared', JSON.stringify(node.declared));
     const written = await query.id().next();
     if (written.done || written.value !== node.id) scopeMismatch();
   }
   for (const edge of graph.edges) {
     await authorize();
     const id = `native-edge-${digest(JSON.stringify(edge))}`;
-    await g
+    const endpoint = (vertexId) => {
+      let query = __.V(vertexId).has('native_publication_sequence', publication.sequence);
+      for (const [key, value] of Object.entries({ id: vertexId, ...protectedScope }))
+        query = query.has(key, value).filter(__.properties(key).count().is(1));
+      return query;
+    };
+    const written = await g
       .E(id)
       .fold()
       .filter(__.V(intentVertexId(draft)).has('native_publication_sequence', publication.sequence))
+      .filter(endpoint(edge.source))
+      .filter(endpoint(edge.target))
       .coalesce(
-        __.unfold(),
+        __.unfold()
+          .hasLabel(edge.label)
+          .filter(__.outV().hasId(edge.source))
+          .filter(__.inV().hasId(edge.target)),
         __.V(edge.source).addE(edge.label).to(__.V(edge.target)).property(t.id, id),
       )
+      .id()
       .next();
+    if (written.done || written.value !== id) scopeMismatch();
   }
-  if (publication.sequence > 1) {
-    await authorize();
-    // The protected publication history retains old exact bytes. Neptune is
-    // the current projection: disconnect superseded files/questions/responses only when
-    // both the parent and target still prove this execution's unique scope.
-    let parent = g
-      .V(intentVertexId(draft))
-      .hasLabel('Intent')
-      .has('native_publication_sequence', publication.sequence);
-    for (const [key, value] of Object.entries({ id: intentVertexId(draft), ...protectedScope })) {
-      parent = parent.has(key, value).filter(__.properties(key).count().is(1));
-    }
-    let stale = __.inV().hasLabel('Artifact', 'Question', 'NativeInteraction');
-    for (const [key, value] of Object.entries(protectedScope)) {
-      stale = stale.has(key, value).filter(__.properties(key).count().is(1));
-    }
-    stale = stale
-      .has('publication_id')
-      .filter(__.properties('publication_id').count().is(1))
-      .not(__.has('publication_id', publication.id));
-    // Gremlin 3.8's iterate() appends discard, which this Neptune engine does
-    // not support. Consume the drop traversal without adding a terminal step.
-    await parent.outE('CONTAINS').filter(stale).drop().toList();
-  }
+  await cleanupNativePublication({ g, draft, publication, trace, authorize, protectedScope });
   await authorize();
   return graph;
 };

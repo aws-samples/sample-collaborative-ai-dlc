@@ -7,6 +7,7 @@ import { createNativePublications } from '../shared/native-publication.js';
 import { createNativeInteractions } from '../shared/native-interaction.js';
 import { executionIdentity } from './execution-runtime.js';
 import { projectNativePublication, readNativePublicationInteraction } from './publication-graph.js';
+import { readNativePublicationTrace } from './publication-trace.js';
 
 export const createNativeProjector =
   ({ store, publications, interactions, authorize, project }) =>
@@ -30,11 +31,19 @@ export const createNativeProjector =
         manifest,
         interactions,
       });
+      const trace = await readNativePublicationTrace({
+        draft,
+        publication: row.publication,
+        manifest,
+        publications,
+        authorize: check,
+      });
       await project({
         draft,
         publication: row.publication,
         manifest,
         interaction,
+        trace,
         authorize: check,
       });
       await check();

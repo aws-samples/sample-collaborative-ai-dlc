@@ -77,7 +77,9 @@ export const serialFixture = () => {
       packageId: f.configuration.packageId,
       outcome: 'STOPPED',
       repository: SERIAL_SOURCE,
-      files: [{ path: 'src/game.js', role: 'code', content: Buffer.from(`// turn ${sequence}\n`) }],
+      files: options.files ?? [
+        { path: 'src/game.js', role: 'code', content: Buffer.from(`// turn ${sequence}\n`) },
+      ],
     });
     const interactionReceipt = await interactions.write({
       identity,
