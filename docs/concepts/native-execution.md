@@ -265,6 +265,22 @@ access so ordered replay can continue. Do not edit execution state or advance
 the cursor manually. Diagnostics and optional debug retention must not delete
 the evidence needed to resume or inspect a run.
 
+Platform administrators can save optional debug archive preferences through
+`/agents/settings`. They default to off and seven days; retention accepts positive
+whole days and remains saved while archiving is off. Capture and expiry are not
+connected to these preferences yet. The settings card describes snapshots and
+conversation archives, but does not define their exact contents, retrieval
+permissions, or when preference changes affect existing runs or archives.
+
+Separately, the runtime starts a numeric flight recorder independently of those
+preferences. It keeps up to 120 resource samples in a per-run EFS ring and logs
+up to 60 samples from the previous boot. Replayed samples contain only numeric
+fields and fixed process categories, not file or conversation content. Controller
+diagnostics also allowlist metadata. Neither diagnostic path defines an optional
+archive contract. Required publications, immutable history, accepted answers,
+private recovery checkpoints, EFS workspaces, and session restore dependencies
+remain outside optional archive expiry.
+
 ### Trust and qualification limits
 
 One writer generation does not mean its tools are isolated from one another.
@@ -467,6 +483,22 @@ release criteria before widening support; later capabilities are separate scope.
 - [ ] **Capability — optional debug archive lifecycle.** Wire capture and expiry
       to the existing off-by-default preferences. Done when enabled retention is
       enforced without affecting mandatory publications, history, or recovery.
+      **Open decisions:** define exact archive contents, who can retrieve them
+      (AWS operators, application administrators, or project members), and whether
+      retention is fixed at capture, pinned at Start, or changed retroactively.
+      The settings owner (`lambda/agents/index.js`) persists preferences only;
+      the independent numeric recorder (`lambda/agentcore/native/flight-recorder.js`)
+      and sanitized controller diagnostics do not establish a snapshot/conversation
+      archive inventory. No optional archive writer, read route, storage prefix,
+      or expiry owner is wired. The native storage policies retain publications
+      and private recovery versions without expiry and give the control table no TTL.
+      No capture or deletion behavior was added pending these decisions.
+      Local verification on Node 24.21.0: 92 existing settings, recorder,
+      diagnostics, and runtime-policy tests, 21 native wiring tests, and three
+      storage-retention release tests passed. The first focused run passed 84
+      tests and failed eight because sandbox loopback access was denied; all 92
+      passed with local socket access. These checks verify existing safeguards,
+      not an implemented archive lifecycle or deployed IAM behavior.
 
 ### Deliberately later
 
