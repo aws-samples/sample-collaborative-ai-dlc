@@ -110,6 +110,61 @@ const fixture = () => {
 };
 
 describe('trusted native OUTPUT ingestion', () => {
+  it('drains multiple full batches, retries a lost ACK, and pages both histories independently', async () => {
+    const f = fixture();
+    f.broadcast.mockRejectedValue(new Error('Socket unavailable'));
+    for (let after = 0; after < 192; after += 64) {
+      const offered = batch(
+        Array.from({ length: 64 }, (_, i) => event(after + i + 1)),
+        after,
+      );
+      if (after === 64) {
+        f.state.loseAck = true;
+        await expect(f.store.ingest(f.row, offered)).rejects.toThrow('response lost');
+      }
+      expect(await f.store.ingest(f.row, offered)).toBe(after + 64);
+    }
+    for (let revision = 1; revision <= 139; revision++)
+      f.put({
+        ...nativeExecutionKey(scope),
+        sk: `EVENT#${String(revision * 2).padStart(16, '0')}`,
+        revision: revision * 2,
+        eventId: `native-${revision * 2}`,
+        type: 'native.running',
+        summary: 'Recorded delivery',
+        timestamp: new Date(1000).toISOString(),
+        actor: null,
+        privateUnexpectedField: 'must not leave storage',
+      });
+    const outputs = [],
+      events = [];
+    let after = 0,
+      afterEvent = 0;
+    do {
+      const page = await f.store.history(scope, after);
+      outputs.push(...page.outputs);
+      after = page.nextAfter;
+    } while (after !== null);
+    do {
+      const page = await f.store.events(scope, afterEvent);
+      events.push(...page.events);
+      afterEvent = page.nextEventAfter;
+    } while (afterEvent !== null);
+    expect(outputs.map((r) => r.seq)).toEqual(Array.from({ length: 192 }, (_, i) => i + 1));
+    expect(events.map((r) => r.revision)).toEqual(
+      Array.from({ length: 139 }, (_, i) => (i + 1) * 2),
+    );
+    expect(JSON.stringify(events)).not.toContain('must not leave storage');
+  });
+
+  it('does not report a partial or unavailable Query response as empty history', async () => {
+    const f = fixture();
+    f.ddb.send.mockResolvedValueOnce({});
+    await expect(f.store.history(scope)).rejects.toThrow();
+    f.ddb.send.mockResolvedValueOnce({ Items: [], LastEvaluatedKey: { pk: 'partial' } });
+    await expect(f.store.events(scope)).rejects.toThrow();
+  });
+
   it('persists ordering and cursor atomically before broadcasting/acknowledging', async () => {
     const f = fixture();
     expect(await f.store.ingest(f.row, batch([event(1), event(2)]))).toBe(2);
@@ -145,6 +200,15 @@ describe('trusted native OUTPUT ingestion', () => {
     await expect(f.store.ingest(f.row, batch([event(1)]))).rejects.toThrow();
     expect(await f.store.cursor(f.row)).toBe(0);
     expect(f.broadcast).not.toHaveBeenCalled();
+  });
+  it('acknowledges committed output even if the optional broadcaster throws synchronously', async () => {
+    const f = fixture();
+    f.broadcast.mockImplementation(() => {
+      throw new Error('Socket unavailable');
+    });
+    expect(await f.store.ingest(f.row, batch([event(1)]))).toBe(1);
+    expect(await f.store.cursor(f.row)).toBe(1);
+    expect((await f.store.history(scope)).outputs).toHaveLength(1);
   });
   it('allows only one competing transaction and accepts its identical retry', async () => {
     const f = fixture();
@@ -213,4 +277,20 @@ describe('trusted native OUTPUT ingestion', () => {
     });
     await expect(f.store.ingest(f.row, batch([event(2)], 1))).rejects.toThrow();
   });
+  it.each(['bindingId', 'configurationSha256', 'writerGeneration', 'turnSequence', 'leaseToken'])(
+    'rejects a duplicate ACK when the protected %s no longer matches',
+    async (field) => {
+      const f = fixture();
+      const offered = batch([event(1)]);
+      await f.store.ingest(f.row, offered);
+      f.put({
+        ...nativeExecutionKey(scope),
+        ...f.row,
+        [field]: typeof f.row[field] === 'number' ? f.row[field] + 1 : 'changed',
+      });
+      await expect(f.store.ingest(f.row, offered)).rejects.toMatchObject({
+        code: 'NATIVE_ACTIVITY_CONFLICT',
+      });
+    },
+  );
 });

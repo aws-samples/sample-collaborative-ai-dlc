@@ -777,6 +777,7 @@ export const createNativeExecutor = ({
     const activityTurn = activityLog().turn({
       sequence: current.report.sequence,
       harness: configuration.harness,
+      model: configuration.model,
       forbiddenBytes,
       signal,
     });

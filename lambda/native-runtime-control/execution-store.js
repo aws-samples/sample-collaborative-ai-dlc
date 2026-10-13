@@ -9,6 +9,7 @@ import {
 } from '../shared/native-runtime-binding.js';
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { nativeDraftPrompt } from './draft-prompt.js';
+import { nativeExecutionHistory } from './execution-history.js';
 import {
   nativeInteractionReceipt,
   NATIVE_INTERACTION_LIMITS,
@@ -862,6 +863,7 @@ export const createNativeExecutionStore = ({
               },
             },
             ...additions,
+            ...historyWrite(before, next),
           ],
         }),
       );
@@ -875,6 +877,12 @@ export const createNativeExecutionStore = ({
       if (retryableConflict(error)) fail('CONFLICT');
       fail('UNAVAILABLE');
     }
+  };
+  const historyWrite = (before, row) => {
+    const Item = nativeExecutionHistory(before, row);
+    return Item
+      ? [{ Put: { TableName: tableName, Item, ConditionExpression: 'attribute_not_exists(pk)' } }]
+      : [];
   };
   const owned = async (candidate, { allowCancelled = false } = {}) => {
     validate(candidate);
@@ -1072,6 +1080,7 @@ export const createNativeExecutionStore = ({
                   ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
                 },
               },
+              ...historyWrite(null, row),
             ],
           }),
         );

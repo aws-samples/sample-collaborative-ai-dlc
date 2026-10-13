@@ -178,7 +178,7 @@ const suffixFor = (resource, params) => {
   if (resource === FILE) return `/files/${params.fileId}`;
   return '/' + resource.split('/').at(-1);
 };
-const outputCursor = (event) => {
+const outputCursor = (event, field = 'afterSeq') => {
   let after = 0;
   {
     const single = event.queryStringParameters ?? {};
@@ -186,17 +186,18 @@ const outputCursor = (event) => {
     if (
       !record(single) ||
       !record(multi) ||
-      Object.keys(single).some((k) => k !== 'afterSeq') ||
+      Object.keys(single).some((k) => !['afterSeq', 'afterEvent'].includes(k)) ||
       Object.entries(multi).some(
         ([k, v]) =>
-          k !== 'afterSeq' ||
+          !['afterSeq', 'afterEvent'].includes(k) ||
           !Array.isArray(v) ||
           v.length !== 1 ||
           (single[k] !== undefined && single[k] !== v[0]),
       )
     )
       fail('INVALID');
-    const raw = single.afterSeq ?? multi.afterSeq?.[0] ?? '0';
+    const raw = single[field] ?? multi[field]?.[0] ?? (field === 'afterEvent' ? undefined : '0');
+    if (raw === undefined) return undefined;
     if (
       typeof raw !== 'string' ||
       !/^(0|[1-9][0-9]{0,15})$/.test(raw) ||
@@ -373,6 +374,7 @@ export const createNativeRuntimeApi = ({
     let input;
     try {
       const after = outputRead ? outputCursor(event) : 0;
+      const afterEvent = outputRead ? outputCursor(event, 'afterEvent') : undefined;
       const listing = outputRead ? null : nativeListQuery(event, { collection, projectId });
       if (collection && event.httpMethod === 'POST') {
         if (typeof event.body !== 'string') return invalid();
@@ -513,7 +515,7 @@ export const createNativeRuntimeApi = ({
       }
       if (outputRead) {
         if (!execution?.outputs) return response(200, { outputs: [], nextAfter: null });
-        return response(200, await execution.outputs(row, after, recheck));
+        return response(200, await execution.outputs(row, after, recheck, afterEvent));
       }
       if (start || cancel || userResponse || recover)
         return await executionCommand({

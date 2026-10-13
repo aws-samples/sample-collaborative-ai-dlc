@@ -6,8 +6,7 @@
 // metric names used by the process store.
 
 const numberOrNull = (value) => {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 };
 
 const firstNumber = (...values) => {

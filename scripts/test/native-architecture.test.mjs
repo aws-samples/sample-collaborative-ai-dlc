@@ -93,9 +93,10 @@ test('readable history prevents service teardown independently of executable sup
   const inventory = nativeDependencyInventory([
     { pk: 'a', sk: 'PUBLICATION#1' },
     { pk: 'a', sk: 'PROMPT#request', request: { prompt: 'Private saved prompt' } },
+    { pk: 'a', sk: 'EVENT#0000000000000001' },
   ]);
   assert.equal(inventory.executableReferences, 0);
-  assert.equal(inventory.references.filter((reference) => reference.kind === 'history').length, 2);
+  assert.equal(inventory.references.filter((reference) => reference.kind === 'history').length, 3);
   assert.doesNotMatch(JSON.stringify(inventory), /Private saved prompt/);
   assert.throws(
     () =>

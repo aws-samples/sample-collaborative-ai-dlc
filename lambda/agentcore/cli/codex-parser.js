@@ -20,8 +20,7 @@
 // schema may drift between releases.
 
 const numberOrNull = (value) => {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 };
 
 const usageFrom = (event) => {

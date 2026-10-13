@@ -32,6 +32,11 @@
       "observations": ["execution:activity.ingest"],
       "role": "authority"
     },
+    "EVENT": {
+      "owner": "native-authority",
+      "kind": "public lifecycle facts committed atomically with EXECUTION; never scheduling authority",
+      "role": "authority"
+    },
     "PROJECTION": {
       "owner": "native-authority",
       "observations": ["projection:claim/acknowledge/release"],

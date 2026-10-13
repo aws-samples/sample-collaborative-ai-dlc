@@ -71,6 +71,111 @@ const expectNoSecret = (events, secret) => {
 };
 
 describe('native activity public boundary', () => {
+  it.each([
+    [
+      'codex',
+      { type: 'turn.completed', usage: { input_tokens: 20, output_tokens: 5 } },
+      'openai.gpt-5.5',
+      'Cost unavailable',
+    ],
+    [
+      'claude',
+      { type: 'result', usage: { input_tokens: 20, output_tokens: 5 } },
+      'us.anthropic.claude-sonnet-4-6',
+      'Input/output cost estimate: USD',
+    ],
+    [
+      'opencode',
+      { type: 'step_finish', part: { tokens: { input: 20, output: 5 } } },
+      'amazon-bedrock/us.anthropic.claude-sonnet-4-6',
+      'Input/output cost estimate: USD',
+    ],
+  ])(
+    'reports numeric %s usage with pinned model attribution and explicit pricing limits',
+    (harness, event, model, cost) => {
+      let time = 1000;
+      const log = createNativeActivityLog({ writerGeneration: 1, now: () => time });
+      const turn = log.turn({ sequence: 2, harness, model });
+      write(turn, codex(event), [4, 13, 31]);
+      time = 1250;
+      turn.close();
+      const text = visible(log.pull(0).events).join('\n');
+      expect(text).toContain(`Turn 2 · ${harness} · model ${model}`);
+      expect(text).toContain('input tokens: 20');
+      expect(text).toContain('output tokens: 5');
+      expect(text).toContain('cache-read tokens: unavailable');
+      expect(text).toContain(cost);
+      expect(text).toContain('Capture wall time: 250 ms');
+      expect(text).toContain('reviewer attribution unavailable');
+      expect(text).not.toContain('workflow complete');
+    },
+  );
+
+  it.each(['codex', 'opencode', 'claude', 'kiro'])(
+    'keeps missing %s usage unavailable, including null/malformed counters',
+    (harness) => {
+      const log = createNativeActivityLog({ writerGeneration: 1 });
+      const turn = log.turn({ sequence: 1, harness, model: null });
+      write(
+        turn,
+        codex(
+          { type: 'turn.completed', usage: { input_tokens: null, output_tokens: '0' } },
+          { type: 'step_finish', part: { tokens: { input: null, output: false } } },
+          { type: 'result', usage: { input_tokens: null, output_tokens: -1 } },
+        ),
+      );
+      turn.close();
+      const text = visible(log.pull(0).events).join('\n');
+      expect(text).toContain('model unavailable');
+      expect(text).toContain('Usage and cost unavailable');
+      expect(text).not.toContain('input tokens: 0');
+      expect(text).not.toContain('USD 0');
+    },
+  );
+
+  it('drains a pressured multi-segment spool in full pages without losing split redactions', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-activity-pages-'));
+    try {
+      const log = createNativeActivityLog({
+        writerGeneration: 1,
+        spoolDirectory: join(root, 'spool'),
+        limits: { ...NATIVE_ACTIVITY_LIMITS, spoolBytes: 4096, segmentBytes: 2048 },
+      });
+      const turn = log.turn({ sequence: 1, harness: 'codex', forbiddenBytes: [MODEL] });
+      const bytes = Buffer.from(
+        codex(
+          ...Array.from({ length: 193 }, (_, i) =>
+            message(
+              `m${i}`,
+              i === 63 ? MODEL.slice(0, 15) : i === 64 ? MODEL.slice(15) : `Message ${i}.`,
+            ),
+          ),
+        ),
+      );
+      turn.write(bytes.subarray(0, 37));
+      const pressure = turn.write(bytes.subarray(37));
+      expect(pressure).toBeInstanceOf(Promise);
+      const seen = [];
+      let after = 0;
+      for (let page = 0; page < 4; page++) {
+        const batch = log.pull(after);
+        expect(log.pull(after)).toEqual(batch); // No ACK: exact replay.
+        seen.push(...batch.events);
+        after = batch.events.at(-1).index;
+      }
+      log.pull(after);
+      await pressure;
+      turn.close();
+      expect(seen.map((event) => event.index)).toEqual(
+        Array.from({ length: 193 }, (_, i) => i + 1),
+      );
+      expectNoSecret(seen, MODEL);
+      expect(log.pull(after)).toMatchObject({ events: [], complete: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('streams parsed codex messages and tool calls through the existing normalizer', () => {
     const { log, turn } = turnOf({ forbiddenBytes: [] });
     write(

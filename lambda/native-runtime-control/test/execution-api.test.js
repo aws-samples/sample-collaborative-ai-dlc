@@ -583,7 +583,7 @@ describe('native publication reads across cancellation and membership changes', 
         expect(operation.TableName).toBe(TABLE);
         const key = operation.Key ?? operation.Item;
         expect(key.pk).toMatch(/^NATIVE#[a-f0-9]{64}$/);
-        expect(key.sk).toMatch(/^(RUNTIME|EXECUTION|PUBLICATION#[0-9]{16})$/);
+        expect(key.sk).toMatch(/^(RUNTIME|EXECUTION|(?:PUBLICATION|EVENT)#[0-9]{16})$/);
         expect(key.sk).not.toBe('META');
       }
     }

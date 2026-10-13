@@ -27,9 +27,7 @@ const responseView = (response, row) =>
         text: response.text,
         acceptedAt: new Date(response.acceptedAt).toISOString(),
         deliveryStatus:
-          row.response?.commandId === response.commandId
-            ? row.response.deliveryStatus
-            : 'delivered',
+          row.response?.commandId === response.commandId ? row.response.deliveryStatus : 'unknown',
       }
     : null;
 
@@ -151,10 +149,12 @@ export const createNativeExecutionApi = ({
   };
   return {
     enabled,
-    async outputs(draft, after, recheck) {
+    async outputs(draft, after, recheck, afterEvent) {
       const row = await read(draft, recheck);
       if (!row || !activity) return { outputs: [], nextAfter: null };
       const result = await activity.history(identity(draft), after);
+      if (afterEvent !== undefined)
+        Object.assign(result, await activity.events(identity(draft), afterEvent));
       await recheck(draft);
       return result;
     },

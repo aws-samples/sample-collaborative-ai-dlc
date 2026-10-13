@@ -10,6 +10,7 @@ import {
 } from './execution-store.js';
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { nativePublicActivity, NATIVE_ACTIVITY_LIMITS } from '../shared/native-activity.js';
+import { nativeHistoryView } from './execution-history.js';
 
 const fail = () => {
   throw Object.assign(new Error('Native activity ownership or ordering changed'), {
@@ -119,9 +120,17 @@ export const createNativeActivityStore = ({
       const latest = await get(nativeExecutionKey(row.scope));
       if (
         !latest ||
-        ['version', 'attemptId', 'epoch', 'runtimeSessionId', 'leaseToken'].some(
-          (k) => latest[k] !== row[k],
-        ) ||
+        [
+          'version',
+          'bindingId',
+          'configurationSha256',
+          'attemptId',
+          'epoch',
+          'runtimeSessionId',
+          'leaseToken',
+        ].some((k) => latest[k] !== row[k]) ||
+        nativeWriterGeneration(latest) !== generation ||
+        nativeTurnSequence(latest) !== nativeTurnSequence(row) ||
         latest.leaseExpiresAt <= now() ||
         latest.cancelRequested
       )
@@ -190,35 +199,51 @@ export const createNativeActivityStore = ({
     );
     // Native sockets receive content-free invalidations only. Token expiry is
     // not current membership; the authorized REST read supplies public fields.
-    for (const output of rows)
-      await broadcast(row.scope, {
-        action: 'agent.output',
-        executionBackend: 'native',
-        projectId: row.scope.projectId,
-        intentId: row.scope.executionId,
-        executionId: row.scope.executionId,
-        seq: output.seq,
-      }).catch(() => {});
+    for (const output of rows) {
+      try {
+        await broadcast(row.scope, {
+          action: 'agent.output',
+          executionBackend: 'native',
+          projectId: row.scope.projectId,
+          intentId: row.scope.executionId,
+          executionId: row.scope.executionId,
+          seq: output.seq,
+        });
+      } catch {
+        // Persistence is the acknowledgement boundary, including synchronous
+        // broadcaster failures. Polling/reconnect reads repair lost hints.
+      }
+    }
     return next.index;
   };
-  const history = async (scope, after = 0) => {
+  const page = async (scope, after, prefix, select, sequence) => {
     if (!Number.isSafeInteger(after) || after < 0) fail();
     const key = nativeExecutionKey(scope);
-    const page = await ddb.send(
+    const result = await ddb.send(
       new QueryCommand({
         TableName: tableName,
         ConsistentRead: true,
         KeyConditionExpression: 'pk = :pk AND sk BETWEEN :after AND :end',
         ExpressionAttributeValues: {
           ':pk': key.pk,
-          ':after': `OUTPUT#${String(after + 1).padStart(16, '0')}`,
-          ':end': 'OUTPUT$',
+          ':after': `${prefix}#${String(after + 1).padStart(16, '0')}`,
+          ':end': `${prefix}$`,
         },
         Limit: 64,
       }),
     );
-    const outputs = (page.Items ?? []).map(view);
-    return { outputs, nextAfter: page.LastEvaluatedKey ? (outputs.at(-1)?.seq ?? after) : null };
+    // An unavailable/partial read must not masquerade as an empty history.
+    if (!Array.isArray(result.Items) || (result.LastEvaluatedKey && !result.Items.length)) fail();
+    const rows = result.Items.map(select);
+    return { rows, nextAfter: result.LastEvaluatedKey ? rows.at(-1)[sequence] : null };
   };
-  return { cursor, ingest, history };
+  const history = async (scope, after = 0) => {
+    const result = await page(scope, after, 'OUTPUT', view, 'seq');
+    return { outputs: result.rows, nextAfter: result.nextAfter };
+  };
+  const events = async (scope, after = 0) => {
+    const result = await page(scope, after, 'EVENT', nativeHistoryView, 'revision');
+    return { events: result.rows, nextEventAfter: result.nextAfter };
+  };
+  return { cursor, ingest, history, events };
 };

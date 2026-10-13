@@ -50,7 +50,7 @@ const noWork = (f) => {
 
 describe('native execution REST boundary', () => {
   const route = (action, overrides = {}) => {
-    const read = ['publication', 'graph', 'files'].includes(action);
+    const read = ['publication', 'graph', 'files', 'outputs'].includes(action);
     const suffix = action === 'files' ? `/files/nf-${'a'.repeat(64)}` : `/${action}`;
     const base = event('get');
     return {
@@ -77,6 +77,31 @@ describe('native execution REST boundary', () => {
     file: vi.fn(async () => ({ id: `nf-${'a'.repeat(64)}`, content: 'exact' })),
     graph: vi.fn(async () => ({ publicationId: 'committed', nodes: [], edges: [] })),
     status: vi.fn(async () => ({ executionAvailable: true, execution: null })),
+  });
+  it('accepts independent output/event cursors only after membership and rejects malformed cursors', async () => {
+    const outputs = vi.fn(async () => ({
+      outputs: [],
+      nextAfter: null,
+      events: [],
+      nextEventAfter: null,
+    }));
+    const f = makeApi({ execution: { ...execution(), outputs } });
+    await f.store.create(createInput());
+    const page = route('outputs', { queryStringParameters: { afterSeq: '128', afterEvent: '70' } });
+    expect((await f.api(page)).statusCode).toBe(200);
+    expect(outputs).toHaveBeenCalledWith(expect.any(Object), 128, expect.any(Function), 70);
+    for (const query of [
+      { afterEvent: '-1' },
+      { afterEvent: 'NaN' },
+      { afterSeq: '1', secret: 'x' },
+    ])
+      expect((await f.api(route('outputs', { queryStringParameters: query }))).statusCode).toBe(
+        400,
+      );
+    expect(outputs).toHaveBeenCalledTimes(1);
+    f.membership.mockResolvedValue(null);
+    expect((await f.api(page)).statusCode).toBe(403);
+    expect(outputs).toHaveBeenCalledTimes(1);
   });
   it.each(['start', 'cancel', 'publication', 'files', 'graph'])(
     'routes %s only after project membership checks',

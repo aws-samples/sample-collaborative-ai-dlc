@@ -487,6 +487,16 @@ it('renders paginated history in the real Agent transcript while running, and re
     .mockResolvedValueOnce({
       outputs: Array.from({ length: 64 }, (_, index) => row(index + 1)),
       nextAfter: 64,
+      events: [
+        {
+          revision: 1,
+          eventId: 'native-1',
+          type: 'native.accepted',
+          summary: 'Turn 1: Start accepted',
+          timestamp: '2026-10-13T10:00:00Z',
+        },
+      ],
+      nextEventAfter: null,
     })
     .mockResolvedValueOnce(page(row(65)));
   const view = workspace();
@@ -495,7 +505,10 @@ it('renders paginated history in the real Agent transcript while running, and re
   expect(document.querySelectorAll('[data-output-type="message"]')).toHaveLength(65);
   expect(screen.getByText('Agent running')).toBeVisible();
   expect(screen.getByRole('tab', { name: 'Agent' })).toHaveAttribute('data-state', 'active');
-  expect(service.outputs).toHaveBeenCalledWith('project', 'one', 64);
+  expect(service.outputs).toHaveBeenCalledWith('project', 'one', 64, 1);
+  await userEvent.setup().click(screen.getByRole('tab', { name: /Timeline/ }));
+  expect(screen.getByText('Turn 1: Start accepted')).toBeVisible();
+  await userEvent.setup().click(screen.getByRole('tab', { name: 'Agent' }));
   service.outputs.mockResolvedValueOnce(page(row(66)));
   emit('status', 'disconnected');
   emit('status', 'connected');
@@ -547,7 +560,7 @@ it('resets history and its cursor on a run switch and rejects old-run responses 
   service.outputs.mockResolvedValueOnce(page(row(1, 'Second run text.')));
   fireEvent.click(screen.getByRole('link', { name: 'Switch run' }));
   expect(await screen.findByText('Second run text.')).toBeVisible();
-  expect(service.outputs).toHaveBeenCalledWith('project', 'two', 0);
+  expect(service.outputs).toHaveBeenCalledWith('project', 'two', 0, 0);
   await act(async () => pending.resolve(page(row(18, 'First run late text.'))));
   hint();
   expect(screen.queryByText('First run text.')).not.toBeInTheDocument();

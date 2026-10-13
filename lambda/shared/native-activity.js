@@ -1,4 +1,5 @@
 // Public native activity contract shared by runtime sanitization and durable ingest.
+import { costForMetrics } from './model-pricing.js';
 export const NATIVE_ACTIVITY_CAPABILITY = 'activity-v1';
 export const NATIVE_ACTIVITY_LIMITS = Object.freeze({
   contentBytes: 8 * 1024,
@@ -19,6 +20,39 @@ const TYPES = new Set(['message', 'tool', 'edit', 'batch_read', 'artifact', 'que
 const LEVELS = new Set(['info', 'success', 'warning', 'error']);
 const PROJECT = '/mnt/native/project';
 const REDACTED = '[REDACTED]';
+const USAGE_FIELDS = {
+  tokensInput: 'input tokens',
+  tokensOutput: 'output tokens',
+  tokensCacheRead: 'cache-read tokens',
+  tokensCacheWrite: 'cache-write tokens',
+  tokensReasoning: 'reasoning tokens',
+};
+
+// Report samples, never infer a complete bill from a missing provider signal.
+// Pricing uses the canonical resolver; this is an input/output estimate only.
+export const nativeUsageSummary = (metrics, model) => {
+  const observed = Object.fromEntries(
+    Object.entries(metrics ?? {}).filter(
+      ([key, value]) =>
+        Object.hasOwn(USAGE_FIELDS, key) && Number.isSafeInteger(value) && value >= 0,
+    ),
+  );
+  const fields = Object.entries(USAGE_FIELDS).map(
+    ([key, label]) => `${label}: ${observed[key] ?? 'unavailable'}`,
+  );
+  const cost = costForMetrics(observed, model);
+  const priced =
+    Object.hasOwn(observed, 'tokensInput') &&
+    Object.hasOwn(observed, 'tokensOutput') &&
+    cost.priced;
+  return [
+    ...fields,
+    priced
+      ? `Input/output cost estimate: USD ${cost.totalCost.toFixed(6)} (canonical pricing; excludes cache, credits and infrastructure)`
+      : 'Cost unavailable',
+    'Provider-reported sample; total billing and reviewer attribution unavailable',
+  ].join(' · ');
+};
 // A secret window this long is treated as a credential fragment. Shorter runs
 // at a boundary may leak at most HOLD - 1 characters before being held.
 const GRAM = 4;

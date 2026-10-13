@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { executionIdentity } from '../execution-runtime.js';
 import { createNativeExecutionStore } from '../execution-store.js';
 import { createNativeExecutionApi } from '../execution-api.js';
+import { createNativeActivityStore } from '../activity-store.js';
 import { serialFixture } from './execution-serial-fixtures.js';
 import { TABLE } from './fixtures.js';
 
@@ -81,6 +82,7 @@ describe('serial native interaction authority', () => {
       'EXECUTION',
       `RESPONSE#${request.interactionId}`,
       expect.stringMatching(/^RESPONSE_REQUEST#[a-f0-9]{64}$/),
+      expect.stringMatching(/^EVENT#[0-9]{16}$/),
     ]);
     expect(await f.respond(request)).toMatchObject({
       created: false,
@@ -202,6 +204,18 @@ describe('serial native interaction authority', () => {
       verifyFiles: true,
     });
     expect(old.sequence).toBe(1);
+  });
+
+  it('does not invent delivery confirmation when a later answer has replaced the delivery pointer', async () => {
+    const f = await waiting();
+    const first = f.replyRequest();
+    await f.respond(first);
+    await resume(f);
+    await f.publish();
+    await f.respond(f.replyRequest());
+    const retried = await f.api.respond(f.prepared, 'responding-member', first, f.recheck);
+    expect(retried.response.deliveryStatus).toBe('unknown');
+    expect(retried.response.text).toBe(first.text);
   });
 
   it('cancellation wins a response transaction race and leaves no accepted ledger entry', async () => {
@@ -463,9 +477,69 @@ describe('task-3 structured answers', () => {
           new ScanCommand({ TableName: tableName, ConsistentRead: true }),
         );
         expect(Items.map((item) => item.sk).sort()).toEqual([
+          expect.stringMatching(/^EVENT#[0-9]{16}$/),
           'EXECUTION',
           `RESPONSE#${request.interactionId}`,
           expect.stringMatching(/^RESPONSE_REQUEST#/),
+        ]);
+        const event = Items.find((item) => item.sk.startsWith('EVENT#'));
+        expect(event).toMatchObject({ type: 'native.answer.accepted', actor: accepted.actorId });
+        expect(event.summary).toContain('delivery pending');
+        // The same table and real transaction conditions fence multi-batch
+        // output, duplicate ACK recovery, and a cancellation racing an old writer.
+        const activity = createNativeActivityStore({ ddb, tableName, now: f.now });
+        const owner = (await store.claim(f.bindingIdentity)).row;
+        for (let after = 0; after < 192; after += 64) {
+          const batch = {
+            ...executionIdentity(owner),
+            writerGeneration: owner.writerGeneration,
+            after,
+            events: Array.from({ length: 64 }, (_, i) => ({
+              index: after + i + 1,
+              sequence: owner.turnSequence,
+              writerGeneration: owner.writerGeneration,
+              kind: 'stdout',
+              capturedAt: f.now(),
+              content: `Visible output ${after + i + 1}`,
+              display: { type: 'message', level: 'info' },
+            })),
+          };
+          expect(await activity.ingest(owner, batch)).toBe(after + 64);
+          expect(await activity.ingest(owner, batch)).toBe(after + 64);
+        }
+        const seen = [];
+        let after = 0;
+        do {
+          const page = await activity.history(f.identity, after);
+          seen.push(...page.outputs);
+          after = page.nextAfter;
+        } while (after !== null);
+        expect(seen.map((output) => output.seq)).toEqual(
+          Array.from({ length: 192 }, (_, i) => i + 1),
+        );
+        expect((await activity.events(f.identity)).events).toHaveLength(1);
+        await store.cancel(f.bindingIdentity);
+        await expect(
+          activity.ingest(owner, {
+            ...executionIdentity(owner),
+            writerGeneration: owner.writerGeneration,
+            after: 192,
+            events: [
+              {
+                index: 193,
+                sequence: owner.turnSequence,
+                writerGeneration: owner.writerGeneration,
+                kind: 'stdout',
+                capturedAt: f.now(),
+                content: 'Stale output',
+              },
+            ],
+          }),
+        ).rejects.toThrow();
+        expect(await activity.cursor(owner)).toBe(192);
+        expect((await activity.events(f.identity)).events.map((entry) => entry.type)).toEqual([
+          'native.answer.accepted',
+          'native.cancel_requested',
         ]);
         members.delete(accepted.actorId);
         await expect(submit(accepted.actorId, request)).rejects.toMatchObject({

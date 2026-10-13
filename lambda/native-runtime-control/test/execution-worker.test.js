@@ -409,6 +409,45 @@ describe('administrator image revocation in the supervisor', () => {
 });
 
 describe('native activity terminal drain', () => {
+  it('drains more than four full batches across wakeups before admitting publication', async () => {
+    const { createNativeActivityLog } = await import('../../agentcore/native/activity.js');
+    const { createNativeActivityStore } = await import('../activity-store.js');
+    const { TABLE } = await import('./fixtures.js');
+    const f = await make();
+    await f.dispatch();
+    const log = createNativeActivityLog({ writerGeneration: 1, now: f.now });
+    const turn = log.turn({ sequence: 1, harness: 'codex' });
+    for (let n = 0; n < 325; n++)
+      turn.write(
+        Buffer.from(
+          JSON.stringify({
+            type: 'item.completed',
+            item: { id: `m${n}`, type: 'agent_message', text: `Public message ${n}` },
+          }) + '\n',
+        ),
+      );
+    turn.close();
+    const activity = createNativeActivityStore({ ddb: f.ddb, tableName: TABLE, now: f.now });
+    const invoke = f.ports.invoke.getMockImplementation();
+    f.ports.invoke.mockImplementation(async (input) =>
+      input.payload.command === 'native-activity'
+        ? { ...executionIdentity(input.execution), ...log.pull(input.payload.after) }
+        : { ...(await invoke(input)), capabilities: ['activity-v1'] },
+    );
+    const reconcile = createNativeExecutionSupervisor({ ...f.ports, activity });
+    await reconcile(f.identity);
+    expect(f.row().status).toBe('RUNNING');
+    expect(await activity.cursor(f.row())).toBe(256);
+    expect(f.ports.publications.read).not.toHaveBeenCalled();
+    await reconcile(f.identity);
+    expect(await activity.cursor(f.row())).toBe(325);
+    expect(log.pull(325)).toMatchObject({ events: [], complete: true });
+    expect(f.row().status).toBe('WAITING_FOR_INPUT');
+    expect(
+      f.ports.invoke.mock.calls.filter(([input]) => input.payload.command === 'native-start'),
+    ).toHaveLength(1);
+  });
+
   it('waits for timer-held output and closure, then acknowledges it before publication', async () => {
     const { createNativeActivityLog } = await import('../../agentcore/native/activity.js');
     const f = await make();

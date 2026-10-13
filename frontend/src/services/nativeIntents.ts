@@ -6,7 +6,53 @@ import {
 import type { StructuredAnswer } from './questions';
 import { api, ApiError } from './api';
 import type { WorkflowPackageHarness } from './workflowSources';
-import type { IntentGraphEdge, IntentGraphNode, IntentOutput } from './intents';
+import type {
+  IntentActivityEvent,
+  IntentGraphEdge,
+  IntentGraphNode,
+  IntentOutput,
+} from './intents';
+
+export interface NativeActivityEvent extends IntentActivityEvent {
+  revision: number;
+}
+export interface NativeActivityPage {
+  outputs: IntentOutput[];
+  nextAfter: number | null;
+  // Additive. Older controllers have no lifecycle ledger.
+  events?: NativeActivityEvent[];
+  nextEventAfter?: number | null;
+}
+
+function validHistoryCursor(value: unknown, after: number, last?: number): boolean {
+  return value === null || (Number.isSafeInteger(value) && value === last && Number(value) > after);
+}
+
+function validEvents(value: NativeActivityPage, after: number): boolean {
+  if (value.events === undefined) return value.nextEventAfter === undefined;
+  let previous = after;
+  if (
+    !Array.isArray(value.events) ||
+    value.events.some((event) => {
+      if (
+        !record(event) ||
+        !Number.isSafeInteger(event.revision) ||
+        event.revision <= previous ||
+        event.eventId !== `native-${event.revision}` ||
+        typeof event.type !== 'string' ||
+        !event.type.startsWith('native.') ||
+        typeof event.summary !== 'string' ||
+        typeof event.timestamp !== 'string' ||
+        !Number.isFinite(Date.parse(event.timestamp))
+      )
+        return true;
+      previous = event.revision;
+      return false;
+    })
+  )
+    return false;
+  return validHistoryCursor(value.nextEventAfter, after, value.events.at(-1)?.revision);
+}
 
 const executionStatuses = [
   'REQUESTED',
@@ -88,7 +134,7 @@ export interface NativeUserReply {
   actorId: string;
   text: string;
   acceptedAt: string;
-  deliveryStatus: 'pending' | 'delivered';
+  deliveryStatus: 'pending' | 'delivered' | 'unknown';
 }
 
 export interface NativeReplyAcceptance {
@@ -418,7 +464,7 @@ function userReply(value: unknown): NativeUserReply {
     typeof value.text !== 'string' ||
     !nativeReplyTextValid(value.text) ||
     !timestamp(value.acceptedAt) ||
-    !['pending', 'delivered'].includes(String(value.deliveryStatus)) ||
+    !['pending', 'delivered', 'unknown'].includes(String(value.deliveryStatus)) ||
     typeof value.deliveryStatus !== 'string'
   )
     throw new Error('The accepted native reply could not be verified.');
@@ -670,9 +716,12 @@ export const nativeIntentsService = {
     projectId: string,
     intentId: string,
     afterSeq = 0,
-  ): Promise<{ outputs: IntentOutput[]; nextAfter: number | null }> {
-    const value = await api.get<{ outputs: IntentOutput[]; nextAfter: number | null }>(
-      `${path(projectId)}/${encodeURIComponent(intentId)}/outputs?afterSeq=${afterSeq}`,
+    afterEvent?: number,
+  ): Promise<NativeActivityPage> {
+    const value = await api.get<NativeActivityPage>(
+      `${path(projectId)}/${encodeURIComponent(intentId)}/outputs?afterSeq=${afterSeq}${
+        afterEvent === undefined ? '' : `&afterEvent=${afterEvent}`
+      }`,
     );
     if (
       !record(value) ||
@@ -684,8 +733,9 @@ export const nativeIntentsService = {
           row.seq <= afterSeq ||
           typeof row.content !== 'string',
       ) ||
-      (value.nextAfter !== null &&
-        (!Number.isSafeInteger(value.nextAfter) || value.nextAfter <= afterSeq))
+      value.outputs.some((row, index) => index > 0 && row.seq <= value.outputs[index - 1].seq) ||
+      !validHistoryCursor(value.nextAfter, afterSeq, value.outputs.at(-1)?.seq) ||
+      !validEvents(value, afterEvent ?? 0)
     )
       throw new Error('Invalid native output history');
     return value;

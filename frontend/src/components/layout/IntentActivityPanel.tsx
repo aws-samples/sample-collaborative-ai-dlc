@@ -43,8 +43,18 @@ import type { IntentActivityEvent, IntentArtifact, IntentGraphNode } from '@/ser
 const FOLLOW_KEY = 'auto';
 
 export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
-  const { detail, stageRows, agentFocus, previewSeq, executionBackend, nativeWorkspace, intentId } =
-    useIntent();
+  const {
+    detail,
+    stageRows,
+    agentFocus,
+    previewSeq,
+    executionBackend,
+    nativeWorkspace,
+    intentId,
+    activityEvents,
+    activityError,
+    ensureOutputs,
+  } = useIntent();
   const [activeTab, setActiveTab] = useState(executionBackend === 'native' ? 'agent' : 'timeline');
   const discussionsCtx = useDiscussions();
   const totalUnread = (discussionsCtx?.discussions ?? []).reduce(
@@ -84,7 +94,7 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
       ['RUNNING', 'DISPATCHING', 'RECOVERING'].includes(
         nativeWorkspace?.intent?.execution?.status ?? '',
       ));
-  const events = detail?.events ?? [];
+  const events = activityEvents ?? detail?.events ?? [];
 
   return (
     <div className="flex h-full w-full flex-col bg-sidebar border-l border-border">
@@ -151,6 +161,18 @@ export function IntentActivityPanel({ onClose }: { onClose: () => void }) {
       {/* Content. The Discuss tab swaps between the thread list and the open
           thread; the Agent tab manages its own scrolling (stick-to-bottom), so
           both render outside the shared ScrollArea. */}
+      {executionBackend === 'native' && (
+        <div className="border-b px-3 py-2 text-xs text-muted-foreground">
+          <p>
+            Recorded activity is not workflow approval or completion. Earlier lifecycle history and
+            unreported usage may be unavailable.
+          </p>
+          {activityError && <p role="alert">{activityError}</p>}
+          <Button variant="ghost" size="sm" onClick={() => ensureOutputs(INTENT_OUTPUT_KEY)}>
+            Refresh activity
+          </Button>
+        </div>
+      )}
       {activeTab === 'discussions' && discussionsCtx?.isOpen ? (
         <DiscussionPanel />
       ) : activeTab === 'agent' ? (
@@ -449,6 +471,10 @@ function timelineDotColor(event: IntentActivityEvent): string {
 // v2 event type → dot color (mirrors v1's TimelineEventItem visual, which is
 // typed to sprint events and can't be reused directly).
 function eventDotColor(type: string): string {
+  if (type === 'native.failed') return 'bg-agent-error';
+  if (['native.recovery_required', 'native.cancel_requested'].includes(type))
+    return 'bg-agent-waiting';
+  if (type === 'native.running') return 'bg-agent-running';
   if (type === 'v2.execution.failed') return 'bg-agent-error';
   if (type === 'v2.execution.succeeded' || type === 'v2.stage.succeeded') {
     return 'bg-agent-success';
@@ -573,6 +599,9 @@ function IntentTimelineItem({ event }: { event: IntentActivityEvent }) {
           </div>
         )}
         <div className="flex items-center gap-2 mt-0.5">
+          {event.type.startsWith('native.') && event.actor && (
+            <span className="text-[10px] text-muted-foreground">By {event.actor}</span>
+          )}
           {event.stageInstanceId && (
             <span className="text-[10px] text-muted-foreground">
               {stageNameOf(event.stageInstanceId)}

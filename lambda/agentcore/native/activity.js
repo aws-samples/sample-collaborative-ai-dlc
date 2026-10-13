@@ -32,6 +32,7 @@ import { createCliOutputSink } from '../output-normalizer.js';
 import {
   NATIVE_ACTIVITY_LIMITS,
   nativePublicActivity,
+  nativeUsageSummary,
   createNativeSecretGuard,
   FIELDS,
   applyMarks,
@@ -276,7 +277,7 @@ export const createNativeActivityLog = ({
       for (const resolve of resume) resolve();
     }
   };
-  const turn = ({ sequence, harness, forbiddenBytes = [], signal }) => {
+  const turn = ({ sequence, harness, model, forbiddenBytes = [], signal }) => {
     if (open) open.close({ failed: true });
     if (spoolDirectory) {
       try {
@@ -294,6 +295,8 @@ export const createNativeActivityLog = ({
     const rawTail = Object.fromEntries(FIELDS.map((key) => [key, '']));
     let omittedDiagnostics = 0;
     let closed = false;
+    const startedAt = now();
+    let usageSamples = 0;
     const fieldOf = (event, key) => (key === 'content' ? event.content : event.display[key]) ?? '';
     const flush = (forced = false) => {
       clearTimeout(flushTimer);
@@ -398,6 +401,21 @@ export const createNativeActivityLog = ({
         retainState: false,
         maxPendingTools: 64,
         emit: (value) => emitPublic(value),
+        onUsage: (metrics) => {
+          if (model === undefined) return;
+          usageSamples++;
+          emitPublic(
+            {
+              content: '',
+              display: {
+                type: 'system',
+                title: `Turn ${sequence} · ${harness} · model ${model ?? 'unavailable'} · usage sample ${usageSamples}`,
+                summary: nativeUsageSummary(metrics, model),
+              },
+            },
+            'lifecycle',
+          );
+        },
       });
     }
     const decoder = new TextDecoder('utf-8', { fatal: false });
@@ -443,12 +461,20 @@ export const createNativeActivityLog = ({
       // Trusted fixed lifecycle text still flows through the same ordering.
       lifecycle({ title, level = 'info', summary }) {
         flush(true);
+        const event = nativePublicActivity(
+          {
+            content: '',
+            display: { type: 'system', level, title, ...(summary ? { summary } : {}) },
+          },
+          limits,
+          guard,
+        );
+        if (!event) return;
         append({
           sequence,
           kind: 'lifecycle',
           capturedAt: now(),
-          content: '',
-          display: { type: 'system', level, title, ...(summary ? { summary } : {}) },
+          ...event,
         });
       },
       close({ failed = false } = {}) {
@@ -459,6 +485,15 @@ export const createNativeActivityLog = ({
         } catch {
           omittedDiagnostics++;
         }
+        if (model !== undefined)
+          handle.lifecycle({
+            title: `Turn ${sequence} · ${harness} · model ${model ?? 'unavailable'} · activity capture ended`,
+            summary: `Capture wall time: ${Math.max(0, now() - startedAt)} ms (includes harness preparation and tools). ${
+              usageSamples
+                ? `${usageSamples} usage samples observed; aggregate cost unavailable.`
+                : 'Usage and cost unavailable.'
+            } This does not establish publication or workflow completion.`,
+          });
         if (omittedDiagnostics)
           handle.lifecycle({
             title: `${omittedDiagnostics} unparsed harness output ${omittedDiagnostics === 1 ? 'entry was' : 'entries were'} withheld`,

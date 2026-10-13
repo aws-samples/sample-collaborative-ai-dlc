@@ -20,6 +20,7 @@ import {
   intentsService,
   type GateAnswer,
   type Intent,
+  type IntentActivityEvent,
   type IntentArtifact,
   type IntentDetail,
   type IntentGate,
@@ -109,6 +110,8 @@ interface OutputPane {
 export interface IntentContextValue {
   executionBackend?: 'platform' | 'native';
   nativeWorkspace?: NativeIntentAdapter;
+  activityEvents?: IntentActivityEvent[];
+  activityError?: string | null;
   projectId: string;
   intentId: string;
   detail: IntentDetail | null;
@@ -336,6 +339,8 @@ function NativeIntentAdapterProvider({
   const value: IntentContextValue = {
     executionBackend: 'native',
     nativeWorkspace,
+    activityEvents: activity.events,
+    activityError: activity.error,
     projectId,
     intentId,
     detail: null,

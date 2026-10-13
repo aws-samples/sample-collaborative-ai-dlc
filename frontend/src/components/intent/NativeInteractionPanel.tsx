@@ -441,7 +441,9 @@ export function NativeInteractionPanel({
                     ? 'Reply accepted. Cancellation requested.'
                     : reply.receipt.deliveryStatus === 'pending'
                       ? 'Reply accepted. Delivery pending.'
-                      : 'Reply delivered. Waiting for the next AI-DLC response.'}
+                      : reply.receipt.deliveryStatus === 'delivered'
+                        ? 'Reply delivered. Waiting for the next AI-DLC response.'
+                        : 'Reply accepted. Historical delivery confirmation is unavailable.'}
             </p>
           )}
           {!reply.receipt && !reply.editable && reply.state === 'idle' && (

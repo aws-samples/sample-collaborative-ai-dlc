@@ -164,6 +164,53 @@ the browser. Activity describes work; it cannot accept answers or advance the
 methodology. Buffer and transport limits are not automatic model-turn time,
 token, or spending cutoffs.
 
+The authority also writes a small public `EVENT#<execution revision>` ledger in
+the **same transaction** as meaningful execution transitions. It records Start
+and reply acceptance, queued/attempted/confirmed dispatch, admitted publication,
+waiting, recovery phases, failures, and requested/confirmed cancellation.
+Heartbeats and leases add no timeline noise. Event rows do not schedule work;
+the existing execution, answer, publication, and ownership records remain
+authoritative. A failed or stale transaction cannot leave a successful event.
+The dependency inventory retains these rows as readable history.
+
+The existing `/outputs` read accepts an optional independent `afterEvent` cursor
+alongside `afterSeq`. Its additive `events` and `nextEventAfter` fields populate
+the shared Timeline while `OUTPUT` and `OUTPUT_CURSOR` keep their existing
+ordering. Each stream pages 64 rows; reconnect and two-second polling catch
+lost notifications. Read failures visibly mark incomplete history and preserve
+the last confirmed cursor. Resource/action denials clear the scoped history
+without treating their status codes as project-wide access revocation.
+Account/project/intent changes detach subscriptions and reject late pages.
+Old output-only responses remain readable; old lifecycle history is not
+reconstructed. Historical reply delivery is `unknown` when the retained delivery
+pointer no longer identifies that answer. Acceptance never implies approval.
+
+New runtime captures add bounded usage/timing summaries through the unchanged
+`activity-v1` lifecycle format and the existing redaction boundary. Codex turn,
+Claude result, and OpenCode step usage callbacks report observed numeric
+counters with the pinned harness/model; missing counters remain unavailable.
+The shared `model-pricing.js` helper supplies an **input/output cost estimate**
+only when both counters and a canonical price exist. It is not a total bill:
+cache, credits, infrastructure, aggregate costs and individual reviewer usage
+are not priced by this view. Kiro ACP has no captured reliable usage signal here.
+Controller timestamps report acceptance-to-dispatch and dispatch-to-publication
+when those exact boundaries exist; runtime capture wall time includes harness
+preparation and tools. None is presented as model-only inference latency.
+
+Quorum's existing discussion status shows running, advisory completion or
+failure, with its existing guarded retry. Internal harness reviewer activity is
+visible only to the extent supplied by sanitized normalizer output; there is no
+invented reviewer verdict or workflow success. Incident actions remain Refresh
+activity/status, Cancel execution, eligible Recover session, and discussion
+retry. `DELIVERY_UNCERTAIN` cannot enable replay. These changes add no archive,
+private transcript/checkpoint read, control route, IAM permission or pricing
+table. Existing retained images continue without the new usage summaries;
+controller/frontend updates add lifecycle visibility without repinning runs.
+Deploy the controller and frontend together (controller first); old controllers
+reject the new cursor parameter. Existing clients that request only `afterSeq`
+still receive their original output DTO. The `unknown` historical reply delivery
+value requires the updated frontend decoder.
+
 Yjs is a separate collaboration transport for revision-scoped drafts and
 presence. Its document synchronization is neither the execution event log nor
 the accepted-answer ledger. See [Real-time collaboration](../using-the-platform/real-time-collaboration.md)
@@ -502,6 +549,31 @@ release criteria before widening support; later capabilities are separate scope.
       across chunks, backpressure, and stale writers. Done when operators can trace
       acceptance through dispatch and publication without relying on private logs
       for normal member actions.
+      **Implemented locally:** transactional lifecycle Timeline; explicit acceptance,
+      dispatch, publication and cancellation facts; observed usage and partial cost/
+      timing attribution; advisory Quorum outcomes and existing incident actions.
+      Output and lifecycle cursors remain independent; retained history is not
+      invented. **Checks:** multi-page replay, 325 events drained across supervisor
+      wakeups, lost ACK/notification and partial-read handling, multi-segment spool
+      pressure, split redaction, stale writers/cancellation, and scoped identity/
+      access/token changes. **Validation (Node 24.21.0,
+      `NODE_OPTIONS=--no-experimental-webstorage`):** full frontend 1,727 passed
+      and build passed; Docker native-runtime-control 1,176 passed (including
+      real DynamoDB transactions); latest activity-store recheck 22 passed;
+      focused runtime/parser checks 110 passed. The broader AgentCore/shared/
+      discussion/control run passed 7,317 tests; its one new-test actor-fixture
+      failure was corrected and covered by the passing control recheck. Three
+      existing Bun-dependent sensor tests were skipped, not credited as passes.
+      Release tests 232, native wiring 21 and architecture tests 5 passed.
+      Lint, format, secretlint, dependency and architecture checks passed
+      (lint/dependency warnings remain); native Lambda bundles built successfully.
+      **Still unqualified:** deployed member/API/WebSocket/IAM behavior and a
+      current pinned-image run for each harness, including retained-image replay,
+      real reviewer progress/failure, reported usage accuracy and observed timing.
+      Per-reviewer usage, complete billing and engine-applied decision evidence
+      are unavailable from the current public signals. No live model call,
+      deployment or AWS mutation was performed; this item remains open for that
+      evidence.
 - [ ] **Verification — runtime stability.** Revisit historically reported mid-turn
       runtime losses and reviewer timeouts on the current package/image. Done when
       repeated representative long and reviewer-heavy runs report durations,

@@ -693,6 +693,19 @@ export const createCliOutputSink = ({
     if (!line.trim()) return;
     try {
       const event = JSON.parse(line);
+      if (event.type === 'result' && event.usage && event.parent_tool_use_id == null) {
+        const metrics = {};
+        for (const [key, field] of Object.entries({
+          tokensInput: 'input_tokens',
+          tokensOutput: 'output_tokens',
+          tokensCacheRead: 'cache_read_input_tokens',
+          tokensCacheWrite: 'cache_creation_input_tokens',
+        })) {
+          const value = event.usage[field];
+          if (Number.isSafeInteger(value) && value >= 0) metrics[key] = value;
+        }
+        if (Object.keys(metrics).length) onUsage(metrics, event);
+      }
       const text = stripTerminalControls(textFromClaudeStreamEvent(event));
       if (text) {
         emitEvent(emit, text, displayForMessage(text));

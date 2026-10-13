@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 
 const mocks = vi.hoisted(() => ({
   ensureOutputs: vi.fn(),
+  native: false,
 }));
 
 vi.mock('@/contexts/IntentContext', () => ({
@@ -165,6 +166,33 @@ vi.mock('@/contexts/IntentContext', () => ({
     stageNameOf: (key: string) => (key === 'si-1' ? 'Requirements Analysis' : key),
     ensureOutputs: mocks.ensureOutputs,
     outputPaneStatus: () => 'seeded',
+    ...(mocks.native
+      ? {
+          executionBackend: 'native',
+          activityError:
+            'Activity could not be refreshed. History may be incomplete; retry refresh.',
+          activityEvents: [
+            {
+              eventId: 'native-1',
+              type: 'native.accepted',
+              summary: 'Turn 1: Start accepted',
+              timestamp: '2026-10-13T10:00:00Z',
+            },
+            {
+              eventId: 'native-3',
+              type: 'native.dispatch.attempted',
+              summary: 'Turn 1: Dispatch attempted; delivery not yet confirmed',
+              timestamp: '2026-10-13T10:00:01Z',
+            },
+            {
+              eventId: 'native-5',
+              type: 'native.published',
+              summary: 'Turn 1: Response published; awaiting a human reply',
+              timestamp: '2026-10-13T10:00:02Z',
+            },
+          ],
+        }
+      : {}),
   }),
 }));
 
@@ -177,6 +205,30 @@ vi.mock('@/components/discussion/DiscussionsTab', () => ({
 }));
 
 import { IntentActivityPanel } from './IntentActivityPanel';
+
+it('uses the shared timeline for native committed facts and provides scoped refresh', async () => {
+  mocks.native = true;
+  try {
+    const user = userEvent.setup();
+    render(<IntentActivityPanel onClose={() => {}} />);
+    await user.click(screen.getByRole('tab', { name: /Timeline/i }));
+    expect(screen.getByText('Turn 1: Start accepted')).toBeInTheDocument();
+    expect(
+      screen.getByText('Turn 1: Dispatch attempted; delivery not yet confirmed'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Turn 1: Response published; awaiting a human reply'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Earlier lifecycle history and unreported usage may be unavailable/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('History may be incomplete');
+    await user.click(screen.getByRole('button', { name: 'Refresh activity' }));
+    expect(mocks.ensureOutputs).toHaveBeenLastCalledWith('intent');
+  } finally {
+    mocks.native = false;
+  }
+});
 
 describe('IntentActivityPanel Agent tab', () => {
   beforeEach(() => {

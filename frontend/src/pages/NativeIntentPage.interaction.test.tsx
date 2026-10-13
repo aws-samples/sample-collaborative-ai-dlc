@@ -327,6 +327,20 @@ it('does not invent a next assistant response when delivery has completed', asyn
   expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
 });
 
+it('keeps missing historical delivery confirmation distinct from a delivered reply', async () => {
+  accept({ requestId: '', interactionId: initialInteraction.id, contentSha256: '', text: 'poc' });
+  intent.execution = { ...intent.execution!, status: 'RUNNING', responsePending: false };
+  interaction.response = { ...interaction.response!, deliveryStatus: 'unknown' };
+  renderPage();
+  await loaded();
+  expect(
+    screen.getByText('Reply accepted. Historical delivery confirmation is unavailable.'),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText('Reply delivered. Waiting for the next AI-DLC response.'),
+  ).not.toBeInTheDocument();
+});
+
 it('keeps text after a stale 409 and requires refreshed authority before any new submission', async () => {
   transport.post.mockRejectedValue(
     new ApiError(409, 'private detail', { code: 'NATIVE_EXECUTION_CONFLICT' }),

@@ -24,6 +24,49 @@ const draft = {
   updatedAt: '2026-09-25T08:00:00Z',
 };
 beforeEach(() => vi.resetAllMocks());
+describe('native output and lifecycle history', () => {
+  const output = { seq: 65, content: 'Public output' };
+  const event = {
+    revision: 89,
+    eventId: 'native-89',
+    type: 'native.published',
+    summary: 'Published',
+    timestamp: '2026-10-13T00:00:00Z',
+  };
+  it('decodes additive lifecycle pages and retains older output-only responses', async () => {
+    get.mockResolvedValueOnce({
+      outputs: [output],
+      nextAfter: 65,
+      events: [event],
+      nextEventAfter: 89,
+    });
+    expect(await nativeIntentsService.outputs('p1', 'i1', 64, 80)).toMatchObject({
+      events: [event],
+    });
+    expect(get).toHaveBeenCalledWith(
+      '/projects/p1/native-intents/i1/outputs?afterSeq=64&afterEvent=80',
+    );
+    get.mockResolvedValueOnce({ outputs: [output], nextAfter: null });
+    expect(await nativeIntentsService.outputs('p1', 'i1', 64)).toEqual({
+      outputs: [output],
+      nextAfter: null,
+    });
+  });
+  it.each([
+    { outputs: [output, output] },
+    { outputs: [{ seq: 66, content: '' }, output] },
+    { nextAfter: 80 },
+    { events: [event], nextEventAfter: 90 },
+    { events: [event, event], nextEventAfter: null },
+    { events: [event] },
+    { events: [{ ...event, timestamp: 'invalid' }], nextEventAfter: null },
+  ])('rejects gaps, backwards pages and partial response shapes %j', async (patch) => {
+    get.mockResolvedValue({ outputs: [output], nextAfter: null, ...patch });
+    await expect(nativeIntentsService.outputs('p1', 'i1', 64, 80)).rejects.toThrow(
+      'Invalid native output history',
+    );
+  });
+});
 describe('saved native prompt boundary', () => {
   const request = {
     requestId: '10000000-0000-4000-8000-000000000001',

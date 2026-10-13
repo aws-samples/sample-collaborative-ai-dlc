@@ -95,6 +95,14 @@ export function MessageBubble({ group, currentUserId, canRedact, onRedact, onAss
                       running
                     </p>
                   )}
+                  {isAgent && m.assistStatus === 'completed' && (
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      Advisory response completed · {relativeTime(m.updatedAt)}
+                    </p>
+                  )}
+                  {isAgent && m.assistStatus === 'failed' && (!m.requestId || !onAssistRetry) && (
+                    <p className="mt-1 text-[10px] text-destructive">Advisory response failed</p>
+                  )}
                   {isAgent && m.assistStatus === 'failed' && m.requestId && onAssistRetry && (
                     <button
                       type="button"

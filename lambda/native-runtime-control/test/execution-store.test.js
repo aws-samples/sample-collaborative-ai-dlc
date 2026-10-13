@@ -151,7 +151,7 @@ const setup = ({ leaseMs = 100 } = {}) => {
         }
         for (const action of actions) {
           if (action.Put) {
-            expect(action.Put.Item.sk).toMatch(/^(EXECUTION|PUBLICATION#[0-9]{16})$/);
+            expect(action.Put.Item.sk).toMatch(/^(EXECUTION|(?:PUBLICATION|EVENT)#[0-9]{16})$/);
             expect(action.Put.Item).not.toHaveProperty('projectId');
             expect(action.Put.Item).not.toHaveProperty('createdAt');
             write(action.Put.Item);
@@ -248,6 +248,72 @@ const setup = ({ leaseMs = 100 } = {}) => {
 };
 
 describe('first native Start and protected preparation boundary', () => {
+  it('records acceptance through publication and cancellation without lease noise or invented success', async () => {
+    const f = setup();
+    let row = await f.dispatching();
+    f.setTime(1010);
+    row = await f.store.dispatchAttempted({ row });
+    row = await f.store.advance({ row, patch: { status: 'RUNNING' } });
+    f.setTime(1020);
+    row = await f.store.advance({ row, patch: {} });
+    f.setTime(1040);
+    row = await f.store.publish({ row, publication: PUBLICATION });
+    await f.store.cancel(bindingIdentity);
+    const events = [...f.rows.values()].filter((r) => r.sk.startsWith('EVENT#'));
+    expect(events.map((r) => r.type)).toEqual([
+      'native.accepted',
+      'native.dispatching',
+      'native.dispatch.attempted',
+      'native.running',
+      'native.published',
+      'native.cancel_requested',
+    ]);
+    expect(events[0]).toMatchObject({
+      revision: 1,
+      actor: ACTOR,
+      timestamp: new Date(1000).toISOString(),
+    });
+    expect(events[2].summary).toContain('Acceptance to dispatch: 10 ms');
+    expect(events[4].summary).toContain('Dispatch to publication: 30 ms');
+    expect(events[4].summary).toContain(PUBLICATION.id);
+    expect(events[4].summary).toContain('waiting for input');
+    expect(JSON.stringify(events)).not.toMatch(
+      /credentialBinding|manifest|native-session|leaseToken|promptSha256/,
+    );
+    const before = clone(events);
+    await expect(f.store.publish({ row, publication: PUBLICATION })).rejects.toMatchObject(
+      rejection('CANCELLED'),
+    );
+    expect([...f.rows.values()].filter((r) => r.sk.startsWith('EVENT#'))).toEqual(before);
+  });
+
+  it('commits lifecycle and execution together, recovers a lost ACK and never backfills retained history', async () => {
+    const f = setup();
+    let row = await f.dispatching();
+    // A retained row has no old ledger. An update must not reconstruct its past.
+    for (const [key, value] of f.rows) if (value.sk.startsWith('EVENT#')) f.rows.delete(key);
+    f.hooks.before = (command) => {
+      if (
+        command instanceof TransactWriteCommand &&
+        command.input.TransactItems.some((v) => v.Put?.Item.sk.startsWith('EVENT#'))
+      )
+        throw error();
+    };
+    await expect(f.store.dispatchAttempted({ row })).rejects.toMatchObject(
+      rejection('UNAVAILABLE'),
+    );
+    expect(f.read()).toEqual(row);
+    expect([...f.rows.values()].filter((r) => r.sk.startsWith('EVENT#'))).toEqual([]);
+    delete f.hooks.before;
+    f.hooks.after = (command) => {
+      if (command instanceof TransactWriteCommand) throw error();
+    };
+    row = await f.store.dispatchAttempted({ row });
+    expect(await f.store.dispatchAttempted({ row })).toEqual(row);
+    const events = [...f.rows.values()].filter((r) => r.sk.startsWith('EVENT#'));
+    expect(events.map((r) => r.type)).toEqual(['native.dispatch.attempted']);
+  });
+
   it('creates one non-indexed execution with immutable starter/configuration/preparation pins', async () => {
     const f = setup();
     const original = clone(CONFIGURATION);
@@ -288,7 +354,7 @@ describe('first native Start and protected preparation boundary', () => {
     original.source.bindingRevision = 'changed';
     row.configuration.model = 'changed';
     expect((await f.store.get(IDENTITY)).configuration).toEqual(CONFIGURATION);
-    expect(f.rows.size).toBe(2);
+    expect(f.rows.size).toBe(3);
   });
 
   it('concurrent Starts from different members and request ids retain exactly one starter/session', async () => {
@@ -305,7 +371,7 @@ describe('first native Start and protected preparation boundary', () => {
       row: f.read(),
       created: false,
     });
-    expect(f.rows.size).toBe(2);
+    expect(f.rows.size).toBe(3);
   });
 
   it('concurrent different configurations conflict without changing the winner', async () => {
