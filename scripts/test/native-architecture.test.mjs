@@ -90,8 +90,13 @@ test('prepared, accepted, cold-recovery and unknown references block removal wit
   );
 });
 test('readable history prevents service teardown independently of executable support', () => {
-  const inventory = nativeDependencyInventory([{ pk: 'a', sk: 'PUBLICATION#1' }]);
+  const inventory = nativeDependencyInventory([
+    { pk: 'a', sk: 'PUBLICATION#1' },
+    { pk: 'a', sk: 'PROMPT#request', request: { prompt: 'Private saved prompt' } },
+  ]);
   assert.equal(inventory.executableReferences, 0);
+  assert.equal(inventory.references.filter((reference) => reference.kind === 'history').length, 2);
+  assert.doesNotMatch(JSON.stringify(inventory), /Private saved prompt/);
   assert.throws(
     () =>
       assertNativeRemoval(inventory, {

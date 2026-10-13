@@ -6,6 +6,7 @@ import {
 } from './publication-graph.js';
 import { executionIdentity } from './execution-runtime.js';
 import { nativeReplyRequest, nativeTurnSequence } from './execution-store.js';
+import { nativeDraftPrompt, promptFailure } from './draft-prompt.js';
 import { nativeInteractionView } from '../shared/native-interaction.js';
 import { nativeAnswerText } from '../shared/native-pending-input.js';
 
@@ -178,9 +179,15 @@ export const createNativeExecutionApi = ({
         execution: view,
       };
     },
-    async start(draft, actorId, requestId, recheck) {
+    async start(draft, actorId, requestId, recheck, promptRevision) {
       // An existing start retains its original starter and configuration.
       let row = await read(draft, recheck);
+      const expectedRevision = promptRevision ?? 0;
+      if (
+        (row ? (row.preparation.promptRevision ?? 0) : nativeDraftPrompt(draft).revision) !==
+        expectedRevision
+      )
+        promptFailure('CONFLICT');
       if (!row) {
         if (!admissionEnabled)
           fail('NATIVE_EXECUTION_DISABLED', 'New native executions are disabled');
@@ -203,7 +210,13 @@ export const createNativeExecutionApi = ({
         }
         await recheck(draft);
         await authorizeSource(draft, actorId);
-        const result = await store.start({ ...identity(draft), actorId, requestId, configuration });
+        const result = await store.start({
+          ...identity(draft),
+          actorId,
+          requestId,
+          configuration,
+          ...(promptRevision !== undefined ? { promptRevision } : {}),
+        });
         row = result.row ?? result;
       }
       await recheck(draft);

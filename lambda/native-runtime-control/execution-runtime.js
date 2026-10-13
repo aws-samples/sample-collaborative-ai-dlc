@@ -19,6 +19,7 @@ import { nativeExecutionFenceKey } from '../shared/native-execution-fence.js';
 import { nativeRecoveryScope } from '../shared/native-recovery-checkpoint.js';
 import { nativeRuntimeEnvironment } from './provisioner.js';
 import { canonicalJson, runtimePolicyDocuments, samePolicy } from './policies.js';
+import { nativeDraftPrompt } from './draft-prompt.js';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const mismatch = () => {
@@ -45,7 +46,7 @@ export const executionIdentity = (row) => ({
 export const executionRuntimeConfiguration = (draft, row) => ({
   harness: row.configuration.harness,
   model: row.configuration.model,
-  prompt: draft.request.prompt,
+  prompt: nativeDraftPrompt(draft).text,
   packageVersion: draft.candidate.packagePin.version,
   repository: {
     provider: row.configuration.repository.provider,

@@ -369,11 +369,14 @@ class NativeExecutionWiring(unittest.TestCase):
         self.assertRegex(preparation, r"environment_variables\s*=\s*local.base_environment")
 
     def test_execution_routes_use_existing_authenticated_deployment_and_cors_closure(self):
-        for path in ["start", "cancel", "publication", "graph", "files/*", "interaction", "response"]:
+        for path in ["start", "cancel", "publication", "graph", "files/*", "interaction", "response", "prompt"]:
             self.assertIn(f'path   = "api/projects/*/native-intents/*/{path}"', ROUTES)
         self.assertRegex(ROUTES, r'authorization\s*=\s*"COGNITO_USER_POOLS"')
         self.assertIn('"method.request.path.fileId" = true', ROUTES)
         self.assertIn("module.cors_native_execution_action, module.cors_native_execution_file", ROUTES)
+        self.assertIn("module.cors_native_intent_prompt", ROUTES)
+        self.assertIn("module.cors_native_intent_prompt", GATEWAY)
+        self.assertIn('resource "aws_api_gateway_resource" "native_intent_prompt"', ROUTES)
         self.assertIn("aws_api_gateway_integration.native_intents,", GATEWAY)
         self.assertIn("for key, method in aws_api_gateway_method.native_intents", GATEWAY)
         self.assertIn("for key, integration in aws_api_gateway_integration.native_intents", GATEWAY)

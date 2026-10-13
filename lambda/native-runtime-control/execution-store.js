@@ -8,6 +8,7 @@ import {
   nativeRuntimeResourceNames,
 } from '../shared/native-runtime-binding.js';
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
+import { nativeDraftPrompt } from './draft-prompt.js';
 import {
   nativeInteractionReceipt,
   NATIVE_INTERACTION_LIMITS,
@@ -234,7 +235,8 @@ const PREPARATION_FIELDS = [
   'runtimeEndpoint',
 ];
 const preparation = (value, row) => {
-  shape(value, PREPARATION_FIELDS);
+  shape(value, PREPARATION_FIELDS, ['promptRevision']);
+  check(value.promptRevision === undefined || integer(value.promptRevision));
   const names = nativeRuntimeResourceNames({ ...row.scope, bindingId: row.bindingId });
   const runtime =
     typeof value.runtimeArn === 'string'
@@ -888,8 +890,12 @@ export const createNativeExecutionStore = ({
       fail('LEASE_LOST');
     return current;
   };
-  const retryStart = (row, configuration) => {
-    if (!same(row.configuration, configuration)) fail('CONFLICT');
+  const retryStart = (row, configuration, promptRevision = 0) => {
+    if (
+      !same(row.configuration, configuration) ||
+      (row.preparation.promptRevision ?? 0) !== promptRevision
+    )
+      fail('CONFLICT');
     return { row, created: false };
   };
   const readRecord = async (key) => {
@@ -956,12 +962,20 @@ export const createNativeExecutionStore = ({
     get,
     response: getResponse,
     async start(input) {
-      shape(input, ['projectId', 'executionId', 'actorId', 'requestId', 'configuration']);
+      shape(
+        input,
+        ['projectId', 'executionId', 'actorId', 'requestId', 'configuration'],
+        ['promptRevision'],
+      );
       const currentScope = scope({ projectId: input.projectId, executionId: input.executionId });
       check(matches(input.actorId, ID) && matches(input.requestId, ID));
       const configuration = nativeExecutionConfiguration(input.configuration);
       const current = await get(currentScope);
-      if (current) return retryStart(current, configuration);
+      if (current) {
+        if ((current.preparation.promptRevision ?? 0) !== (input.promptRevision ?? 0))
+          fail('CONFLICT');
+        return retryStart(current, configuration, input.promptRevision);
+      }
       if (
         configuration.credentialBinding.source === 'user' &&
         configuration.credentialBinding.userId !== input.actorId
@@ -975,14 +989,17 @@ export const createNativeExecutionStore = ({
       }
       if (!prepared) fail('NOT_FOUND');
       if (prepared.status !== 'READY') fail('NOT_READY');
+      const prompt = nativeDraftPrompt(prepared);
+      if (prompt.revision !== (input.promptRevision ?? 0)) fail('CONFLICT');
       check(
         prepared.projectId === currentScope.projectId &&
           prepared.executionId === currentScope.executionId &&
           prepared.pk === nativeRuntimeBindingKey(currentScope).pk &&
           prepared.sk === 'RUNTIME' &&
           configuration.harness === prepared.request?.harness &&
-          typeof prepared.request?.prompt === 'string' &&
-          configuration.promptSha256 === sha(prepared.request.prompt) &&
+          typeof prompt.text === 'string' &&
+          Boolean(prompt.text.trim()) &&
+          configuration.promptSha256 === sha(prompt.text) &&
           configuration.packageId === prepared.candidate?.packagePin?.packageId &&
           configuration.materializationId === prepared.candidate?.materializationId &&
           configuration.source.sourceId === prepared.request.sourceId &&
@@ -997,6 +1014,7 @@ export const createNativeExecutionStore = ({
             : prepared[key],
         ]),
       );
+      if (prompt.revision > 0) pins.promptRevision = prompt.revision;
       const time = clock();
       const row = validate(
         {
@@ -1060,7 +1078,7 @@ export const createNativeExecutionStore = ({
         return { row, created: true };
       } catch (error) {
         const stored = await get(currentScope);
-        if (stored) return retryStart(stored, configuration);
+        if (stored) return retryStart(stored, configuration, input.promptRevision);
         if (retryableConflict(error)) fail('CONFLICT');
         fail('UNAVAILABLE');
       }

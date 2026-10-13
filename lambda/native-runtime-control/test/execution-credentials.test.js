@@ -220,6 +220,23 @@ afterEach(() => {
 });
 
 describe('controller-only native credential facade', () => {
+  it('resolves credentials for the pinned saved prompt while retaining the immutable creation request', async () => {
+    const f = await fixture();
+    const original = structuredClone(f.state.draft.request);
+    f.state.draft.promptDraft = { revision: 2, text: 'The corrected prompt before Start' };
+    f.state.draft.version += 2;
+    f.state.row.preparation.version = f.state.draft.version;
+    f.state.row.preparation.promptRevision = 2;
+    f.state.row.configuration.promptSha256 = nativePromptSha256(f.state.draft.promptDraft.text);
+    expect(await f.invoke()).toMatchObject({ ok: true });
+    expect(f.state.draft.request).toEqual(original);
+    f.state.draft.promptDraft.text = 'Changed after admission';
+    expect(await f.invoke()).toMatchObject({
+      ok: false,
+      code: 'NATIVE_EXECUTION_CREDENTIALS_CHANGED',
+    });
+  });
+
   const continuation = async () => {
     const f = await fixture();
     const response = {

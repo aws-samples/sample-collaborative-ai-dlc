@@ -6,6 +6,8 @@ import {
   type NativeExecution,
   type NativeRecovery,
   type NativeRecoveryRequest,
+  type NativePromptRequest,
+  nativePromptValid,
 } from '@/services/nativeIntents';
 import {
   clearNativeIntents,
@@ -83,6 +85,12 @@ export const canRecover = (intent: NativeIntent) =>
 // Fixed public responses from lambda/native-runtime-control/api.js. Never
 // render arbitrary ApiError.message/body text, even for a recognized code.
 const nativeActionErrors: Record<string, readonly [number, string]> = {
+  NATIVE_PROMPT_INVALID: [400, 'Enter a nonblank prompt of at most 64 KiB without null characters'],
+  NATIVE_PROMPT_CONFLICT: [
+    409,
+    'The prompt or native intent changed. Refresh before editing or starting',
+  ],
+  NATIVE_PROMPT_UNAVAILABLE: [503, 'Prompt saving could not be confirmed. Retry the same save'],
   NATIVE_PREPARATION_INVALID: [400, 'Invalid native preparation request'],
   NATIVE_PREPARATION_CONFLICT: [409, 'Native intent changed or its immutable request conflicts'],
   NATIVE_PREPARATION_UNAVAILABLE: [503, 'Native preparation is unavailable; retry safely'],
@@ -164,6 +172,7 @@ function acceptDetail(
   accessRevision: number,
 ): LoadedIntent {
   if (previous?.accessRevision === accessRevision) {
+    if ((previous.value.promptRevision ?? 0) > (next.promptRevision ?? 0)) return previous;
     const previousRevision = previous.value.execution?.revision;
     const nextRevision = next.execution?.revision;
     if (previous.value.execution && !next.execution) return previous;
@@ -199,7 +208,16 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
   const [preparing, setPreparing] = useState(false);
   const [acting, setActing] = useState<'start' | 'cancel' | 'recover' | null>(null);
   const actionInFlight = useRef<'start' | 'cancel' | 'recover' | null>(null);
-  const startRequestId = useRef<string | null>(null);
+  const startRequest = useRef<{ requestId: string; promptRevision?: number } | null>(null);
+  const [startPending, setStartPending] = useState(false);
+  const [startConflict, setStartConflict] = useState(false);
+  const [promptDraft, setPromptDraft] = useState<{ text: string; expectedRevision: number } | null>(
+    null,
+  );
+  const [savingPrompt, setSavingPrompt] = useState(false);
+  const [promptUncertain, setPromptUncertain] = useState(false);
+  const promptRequest = useRef<NativePromptRequest | null>(null);
+  const promptInFlight = useRef(false);
   const recoveryRequest = useRef<NativeRecoveryRequest | null>(null);
   const generation = useRef(0);
   const epoch = useRef(currentSessionEpoch());
@@ -219,6 +237,11 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
         setPreparing(false);
         setActing(null);
         actionInFlight.current = null;
+        setPromptDraft(null);
+        promptRequest.current = null;
+        setPromptUncertain(false);
+        setSavingPrompt(false);
+        promptInFlight.current = false;
         setError('Your session expired. Sign in again to read this native intent.');
       }),
     [],
@@ -232,6 +255,11 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
     setPreparing(false);
     setActing(null);
     actionInFlight.current = null;
+    setPromptDraft(null);
+    promptRequest.current = null;
+    setPromptUncertain(false);
+    setSavingPrompt(false);
+    promptInFlight.current = false;
     setError('Native intent access is no longer available. Refresh status to check access.');
   }, [projectId, accessRevision]);
   const handleFailure = useCallback(
@@ -246,6 +274,11 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
         setPreparing(false);
         setActing(null);
         actionInFlight.current = null;
+        setPromptDraft(null);
+        promptRequest.current = null;
+        setPromptUncertain(false);
+        setSavingPrompt(false);
+        promptInFlight.current = false;
         setError('Native intent access is no longer available. Refresh status to check access.');
       } else {
         setError(fallback);
@@ -261,6 +294,7 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
       if (!current(requestGeneration, requestAccessRevision)) return;
       setLoaded((previous) => acceptDetail(previous, next, requestAccessRevision));
       setError(null);
+      setStartConflict(false);
     } catch (err) {
       handleFailure(
         err,
@@ -359,7 +393,13 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
     if (!intent || actionInFlight.current) return;
     if (
       action === 'start' &&
-      (intent.status !== 'READY' || intent.executionAvailable !== true || intent.execution)
+      (intent.status !== 'READY' ||
+        intent.executionAvailable !== true ||
+        intent.execution ||
+        !intent.prompt.trim() ||
+        promptDraft !== null ||
+        promptInFlight.current ||
+        startConflict)
     )
       return;
     if (action === 'recover' && !canRecover(intent)) return;
@@ -378,17 +418,33 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
           recoveryRequest.current = { requestId: crypto.randomUUID(), recoveryId };
         next = await nativeIntentsService.recover(projectId, intentId, recoveryRequest.current);
       } else if (action === 'start') {
-        next = await nativeIntentsService.start(
-          projectId,
-          intentId,
-          (startRequestId.current ??= crypto.randomUUID()),
-        );
+        startRequest.current ??= {
+          requestId: crypto.randomUUID(),
+          ...(intent.promptRevision !== undefined ? { promptRevision: intent.promptRevision } : {}),
+        };
+        setStartPending(true);
+        const { requestId, promptRevision } = startRequest.current;
+        next =
+          promptRevision === undefined
+            ? await nativeIntentsService.start(projectId, intentId, requestId)
+            : await nativeIntentsService.start(projectId, intentId, requestId, promptRevision);
       } else {
         next = await nativeIntentsService.cancel(projectId, intentId);
       }
       if (!current(requestGeneration, requestAccessRevision)) return;
       setLoaded((previous) => acceptDetail(previous, next, requestAccessRevision));
     } catch (err) {
+      if (
+        action === 'start' &&
+        current(requestGeneration, requestAccessRevision) &&
+        err instanceof ApiError &&
+        err.status === 409 &&
+        ['NATIVE_PROMPT_CONFLICT', 'NATIVE_EXECUTION_CONFLICT'].includes(String(err.body?.code))
+      ) {
+        startRequest.current = null;
+        setStartPending(false);
+        setStartConflict(true);
+      }
       handleFailure(
         err,
         nativeActionError(
@@ -403,6 +459,87 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
       if (current(requestGeneration, requestAccessRevision)) {
         actionInFlight.current = null;
         setActing(null);
+      }
+    }
+  };
+  const editPrompt = (text: string) => {
+    if (
+      !intent ||
+      intent.execution ||
+      intent.promptRevision === undefined ||
+      actionInFlight.current === 'start' ||
+      promptInFlight.current ||
+      promptUncertain
+    )
+      return;
+    setPromptDraft((draft) => ({
+      text,
+      expectedRevision: draft?.expectedRevision ?? intent.promptRevision!,
+    }));
+  };
+  const discardPrompt = () => {
+    if (promptInFlight.current || promptUncertain) return;
+    promptRequest.current = null;
+    setPromptDraft(null);
+  };
+  const savePrompt = async () => {
+    if (
+      !intent ||
+      intent.execution ||
+      !promptDraft ||
+      actionInFlight.current === 'start' ||
+      promptInFlight.current ||
+      !nativePromptValid(promptDraft.text)
+    )
+      return;
+    const requestGeneration = generation.current;
+    const requestAccessRevision = nativeAccessRevision(projectId);
+    promptInFlight.current = true;
+    setSavingPrompt(true);
+    setError(null);
+    promptRequest.current ??= {
+      requestId: crypto.randomUUID(),
+      expectedRevision: promptDraft.expectedRevision,
+      prompt: promptDraft.text,
+    };
+    try {
+      const next = await nativeIntentsService.savePrompt(
+        projectId,
+        intentId,
+        promptRequest.current,
+      );
+      if (!current(requestGeneration, requestAccessRevision)) return;
+      setLoaded((previous) => acceptDetail(previous, next, requestAccessRevision));
+      promptRequest.current = null;
+      setPromptDraft(null);
+      setPromptUncertain(false);
+      // The save transaction excludes EXECUTION and advances the prompt
+      // revision. An older Start cannot subsequently admit the previous prompt.
+      startRequest.current = null;
+      setStartPending(false);
+      setStartConflict(false);
+    } catch (err) {
+      if (!current(requestGeneration, requestAccessRevision)) return;
+      // Only the command's explicit validation/CAS rejection ends this attempt.
+      // Every uncertain result retries its immutable identity and body.
+      if (
+        err instanceof ApiError &&
+        ((!promptUncertain && err.status === 400 && err.body?.code === 'NATIVE_PROMPT_INVALID') ||
+          (err.status === 409 && err.body?.code === 'NATIVE_PROMPT_CONFLICT'))
+      ) {
+        promptRequest.current = null;
+        setPromptUncertain(false);
+      } else setPromptUncertain(true);
+      handleFailure(
+        err,
+        nativeActionError(err, 'Prompt saving could not be confirmed. Retry the same save.'),
+        requestGeneration,
+        requestAccessRevision,
+      );
+    } finally {
+      if (current(requestGeneration, requestAccessRevision)) {
+        promptInFlight.current = false;
+        setSavingPrompt(false);
       }
     }
   };
@@ -429,6 +566,14 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
     execute,
     refresh,
     publicationFailure,
+    promptDraft,
+    savingPrompt,
+    promptUncertain,
+    startPending,
+    startConflict,
+    editPrompt,
+    discardPrompt,
+    savePrompt,
   };
 }
 export type NativeIntentAdapter = ReturnType<typeof useNativeIntentAdapter>;

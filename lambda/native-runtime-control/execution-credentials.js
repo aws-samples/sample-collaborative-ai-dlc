@@ -14,6 +14,7 @@ import {
   readNativeCodeBinding,
 } from './execution-config.js';
 import { ID, UUID_V4, matches } from './store.js';
+import { nativeDraftPrompt } from './draft-prompt.js';
 import { createNativeRuntimeImagePolicy } from './runtime-images.js';
 import {
   isNativeSourceBranch,
@@ -71,6 +72,9 @@ const preparedSnapshot = (draft) => ({
   bindingId: draft.bindingId,
   version: draft.version,
   requestFingerprint: draft.requestFingerprint,
+  ...(nativeDraftPrompt(draft).revision > 0
+    ? { promptRevision: nativeDraftPrompt(draft).revision }
+    : {}),
   image: { uri: draft.imageUri, digest: draft.imageDigest },
   executionRoleArn: draft.executionRoleArn,
   accessPointArn: draft.accessPointArn,

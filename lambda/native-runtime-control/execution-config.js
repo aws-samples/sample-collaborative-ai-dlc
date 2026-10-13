@@ -28,6 +28,7 @@ import { resolveStageModel } from '../shared/model-resolver.js';
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { nativeExecutionConfiguration } from './execution-store.js';
 import { ID, UUID, UUID_V4, matches, nativeDraftRequest, pinPackageJob } from './store.js';
+import { nativeDraftPrompt } from './draft-prompt.js';
 
 const __ = gremlin.process.statics;
 const T = gremlin.process.t;
@@ -235,10 +236,11 @@ export const nativePreparedConfigurationPins = (draft) => {
       !isDeepStrictEqual(checked.archiveReceipt, draft.archiveReceipt)
     )
       fail('INVALID');
-    if (!request.prompt.trim()) fail('PROMPT_REQUIRED');
+    const prompt = nativeDraftPrompt(draft).text;
+    if (!prompt.trim()) fail('PROMPT_REQUIRED');
     return {
       harness: request.harness,
-      promptSha256: nativePromptSha256(request.prompt),
+      promptSha256: nativePromptSha256(prompt),
       packageId: pin.packageId,
       materializationId: pin.materializationId,
       source: {

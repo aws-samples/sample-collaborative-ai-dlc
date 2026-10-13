@@ -168,12 +168,25 @@ export const nativeDraftInputRejected = (error: unknown): boolean =>
   ((error.status === 400 && error.body.code === 'NATIVE_PREPARATION_INVALID') ||
     (error.status === 413 && error.body.code === 'NATIVE_PREPARATION_BODY_TOO_LARGE'));
 
+export interface NativePromptRequest {
+  requestId: string;
+  expectedRevision: number;
+  prompt: string;
+}
+export const nativePromptValid = (prompt: string) =>
+  Boolean(prompt.trim()) &&
+  encoder.encode(prompt).length <= 65536 &&
+  !prompt.includes('\0') &&
+  new TextDecoder('utf-8', { ignoreBOM: true }).decode(encoder.encode(prompt)) === prompt;
+
 export interface NativeIntent {
   id: string;
   projectId: string;
   executionBackend: 'native';
   title: string;
   prompt: string;
+  // Absent on APIs predating prompt correction; those remain read-only.
+  promptRevision?: number;
   harness: WorkflowPackageHarness;
   status: 'DRAFT' | 'PREPARING' | 'READY' | 'FAILED';
   package: {
@@ -188,7 +201,10 @@ export interface NativeIntent {
   execution?: NativeExecution | null;
 }
 
-export type NativeIntentSummary = Omit<NativeIntent, 'prompt' | 'executionAvailable' | 'execution'>;
+export type NativeIntentSummary = Omit<
+  NativeIntent,
+  'prompt' | 'promptRevision' | 'executionAvailable' | 'execution'
+>;
 export interface NativeIntentPage {
   items: NativeIntentSummary[];
   nextCursor: string | null;
@@ -259,6 +275,8 @@ function view(value: unknown, projectId: string, intentId: string): NativeIntent
   if (
     !record(value) ||
     typeof value.prompt !== 'string' ||
+    (value.promptRevision !== undefined &&
+      (!Number.isSafeInteger(value.promptRevision) || Number(value.promptRevision) < 0)) ||
     (value.executionAvailable !== undefined && typeof value.executionAvailable !== 'boolean')
   ) {
     throw new Error('The native intent status could not be verified.');
@@ -266,6 +284,7 @@ function view(value: unknown, projectId: string, intentId: string): NativeIntent
   return {
     ...item,
     prompt: value.prompt,
+    ...(value.promptRevision !== undefined ? { promptRevision: Number(value.promptRevision) } : {}),
     ...(value.executionAvailable !== undefined
       ? { executionAvailable: value.executionAvailable }
       : {}),
@@ -722,12 +741,52 @@ export const nativeIntentsService = {
       intentId,
     );
   },
-  async start(projectId: string, intentId: string, requestId: string): Promise<NativeIntent> {
-    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(requestId)) {
+  async savePrompt(
+    projectId: string,
+    intentId: string,
+    request: NativePromptRequest,
+  ): Promise<NativeIntent> {
+    if (
+      !uuid(request.requestId) ||
+      !Number.isSafeInteger(request.expectedRevision) ||
+      request.expectedRevision < 0 ||
+      request.expectedRevision >= Number.MAX_SAFE_INTEGER ||
+      !nativePromptValid(request.prompt)
+    )
+      throw new Error('Enter a nonblank prompt of at most 64 KiB without null characters.');
+    const value = await api.post<unknown>(`${itemPath(projectId, intentId)}/prompt`, request);
+    const next = view(value, projectId, intentId);
+    if (
+      !record(value) ||
+      !record(value.promptAcceptance) ||
+      value.promptAcceptance.requestId !== request.requestId ||
+      value.promptAcceptance.prompt !== request.prompt ||
+      value.promptAcceptance.revision !== request.expectedRevision + 1 ||
+      next.promptRevision === undefined ||
+      next.promptRevision < request.expectedRevision + 1 ||
+      (next.promptRevision === request.expectedRevision + 1 && next.prompt !== request.prompt)
+    )
+      throw new Error('Prompt saving could not be confirmed. Retry the same save.');
+    return next;
+  },
+  async start(
+    projectId: string,
+    intentId: string,
+    requestId: string,
+    promptRevision?: number,
+  ): Promise<NativeIntent> {
+    if (
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(requestId) ||
+      (promptRevision !== undefined &&
+        (!Number.isSafeInteger(promptRevision) || promptRevision < 0))
+    ) {
       throw new Error('The native start request identity is invalid.');
     }
     return view(
-      await api.post(`${itemPath(projectId, intentId)}/start`, { requestId }),
+      await api.post(`${itemPath(projectId, intentId)}/start`, {
+        requestId,
+        ...(promptRevision !== undefined ? { promptRevision } : {}),
+      }),
       projectId,
       intentId,
     );

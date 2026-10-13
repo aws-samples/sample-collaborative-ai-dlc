@@ -324,7 +324,7 @@ function NativePublicationContent({
         </p>
       )}
       <TabsContent value="overview" className="space-y-4">
-        {intent.prompt && (
+        {intent.prompt && (intent.execution || intent.promptRevision === undefined) && (
           <Card>
             <CardHeader>
               <CardTitle className="text-sm">Request</CardTitle>

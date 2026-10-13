@@ -5,10 +5,12 @@ import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { ID, UUID_V4, fail, matches, nativeDraftRequest, pinPackageJob, record } from './store.js';
 import { nativeListQuery } from './listing.js';
 import { NATIVE_INTERACTION_LIMITS } from '../shared/native-interaction.js';
+import { nativeDraftPrompt, nativePromptRequest, promptFailure } from './draft-prompt.js';
 
 const COLLECTION = '/api/projects/{projectId}/native-intents';
 const ITEM = `${COLLECTION}/{intentId}`;
 const PREPARE = `${ITEM}/prepare`;
+const PROMPT = `${ITEM}/prompt`;
 const START = `${ITEM}/start`;
 const CANCEL = `${ITEM}/cancel`;
 const RECOVER = `${ITEM}/recover`;
@@ -19,6 +21,12 @@ const INTERACTION = `${ITEM}/interaction`;
 const RESPONSE = `${ITEM}/response`;
 const OUTPUTS = `${ITEM}/outputs`;
 const ERRORS = {
+  NATIVE_PROMPT_INVALID: [400, 'Enter a nonblank prompt of at most 64 KiB without null characters'],
+  NATIVE_PROMPT_CONFLICT: [
+    409,
+    'The prompt or native intent changed. Refresh before editing or starting',
+  ],
+  NATIVE_PROMPT_UNAVAILABLE: [503, 'Prompt saving could not be confirmed. Retry the same save'],
   NATIVE_PREPARATION_INVALID: [400, 'Invalid native preparation request'],
   NATIVE_PREPARATION_CONFLICT: [409, 'Native intent changed or its immutable request conflicts'],
   NATIVE_PREPARATION_NOT_FOUND: [404, 'Native intent not found'],
@@ -110,7 +118,8 @@ export const nativeIntentView = (row) => ({
   projectId: row.projectId,
   executionBackend: 'native',
   title: row.request.title,
-  prompt: row.request.prompt,
+  prompt: nativeDraftPrompt(row).text,
+  promptRevision: nativeDraftPrompt(row).revision,
   harness: row.harness,
   status: row.status,
   package: {
@@ -129,6 +138,7 @@ export const nativeIntentView = (row) => ({
 export const nativeIntentSummary = (row) => {
   const summary = nativeIntentView(row);
   delete summary.prompt;
+  delete summary.promptRevision;
   return summary;
 };
 
@@ -245,7 +255,13 @@ export const createNativeRuntimeApi = ({
     if (!execution)
       return reply(response, 503, 'NATIVE_EXECUTION_DISABLED', 'Native execution is disabled');
     const details = start
-      ? await execution.start(row, actorId, input.requestId, recheck)
+      ? await execution.start(
+          row,
+          actorId,
+          input.requestId,
+          recheck,
+          ...(input.promptRevision === undefined ? [] : [input.promptRevision]),
+        )
       : userResponse
         ? await execution.respond(row, actorId, input, recheck, {
             membershipId: before.membershipId,
@@ -277,17 +293,19 @@ export const createNativeRuntimeApi = ({
     const response = buildResponse(event, { methods: 'GET,POST,OPTIONS' });
     const collection = event?.resource === COLLECTION;
     const preparation = event?.resource === PREPARE;
+    const promptEdit = event?.resource === PROMPT;
     const start = event?.resource === START;
     const cancel = event?.resource === CANCEL;
     const recover = event?.resource === RECOVER;
     const userResponse = event?.resource === RESPONSE;
     const file = event?.resource === FILE;
-    const mutation = preparation || start || cancel || recover || userResponse;
+    const mutation = preparation || promptEdit || start || cancel || recover || userResponse;
     if (
       ![
         COLLECTION,
         ITEM,
         PREPARE,
+        PROMPT,
         START,
         CANCEL,
         RECOVER,
@@ -380,7 +398,12 @@ export const createNativeRuntimeApi = ({
       } else if (event.body !== undefined && event.body !== null && event.body !== '') {
         // JSON escaping can expand a valid 16 KiB reply sixfold. The decoded
         // text has its own byte limit; this bounds work before JSON parsing.
-        const maxBody = userResponse ? 100 * 1024 : 1024;
+        const maxBody = userResponse ? 100 * 1024 : promptEdit ? 96 * 1024 : 1024;
+        if (
+          promptEdit &&
+          (typeof event.body !== 'string' || Buffer.byteLength(event.body) > maxBody)
+        )
+          promptFailure('INVALID');
         if (!mutation || typeof event.body !== 'string' || Buffer.byteLength(event.body) > maxBody)
           return invalid();
         try {
@@ -388,11 +411,15 @@ export const createNativeRuntimeApi = ({
           if (start) {
             if (
               !record(body) ||
-              Object.keys(body).length !== 1 ||
-              !matches(body.requestId, UUID_V4)
+              Object.keys(body).some((key) => !['requestId', 'promptRevision'].includes(key)) ||
+              !matches(body.requestId, UUID_V4) ||
+              (body.promptRevision !== undefined &&
+                (!Number.isSafeInteger(body.promptRevision) || body.promptRevision < 0))
             )
               return invalid();
             input = body;
+          } else if (promptEdit) {
+            input = nativePromptRequest(body);
           } else if (userResponse) {
             if (!validReply(body)) return invalid();
             input = body;
@@ -406,11 +433,12 @@ export const createNativeRuntimeApi = ({
               return invalid();
             input = body;
           } else if (!record(body) || Object.keys(body).length) return invalid();
-        } catch {
+        } catch (error) {
+          if (promptEdit && error?.code === 'NATIVE_PROMPT_INVALID') throw error;
           return invalid();
         }
       }
-      if ((start || userResponse || recover) && !input) return invalid();
+      if ((start || userResponse || recover || promptEdit) && !input) return invalid();
       const membership = async () => {
         const current = await getMembershipSnapshot(projectId, actorId);
         if (!validMembership(current)) fail('FORBIDDEN');
@@ -469,6 +497,20 @@ export const createNativeRuntimeApi = ({
       let row = await store.get(identity);
       if (!row) fail('NOT_FOUND');
       await recheck(row);
+      if (promptEdit) {
+        const saved = await store.savePrompt({
+          ...identity,
+          actorId,
+          projectIdentity: before.projectIdentity,
+          request: input,
+        });
+        await recheck(saved.row);
+        return response(200, {
+          ...nativeIntentView(saved.row),
+          ...(execution ? await execution.status(saved.row, recheck) : {}),
+          promptAcceptance: saved.promptAcceptance,
+        });
+      }
       if (outputRead) {
         if (!execution?.outputs) return response(200, { outputs: [], nextAfter: null });
         return response(200, await execution.outputs(row, after, recheck));

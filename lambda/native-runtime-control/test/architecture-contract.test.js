@@ -265,6 +265,9 @@ describe('native mutation authority callers', () => {
     ['execution', 'execution', 'respond'],
     ['preparation', 'execution', 'advance'],
     ['projection', 'preparation', 'ready'],
+    ['preparation', 'preparation', 'savePrompt'],
+    ['execution', 'preparation', 'savePrompt'],
+    ['projection', 'preparation', 'savePrompt'],
     ['operator', 'execution', 'advance'],
     ['', 'execution', 'advance'],
   ])('denies %s calling %s.%s', async (caller, aggregate, operation) => {

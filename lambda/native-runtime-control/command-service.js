@@ -181,6 +181,7 @@ export const createNativeRuntimeLambda =
           get: (input) => store().get(input),
           create: (input) => store().create(input),
           prepare: (input) => store().prepare(input),
+          savePrompt: (input) => store().savePrompt(input),
         },
         image: { uri: env.NATIVE_RUNTIME_IMAGE_URI, digest: env.NATIVE_RUNTIME_IMAGE_DIGEST },
         execution,

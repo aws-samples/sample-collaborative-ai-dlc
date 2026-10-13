@@ -1,6 +1,8 @@
 // Protected control-plane state. No runtime principal may access this table.
 import { createHash, randomUUID } from 'node:crypto';
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { nativeExecutionKey } from './execution-store.js';
+import { nativeDraftPrompt, nativePromptRequest, promptFailure } from './draft-prompt.js';
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { describeNativePackagePin } from '../shared/native-package-pin.js';
 import { describeNativePackageArchiveReceipt } from '../shared/native-package-archive.js';
@@ -260,7 +262,12 @@ export const createNativeRuntimeStore = ({
   };
   const validate = async (row, identity) => {
     try {
-      if (!record(row) || Buffer.byteLength(JSON.stringify(row)) > 128 * 1024) fail('INVALID');
+      if (
+        !record(row) ||
+        Buffer.byteLength(JSON.stringify(row)) > (row.promptDraft ? 256 : 128) * 1024
+      )
+        fail('INVALID');
+      nativeDraftPrompt(row);
       const bindingKey = nativeRuntimeBindingKey(identity);
       const request = nativeDraftRequest(row.request);
       if (
@@ -439,8 +446,120 @@ export const createNativeRuntimeStore = ({
       fail('LEASE_LOST');
     return row;
   };
+  const promptReceipt = async (identity, actorId, projectIdentity, request) => {
+    let result;
+    try {
+      result = await ddb.send(
+        new GetCommand({
+          TableName: tableName,
+          Key: { ...nativeRuntimeBindingKey(identity), sk: `PROMPT#${request.requestId}` },
+          ConsistentRead: true,
+        }),
+      );
+    } catch {
+      promptFailure('UNAVAILABLE');
+    }
+    if (!record(result)) promptFailure('UNAVAILABLE');
+    if (result.Item === undefined) return null;
+    const receipt = result.Item;
+    if (
+      receipt.schemaVersion !== 1 ||
+      receipt.actorId !== actorId ||
+      receipt.projectIdentity !== projectIdentity ||
+      !same(receipt.request, request) ||
+      receipt.revision !== request.expectedRevision + 1
+    )
+      promptFailure('CONFLICT');
+    return { requestId: request.requestId, revision: receipt.revision, prompt: request.prompt };
+  };
+  const savePrompt = async ({ projectId, executionId, actorId, projectIdentity, request: raw }) => {
+    const identity = scope({ projectId, executionId });
+    const request = nativePromptRequest(raw);
+    if (!matches(actorId, ID) || !graphId(projectIdentity)) fail('INVALID');
+    const before = await get(identity);
+    if (!before) fail('NOT_FOUND');
+    if (before.projectIdentity !== projectIdentity) fail('FORBIDDEN');
+    const prior = await promptReceipt(identity, actorId, projectIdentity, request);
+    if (prior) return { row: before, promptAcceptance: prior };
+    if (nativeDraftPrompt(before).revision !== request.expectedRevision) promptFailure('CONFLICT');
+    const time = clock();
+    if (time < before.updatedAt) fail('UNAVAILABLE');
+    const next = {
+      ...before,
+      version: before.version + 1,
+      updatedAt: time,
+      promptDraft: { text: request.prompt, revision: request.expectedRevision + 1 },
+    };
+    await validate(next, identity);
+    try {
+      await ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              ConditionCheck: {
+                TableName: tableName,
+                Key: nativeExecutionKey(identity),
+                ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+              },
+            },
+            {
+              Put: {
+                TableName: tableName,
+                Item: next,
+                ConditionExpression:
+                  '#version = :version AND #binding = :binding AND #fingerprint = :fingerprint',
+                ExpressionAttributeNames: {
+                  '#version': 'version',
+                  '#binding': 'bindingId',
+                  '#fingerprint': 'requestFingerprint',
+                },
+                ExpressionAttributeValues: {
+                  ':version': before.version,
+                  ':binding': before.bindingId,
+                  ':fingerprint': before.requestFingerprint,
+                },
+              },
+            },
+            {
+              Put: {
+                TableName: tableName,
+                Item: {
+                  ...nativeRuntimeBindingKey(identity),
+                  sk: `PROMPT#${request.requestId}`,
+                  schemaVersion: 1,
+                  actorId,
+                  projectIdentity,
+                  request,
+                  revision: next.promptDraft.revision,
+                },
+                ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+              },
+            },
+          ],
+        }),
+      );
+    } catch (error) {
+      const accepted = await promptReceipt(identity, actorId, projectIdentity, request);
+      if (accepted) return { row: await get(identity), promptAcceptance: accepted };
+      if (
+        error?.name === 'TransactionCanceledException' &&
+        error.CancellationReasons?.some((reason) => reason.Code === 'ConditionalCheckFailed')
+      )
+        promptFailure('CONFLICT');
+      promptFailure('UNAVAILABLE');
+    }
+    return {
+      row: next,
+      promptAcceptance: {
+        requestId: request.requestId,
+        revision: next.promptDraft.revision,
+        prompt: request.prompt,
+      },
+    };
+  };
   return Object.freeze({
     get,
+    savePrompt,
     async create({
       projectId,
       actorId,

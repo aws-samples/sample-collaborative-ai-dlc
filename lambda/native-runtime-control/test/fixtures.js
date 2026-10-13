@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { expect, vi } from 'vitest';
 import { canonicalJson } from '../../shared/workflow-checkpoint.js';
 import { workflowSourceIdentity } from '../../shared/workflow-source-bindings.js';
@@ -153,30 +153,42 @@ export const storage = () => {
   const read = (identity = IDENTITY) =>
     structuredClone(rows.get(key(nativeRuntimeBindingKey(identity))));
   const write = (row) => rows.set(key(row), structuredClone(row));
+  const condition = (input) => {
+    expect(input.TableName).toBe(TABLE);
+    const existing = rows.get(key(input.Key ?? input.Item));
+    return input.ConditionExpression.split(' AND ').every((clause) => {
+      const absent = /^attribute_not_exists\((pk|sk)\)$/.exec(clause);
+      if (absent) return !existing || !Object.hasOwn(existing, absent[1]);
+      const match = /^(#[A-Za-z]+) (=|>|<=) (:[A-Za-z]+)$/.exec(clause);
+      if (!match) throw new Error(`Unsupported condition: ${clause}`);
+      const left = existing?.[input.ExpressionAttributeNames[match[1]]];
+      const right = input.ExpressionAttributeValues[match[3]];
+      return match[2] === '='
+        ? isDeepStrictEqual(left, right)
+        : match[2] === '>'
+          ? left > right
+          : left <= right;
+    });
+  };
   const send = vi.fn(async (command) => {
-    expect(command.input.TableName).toBe(TABLE);
     await hooks.before?.(command);
     const input = command.input;
-    const existing = rows.get(key(input.Key ?? input.Item));
     let result;
-    if (command instanceof GetCommand) {
+    if (command instanceof TransactWriteCommand) {
+      const operations = input.TransactItems.map((item) => item.Put ?? item.ConditionCheck);
+      if (!operations.every(condition))
+        throw Object.assign(awsError('TransactionCanceledException'), {
+          CancellationReasons: [{ Code: 'ConditionalCheckFailed' }],
+        });
+      for (const item of input.TransactItems) if (item.Put) write(item.Put.Item);
+      result = {};
+    } else if (command instanceof GetCommand) {
+      expect(input.TableName).toBe(TABLE);
+      const existing = rows.get(key(input.Key));
       expect(input.ConsistentRead).toBe(true);
       result = existing === undefined ? {} : { Item: structuredClone(existing) };
     } else if (command instanceof PutCommand) {
-      const passed = input.ConditionExpression.split(' AND ').every((clause) => {
-        const absent = /^attribute_not_exists\((pk|sk)\)$/.exec(clause);
-        if (absent) return !existing || !Object.hasOwn(existing, absent[1]);
-        const match = /^(#[A-Za-z]+) (=|>|<=) (:[A-Za-z]+)$/.exec(clause);
-        if (!match) throw new Error(`Unsupported condition: ${clause}`);
-        const left = existing?.[input.ExpressionAttributeNames[match[1]]];
-        const right = input.ExpressionAttributeValues[match[3]];
-        return match[2] === '='
-          ? isDeepStrictEqual(left, right)
-          : match[2] === '>'
-            ? left > right
-            : left <= right;
-      });
-      if (!passed) throw awsError();
+      if (!condition(input)) throw awsError();
       write(input.Item);
       result = {};
     } else throw new Error('Unexpected command');

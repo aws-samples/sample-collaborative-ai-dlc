@@ -20,6 +20,8 @@ const service = vi.hoisted(() => ({
   list: vi.fn(),
   publication: vi.fn(),
   interaction: vi.fn(),
+  savePrompt: vi.fn(),
+  start: vi.fn(),
   handlers: new Map<string, Set<(value: any) => void>>(),
   connect: vi.fn(async () => {}),
 }));
@@ -167,6 +169,33 @@ beforeEach(() => {
     },
   );
   Element.prototype.scrollIntoView = vi.fn();
+});
+
+it('saves a missing task prompt and starts its saved revision in the shared Intent workspace', async () => {
+  const draft = { ...detail(), prompt: '', promptRevision: 0, execution: null };
+  service.get.mockResolvedValue(draft);
+  service.savePrompt.mockImplementation(async (_project, _intent, request) => ({
+    ...draft,
+    prompt: request.prompt,
+    promptRevision: request.expectedRevision + 1,
+  }));
+  service.start.mockResolvedValue({
+    ...detail(),
+    prompt: 'Task from the shared workspace',
+    promptRevision: 1,
+  });
+  workspace();
+  await screen.findByRole('button', { name: 'Add prompt' });
+  expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Add prompt' })));
+  fireEvent.change(screen.getByLabelText('What would you like to build?'), {
+    target: { value: 'Task from the shared workspace' },
+  });
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save prompt' })));
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Start agent' })));
+  expect(service.start).toHaveBeenCalledWith('project', 'one', expect.any(String), 1);
+  expect(screen.queryByRole('button', { name: 'Edit prompt' })).not.toBeInTheDocument();
+  expect(screen.getByText('Task from the shared workspace')).toBeInTheDocument();
 });
 afterEach(() => {
   cleanup();

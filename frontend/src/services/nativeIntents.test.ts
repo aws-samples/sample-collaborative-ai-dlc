@@ -24,6 +24,64 @@ const draft = {
   updatedAt: '2026-09-25T08:00:00Z',
 };
 beforeEach(() => vi.resetAllMocks());
+describe('saved native prompt boundary', () => {
+  const request = {
+    requestId: '10000000-0000-4000-8000-000000000001',
+    expectedRevision: 0,
+    prompt: 'Saved task  \n',
+  };
+  const response = {
+    ...draft,
+    prompt: request.prompt,
+    promptRevision: 1,
+    promptAcceptance: { requestId: request.requestId, revision: 1, prompt: request.prompt },
+  };
+  it('verifies an exact save receipt and forwards the saved revision to Start', async () => {
+    post.mockResolvedValueOnce(response).mockResolvedValueOnce(response);
+    expect(await nativeIntentsService.savePrompt('project-1', 'run-1', request)).toMatchObject({
+      prompt: request.prompt,
+      promptRevision: 1,
+    });
+    expect(post).toHaveBeenNthCalledWith(
+      1,
+      '/projects/project-1/native-intents/run-1/prompt',
+      request,
+    );
+    await nativeIntentsService.start('project-1', 'run-1', request.requestId, 1);
+    expect(post).toHaveBeenNthCalledWith(2, '/projects/project-1/native-intents/run-1/start', {
+      requestId: request.requestId,
+      promptRevision: 1,
+    });
+  });
+  it.each([
+    { promptAcceptance: undefined },
+    { promptRevision: -1 },
+    { promptRevision: 0 },
+    { promptRevision: '1' },
+    { prompt: 'Different prompt' },
+    { promptAcceptance: { ...response.promptAcceptance, revision: 2 } },
+    { promptAcceptance: { ...response.promptAcceptance, prompt: 'Different accepted prompt' } },
+  ])('rejects ambiguous or inconsistent save results %j', async (patch) => {
+    post.mockResolvedValue({ ...response, ...patch });
+    await expect(nativeIntentsService.savePrompt('project-1', 'run-1', request)).rejects.toThrow();
+  });
+  it('accepts an exact receipt alongside a newer current prompt without inventing acknowledgement', async () => {
+    post.mockResolvedValue({ ...response, prompt: 'Later member save', promptRevision: 2 });
+    expect(await nativeIntentsService.savePrompt('project-1', 'run-1', request)).toMatchObject({
+      prompt: 'Later member save',
+      promptRevision: 2,
+    });
+  });
+  it.each(['', ' ', 'bad\0text', '\ud800'])(
+    'blocks invalid prompt %j before POST',
+    async (prompt) => {
+      await expect(
+        nativeIntentsService.savePrompt('project-1', 'run-1', { ...request, prompt }),
+      ).rejects.toThrow();
+      expect(post).not.toHaveBeenCalled();
+    },
+  );
+});
 describe('native draft rejection boundary', () => {
   const request = {
     intentId: 'run-1',

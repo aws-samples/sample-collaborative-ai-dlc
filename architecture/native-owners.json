@@ -3,7 +3,7 @@
   "records": {
     "RUNTIME": {
       "owner": "native-authority",
-      "commands": ["commands:create", "commands:prepare"],
+      "commands": ["commands:create", "commands:prepare", "commands:savePrompt"],
       "observations": ["preparation:claim/advance/release/fail/ready"],
       "role": "authority",
       "adapters": ["api", "worker"]
@@ -20,6 +20,11 @@
     "RESPONSE/PUBLICATION": {
       "owner": "native-authority",
       "kind": "immutable transactional history",
+      "role": "authority"
+    },
+    "PROMPT": {
+      "owner": "native-authority",
+      "kind": "immutable transactional prompt-save receipts",
       "role": "authority"
     },
     "OUTPUT/OUTPUT_CURSOR": {

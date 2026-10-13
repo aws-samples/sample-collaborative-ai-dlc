@@ -92,14 +92,15 @@ the native control table directly or impersonate another caller class.
 1. **Select the project and package.** A workflow source is a read-only methodology
    source, separate from the application's code repository. An authorized source
    binding and completed, verified package import identify the package bytes.
-   The member selects a harness and creates a native draft.
+   The member selects a harness and creates a native draft. Title-only drafts
+   remain supported; members can add or revise and save the prompt before Start.
 2. **Prepare the workspace.** The preparation worker provisions the run's
    dedicated runtime, role, and EFS access point. It verifies the actual resource
    identities and mounted filesystem before reporting readiness. Preparation
    does not start a model turn.
 3. **Accept Start.** The authenticated command validates membership, the ready
    draft, application repository access, and credentials. It records immutable
-   configuration: package and archive versions, prompt, harness/model,
+   configuration: package and archive versions, the saved prompt revision, harness/model,
    credential binding, and execution image. The source branch and resolved
    commit are captured before dispatch. Preparation and execution images have
    separate pins; starting a prepared draft records the execution image explicitly.
@@ -328,11 +329,22 @@ release criteria before widening support; later capabilities are separate scope.
       `.env` and `.npmrc`. Align the public subset and preserve safe templates. Done
       when capture → checkpoint → admission tests agree on exact inventories and
       credential files cannot become public artifacts.
-- [ ] **Issue — rejected or incomplete drafts.** Creation permits title-only
-      drafts although Start requires a prompt. **OPEN — prompt correction:** decide
-      whether new drafts retain title-only creation with prompt editing before Start,
-      or require a prompt at creation; existing incomplete drafts need correction
-      either way. Title-only and prompt-only acceptance remain unchanged.
+- [x] **Issue — rejected or incomplete drafts.** **Accepted behavior — prompt correction:**
+      retain title-only drafts and allow prompt editing before Start, including
+      existing incomplete drafts. Start pins the accepted saved prompt; admitted
+      executions cannot be retargeted by editing. Title-only and prompt-only
+      creation remain supported. Both native presentations now offer Add/Edit,
+      Save, and explicit reload after a conflict. Unsaved text survives refreshes;
+      ambiguous saves retry the same identity and body. Protected transactions
+      compare the saved revision and exclude admitted executions, fencing both
+      edit/edit and edit/Start races. Start requires a nonblank saved prompt and
+      the revision the member saw. Immutable save receipts confirm retries,
+      including after later edits or Start; the original creation request and
+      fingerprint stay unchanged. Retained drafts decode as revision zero.
+      Deploy the updated authority/controller and prompt route before the frontend;
+      older APIs expose read-only prompts, and older Start clients must refresh
+      using an updated client after a draft has been edited. No data migration
+      or model dispatch is caused by editing.
       **Completed — rejection repair:** the API marks draft input/size rejection
       before dependencies or persistence. Only that explicit rejection, with no
       earlier uncertain attempt, unlocks correction; resubmission keeps the same ID.
@@ -343,14 +355,16 @@ release criteria before widening support; later capabilities are separate scope.
       never recreates a request from missing fields, even after a 404.
       Duplicate submissions and late route/account/session callbacks are fenced.
       The additive error marker needs the updated API to enable repair; older APIs
-      retain conservative retry behavior. Accepted requests and configuration pins
-      are unchanged. Local verification on Node 24.21.0: 200 focused frontend tests,
-      all 1,535 frontend tests, and 290 affected backend tests passed; frontend build,
-      lint, formatting, secret scanning, dependency and architecture checks,
-      wiring (21 tests), and architecture regressions (5 tests) passed. Lint,
-      dependency, and build warnings remain; no deployed AWS or model qualification
-      was performed. Done when remaining prompt correction is implemented as well
-      as safe rejection repair.
+      retain conservative retry behavior. Local verification on Node 24.21.0:
+      273 focused frontend tests, 463 focused backend tests, the 70-test listing
+      suite, all 1,570 frontend tests, and all 5,749 native foundation tests passed.
+      Frontend build, lint, formatting, secret scanning, dependency and architecture
+      checks, wiring (21 tests), architecture regressions (5 tests), and Terraform
+      formatting/validation passed. Four initial list-summary expectations were
+      corrected to retain the existing summary shape. Terraform initialization
+      required registry access and isolated local backend data. Lint, dependency,
+      build, and Terraform deprecation warnings remain; no deployed AWS or model
+      qualification was performed.
 - [x] **Issue — legacy waiting-state refresh.** Detail polling now includes
       `WAITING_FOR_INPUT` after projection catches up, alongside current waits.
       Another member's cancellation appears without a manual reload. Existing

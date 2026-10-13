@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { NativeIntentContent } from '@/components/intent/NativeIntentContent';
+import { NativePromptEditor } from '@/components/intent/NativePromptEditor';
 import { currentSessionEpoch } from '@/services/sessionExpiry';
 import { useNativeListingVersion } from '@/hooks/useNativeIntents';
 import {
@@ -127,6 +128,7 @@ export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter 
                 Execution is unavailable for this runtime image. Committed results remain readable.
               </p>
             )}
+            <NativePromptEditor adapter={adapter} />
             <div className="flex flex-wrap gap-2">
               {intent.status !== 'READY' && (
                 <Button onClick={() => void prepare()} disabled={preparing}>
@@ -151,6 +153,10 @@ export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter 
                   intent.status !== 'READY' ||
                   intent.executionAvailable !== true ||
                   Boolean(intent.execution) ||
+                  !intent.prompt.trim() ||
+                  adapter.promptDraft !== null ||
+                  adapter.savingPrompt ||
+                  adapter.startConflict ||
                   acting !== null
                 }
               >

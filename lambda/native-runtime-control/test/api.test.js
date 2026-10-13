@@ -350,6 +350,7 @@ describe('native draft creation and shared status', () => {
       executionBackend: 'native',
       title: request().title,
       prompt: request().prompt,
+      promptRevision: 0,
       harness: 'codex',
       status: 'DRAFT',
       package: {

@@ -110,6 +110,7 @@ describe('protected native discovery and public summaries', () => {
       const response = await f.api(listEvent());
       const expected = nativeIntentView(f.read());
       delete expected.prompt;
+      delete expected.promptRevision;
       expect(response.statusCode).toBe(200);
       expect(json(response)).toEqual({ items: [expected], nextCursor: null });
       expect(json(response).items[0].status).toBe('PREPARING');
