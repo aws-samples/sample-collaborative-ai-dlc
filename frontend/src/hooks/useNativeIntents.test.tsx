@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/services/api';
 import { clearPersistedCache } from '@/lib/persistentCache';
+import { nativeIntentStatusLabel } from '@/lib/intentDiscovery';
 import { resetSessionExpiry } from '@/services/sessionExpiry';
 import type { NativeExecution, NativeIntent, NativeIntentSummary } from '@/services/nativeIntents';
 const { list, get } = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn() }));
@@ -125,6 +126,10 @@ describe('shared native discovery cache', () => {
     await failedRefresh;
     expect(getNativeListing('p1').items[0].execution?.status).toBe('CANCELLED');
     expect(getNativeListing('p1').error).toMatch(/may be outdated/);
+    get.mockResolvedValueOnce({ ...current, execution: execution('CANCELLED', 4) });
+    await refreshNativeIntents('p1', 'refresh', true);
+    expect(nativeIntentStatusLabel(getNativeListing('p1').items[0])).toBe('Execution cancelled');
+    expect(getNativeListing('p1').error).toBeNull();
   });
   it('does not replace admitted execution with a late preparation-only response', async () => {
     list.mockResolvedValue(page('same'));
@@ -138,20 +143,31 @@ describe('shared native discovery cache', () => {
     await refresh;
     expect(getNativeListing('p1').items[0].execution?.status).toBe('DISPATCHING');
   });
-  it('does not hide a late protected denial behind an earlier transient hydration failure', async () => {
-    list.mockResolvedValue({ items: [item('first'), item('second')], nextCursor: null });
+  it.each([false, true])(
+    'does not hide a late protected denial behind an earlier transient hydration failure (already loaded: %s)',
+    async (loaded) => {
+      list.mockResolvedValue({ items: [item('first'), item('second')], nextCursor: null });
+      if (loaded) await refreshNativeIntents('p1');
+      const first = deferred<NativeIntent>();
+      const second = deferred<NativeIntent>();
+      get.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+      const refresh = refreshNativeIntents('p1', 'refresh', true);
+      await waitFor(() => expect(get).toHaveBeenCalledTimes(loaded ? 4 : 2));
+      first.reject(new Error('Temporary service failure'));
+      await Promise.resolve();
+      expect(getNativeListing('p1').loading).toBe(true);
+      second.reject(new ApiError(403, 'Membership revoked'));
+      await refresh;
+      expect(getNativeListing('p1')).toMatchObject({ items: [], denied: true });
+    },
+  );
+  it('does not invent a navigable list when the first collection request fails', async () => {
+    list.mockRejectedValueOnce(new ApiError(503, 'Collection unavailable'));
     await refreshNativeIntents('p1');
-    const first = deferred<NativeIntent>();
-    const second = deferred<NativeIntent>();
-    get.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
-    const refresh = refreshNativeIntents('p1', 'refresh', true);
-    await waitFor(() => expect(get).toHaveBeenCalledTimes(4));
-    first.reject(new Error('Temporary service failure'));
-    await Promise.resolve();
-    expect(getNativeListing('p1').loading).toBe(true);
-    second.reject(new ApiError(403, 'Membership revoked'));
-    await refresh;
-    expect(getNativeListing('p1')).toMatchObject({ items: [], denied: true });
+    expect(getNativeListing('p1')).toMatchObject({ items: [], loaded: false, loading: false });
+    expect(getNativeListing('p1').error).toMatch(/Native intents could not be refreshed/);
+    expect(get).not.toHaveBeenCalled();
+    expect(nativeProjectDeleteReason(getNativeListing('p1'))).toMatch(/complete, accessible/);
   });
   it('ignores a prior-account hydration denial after the new account has loaded', async () => {
     list.mockResolvedValue(page('same'));
@@ -186,18 +202,146 @@ describe('shared native discovery cache', () => {
       expect(getNativeListing('p1').items).toEqual([]);
     },
   );
-  it('keeps a first hydration failure visible instead of claiming workspace readiness', async () => {
-    list.mockResolvedValue(page('same'));
-    get.mockRejectedValueOnce(new Error('Execution status unavailable'));
+  it.each([
+    new ApiError(503, 'Status service unavailable'),
+    new Error('Network unavailable'),
+    new Error('The native execution could not be verified.'),
+  ])('keeps an authorized mixed first page when one status read fails: %s', async (failure) => {
+    const summaries = [item('a'), { ...item('b'), status: 'DRAFT' }, item('c')];
+    list.mockResolvedValue({ items: summaries, nextCursor: null });
+    get.mockImplementation(async (_projectId, id) => {
+      if (id === 'a') throw failure;
+      return { ...item(id), prompt: 'Private prompt', execution: execution('RUNNING') };
+    });
     await refreshNativeIntents('p1');
-    expect(getNativeListing('p1')).toMatchObject({ items: [], loaded: false, loading: false });
-    expect(getNativeListing('p1').error).toMatch(/could not be refreshed/);
+    const loaded = getNativeListing('p1');
+    expect(loaded).toMatchObject({ loaded: true, loading: false, denied: false, pages: 1 });
+    expect(loaded.items.map((entry) => entry.id)).toEqual(['a', 'b', 'c']);
+    expect(loaded.items.map(nativeIntentStatusLabel)).toEqual([
+      'Execution status unavailable',
+      'Draft',
+      'Agent running',
+    ]);
+    expect(get.mock.calls.map((call) => call[1])).toEqual(['a', 'c']);
+    expect(loaded.error).toMatch(/statuses could not be refreshed/);
+    expect(nativeProjectDeleteReason(loaded)).toMatch(/native intents/);
+    expect(loaded.items[0]).toEqual({ ...item('a'), executionStatusUnavailable: true });
+    expect(loaded.items[2]).not.toHaveProperty('prompt');
+    expect(loaded.items[2].execution).not.toHaveProperty('repository');
+    expect(loaded.items[2].execution).not.toHaveProperty('responsePending');
+
+    get.mockImplementation(async (_projectId, id) => ({
+      ...item(id),
+      prompt: 'Private prompt',
+      execution: execution(id === 'a' ? 'STOPPED' : 'RUNNING'),
+    }));
+    await refreshNativeIntents('p1', 'refresh', true);
+    expect(getNativeListing('p1').items.map(nativeIntentStatusLabel)).toEqual([
+      'Agent stopped',
+      'Draft',
+      'Agent running',
+    ]);
+    expect(getNativeListing('p1').error).toBeNull();
+  });
+  it('keeps known-native deletion protection after an optional status failure and disabled collection', async () => {
+    list.mockResolvedValue(page('same'));
+    get.mockRejectedValueOnce(new Error('Status unavailable'));
+    await refreshNativeIntents('p1');
+    expect(getNativeListing('p1')).toMatchObject({
+      items: [{ id: 'same', executionStatusUnavailable: true }],
+      loaded: true,
+    });
     list.mockRejectedValueOnce(
       new ApiError(503, 'disabled', { code: 'NATIVE_PREPARATION_DISABLED' }),
     );
     await refreshNativeIntents('p1', 'refresh', true);
     expect(getNativeListing('p1').disabled).toBe(true);
     expect(nativeProjectDeleteReason(getNativeListing('p1'))).toMatch(/native intents/);
+  });
+  it('continues queued healthy status reads after a transient failure with at most four in flight', async () => {
+    list.mockResolvedValue({
+      items: Array.from({ length: 9 }, (_, index) => item(String(index))),
+      nextCursor: null,
+    });
+    const pending = new Map<string, ReturnType<typeof deferred<NativeIntent>>>();
+    let inFlight = 0;
+    let peak = 0;
+    get.mockImplementation((_projectId, id) => {
+      const request = deferred<NativeIntent>();
+      pending.set(id, request);
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      return request.promise.finally(() => {
+        inFlight--;
+      });
+    });
+    const refresh = refreshNativeIntents('p1');
+    await waitFor(() => expect(pending.size).toBe(4));
+    pending.get('0')!.reject(new ApiError(503, 'Temporary status failure'));
+    await waitFor(() => expect(pending.size).toBe(5));
+    for (let index = 1; index < 9; index++) {
+      const id = String(index);
+      await waitFor(() => expect(pending.has(id)).toBe(true));
+      pending.get(id)!.resolve({ ...item(id), prompt: '', execution: execution('RUNNING') });
+    }
+    await refresh;
+    expect(peak).toBe(4);
+    expect(getNativeListing('p1').items).toHaveLength(9);
+    expect(
+      getNativeListing('p1')
+        .items.slice(1)
+        .every((entry) => entry.execution?.status === 'RUNNING'),
+    ).toBe(true);
+  });
+  it('retains a newer accepted healthy status while a different entry fails, then confirms an outdated status', async () => {
+    list.mockResolvedValue({ items: [item('a'), item('b')], nextCursor: null });
+    get.mockImplementation(async (_projectId, id) => ({
+      ...item(id),
+      prompt: '',
+      execution: execution('RUNNING', 1),
+    }));
+    await refreshNativeIntents('p1');
+    const older = deferred<NativeIntent>();
+    get.mockRejectedValueOnce(new Error('Status unavailable')).mockReturnValueOnce(older.promise);
+    const refresh = refreshNativeIntents('p1', 'refresh', true);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(4));
+    updateNativeIntentSummary({
+      ...item('b'),
+      prompt: '',
+      execution: execution('AWAITING_USER', 3),
+    });
+    older.resolve({ ...item('b'), prompt: '', execution: execution('RUNNING', 2) });
+    await refresh;
+    expect(getNativeListing('p1').items.map(nativeIntentStatusLabel)).toEqual([
+      'Agent running (status outdated)',
+      'Awaiting your reply',
+    ]);
+    updateNativeIntentSummary({ ...item('a'), prompt: '', execution: execution('RUNNING', 1) });
+    expect(getNativeListing('p1').items.map(nativeIntentStatusLabel)).toEqual([
+      'Agent running',
+      'Awaiting your reply',
+    ]);
+    expect(getNativeListing('p1').error).toBeNull();
+  });
+  it('keeps page navigation and deletion guards after status failure and rejects repeated cursors', async () => {
+    list
+      .mockResolvedValueOnce(page('a', 'second'))
+      .mockResolvedValueOnce({ items: [{ ...item('b'), status: 'DRAFT' }], nextCursor: 'third' })
+      .mockResolvedValueOnce(page('c', 'second'));
+    get.mockRejectedValueOnce(new Error('Status unavailable'));
+    await refreshNativeIntents('p1');
+    expect(getNativeListing('p1')).toMatchObject({ loaded: true, pages: 1, nextCursor: 'second' });
+    await refreshNativeIntents('p1', 'more');
+    expect(getNativeListing('p1').items.map(nativeIntentStatusLabel)).toEqual([
+      'Execution status unavailable',
+      'Draft',
+    ]);
+    expect(getNativeListing('p1')).toMatchObject({ pages: 2, nextCursor: 'third' });
+    expect(nativeProjectDeleteReason(getNativeListing('p1'))).toMatch(/native intents/);
+    await refreshNativeIntents('p1', 'more');
+    expect(getNativeListing('p1').items.map((entry) => entry.id)).toEqual(['a', 'b']);
+    expect(getNativeListing('p1')).toMatchObject({ pages: 2, nextCursor: 'third' });
+    expect(getNativeListing('p1').error).toMatch(/Native intents could not be refreshed/);
   });
   it('rejects hydration that returns after an account reset', async () => {
     list.mockResolvedValue(page('same'));

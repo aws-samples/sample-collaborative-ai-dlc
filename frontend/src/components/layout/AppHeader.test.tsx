@@ -85,6 +85,30 @@ it('uses a native status breadcrumb without requiring any platform provider or c
   expect(screen.getByTestId('path')).toHaveTextContent('/space/p1/native-intent/same');
   expect(screen.getByText('Status')).toBeInTheDocument();
 });
+it.each([false, true])(
+  'keeps breadcrumb navigation truthful when status is unavailable (previous execution: %s)',
+  (previous) => {
+    state.native = [
+      {
+        ...native,
+        executionStatusUnavailable: true,
+        ...(previous
+          ? { execution: { status: 'CANCELLED', revision: 1, updatedAt: '2026-09-29T08:00:00Z' } }
+          : {}),
+      },
+    ];
+    renderHeader('/space/p1/native-intent/same');
+    const crumbs = screen.getByRole('navigation', { name: 'Breadcrumb' });
+    expect(
+      within(crumbs).getByText(
+        previous ? 'Execution cancelled (status outdated)' : 'Execution status unavailable',
+      ),
+    ).toBeInTheDocument();
+    expect(within(crumbs).queryByText('Workspace ready')).not.toBeInTheDocument();
+    fireEvent.click(within(crumbs).getByRole('button', { name: 'Protected native' }));
+    expect(screen.getByTestId('path')).toHaveTextContent('/space/p1/native-intent/same');
+  },
+);
 it('labels native creation without platform activity controls', () => {
   renderHeader('/space/p1/native-intent/new');
   expect(screen.getByText('New native intent')).toBeInTheDocument();

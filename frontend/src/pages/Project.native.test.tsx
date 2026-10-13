@@ -91,6 +91,63 @@ beforeEach(() => {
 });
 
 describe('Space native discovery', () => {
+  it.each(['a', 'b', 'c'] as const)(
+    'keeps every authorized mixed-list entry navigable after one status read fails: %s',
+    async (target) => {
+      const draft = { ...summary('b'), status: 'DRAFT' as const };
+      const running = {
+        ...summary('c'),
+        prompt: 'Protected native prompt',
+        execution: {
+          status: 'RUNNING' as const,
+          revision: 1,
+          attemptId: 'attempt',
+          epoch: 1,
+          startedAt: '2026-09-29T08:00:00Z',
+          updatedAt: '2026-09-29T08:00:00Z',
+          model: null,
+          repository: { provider: 'github', repository: 'owner/app', branch: null, commit: null },
+          publicationId: null,
+          projectionStatus: null,
+        },
+      };
+      mocks.nativeList.mockResolvedValue({
+        items: [summary('a'), draft, summary('c')],
+        nextCursor: null,
+      });
+      mocks.nativeGet.mockImplementation(async (_projectId, id) => {
+        if (id === 'a') throw new ApiError(503, 'Status unavailable');
+        return running;
+      });
+      renderPage();
+      const affected = await screen.findByRole('button', {
+        name: /Native a Native Execution status unavailable/,
+      });
+      const unprepared = screen.getByRole('button', { name: /Native b Native Draft/ });
+      const healthy = screen.getByRole('button', { name: /Native c Native Agent running/ });
+      expect(screen.getByRole('alert')).toHaveTextContent(/statuses could not be refreshed/);
+      expect(screen.queryByText('Workspace ready')).not.toBeInTheDocument();
+      expect(mocks.nativeGet).not.toHaveBeenCalledWith('p1', 'b');
+      mocks.nativeGet.mockResolvedValueOnce({
+        ...(target === 'b' ? draft : target === 'c' ? running : summary('a')),
+        prompt: 'Protected native prompt',
+      });
+      await userEvent.click({ a: affected, b: unprepared, c: healthy }[target]!);
+      expect(await screen.findByText('Protected native prompt')).toBeVisible();
+      expect(mocks.nativeGet).toHaveBeenLastCalledWith('p1', target);
+      expect(screen.queryByText('Platform detail route')).not.toBeInTheDocument();
+    },
+  );
+  it('restores normal status through the existing list retry without losing navigation', async () => {
+    mocks.nativeGet.mockRejectedValueOnce(new Error('Status unavailable'));
+    renderPage();
+    await screen.findByRole('button', { name: /Native same Native Execution status unavailable/ });
+    await userEvent.click(screen.getByRole('button', { name: 'Retry native intents' }));
+    expect(
+      await screen.findByRole('button', { name: /Native same Native Workspace ready/ }),
+    ).toBeVisible();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
   it('shows a usable fallback label for a prompt-only native draft', async () => {
     mocks.nativeList.mockResolvedValueOnce({
       items: [{ ...summary(), title: '' }],

@@ -10,6 +10,8 @@ import { onCacheCleared } from '@/lib/persistentCache';
 import type { NativeDiscoveredIntent } from '@/lib/intentDiscovery';
 
 const TTL = 30_000;
+const STATUS_READ_ERROR =
+  'Some native execution statuses could not be refreshed. Entries remain available; affected statuses may be outdated.';
 // Explicit paging bounds both memory and the cost of refreshing loaded pages.
 export const MAX_NATIVE_PAGES = 40;
 export interface NativeListing {
@@ -146,18 +148,29 @@ function latestSummary(
   previous: NativeDiscoveredIntent | undefined,
   next: NativeDiscoveredIntent,
 ): NativeDiscoveredIntent {
-  if (!previous) return next;
-  if (previous.execution && !next.execution) return previous;
-  if (previous.execution?.revision !== undefined) {
-    if (
-      next.execution?.revision === undefined ||
-      next.execution.revision <= previous.execution.revision
-    )
-      return previous;
-  }
   const time = (item: NativeDiscoveredIntent) =>
     Math.max(Date.parse(item.updatedAt), Date.parse(item.execution?.updatedAt ?? item.updatedAt));
-  return next.execution?.revision === undefined && time(previous) > time(next) ? previous : next;
+  const latest =
+    previous &&
+    ((previous.execution && !next.execution) ||
+      (previous.execution?.revision !== undefined &&
+        (next.execution?.revision === undefined ||
+          next.execution.revision <= previous.execution.revision)) ||
+      (next.execution?.revision === undefined && time(previous) > time(next)))
+      ? previous
+      : next;
+  if (next.executionStatusUnavailable) return { ...latest, executionStatusUnavailable: true };
+  // A successful read at the same revision confirms the retained execution.
+  // Older reads still cannot clear uncertainty or replace newer accepted state.
+  if (
+    latest.executionStatusUnavailable &&
+    next.execution?.revision !== undefined &&
+    next.execution.revision === latest.execution?.revision
+  ) {
+    const { executionStatusUnavailable: _unavailable, ...confirmed } = latest;
+    return confirmed;
+  }
+  return latest;
 }
 
 // Called only with the adapter's accepted current detail. Discovery remains the
@@ -171,9 +184,15 @@ export function updateNativeIntentSummary(intent: NativeIntent): void {
   const previous = entry.state.items[index];
   const next = latestSummary(previous, discoverySummary(intent));
   if (next === previous) return;
+  const items = entry.state.items.map((item, itemIndex) => (itemIndex === index ? next : item));
   entry.state = {
     ...entry.state,
-    items: entry.state.items.map((item, itemIndex) => (itemIndex === index ? next : item)),
+    items,
+    error:
+      entry.state.error === STATUS_READ_ERROR &&
+      !items.some((item) => item.executionStatusUnavailable)
+        ? null
+        : entry.state.error,
   };
   notify();
 }
@@ -185,20 +204,25 @@ async function hydrateExecution(
 ): Promise<NativeDiscoveredIntent[]> {
   const items: NativeDiscoveredIntent[] = [...summaries];
   let nextIndex = 0;
-  let failed = false;
+  let denied = false;
   // The collection intentionally carries preparation metadata only. Reuse the
   // protected detail endpoint for READY rows, with at most four reads at once.
   const results = await Promise.allSettled(
     Array.from({ length: Math.min(4, items.length) }, async () => {
-      while (!failed && active() && nextIndex < items.length) {
+      while (!denied && active() && nextIndex < items.length) {
         const index = nextIndex++;
         if (items[index].status !== 'READY') continue;
         try {
           const detail = await nativeIntentsService.get(projectId, items[index].id);
           if (active()) items[index] = discoverySummary(detail);
         } catch (error) {
-          failed = true;
-          throw error;
+          if (nativeAccessDenied(error)) {
+            denied = true;
+            throw error;
+          }
+          // The collection authorized navigation independently of this optional
+          // status read. Keep its summary and continue the other bounded reads.
+          if (active()) items[index] = { ...items[index], executionStatusUnavailable: true };
         }
       }
     }),
@@ -273,18 +297,19 @@ export async function refreshNativeIntents(
       if (!active()) return;
       owner.cursors = cursors;
       owner.fetchedAt = Date.now();
-      owner.state = {
-        items: items.map((item) =>
-          latestSummary(
-            owner.state.items.find((current) => current.id === item.id),
-            item,
-          ),
+      const merged = items.map((item) =>
+        latestSummary(
+          owner.state.items.find((current) => current.id === item.id),
+          item,
         ),
+      );
+      owner.state = {
+        items: merged,
         nextCursor: cursor,
         pages,
         loaded: true,
         loading: false,
-        error: null,
+        error: merged.some((item) => item.executionStatusUnavailable) ? STATUS_READ_ERROR : null,
         disabled: false,
         denied: false,
         hasKnownNativeIntents: owner.state.hasKnownNativeIntents || items.length > 0,

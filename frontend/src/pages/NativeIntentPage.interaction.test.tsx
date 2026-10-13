@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Link, MemoryRouter, Route, Routes } from 'react-router';
 import { ApiError } from '@/services/api';
 import { clearNativeIntents } from '@/hooks/useNativeIntents';
+import { resetCollaborationFakes } from '@/test/collaborationFakes';
 import {
   armSessionExpiry,
   notifySessionExpired,
@@ -176,6 +177,7 @@ function cleared() {
   expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
 }
 beforeEach(() => {
+  resetCollaborationFakes();
   vi.resetAllMocks();
   vi.stubGlobal('crypto', webcrypto);
   resetSessionExpiry();

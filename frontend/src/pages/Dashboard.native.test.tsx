@@ -161,6 +161,40 @@ it('shows a visible partial error with a native retry', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Retry native intents' }));
   expect(state.refreshNative).toHaveBeenCalledWith('p1', 'refresh', true);
 });
+it.each([false, true])(
+  'keeps navigation and marks unavailable status in both dashboard views (previous execution: %s)',
+  async (previous) => {
+    const entry: NativeDiscoveredIntent = {
+      ...native.items[0],
+      executionStatusUnavailable: true,
+      ...(previous
+        ? { execution: { status: 'STOPPED', revision: 1, updatedAt: native.items[0].updatedAt } }
+        : {}),
+    };
+    state.projects = [
+      project({
+        ...native,
+        items: [entry],
+        error: 'Some native execution statuses could not be refreshed.',
+      }),
+    ];
+    renderPage();
+    const label = previous ? 'Agent stopped (status outdated)' : 'Execution status unavailable';
+    for (const view of ['Grid view', 'List view']) {
+      await userEvent.click(screen.getByRole('button', { name: view }));
+      expect(
+        screen.getByRole('button', { name: `Native Native workspace: ${label}` }),
+      ).toBeEnabled();
+      expect(screen.getByRole('alert')).toHaveTextContent(/statuses could not be refreshed/);
+      expect(screen.getByRole('button', { name: 'Delete Space One' })).toBeDisabled();
+      expect(screen.queryByText('Workspace ready')).not.toBeInTheDocument();
+    }
+    await userEvent.click(
+      screen.getByRole('button', { name: `Native Native workspace: ${label}` }),
+    );
+    expect(screen.getByText('Native status route')).toBeInTheDocument();
+  },
+);
 it('guards deletion when a native intent appears after the confirmation dialog opens', async () => {
   state.projects = [project({ ...native, items: [] })];
   renderPage();

@@ -4,6 +4,7 @@ import type { NativeExecution, NativeIntentSummary } from '@/services/nativeInte
 // Protected detail reads enrich the in-memory discovery cache, without retaining
 // prompts, repository configuration, or reply/recovery authority.
 export type NativeDiscoveredIntent = NativeIntentSummary & {
+  executionStatusUnavailable?: boolean;
   execution?: Pick<
     NativeExecution,
     'status' | 'revision' | 'updatedAt' | 'responsePending' | 'turnSequence'
@@ -38,16 +39,18 @@ export const nativeExecutionLabels: Record<NativeExecution['status'], string> = 
 };
 
 export function nativeIntentStatusLabel(
-  intent: Pick<NativeDiscoveredIntent, 'status' | 'execution'>,
+  intent: Pick<NativeDiscoveredIntent, 'status' | 'execution' | 'executionStatusUnavailable'>,
 ): string {
+  if (intent.executionStatusUnavailable && !intent.execution) return 'Execution status unavailable';
+  let label = intent.execution
+    ? nativeExecutionLabels[intent.execution.status]
+    : nativePreparationLabels[intent.status];
   if (
     intent.execution?.status === 'DISPATCHING' &&
     (intent.execution.responsePending === true || (intent.execution.turnSequence ?? 0) > 1)
   )
-    return 'Continuing agent';
-  return intent.execution
-    ? nativeExecutionLabels[intent.execution.status]
-    : nativePreparationLabels[intent.status];
+    label = 'Continuing agent';
+  return intent.executionStatusUnavailable ? `${label} (status outdated)` : label;
 }
 
 export function isPlatformIntent(intent: Intent): boolean {

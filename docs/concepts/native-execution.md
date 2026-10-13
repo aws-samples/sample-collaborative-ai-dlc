@@ -310,6 +310,9 @@ release criteria before widening support; later capabilities are separate scope.
       and breadcrumbs share execution-aware status labels; stopped turns are not
       workflow completion. The existing listing cache uses protected detail reads
       for ready entries, with four concurrent reads per project and revision guards.
+      Individual status read failures keep authorized list entries navigable, with
+      unavailable or outdated status labels and retry; access denials still clear
+      protected entries.
       **Remaining:** decide the normal creation entry's backend/default and attachment
       versus tracker input scope, integrate creation and supported source selection,
       resolve the separate file-policy decision, and qualify navigation and status

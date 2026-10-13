@@ -71,6 +71,7 @@ describe('AppSidebar native discovery routing', () => {
   const setup = (
     execution?: NativeDiscoveredIntent['execution'],
     status: NativeDiscoveredIntent['status'] = 'READY',
+    executionStatusUnavailable = false,
   ) => {
     mockProjects.projects = [
       {
@@ -85,6 +86,7 @@ describe('AppSidebar native discovery routing', () => {
               title: 'Native same',
               status,
               execution,
+              executionStatusUnavailable,
               updatedAt: '2026-09-29T07:00:00Z',
             },
           ],
@@ -95,6 +97,31 @@ describe('AppSidebar native discovery routing', () => {
       },
     ];
   };
+  it.each([false, true])(
+    'keeps native navigation when status is unavailable (previous execution: %s)',
+    (previous) => {
+      setup(
+        previous
+          ? { status: 'AWAITING_USER', revision: 1, updatedAt: '2026-09-29T08:00:00Z' }
+          : undefined,
+        'READY',
+        true,
+      );
+      renderSidebar('/dashboard');
+      const row = screen.getByRole('button', { name: /Native same/ });
+      expect(
+        within(row).getByText(
+          previous ? 'Awaiting your reply (status outdated)' : 'Execution status unavailable',
+        ),
+      ).toBeInTheDocument();
+      expect(within(row).queryByText('Workspace ready')).not.toBeInTheDocument();
+      fireEvent.click(row);
+      expect(screen.getByRole('button', { name: /Native same/ })).toHaveAttribute(
+        'aria-current',
+        'page',
+      );
+    },
+  );
   it.each([
     ['DISPATCHING', 'Continuing agent'],
     ['RUNNING', 'Agent running'],
