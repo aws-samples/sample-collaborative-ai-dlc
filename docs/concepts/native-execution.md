@@ -302,6 +302,18 @@ release criteria before widening support; later capabilities are separate scope.
       and permanent unavailable-action controls. Define supported attachments, tracker
       input, and source selection. Done when two members can create and navigate a
       native intent with consistent status in project, dashboard, and sidebar views.
+      **Completed — presentation:** native uses the shared workspace header,
+      configuration dialog layout, and work-products card. Current questions precede
+      the original request; recovery precedes published content. Unsupported action
+      placeholders are removed, while prompt editing before Start, pinned requests,
+      accepted answers, and functional safeguards remain. Project, dashboard, sidebar,
+      and breadcrumbs share execution-aware status labels; stopped turns are not
+      workflow completion. The existing listing cache uses protected detail reads
+      for ready entries, with four concurrent reads per project and revision guards.
+      **Remaining:** decide the normal creation entry's backend/default and attachment
+      versus tracker input scope, integrate creation and supported source selection,
+      resolve the separate file-policy decision, and qualify navigation and status
+      with two live members. Local regressions do not establish that qualification.
 - [ ] **Capability — completion and obtainable results.** Define verified workflow
       completion separately from a stopped turn, with required checks and review
       outcomes tied to exact result bytes. Provide result archive, binary download,

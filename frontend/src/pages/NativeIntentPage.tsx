@@ -1,4 +1,15 @@
+import { useState } from 'react';
 import { Link, useParams } from 'react-router';
+import { MoreHorizontal, Settings2 } from 'lucide-react';
+import { IntentWorkspaceHeader } from '@/components/intent/IntentWorkspaceHeader';
+import { NativeIntentConfigurationDialog } from '@/components/intent/IntentConfigurationDialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import { nativeIntentStatusLabel, nativeIntentTitle } from '@/lib/intentDiscovery';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { NativeIntentContent } from '@/components/intent/NativeIntentContent';
@@ -8,9 +19,6 @@ import { useNativeListingVersion } from '@/hooks/useNativeIntents';
 import {
   useNativeIntentAdapter,
   type NativeIntentAdapter,
-  labels,
-  harnesses,
-  executionLabels,
   activeExecution,
   recoveryMessages,
   canRecover,
@@ -34,6 +42,7 @@ function NativeWorkspace({ projectId, intentId }: { projectId: string; intentId:
 }
 
 export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter }) {
+  const [configurationOpen, setConfigurationOpen] = useState(false);
   const {
     projectId,
     intent,
@@ -46,56 +55,52 @@ export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter 
     publicationFailure,
   } = adapter;
   return (
-    <div className="h-full overflow-y-auto p-4">
-      <div className="mx-auto max-w-6xl space-y-5">
-        <Link className="text-sm underline" to={`/space/${projectId}`}>
-          Back to space
-        </Link>
-        <h1 className="text-xl font-semibold">{intent?.title || 'Native intent'}</h1>
-        {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        )}
-        {!intent ? (
-          <Button variant="outline" onClick={() => void refresh()}>
-            Refresh status
-          </Button>
-        ) : (
-          <>
-            <div className="flex items-center gap-2">
-              <Badge variant="outline">Native</Badge>
-              <p role="status" className="font-medium">
-                {intent.execution
-                  ? intent.execution.status === 'DISPATCHING' &&
-                    (intent.execution.responsePending === true ||
-                      (intent.execution.turnSequence ?? 1) > 1)
-                    ? 'Continuing agent'
-                    : executionLabels[intent.execution.status]
-                  : labels[intent.status]}
-              </p>
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {harnesses[intent.harness]} · {intent.package.source.repository} ·{' '}
-              {intent.package.source.release}
+    <div className="space-y-6">
+      <IntentWorkspaceHeader
+        title={intent ? nativeIntentTitle(intent) : 'Native intent'}
+        badges={
+          intent && (
+            <Badge variant="outline" className="text-[10px] shrink-0">
+              Native
+            </Badge>
+          )
+        }
+        actions={
+          intent && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => setConfigurationOpen(true)}>
+                  <Settings2 className="mr-2 h-4 w-4" />
+                  Intent configuration
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link to={`/space/${encodeURIComponent(projectId)}`}>Back to space</Link>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )
+        }
+      />
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {!intent ? (
+        <Button variant="outline" onClick={() => void refresh()}>
+          Refresh status
+        </Button>
+      ) : (
+        <>
+          <section aria-label="Native execution status" className="space-y-3 rounded-md border p-4">
+            <p role="status" className="font-medium">
+              {nativeIntentStatusLabel(intent)}
             </p>
-            {intent.execution && (
-              <div className="space-y-1 text-sm text-muted-foreground">
-                {intent.execution.model && <p>Model: {intent.execution.model}</p>}
-                {intent.execution.repository.repository && (
-                  <p className="break-all">
-                    Repository: {intent.execution.repository.provider} ·{' '}
-                    {intent.execution.repository.repository}
-                    {intent.execution.repository.branch &&
-                      ` · ${intent.execution.repository.branch}`}
-                    {intent.execution.repository.commit &&
-                      ` · ${intent.execution.repository.commit}`}
-                  </p>
-                )}
-                <p>Started {new Date(intent.execution.startedAt).toLocaleString()}</p>
-                {intent.execution.failureCode && <p>Failure: {intent.execution.failureCode}</p>}
-              </div>
-            )}
             <p className="text-sm">
               {intent.execution
                 ? intent.execution.status === 'RECOVERING'
@@ -121,16 +126,25 @@ export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter 
                     ? 'Preparing and verifying a separate runtime and workspace for this run. You can leave this page and return to the same link.'
                     : intent.status === 'FAILED'
                       ? 'Preparation stopped with an error. The run identity and any created resources are retained for diagnosis and retry.'
-                      : 'Prepare a separate workspace for this native intent before agent execution is enabled.'}
+                      : 'Prepare the workspace, then start the agent with your saved prompt.'}
             </p>
             {imageBlocked(intent) && (
               <p role="status" className="text-sm text-muted-foreground">
                 Execution is unavailable for this runtime image. Committed results remain readable.
               </p>
             )}
-            <NativePromptEditor adapter={adapter} />
+            {(intent.execution?.failureCode || intent.failureCode) && (
+              <p className="text-sm text-destructive">
+                Failure: {intent.execution?.failureCode ?? intent.failureCode}
+              </p>
+            )}
+            {!intent.execution && intent.executionAvailable !== true && (
+              <p className="text-sm text-muted-foreground">
+                Agent execution is not enabled for this draft.
+              </p>
+            )}
             <div className="flex flex-wrap gap-2">
-              {intent.status !== 'READY' && (
+              {!intent.execution && intent.status !== 'READY' && (
                 <Button onClick={() => void prepare()} disabled={preparing}>
                   {preparing
                     ? 'Requesting preparation…'
@@ -139,29 +153,27 @@ export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter 
                       : 'Retry preparation'}
                 </Button>
               )}
-              <Button variant="outline" onClick={() => void refresh()}>
-                Refresh status
-              </Button>
               {canRecover(intent) && (
                 <Button onClick={() => void execute('recover')} disabled={acting !== null}>
                   {acting === 'recover' ? 'Requesting recovery…' : 'Recover session'}
                 </Button>
               )}
-              <Button
-                onClick={() => void execute('start')}
-                disabled={
-                  intent.status !== 'READY' ||
-                  intent.executionAvailable !== true ||
-                  Boolean(intent.execution) ||
-                  !intent.prompt.trim() ||
-                  adapter.promptDraft !== null ||
-                  adapter.savingPrompt ||
-                  adapter.startConflict ||
-                  acting !== null
-                }
-              >
-                {acting === 'start' ? 'Requesting start…' : 'Start agent'}
-              </Button>
+              {!intent.execution && (
+                <Button
+                  onClick={() => void execute('start')}
+                  disabled={
+                    intent.status !== 'READY' ||
+                    intent.executionAvailable !== true ||
+                    !intent.prompt.trim() ||
+                    adapter.promptDraft !== null ||
+                    adapter.savingPrompt ||
+                    adapter.startConflict ||
+                    acting !== null
+                  }
+                >
+                  {acting === 'start' ? 'Requesting start…' : 'Start agent'}
+                </Button>
+              )}
               {intent.execution &&
                 (activeExecution.has(intent.execution.status) ||
                   intent.execution.status === 'WAITING_FOR_INPUT' ||
@@ -174,31 +186,24 @@ export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter 
                     {acting === 'cancel' ? 'Requesting cancellation…' : 'Cancel execution'}
                   </Button>
                 )}
+              <Button variant="outline" onClick={() => void refresh()}>
+                Refresh status
+              </Button>
             </div>
-            <div className="space-y-3 rounded-md border p-4">
-              <p className="text-sm text-muted-foreground">
-                Questions and approvals are answered below when AI-DLC asks for them. Artifact
-                editing, unit pull requests and deletion are not enabled yet.
-                {!intent.execution &&
-                  intent.executionAvailable !== true &&
-                  ' Agent execution is not enabled for this draft.'}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {['Edit artifacts', 'Create unit PR', 'Delete intent'].map((action) => (
-                  <Button key={action} variant="outline" disabled>
-                    {action}
-                  </Button>
-                ))}
-              </div>
-            </div>
-            <NativeIntentContent
-              intent={intent}
-              onAccessFailure={publicationFailure}
-              onRefresh={refresh}
-            />
-          </>
-        )}
-      </div>
+          </section>
+          <NativePromptEditor adapter={adapter} />
+          <NativeIntentContent
+            intent={intent}
+            onAccessFailure={publicationFailure}
+            onRefresh={refresh}
+          />
+          <NativeIntentConfigurationDialog
+            intent={intent}
+            open={configurationOpen}
+            onOpenChange={setConfigurationOpen}
+          />
+        </>
+      )}
     </div>
   );
 }

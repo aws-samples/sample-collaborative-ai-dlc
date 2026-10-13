@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router';
+import type { NativeDiscoveredIntent } from '@/lib/intentDiscovery';
 
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ isPlatformAdmin: false }),
@@ -67,7 +68,10 @@ describe('AppSidebar native discovery routing', () => {
     renderSidebar('/space/p2/intent/same');
     expect(screen.queryByText('Wrong project title')).not.toBeInTheDocument();
   });
-  const setup = () => {
+  const setup = (
+    execution?: NativeDiscoveredIntent['execution'],
+    status: NativeDiscoveredIntent['status'] = 'READY',
+  ) => {
     mockProjects.projects = [
       {
         project: { id: 'p1', name: 'Space', kind: 'v2', createdAt: '2024-01-01' },
@@ -79,7 +83,8 @@ describe('AppSidebar native discovery routing', () => {
               id: 'same',
               projectId: 'p1',
               title: 'Native same',
-              status: 'READY',
+              status,
+              execution,
               updatedAt: '2026-09-29T07:00:00Z',
             },
           ],
@@ -90,6 +95,43 @@ describe('AppSidebar native discovery routing', () => {
       },
     ];
   };
+  it.each([
+    ['DISPATCHING', 'Continuing agent'],
+    ['RUNNING', 'Agent running'],
+    ['WAITING_FOR_INPUT', 'Waiting for input'],
+    ['AWAITING_USER', 'Awaiting your reply'],
+    ['RECOVERY_REQUIRED', 'Session recovery required'],
+    ['RECOVERING', 'Restoring session'],
+    ['STOPPED', 'Agent stopped'],
+    ['FAILED', 'Execution failed'],
+    ['CANCELLED', 'Execution cancelled'],
+  ] as const)('shows execution %s and retains scoped navigation', (status, label) => {
+    setup({
+      status,
+      revision: 1,
+      updatedAt: '2026-09-29T08:01:00Z',
+      responsePending: status === 'DISPATCHING',
+    });
+    renderSidebar('/space/p1/intent/same');
+    const row = screen.getByRole('button', { name: /Native same/ });
+    expect(within(row).getByText(label)).toBeInTheDocument();
+    expect(within(row).queryByText('Workspace ready')).not.toBeInTheDocument();
+    fireEvent.click(row);
+    expect(screen.getByRole('button', { name: /Native same/ })).toHaveAttribute(
+      'aria-current',
+      'page',
+    );
+    expect(screen.queryByRole('navigation', { name: /intent sections/i })).not.toBeInTheDocument();
+  });
+  it.each([
+    ['DRAFT', 'Draft'],
+    ['PREPARING', 'Preparing workspace'],
+    ['FAILED', 'Preparation failed'],
+  ] as const)('keeps preparation %s distinct in the sidebar', (status, label) => {
+    setup(undefined, status);
+    renderSidebar('/space/p1/native-intent/same');
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
   it('keeps platform section tabs off native routes even with the same UUID', () => {
     setup();
     renderSidebar('/space/p1/native-intent/same');

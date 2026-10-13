@@ -11,6 +11,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { RecomposePanel } from '@/components/intent/RecomposePanel';
 import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurationDialog';
+import { IntentWorkspaceHeader } from '@/components/intent/IntentWorkspaceHeader';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { humanizeStageId } from '@/components/intent/documentHelpers';
 import { deriveLaneWaits } from '@/lib/intentRecovery';
@@ -426,155 +427,157 @@ function PlatformIntentView() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0 flex-1">
-          <h1 className="text-lg font-bold tracking-tight truncate min-w-0">
-            {intent.title || 'Intent'}
-          </h1>
-          {TERMINAL_STATUSES.has(intent.status) && (
-            <Badge variant="outline" className="text-[10px] shrink-0">
-              {intent.status}
-            </Badge>
-          )}
-          <MethodologyReleaseBadge release={intent.methodologyRelease ?? null} />
-          {isActive && (
-            <span
-              className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse shrink-0"
-              aria-label="live"
-            />
-          )}
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
-          <div className="inline-flex h-7 shrink-0 overflow-hidden rounded-md border border-border/60">
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="inline-flex" data-testid="workspace-export-harness">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-7 w-5 rounded-none border-r border-border/60 px-0"
-                          disabled={exportDisabled}
-                          aria-label="Choose workspace harness"
-                        >
-                          <ChevronDown className="h-3 w-3" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start">
-                        {EXPORT_HARNESSES.map((option) => (
-                          <DropdownMenuItem
-                            key={option.value}
+      <IntentWorkspaceHeader
+        title={intent.title || 'Intent'}
+        badges={
+          <>
+            {TERMINAL_STATUSES.has(intent.status) && (
+              <Badge variant="outline" className="text-[10px] shrink-0">
+                {intent.status}
+              </Badge>
+            )}
+            <MethodologyReleaseBadge release={intent.methodologyRelease ?? null} />
+            {isActive && (
+              <span
+                className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse shrink-0"
+                aria-label="live"
+              />
+            )}
+          </>
+        }
+        actions={
+          <>
+            <DiscussButton entityType="intent" entityTitle={intent.title || 'Intent'} />
+            <div className="inline-flex h-7 shrink-0 overflow-hidden rounded-md border border-border/60">
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex" data-testid="workspace-export-harness">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            className="h-7 w-5 rounded-none border-r border-border/60 px-0"
                             disabled={exportDisabled}
-                            onClick={() => setSelectedExportHarness(option.value)}
+                            aria-label="Choose workspace harness"
                           >
-                            <span>{option.label}</span>
-                            {option.value === activeExportHarness && (
-                              <Check className="ml-auto h-4 w-4" aria-label="Current harness" />
-                            )}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {exporting
-                    ? 'Preparing workspace…'
-                    : isExportable
-                      ? 'Choose workspace harness'
-                      : exportUnavailableReason}
-                </TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="inline-flex" data-testid="workspace-export-download">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 rounded-none"
-                      disabled={exportDisabled}
-                      onClick={() => requestExport(activeExportHarness)}
-                      aria-label={exportButtonLabel}
-                    >
-                      {exporting ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Download className="h-4 w-4" />
-                      )}
-                    </Button>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>
-                  {exporting
-                    ? 'Preparing workspace…'
-                    : isExportable
-                      ? exportButtonLabel
-                      : exportUnavailableReason}
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          </div>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onSelect={() => setConfigurationOpen(true)}>
-                <Settings2 className="mr-2 h-4 w-4" />
-                Intent configuration
-              </DropdownMenuItem>
-              {canReshape && (
-                <DropdownMenuItem
-                  disabled={Boolean(reshapeBlocked)}
-                  title={reshapeBlocked ?? undefined}
-                  onSelect={openReshape}
-                >
-                  <GitBranch className="mr-2 h-4 w-4" />
-                  Reshape remaining stages
+                            <ChevronDown className="h-3 w-3" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start">
+                          {EXPORT_HARNESSES.map((option) => (
+                            <DropdownMenuItem
+                              key={option.value}
+                              disabled={exportDisabled}
+                              onClick={() => setSelectedExportHarness(option.value)}
+                            >
+                              <span>{option.label}</span>
+                              {option.value === activeExportHarness && (
+                                <Check className="ml-auto h-4 w-4" aria-label="Current harness" />
+                              )}
+                            </DropdownMenuItem>
+                          ))}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {exporting
+                      ? 'Preparing workspace…'
+                      : isExportable
+                        ? 'Choose workspace harness'
+                        : exportUnavailableReason}
+                  </TooltipContent>
+                </Tooltip>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="inline-flex" data-testid="workspace-export-download">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 rounded-none"
+                        disabled={exportDisabled}
+                        onClick={() => requestExport(activeExportHarness)}
+                        aria-label={exportButtonLabel}
+                      >
+                        {exporting ? (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <Download className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {exporting
+                      ? 'Preparing workspace…'
+                      : isExportable
+                        ? exportButtonLabel
+                        : exportUnavailableReason}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Intent actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => setConfigurationOpen(true)}>
+                  <Settings2 className="mr-2 h-4 w-4" />
+                  Intent configuration
                 </DropdownMenuItem>
-              )}
-              {/* Opt-in migration (issue #482): never migrates this intent —
+                {canReshape && (
+                  <DropdownMenuItem
+                    disabled={Boolean(reshapeBlocked)}
+                    title={reshapeBlocked ?? undefined}
+                    onSelect={openReshape}
+                  >
+                    <GitBranch className="mr-2 h-4 w-4" />
+                    Reshape remaining stages
+                  </DropdownMenuItem>
+                )}
+                {/* Opt-in migration (issue #482): never migrates this intent —
                   it opens the create page prefilled from it, and the new
                   intent recomputes its plan on the version chosen there. */}
-              {pinningEnabled && (
-                <DropdownMenuItem
-                  onSelect={() =>
-                    navigate(
-                      `/space/${projectId}/intent/new?fromIntent=${encodeURIComponent(intentId)}`,
-                    )
-                  }
-                >
-                  <Milestone className="mr-2 h-4 w-4" />
-                  Start a new intent on another AI-DLC version
-                </DropdownMenuItem>
-              )}
-              {(isCancellable || isDeletable) && <DropdownMenuSeparator />}
-              {isCancellable && (
-                <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
-                  <XCircle className="mr-2 h-4 w-4" />
-                  {cancelling ? 'Cancelling…' : 'Cancel run'}
-                </DropdownMenuItem>
-              )}
-              {isDeletable && (
-                <DropdownMenuItem
-                  disabled={deleting}
-                  onClick={() => setConfirmDelete(true)}
-                  className="text-destructive"
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  {deleting ? 'Deleting…' : 'Delete'}
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </div>
+                {pinningEnabled && (
+                  <DropdownMenuItem
+                    onSelect={() =>
+                      navigate(
+                        `/space/${projectId}/intent/new?fromIntent=${encodeURIComponent(intentId)}`,
+                      )
+                    }
+                  >
+                    <Milestone className="mr-2 h-4 w-4" />
+                    Start a new intent on another AI-DLC version
+                  </DropdownMenuItem>
+                )}
+                {(isCancellable || isDeletable) && <DropdownMenuSeparator />}
+                {isCancellable && (
+                  <DropdownMenuItem disabled={cancelling} onClick={handleCancel}>
+                    <XCircle className="mr-2 h-4 w-4" />
+                    {cancelling ? 'Cancelling…' : 'Cancel run'}
+                  </DropdownMenuItem>
+                )}
+                {isDeletable && (
+                  <DropdownMenuItem
+                    disabled={deleting}
+                    onClick={() => setConfirmDelete(true)}
+                    className="text-destructive"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    {deleting ? 'Deleting…' : 'Delete'}
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      />
 
       <IntentPhaseBreadcrumb
         onOpenScopeDefinition={canReshape && !reshapeBlocked ? openReshape : undefined}

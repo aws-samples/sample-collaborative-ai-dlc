@@ -55,7 +55,7 @@ import {
   discoveryKey,
   discoveryPath,
   isPlatformIntent,
-  nativePreparationLabels,
+  nativeIntentStatusLabel,
   nativeIntentTitle,
   type DiscoveredIntent,
 } from '@/lib/intentDiscovery';
@@ -631,7 +631,8 @@ function IntentsView({
               {visibleIntents.map((item) => {
                 const it = item.intent;
                 const unsupported = item.backend === 'platform' && !isPlatformIntent(item.intent);
-                const Icon = INTENT_STATUS_ICON[it.status];
+                const Icon =
+                  item.backend === 'platform' ? INTENT_STATUS_ICON[it.status] : undefined;
                 // The row being purged: dimmed + spinner, navigation disabled while
                 // the (multi-store) cascade runs so it can't be clicked into a
                 // half-deleted intent.
@@ -688,7 +689,7 @@ function IntentsView({
                             : unsupported
                               ? 'Unsupported backend'
                               : item.backend === 'native'
-                                ? nativePreparationLabels[item.intent.status]
+                                ? nativeIntentStatusLabel(item.intent)
                                 : (INTENT_STATUS_LABEL[it.status] ?? it.status)}
                         </Badge>
                       </span>
@@ -726,26 +727,23 @@ function IntentsView({
                             )}
                           />
                         )}
-                        {canDeleteIntents && it.status !== 'RUNNING' && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100"
-                            aria-label="Delete intent"
-                            disabled={!canDeleteDiscoveredIntent(item)}
-                            title={
-                              item.backend === 'native'
-                                ? 'Deleting native intents is not available yet'
-                                : undefined
-                            }
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (canDeleteDiscoveredIntent(item)) setConfirmDeleteIntent(item);
-                            }}
-                          >
-                            <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                          </Button>
-                        )}
+                        {canDeleteIntents &&
+                          item.backend === 'platform' &&
+                          it.status !== 'RUNNING' && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 shrink-0 opacity-0 group-hover:opacity-100"
+                              aria-label="Delete intent"
+                              disabled={!canDeleteDiscoveredIntent(item)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (canDeleteDiscoveredIntent(item)) setConfirmDeleteIntent(item);
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5 text-destructive" />
+                            </Button>
+                          )}
                         <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
                       </>
                     )}

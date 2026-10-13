@@ -16,6 +16,7 @@ const cacheServiceMocks = vi.hoisted(() => ({
     Promise.reject(new Error('unexpected intents fetch')),
   ),
   listNative: vi.fn(),
+  getNative: vi.fn(),
 }));
 
 vi.mock('@/services/projects', () => ({
@@ -30,7 +31,7 @@ vi.mock('@/services/intents', () => ({
   intentsService: { list: cacheServiceMocks.listIntents },
 }));
 vi.mock('@/services/nativeIntents', () => ({
-  nativeIntentsService: { list: cacheServiceMocks.listNative },
+  nativeIntentsService: { list: cacheServiceMocks.listNative, get: cacheServiceMocks.getNative },
 }));
 
 // Only `status` matters to deriveActivity; keep fixtures minimal.
@@ -249,6 +250,7 @@ describe('useProjectsCache — native discovery stays outside persisted platform
     sessionStorage.clear();
     cacheServiceMocks.listIntents.mockResolvedValue([]);
     cacheServiceMocks.listNative.mockResolvedValue({ items: [], nextCursor: null });
+    cacheServiceMocks.getNative.mockImplementation(async () => ({ ...native, prompt: '' }));
   });
   const native = {
     id: 'n1',
@@ -283,6 +285,7 @@ describe('useProjectsCache — native discovery stays outside persisted platform
       resetSessionExpiry();
       const current = { ...native, title: 'Account B native title' };
       cacheServiceMocks.listNative.mockResolvedValue({ items: [current], nextCursor: null });
+      cacheServiceMocks.getNative.mockResolvedValue({ ...current, prompt: '' });
       await refreshNativeIntents('p1', 'refresh', true);
       expect(getNativeListing('p1').items[0].title).toBe(current.title);
       rejectOld(new ApiError(403, 'Account A denied'));

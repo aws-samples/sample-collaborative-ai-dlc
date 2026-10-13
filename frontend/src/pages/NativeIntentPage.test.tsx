@@ -188,14 +188,15 @@ it.each(denialCases)(
   },
 );
 
-it('prepares only on an explicit action and keeps all execution controls disabled', async () => {
+it('prepares only on an explicit action and shows only supported controls', async () => {
   prepare.mockResolvedValue({ ...draft, status: 'PREPARING' });
   const user = userEvent.setup();
   renderPage();
   await screen.findByRole('status');
   expect(prepare).not.toHaveBeenCalled();
-  for (const name of ['Start agent', 'Edit artifacts', 'Create unit PR']) {
-    expect(screen.getByRole('button', { name })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
+  for (const name of ['Edit artifacts', 'Create unit PR', 'Delete intent']) {
+    expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
   }
   await user.click(screen.getByRole('button', { name: 'Prepare workspace' }));
   expect(await screen.findByText('Preparing workspace')).toBeInTheDocument();
@@ -336,7 +337,6 @@ it.each(transientCases)(
 
     expect(screen.getByRole('heading', { name: draft.title })).toBeVisible();
     expect(screen.getByText(draft.prompt)).toBeVisible();
-    expect(screen.getByText(/awslabs\/aidlc-workflows/)).toBeVisible();
     expect(screen.getByRole('status')).toHaveTextContent('Preparing workspace');
     expect(screen.getByRole('button', { name: 'Retry preparation' })).toBeEnabled();
     expect(screen.getByRole('alert')).toBeVisible();

@@ -58,7 +58,7 @@ import {
   discoveryPath,
   isNativeIntentRoute,
   isPlatformIntent,
-  nativePreparationLabels,
+  nativeIntentStatusLabel,
   nativeIntentTitle,
 } from '@/lib/intentDiscovery';
 import { refreshNativeIntents } from '@/hooks/useNativeIntents';
@@ -564,7 +564,7 @@ export function AppSidebar() {
                         </Badge>
                       </span>
                       <span className="block text-muted-foreground">
-                        {nativePreparationLabels[item.status]}
+                        {nativeIntentStatusLabel(item)}
                       </span>
                       <span className="block text-muted-foreground">{project.name}</span>
                     </button>

@@ -54,7 +54,7 @@ import {
   refreshNativeIntents,
   type NativeListing,
 } from '@/hooks/useNativeIntents';
-import { discoveryPath, nativeIntentTitle, nativePreparationLabels } from '@/lib/intentDiscovery';
+import { discoveryPath, nativeIntentTitle, nativeIntentStatusLabel } from '@/lib/intentDiscovery';
 
 function formatRelativeTime(dateStr: string | null | undefined): string {
   if (!dateStr) return '—';
@@ -97,7 +97,7 @@ function NativeDiscovery({ projectId, listing }: { projectId: string; listing?: 
       {latest && (
         <button
           className="text-left"
-          aria-label={`Native ${nativeIntentTitle(latest)}: ${nativePreparationLabels[latest.status]}`}
+          aria-label={`Native ${nativeIntentTitle(latest)}: ${nativeIntentStatusLabel(latest)}`}
           onClick={() => navigate(discoveryPath(projectId, { backend: 'native', intent: latest }))}
         >
           <span className="flex items-center gap-1.5">
@@ -106,9 +106,7 @@ function NativeDiscovery({ projectId, listing }: { projectId: string; listing?: 
             </Badge>
             {nativeIntentTitle(latest)}
           </span>
-          <span className="block text-muted-foreground">
-            {nativePreparationLabels[latest.status]}
-          </span>
+          <span className="block text-muted-foreground">{nativeIntentStatusLabel(latest)}</span>
         </button>
       )}
       {(listing.items.length > 1 || listing.nextCursor) && (

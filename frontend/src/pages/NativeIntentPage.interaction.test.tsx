@@ -237,7 +237,7 @@ it('renders actual ordered text and composer tables without a fake artifact or v
   expect(screen.getByText(/one member sends it to continue this session/)).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
   for (const name of ['Edit artifacts', 'Create unit PR', 'Delete intent']) {
-    expect(screen.getByRole('button', { name })).toBeDisabled();
+    expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
   }
   expect(transport.post).not.toHaveBeenCalled();
 });
@@ -598,14 +598,9 @@ it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
     expect(screen.getByRole('textbox')).toHaveValue('poc');
     expect(screen.getByRole('textbox')).toHaveAttribute('readonly');
     expect(screen.getByRole('button', { name: 'Recover session' })).toBeEnabled();
-    for (const name of [
-      'Start agent',
-      'Send reply',
-      'Edit artifacts',
-      'Create unit PR',
-      'Delete intent',
-    ])
-      expect(screen.getByRole('button', { name })).toBeDisabled();
+    for (const name of ['Start agent', 'Edit artifacts', 'Create unit PR', 'Delete intent'])
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
     expect(transport.post).not.toHaveBeenCalled();
   },
 );
@@ -736,7 +731,7 @@ it.each([
     expect(screen.getByText('Session recovery required')).toBeInTheDocument();
     expect(screen.getByText('Your reply is saved.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
     expect(transport.post).not.toHaveBeenCalled();
   },
@@ -848,7 +843,7 @@ it.each([
     await verifiedText('Your reply is saved.');
     await act(async () => vi.advanceTimersByTimeAsync(18000));
     expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
     expect(screen.getByRole('textbox')).toHaveValue('poc');
     expect(screen.getByRole('textbox')).toHaveAttribute('readonly');

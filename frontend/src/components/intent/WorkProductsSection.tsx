@@ -5,7 +5,7 @@ import { useIntentGraph } from '@/hooks/useIntentGraph';
 import { buildCodeItems, buildUnitBranchItems } from '@/components/intent/CodeSection';
 import { ProvenanceTree } from '@/components/intent/ProvenanceTree';
 import { HistorySection } from '@/components/intent/HistorySection';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { WorkProductsCard } from './WorkProductsCard';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { isDocumentArtifact } from '@/components/intent/documentHelpers';
@@ -60,91 +60,89 @@ export function WorkProductsSection({ detail, gates }: WorkProductsSectionProps)
   }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-sm">Work products</CardTitle>
-          <div className="flex items-center gap-1">
-            {documentCount > 1 && (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7"
-                      aria-label={
-                        newestFirst
-                          ? 'Sort work products by oldest first'
-                          : 'Sort work products by newest first'
-                      }
-                      onClick={() => {
-                        const nextOrder = newestFirst ? 'oldest-first' : 'newest-first';
-                        setDocumentOrderState(nextOrder);
-                        setDocumentOrder(nextOrder);
-                      }}
-                    >
-                      <ArrowDownUp className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {newestFirst
-                      ? 'Show oldest work products first'
-                      : 'Show newest work products first'}
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            )}
-          </div>
-        </div>
-        {detail.intent.planWarnings &&
-          detail.intent.planWarnings.length > 0 &&
-          detail.intent.status !== 'SUCCEEDED' && (
-            <details className="mt-2 rounded border border-sky-500/20 bg-sky-500/5 px-3 py-2 text-sm">
-              <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium text-sky-700 dark:text-sky-300">
-                <Info className="h-4 w-4 shrink-0" />
-                Some stages are intentionally excluded from this scope ({detail.intent.scope}) and
-                their artifacts won't be generated
-              </summary>
-              <ul className="mt-2 space-y-1 pl-6 text-[12px] text-muted-foreground">
-                {detail.intent.planWarnings.map((w, i) => (
-                  <li key={`${w.code}-${i}`} className="list-disc">
-                    {w.message}
-                  </li>
-                ))}
-              </ul>
-            </details>
+    <WorkProductsCard
+      actions={
+        <div className="flex items-center gap-1">
+          {documentCount > 1 && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    aria-label={
+                      newestFirst
+                        ? 'Sort work products by oldest first'
+                        : 'Sort work products by newest first'
+                    }
+                    onClick={() => {
+                      const nextOrder = newestFirst ? 'oldest-first' : 'newest-first';
+                      setDocumentOrderState(nextOrder);
+                      setDocumentOrder(nextOrder);
+                    }}
+                  >
+                    <ArrowDownUp className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {newestFirst
+                    ? 'Show oldest work products first'
+                    : 'Show newest work products first'}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {detail.artifacts.length > 0 || codeItems.length > 0 ? (
-          <ProvenanceTree
-            detail={detail}
-            stageRows={stageRows}
-            phaseNameOf={phaseNameOf}
-            getNeighbors={getNeighbors}
-            itemsByArtifact={itemsByArtifact}
-            derivedItems={derivedItems}
-            codeItems={codeItems}
-            unitBranchItems={unitBranchItems}
-            openArtifactPreview={openArtifactPreview}
-            openItemPreview={openItemPreview}
-            documentOrder={documentOrder}
-          />
-        ) : (
-          <p className="py-4 text-center text-sm text-muted-foreground">
-            No work products yet — documents, items and code will appear here as the run progresses.
-          </p>
-        )}
+        </div>
+      }
+      description={
+        detail.intent.planWarnings &&
+        detail.intent.planWarnings.length > 0 &&
+        detail.intent.status !== 'SUCCEEDED' && (
+          <details className="mt-2 rounded border border-sky-500/20 bg-sky-500/5 px-3 py-2 text-sm">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 font-medium text-sky-700 dark:text-sky-300">
+              <Info className="h-4 w-4 shrink-0" />
+              Some stages are intentionally excluded from this scope ({detail.intent.scope}) and
+              their artifacts won't be generated
+            </summary>
+            <ul className="mt-2 space-y-1 pl-6 text-[12px] text-muted-foreground">
+              {detail.intent.planWarnings.map((w, i) => (
+                <li key={`${w.code}-${i}`} className="list-disc">
+                  {w.message}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )
+      }
+    >
+      {detail.artifacts.length > 0 || codeItems.length > 0 ? (
+        <ProvenanceTree
+          detail={detail}
+          stageRows={stageRows}
+          phaseNameOf={phaseNameOf}
+          getNeighbors={getNeighbors}
+          itemsByArtifact={itemsByArtifact}
+          derivedItems={derivedItems}
+          codeItems={codeItems}
+          unitBranchItems={unitBranchItems}
+          openArtifactPreview={openArtifactPreview}
+          openItemPreview={openItemPreview}
+          documentOrder={documentOrder}
+        />
+      ) : (
+        <p className="py-4 text-center text-sm text-muted-foreground">
+          No work products yet — documents, items and code will appear here as the run progresses.
+        </p>
+      )}
 
-        {(questionGates.length > 0 || steering.length > 0) && (
-          <HistorySection
-            questionGates={questionGates}
-            steering={steering}
-            influencedArtifactsByQuestion={influencedArtifactsByQuestion}
-          />
-        )}
-      </CardContent>
-    </Card>
+      {(questionGates.length > 0 || steering.length > 0) && (
+        <HistorySection
+          questionGates={questionGates}
+          steering={steering}
+          influencedArtifactsByQuestion={influencedArtifactsByQuestion}
+        />
+      )}
+    </WorkProductsCard>
   );
 }

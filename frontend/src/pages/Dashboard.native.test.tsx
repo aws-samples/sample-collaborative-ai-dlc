@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import type { NativeListing } from '@/hooks/useNativeIntents';
+import type { NativeDiscoveredIntent } from '@/lib/intentDiscovery';
 const state = vi.hoisted(() => ({
   projects: [] as unknown[],
   deleteProject: vi.fn(),
@@ -57,7 +58,7 @@ const native = {
     },
   ],
 };
-const project = (listing = native) => ({
+const project = (listing: NativeListing = native) => ({
   project: {
     id: 'p1',
     name: 'Space One',
@@ -108,6 +109,51 @@ it.each(['Grid view', 'List view'])(
     expect(screen.queryByText('Space route')).not.toBeInTheDocument();
   },
 );
+it.each([
+  ['DISPATCHING', 'Continuing agent'],
+  ['RUNNING', 'Agent running'],
+  ['WAITING_FOR_INPUT', 'Waiting for input'],
+  ['AWAITING_USER', 'Awaiting your reply'],
+  ['RECOVERY_REQUIRED', 'Session recovery required'],
+  ['RECOVERING', 'Restoring session'],
+  ['STOPPED', 'Agent stopped'],
+  ['FAILED', 'Execution failed'],
+  ['CANCELLED', 'Execution cancelled'],
+] as const)(
+  'keeps execution %s distinct in dashboard previews and navigation',
+  async (status, label) => {
+    const execution: NativeDiscoveredIntent['execution'] = {
+      status,
+      responsePending: status === 'DISPATCHING',
+      revision: 1,
+      updatedAt: '2026-09-29T08:01:00Z',
+    };
+    state.projects = [project({ ...native, items: [{ ...native.items[0], execution }] })];
+    renderPage();
+    for (const view of ['Grid view', 'List view']) {
+      await userEvent.click(screen.getByRole('button', { name: view }));
+      expect(
+        screen.getByRole('button', { name: `Native Native workspace: ${label}` }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText('Workspace ready')).not.toBeInTheDocument();
+    }
+    await userEvent.click(
+      screen.getByRole('button', { name: `Native Native workspace: ${label}` }),
+    );
+    expect(screen.getByText('Native status route')).toBeInTheDocument();
+  },
+);
+it.each([
+  ['DRAFT', 'Draft'],
+  ['PREPARING', 'Preparing workspace'],
+  ['FAILED', 'Preparation failed'],
+] as const)('keeps preparation %s distinct in dashboard previews', (status, label) => {
+  state.projects = [project({ ...native, items: [{ ...native.items[0], status }] })];
+  renderPage();
+  expect(
+    screen.getByRole('button', { name: `Native Native workspace: ${label}` }),
+  ).toBeInTheDocument();
+});
 it('shows a visible partial error with a native retry', async () => {
   state.projects = [project({ ...native, error: 'Native listing unavailable' })];
   renderPage();

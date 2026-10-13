@@ -33,10 +33,10 @@ import {
   discoveryPath,
   isNativeIntentRoute,
   isPlatformIntent,
-  nativePreparationLabels,
+  nativeIntentStatusLabel,
+  type NativeDiscoveredIntent,
   nativeIntentTitle,
 } from '@/lib/intentDiscovery';
-import type { NativeIntentSummary } from '@/services/nativeIntents';
 
 interface AppHeaderProps {
   onToggleSidebar: () => void;
@@ -254,7 +254,7 @@ function buildBreadcrumbs(
   project: Project | null,
   sprint: Sprint | null,
   intentTitle: string | null,
-  nativeIntent: NativeIntentSummary | null,
+  nativeIntent: NativeDiscoveredIntent | null,
 ): Breadcrumb[] {
   // Admin panel - just "Platform Admin"
   if (pathname === '/admin') {
@@ -302,7 +302,7 @@ function buildBreadcrumbs(
           : `/space/${encodeURIComponent(params.projectId)}/native-intent/${encodeURIComponent(params.intentId)}`,
       });
       crumbs.push({
-        label: nativeIntent ? nativePreparationLabels[nativeIntent.status] : 'Preparation status',
+        label: nativeIntent ? nativeIntentStatusLabel(nativeIntent) : 'Status',
       });
     } else {
       crumbs.push({ label: 'New native intent' });

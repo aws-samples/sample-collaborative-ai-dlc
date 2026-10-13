@@ -5,7 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router';
 import { ApiError } from '@/services/api';
 import { clearNativeIntents } from '@/hooks/useNativeIntents';
 import { resetSessionExpiry } from '@/services/sessionExpiry';
-import type { NativeIntentSummary } from '@/services/nativeIntents';
+import type { NativeExecution, NativeIntentSummary } from '@/services/nativeIntents';
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -84,7 +84,10 @@ beforeEach(() => {
   sessionStorage.clear();
   mocks.list.mockResolvedValue([platform]);
   mocks.nativeList.mockResolvedValue({ items: [summary()], nextCursor: null });
-  mocks.nativeGet.mockResolvedValue({ ...summary(), prompt: 'Protected native prompt' });
+  mocks.nativeGet.mockImplementation(async (_projectId, id) => ({
+    ...summary(id),
+    prompt: 'Protected native prompt',
+  }));
 });
 
 describe('Space native discovery', () => {
@@ -92,6 +95,11 @@ describe('Space native discovery', () => {
     mocks.nativeList.mockResolvedValueOnce({
       items: [{ ...summary(), title: '' }],
       nextCursor: null,
+    });
+    mocks.nativeGet.mockResolvedValue({
+      ...summary(),
+      title: '',
+      prompt: 'Protected native prompt',
     });
     renderPage();
     const row = await screen.findByRole('button', {
@@ -117,29 +125,76 @@ describe('Space native discovery', () => {
     const row = await screen.findByRole('button', { name: /Native same Native Workspace ready/ });
     expect(screen.getByText('Platform same')).toBeInTheDocument();
     expect(within(row).queryByText(/stage:/)).not.toBeInTheDocument();
-    expect(within(row).getByRole('button', { name: 'Delete intent' })).toBeDisabled();
+    expect(within(row).queryByRole('button', { name: 'Delete intent' })).not.toBeInTheDocument();
     await userEvent.click(row);
     expect(await screen.findByText('Protected native prompt')).toBeInTheDocument();
     expect(mocks.nativeGet).toHaveBeenCalledWith('p1', 'same');
     expect(screen.queryByText('Platform detail route')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
     // Answers and approvals appear only as the real structured question for a turn.
     expect(screen.queryByRole('button', { name: 'Answer question' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Edit artifacts' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Create unit PR' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Delete intent' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Edit artifacts' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Create unit PR' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete intent' })).not.toBeInTheDocument();
     expect(screen.queryByText('Done')).not.toBeInTheDocument();
   });
   it('preserves platform routing and native delete cannot invoke the platform handler', async () => {
     renderPage();
     const row = await screen.findByRole('button', { name: /Native same Native Workspace ready/ });
-    fireEvent.click(within(row).getByRole('button', { name: 'Delete intent' }));
+    expect(within(row).queryByRole('button', { name: 'Delete intent' })).not.toBeInTheDocument();
     expect(mocks.deleteIntent).not.toHaveBeenCalled();
     expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: /Platform same/ }));
     expect(screen.getByText('Platform detail route')).toBeInTheDocument();
   });
+  it.each([
+    ['DISPATCHING', 'Continuing agent'],
+    ['RUNNING', 'Agent running'],
+    ['WAITING_FOR_INPUT', 'Waiting for input'],
+    ['AWAITING_USER', 'Awaiting your reply'],
+    ['RECOVERY_REQUIRED', 'Session recovery required'],
+    ['RECOVERING', 'Restoring session'],
+    ['STOPPED', 'Agent stopped'],
+    ['FAILED', 'Execution failed'],
+    ['CANCELLED', 'Execution cancelled'],
+  ] as const)(
+    'shows protected execution %s instead of preparation readiness',
+    async (status, label) => {
+      const execution: NativeExecution = {
+        status,
+        responsePending: status === 'DISPATCHING',
+        attemptId: 'attempt-1',
+        epoch: 0,
+        startedAt: '2026-09-29T08:00:00Z',
+        updatedAt: '2026-09-29T08:01:00Z',
+        model: null,
+        repository: { provider: 'github', repository: 'owner/repo', branch: null, commit: null },
+        publicationId: null,
+        projectionStatus: null,
+      };
+      mocks.nativeGet.mockResolvedValue({ ...summary(), prompt: 'Task', execution });
+      renderPage();
+      const row = await screen.findByRole('button', {
+        name: new RegExp(`Native same Native ${label}`),
+      });
+      expect(within(row).queryByText('Workspace ready')).not.toBeInTheDocument();
+      expect(within(row).queryByText('Done')).not.toBeInTheDocument();
+      expect(within(row).queryByRole('button', { name: 'Delete intent' })).not.toBeInTheDocument();
+    },
+  );
+  it.each([
+    ['DRAFT', 'Draft'],
+    ['PREPARING', 'Preparing workspace'],
+    ['FAILED', 'Preparation failed'],
+  ] as const)(
+    'keeps preparation status %s distinct without a detail read',
+    async (status, label) => {
+      mocks.nativeList.mockResolvedValue({ items: [{ ...summary(), status }], nextCursor: null });
+      renderPage();
+      await screen.findByRole('button', { name: new RegExp(`Native same Native ${label}`) });
+      expect(mocks.nativeGet).not.toHaveBeenCalled();
+    },
+  );
   it('does not promote an agent-writable platform backend flag into a protected native entry', async () => {
     mocks.list.mockResolvedValue([{ ...platform, executionBackend: 'native' }]);
     mocks.nativeList.mockResolvedValue({ items: [], nextCursor: null });

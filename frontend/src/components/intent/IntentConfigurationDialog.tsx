@@ -1,3 +1,7 @@
+import type { ReactNode } from 'react';
+import type { NativeIntent } from '@/services/nativeIntents';
+import { harnesses } from '@/contexts/adapters/nativeIntent';
+import { nativeIntentStatusLabel } from '@/lib/intentDiscovery';
 import {
   Boxes,
   Check,
@@ -106,167 +110,178 @@ export function IntentConfigurationDialog({
   const failed = intent.status === 'FAILED';
 
   return (
+    <ConfigurationDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      description="Configuration captured when this intent started."
+    >
+      <div className="divide-y">
+        {intent.source && (
+          <section className="px-6 py-4" aria-label="Source">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 text-sm font-semibold">
+                  {sourceProvider?.icon({ className: 'h-4 w-4 shrink-0' })}
+                  <span>Source: {sourceLabel}</span>
+                </p>
+                <p className="mt-1 truncate text-xs text-muted-foreground">
+                  {intent.title || sourceProvider?.displayName || intent.source.provider}
+                </p>
+              </div>
+              {intent.source.resourceUrl && (
+                <Button variant="outline" size="sm" className="shrink-0 gap-1.5" asChild>
+                  <a href={intent.source.resourceUrl} target="_blank" rel="noopener noreferrer">
+                    Open
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                </Button>
+              )}
+            </div>
+          </section>
+        )}
+
+        <section className="space-y-4 px-6 py-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                <Workflow className="h-4 w-4" />
+                Execution
+              </h3>
+            </div>
+            <Badge
+              variant="outline"
+              className={cn(
+                'shrink-0 gap-1.5 text-[10px]',
+                waiting && 'border-agent-waiting/30 bg-agent-waiting/10 text-agent-waiting',
+                running && 'border-agent-running/30 bg-agent-running/10 text-agent-running',
+                succeeded && 'border-agent-success/30 bg-agent-success/10 text-agent-success',
+                failed && 'border-destructive/30 bg-destructive/10 text-destructive',
+              )}
+            >
+              {waiting && <CirclePause className="h-3 w-3" />}
+              {running && <LoaderCircle className="h-3 w-3 animate-spin" />}
+              {succeeded && <Check className="h-3 w-3" />}
+              {failed && <XCircle className="h-3 w-3" />}
+              {intent.status}
+            </Badge>
+          </div>
+          <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+            <Definition label="Scope" value={intent.scope ?? 'Default'} />
+            <div className="min-w-0 space-y-1">
+              <dt className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Selected stages
+              </dt>
+              <dd className="flex items-center gap-2">
+                <span className="text-sm font-medium">
+                  {selection
+                    ? `${selection.selected.length} of ${selection.available.length}`
+                    : 'Unavailable'}
+                </span>
+                {onOpenReshape && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 gap-1.5 px-2.5 text-xs"
+                    disabled={Boolean(reshapeBlocked)}
+                    title={reshapeBlocked ?? undefined}
+                    onClick={() => {
+                      if (reshapeBlocked) return;
+                      onOpenChange(false);
+                      onOpenReshape();
+                    }}
+                  >
+                    <GitBranch className="h-3.5 w-3.5" />
+                    Reshape
+                  </Button>
+                )}
+              </dd>
+            </div>
+            <Definition
+              label="Agent"
+              value={intent.agentCli ? AGENT_CLI_METADATA[intent.agentCli].label : 'Default'}
+              secondaryValue={intentModel ?? 'CLI default'}
+            />
+            <Definition
+              label="Credentials"
+              value={
+                intent.credentialConnection
+                  ? `${intent.credentialConnection.backend} · ${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialConnection.source]} · ${intent.credentialConnection.mechanism}`
+                  : intent.credentialSource
+                    ? `${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
+                    : 'Selected at next start'
+              }
+              secondaryValue={
+                intent.credentialConnection
+                  ? `Pinned for this intent${intent.credentialConnection.policyRevision !== null ? ` at policy revision ${intent.credentialConnection.policyRevision}` : ' using the legacy key reference'}. Platform changes apply to new work.`
+                  : undefined
+              }
+            />
+          </dl>
+        </section>
+
+        <section className="space-y-4 px-6 py-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="flex items-center gap-1.5 text-sm font-semibold">
+                <Boxes className="h-4 w-4" />
+                Environment
+              </h3>
+            </div>
+            {environment && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  'shrink-0 gap-1.5 font-mono text-[10px]',
+                  verification === 'PASSED' &&
+                    'border-agent-success/30 bg-agent-success/10 text-agent-success',
+                )}
+              >
+                {verification === 'PASSED' && <Check className="h-3 w-3" />}
+                {verification}
+              </Badge>
+            )}
+          </div>
+
+          {environment ? (
+            <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+              <Definition label="Name" value={environment.name} />
+              <Definition label="Revision" value={environment.revisionId} code />
+              <Definition
+                label="Image"
+                value={environment.imageDigest ?? 'Unavailable'}
+                code
+                wide
+              />
+              <Definition label="Endpoint" value={environment.runtimeEndpoint ?? 'Default'} code />
+              <Definition label="Runtime" value={environment.runtimeVersion ?? 'Legacy'} code />
+              <Definition label="Compatibility" value={environment.compatibilityVersion} code />
+            </dl>
+          ) : (
+            <p className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
+              No environment snapshot was captured for this run.
+            </p>
+          )}
+        </section>
+      </div>
+    </ConfigurationDialog>
+  );
+}
+
+function ConfigurationDialog({
+  open,
+  onOpenChange,
+  description,
+  children,
+}: IntentConfigurationDialogProps & { description: string; children: ReactNode }) {
+  return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] gap-0 overflow-y-auto p-0 sm:max-w-2xl">
         <DialogHeader className="border-b px-6 py-5">
           <DialogTitle>Intent configuration</DialogTitle>
-          <DialogDescription>Configuration captured when this intent started.</DialogDescription>
+          <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
-
-        <div className="divide-y">
-          {intent.source && (
-            <section className="px-6 py-4" aria-label="Source">
-              <div className="flex items-center justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="flex items-center gap-2 text-sm font-semibold">
-                    {sourceProvider?.icon({ className: 'h-4 w-4 shrink-0' })}
-                    <span>Source: {sourceLabel}</span>
-                  </p>
-                  <p className="mt-1 truncate text-xs text-muted-foreground">
-                    {intent.title || sourceProvider?.displayName || intent.source.provider}
-                  </p>
-                </div>
-                {intent.source.resourceUrl && (
-                  <Button variant="outline" size="sm" className="shrink-0 gap-1.5" asChild>
-                    <a href={intent.source.resourceUrl} target="_blank" rel="noopener noreferrer">
-                      Open
-                      <ExternalLink className="h-3.5 w-3.5" />
-                    </a>
-                  </Button>
-                )}
-              </div>
-            </section>
-          )}
-
-          <section className="space-y-4 px-6 py-5">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-                  <Workflow className="h-4 w-4" />
-                  Execution
-                </h3>
-              </div>
-              <Badge
-                variant="outline"
-                className={cn(
-                  'shrink-0 gap-1.5 text-[10px]',
-                  waiting && 'border-agent-waiting/30 bg-agent-waiting/10 text-agent-waiting',
-                  running && 'border-agent-running/30 bg-agent-running/10 text-agent-running',
-                  succeeded && 'border-agent-success/30 bg-agent-success/10 text-agent-success',
-                  failed && 'border-destructive/30 bg-destructive/10 text-destructive',
-                )}
-              >
-                {waiting && <CirclePause className="h-3 w-3" />}
-                {running && <LoaderCircle className="h-3 w-3 animate-spin" />}
-                {succeeded && <Check className="h-3 w-3" />}
-                {failed && <XCircle className="h-3 w-3" />}
-                {intent.status}
-              </Badge>
-            </div>
-            <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-              <Definition label="Scope" value={intent.scope ?? 'Default'} />
-              <div className="min-w-0 space-y-1">
-                <dt className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  Selected stages
-                </dt>
-                <dd className="flex items-center gap-2">
-                  <span className="text-sm font-medium">
-                    {selection
-                      ? `${selection.selected.length} of ${selection.available.length}`
-                      : 'Unavailable'}
-                  </span>
-                  {onOpenReshape && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7 gap-1.5 px-2.5 text-xs"
-                      disabled={Boolean(reshapeBlocked)}
-                      title={reshapeBlocked ?? undefined}
-                      onClick={() => {
-                        if (reshapeBlocked) return;
-                        onOpenChange(false);
-                        onOpenReshape();
-                      }}
-                    >
-                      <GitBranch className="h-3.5 w-3.5" />
-                      Reshape
-                    </Button>
-                  )}
-                </dd>
-              </div>
-              <Definition
-                label="Agent"
-                value={intent.agentCli ? AGENT_CLI_METADATA[intent.agentCli].label : 'Default'}
-                secondaryValue={intentModel ?? 'CLI default'}
-              />
-              <Definition
-                label="Credentials"
-                value={
-                  intent.credentialConnection
-                    ? `${intent.credentialConnection.backend} · ${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialConnection.source]} · ${intent.credentialConnection.mechanism}`
-                    : intent.credentialSource
-                      ? `${AGENT_CREDENTIAL_SOURCE_LABELS[intent.credentialSource]} key`
-                      : 'Selected at next start'
-                }
-                secondaryValue={
-                  intent.credentialConnection
-                    ? `Pinned for this intent${intent.credentialConnection.policyRevision !== null ? ` at policy revision ${intent.credentialConnection.policyRevision}` : ' using the legacy key reference'}. Platform changes apply to new work.`
-                    : undefined
-                }
-              />
-            </dl>
-          </section>
-
-          <section className="space-y-4 px-6 py-5">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-                  <Boxes className="h-4 w-4" />
-                  Environment
-                </h3>
-              </div>
-              {environment && (
-                <Badge
-                  variant="outline"
-                  className={cn(
-                    'shrink-0 gap-1.5 font-mono text-[10px]',
-                    verification === 'PASSED' &&
-                      'border-agent-success/30 bg-agent-success/10 text-agent-success',
-                  )}
-                >
-                  {verification === 'PASSED' && <Check className="h-3 w-3" />}
-                  {verification}
-                </Badge>
-              )}
-            </div>
-
-            {environment ? (
-              <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-                <Definition label="Name" value={environment.name} />
-                <Definition label="Revision" value={environment.revisionId} code />
-                <Definition
-                  label="Image"
-                  value={environment.imageDigest ?? 'Unavailable'}
-                  code
-                  wide
-                />
-                <Definition
-                  label="Endpoint"
-                  value={environment.runtimeEndpoint ?? 'Default'}
-                  code
-                />
-                <Definition label="Runtime" value={environment.runtimeVersion ?? 'Legacy'} code />
-                <Definition label="Compatibility" value={environment.compatibilityVersion} code />
-              </dl>
-            ) : (
-              <p className="rounded-md border border-dashed px-3 py-4 text-sm text-muted-foreground">
-                No environment snapshot was captured for this run.
-              </p>
-            )}
-          </section>
-        </div>
-
+        {children}
         <DialogFooter className="border-t px-6 py-4">
           <DialogClose asChild>
             <Button variant="outline">Close</Button>
@@ -274,5 +289,62 @@ export function IntentConfigurationDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+export function NativeIntentConfigurationDialog({
+  intent,
+  open,
+  onOpenChange,
+}: IntentConfigurationDialogProps & { intent: NativeIntent }) {
+  const execution = intent.execution;
+  return (
+    <ConfigurationDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      description={
+        execution
+          ? 'This execution uses the saved prompt and configuration pinned at Start.'
+          : 'Review the selected package and harness. Execution configuration is pinned at Start.'
+      }
+    >
+      <div className="divide-y">
+        <section className="space-y-4 px-6 py-5" aria-label="Execution configuration">
+          <h3 className="text-sm font-semibold">Execution</h3>
+          <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+            <Definition label="Backend" value="Native" />
+            <Definition label="Status" value={nativeIntentStatusLabel(intent)} />
+            <Definition label="Agent" value={harnesses[intent.harness]} />
+            {execution && <Definition label="Model" value={execution.model ?? 'CLI default'} />}
+            {execution && (
+              <Definition label="Started" value={new Date(execution.startedAt).toLocaleString()} />
+            )}
+          </dl>
+        </section>
+        <section className="space-y-4 px-6 py-5" aria-label="Methodology package">
+          <h3 className="text-sm font-semibold">Methodology package</h3>
+          <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+            <Definition label="Source" value={intent.package.source.repository} wide />
+            <Definition label="Release" value={intent.package.source.release} />
+            <Definition label="Package version" value={intent.package.version} />
+          </dl>
+        </section>
+        {execution?.repository.repository && (
+          <section className="space-y-4 px-6 py-5" aria-label="Application repository">
+            <h3 className="text-sm font-semibold">Application repository</h3>
+            <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+              <Definition label="Provider" value={execution.repository.provider} />
+              <Definition label="Repository" value={execution.repository.repository} />
+              {execution.repository.branch && (
+                <Definition label="Branch" value={execution.repository.branch} />
+              )}
+              {execution.repository.commit && (
+                <Definition label="Commit" value={execution.repository.commit} code wide />
+              )}
+            </dl>
+          </section>
+        )}
+      </div>
+    </ConfigurationDialog>
   );
 }

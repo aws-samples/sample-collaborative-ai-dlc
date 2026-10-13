@@ -3,15 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/services/api';
 import { clearPersistedCache } from '@/lib/persistentCache';
 import { resetSessionExpiry } from '@/services/sessionExpiry';
-import type { NativeIntentSummary } from '@/services/nativeIntents';
-const { list } = vi.hoisted(() => ({ list: vi.fn() }));
-vi.mock('@/services/nativeIntents', () => ({ nativeIntentsService: { list } }));
+import type { NativeExecution, NativeIntent, NativeIntentSummary } from '@/services/nativeIntents';
+const { list, get } = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn() }));
+vi.mock('@/services/nativeIntents', () => ({ nativeIntentsService: { list, get } }));
 import {
   clearNativeIntents,
   getNativeListing,
   MAX_NATIVE_PAGES,
   nativeProjectDeleteReason,
   refreshNativeIntents,
+  updateNativeIntentSummary,
   useNativeIntents,
 } from './useNativeIntents';
 
@@ -43,9 +44,172 @@ beforeEach(() => {
   clearNativeIntents();
   vi.resetAllMocks();
   sessionStorage.clear();
+  get.mockImplementation(async (projectId, id) => ({
+    ...item(id, projectId),
+    prompt: 'Private prompt',
+  }));
 });
 
 describe('shared native discovery cache', () => {
+  const execution = (status: NativeExecution['status'], revision = 1): NativeExecution => ({
+    status,
+    revision,
+    attemptId: 'attempt-1',
+    epoch: 0,
+    startedAt: '2026-09-29T08:00:00Z',
+    updatedAt: '2026-09-29T08:01:00Z',
+    model: 'private model configuration',
+    repository: { provider: 'github', repository: 'owner/private', branch: 'work', commit: null },
+    publicationId: null,
+    projectionStatus: null,
+  });
+  it('hydrates READY execution without retaining prompt, repository or reply authority', async () => {
+    const detail = {
+      ...item('running'),
+      prompt: 'Private prompt',
+      execution: execution('RUNNING'),
+    };
+    list.mockResolvedValueOnce({
+      items: [
+        item('running'),
+        { ...item('draft'), status: 'DRAFT' },
+        { ...item('preparing'), status: 'PREPARING' },
+        { ...item('failed'), status: 'FAILED' },
+      ],
+      nextCursor: null,
+    });
+    get.mockResolvedValueOnce(detail);
+    await refreshNativeIntents('p1');
+    expect(get).toHaveBeenCalledExactlyOnceWith('p1', 'running');
+    expect(getNativeListing('p1').items[0]).toEqual({
+      ...item('running'),
+      updatedAt: detail.execution.updatedAt,
+      execution: { status: 'RUNNING', revision: 1, updatedAt: detail.execution.updatedAt },
+    });
+    expect(sessionStorage.length).toBe(0);
+  });
+  it('bounds detail reads to four concurrent requests and stops new reads after revocation', async () => {
+    list.mockResolvedValueOnce({
+      items: Array.from({ length: 7 }, (_, index) => item(String(index))),
+      nextCursor: null,
+    });
+    const pending = deferred<NativeIntent>();
+    get.mockReturnValue(pending.promise);
+    const work = refreshNativeIntents('p1');
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(4));
+    clearNativeIntents('p1', true);
+    pending.resolve({ ...item('late'), prompt: 'Private prompt' });
+    await work;
+    expect(get).toHaveBeenCalledTimes(4);
+    expect(getNativeListing('p1')).toMatchObject({ items: [], denied: true });
+  });
+  it('preserves a newer accepted workspace status when older hydration settles or fails', async () => {
+    list.mockResolvedValue(page('same'));
+    get.mockResolvedValueOnce({ ...item('same'), prompt: '', execution: execution('RUNNING', 1) });
+    await refreshNativeIntents('p1');
+    const pending = deferred<NativeIntent>();
+    get.mockReturnValueOnce(pending.promise);
+    const refresh = refreshNativeIntents('p1', 'refresh', true);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    const current = { ...item('same'), prompt: '', execution: execution('AWAITING_USER', 3) };
+    updateNativeIntentSummary(current);
+    pending.resolve({ ...current, execution: execution('RUNNING', 2) });
+    await refresh;
+    expect(getNativeListing('p1').items[0].execution?.status).toBe('AWAITING_USER');
+    const failed = deferred<NativeIntent>();
+    get.mockReturnValueOnce(failed.promise);
+    const failedRefresh = refreshNativeIntents('p1', 'refresh', true);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(3));
+    updateNativeIntentSummary({ ...current, execution: execution('CANCELLED', 4) });
+    failed.reject(new Error('Unavailable'));
+    await failedRefresh;
+    expect(getNativeListing('p1').items[0].execution?.status).toBe('CANCELLED');
+    expect(getNativeListing('p1').error).toMatch(/may be outdated/);
+  });
+  it('does not replace admitted execution with a late preparation-only response', async () => {
+    list.mockResolvedValue(page('same'));
+    await refreshNativeIntents('p1');
+    const pending = deferred<NativeIntent>();
+    get.mockReturnValueOnce(pending.promise);
+    const refresh = refreshNativeIntents('p1', 'refresh', true);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
+    updateNativeIntentSummary({ ...item('same'), prompt: '', execution: execution('DISPATCHING') });
+    pending.resolve({ ...item('same'), prompt: '' });
+    await refresh;
+    expect(getNativeListing('p1').items[0].execution?.status).toBe('DISPATCHING');
+  });
+  it('does not hide a late protected denial behind an earlier transient hydration failure', async () => {
+    list.mockResolvedValue({ items: [item('first'), item('second')], nextCursor: null });
+    await refreshNativeIntents('p1');
+    const first = deferred<NativeIntent>();
+    const second = deferred<NativeIntent>();
+    get.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const refresh = refreshNativeIntents('p1', 'refresh', true);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(4));
+    first.reject(new Error('Temporary service failure'));
+    await Promise.resolve();
+    expect(getNativeListing('p1').loading).toBe(true);
+    second.reject(new ApiError(403, 'Membership revoked'));
+    await refresh;
+    expect(getNativeListing('p1')).toMatchObject({ items: [], denied: true });
+  });
+  it('ignores a prior-account hydration denial after the new account has loaded', async () => {
+    list.mockResolvedValue(page('same'));
+    const pending = deferred<NativeIntent>();
+    get.mockReturnValueOnce(pending.promise);
+    const oldRefresh = refreshNativeIntents('p1');
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+    resetSessionExpiry();
+    get.mockResolvedValueOnce({
+      ...item('same'),
+      title: 'New account title',
+      prompt: '',
+      execution: execution('RUNNING'),
+    });
+    await refreshNativeIntents('p1');
+    pending.reject(new ApiError(403, 'Previous account denied'));
+    await oldRefresh;
+    expect(getNativeListing('p1')).toMatchObject({
+      items: [{ title: 'New account title', execution: { status: 'RUNNING' } }],
+      denied: false,
+    });
+  });
+  it.each([401, 403, 404])(
+    'clears titles when a detail hydration read is denied with %s',
+    async (status) => {
+      list.mockResolvedValue(page('same'));
+      await refreshNativeIntents('p1');
+      get.mockRejectedValueOnce(new ApiError(status, 'denied'));
+      await refreshNativeIntents('p1', 'refresh', true);
+      expect(getNativeListing('p1')).toMatchObject({ items: [], denied: true });
+      updateNativeIntentSummary({ ...item('same'), prompt: '' });
+      expect(getNativeListing('p1').items).toEqual([]);
+    },
+  );
+  it('keeps a first hydration failure visible instead of claiming workspace readiness', async () => {
+    list.mockResolvedValue(page('same'));
+    get.mockRejectedValueOnce(new Error('Execution status unavailable'));
+    await refreshNativeIntents('p1');
+    expect(getNativeListing('p1')).toMatchObject({ items: [], loaded: false, loading: false });
+    expect(getNativeListing('p1').error).toMatch(/could not be refreshed/);
+    list.mockRejectedValueOnce(
+      new ApiError(503, 'disabled', { code: 'NATIVE_PREPARATION_DISABLED' }),
+    );
+    await refreshNativeIntents('p1', 'refresh', true);
+    expect(getNativeListing('p1').disabled).toBe(true);
+    expect(nativeProjectDeleteReason(getNativeListing('p1'))).toMatch(/native intents/);
+  });
+  it('rejects hydration that returns after an account reset', async () => {
+    list.mockResolvedValue(page('same'));
+    const pending = deferred<NativeIntent>();
+    get.mockReturnValueOnce(pending.promise);
+    const refresh = refreshNativeIntents('p1');
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+    resetSessionExpiry();
+    pending.resolve({ ...item('same'), prompt: '', execution: execution('RUNNING') });
+    await refresh;
+    expect(getNativeListing('p1').items).toEqual([]);
+  });
   it.each([
     [503, 'DISABLED'],
     [403, 'PROJECT_DISABLED'],

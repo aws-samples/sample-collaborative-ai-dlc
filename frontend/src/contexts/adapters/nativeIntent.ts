@@ -11,6 +11,7 @@ import {
 } from '@/services/nativeIntents';
 import {
   clearNativeIntents,
+  updateNativeIntentSummary,
   getNativeListing,
   useNativeListingVersion,
 } from '@/hooks/useNativeIntents';
@@ -20,31 +21,15 @@ import {
   onSessionExpired,
 } from '@/services/sessionExpiry';
 
-export const labels = {
-  DRAFT: 'Draft',
-  PREPARING: 'Preparing workspace',
-  READY: 'Workspace ready',
-  FAILED: 'Preparation failed',
-};
+export {
+  nativePreparationLabels as labels,
+  nativeExecutionLabels as executionLabels,
+} from '@/lib/intentDiscovery';
 export const harnesses = {
   claude: 'Claude Code',
   codex: 'Codex',
   kiro: 'Kiro',
   opencode: 'OpenCode',
-};
-export const executionLabels: Record<NativeExecution['status'], string> = {
-  REQUESTED: 'Start requested',
-  UPGRADING: 'Preparing agent execution',
-  DISPATCHING: 'Starting agent',
-  RUNNING: 'Agent running',
-  RECOVERY_REQUIRED: 'Session recovery required',
-  RECOVERING: 'Restoring session',
-  WAITING_FOR_INPUT: 'Waiting for input',
-  AWAITING_USER: 'Awaiting your reply',
-  STOPPED: 'Agent stopped',
-  FAILED: 'Execution failed',
-  CANCEL_REQUESTED: 'Cancellation requested',
-  CANCELLED: 'Execution cancelled',
 };
 export const activeExecution = new Set<NativeExecution['status']>([
   'REQUESTED',
@@ -203,6 +188,9 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
   // Hide revoked detail during render, before effects or any late promise run.
   const intent =
     loaded?.accessRevision === accessRevision && !isSessionExpiryNotified() ? loaded.value : null;
+  useEffect(() => {
+    if (intent) updateNativeIntentSummary(intent);
+  }, [intent]);
   const polling = intent ? Boolean(needsPolling(intent)) : false;
   const [error, setError] = useState<string | null>(null);
   const [preparing, setPreparing] = useState(false);

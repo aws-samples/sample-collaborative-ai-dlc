@@ -83,7 +83,7 @@ it('uses a native status breadcrumb without requiring any platform provider or c
   renderHeader('/space/p1/native-intent/same');
   fireEvent.click(screen.getByRole('button', { name: 'Native intent' }));
   expect(screen.getByTestId('path')).toHaveTextContent('/space/p1/native-intent/same');
-  expect(screen.getByText('Preparation status')).toBeInTheDocument();
+  expect(screen.getByText('Status')).toBeInTheDocument();
 });
 it('labels native creation without platform activity controls', () => {
   renderHeader('/space/p1/native-intent/new');

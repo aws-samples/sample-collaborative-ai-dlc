@@ -1,9 +1,14 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Link, MemoryRouter, Route, Routes } from 'react-router';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
-import { clearNativeIntents } from '@/hooks/useNativeIntents';
+import {
+  clearNativeIntents,
+  getNativeListing,
+  refreshNativeIntents,
+} from '@/hooks/useNativeIntents';
 import { invalidateProjects } from '@/hooks/useProjectsCache';
 import { notifySessionExpired, resetSessionExpiry } from '@/services/sessionExpiry';
 import { ApiError } from '@/services/api';
@@ -22,6 +27,7 @@ const service = vi.hoisted(() => ({
   interaction: vi.fn(),
   savePrompt: vi.fn(),
   start: vi.fn(),
+  recover: vi.fn(),
   handlers: new Map<string, Set<(value: any) => void>>(),
   connect: vi.fn(async () => {}),
 }));
@@ -234,6 +240,146 @@ function waitingDetail(status: 'WAITING_FOR_INPUT' | 'AWAITING_USER' | 'RECOVERY
   return waiting;
 }
 
+it('puts the supported question before the request and keeps pinned configuration in the shared dialog', async () => {
+  waitingDetail('AWAITING_USER');
+  workspace();
+  const response = await screen.findByRole('region', { name: 'Published AI-DLC response' });
+  expect(
+    response.compareDocumentPosition(screen.getByText('Request')) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(screen.queryByText('fixed-model')).not.toBeInTheDocument();
+  expect(screen.queryByText(/pilot|unit pull requests|approvals are not enabled/i)).toBeNull();
+  for (const name of ['Start agent', 'Edit artifacts', 'Create unit PR', 'Delete intent']) {
+    expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+  }
+  expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeEnabled();
+  const reply = screen.getByRole('textbox', { name: 'Reply to AI-DLC' });
+  await waitFor(() => expect(reply).not.toHaveAttribute('readonly'));
+  fireEvent.change(reply, { target: { value: 'Keep this shared answer draft.' } });
+  await userEvent.click(screen.getByRole('button', { name: 'Intent actions' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Intent configuration' }));
+  const configuration = screen.getByRole('dialog', { name: 'Intent configuration' });
+  expect(within(configuration).getByText(/pinned at Start/)).toBeVisible();
+  for (const value of ['Codex', 'fixed-model', 'example/app', 'main', 'v2.9.0']) {
+    expect(within(configuration).getByText(value)).toBeVisible();
+  }
+  await userEvent.click(within(configuration).getAllByRole('button', { name: 'Close' })[0]);
+  expect(reply).toHaveValue('Keep this shared answer draft.');
+  await userEvent.click(screen.getByRole('tab', { name: 'Files' }));
+  expect(screen.getByText('Work products')).toBeVisible();
+  await userEvent.click(screen.getByRole('tab', { name: 'Overview' }));
+  expect(screen.getByRole('textbox', { name: 'Reply to AI-DLC' })).toHaveValue(
+    'Keep this shared answer draft.',
+  );
+});
+
+it.each([
+  ['SESSION_LOST', true, 'The saved AI-DLC session needs to be restored'],
+  ['DELIVERY_UNCERTAIN', false, 'Recovery needs review before continuing'],
+] as const)(
+  'puts %s recovery before the published response and preserves recovery authority',
+  async (reason, canRecover, explanation) => {
+    const waiting = waitingDetail('AWAITING_USER');
+    const recovery = {
+      ...waiting,
+      execution: {
+        ...waiting.execution!,
+        status: 'RECOVERY_REQUIRED' as const,
+        recovery: { id: 'recovery', reason, canRecover },
+      },
+    };
+    service.get.mockResolvedValue(recovery);
+    workspace();
+    const response = await screen.findByRole('region', { name: 'Published AI-DLC response' });
+    const status = screen.getByRole('region', { name: 'Native execution status' });
+    expect(within(status).getByText(explanation, { exact: false })).toBeVisible();
+    expect(
+      status.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
+    expect(service.recover).not.toHaveBeenCalled();
+    if (canRecover) {
+      const pending = deferred<NativeIntent>();
+      service.recover.mockReturnValue(pending.promise);
+      await userEvent.click(screen.getByRole('button', { name: 'Recover session' }));
+      expect(screen.getByRole('button', { name: 'Requesting recovery…' })).toBeDisabled();
+      await act(async () =>
+        pending.resolve({
+          ...recovery,
+          execution: { ...recovery.execution, status: 'RECOVERING', revision: 8 },
+        }),
+      );
+      expect(screen.getByText('Restoring session')).toBeVisible();
+    } else {
+      expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
+    }
+  },
+);
+
+it.each([
+  ['DRAFT', 'Draft', 'Prepare workspace'],
+  ['PREPARING', 'Preparing workspace', 'Retry preparation'],
+  ['READY', 'Workspace ready', null],
+  ['FAILED', 'Preparation failed', 'Retry preparation'],
+] as const)(
+  'distinguishes %s preparation from execution in the routed workspace',
+  async (state, label, action) => {
+    service.get.mockResolvedValue({
+      ...detail(),
+      status: state,
+      promptRevision: 0,
+      execution: null,
+    });
+    workspace();
+    const status = await screen.findByRole('region', { name: 'Native execution status' });
+    expect(within(status).getByRole('status')).toHaveTextContent(label);
+    expect(screen.getByRole('button', { name: 'Start agent' })).toHaveProperty(
+      'disabled',
+      state !== 'READY',
+    );
+    if (action) expect(screen.getByRole('button', { name: action })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit prompt' })).toBeEnabled();
+    expect(service.start).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  ['RUNNING', 'Agent running', true],
+  ['STOPPED', 'Agent stopped', false],
+  ['FAILED', 'Execution failed', false],
+  ['CANCEL_REQUESTED', 'Cancellation requested', true],
+  ['CANCELLED', 'Execution cancelled', false],
+] as const)(
+  'distinguishes %s execution and supported actions in the routed workspace',
+  async (state, label, cancellable) => {
+    service.get.mockResolvedValue({
+      ...detail(),
+      execution: { ...detail().execution!, status: state },
+    });
+    workspace();
+    const status = await screen.findByRole('region', { name: 'Native execution status' });
+    expect(within(status).getByRole('status')).toHaveTextContent(label);
+    expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit prompt' })).not.toBeInTheDocument();
+    if (cancellable) {
+      expect(screen.getByRole('button', { name: 'Cancel execution' })).toHaveProperty(
+        'disabled',
+        state === 'CANCEL_REQUESTED',
+      );
+    } else {
+      expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
+    }
+    if (state === 'STOPPED') {
+      expect(
+        within(status).getByText(/does not establish that the workflow is complete/),
+      ).toBeVisible();
+    }
+    expect(screen.getByText('Task one')).toBeVisible();
+  },
+);
+
 it.each(['WAITING_FOR_INPUT', 'AWAITING_USER', 'RECOVERY_REQUIRED'] as const)(
   'refreshes a projected %s wait in the shared workspace without an activity notification',
   async (status) => {
@@ -253,6 +399,33 @@ it.each(['WAITING_FOR_INPUT', 'AWAITING_USER', 'RECOVERY_REQUIRED'] as const)(
     expect(service.get).toHaveBeenCalledTimes(2);
   },
 );
+
+it('updates cached navigation status from the routed workspace after another member cancels', async () => {
+  const waiting = waitingDetail('WAITING_FOR_INPUT');
+  const {
+    prompt: _prompt,
+    execution: _execution,
+    executionAvailable: _available,
+    ...summary
+  } = waiting;
+  service.list.mockResolvedValue({ items: [summary], nextCursor: null });
+  await refreshNativeIntents('project');
+  workspace();
+  const breadcrumbs = await screen.findByRole('navigation', { name: 'Breadcrumb' });
+  await waitFor(() => expect(within(breadcrumbs).getByText('Waiting for input')).toBeVisible());
+  service.get.mockResolvedValue({
+    ...waiting,
+    execution: { ...waiting.execution!, status: 'CANCELLED', revision: 8 },
+  });
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+  await waitFor(() => expect(within(breadcrumbs).getByText('Execution cancelled')).toBeVisible());
+  expect(
+    within(screen.getByRole('region', { name: 'Native execution status' })).getByRole('status'),
+  ).toHaveTextContent('Execution cancelled');
+  expect(getNativeListing('project').items[0].execution?.status).toBe('CANCELLED');
+  expect(getNativeListing('project').items[0]).not.toHaveProperty('prompt');
+  expect(screen.queryByText('Workspace ready')).not.toBeInTheDocument();
+});
 
 const waitingCleanupCases = (['run', 'project', 'expiry', 'unmount'] as const).flatMap((boundary) =>
   (['success', 'denial'] as const).map((outcome) => ({ boundary, outcome })),

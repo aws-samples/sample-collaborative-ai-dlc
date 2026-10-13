@@ -1,10 +1,19 @@
 import type { Intent } from '@/services/intents';
-import type { NativeIntentSummary } from '@/services/nativeIntents';
+import type { NativeExecution, NativeIntentSummary } from '@/services/nativeIntents';
+
+// Protected detail reads enrich the in-memory discovery cache, without retaining
+// prompts, repository configuration, or reply/recovery authority.
+export type NativeDiscoveredIntent = NativeIntentSummary & {
+  execution?: Pick<
+    NativeExecution,
+    'status' | 'revision' | 'updatedAt' | 'responsePending' | 'turnSequence'
+  > | null;
+};
 
 // Discovery never supplies native records to the platform execution context.
 export type DiscoveredIntent =
   | { backend: 'platform'; intent: Intent }
-  | { backend: 'native'; intent: NativeIntentSummary };
+  | { backend: 'native'; intent: NativeDiscoveredIntent };
 
 export const nativePreparationLabels: Record<NativeIntentSummary['status'], string> = {
   DRAFT: 'Draft',
@@ -12,6 +21,34 @@ export const nativePreparationLabels: Record<NativeIntentSummary['status'], stri
   READY: 'Workspace ready',
   FAILED: 'Preparation failed',
 };
+
+export const nativeExecutionLabels: Record<NativeExecution['status'], string> = {
+  REQUESTED: 'Start requested',
+  UPGRADING: 'Preparing agent execution',
+  DISPATCHING: 'Starting agent',
+  RUNNING: 'Agent running',
+  RECOVERY_REQUIRED: 'Session recovery required',
+  RECOVERING: 'Restoring session',
+  WAITING_FOR_INPUT: 'Waiting for input',
+  AWAITING_USER: 'Awaiting your reply',
+  STOPPED: 'Agent stopped',
+  FAILED: 'Execution failed',
+  CANCEL_REQUESTED: 'Cancellation requested',
+  CANCELLED: 'Execution cancelled',
+};
+
+export function nativeIntentStatusLabel(
+  intent: Pick<NativeDiscoveredIntent, 'status' | 'execution'>,
+): string {
+  if (
+    intent.execution?.status === 'DISPATCHING' &&
+    (intent.execution.responsePending === true || (intent.execution.turnSequence ?? 0) > 1)
+  )
+    return 'Continuing agent';
+  return intent.execution
+    ? nativeExecutionLabels[intent.execution.status]
+    : nativePreparationLabels[intent.status];
+}
 
 export function isPlatformIntent(intent: Intent): boolean {
   return intent.executionBackend === undefined || intent.executionBackend === 'platform';

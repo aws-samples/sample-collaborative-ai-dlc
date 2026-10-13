@@ -1,14 +1,19 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { ApiError } from '@/services/api';
-import { nativeIntentsService, type NativeIntentSummary } from '@/services/nativeIntents';
+import {
+  nativeIntentsService,
+  type NativeIntent,
+  type NativeIntentSummary,
+} from '@/services/nativeIntents';
 import { currentSessionEpoch, onSessionExpired, onSessionReset } from '@/services/sessionExpiry';
 import { onCacheCleared } from '@/lib/persistentCache';
+import type { NativeDiscoveredIntent } from '@/lib/intentDiscovery';
 
 const TTL = 30_000;
 // Explicit paging bounds both memory and the cost of refreshing loaded pages.
 export const MAX_NATIVE_PAGES = 40;
 export interface NativeListing {
-  items: NativeIntentSummary[];
+  items: NativeDiscoveredIntent[];
   nextCursor: string | null;
   loaded: boolean;
   loading: boolean;
@@ -102,6 +107,110 @@ export function nativeProjectDeleteReason(state: NativeListing | undefined): str
   return null;
 }
 
+function discoverySummary(intent: NativeIntent): NativeDiscoveredIntent {
+  return {
+    id: intent.id,
+    projectId: intent.projectId,
+    executionBackend: intent.executionBackend,
+    title: intent.title,
+    harness: intent.harness,
+    status: intent.status,
+    package: intent.package,
+    ...(intent.failureCode !== undefined ? { failureCode: intent.failureCode } : {}),
+    createdAt: intent.createdAt,
+    updatedAt:
+      intent.execution && Date.parse(intent.execution.updatedAt) > Date.parse(intent.updatedAt)
+        ? intent.execution.updatedAt
+        : intent.updatedAt,
+    ...(intent.execution !== undefined
+      ? {
+          execution: intent.execution && {
+            status: intent.execution.status,
+            updatedAt: intent.execution.updatedAt,
+            ...(intent.execution.revision !== undefined
+              ? { revision: intent.execution.revision }
+              : {}),
+            ...(intent.execution.responsePending !== undefined
+              ? { responsePending: intent.execution.responsePending }
+              : {}),
+            ...(intent.execution.turnSequence !== undefined
+              ? { turnSequence: intent.execution.turnSequence }
+              : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+function latestSummary(
+  previous: NativeDiscoveredIntent | undefined,
+  next: NativeDiscoveredIntent,
+): NativeDiscoveredIntent {
+  if (!previous) return next;
+  if (previous.execution && !next.execution) return previous;
+  if (previous.execution?.revision !== undefined) {
+    if (
+      next.execution?.revision === undefined ||
+      next.execution.revision <= previous.execution.revision
+    )
+      return previous;
+  }
+  const time = (item: NativeDiscoveredIntent) =>
+    Math.max(Date.parse(item.updatedAt), Date.parse(item.execution?.updatedAt ?? item.updatedAt));
+  return next.execution?.revision === undefined && time(previous) > time(next) ? previous : next;
+}
+
+// Called only with the adapter's accepted current detail. Discovery remains the
+// single list owner and does not retain another workspace state or authority.
+export function updateNativeIntentSummary(intent: NativeIntent): void {
+  const entry = entries.get(intent.projectId);
+  if (!entry || entry.epoch !== currentSessionEpoch() || entry.state.denied || entry.state.disabled)
+    return;
+  const index = entry.state.items.findIndex((item) => item.id === intent.id);
+  if (index < 0) return;
+  const previous = entry.state.items[index];
+  const next = latestSummary(previous, discoverySummary(intent));
+  if (next === previous) return;
+  entry.state = {
+    ...entry.state,
+    items: entry.state.items.map((item, itemIndex) => (itemIndex === index ? next : item)),
+  };
+  notify();
+}
+
+async function hydrateExecution(
+  projectId: string,
+  summaries: NativeIntentSummary[],
+  active: () => boolean,
+): Promise<NativeDiscoveredIntent[]> {
+  const items: NativeDiscoveredIntent[] = [...summaries];
+  let nextIndex = 0;
+  let failed = false;
+  // The collection intentionally carries preparation metadata only. Reuse the
+  // protected detail endpoint for READY rows, with at most four reads at once.
+  const results = await Promise.allSettled(
+    Array.from({ length: Math.min(4, items.length) }, async () => {
+      while (!failed && active() && nextIndex < items.length) {
+        const index = nextIndex++;
+        if (items[index].status !== 'READY') continue;
+        try {
+          const detail = await nativeIntentsService.get(projectId, items[index].id);
+          if (active()) items[index] = discoverySummary(detail);
+        } catch (error) {
+          failed = true;
+          throw error;
+        }
+      }
+    }),
+  );
+  // A late protected denial must not be hidden by an earlier transient failure.
+  const failure =
+    results.find((result) => result.status === 'rejected' && nativeAccessDenied(result.reason)) ??
+    results.find((result) => result.status === 'rejected');
+  if (failure?.status === 'rejected') throw failure.reason;
+  return items;
+}
+
 export async function refreshNativeIntents(
   projectId: string,
   mode: 'refresh' | 'more' = 'refresh',
@@ -145,7 +254,10 @@ export async function refreshNativeIntents(
         if (cursor !== null) cursors.add(cursor);
         const result = await nativeIntentsService.list(projectId, cursor);
         if (!active()) return;
-        for (const item of result.items) {
+        if (result.items.length) owner.state = { ...owner.state, hasKnownNativeIntents: true };
+        const hydrated = await hydrateExecution(projectId, result.items, active);
+        if (!active()) return;
+        for (const item of hydrated) {
           if (ids.has(item.id))
             throw new Error('Native pagination returned a duplicate intent. Retry the list.');
           ids.add(item.id);
@@ -162,7 +274,12 @@ export async function refreshNativeIntents(
       owner.cursors = cursors;
       owner.fetchedAt = Date.now();
       owner.state = {
-        items,
+        items: items.map((item) =>
+          latestSummary(
+            owner.state.items.find((current) => current.id === item.id),
+            item,
+          ),
+        ),
         nextCursor: cursor,
         pages,
         loaded: true,
@@ -170,7 +287,7 @@ export async function refreshNativeIntents(
         error: null,
         disabled: false,
         denied: false,
-        hasKnownNativeIntents: previous.hasKnownNativeIntents || items.length > 0,
+        hasKnownNativeIntents: owner.state.hasKnownNativeIntents || items.length > 0,
         accessRevision: previous.accessRevision,
       };
     } catch (error) {
@@ -180,7 +297,7 @@ export async function refreshNativeIntents(
           ...EMPTY,
           loaded: true,
           disabled: true,
-          hasKnownNativeIntents: previous.hasKnownNativeIntents,
+          hasKnownNativeIntents: owner.state.hasKnownNativeIntents,
           // The project-disabled 403 revokes loaded detail even though the
           // collection keeps its disabled presentation instead of an error.
           accessRevision: nativeAccessDenied(error) ? ++accessRevision : previous.accessRevision,
@@ -192,7 +309,7 @@ export async function refreshNativeIntents(
         clearNativeIntents(projectId, true);
       } else {
         owner.state = {
-          ...previous,
+          ...owner.state,
           loading: false,
           error:
             'Native intents could not be refreshed. Previously loaded entries may be outdated.',

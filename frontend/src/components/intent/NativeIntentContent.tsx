@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArtifactViewer } from './ArtifactViewer';
+import { WorkProductsCard } from './WorkProductsCard';
 import { NativeInteractionPanel, useNativeReply } from './NativeInteractionPanel';
 import { useOptionalAuth } from '@/contexts/AuthContext';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
@@ -324,16 +325,6 @@ function NativePublicationContent({
         </p>
       )}
       <TabsContent value="overview" className="space-y-4">
-        {intent.prompt && (intent.execution || intent.promptRevision === undefined) && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm">Request</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="whitespace-pre-wrap text-sm">{intent.prompt}</p>
-            </CardContent>
-          </Card>
-        )}
         {!error && interaction && intent.execution && (
           <NativeInteractionPanel
             interaction={interaction}
@@ -350,7 +341,7 @@ function NativePublicationContent({
             <section aria-label="Published question" className="space-y-2">
               <h2 className="font-semibold">Workflow question</h2>
               <p className="text-sm text-muted-foreground">
-                Read-only · Answering and approvals are not enabled yet.
+                This legacy question file is read-only. Replies require a supported AI-DLC response.
               </p>
               <NativeFileView
                 file={questionFile}
@@ -370,51 +361,63 @@ function NativePublicationContent({
             {publication ? 'No question is included in this committed revision.' : noPublication}
           </p>
         )}
+        {intent.prompt && (intent.execution || intent.promptRevision === undefined) && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm">Request</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="whitespace-pre-wrap text-sm">{intent.prompt}</p>
+            </CardContent>
+          </Card>
+        )}
       </TabsContent>
       <TabsContent value="files">
-        {!error &&
-          (publication ? (
-            <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(12rem,1fr)_minmax(0,3fr)]">
-              <nav aria-label="Published files" className="space-y-1">
-                {publication.files.length === 0 && (
-                  <p className="text-sm">This revision contains no files.</p>
-                )}
-                {publication.files.map((file) => (
-                  <button
-                    key={file.id}
-                    type="button"
-                    aria-current={file.id === selectedId ? 'true' : undefined}
-                    className="w-full rounded-md border p-2 text-left text-sm hover:bg-muted aria-[current=true]:bg-muted"
-                    onClick={() => setSelectedId(file.id)}
-                  >
-                    <span className="block break-all">{file.path}</span>
-                    <span className="text-xs text-muted-foreground">
-                      {file.role} · {file.bytes} bytes
-                    </span>
-                  </button>
-                ))}
-              </nav>
-              <div className="min-w-0">
-                {selectedId ? (
-                  selectedFile && descriptor ? (
-                    <NativeFileView
-                      key={selectedId}
-                      file={selectedFile}
-                      descriptor={descriptor}
-                      createdAt={publication.createdAt}
-                      publicationSequence={publication.sequence}
-                    />
+        <WorkProductsCard>
+          {!error &&
+            (publication ? (
+              <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(12rem,1fr)_minmax(0,3fr)]">
+                <nav aria-label="Published files" className="space-y-1">
+                  {publication.files.length === 0 && (
+                    <p className="text-sm">This revision contains no files.</p>
+                  )}
+                  {publication.files.map((file) => (
+                    <button
+                      key={file.id}
+                      type="button"
+                      aria-current={file.id === selectedId ? 'true' : undefined}
+                      className="w-full rounded-md border p-2 text-left text-sm hover:bg-muted aria-[current=true]:bg-muted"
+                      onClick={() => setSelectedId(file.id)}
+                    >
+                      <span className="block break-all">{file.path}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {file.role} · {file.bytes} bytes
+                      </span>
+                    </button>
+                  ))}
+                </nav>
+                <div className="min-w-0">
+                  {selectedId ? (
+                    selectedFile && descriptor ? (
+                      <NativeFileView
+                        key={selectedId}
+                        file={selectedFile}
+                        descriptor={descriptor}
+                        createdAt={publication.createdAt}
+                        publicationSequence={publication.sequence}
+                      />
+                    ) : (
+                      <p className="text-sm">Loading file…</p>
+                    )
                   ) : (
-                    <p className="text-sm">Loading file…</p>
-                  )
-                ) : (
-                  <p className="text-sm text-muted-foreground">Select a published file.</p>
-                )}
+                    <p className="text-sm text-muted-foreground">Select a published file.</p>
+                  )}
+                </div>
               </div>
-            </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">{noPublication}</p>
-          ))}
+            ) : (
+              <p className="text-sm text-muted-foreground">{noPublication}</p>
+            ))}
+        </WorkProductsCard>
       </TabsContent>
       <TabsContent value="graph">
         {!error &&

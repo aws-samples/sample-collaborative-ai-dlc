@@ -215,11 +215,14 @@ it('starts only explicitly, deduplicates pending clicks and reuses the request I
     ['project-1', 'run-1', requestId],
   ]);
   expect(screen.getByRole('status')).toHaveTextContent('Start requested');
-  expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
-  expect(screen.getByText(/Model: selected-model/)).toBeInTheDocument();
-  expect(
-    screen.getByText(/Repository: github · JWThewes\/flappy-bird · main · abc123/),
-  ).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Intent actions' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Intent configuration' }));
+  const configuration = screen.getByRole('dialog', { name: 'Intent configuration' });
+  expect(within(configuration).getByText('selected-model')).toBeInTheDocument();
+  expect(within(configuration).getByText('JWThewes/flappy-bird')).toBeInTheDocument();
+  expect(within(configuration).getByText('main')).toBeInTheDocument();
+  expect(within(configuration).getByText('abc123')).toBeInTheDocument();
 });
 
 const credentialError = {
@@ -423,7 +426,7 @@ it('does not let a GET begun before Start erase its accepted execution', async (
   await click('Start agent');
   await act(async () => pending.resolve(ready));
   expect(screen.getByRole('status')).toHaveTextContent('Agent running');
-  expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
+  expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
 });
 
 it('does not regress a newer execution when the Start acknowledgement arrives late', async () => {
@@ -477,7 +480,7 @@ it('reloads committed files and graph and navigates from the graph into the nati
   expect(api.prepare).not.toHaveBeenCalled();
   expect(screen.getByText(/Current committed revision 1/)).toBeInTheDocument();
   for (const name of ['Start agent', 'Edit artifacts', 'Create unit PR', 'Delete intent'])
-    expect(screen.getByRole('button', { name })).toBeDisabled();
+    expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
   first.unmount();
   renderPage();
   await screen.findByText('Which pipe style?');
@@ -936,7 +939,7 @@ it.each(['STOPPED', 'FAILED', 'CANCELLED'] as const)(
       .mockResolvedValue({ ...waiting, execution: { ...execution, status } });
     await act(async () => renderPage());
     expect(screen.getByText('Which pipe style?')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Start agent' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
     expect(screen.queryByText('Succeeded')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
     await act(async () => vi.advanceTimersByTimeAsync(3000));
