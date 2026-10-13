@@ -329,10 +329,28 @@ release criteria before widening support; later capabilities are separate scope.
       when capture → checkpoint → admission tests agree on exact inventories and
       credential files cannot become public artifacts.
 - [ ] **Issue — rejected or incomplete drafts.** Creation permits title-only
-      drafts although Start requires a prompt; definitive validation errors leave
-      the form locked to the rejected request. Provide pre-start correction or
-      validation, including existing drafts. Done when invalid input is repairable
-      while uncertain acceptance still retries the same identity and body.
+      drafts although Start requires a prompt. **OPEN — prompt correction:** decide
+      whether new drafts retain title-only creation with prompt editing before Start,
+      or require a prompt at creation; existing incomplete drafts need correction
+      either way. Title-only and prompt-only acceptance remain unchanged.
+      **Completed — rejection repair:** the API marks draft input/size rejection
+      before dependencies or persistence. Only that explicit rejection, with no
+      earlier uncertain attempt, unlocks correction; resubmission keeps the same ID.
+      Generic validation errors can originate from committed-row reads and do not
+      unlock the form. Conflicts, failed or unreadable responses, and later rejection
+      after uncertainty retain the original identity and body. Known rejection
+      clears the recovery URL; a reload with an unresolved ID only refreshes status,
+      never recreates a request from missing fields, even after a 404.
+      Duplicate submissions and late route/account/session callbacks are fenced.
+      The additive error marker needs the updated API to enable repair; older APIs
+      retain conservative retry behavior. Accepted requests and configuration pins
+      are unchanged. Local verification on Node 24.21.0: 200 focused frontend tests,
+      all 1,535 frontend tests, and 290 affected backend tests passed; frontend build,
+      lint, formatting, secret scanning, dependency and architecture checks,
+      wiring (21 tests), and architecture regressions (5 tests) passed. Lint,
+      dependency, and build warnings remain; no deployed AWS or model qualification
+      was performed. Done when remaining prompt correction is implemented as well
+      as safe rejection repair.
 - [x] **Issue — legacy waiting-state refresh.** Detail polling now includes
       `WAITING_FOR_INPUT` after projection catches up, alongside current waits.
       Another member's cancellation appears without a manual reload. Existing

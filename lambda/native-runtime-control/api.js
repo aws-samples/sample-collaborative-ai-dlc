@@ -359,16 +359,23 @@ export const createNativeRuntimeApi = ({
       if (collection && event.httpMethod === 'POST') {
         if (typeof event.body !== 'string') return invalid();
         if (Buffer.byteLength(event.body) > 96 * 1024)
-          return reply(
-            response,
-            413,
-            'NATIVE_PREPARATION_BODY_TOO_LARGE',
-            'Native draft request is too large',
-          );
+          return response(413, {
+            code: 'NATIVE_PREPARATION_BODY_TOO_LARGE',
+            error: 'Native draft request is too large',
+            draftInputRejected: true,
+          });
         try {
           input = nativeDraftRequest(JSON.parse(event.body));
         } catch {
-          return invalid();
+          // This attempt has not reached any dependencies or persistence. The
+          // generic INVALID code can also originate from a committed-row read;
+          // only this boundary identifies editable draft input. It says nothing
+          // about earlier attempts using the same identity.
+          return response(400, {
+            code: 'NATIVE_PREPARATION_INVALID',
+            error: 'Invalid native preparation request',
+            draftInputRejected: true,
+          });
         }
       } else if (event.body !== undefined && event.body !== null && event.body !== '') {
         // JSON escaping can expand a valid 16 KiB reply sixfold. The decoded

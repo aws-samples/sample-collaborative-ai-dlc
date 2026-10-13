@@ -237,6 +237,70 @@ describe('native API authentication and gates', () => {
 });
 
 describe('native draft creation and shared status', () => {
+  it.each([
+    ['long title', { title: 'x'.repeat(257) }],
+    ['title controls', { title: 'Contains\u007fcontrol' }],
+    ['long prompt', { prompt: 'x'.repeat(65537) }],
+    ['prompt controls', { prompt: 'Contains\0control' }],
+    ['encoded body size', { prompt: '\t'.repeat(65536) }],
+  ])(
+    'rejects %s before work and accepts correction at the same identity',
+    async (_label, fields) => {
+      const f = makeApi();
+      const rejected = await f.api(event('create', { body: JSON.stringify(request(fields)) }));
+      const oversizedBody = Buffer.byteLength(JSON.stringify(request(fields))) > 96 * 1024;
+      expect(rejected.statusCode).toBe(oversizedBody ? 413 : 400);
+      expect(json(rejected)).toMatchObject({
+        code: oversizedBody ? 'NATIVE_PREPARATION_BODY_TOO_LARGE' : 'NATIVE_PREPARATION_INVALID',
+        draftInputRejected: true,
+      });
+      expect(f.membership).not.toHaveBeenCalled();
+      noWork(f);
+      const corrected = await f.api(event('create', { body: JSON.stringify(request()) }));
+      expect(corrected.statusCode).toBe(201);
+      expect(f.read().request).toEqual(request());
+      expect(json(corrected)).not.toHaveProperty('draftInputRejected');
+      expect((await f.api(event())).statusCode).toBe(200);
+    },
+  );
+
+  it('does not mark stored-row validation after a lost write acknowledgement as input rejection', async () => {
+    const f = makeApi();
+    f.hooks.after = (command) => {
+      if (command instanceof PutCommand) {
+        f.write({ ...f.read(), requestFingerprint: 'corrupt' });
+        throw new Error('Write acknowledgement lost');
+      }
+    };
+    const response = await f.api(event());
+    expect(response.statusCode).toBe(400);
+    expect(json(response).code).toBe('NATIVE_PREPARATION_INVALID');
+    expect(json(response)).not.toHaveProperty('draftInputRejected');
+    expect(f.read().request).toEqual(request());
+  });
+
+  it('does not mark a post-commit membership rejection as editable input', async () => {
+    const f = makeApi();
+    f.hooks.after = (command) => {
+      if (command instanceof PutCommand) f.membership.mockResolvedValue(null);
+    };
+    const response = await f.api(event());
+    expect(response.statusCode).toBe(403);
+    expect(json(response)).not.toHaveProperty('draftInputRejected');
+    expect(f.read().request).toEqual(request());
+  });
+
+  it('does not mark an immutable request conflict as editable input', async () => {
+    const f = makeApi();
+    expect((await f.api(event())).statusCode).toBe(201);
+    const response = await f.api(
+      event('create', { body: JSON.stringify(request({ title: 'Conflicting title' })) }),
+    );
+    expect(response.statusCode).toBe(409);
+    expect(json(response)).not.toHaveProperty('draftInputRejected');
+    expect(f.read().request).toEqual(request());
+  });
+
   it('closes new draft admission while retaining prepared draft reads and preparation retries', async () => {
     const f = makeApi({ admissionEnabled: false });
     expect((await f.api(event('create', { body: JSON.stringify(request()) }))).statusCode).toBe(

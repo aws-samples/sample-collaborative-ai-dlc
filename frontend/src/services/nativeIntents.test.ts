@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const get = vi.fn();
 const post = vi.fn();
-vi.mock('./api', () => ({
+vi.mock('./api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./api')>()),
   api: { get: (...args: unknown[]) => get(...args), post: (...args: unknown[]) => post(...args) },
 }));
-import { nativeIntentsService } from './nativeIntents';
+import { ApiError } from './api';
+import { nativeDraftInputRejected, nativeIntentsService } from './nativeIntents';
 
 const draft = {
   id: 'run-1',
@@ -22,6 +24,56 @@ const draft = {
   updatedAt: '2026-09-25T08:00:00Z',
 };
 beforeEach(() => vi.resetAllMocks());
+describe('native draft rejection boundary', () => {
+  const request = {
+    intentId: 'run-1',
+    title: 'Game',
+    prompt: 'Create a game',
+    harness: 'kiro' as const,
+    sourceId: 'a'.repeat(64),
+    packageJobId: '10000000-0000-4000-8000-000000000001',
+    bindingRevision: '20000000-0000-4000-8000-000000000002',
+  };
+  it.each([
+    [400, 'NATIVE_PREPARATION_INVALID'],
+    [413, 'NATIVE_PREPARATION_BODY_TOO_LARGE'],
+  ])('preserves the authoritative %s rejection through create', async (status, code) => {
+    const error = new ApiError(status, 'Rejected input', { code, draftInputRejected: true });
+    post.mockRejectedValue(error);
+    await expect(nativeIntentsService.create('project-1', request)).rejects.toBe(error);
+    expect(nativeDraftInputRejected(error)).toBe(true);
+    expect(post).toHaveBeenCalledWith('/projects/project-1/native-intents', request);
+  });
+  it.each([
+    new Error('Response lost'),
+    new ApiError(400, 'Invalid', { code: 'NATIVE_PREPARATION_INVALID' }),
+    new ApiError(400, 'Invalid', {
+      code: 'NATIVE_PREPARATION_INVALID',
+      draftInputRejected: 'true',
+    }),
+    new ApiError(503, 'Unavailable', {
+      code: 'NATIVE_PREPARATION_INVALID',
+      draftInputRejected: true,
+    }),
+    new ApiError(409, 'Conflict', {
+      code: 'NATIVE_PREPARATION_CONFLICT',
+      draftInputRejected: true,
+    }),
+    new ApiError(413, 'Gateway size limit'),
+    new ApiError(400, 'Unknown', { code: 'UNKNOWN', draftInputRejected: true }),
+  ])('does not interpret $message as definitive draft rejection', (error) => {
+    expect(nativeDraftInputRejected(error)).toBe(false);
+  });
+  it.each([null, {}, { ...draft, id: 'foreign-id' }])(
+    'does not interpret an invalid success body as rejection: %j',
+    async (body) => {
+      post.mockResolvedValue(body);
+      const error = await nativeIntentsService.create('project-1', request).catch((err) => err);
+      expect(error).toBeInstanceOf(Error);
+      expect(nativeDraftInputRejected(error)).toBe(false);
+    },
+  );
+});
 describe('native intent response boundary', () => {
   it.each([
     null,

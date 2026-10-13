@@ -4,7 +4,7 @@ import {
   type NativePendingInput,
 } from '@/lib/nativePendingInput';
 import type { StructuredAnswer } from './questions';
-import { api } from './api';
+import { api, ApiError } from './api';
 import type { WorkflowPackageHarness } from './workflowSources';
 import type { IntentGraphEdge, IntentGraphNode, IntentOutput } from './intents';
 
@@ -159,6 +159,14 @@ export interface NativeDraftRequest {
   packageJobId: string;
   bindingRevision: string;
 }
+
+// The generic INVALID code also covers stored-row validation after a write.
+// This marker describes only the current POST, never earlier uncertain attempts.
+export const nativeDraftInputRejected = (error: unknown): boolean =>
+  error instanceof ApiError &&
+  error.body?.draftInputRejected === true &&
+  ((error.status === 400 && error.body.code === 'NATIVE_PREPARATION_INVALID') ||
+    (error.status === 413 && error.body.code === 'NATIVE_PREPARATION_BODY_TOO_LARGE'));
 
 export interface NativeIntent {
   id: string;
