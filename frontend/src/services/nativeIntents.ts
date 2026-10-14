@@ -13,6 +13,8 @@ import type {
   IntentOutput,
 } from './intents';
 
+export { publication as decodeNativePublication, interaction as decodeNativeInteraction };
+
 export interface NativeActivityEvent extends IntentActivityEvent {
   revision: number;
 }

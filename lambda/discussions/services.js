@@ -92,6 +92,19 @@ const authorizeNativeScope = async (scope, sub, res) => {
   return { projectId: scope.projectId, role: access.member.role, native: access };
 };
 
+export const recheckNativeScope = async (scope, sub, before, res) => {
+  if (scope.kind !== 'native') return null;
+  const after = await authorizeNativeScope(scope, sub, res);
+  if (after.res) return after.res;
+  if (
+    after.native.member.membershipId !== before.native.member.membershipId ||
+    after.native.member.projectIdentity !== before.native.member.projectIdentity ||
+    after.native.binding.bindingId !== before.native.binding.bindingId
+  )
+    return res(403, { error: 'Native discussion access changed' });
+  return null;
+};
+
 // Back-compat shim: the sprint-scoped callers still pass a bare sprintId.
 export const authorizeSprint = async (sprintId, sub, res) => {
   if (!sprintId) return { res: res(404, { error: 'Sprint not found' }) };

@@ -10,6 +10,7 @@ import {
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { nativeDraftPrompt } from './draft-prompt.js';
 import { nativeExecutionHistory } from './execution-history.js';
+import { answerHistoryKey, answerObservation, nativeAnswerHistory } from './answer-history.js';
 import {
   nativeInteractionReceipt,
   NATIVE_INTERACTION_LIMITS,
@@ -864,6 +865,9 @@ export const createNativeExecutionStore = ({
             },
             ...additions,
             ...historyWrite(before, next),
+            ...nativeAnswerHistory(before, next).map((Item) => ({
+              Put: { TableName: tableName, Item, ConditionExpression: 'attribute_not_exists(pk)' },
+            })),
           ],
         }),
       );
@@ -969,6 +973,40 @@ export const createNativeExecutionStore = ({
   return Object.freeze({
     get,
     response: getResponse,
+    async historicalAnswer(row, found) {
+      const interactionId = found.interaction?.id;
+      if (!interactionId) return null;
+      const value = await readRecord(nativeResponseKey(row.scope, interactionId));
+      if (!value) return null;
+      const response = acceptedResponse(value, {
+        ...row,
+        attemptId: found.identity.attemptId,
+        epoch: found.identity.epoch,
+        runtimeSessionId: found.runtimeSessionId,
+        cancelRequested: false,
+      });
+      check(
+        response.sequence === found.receipt.sequence + 1 &&
+          response.contentSha256 === found.interactionContentSha256 &&
+          (!response.publicationId || response.publicationId === found.receipt.id),
+      );
+      const observations = await Promise.all(
+        ['delivered', 'uncertain', 'publication'].map(async (kind) =>
+          answerObservation(
+            await readRecord(answerHistoryKey(row, interactionId, kind)),
+            row,
+            response,
+            kind,
+          ),
+        ),
+      );
+      return {
+        response,
+        delivered: observations[0],
+        uncertain: observations[1],
+        publication: observations[2],
+      };
+    },
     async start(input) {
       shape(
         input,
@@ -1522,6 +1560,7 @@ export const createNativeExecutionStore = ({
         publication,
         interaction,
         interactionContentSha256: input.interactionContentSha256 ?? null,
+        admittedAt: clock(),
         ...(checkpoint ? { recoveryCheckpoint: checkpoint } : {}),
       };
       delete Item.projectId;

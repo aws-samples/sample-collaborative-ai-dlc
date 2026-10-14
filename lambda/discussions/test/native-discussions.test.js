@@ -354,6 +354,47 @@ const setup = async () => {
 };
 
 describe('native discussion threads', () => {
+  it('keeps identical file bytes in different publications on distinct exact discussion anchors', async () => {
+    const f = await setup();
+    const read = (receipt, epoch) =>
+      publications().read({ ...f.scope, attemptId: f.execution.attemptId, epoch }, receipt);
+    const oldFile = (await read(f.first, 1)).files.find((file) => file.path === 'src/bird.png');
+    const newFile = (await read(f.second, 2)).files.find((file) => file.path === 'src/bird.png');
+    expect(oldFile.id).toBe(newFile.id);
+    expect(oldFile.sha256).toBe(newFile.sha256);
+    const older = json(await f.createArtifactThread(oldFile, f.first, { publicationSequence: 1 }));
+    const newer = json(await f.createArtifactThread(newFile, f.second, { publicationSequence: 2 }));
+    expect(older.id).not.toBe(newer.id);
+    expect(older.revision.publicationId).toBe(f.first.id);
+    expect(newer.revision.publicationId).toBe(f.second.id);
+    expect(
+      json(await f.createArtifactThread(oldFile, f.first, { publicationSequence: 1 })).id,
+    ).toBe(older.id);
+    // A bogus publication cannot use the existing-hash fast path.
+    expect(
+      (await f.createArtifactThread(oldFile, f.first, { publicationSequence: 2 })).statusCode,
+    ).toBe(404);
+  });
+
+  it('withholds a discussion list if membership is revoked during its read', async () => {
+    const f = await setup();
+    await f.createArtifactThread(f.secondPlan, f.second);
+    vi.stubEnv('READ_STATE_TABLE', 'read-state-test');
+    ddbMock.on(QueryCommand, { TableName: 'read-state-test' }).callsFake(async () => {
+      await g
+        .V()
+        .has('Project', 'id', f.projectId)
+        .outE('HAS_MEMBER')
+        .where(gremlin.process.statics.inV().has('User', 'id', MEMBER))
+        .drop()
+        .next();
+      return { Items: [] };
+    });
+    const result = await call('GET', '/discussions', f.at);
+    expect(result.statusCode).toBe(403);
+    expect(result.body).not.toContain('docs/plan.md');
+  });
+
   it('anchors a thread to one verified revision and shares it between two members', async () => {
     const f = await setup();
     const res = await f.createArtifactThread(f.secondPlan, f.second);

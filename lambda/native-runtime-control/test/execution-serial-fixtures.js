@@ -3,6 +3,8 @@ import { Readable } from 'node:stream';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { expect, vi } from 'vitest';
 import { createNativePublications } from '../../shared/native-publication.js';
+import { createNativeArtifactRevisions } from '../../shared/native-artifact-revision.js';
+import { TABLE } from './fixtures.js';
 import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeExecutionApi } from '../execution-api.js';
 import { executionIdentity } from '../execution-runtime.js';
@@ -61,6 +63,7 @@ export const serialFixture = () => {
       enabled,
       store: f.store,
       publications,
+      revisions: createNativeArtifactRevisions({ ddb: f.ddb, nativeTable: TABLE, publications }),
       interactions,
       enqueue,
       configure,

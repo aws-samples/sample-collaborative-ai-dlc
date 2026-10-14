@@ -67,9 +67,10 @@ export const nativeDependencyInventory = (records) => {
         ].filter(Boolean),
       });
     } else {
-      const history = /^(PUBLICATION#|RESPONSE#|RESPONSE_REQUEST#|OUTPUT#|PROMPT#|EVENT#)/.test(
-        row.sk ?? '',
-      );
+      const history =
+        /^(PUBLICATION#|RESPONSE#|RESPONSE_REQUEST#|ANSWER#|OUTPUT#|PROMPT#|EVENT#)/.test(
+          row.sk ?? '',
+        );
       const control = ['OUTPUT_CURSOR', 'PROJECTION', 'REVOCATION'].includes(row.sk);
       references.push({
         id,

@@ -441,6 +441,67 @@ release criteria before widening support; later capabilities are separate scope.
       comparisons, shareable file/revision links, and correlated accepted, delivered,
       applied, rejected, or uncertain answer outcomes. Done when a member can reopen
       the exact proposal, discussion, decision, and resulting revision.
+      **Member-facing implementation complete locally (2026-10-14):** both native
+      presentations now expose paginated immutable publication history, exact
+      assistant proposals and structured questions, accepted human answers with
+      immutable actor/time/context, revision/file/discussion permalinks, and
+      added/changed/deleted/identical file comparisons. Complete text comparisons
+      reuse the existing diff primitive and 3 MiB inline limit; binary, unsupported
+      text and larger files are explicitly unavailable for text comparison, with no
+      partial diff or new download transport. Unknown text formats remain readable.
+      Links retain publication ID/sequence and file ID/hash across refresh and browser
+      navigation. Historical views cannot dispatch answers; Current retains exact
+      current-interaction authority. Missing, tampered or inaccessible targets fail
+      safely without substituting newer files or discussions. Identical file hashes
+      in different publications have distinct discussion anchors.
+      **Ownership and compatibility:** the shared `native-artifact-revision` owner
+      resolves protected head or immutable `PUBLICATION#` receipts, verifies scope,
+      binding, attempt, epoch, package and hashes, and reads exact S3 object versions.
+      History has no runtime, model, projection or mutable image-policy dependency.
+      Existing authenticated publication/interaction/file GET resources accept strict
+      historical query identities; reads recheck current membership and execution
+      identity after I/O. No route or IAM expansion is required. The execution store
+      atomically adds immutable `ANSWER#` delivery, uncertainty and resulting-publication
+      observations alongside its existing CAS/lifecycle transaction. These are trusted
+      transport/admission facts, not engine application or workflow approval.
+      Accepted `RESPONSE#` receipts, existing schemas, replay, pins and dispatch remain
+      unchanged. Retained heads remain readable when older history is missing; missing
+      sequence ranges and admission times are explicit. No storage keys, private
+      checkpoints or credentials enter DTOs; existing public-file eligibility and the
+      unresolved credential-shaped public-file policy are unchanged. Deploy compatible
+      native controller/authority and discussion bundles before the frontend; no
+      runtime image or data migration is needed.
+      **Validation:** Node 24.21.0 with
+      `NODE_OPTIONS=--no-experimental-webstorage`. Focused resolver/history/HTTP/discussion
+      tests passed 57, including real DynamoDB and Gremlin slices; the final complete
+      native-control/discussion rerun passed 1,330. The broader shared/native/discussion/
+      AgentCore/intents run passed 7,830 tests with three existing Bun-dependent skips
+      and one new 35-publication integration timeout at the default five seconds.
+      That test now has an explicit 30-second budget and passes; an existing
+      DynamoDB test also hit five seconds during concurrent build load, then passed
+      in the complete 1,330-test rerun without changing its timeout. Frontend tests
+      passed 1,789 and the production build passed. Coverage includes exact bytes,
+      retained gaps, paging across concurrent publications, answer races and lost
+      acknowledgements, denied/revoked access, discussion revision isolation,
+      direct links/back-forward, late callbacks and historical/current action isolation.
+      Lint, format, secret and dependency checks, native architecture checks (including
+      five architecture regressions), 21 native wiring tests, 232 release tests and
+      release metadata checks passed. All seven native Lambda bundles and both
+      discussion bundles built successfully; existing lint/dependency and frontend
+      bundle-size warnings remain.
+      **Recorded-evidence limits:** older answers without immutable transport or
+      resulting-publication observations report unknown/not recorded; neither adjacent
+      publications nor lifecycle text establish causality. Engine-applied, rejected,
+      superseded and verified approval/completion receipts are not established by the
+      current protocol and are not invented. An authoritative future engine decision
+      receipt would need exact accepted-command and publication lineage before those
+      outcomes could be displayed as established facts.
+      **Remaining qualification:** deploy and verify both presentations with two
+      authenticated members, real immutable S3 versions and IAM, stopped/recovered
+      retained runs, refresh/back-forward links, concurrent membership revocation,
+      and observation continuity across a compatible deployment. No deployment,
+      AWS mutation or real model call was performed; local tests do not establish
+      this live qualification.
 - [ ] **Capability — native traceability.** Integrate deterministic section/item
       extraction and meaningful phase/stage relationships from admitted content.
       Define optional enrichment settings and provenance explicitly. Done when

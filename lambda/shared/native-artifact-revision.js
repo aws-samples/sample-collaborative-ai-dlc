@@ -4,13 +4,46 @@
 // The protected execution row or its PUBLICATION#<sequence> history row is the
 // authority; the Neptune projection is never consulted. Reads confer no
 // execution, approval or edit authority.
-import { GetCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { nativeRuntimeBindingKey } from './native-runtime-binding.js';
 
 const SHA = /^[a-f0-9]{64}$/;
 const FILE_ID = /^nf-[a-f0-9]{64}$/;
 const REVISION = /^(nf-[a-f0-9]{64}):([a-f0-9]{64})$/;
 export const NATIVE_ARTIFACT_CONTEXT_MAX_FILE_BYTES = 3 * 1024 * 1024;
+const publicationKey = (sequence) => `PUBLICATION#${String(sequence).padStart(16, '0')}`;
+
+// Shared by member history, discussions and Quorum. Never resolve a historical
+// file by its ID alone, or substitute the current receipt for a missing row.
+export const nativePublicationRecord = (execution, item) => {
+  const { projectId, executionId } = execution.scope ?? {};
+  if (
+    !item ||
+    (item.schemaVersion !== undefined && item.schemaVersion !== 1) ||
+    item.bindingId !== execution.bindingId ||
+    item.attemptId !== execution.attemptId ||
+    item.scope?.projectId !== projectId ||
+    item.scope?.executionId !== executionId ||
+    !Number.isSafeInteger(item.epoch) ||
+    item.epoch < 1 ||
+    item.epoch > (execution.epoch ?? execution.publicationEpoch) ||
+    !SHA.test(item.publication?.id ?? '') ||
+    !Number.isSafeInteger(item.publication.sequence) ||
+    item.publication.sequence < 1 ||
+    item.publication.sequence > execution.publication.sequence ||
+    (item.sk !== undefined && item.sk !== publicationKey(item.publication.sequence)) ||
+    (item.pk !== undefined && item.pk !== nativeRuntimeBindingKey({ projectId, executionId }).pk)
+  )
+    throw unavailable();
+  return {
+    identity: { projectId, executionId, attemptId: item.attemptId, epoch: item.epoch },
+    receipt: item.publication,
+    interaction: item.interaction ?? null,
+    interactionContentSha256: item.interactionContentSha256 ?? null,
+    runtimeSessionId: item.runtimeSessionId,
+    admittedAt: item.admittedAt ?? null,
+  };
+};
 
 export const nativeArtifactRevisionId = ({ fileId, sha256 }) => {
   if (!FILE_ID.test(fileId ?? '') || !SHA.test(sha256 ?? ''))
@@ -44,6 +77,11 @@ export const createNativeArtifactRevisions = ({ ddb, nativeTable, publications }
   const receiptFor = async (execution, { publicationId, publicationSequence }) => {
     const { projectId, executionId } = execution.scope ?? {};
     if (execution.publication?.id === publicationId) {
+      if (
+        publicationSequence !== undefined &&
+        publicationSequence !== execution.publication.sequence
+      )
+        throw unavailable();
       return {
         identity: {
           projectId,
@@ -52,6 +90,9 @@ export const createNativeArtifactRevisions = ({ ddb, nativeTable, publications }
           epoch: execution.publicationEpoch,
         },
         receipt: execution.publication,
+        interaction: execution.interaction ?? null,
+        interactionContentSha256: execution.interactionContentSha256 ?? null,
+        runtimeSessionId: execution.runtimeSessionId,
       };
     }
     if (!Number.isSafeInteger(publicationSequence) || publicationSequence < 1) return null;
@@ -60,7 +101,7 @@ export const createNativeArtifactRevisions = ({ ddb, nativeTable, publications }
         TableName: nativeTable,
         Key: {
           pk: nativeRuntimeBindingKey({ projectId, executionId }).pk,
-          sk: `PUBLICATION#${String(publicationSequence).padStart(16, '0')}`,
+          sk: publicationKey(publicationSequence),
         },
         ConsistentRead: true,
       }),
@@ -68,26 +109,14 @@ export const createNativeArtifactRevisions = ({ ddb, nativeTable, publications }
     if (
       !item ||
       item.publication?.id !== publicationId ||
-      item.publication?.sequence !== publicationSequence ||
-      item.bindingId !== execution.bindingId ||
-      item.scope?.projectId !== projectId ||
-      item.scope?.executionId !== executionId
+      item.publication?.sequence !== publicationSequence
     )
       return null;
-    return {
-      identity: { projectId, executionId, attemptId: item.attemptId, epoch: item.epoch },
-      receipt: item.publication,
-    };
+    return nativePublicationRecord(execution, item);
   };
 
-  const locate = async (execution, revision) => {
-    if (
-      !execution?.publication ||
-      !SHA.test(revision?.publicationId ?? '') ||
-      !FILE_ID.test(revision?.fileId ?? '') ||
-      !SHA.test(revision?.sha256 ?? '')
-    )
-      throw unavailable();
+  const publication = async (execution, revision) => {
+    if (!execution?.publication || !SHA.test(revision?.publicationId ?? '')) throw unavailable();
     const found = await receiptFor(execution, revision);
     if (!found) throw unavailable();
     let manifest;
@@ -97,12 +126,73 @@ export const createNativeArtifactRevisions = ({ ddb, nativeTable, publications }
       throw unavailable();
     }
     if (manifest.packageId !== execution.configuration?.packageId) throw unavailable();
+    return { found, manifest };
+  };
+  const locate = async (execution, revision) => {
+    if (!FILE_ID.test(revision?.fileId ?? '') || !SHA.test(revision?.sha256 ?? ''))
+      throw unavailable();
+    const { found, manifest } = await publication(execution, revision);
     const file = manifest.files.find((entry) => entry.id === revision.fileId);
     if (!file || file.sha256 !== revision.sha256) throw unavailable();
     return { found, manifest, file };
   };
 
   return Object.freeze({
+    publication,
+    async list(execution, beforeSequence = null) {
+      if (!execution?.publication) return { items: [], nextBefore: null, gaps: [] };
+      const upper =
+        beforeSequence === null
+          ? execution.publication.sequence
+          : Math.min(beforeSequence - 1, execution.publication.sequence);
+      if (upper < 1) return { items: [], nextBefore: null, gaps: [] };
+      const page = await ddb.send(
+        new QueryCommand({
+          TableName: nativeTable,
+          ConsistentRead: true,
+          KeyConditionExpression: 'pk = :pk AND sk BETWEEN :after AND :end',
+          ExpressionAttributeValues: {
+            ':pk': nativeRuntimeBindingKey(execution.scope).pk,
+            ':after': publicationKey(1),
+            ':end': publicationKey(upper),
+          },
+          ScanIndexForward: false,
+          Limit: 32,
+        }),
+      );
+      const gaps = [];
+      let expected = upper;
+      const items = (page.Items ?? []).map((item) => {
+        const found = nativePublicationRecord(execution, item);
+        const { id, sequence, filesCount, outcome } = found.receipt;
+        if (
+          sequence > expected ||
+          !Number.isSafeInteger(filesCount) ||
+          filesCount < 0 ||
+          filesCount > 1000 ||
+          !['STOPPED', 'WAITING_FOR_INPUT'].includes(outcome) ||
+          (found.admittedAt !== null &&
+            (!Number.isSafeInteger(found.admittedAt) ||
+              !Number.isFinite(new Date(found.admittedAt).getTime()))) ||
+          (found.interaction && !SHA.test(found.interaction.id ?? ''))
+        )
+          throw unavailable();
+        if (sequence < expected) gaps.push({ from: sequence + 1, to: expected });
+        expected = sequence - 1;
+        return {
+          id,
+          sequence,
+          filesCount,
+          outcome,
+          epoch: found.identity.epoch,
+          admittedAt: found.admittedAt,
+          interactionId: found.interaction?.id ?? null,
+        };
+      });
+      const nextBefore = page.LastEvaluatedKey && items.length ? items.at(-1).sequence : null;
+      if (!nextBefore && expected > 0) gaps.push({ from: 1, to: expected });
+      return { items, nextBefore, gaps };
+    },
     // Metadata only: used to anchor a revision-specific discussion.
     async verify(execution, revision) {
       return describe(await locate(execution, revision));

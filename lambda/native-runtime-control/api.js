@@ -6,6 +6,7 @@ import { ID, UUID_V4, fail, matches, nativeDraftRequest, pinPackageJob, record }
 import { nativeListQuery } from './listing.js';
 import { NATIVE_INTERACTION_LIMITS } from '../shared/native-interaction.js';
 import { nativeDraftPrompt, nativePromptRequest, promptFailure } from './draft-prompt.js';
+import { nativeRevisionQuery } from './revision-query.js';
 
 const COLLECTION = '/api/projects/{projectId}/native-intents';
 const ITEM = `${COLLECTION}/{intentId}`;
@@ -21,6 +22,10 @@ const INTERACTION = `${ITEM}/interaction`;
 const RESPONSE = `${ITEM}/response`;
 const OUTPUTS = `${ITEM}/outputs`;
 const ERRORS = {
+  NATIVE_ARTIFACT_REVISION_INVALID: [
+    404,
+    'The named native revision is unavailable or could not be verified',
+  ],
   NATIVE_PROMPT_INVALID: [400, 'Enter a nonblank prompt of at most 64 KiB without null characters'],
   NATIVE_PROMPT_CONFLICT: [
     409,
@@ -273,7 +278,7 @@ export const createNativeRuntimeApi = ({
           : await execution.cancel(row, recheck);
     return response(202, { ...nativeIntentView(row), ...details });
   };
-  const committedRead = async ({ event, file, row, params, recheck, response }) => {
+  const committedRead = async ({ event, file, row, params, recheck, response, revision }) => {
     if (!execution)
       return reply(
         response,
@@ -281,6 +286,17 @@ export const createNativeRuntimeApi = ({
         'NATIVE_PUBLICATION_NOT_FOUND',
         'No native files have been published yet',
       );
+    if (revision) {
+      const result = revision.history
+        ? await execution.history(row, revision.before, recheck)
+        : file
+          ? await execution.revisionFile(row, revision, recheck)
+          : event.resource === INTERACTION
+            ? await execution.revisionInteraction(row, revision, recheck)
+            : await execution.revision(row, revision, recheck);
+      await recheck(row);
+      return response(200, result);
+    }
     const result = file
       ? await execution.file(row, params.fileId, recheck)
       : event.resource === GRAPH
@@ -375,7 +391,15 @@ export const createNativeRuntimeApi = ({
     try {
       const after = outputRead ? outputCursor(event) : 0;
       const afterEvent = outputRead ? outputCursor(event, 'afterEvent') : undefined;
-      const listing = outputRead ? null : nativeListQuery(event, { collection, projectId });
+      const revisionRead = [PUBLICATION, FILE, INTERACTION].includes(event.resource);
+      const revision = revisionRead
+        ? nativeRevisionQuery(
+            event,
+            file ? 'file' : event.resource === INTERACTION ? 'interaction' : 'publication',
+          )
+        : null;
+      const listing =
+        outputRead || revisionRead ? null : nativeListQuery(event, { collection, projectId });
       if (collection && event.httpMethod === 'POST') {
         if (typeof event.body !== 'string') return invalid();
         if (Buffer.byteLength(event.body) > 96 * 1024)
@@ -530,7 +554,7 @@ export const createNativeRuntimeApi = ({
           response,
         });
       if ([PUBLICATION, FILE, GRAPH, INTERACTION].includes(event.resource))
-        return await committedRead({ event, file, row, params, recheck, response });
+        return await committedRead({ event, file, row, params, recheck, response, revision });
       if (!preparation)
         return response(200, {
           ...nativeIntentView(row),

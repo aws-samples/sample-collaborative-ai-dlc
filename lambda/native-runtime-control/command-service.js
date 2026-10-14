@@ -17,6 +17,7 @@ import { createNativeExecutionConfiguration } from './execution-config.js';
 import { createNativeExecutionApi } from './execution-api.js';
 import { createNativePublications } from '../shared/native-publication.js';
 import { createNativeInteractions } from '../shared/native-interaction.js';
+import { createNativeArtifactRevisions } from '../shared/native-artifact-revision.js';
 import { createNativeRuntimeImagePolicy } from './runtime-images.js';
 import { nativeExecutionDeployment } from './execution-config.js';
 import { createNativeActivityStore } from './activity-store.js';
@@ -100,6 +101,11 @@ export const createNativeRuntimeLambda =
         tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
         preparationStore: store(),
       });
+      const publications = createNativePublications({
+        s3,
+        bucket: env.NATIVE_EXECUTION_PUBLICATION_BUCKET,
+        accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
+      });
       executionApi = createNativeExecutionApi({
         enabled: true,
         admissionEnabled:
@@ -108,10 +114,11 @@ export const createNativeRuntimeLambda =
         projectionStatus: (row) =>
           nativeProjectionStatus(ddb, env.NATIVE_RUNTIME_BINDINGS_TABLE, row),
         configure: createNativeExecutionConfiguration({ ddb, ssm, graph: () => graph, env }),
-        publications: createNativePublications({
-          s3,
-          bucket: env.NATIVE_EXECUTION_PUBLICATION_BUCKET,
-          accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
+        publications,
+        revisions: createNativeArtifactRevisions({
+          ddb,
+          nativeTable: env.NATIVE_RUNTIME_BINDINGS_TABLE,
+          publications,
         }),
         interactions: createNativeInteractions({
           s3,
@@ -154,6 +161,10 @@ export const createNativeRuntimeLambda =
           cancel: (...args) => executions().cancel(...args),
           recover: (...args) => executions().recover(...args),
           publication: (...args) => executions().publication(...args),
+          history: (...args) => executions().history(...args),
+          revision: (...args) => executions().revision(...args),
+          revisionFile: (...args) => executions().revisionFile(...args),
+          revisionInteraction: (...args) => executions().revisionInteraction(...args),
           file: (...args) => executions().file(...args),
           graph: (...args) => executions().graph(...args),
           interaction: (...args) => executions().interaction(...args),

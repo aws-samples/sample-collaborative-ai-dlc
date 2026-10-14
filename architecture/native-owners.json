@@ -17,7 +17,7 @@
       "role": "authority",
       "adapters": ["execution_worker", "cancellation_worker"]
     },
-    "RESPONSE/PUBLICATION": {
+    "RESPONSE/PUBLICATION/ANSWER": {
       "owner": "native-authority",
       "kind": "immutable transactional history",
       "role": "authority"

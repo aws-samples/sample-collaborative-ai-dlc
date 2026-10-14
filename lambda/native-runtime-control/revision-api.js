@@ -1,0 +1,121 @@
+import { nativePublicationView } from '../shared/native-publication.js';
+import { nativeInteractionView } from '../shared/native-interaction.js';
+import { NATIVE_ARTIFACT_CONTEXT_MAX_FILE_BYTES } from '../shared/native-artifact-revision.js';
+
+const invalid = () => {
+  throw Object.assign(new Error('The named publication could not be verified'), {
+    code: 'NATIVE_ARTIFACT_REVISION_INVALID',
+  });
+};
+
+// Reads use admitted bytes and structured authority receipts only. No runtime,
+// projection, image-policy or mutable project configuration is consulted.
+export const createNativeRevisionApi = ({ read, revisions, interactions, store }) => {
+  const locate = async (draft, target, recheck) => {
+    const row = await read(draft, recheck);
+    if (!row?.publication || !revisions) invalid();
+    const located = await revisions.publication(row, target);
+    return { row, ...located };
+  };
+  const finish = async (draft, row, recheck) => {
+    const current = await read(draft, recheck);
+    if (
+      current?.bindingId !== row.bindingId ||
+      current.attemptId !== row.attemptId ||
+      current.configurationSha256 !== row.configurationSha256
+    )
+      invalid();
+    // A new head, recovery or cancellation cannot retarget an immutable read.
+  };
+  return {
+    async history(draft, before, recheck) {
+      const row = await read(draft, recheck);
+      const page = row
+        ? await revisions.list(row, before)
+        : { items: [], nextBefore: null, gaps: [] };
+      if (row) await finish(draft, row, recheck);
+      return page;
+    },
+    async revision(draft, target, recheck) {
+      const { row, found, manifest } = await locate(draft, target, recheck);
+      await finish(draft, row, recheck);
+      return {
+        ...nativePublicationView(found.receipt, manifest),
+        context: { ...found.identity, packageId: manifest.packageId },
+        outcome: manifest.outcome,
+        interactionId: found.interaction?.id ?? null,
+      };
+    },
+    async revisionFile(draft, target, recheck) {
+      const row = await read(draft, recheck);
+      if (!row?.publication || !revisions) invalid();
+      const result = await revisions.read(row, target, {
+        maxBytes: NATIVE_ARTIFACT_CONTEXT_MAX_FILE_BYTES,
+      });
+      await finish(draft, row, recheck);
+      return result;
+    },
+    async revisionInteraction(draft, target, recheck) {
+      const { row, found, manifest } = await locate(draft, target, recheck);
+      if (!found.interaction) {
+        await finish(draft, row, recheck);
+        return { interaction: null, answer: null };
+      }
+      const body = await interactions.read(
+        {
+          ...found.identity,
+          bindingId: row.bindingId,
+          runtimeSessionId: found.runtimeSessionId,
+        },
+        found.interaction,
+      );
+      if (
+        body.packageId !== manifest.packageId ||
+        body.harness !== row.configuration.harness ||
+        body.publicationId !== found.receipt.id ||
+        body.sequence !== manifest.sequence ||
+        body.nativeSessionId !== manifest.nativeSessionId ||
+        body.contentSha256 !== found.interactionContentSha256
+      )
+        invalid();
+      const facts = await store.historicalAnswer(row, found);
+      let answer = null;
+      if (facts) {
+        const { response, delivered, uncertain, publication } = facts;
+        // The observation names the command consumed by publication admission.
+        // Verify that exact publication still exists before exposing its link.
+        if (publication) await revisions.publication(row, publication);
+        const pointer = row.response?.commandId === response.commandId ? row.response : null;
+        const deliveryStatus = delivered
+          ? 'delivered'
+          : uncertain || (pointer && row.recovery?.reason === 'DELIVERY_UNCERTAIN')
+            ? 'uncertain'
+            : (pointer?.deliveryStatus ?? 'unknown');
+        answer = {
+          id: response.commandId,
+          interactionId: response.interactionId,
+          sequence: response.sequence,
+          actorId: response.actorId,
+          text: response.text,
+          acceptedAt: new Date(response.acceptedAt).toISOString(),
+          context: {
+            publicationId: found.receipt.id,
+            publicationSequence: manifest.sequence,
+            contentSha256: response.contentSha256,
+            epoch: response.epoch,
+            membershipRecorded: Boolean(response.member),
+          },
+          deliveryStatus,
+          deliveredAt: delivered?.recordedAt ?? null,
+          uncertainAt: uncertain?.recordedAt ?? null,
+          resultingPublication: publication,
+          applicationStatus: 'not_recorded',
+          rejectionStatus: 'not_recorded',
+          approvalStatus: 'not_recorded',
+        };
+      }
+      await finish(draft, row, recheck);
+      return { interaction: nativeInteractionView(found.interaction, body), answer };
+    },
+  };
+};

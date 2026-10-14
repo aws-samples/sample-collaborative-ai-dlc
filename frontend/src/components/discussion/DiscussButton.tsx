@@ -29,7 +29,12 @@ export function DiscussButton({
   const discussions = useDiscussions();
   if (!discussions) return null;
 
-  const thread = discussions.discussionFor(entityType, entityId);
+  const thread = discussions.discussionFor(
+    entityType,
+    entityId,
+    publicationId,
+    publicationSequence,
+  );
   const unread = thread?.unreadCount ?? 0;
   const ongoing = (thread?.messageCount ?? 0) > 0;
 

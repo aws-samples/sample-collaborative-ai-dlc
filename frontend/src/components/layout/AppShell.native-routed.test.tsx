@@ -25,6 +25,10 @@ const service = vi.hoisted(() => ({
   list: vi.fn(),
   publication: vi.fn(),
   interaction: vi.fn(),
+  historyList: vi.fn(),
+  revision: vi.fn(),
+  decision: vi.fn(),
+  revisionFile: vi.fn(),
   savePrompt: vi.fn(),
   start: vi.fn(),
   recover: vi.fn(),
@@ -40,6 +44,15 @@ vi.mock(
 vi.mock('@/services/nativeIntents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/nativeIntents')>()),
   nativeIntentsService: service,
+}));
+vi.mock('@/services/nativeHistory', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/nativeHistory')>()),
+  nativeHistoryService: {
+    list: service.historyList,
+    revision: service.revision,
+    decision: service.decision,
+    file: service.revisionFile,
+  },
 }));
 vi.mock('@/services/auth', () => ({
   authService: {
@@ -130,11 +143,11 @@ function emit(name: string, value: unknown) {
 }
 const hint = (id = 'one') =>
   emit('agent.output', { executionBackend: 'native', projectId: 'project', intentId: id });
-function workspace() {
+function workspace(search = '') {
   return render(
     <ThemeProvider>
       <AuthProvider>
-        <MemoryRouter initialEntries={['/space/project/native-intent/one']}>
+        <MemoryRouter initialEntries={[`/space/project/native-intent/one${search}`]}>
           <Link to="/space/project/native-intent/two">Switch run</Link>
           <Link to="/space/other-project/native-intent/one">Switch project</Link>
           <Routes>
@@ -207,6 +220,68 @@ it('saves a missing task prompt and starts its saved revision in the shared Inte
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+});
+
+it('reopens a named historical proposal and file in the shared shell and isolates late history on project navigation', async () => {
+  const publicationId = 'a'.repeat(64);
+  const fileId = `nf-${'b'.repeat(64)}`;
+  const sha256 = 'c'.repeat(64);
+  const file = {
+    id: fileId,
+    path: 'docs/proposal.custom',
+    bytes: 19,
+    sha256,
+    role: 'artifact',
+    mediaType: 'application/octet-stream',
+  };
+  const revision = {
+    id: publicationId,
+    sequence: 1,
+    createdAt: time,
+    files: [file],
+    question: null,
+    projectionStatus: 'pending',
+    interactionId: 'd'.repeat(64),
+    outcome: 'STOPPED',
+    context: {
+      projectId: 'project',
+      executionId: 'one',
+      attemptId: 'attempt',
+      epoch: 1,
+      packageId: `sha256:${sha256}`,
+    },
+  };
+  service.historyList.mockResolvedValue({ items: [], nextBefore: null, gaps: [] });
+  service.revision.mockResolvedValue(revision);
+  service.decision.mockResolvedValue({
+    interaction: { harness: 'codex', messages: [{ type: 'text', text: 'Earlier exact proposal' }] },
+    answer: null,
+  });
+  const pending = deferred<any>();
+  service.revisionFile.mockReturnValue(pending.promise);
+  workspace(`?nativeRevision=1.${publicationId}&nativeFile=${fileId}%3A${sha256}`);
+  expect(await screen.findByText('Earlier exact proposal')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Send reply' })).not.toBeInTheDocument();
+  expect(service.interaction).not.toHaveBeenCalled();
+  await act(async () =>
+    pending.resolve({
+      ...file,
+      publicationId,
+      publicationSequence: 1,
+      encoding: 'utf8',
+      content: 'Earlier exact bytes',
+      truncated: false,
+    }),
+  );
+  await screen.findByText('Earlier exact bytes');
+  expect(screen.getByRole('link', { name: 'Link to file revision' })).toHaveAttribute(
+    'href',
+    `/space/project/native-intent/one?nativeRevision=1.${publicationId}&nativeFile=${fileId}%3A${sha256}`,
+  );
+  fireEvent.click(screen.getByRole('link', { name: 'Switch project' }));
+  await waitFor(() => expect(service.get).toHaveBeenCalledWith('other-project', 'one'));
+  expect(screen.queryByText('Earlier exact bytes')).not.toBeInTheDocument();
+  expect(screen.queryByText('Earlier exact proposal')).not.toBeInTheDocument();
 });
 
 function waitingDetail(status: 'WAITING_FOR_INPUT' | 'AWAITING_USER' | 'RECOVERY_REQUIRED') {

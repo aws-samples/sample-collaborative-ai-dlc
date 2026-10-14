@@ -95,14 +95,23 @@ export const executionFixture = () => {
       if (command instanceof ScanCommand) return { Items: [...rows.values()].map(clone) };
       if (command instanceof QueryCommand) {
         const values = command.input.ExpressionAttributeValues;
+        const matching = [...rows.values()]
+          .filter(
+            (r) => r.pk === values[':pk'] && r.sk >= values[':after'] && r.sk <= values[':end'],
+          )
+          .toSorted((a, b) =>
+            command.input.ScanIndexForward === false
+              ? b.sk.localeCompare(a.sk)
+              : a.sk.localeCompare(b.sk),
+          );
+        const Items = matching.slice(0, command.input.Limit).map(clone);
         return {
-          Items: [...rows.values()]
-            .filter(
-              (r) => r.pk === values[':pk'] && r.sk >= values[':after'] && r.sk <= values[':end'],
-            )
-            .sort((a, b) => a.sk.localeCompare(b.sk))
-            .slice(0, command.input.Limit)
-            .map(clone),
+          Items,
+          ...(matching.length > Items.length
+            ? {
+                LastEvaluatedKey: { pk: Items.at(-1).pk, sk: Items.at(-1).sk },
+              }
+            : {}),
         };
       }
       if (!(command instanceof TransactWriteCommand))
@@ -143,6 +152,7 @@ export const executionFixture = () => {
   };
   return {
     ddb,
+    rows,
     store,
     preparationStore,
     prepared,

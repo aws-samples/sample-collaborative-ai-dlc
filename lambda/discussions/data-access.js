@@ -128,12 +128,18 @@ export const findDiscussionByAnchor = async (
   entityId,
   entityType,
   scope = null,
+  revision = null,
 ) => {
-  const r = await anchorTraversal(g, scope, entityType, entityId)
+  let traversal = anchorTraversal(g, scope, entityType, entityId)
     .in_('DISCUSSES')
     .hasLabel('Discussion')
     .has('entity_type', entityType)
-    .has('entity_id', entityId)
+    .has('entity_id', entityId);
+  if (scope?.kind === 'native' && revision)
+    traversal = traversal
+      .has('publication_id', revision.publicationId)
+      .has('publication_sequence', revision.publicationSequence);
+  const r = await traversal
     .order()
     .by('created_at', order.asc)
     .limit(1)

@@ -10,6 +10,7 @@ import { nativeReplyRequest, nativeTurnSequence } from './execution-store.js';
 import { nativeDraftPrompt, promptFailure } from './draft-prompt.js';
 import { nativeInteractionView } from '../shared/native-interaction.js';
 import { nativeAnswerText } from '../shared/native-pending-input.js';
+import { createNativeRevisionApi } from './revision-api.js';
 
 const fail = (code, message) => {
   throw Object.assign(new Error(message), { code });
@@ -76,6 +77,7 @@ export const createNativeExecutionApi = ({
   configure,
   publications,
   interactions,
+  revisions,
   enqueue,
   authorizeSource,
   images,
@@ -107,12 +109,12 @@ export const createNativeExecutionApi = ({
     if (decision?.status === 'unapproved')
       fail('NATIVE_EXECUTION_IMAGE_UNAPPROVED', 'The runtime image is no longer approved');
   };
-  const read = async (draft, recheck) => {
+  const read = async (draft, recheck, includeProjection = true) => {
     const row = await store.get(identity(draft));
     if (row && row.bindingId !== draft.bindingId)
       fail('NATIVE_EXECUTION_CONFLICT', 'Native execution binding changed');
     await recheck(draft);
-    return row && projectionStatus
+    return row && projectionStatus && includeProjection
       ? { ...row, projectionStatus: await projectionStatus(row) }
       : row;
   };
@@ -149,6 +151,12 @@ export const createNativeExecutionApi = ({
     return { row: current, body, response };
   };
   return {
+    ...createNativeRevisionApi({
+      read: (draft, recheck) => read(draft, recheck, false),
+      revisions,
+      interactions,
+      store,
+    }),
     enabled,
     async outputs(draft, after, recheck, afterEvent) {
       const row = await read(draft, recheck);

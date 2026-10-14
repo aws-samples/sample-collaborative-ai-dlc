@@ -1,20 +1,29 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArtifactViewer } from './ArtifactViewer';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { Link, useLocation } from 'react-router';
+import { nativeHistorySearch, parseNativeHistoryLocation } from '@/lib/nativeRevisionLinks';
+import { NativeHistoryView } from './NativeHistoryView';
+import { NativeFileView } from './NativeFileView';
 import { WorkProductsCard } from './WorkProductsCard';
 import { NativeInteractionPanel, useNativeReply } from './NativeInteractionPanel';
 import { useOptionalAuth } from '@/contexts/AuthContext';
-import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
-import { nativeArtifactRevisionId } from '@/lib/nativeCollaboration';
 import { nativeGraphMatchesPublication } from '@/lib/nativeTraceability';
 import { GraphCanvas } from '@/components/graph/GraphCanvas';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { getNativeListing, nativeAccessDenied } from '@/hooks/useNativeIntents';
-import { currentSessionEpoch, isSessionExpiryNotified } from '@/services/sessionExpiry';
+import {
+  getNativeListing,
+  nativeAccessDenied,
+  useNativeListingVersion,
+} from '@/hooks/useNativeIntents';
+import {
+  currentSessionEpoch,
+  isSessionExpiryNotified,
+  isSessionActive,
+  onSessionChanged,
+} from '@/services/sessionExpiry';
 import {
   nativeIntentsService,
   type NativeFileContent,
@@ -22,7 +31,6 @@ import {
   type NativeIntent,
   type NativeInteractionView,
   type NativePublication,
-  type NativePublishedFile,
 } from '@/services/nativeIntents';
 
 export function NativeIntentContent({
@@ -34,20 +42,63 @@ export function NativeIntentContent({
   onAccessFailure: (error: unknown) => void;
   onRefresh: () => Promise<void>;
 }) {
-  // Each head owns its requests and memory. A newer publication cannot inherit
-  // a file, graph, selection or late response from the previous revision.
+  const location = useLocation();
+  const session = useSyncExternalStore(onSessionChanged, currentSessionEpoch);
+  useNativeListingVersion();
+  const auth = useOptionalAuth();
+  const selection = useMemo(() => parseNativeHistoryLocation(location.search), [location.search]);
+  const discussions = useDiscussions();
+  const close = discussions?.close;
+  useEffect(() => {
+    close?.();
+  }, [location.search, close]);
+  const listing = getNativeListing(intent.projectId);
+  const identity = [
+    intent.projectId,
+    intent.id,
+    auth?.user?.userId,
+    session,
+    listing.accessRevision ?? 0,
+  ];
+  if (!isSessionActive()) return null;
   return (
-    <NativePublicationContent
-      key={JSON.stringify([
-        intent.projectId,
-        intent.id,
-        intent.execution?.publicationId,
-        intent.execution?.interactionId,
-      ])}
-      intent={intent}
-      onAccessFailure={onAccessFailure}
-      onRefresh={onRefresh}
-    />
+    <div className="space-y-4">
+      <nav aria-label="Native revision navigation" className="flex gap-4 text-sm">
+        <Link
+          className="underline"
+          to={{ search: nativeHistorySearch(location.search) }}
+          aria-current={selection.mode === 'current' ? 'page' : undefined}
+        >
+          Current
+        </Link>
+        <Link
+          className="underline"
+          to={{ search: nativeHistorySearch(location.search, { history: true }) }}
+          aria-current={selection.mode !== 'current' ? 'page' : undefined}
+        >
+          History
+        </Link>
+      </nav>
+      {selection.mode === 'current' ? (
+        <NativePublicationContent
+          key={JSON.stringify([
+            ...identity,
+            intent.execution?.publicationId,
+            intent.execution?.interactionId,
+          ])}
+          intent={intent}
+          onAccessFailure={onAccessFailure}
+          onRefresh={onRefresh}
+        />
+      ) : (
+        <NativeHistoryView
+          key={JSON.stringify([...identity, location.search])}
+          intent={intent}
+          selection={selection}
+          onAccessFailure={onAccessFailure}
+        />
+      )}
+    </div>
   );
 }
 
@@ -467,63 +518,5 @@ function NativePublicationContent({
           ))}
       </TabsContent>
     </Tabs>
-  );
-}
-
-function NativeFileView({
-  file,
-  descriptor,
-  createdAt,
-  publicationSequence,
-}: {
-  file: NativeFileContent;
-  descriptor: NativePublishedFile;
-  createdAt: string;
-  publicationSequence: number;
-}) {
-  const markdown = file.mediaType.split(';')[0] === 'text/markdown' || /\.md$/i.test(file.path);
-  return (
-    <section className="min-w-0 space-y-2" aria-label={`File ${file.path}`}>
-      <div className="flex items-start gap-2">
-        <h3 className="min-w-0 flex-1 break-all text-sm font-medium">{file.path}</h3>
-        {/* Discussion and Quorum are bound to these exact verified bytes. */}
-        <DiscussButton
-          entityType="artifact"
-          entityId={nativeArtifactRevisionId(file.id, file.sha256)}
-          entityTitle={file.path}
-          publicationId={file.publicationId}
-          publicationSequence={publicationSequence}
-        />
-      </div>
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <Badge variant="outline">{descriptor.role}</Badge>
-        <span>
-          {file.bytes} bytes · {file.mediaType}
-        </span>
-        <span title={file.sha256}>SHA-256 {file.sha256.slice(0, 12)}…</span>
-      </div>
-      {file.encoding === 'base64' ? (
-        <p className="rounded-md border p-4 text-sm text-muted-foreground">
-          Binary file. Preview is not available. This file is preserved in the committed revision.
-        </p>
-      ) : markdown ? (
-        <ArtifactViewer
-          readOnly
-          artifact={{
-            id: file.id,
-            title: file.path,
-            artifactType: descriptor.role,
-            content: file.content,
-            createdAt,
-            createdByExecutionId: null,
-            createdByStageInstanceId: null,
-          }}
-        />
-      ) : (
-        <pre className="max-h-[36rem] overflow-auto rounded-md border bg-muted/30 p-4 text-xs">
-          <code>{file.content}</code>
-        </pre>
-      )}
-    </section>
   );
 }

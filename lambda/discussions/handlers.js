@@ -67,6 +67,7 @@ import {
 } from './data-access.js';
 import {
   authorizeScope,
+  recheckNativeScope,
   broadcastToScope,
   broadcastToUser,
   getSecret,
@@ -186,7 +187,7 @@ export const listDiscussions = async (event, res) => {
       if (a.lastMessageAt !== b.lastMessageAt) return a.lastMessageAt < b.lastMessageAt ? 1 : -1;
       return a.id < b.id ? 1 : -1;
     });
-  return res(200, discussions);
+  return (await recheckNativeScope(scope, caller.sub, auth, res)) ?? res(200, discussions);
 };
 
 export const getOrCreateDiscussion = async (event, res) => {
@@ -222,12 +223,15 @@ export const getOrCreateDiscussion = async (event, res) => {
   if (scope.kind === 'native' && entityType === 'artifact' && !nativeRevision) {
     return res(400, { error: 'Native artifact threads require a "<fileId>:<sha256>" revision' });
   }
-
-  // Fast path: thread already exists — no lock.
-  const existing = await query((g) =>
-    findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),
-  );
-  if (existing) return res(200, existing);
+  // Preserve existing platform discussion history, including anchors that
+  // have since been superseded. Native revision lookups must verify the named
+  // publication before taking an existing-thread shortcut.
+  if (scope.kind !== 'native') {
+    const existing = await query((g) =>
+      findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),
+    );
+    if (existing) return res(200, existing);
+  }
 
   // Validate the anchor lives in this scope before creating anything. A native
   // artifact revision must be a committed file with these exact bytes in the
@@ -249,6 +253,15 @@ export const getOrCreateDiscussion = async (event, res) => {
     if (!anchorOk)
       return res(404, { error: `${entityType} "${entityId}" not found in ${scope.kind}` });
   }
+
+  const finish = async (discussion) => {
+    const denied = await recheckNativeScope(scope, caller.sub, auth, res);
+    return denied ?? res(200, discussion);
+  };
+  const find = (g) =>
+    findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope, verifiedRevision);
+  const existing = scope.kind === 'native' ? await query(find) : null;
+  if (existing) return finish(existing);
 
   // Native creation serializes per execution so the lazily created root is unique.
   const guardKey =
@@ -280,14 +293,12 @@ export const getOrCreateDiscussion = async (event, res) => {
     if (acquired) {
       // Winner: re-check the anchor (guard against a just-finished creator),
       // create vertex + edges, delete the guard.
-      const recheck = await query((g) =>
-        findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),
-      );
+      const recheck = await query(find);
       if (recheck) {
         await ddb
           .send(new DeleteCommand({ TableName: locksTable(), Key: { lockId: guardKey } }))
           .catch(() => {});
-        return res(200, recheck);
+        return finish(recheck);
       }
 
       const id = `disc-${randomUUID()}`;
@@ -299,6 +310,13 @@ export const getOrCreateDiscussion = async (event, res) => {
       const entityTitle =
         verifiedRevision?.path || fetchedTitle || String(body.entityTitle || '').slice(0, 512);
 
+      const denied = await recheckNativeScope(scope, caller.sub, auth, res);
+      if (denied) {
+        await ddb
+          .send(new DeleteCommand({ TableName: locksTable(), Key: { lockId: guardKey } }))
+          .catch(() => {});
+        return denied;
+      }
       if (scope.kind === 'native') {
         await query((g) => ensureNativeDiscussionRoot(g, scope, createdAt));
       }
@@ -328,19 +346,15 @@ export const getOrCreateDiscussion = async (event, res) => {
         .send(new DeleteCommand({ TableName: locksTable(), Key: { lockId: guardKey } }))
         .catch(() => {});
 
-      const created = await query((g) =>
-        findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),
-      );
-      return res(200, created);
+      const created = await query(find);
+      return finish(created);
     }
 
     // Loser: short retry loop on the anchor lookup.
     for (let poll = 0; poll < POLL_ATTEMPTS; poll++) {
       await sleep(POLL_INTERVAL_MS);
-      const found = await query((g) =>
-        findDiscussionByAnchor(g, anchorLabel, entityId, entityType, scope),
-      );
-      if (found) return res(200, found);
+      const found = await query(find);
+      if (found) return finish(found);
     }
 
     const guard = await ddb.send(
@@ -417,7 +431,10 @@ export const listMessages = async (event, res) => {
     hasMore = sorted.length > limit;
   }
 
-  return res(200, { messages, hasMore });
+  return (
+    (await recheckNativeScope(scope, getCaller(event).sub, auth, res)) ??
+    res(200, { messages, hasMore })
+  );
 };
 
 export const postMessage = async (event, res) => {
@@ -1223,5 +1240,8 @@ export const searchDiscussions = async (event, res) => {
     return aTs < bTs ? 1 : -1;
   });
 
-  return res(200, { results: deduped.slice(0, limit) });
+  return (
+    (await recheckNativeScope(scope, getCaller(event).sub, auth, res)) ??
+    res(200, { results: deduped.slice(0, limit) })
+  );
 };

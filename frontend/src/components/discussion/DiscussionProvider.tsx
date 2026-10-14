@@ -68,7 +68,12 @@ interface DiscussionContextValue {
   /** Per-entity unread lookup for badges. */
   unreadFor: (entityType: DiscussionEntityType, entityId?: string) => number;
   /** Per-entity thread lookup (ongoing-discussion indicator). */
-  discussionFor: (entityType: DiscussionEntityType, entityId?: string) => Discussion | null;
+  discussionFor: (
+    entityType: DiscussionEntityType,
+    entityId?: string,
+    publicationId?: string,
+    publicationSequence?: number,
+  ) => Discussion | null;
   members: Member[];
   /** The caller's project role (redact is admin/owner only). */
   role: Member['role'] | null;
@@ -418,6 +423,14 @@ function ScopedDiscussionProvider({
         })
         .then((d) => {
           if (!current()) return;
+          if (
+            scope.kind === 'native' &&
+            args.publicationId &&
+            (d.revision?.publicationId !== args.publicationId ||
+              d.revision?.publicationSequence !== args.publicationSequence ||
+              d.entityId !== args.entityId)
+          )
+            throw new Error('Discussion does not match the named revision');
           setDiscussion(d);
           reloadDiscussions();
         })
@@ -483,9 +496,19 @@ function ScopedDiscussionProvider({
   );
 
   const discussionFor = useCallback(
-    (entityType: DiscussionEntityType, entityId?: string) =>
+    (
+      entityType: DiscussionEntityType,
+      entityId?: string,
+      publicationId?: string,
+      publicationSequence?: number,
+    ) =>
       discussions.find(
-        (d) => d.entityType === entityType && (entityId === undefined || d.entityId === entityId),
+        (d) =>
+          d.entityType === entityType &&
+          (entityId === undefined || d.entityId === entityId) &&
+          (publicationId === undefined ||
+            (d.revision?.publicationId === publicationId &&
+              d.revision?.publicationSequence === publicationSequence)),
       ) ?? null,
     [discussions],
   );
