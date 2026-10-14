@@ -91,8 +91,23 @@ const nativeRemovalVerified = (plan.resource_changes || []).some(
     change.change?.after?.result?.records === '0' &&
     change.change?.after?.query?.admissionClosed === 'true',
 );
+// The Lambda module replaces these local build helpers when package content
+// changes. They do not remove resident services or retained run data. Keep the
+// exception limited to known helper replacements; outright removal still needs
+// the native decommission preflight.
+const nativePackageHelpers = new Map([
+  ['terraform_data', 'package_filename_for_hash'],
+  ['null_resource', 'archive'],
+  ['local_file', 'archive_plan'],
+]);
+const replacesNativePackageHelper = (change) =>
+  change.change?.actions?.includes('create') &&
+  nativePackageHelpers.has(change.type) &&
+  nativePackageHelpers.get(change.type) === change.name;
 const removesProtectedNativeService = (change) =>
-  change.address.startsWith('module.native_runs[') && !nativeRemovalVerified;
+  change.address.startsWith('module.native_runs[') &&
+  !nativeRemovalVerified &&
+  !replacesNativePackageHelper(change);
 
 const rejected = (plan.resource_changes || []).filter(
   (change) =>

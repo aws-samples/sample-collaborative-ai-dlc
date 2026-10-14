@@ -532,6 +532,16 @@ resident services and history. Resource retirement requires verified stop or
 explicit migration/revocation evidence. There is no automatic cross-engine
 migration or history-deletion policy.
 
+The deployment plan guard permits replacements of the Lambda module's local
+package helpers (`terraform_data.package_filename_for_hash`,
+`null_resource.archive`, and `local_file.archive_plan`) during code upgrades.
+Storage and resident service replacements remain protected; deleting a helper
+without recreating it still requires the decommission preflight. Use
+`scripts/deploy-terraform.sh <environment> --phase apply` to inspect and apply
+the saved plan from the Terraform directory. Running Terraform directly from
+the repository root uses the wrong dependency lock context and relative file
+paths, even when the saved plan path is absolute.
+
 ### Repair and diagnostics
 
 The stream bridge sends hints for committed work and reports partial stream
