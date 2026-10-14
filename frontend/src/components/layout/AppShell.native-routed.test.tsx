@@ -113,6 +113,8 @@ const detail = (id = 'one'): NativeIntent => ({
     startedAt: time,
     updatedAt: time,
     model: 'fixed-model',
+    credentialSource: 'space',
+    imageDigest: `sha256:${'e'.repeat(64)}`,
     repository: { provider: 'github', repository: 'example/app', branch: 'main', commit: null },
     publicationId: null,
     projectionStatus: null,
@@ -340,6 +342,11 @@ it('puts the supported question before the request and keeps pinned configuratio
   for (const value of ['Codex', 'fixed-model', 'example/app', 'main', 'v2.9.0']) {
     expect(within(configuration).getByText(value)).toBeVisible();
   }
+  expect(within(configuration).getByText('Space key')).toBeVisible();
+  expect(within(configuration).getByText(`sha256:${'e'.repeat(64)}`)).toBeVisible();
+  expect(
+    within(configuration).getByText(/Native graph enrichment and optional debug archives are off/),
+  ).toBeVisible();
   await userEvent.click(within(configuration).getAllByRole('button', { name: 'Close' })[0]);
   expect(reply).toHaveValue('Keep this shared answer draft.');
   await userEvent.click(screen.getByRole('tab', { name: 'Files' }));

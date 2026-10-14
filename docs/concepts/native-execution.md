@@ -317,6 +317,127 @@ history. An ambiguous delivery is reported for review rather than blindly
 replaying a possibly executed turn. Unknown schemas and unsupported recovery
 formats fail closed; silently starting a fresh conversation is not recovery.
 
+### Support matrix and settings
+
+**Repository contract, checked locally on 2026-10-14.** “Admitted” below means
+the existing validators permit the configuration after authorization and byte
+verification. It does not mean a model, fork, or deployed combination has passed
+the full native lifecycle. No broad live support claim is established here.
+These tables describe existing owners, not a second capability registry.
+
+The runtime currently supplies `<repository>/.github/workflows/release.yml` to
+the installer. The separate preflight verifier knows the preview workflow name,
+but that does not establish production preview or non-GitHub installer support.
+No workflow identity or trust policy was changed to broaden the matrix.
+
+| Boundary                   | Implemented/admitted contract                                                                                                                                                                                                                                                                                                                                                          | Compatibility and qualification limit                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Methodology release        | `native-release-manifest`, `native-runtime-package`, `native-package-pin` and `native-package-trust` require schema 1, exact `v<version>` tag/40-hex commit, checksums, all four projections, and Linux ARM64 assets. Stable source ref is the tag; the existing `-preview.YYYYMMDD.N` protocol uses `refs/heads/main`. Package, materialization and S3 object versions are immutable. | This release format is not a declaration of workflow protocol compatibility. Other tags, archive layouts, schemas, targets and arbitrary release URLs are unsupported.                                                                                                                                                                                                                                                                             |
+| Forks and provenance       | Matching owner-selected forks need the same release, projection, installation and interaction contracts; the repository name is not recognition authority. Package import/admission pins proof bytes but does not claim signature verification; the trusted runtime runs the pinned installer's provenance checks before any harness turn.                                             | Shared `owner-selected-source-v1` preflight permits explicitly absent proofs and requires a trusted verifier for present proofs; that optional preflight is not wired into the production package worker/Start. Its implemented verifier is GitHub-specific. Actual installer acceptance, including unsigned packages, previews and other providers, still needs qualification. No named fork has current live qualification; policy is unchanged. |
+| Current production readers | Controller row 1, generation-v1 transport, publications 1 **and 2**, interactions 1/2, pending-input 1, recovery 1. Schema-2 publications include the protected source baseline.                                                                                                                                                                                                       | Unknown schemas are not coerced. Unsupported interaction capture keeps exact readable assistant text and free-text reply; it cannot fabricate choices or approval.                                                                                                                                                                                                                                                                                 |
+| Retained transports        | `architecture/native-compatibility.json`: `legacy-native` has publication 1/interaction 1; `retained-native` has publication 1/interactions 1/2/recovery 1. Exact retained router fixtures remain unchanged.                                                                                                                                                                           | The publication-1 tuples intentionally describe old images, not all current readers. Source comparison is unavailable without a captured baseline. Restore requires the original image/session/checkpoint; no migration or replacement conversation.                                                                                                                                                                                               |
+
+| Harness and image-build pin | Model/auth configuration and invocation                                                                                                                                                                                                                                                                          | Local recovery adapter and limits                                                                                                                                        |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Claude Code **2.1.257**     | Bedrock bearer key; bare Bedrock ID, shared alias resolution when applicable; `-p --output-format stream-json --verbose --permission-mode bypassPermissions`, optional `--model`, explicit `--resume`. Package hooks/instructions remain loaded; SessionEnd timeout is adjusted by the existing runtime adapter. | `claude-project-jsonl-v1`: selected session, dependent subagent/tool/task/memory files. Unsupported or missing dependencies fail recovery.                               |
+| Codex **0.145.0**           | Bedrock bearer key; configured exact `openai.*` ID; `exec --json`, `-m`, `model_provider="amazon-bedrock"`, existing hook/approval bypass and four-thread bound. Platform question tools are disabled in favor of native turn publication.                                                                       | `codex-rollout-jsonl-v1`: selected rollout; `exec resume <id>`. No `--last`, fresh thread or fork is substituted.                                                        |
+| Kiro **2.19.2**             | Kiro API key and Kiro model namespace, never a Bedrock alias; ACP protocol 1, **v2 agent engine**, `aidlc` agent and existing tool trust. Explicit models must match session new/load reports.                                                                                                                   | `kiro-v2-session-pair-v1`: JSON/JSONL pair; ACP `session/load` verifies prior user and assistant hashes before another prompt. v1/v3 engines are not native adapters.    |
+| OpenCode **1.17.20**        | Bedrock bearer key; `amazon-bedrock/<model>` selection; `run --format json --auto`, explicit `--model` and `--session`. Auto-update is disabled.                                                                                                                                                                 | `opencode-export-json-v1`: `export/import --pure` to preserve one session. Revert, parent/subtask, snapshot/patch and task/todo dependencies are explicitly unsupported. |
+
+The Dockerfile and `native/session-recovery-files.js` own these CLI pins.
+`cli-models`, `tier-models`, `model-resolver` and the CLI auth drivers own syntax
+and resolution. No live provider/model catalog was fetched. Selection uses the
+project flat per-CLI map over the global map, then the legacy fallback row;
+Claude/OpenCode also use the existing controller environment/alias fallback.
+There is no native platform agent tier. Platform judgment/balanced/templated and
+Quorum rows do not select this workflow's model; package-internal agents and
+reviewers follow the pinned package's own configuration.
+
+An explicit resolved model string is captured at Start and passed unchanged
+through subsequent dispatch and recovery (OpenCode adds its provider prefix
+when necessary). An unset model remains `null`: the pinned image/package selects
+the harness default, **not an immutable underlying provider model**. Kiro `auto`
+also denotes routing, not an exact model version. The UI states this limit.
+Existing lenient model-map parsing and best-effort global SSM fallback are
+unchanged; malformed entries or an unavailable global read may leave the harness
+default. An exact model/region/account combination still needs authorized live
+qualification. This item does not change that selection policy.
+
+| Source use           | Implemented provider/auth combinations                                                                                                                                                                                                            | Explicit limits                                                                                                                                                                                                                                       |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Methodology package  | GitHub.com public/OAuth/App; GitLab.com public/OAuth; Bitbucket Cloud public/OAuth. `workflow-source-bindings`, release catalog and bounded source transport own access and exact asset routes.                                                   | Read-only source binding, current owner/admin delegation checks, separate application binding; no CodeCommit, self-hosted host, arbitrary URL or tracker-as-package source. These are import adapters; installer/provenance limits above still apply. |
+| Application checkout | Exactly one linked repository: GitHub OAuth/App, GitLab OAuth or Bitbucket OAuth, through existing source bindings and provider adapters. Default branch and exact 40/64-hex commit are resolved by two bounded read-only routes before dispatch. | No public/anonymous application binding, CodeCommit, multiple repositories, branch-picker override, Git delivery, submodule or LFS materialization. Credentials are restricted to trusted checkout; harnesses receive no Git credential.              |
+
+| User-facing setting/owner                  | Native capture and runtime behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Package/harness, saved request             | Native creation selects the imported package and harness independently of the project's default CLI. Start validates the protected ready draft and saved prompt revision; package/source/archive/image pins and `configurationSha256` are recorded atomically with execution admission. Edited or competing drafts cannot retarget it.                                                                                                                                                                |
+| Project/Admin model maps                   | `execution-config.js` reads only model maps and credential metadata, then rereads the project and source binding. A project model-map edit during resolution now fails with reload required. Start retries reuse the admitted row without resolving new settings. Reads across Neptune/SSM are not a distributed transaction; a change after the final read does not rewrite the captured values.                                                                                                     |
+| Credentials and payer                      | The starting member's effective **personal > space > platform** key scope is pinned, separately for Bedrock or Kiro. Subsequent credential renewal reads only that binding; rotation at the same scope is allowed, clearing/revocation fails without fallback. A replying member does not become the payer. The API exposes scope only, not user/secret references or billing identity. IAM/STS, external gateways and other platform authentication mechanisms are not native configuration options. |
+| Managed environment/runtime target         | Native uses the protected per-run runtime binding and dedicated execution image/version/endpoint. The shared platform runtime-target resolver deliberately rejects native META. Project environment assignments, tool selections and environment verification do not apply. Recovery preserves the original target/image; no mutable default-runtime fallback.                                                                                                                                        |
+| MCP and rules/instructions                 | Installer uses `config --harness … --mcp none`; native does not fetch Admin/project custom MCP, MCP secrets or S3-uploaded custom rules, and does not install platform graph-write MCP. Repository/package instructions, hooks and configuration remain native workspace inputs and survive eligible checkpoints. `--mcp none` is not a sandbox that removes arbitrary repository-defined tools or package configuration.                                                                             |
+| Enrichment, debug, other platform controls | Native enrichment and optional archive capture remain off even if platform preferences are enabled. Numeric flight recording is independent. Platform workflow/block/agent assignments, stage sensors, parallelism, PR strategy, rewind and verification scheduling do not control native execution. Quorum discussion assistance remains an independent advisory path with its own settings. Attachment/tracker creation scope remains undecided.                                                    |
+
+Creation offers the settings explanation before submission. Both native
+presentations use the shared configuration dialog, showing the captured model,
+credential scope and image digest without loading current settings. Additive
+`execution.credentialSource` and `execution.imageDigest` are derived from the
+validated protected row; old APIs display explicit unavailable metadata.
+No new field is added to immutable configuration, hashes, commands or retained
+row decoders.
+
+Structured questions use the exact version-1 rendered spec, not plan names or
+generated prose as authority. The existing four-question/16-option bound covers
+the scripted twelve-option example (`compose`, `bugfix`, `classic`, `enterprise`,
+`express`, `feature`, `infra`, `mvp`, `poc`, `refactor`, `security-patch`, `workshop`).
+It is not proof that every package called 2.11.0 implements those plans.
+New captures classify a marked stage as approval only when a complete visible
+spec satisfies the existing gate labels and optional-label grammar. Missing,
+unknown or incompatible specs yield no structured choices; labels are neither
+invented nor silently dropped/reordered. Existing stored interactions still use
+their original decoder and digest, including old synthesized gate displays.
+Only the protected current interaction and an authenticated accepted answer
+authorize response delivery; a displayed approval label is not an applied receipt.
+
+**Evidence and deployment.** In an already-local Linux ARM64 image
+`sha256:04d277b05d891422263e368cdf315564e29c556411adf464016b2328e247e47d`,
+all four `--version` and native-argument `--help` checks passed with
+`--network none`, isolated homes and no credentials. The retained public
+`awslabs/aidlc-workflows` v2.9.0 bytes at
+`22f5d1b15a064c9ae80046e5b1761d5877e2f69f` revalidated as package
+`sha256:0399ab50fa7ed00eae5a246159fdb1d594c8fd4946c6aeb72452d9d6e2770ce0`
+(materialization pin in `native/probe-package.json`:
+`sha256:eed746ebdc9078b8bf9217cebaad743e8f90eded8b299da8b96c99eb81bf9368`).
+Real offline `aidlc use` failed for all four isolated harness setups with
+“no valid Sigstore verifiers could be initialized”; configuration and hook
+execution were therefore **not** qualified by that attempt. Signature policy was
+not bypassed. Scripted initialization/plan/gate/resume, checkpoint codecs and
+retained-router tests are separate evidence from these real CLI checks.
+
+Local validation used Node **24.21.0** with
+`NODE_OPTIONS=--no-experimental-webstorage`. Focused backend checks passed 157;
+focused frontend checks passed 251. The full frontend passed **1,823** tests
+and its production build. The Docker-backed shared/AgentCore/native-control/
+agents run passed 7,551 tests, skipped three existing real-Bun tests and failed
+one current scripted interaction fixture that relied on synthesized gate labels.
+That fixture now publishes its spec and visible labels; the correction passed
+70 runtime/interaction checks, and the final API/configuration/interaction slice
+passed 92 including competing Starts with different model snapshots.
+`npm run test:release` passed **232** tests (including the five architecture
+script tests); native wiring passed **21**. Lint, formatting, secretlint,
+dependency, architecture and SDK checks passed, and all eight native-control
+bundles built. Existing lint/dependency/Smithy-range and bundle-size warnings
+remain. Node 22 and host Bun were unavailable. These checks include retained
+decode, cold recovery, denied credentials, package mismatch and frontend
+identity/access races; they do not establish deployed behavior.
+
+Deploy the compatible controller/API before the frontend for captured scope/image
+visibility. A new runtime image is needed for stricter question capture; already
+admitted images remain pinned and keep their original behavior. Bundle the
+existing shared helper with the runtime; no route, IAM, Terraform, storage schema
+or dependency change is needed. Preserve the publication-reader deployment order
+documented under obtainable results. Live pinned-model, package/fork installation,
+deployed identity/access, IAM and old-image cold-restore qualification remain open.
+
 ### Admission shutdown and upgrades
 
 To stop **new executions**, set `native_execution_admission_enabled=false`.
@@ -811,6 +932,20 @@ release criteria before widening support; later capabilities are separate scope.
       broad support, including current structured plan choices and supported forks.
       Done when unsupported managed-environment, MCP, rules, or other settings are
       explicit and supported configuration remains pinned.
+      **Implemented locally (2026-10-14):** [matrix and settings](#support-matrix-and-settings)
+      distinguish admission, installed CLI pins, scripted evidence and live limits.
+      Shared creation/configuration copy identifies unsupported settings and
+      unpinned harness defaults; protected status exposes captured key scope and
+      image without secret references. Project model edits during Start resolution
+      require reload; subsequent changes cannot retarget an admitted run. New
+      structured gate capture requires the complete visible supported spec, while
+      old interactions/configuration hashes and retained bytes remain unchanged.
+      **Still open:** real pinned-model/deployed qualification for all four
+      harnesses, current package/forks, and same-session cold recovery. The local
+      offline package attempt was blocked by Sigstore trust initialization, not
+      credited as a successful installation. No model/provider call, deployment
+      or AWS mutation was performed. Existing product decisions listed elsewhere
+      in this backlog remain unchanged.
 - [ ] **Verification — live lifecycle and upgrade.** Complete one useful task from
       source selection through decisions, implementation, tests, final review, and
       obtainable result. Start with the oldest supported retained image, park,

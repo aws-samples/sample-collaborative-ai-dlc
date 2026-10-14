@@ -97,6 +97,10 @@ export interface NativeExecution {
   startedAt: string;
   updatedAt: string;
   model: string | null;
+  // Additive public metadata derived from the admitted configuration.
+  // Absence on an older API is unknown, never a lookup of current settings.
+  credentialSource?: 'user' | 'space' | 'platform';
+  imageDigest?: string;
   repository: {
     provider: string;
     repository: string;
@@ -377,6 +381,12 @@ function execution(value: unknown): NativeExecution | null {
     !timestamp(value.startedAt) ||
     !timestamp(value.updatedAt) ||
     !nullableString(value.model) ||
+    (value.credentialSource !== undefined &&
+      !['user', 'space', 'platform'].includes(value.credentialSource as string)) ||
+    (value.imageDigest !== undefined &&
+      (typeof value.imageDigest !== 'string' ||
+        value.imageDigest.length !== 71 ||
+        !/^sha256:[a-f0-9]{64}$/.test(value.imageDigest))) ||
     !record(value.repository) ||
     typeof value.repository.provider !== 'string' ||
     typeof value.repository.repository !== 'string' ||
@@ -442,6 +452,10 @@ function execution(value: unknown): NativeExecution | null {
     startedAt: value.startedAt,
     updatedAt: value.updatedAt,
     model: value.model,
+    ...(value.credentialSource !== undefined
+      ? { credentialSource: value.credentialSource as NativeExecution['credentialSource'] }
+      : {}),
+    ...(value.imageDigest !== undefined ? { imageDigest: value.imageDigest as string } : {}),
     repository: {
       provider: value.repository.provider,
       repository: value.repository.repository,

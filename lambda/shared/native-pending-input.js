@@ -3,9 +3,9 @@
 // A pending input is DISPLAY DATA, never authority: it lets members select the
 // exact option labels the workflow presented instead of typing numbers. It is
 // captured by the native runtime at turn end from deterministic workflow state
-// (an engine-held approval gate) or from the question spec the agent rendered
-// this turn, written to a runtime-reserved file. Options are never inferred
-// from assistant prose. The engine still validates every recorded answer, and
+// and the question spec the agent rendered this turn, written to a
+// runtime-reserved file. Options are never inferred from assistant prose or a
+// stage marker alone. The engine still validates every recorded answer, and
 // only a member's protected reply can carry the selection back.
 //
 // The selection shape is QuestionEditor's StructuredAnswer:
@@ -123,7 +123,12 @@ export const nativePendingInput = (value) => {
 // Agent-written spec (from the runtime transport instruction):
 // { version: 1, questions: [{ prompt, header?, multiSelect?, options: [{ label, description? }] }] }
 const normalizeSpec = (spec) => {
-  if (!object(spec) || spec.version !== 1 || !Array.isArray(spec.questions)) fail();
+  if (
+    !exact(spec, ['version', 'questions']) ||
+    spec.version !== 1 ||
+    !Array.isArray(spec.questions)
+  )
+    fail();
   return spec.questions.map((entry, index) => {
     if (!object(entry)) fail();
     const allowed = ['prompt', 'header', 'multiSelect', 'options'];
@@ -158,9 +163,9 @@ const normalizeSpec = (spec) => {
  * Build the pending input for a completed turn. Returns null (free-text reply)
  * whenever nothing structured can be established safely.
  *
- * - gate: { stage } when engine state shows that stage held at `[?]`. The
- *   protocol labels are authoritative; a rendered spec may only add the
- *   protocol's optional gate labels.
+ * - gate: { stage } when engine state shows that stage held at `[?]`. Only a
+ *   complete rendered spec matching the supported gate protocol is classified
+ *   as approval. A marker alone does not identify a fork's decision protocol.
  * - spec: the agent-written rendered question spec (already JSON-parsed), or null.
  * - messagesText: the turn's assistant text. Every rendered option label must
  *   appear in it, so a spec can never show options the member was not shown.
@@ -182,59 +187,13 @@ export const buildNativePendingInput = ({ gate = null, spec = null, messagesText
       questions = null;
     }
   }
-  if (gate) {
-    const rendered = questions?.length === 1 ? questions[0] : null;
-    const extra = (rendered?.options ?? []).filter(
-      (option) =>
-        !NATIVE_GATE_LABELS.includes(option.label) &&
-        (GATE_OPTIONAL_LABELS.has(option.label) ||
-          /^Add [A-Za-z0-9][A-Za-z0-9 -]{0,80}$/.test(option.label)),
-    );
-    const described = (label) =>
-      rendered?.options.find((option) => option.label === label)?.description ?? null;
-    const approval = (useRendered) =>
-      nativePendingInput({
-        schemaVersion: 1,
-        kind: 'approval',
-        source: 'engine-gate',
-        stage: gate.stage,
-        questions: [
-          {
-            id: 'q1',
-            prompt:
-              (useRendered && rendered?.prompt) ||
-              `The ${gate.stage} stage is waiting for approval.`,
-            header: (useRendered && rendered?.header) || 'Approval',
-            multiSelect: false,
-            options: [
-              ...NATIVE_GATE_LABELS.map((label) => ({
-                label,
-                description: useRendered ? described(label) : null,
-              })),
-              ...(useRendered ? extra : []),
-            ],
-          },
-        ],
-      });
-    // The engine-held gate is authoritative; a malformed rendered spec only
-    // loses its wording, never the protocol options.
-    try {
-      return approval(true);
-    } catch {
-      try {
-        return approval(false);
-      } catch {
-        return null;
-      }
-    }
-  }
   if (!questions) return null;
   try {
     return nativePendingInput({
       schemaVersion: 1,
-      kind: 'choice',
-      source: 'rendered-question',
-      stage: null,
+      kind: gate ? 'approval' : 'choice',
+      source: gate ? 'engine-gate' : 'rendered-question',
+      stage: gate ? gate.stage : null,
       questions,
     });
   } catch {

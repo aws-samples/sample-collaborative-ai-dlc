@@ -415,7 +415,7 @@ describe('native first-turn configuration', () => {
     await expect(f.resolve()).rejects.toHaveProperty('code');
   });
 
-  it.each(['project', 'repository', 'binding'])(
+  it.each(['project', 'repository', 'binding', 'cliModels', 'tierModels'])(
     'fences a %s change during slow metadata resolution',
     async (kind) => {
       const f = await fixture();
@@ -423,10 +423,45 @@ describe('native first-turn configuration', () => {
         if (kind === 'project') f.state.project.projectIdentity = 'recreated';
         if (kind === 'repository') f.state.repos[0].repositories = ['other/repo'];
         if (kind === 'binding') f.state.binding.revision = OTHER;
+        if (kind === 'cliModels') f.state.project.cliModels = ['{"codex":"openai.changed"}'];
+        if (kind === 'tierModels')
+          f.state.project.tierModels = ['{"fallback":{"codex":"openai.changed"}}'];
       };
       await expect(f.resolve()).rejects.toHaveProperty('code');
     },
   );
+
+  it('captures new project/global choices before Start without mutating an earlier snapshot', async () => {
+    const f = await fixture();
+    f.state.globals['/aidlc/dev/cli-models'] = '{"codex":"openai.first"}';
+    const first = await f.resolve();
+    f.state.globals['/aidlc/dev/cli-models'] = '{"codex":"openai.second"}';
+    expect((await f.resolve()).model).toBe('openai.second');
+    f.state.project.cliModels = ['{"codex":"openai.project"}'];
+    expect((await f.resolve()).model).toBe('openai.project');
+    expect(first.model).toBe('openai.first');
+    expect(nativeExecutionConfiguration(JSON.parse(JSON.stringify(first)))).toEqual(first);
+  });
+
+  it('does not import platform environment, MCP, rules, tier selection or debug preferences', async () => {
+    const f = await fixture();
+    const first = await f.resolve();
+    // The project query deliberately projects only native model-map owners.
+    f.state.project.environmentId = 'managed-other';
+    f.state.project.agentCli = 'claude';
+    f.state.project.customMcpServers = '{"server":"private"}';
+    f.state.project.customRules = ['private-rule.md'];
+    f.state.globals['/aidlc/dev/derive-enrichment'] = 'llm';
+    f.state.globals['/aidlc/dev/native-debug-archives-enabled'] = 'true';
+    f.state.globals['/aidlc/dev/custom-mcp-servers'] = '{"server":"private"}';
+    expect(await f.resolve()).toEqual(first);
+    expect(f.ssm.send.mock.calls.map(([c]) => c.input.Name)).toEqual([
+      '/aidlc/dev/cli-models',
+      '/aidlc/dev/tier-models',
+      '/aidlc/dev/cli-models',
+      '/aidlc/dev/tier-models',
+    ]);
+  });
 
   it('does not expose raw dependency errors in API errors', async () => {
     const f = await fixture();

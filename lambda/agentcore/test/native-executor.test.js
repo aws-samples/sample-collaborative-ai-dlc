@@ -15,6 +15,7 @@ import { runNativeCommand } from '../native/command-runner.js';
 import { inspectNativeInitialization } from '../native/initialization-evidence.js';
 import { nativePublicationScope } from '../../shared/native-publication.js';
 import { kiroPromptHash } from '../native/kiro-prompt.js';
+import { nativeAnswerText } from '../../shared/native-pending-input.js';
 
 const projectId = randomUUID();
 const executionId = randomUUID();
@@ -228,13 +229,36 @@ describe('native first-turn executor', () => {
   });
 
   it.each(['codex', 'claude', 'opencode', 'kiro'])(
-    'uses explicit same-session resume for three serial %s turns',
+    'captures plan choices and gate replies in three serial %s turns without duplicate effects',
     async (harness) => {
       const request = payload();
       request.configuration.harness = harness;
+      request.configuration.model = {
+        claude: 'us.anthropic.configured',
+        codex: 'openai.configured',
+        kiro: 'configured-kiro-model',
+        opencode: 'amazon-bedrock/us.anthropic.configured',
+      }[harness];
       let turns = 0;
+      // Scripted transport evidence, not a package or live-model support claim.
+      const plans = [
+        'compose',
+        'bugfix',
+        'classic',
+        'enterprise',
+        'express',
+        'feature',
+        'infra',
+        'mvp',
+        'poc',
+        'refactor',
+        'security-patch',
+        'workshop',
+      ];
+      const labels = () => (turns === 1 ? plans : ['Approve', 'Request Changes']);
+      const responseText = () => `Proposal ${turns}. Which option? ${labels().join(' / ')}`;
       const events = () => {
-        const text = `Proposal ${turns}. Which option?`;
+        const text = responseText();
         if (harness === 'codex')
           return [
             { type: 'thread.started', thread_id: 'native-session' },
@@ -317,6 +341,28 @@ describe('native first-turn executor', () => {
       ports.commandRunner.mockImplementation(async (input) => {
         if (input.timeoutMs === null) {
           turns++;
+          if (turns < 3) {
+            await fs.writeFile(
+              join(root, 'project/.native-control/pending-question.json'),
+              JSON.stringify({
+                version: 1,
+                questions: [
+                  { prompt: 'Which option?', options: labels().map((label) => ({ label })) },
+                ],
+              }),
+            );
+          }
+          if (turns === 2) {
+            for (const [path, content] of Object.entries({
+              'aidlc/active-space': 'design\n',
+              'aidlc/spaces/design/intents/active-intent': '260929-real-pipe-request\n',
+              [`${nativeIntentPath}/aidlc-state.md`]:
+                '- **Current Stage**: requirements-analysis\n- [?] requirements-analysis — EXECUTE\n',
+            })) {
+              await fs.mkdir(join(root, 'project', path, '..'), { recursive: true, mode: 0o700 });
+              await fs.writeFile(join(root, 'project', path), content);
+            }
+          }
           // Only the streaming callback receives output, not result.stdout.
           for (const event of events())
             input.onStdoutChunk(Buffer.from(`${JSON.stringify(event)}\n`));
@@ -326,11 +372,24 @@ describe('native first-turn executor', () => {
       await executor.start({ ...request, sequence: 1 });
       const first = await executor.settle();
       expect(first).toMatchObject({ status: 'publication_ready', sequence: 1 });
-      const secondReply = reply(request, first, { text: 'Second user reply' });
+      const firstInput = ports.publishInteraction.mock.calls[0][0].pendingInput;
+      expect(firstInput.questions[0].options.map((option) => option.label)).toEqual(plans);
+      const secondReply = reply(request, first, {
+        text: nativeAnswerText(firstInput, { answers: [{ selectedOptions: [11] }] }),
+      });
+      expect(secondReply.text).toBe('workshop');
       await executor.continue(secondReply);
       const second = await executor.settle();
       expect(second).toMatchObject({ status: 'publication_ready', sequence: 2 });
-      await executor.continue(reply(request, second, { text: 'Third user reply' }));
+      await executor.continue(secondReply);
+      await executor.settle();
+      expect(turns).toBe(2);
+      const secondInput = ports.publishInteraction.mock.calls[1][0].pendingInput;
+      expect(secondInput.kind).toBe('approval');
+      const answer = nativeAnswerText(secondInput, {
+        answers: [{ selectedOptions: [1], freeText: 'Keep offline support.' }],
+      });
+      await executor.continue(reply(request, second, { text: answer }));
       expect(await executor.settle()).toMatchObject({ status: 'publication_ready', sequence: 3 });
       expect(turns).toBe(3);
       expect(ports.prepare).toHaveBeenCalledOnce();
@@ -347,12 +406,14 @@ describe('native first-turn executor', () => {
           kiroPromptHash(secondReply.text),
         );
         expect(resume.args).toContain('latest-turn');
-      } else expect(resume.stdin).toBe('Third user reply');
-      expect(ports.publishInteraction.mock.calls.map(([input]) => input.messages[0].text)).toEqual([
-        'Proposal 1. Which option?',
-        'Proposal 2. Which option?',
-        'Proposal 3. Which option?',
-      ]);
+      } else expect(resume.stdin).toBe('Request Changes\n\nKeep offline support.');
+      for (const [command] of ports.commandRunner.mock.calls.filter(
+        ([c]) => c.timeoutMs === null,
+      )) {
+        const modelFlag = harness === 'codex' ? '-m' : '--model';
+        expect(command.args[command.args.indexOf(modelFlag) + 1]).toBe(request.configuration.model);
+      }
+      expect(ports.publishInteraction.mock.calls[2][0].pendingInput).toBeNull();
     },
   );
 

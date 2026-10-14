@@ -11,6 +11,7 @@ import {
 } from '../../shared/native-publication.js';
 import { executionFixture } from './execution-fixtures.js';
 import { ACTOR, OTHER, TABLE } from './fixtures.js';
+import { canonicalJson } from '../../shared/workflow-checkpoint.js';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const QUESTION_PATH = 'aidlc/spaces/default/intents/pipe-visualization/questions.md';
@@ -216,6 +217,8 @@ describe('native execution API with real protected storage', () => {
         startedAt: new Date(row.startedAt).toISOString(),
         updatedAt: new Date(row.updatedAt).toISOString(),
         model: f.configuration.model,
+        credentialSource: f.configuration.credentialBinding.source,
+        imageDigest: f.configuration.image.digest,
         repository: {
           provider: 'github',
           repository: 'JWThewes/flappy-bird',
@@ -253,9 +256,13 @@ describe('native execution API with real protected storage', () => {
     const f = fixture();
     const first = await f.api.start(f.prepared, ACTOR, 'first', f.recheck);
     const before = f.row();
+    f.configuration.model = 'openai.changed-after-start';
+    f.configuration.credentialBinding = { provider: 'bedrock', source: 'platform' };
+    f.configure.mockRejectedValue(new Error('Current settings are unavailable'));
     const transactions = writes(f).length;
     const second = await f.api.start(f.prepared, 'second-member', 'second', f.recheck);
     expect(second).toEqual(first);
+    expect((await f.api.status(f.prepared, f.recheck)).execution).toEqual(first.execution);
     expect(f.row()).toEqual(before);
     expect(writes(f)).toHaveLength(transactions);
     expect(f.configure).toHaveBeenCalledTimes(1);
@@ -275,6 +282,30 @@ describe('native execution API with real protected storage', () => {
       executionAvailable: true,
       execution: { status: 'CANCEL_REQUESTED', epoch: 2 },
     });
+  });
+
+  it('admits only one configuration when concurrent Starts observe different model settings', async () => {
+    const bothConfigured = Promise.withResolvers();
+    const f = fixture();
+    let calls = 0;
+    f.configure.mockImplementation(async () => {
+      const model = ++calls === 1 ? 'openai.before-edit' : 'openai.after-edit';
+      if (calls === 2) bothConfigured.resolve();
+      await bothConfigured.promise;
+      return { ...structuredClone(f.configuration), model };
+    });
+    const results = await Promise.allSettled([
+      f.api.start(f.prepared, ACTOR, 'before-edit', f.recheck),
+      f.api.start(f.prepared, ACTOR, 'after-edit', f.recheck),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.find((result) => result.status === 'rejected').reason.code).toBe(
+      'NATIVE_EXECUTION_CONFLICT',
+    );
+    const winner = results.find((result) => result.status === 'fulfilled').value.execution;
+    expect((await f.api.status(f.prepared, f.recheck)).execution).toEqual(winner);
+    expect(f.row().configuration.model).toBe(winner.model);
+    expect(f.row().configurationSha256).toBe(hash(canonicalJson(f.row().configuration)));
   });
 
   it('cancels idempotently, fences the epoch and never creates another execution on start retry', async () => {

@@ -381,6 +381,24 @@ describe('native execution and committed publication boundary', () => {
     const { prompt: _prompt, ...expected } = draft;
     expect((await nativeIntentsService.list('project-1')).items).toEqual([expected]);
   });
+  it.each(['user', 'space', 'platform'])(
+    'decodes captured %s scope and image without private metadata',
+    async (credentialSource) => {
+      const imageDigest = `sha256:${'b'.repeat(64)}`;
+      get.mockResolvedValue({
+        ...draft,
+        execution: {
+          ...execution,
+          credentialSource,
+          imageDigest,
+          credentialBinding: { userId: 'private-user', parameterName: 'private-path' },
+        },
+      });
+      const result = (await nativeIntentsService.get('project-1', 'run-1')).execution;
+      expect(result).toEqual({ ...execution, credentialSource, imageDigest });
+      expect(JSON.stringify(result)).not.toContain('private-');
+    },
+  );
   it('starts with only the retry identity, and cancels with an empty body', async () => {
     post.mockResolvedValue({ ...draft, executionAvailable: true, execution });
     await nativeIntentsService.start('project-1', 'run-1', requestId);
@@ -399,6 +417,10 @@ describe('native execution and committed publication boundary', () => {
     { epoch: '1' },
     { attemptId: '../other' },
     { model: {} },
+    { credentialSource: 'current-user' },
+    { credentialSource: { source: 'user' } },
+    { imageDigest: 'latest' },
+    { imageDigest: `sha256:${'b'.repeat(64)}\n` },
     { updatedAt: 'invalid' },
     { repository: null },
     { repository: { ...execution.repository, branch: 1 } },

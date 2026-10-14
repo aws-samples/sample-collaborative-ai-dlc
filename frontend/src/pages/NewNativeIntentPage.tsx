@@ -16,6 +16,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { NativeSettingsNotice } from '@/components/intent/NativeSettingsNotice';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const UUID_V4 = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -278,6 +279,14 @@ function NativeDraftForm({
                   <option value="opencode">OpenCode</option>
                 </select>
               </div>
+              <details className="rounded-md border p-3">
+                <summary className="cursor-pointer text-sm font-medium">
+                  Settings that apply to native execution
+                </summary>
+                <div className="mt-3">
+                  <NativeSettingsNotice />
+                </div>
+              </details>
               <Button type="submit" disabled={creating || (!title.trim() && !prompt.trim())}>
                 {creating ? 'Creating draft…' : locked ? 'Retry same draft' : 'Create native draft'}
               </Button>

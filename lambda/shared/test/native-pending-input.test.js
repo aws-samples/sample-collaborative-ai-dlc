@@ -26,6 +26,25 @@ const planSpec = {
     },
   ],
 };
+const approvalSpec = {
+  version: 1,
+  questions: [
+    {
+      prompt: 'Requirements complete. How would you like to proceed?',
+      header: 'Approval',
+      options: [
+        { label: 'Approve', description: 'Continue to user stories' },
+        { label: 'Request Changes', description: 'Provide revision feedback' },
+        { label: 'Accept as-is', description: 'Proceed without further revision' },
+      ],
+    },
+  ],
+};
+const approvalTurn = {
+  gate: { stage: 'requirements-analysis' },
+  spec: approvalSpec,
+  messagesText: 'Approve Request Changes Accept as-is',
+};
 
 describe('native pending input capture', () => {
   it('captures the rendered question spec when every label was shown', () => {
@@ -95,6 +114,7 @@ describe('native pending input capture', () => {
     for (const bad of [
       {},
       { version: 2, questions: [] },
+      { ...planSpec, futureProtocol: true },
       { version: 1, questions: [{ prompt: 'x', options: [{ label: 'Only' }] }] },
       { version: 1, questions: [{ prompt: 'x', extra: 1, options: [] }] },
       'text',
@@ -104,34 +124,10 @@ describe('native pending input capture', () => {
     }
   });
 
-  it('derives approval gates from engine state with protocol labels, whatever the spec says', () => {
+  it('requires the complete presented gate protocol instead of synthesizing or dropping choices', () => {
     const gate = { stage: 'requirements-analysis' };
-    const fixed = buildNativePendingInput({ gate, spec: null, messagesText: 'Ready for review.' });
-    expect(fixed).toMatchObject({
-      kind: 'approval',
-      source: 'engine-gate',
-      stage: 'requirements-analysis',
-    });
-    expect(fixed.questions[0].options.map((o) => o.label)).toEqual(['Approve', 'Request Changes']);
-    const rendered = buildNativePendingInput({
-      gate,
-      spec: {
-        version: 1,
-        questions: [
-          {
-            prompt: 'Requirements complete. How would you like to proceed?',
-            header: 'Approval',
-            options: [
-              { label: 'Approve', description: 'Continue to user stories' },
-              { label: 'Request Changes', description: 'Provide revision feedback' },
-              { label: 'Accept as-is', description: 'Proceed without further revision' },
-              { label: 'Skip review entirely', description: 'not a protocol option' },
-            ],
-          },
-        ],
-      },
-      messagesText: 'Approve Request Changes Accept as-is Skip review entirely',
-    });
+    expect(buildNativePendingInput({ gate, messagesText: 'Ready for review.' })).toBeNull();
+    const rendered = buildNativePendingInput(approvalTurn);
     expect(rendered.questions[0].prompt).toBe(
       'Requirements complete. How would you like to proceed?',
     );
@@ -141,13 +137,31 @@ describe('native pending input capture', () => {
       'Accept as-is',
     ]);
     expect(rendered.questions[0].options[0].description).toBe('Continue to user stories');
+    const incompatible = structuredClone(approvalSpec);
+    incompatible.questions[0].options.push({ label: 'Skip review entirely' });
+    expect(
+      buildNativePendingInput({
+        ...approvalTurn,
+        spec: incompatible,
+        messagesText: `${approvalTurn.messagesText} Skip review entirely`,
+      }),
+    ).toBeNull();
+    expect(
+      buildNativePendingInput({ ...approvalTurn, messagesText: 'Approve Accept as-is' }),
+    ).toBeNull();
+    // A fork's renamed choices are not translated into the platform's labels.
+    incompatible.questions[0].options = [{ label: 'Ship it' }, { label: 'Revise' }];
+    expect(
+      buildNativePendingInput({
+        ...approvalTurn,
+        spec: incompatible,
+        messagesText: 'Ship it or Revise',
+      }),
+    ).toBeNull();
   });
 
   it('rejects approval inputs that drop a protocol label or invent one', () => {
-    const base = buildNativePendingInput({
-      gate: { stage: 'requirements-analysis' },
-      messagesText: '',
-    });
+    const base = buildNativePendingInput(approvalTurn);
     const missing = structuredClone(base);
     missing.questions[0].options = missing.questions[0].options.filter(
       (o) => o.label !== 'Request Changes',
@@ -162,10 +176,7 @@ describe('native pending input capture', () => {
 
 describe('native answer rendering', () => {
   const choice = buildNativePendingInput({ spec: planSpec, messagesText: planChoiceText });
-  const gate = buildNativePendingInput({
-    gate: { stage: 'requirements-analysis' },
-    messagesText: '',
-  });
+  const gate = buildNativePendingInput(approvalTurn);
   it('sends the bare exact label for one question, never a number', () => {
     expect(nativeAnswerText(choice, { answers: [{ selectedOptions: [0] }] })).toBe('Compose');
     expect(nativeAnswerText(gate, { answers: [{ selectedOptions: [0] }] })).toBe('Approve');

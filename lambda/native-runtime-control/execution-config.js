@@ -368,7 +368,10 @@ export const createNativeExecutionConfiguration =
           tierModels: mergeTierModels(project.tierModels, tierModels),
           env,
         }) ?? null;
-      await readProject(g, draft);
+      // Detect edits during the asynchronous credential/model reads, not just
+      // deletion/recreation of the project. Never admit a stale project choice
+      // while telling the member configuration was captured at Start.
+      if (!isDeepStrictEqual(await readProject(g, draft), project)) fail('PROJECT_CHANGED');
       if (!isDeepStrictEqual(await readRepository(g, draft), repository))
         fail('SOURCE_CONTROL_CHANGED');
       const current = await readNativeCodeBinding(ddb, env, {

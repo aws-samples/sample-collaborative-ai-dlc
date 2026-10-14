@@ -223,6 +223,17 @@ it('starts only explicitly, deduplicates pending clicks and reuses the request I
   expect(within(configuration).getByText('JWThewes/flappy-bird')).toBeInTheDocument();
   expect(within(configuration).getByText('main')).toBeInTheDocument();
   expect(within(configuration).getByText('abc123')).toBeInTheDocument();
+  expect(
+    within(configuration).getByText(
+      /managed environments, custom MCP servers and uploaded custom rules do not apply/,
+    ),
+  ).toBeInTheDocument();
+  expect(
+    within(configuration).getByText('Captured scope unavailable from this API'),
+  ).toBeInTheDocument();
+  expect(
+    within(configuration).getByText('Captured image unavailable from this API'),
+  ).toBeInTheDocument();
 });
 
 const credentialError = {

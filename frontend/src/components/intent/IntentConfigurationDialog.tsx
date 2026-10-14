@@ -30,6 +30,7 @@ import {
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { executionCapabilityReason } from '@/lib/executionCapabilities';
+import { NativeSettingsNotice } from './NativeSettingsNotice';
 
 interface IntentConfigurationDialogProps {
   open: boolean;
@@ -315,11 +316,39 @@ export function NativeIntentConfigurationDialog({
             <Definition label="Backend" value="Native" />
             <Definition label="Status" value={nativeIntentStatusLabel(intent)} />
             <Definition label="Agent" value={harnesses[intent.harness]} />
-            {execution && <Definition label="Model" value={execution.model ?? 'CLI default'} />}
+            {execution && (
+              <Definition
+                label="Model"
+                value={execution.model ?? 'Harness default (model not pinned)'}
+              />
+            )}
+            {execution && (
+              <Definition
+                label="Credentials"
+                value={
+                  execution.credentialSource
+                    ? `${AGENT_CREDENTIAL_SOURCE_LABELS[execution.credentialSource]} key${execution.credentialSource === 'user' ? ' of the starting member' : ''}`
+                    : 'Captured scope unavailable from this API'
+                }
+              />
+            )}
             {execution && (
               <Definition label="Started" value={new Date(execution.startedAt).toLocaleString()} />
             )}
           </dl>
+        </section>
+        <section className="space-y-4 px-6 py-5" aria-label="Native settings">
+          <h3 className="text-sm font-semibold">Settings for this run</h3>
+          <NativeSettingsNotice />
+          {execution && (
+            <dl>
+              <Definition
+                label="Runtime image"
+                value={execution.imageDigest ?? 'Captured image unavailable from this API'}
+                code={Boolean(execution.imageDigest)}
+              />
+            </dl>
+          )}
         </section>
         <section className="space-y-4 px-6 py-5" aria-label="Methodology package">
           <h3 className="text-sm font-semibold">Methodology package</h3>

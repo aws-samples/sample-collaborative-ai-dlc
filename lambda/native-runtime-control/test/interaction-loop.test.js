@@ -45,6 +45,13 @@ it.each([false, true])('native interaction cycle (structured: %s)', async (struc
       await fs.writeFile(dir + '/aidlc-state.md',
         '- **Current Stage**: requirements-analysis\\n- [' + (turn === 3 ? 'x' : '?') + '] requirements-analysis — EXECUTE\\n');
       await fs.writeFile(dir + '/plan.md', turn === 1 ? 'Original plan\\n' : 'Revised plan: accessibility check\\n');
+      if (turn < 3) await fs.writeFile('.native-control/pending-question.json', JSON.stringify({
+        version: 1,
+        questions: [{
+          prompt: 'How should the requirements proceed?',
+          options: [{ label: 'Approve' }, { label: 'Request Changes' }],
+        }],
+      }));
     }
     console.log(JSON.stringify({ type: 'thread.started', thread_id: 'composer-session' }));
     console.log(JSON.stringify({ type: 'turn.started' }));
@@ -56,6 +63,7 @@ it.each([false, true])('native interaction cycle (structured: %s)', async (struc
       ? ['| Stage | Purpose |\\n|---|---|\\n| Design | Improve the pipes |',
          'Would you like to approve or edit this workflow?']
       : ['Which pipe appearance should the design use?'];
+    if (${structured} && turn < 3) texts.push('Approve / Request Changes');
     for (const [index, text] of texts.entries()) console.log(JSON.stringify({
       type: 'item.completed', item: { id: 'message-' + index, type: 'agent_message', text },
     }));
@@ -214,6 +222,7 @@ it.each([false, true])('native interaction cycle (structured: %s)', async (struc
     expect(first.messages).toEqual([
       { type: 'text', text: '| Stage | Purpose |\n|---|---|\n| Design | Improve the pipes |' },
       { type: 'text', text: 'Would you like to approve or edit this workflow?' },
+      ...(structured ? [{ type: 'text', text: 'Approve / Request Changes' }] : []),
     ]);
     expect(firstRow.publication.question).toBeNull();
     expect(firstRow.publication.outcome).toBe('STOPPED');
@@ -281,6 +290,7 @@ it.each([false, true])('native interaction cycle (structured: %s)', async (struc
     expect(prepare).toHaveBeenCalledTimes(1);
     expect((await api.interaction(f.prepared, recheck)).messages).toEqual([
       { type: 'text', text: 'Which pipe appearance should the design use?' },
+      ...(structured ? [{ type: 'text', text: 'Approve / Request Changes' }] : []),
     ]);
     const calls = commandRunner.mock.calls.filter(([call]) => call.timeoutMs === null);
     expect(calls[0][0].stdin).toContain(f.prepared.request.prompt);

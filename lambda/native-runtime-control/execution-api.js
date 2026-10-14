@@ -44,6 +44,8 @@ export const nativeExecutionView = (row) =>
         startedAt: new Date(row.startedAt).toISOString(),
         updatedAt: new Date(row.updatedAt).toISOString(),
         model: row.configuration.model,
+        credentialSource: row.configuration.credentialBinding.source,
+        imageDigest: row.configuration.image.digest,
         repository: {
           provider: row.configuration.repository.provider,
           repository: row.configuration.repository.repository,

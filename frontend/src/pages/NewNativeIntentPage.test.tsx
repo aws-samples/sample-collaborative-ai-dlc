@@ -79,6 +79,19 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+it('explains native settings before creating a draft without loading current private settings', async () => {
+  renderPage();
+  await screen.findByLabelText('Coding harness');
+  await userEvent.click(screen.getByText('Settings that apply to native execution'));
+  expect(
+    screen.getByText(
+      /managed environments, custom MCP servers and uploaded custom rules do not apply/,
+    ),
+  ).toBeVisible();
+  expect(screen.getByText(/Agent tier assignments do not apply/)).toBeVisible();
+  expect(create).not.toHaveBeenCalled();
+});
+
 it.each([false, true])(
   'opens the creation link and submits a draft with the real capability gate and executionEnabled=%s',
   async (executionEnabled) => {
