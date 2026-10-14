@@ -724,6 +724,7 @@ export const createNativeExecutor = ({
     const prepared = continuing
       ? await prepareContinuation({ payload, signal })
       : await prepare({ payload, root, project, home: current.home, signal });
+    if (!continuing) current.sourceBaseline = prepared?.sourceBaseline ?? null;
     timing('preparationCompleted');
     checkCancelled();
     await checkDirectories();
@@ -984,6 +985,7 @@ export const createNativeExecutor = ({
         commit: configuration.repository.commit,
       },
       files: files.files,
+      ...(current.sourceBaseline ? { sourceBaseline: current.sourceBaseline } : {}),
       questionPath,
       signal,
     });
@@ -1608,6 +1610,7 @@ export const createNativeExecutor = ({
           timing('checkpointDownloadCompleted');
           checkCancelled();
           const { manifest, files } = loaded ?? {};
+          current.sourceBaseline = loaded?.sourceBaseline ?? null;
           if (
             manifest?.sequence !== input.sequence ||
             manifest.writerGeneration >= writerGeneration ||

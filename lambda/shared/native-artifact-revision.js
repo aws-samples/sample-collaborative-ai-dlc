@@ -6,6 +6,7 @@
 // execution, approval or edit authority.
 import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { nativeRuntimeBindingKey } from './native-runtime-binding.js';
+import { nativeFileExclusion, nativeCredentialPath } from './native-project-files.js';
 
 const SHA = /^[a-f0-9]{64}$/;
 const FILE_ID = /^nf-[a-f0-9]{64}$/;
@@ -136,9 +137,34 @@ export const createNativeArtifactRevisions = ({ ddb, nativeTable, publications }
     if (!file || file.sha256 !== revision.sha256) throw unavailable();
     return { found, manifest, file };
   };
+  const source = async (execution, revision) => {
+    const located = await publication(execution, revision);
+    const baseline = await publications.source(located.found.identity, located.manifest);
+    if (
+      baseline &&
+      baseline.manifest.files.some(
+        (file) => nativeFileExclusion(file.path) || nativeCredentialPath(file.path),
+      )
+    )
+      throw unavailable();
+    return { ...located, baseline };
+  };
 
   return Object.freeze({
     publication,
+    source,
+    // Full-size exact bytes for result builders. Eligibility and destination
+    // policy belong to that caller; resolution remains shared with history.
+    async bytes(execution, revision, options) {
+      const located = await locate(execution, revision);
+      const { bytes } = await publications.file(
+        located.found.identity,
+        located.manifest,
+        located.file.id,
+        options,
+      );
+      return bytes;
+    },
     async list(execution, beforeSequence = null) {
       if (!execution?.publication) return { items: [], nextBefore: null, gaps: [] };
       const upper =
@@ -199,15 +225,38 @@ export const createNativeArtifactRevisions = ({ ddb, nativeTable, publications }
     },
     // Exact verified bytes for Quorum. Text larger than maxBytes is supplied
     // as a clearly truncated prefix; binary content is never supplied.
-    async read(execution, revision, { maxBytes }) {
-      const located = await locate(execution, revision);
+    async read(execution, revision, { maxBytes, sourceBaseline = false } = {}) {
+      let located;
+      if (sourceBaseline) {
+        const resolved = await source(execution, revision);
+        const file = resolved.baseline?.manifest.files.find(
+          (f) => f.id === revision.fileId && f.sha256 === revision.sha256,
+        );
+        if (!file) throw unavailable();
+        located = {
+          found: resolved.found,
+          manifest: resolved.baseline.manifest,
+          file,
+          readIdentity: resolved.baseline.identity,
+          sourceBaselineId: resolved.baseline.receipt.id,
+        };
+      } else located = await locate(execution, revision);
+      const description = {
+        ...describe(located),
+        ...(located.sourceBaselineId
+          ? {
+              publicationSequence: revision.publicationSequence,
+              sourceBaselineId: located.sourceBaselineId,
+            }
+          : {}),
+      };
       // Match the inline viewer: never download a large object to build context.
       if (located.file.bytes > NATIVE_ARTIFACT_CONTEXT_MAX_FILE_BYTES)
-        return { ...describe(located), encoding: 'too_large', content: null, truncated: false };
+        return { ...description, encoding: 'too_large', content: null, truncated: false };
       let bytes;
       try {
         ({ bytes } = await publications.file(
-          located.found.identity,
+          located.readIdentity ?? located.found.identity,
           located.manifest,
           located.file.id,
         ));
@@ -223,7 +272,7 @@ export const createNativeArtifactRevisions = ({ ddb, nativeTable, publications }
       }
       const truncated = text !== null && Buffer.byteLength(text) > maxBytes;
       return {
-        ...describe(located),
+        ...description,
         encoding: text === null ? 'binary' : 'utf8',
         content:
           text === null

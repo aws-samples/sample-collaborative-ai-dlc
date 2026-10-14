@@ -37,7 +37,13 @@ export const nativeRevisionQuery = (event, kind) => {
       before: query.beforeSequence === undefined ? null : sequence(query.beforeSequence),
     };
   }
-  const keys = ['publicationId', 'publicationSequence', ...(kind === 'file' ? ['sha256'] : [])];
+  const source = query.source === '1' && ['file', 'publication'].includes(kind);
+  const keys = [
+    'publicationId',
+    'publicationSequence',
+    ...(kind === 'file' ? ['sha256'] : []),
+    ...(source ? ['source'] : []),
+  ];
   if (
     Object.keys(query).length !== keys.length ||
     Object.keys(query).some((key) => !keys.includes(key)) ||
@@ -48,6 +54,7 @@ export const nativeRevisionQuery = (event, kind) => {
   return {
     publicationId: query.publicationId,
     publicationSequence: sequence(query.publicationSequence),
+    ...(source ? { source: true } : {}),
     ...(kind === 'file' ? { fileId: event.pathParameters.fileId, sha256: query.sha256 } : {}),
   };
 };

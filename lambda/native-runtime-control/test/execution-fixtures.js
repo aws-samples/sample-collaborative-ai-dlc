@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
-import { GetCommand, QueryCommand, ScanCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  ScanCommand,
+  TransactWriteCommand,
+} from '@aws-sdk/lib-dynamodb';
 import { createNativeExecutionStore, nativeExecutionKey } from '../execution-store.js';
 import { nativeRuntimeBindingKey } from '../../shared/native-runtime-binding.js';
 import { canonicalJson } from '../policies.js';
@@ -92,6 +98,15 @@ export const executionFixture = () => {
     async send(command) {
       await hooks.before?.(command);
       if (command instanceof GetCommand) return { Item: read(command.input.Key) };
+      if (command instanceof PutCommand) {
+        if (!condition(command.input))
+          throw Object.assign(new Error('Conditional write failed'), {
+            name: 'ConditionalCheckFailedException',
+          });
+        rows.set(key(command.input.Item), clone(command.input.Item));
+        await hooks.after?.(command);
+        return {};
+      }
       if (command instanceof ScanCommand) return { Items: [...rows.values()].map(clone) };
       if (command instanceof QueryCommand) {
         const values = command.input.ExpressionAttributeValues;

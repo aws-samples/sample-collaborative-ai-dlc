@@ -4,7 +4,7 @@
 module "packages" {
   source          = "terraform-aws-modules/lambda/aws"
   version         = "~> 8.0"
-  for_each        = toset(["api", "worker", "execution-worker", "execution-credentials", "authority", "wakeup", "projection-worker"])
+  for_each        = toset(["api", "worker", "execution-worker", "execution-credentials", "authority", "wakeup", "projection-worker", "result-worker"])
   create_function = false
   create_role     = false
   runtime         = "nodejs24.x"

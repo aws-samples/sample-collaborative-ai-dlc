@@ -72,6 +72,72 @@ const setup = () => {
   };
 };
 
+it.each(['short', 'long', 'interrupted', 'aborted'])(
+  'rejects and closes a %s immutable file transfer',
+  async (kind) => {
+    const f = setup();
+    const receipt = await f.store.write(input());
+    const manifest = await f.store.read(identity, receipt);
+    const controller = new AbortController();
+    const bytes = Buffer.from([0, 255, 128, 12]);
+    const file = manifest.files[1];
+    const stream = new Readable({
+      read() {
+        if (kind === 'aborted') return;
+        this.push(
+          kind === 'short'
+            ? bytes.subarray(0, 2)
+            : kind === 'long'
+              ? Buffer.concat([bytes, bytes])
+              : bytes,
+        );
+        if (kind === 'interrupted') this.destroy(new Error('connection lost'));
+        else this.push(null);
+      },
+    });
+    const store = createNativePublications({
+      bucket: 'native-results-test',
+      accountId: '123456789012',
+      s3: {
+        send: async () => ({
+          VersionId: file.object.versionId,
+          ContentLength: bytes.length,
+          Body: stream,
+        }),
+      },
+    });
+    const reading = store.file(identity, manifest, file.id, { signal: controller.signal });
+    const rejected = expect(reading).rejects.toThrow();
+    if (kind === 'aborted') controller.abort();
+    await rejected;
+    expect(stream.destroyed).toBe(true);
+  },
+);
+
+it('validates an immutable source baseline and rejects another pinned commit or nested baseline', async () => {
+  const f = setup();
+  const sourceInput = { ...input(), outcome: 'STOPPED', nativeSessionId: null, questionPath: null };
+  const baseline = await f.store.write(sourceInput);
+  const receipt = await f.store.write({
+    ...input(),
+    sourceBaseline: { epoch: 1, receipt: baseline },
+  });
+  const manifest = await f.store.read(identity, receipt);
+  expect((await f.store.source(identity, manifest, { verifyFiles: true })).receipt.id).toBe(
+    baseline.id,
+  );
+  const foreign = await f.store.write({
+    ...sourceInput,
+    repository: { ...sourceInput.repository, commit: 'c'.repeat(40) },
+  });
+  await expect(
+    f.store.source(identity, { ...manifest, sourceBaseline: { epoch: 1, receipt: foreign } }),
+  ).rejects.toThrow();
+  await expect(
+    f.store.source(identity, { ...manifest, sourceBaseline: { epoch: 1, receipt } }),
+  ).rejects.toThrow();
+});
+
 describe('exact native publication', () => {
   it('preserves earlier immutable file versions across sequential native turns', async () => {
     const { store } = setup();

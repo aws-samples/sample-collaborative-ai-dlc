@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router';
-import { simpleDiffStringWithCursor } from 'lib0/diff';
+import { compareInventory, NativeFileComparison } from './NativeFileComparison';
 import { Button } from '@/components/ui/button';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { ArtifactMarkdown } from './ArtifactMarkdown';
 import { NativeFileView } from './NativeFileView';
+import { NativeResultDownload } from './NativeResultDownload';
+import { NativeSourceComparison } from './NativeSourceComparison';
 import { getNativeListing, nativeAccessDenied } from '@/hooks/useNativeIntents';
 import { currentSessionEpoch, isSessionExpiryNotified } from '@/services/sessionExpiry';
 import { nativeHistorySearch, type NativeHistoryLocation } from '@/lib/nativeRevisionLinks';
@@ -262,6 +264,24 @@ export function NativeHistoryView({
                 <p className="text-xs break-all">
                   Publication {revision.id} · Package {revision.context.packageId}
                 </p>
+                <NativeResultDownload
+                  projectId={intent.projectId}
+                  executionId={intent.id}
+                  target={target(revision)}
+                  onAccessFailure={onAccessFailure}
+                />
+                <p className="text-sm">
+                  Workflow completion is not verified for this publication. Required check results,
+                  final review and human approval receipts are not recorded. Runtime output and
+                  published verification files are agent-reported evidence; their freshness and
+                  relationship to these exact result bytes are not established.
+                </p>
+                <NativeSourceComparison
+                  projectId={intent.projectId}
+                  executionId={intent.id}
+                  revision={revision}
+                  onAccessFailure={onAccessFailure}
+                />
                 <p className="text-sm">
                   Read-only proposal and answer history. Return to Current to answer the current
                   question.
@@ -383,6 +403,11 @@ export function NativeHistoryView({
                       descriptor={descriptor}
                       createdAt={revision.createdAt}
                       publicationSequence={revision.sequence}
+                      resultScope={{
+                        projectId: intent.projectId,
+                        executionId: intent.id,
+                        onAccessFailure,
+                      }}
                     />
                     <Link
                       className="text-sm underline"
@@ -517,71 +542,4 @@ export function NativeHistoryView({
   );
 }
 
-export function compareInventory(before: NativePublishedFile[], after: NativePublishedFile[]) {
-  const old = new Map(before.map((file) => [file.path, file]));
-  const next = new Map(after.map((file) => [file.path, file]));
-  return [...new Set([...old.keys(), ...next.keys()])].toSorted().map((path) => {
-    const a = old.get(path),
-      b = next.get(path);
-    return {
-      path,
-      before: a,
-      after: b,
-      status: !a
-        ? 'added'
-        : !b
-          ? 'deleted'
-          : a.sha256 === b.sha256 && a.bytes === b.bytes
-            ? 'identical'
-            : 'changed',
-    };
-  });
-}
-
-export function NativeFileComparison({
-  before,
-  after,
-  added,
-}: {
-  before: NativeRevisionFile | null;
-  after: NativeRevisionFile | null;
-  added: boolean;
-}) {
-  if ((after && after.encoding !== 'utf8') || (before && before.encoding !== 'utf8'))
-    return (
-      <p>
-        Complete text comparison unavailable: a file is binary, unsupported text, or exceeds the 3
-        MiB inline limit. No partial diff is shown.
-      </p>
-    );
-  if (!before && !added) return null;
-  const old = before?.content ?? '',
-    next = after?.content ?? '';
-  if (old === next && before && after) return <p>Identical verified bytes.</p>;
-  const change = simpleDiffStringWithCursor(old, next, 0);
-  return (
-    <section aria-label="Complete file comparison" className="space-y-2">
-      <p className="text-sm">Complete text comparison. Removed text is red; added text is green.</p>
-      <div className="grid gap-3 md:grid-cols-2">
-        <div>
-          <h4>Before{added ? ' (file absent)' : ''}</h4>
-          <pre className="max-h-[36rem] overflow-auto rounded-md border p-3 text-xs">
-            {old.slice(0, change.index)}
-            <del className="bg-red-100 text-red-950">
-              {old.slice(change.index, change.index + change.remove)}
-            </del>
-            {old.slice(change.index + change.remove)}
-          </pre>
-        </div>
-        <div>
-          <h4>After{after === null ? ' (file absent)' : ''}</h4>
-          <pre className="max-h-[36rem] overflow-auto rounded-md border p-3 text-xs">
-            {next.slice(0, change.index)}
-            <ins className="bg-green-100 text-green-950">{change.insert}</ins>
-            {next.slice(change.index + change.insert.length)}
-          </pre>
-        </div>
-      </div>
-    </section>
-  );
-}
+export { compareInventory, NativeFileComparison } from './NativeFileComparison';

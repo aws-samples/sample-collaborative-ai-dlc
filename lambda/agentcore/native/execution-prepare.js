@@ -17,6 +17,7 @@ import { runNativeCommand } from './command-runner.js';
 import { withGitCredential } from '../git-auth.js';
 import { isValidRepoPath } from '../../shared/repo-validation.js';
 import { recordNativeBoundary } from '../../shared/native-lifecycle.js';
+import { captureNativeSourceBaseline } from './source-baseline.js';
 
 const fail = (code) => {
   throw Object.assign(new Error(code), { code });
@@ -409,7 +410,22 @@ export const createNativeExecutionPorts = ({
       }
       await recheck();
       recordNativeBoundary(dispatch, 'checkoutCompleted');
+      const sourceBaseline = await captureNativeSourceBaseline({
+        project,
+        identity: executionScope(dispatch),
+        repository: { commit, branch: repo.branch },
+        packageId: pin.packageId,
+        signal,
+        forbiddenBytes: [git.password, model.value],
+        publications: publicationFactory({
+          s3,
+          bucket: env.NATIVE_PUBLICATION_BUCKET,
+          accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
+        }),
+      });
+      await recheck();
       return {
+        sourceBaseline,
         package: {
           directory: loaded.directory,
           binaryPath: loaded.binaryPath,
@@ -435,6 +451,7 @@ export const createNativeExecutionPorts = ({
       questionPath,
       signal,
       sequence = 1,
+      sourceBaseline,
     }) {
       checkIdentity(env, identity);
       checkAbort(signal);
@@ -452,6 +469,7 @@ export const createNativeExecutionPorts = ({
         files,
         questionPath,
         sequence,
+        ...(sourceBaseline ? { sourceBaseline } : {}),
       });
       checkAbort(signal);
       return { uploaded: true, receipt };
@@ -492,9 +510,17 @@ export const createNativeExecutionPorts = ({
       });
       recordNativeBoundary(payload, 'checkpointVerificationStarted');
       const loaded = await recoveryStorage().readFiles(executionScope(payload), payload.checkpoint);
+      const publications = publicationFactory({
+        s3,
+        bucket: env.NATIVE_PUBLICATION_BUCKET,
+        accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
+      });
+      const publication = await publications.read(executionScope(payload), payload.publication);
+      // Validate the retained original baseline before propagating its pointer.
+      await publications.source(executionScope(payload), publication);
       checkAbort(signal);
       recordNativeBoundary(payload, 'checkpointVerificationCompleted');
-      return loaded;
+      return { ...loaded, sourceBaseline: publication.sourceBaseline ?? null };
     },
     async prepareRecovery({ payload, root, project, home, signal }) {
       checkIdentity(env, payload);

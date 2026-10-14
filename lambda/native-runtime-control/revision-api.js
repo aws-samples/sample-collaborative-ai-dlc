@@ -38,12 +38,40 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
     },
     async revision(draft, target, recheck) {
       const { row, found, manifest } = await locate(draft, target, recheck);
+      if (target.source) {
+        const { baseline } = await revisions.source(row, target);
+        await finish(draft, row, recheck);
+        return {
+          projectId: row.scope.projectId,
+          executionId: row.scope.executionId,
+          publicationId: found.receipt.id,
+          publicationSequence: manifest.sequence,
+          baseline: baseline
+            ? {
+                id: baseline.receipt.id,
+                repository: baseline.manifest.repository,
+                files: nativePublicationView(baseline.receipt, baseline.manifest).files,
+                inventory: 'native-public-files',
+              }
+            : null,
+          status: baseline ? 'captured' : 'not_retained',
+          reason: baseline ? null : (manifest.sourceBaseline?.unavailable ?? 'not_recorded'),
+        };
+      }
       await finish(draft, row, recheck);
       return {
         ...nativePublicationView(found.receipt, manifest),
         context: { ...found.identity, packageId: manifest.packageId },
         outcome: manifest.outcome,
         interactionId: found.interaction?.id ?? null,
+        verification: {
+          publicationId: found.receipt.id,
+          publicationSequence: manifest.sequence,
+          workflowCompletion: 'not_verified',
+          requiredChecks: 'not_recorded',
+          finalReview: 'not_recorded',
+          humanApproval: 'not_recorded',
+        },
       };
     },
     async revisionFile(draft, target, recheck) {
@@ -51,6 +79,7 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
       if (!row?.publication || !revisions) invalid();
       const result = await revisions.read(row, target, {
         maxBytes: NATIVE_ARTIFACT_CONTEXT_MAX_FILE_BYTES,
+        sourceBaseline: target.source === true,
       });
       await finish(draft, row, recheck);
       return result;

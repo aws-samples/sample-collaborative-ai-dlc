@@ -448,6 +448,22 @@ export const verifyCompletedNativeTurn = async ({
     receipt.sequence !== nativeTurnSequence(state.row)
   )
     fail('NATIVE_PUBLICATION_INVALID');
+  if (manifest.sourceBaseline && !state.row.publication)
+    await publications.source(executionIdentity(state.row), manifest, { verifyFiles: true });
+  if (state.row.publication) {
+    const previous = await publications.read(
+      {
+        ...executionIdentity(state.row),
+        epoch: state.row.publicationEpoch,
+      },
+      state.row.publication,
+    );
+    if (
+      JSON.stringify(previous.sourceBaseline ?? null) !==
+      JSON.stringify(manifest.sourceBaseline ?? null)
+    )
+      fail('NATIVE_PUBLICATION_INVALID');
+  }
   await check();
   const interaction = report.interaction;
   let interactionContentSha256;

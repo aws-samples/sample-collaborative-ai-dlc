@@ -11,6 +11,18 @@ locals {
     NATIVE_PACKAGES_BUCKET              = var.native_packages_bucket_name
   }
   execution_api_statements = [
+    {
+      Sid      = "BuildNativeResult"
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = module.results.lambda_function_arn
+    },
+    {
+      Sid      = "DownloadGeneratedNativeResult"
+      Effect   = "Allow"
+      Action   = ["s3:GetObjectVersion"]
+      Resource = "${aws_s3_bucket.publications.arn}/native-results/v1/*"
+    },
     { Sid = "ReadNativeOutputHistory", Effect = "Allow", Action = ["dynamodb:Query"], Resource = aws_dynamodb_table.bindings.arn },
     {
       # TransactWriteItems authorizes its constituent operations individually.

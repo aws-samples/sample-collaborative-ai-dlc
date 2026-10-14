@@ -6,17 +6,24 @@ import { nativeArtifactRevisionId } from '@/lib/nativeCollaboration';
 import { nativeHistorySearch } from '@/lib/nativeRevisionLinks';
 import type { NativeFileContent, NativePublishedFile } from '@/services/nativeIntents';
 import type { NativeRevisionFile } from '@/services/nativeHistory';
+import { NativeResultDownload } from './NativeResultDownload';
 
 export function NativeFileView({
   file,
   descriptor,
   createdAt,
   publicationSequence,
+  resultScope,
 }: {
   file: NativeFileContent | NativeRevisionFile;
   descriptor: NativePublishedFile;
   createdAt: string;
   publicationSequence: number;
+  resultScope?: {
+    projectId: string;
+    executionId: string;
+    onAccessFailure: (error: unknown) => void;
+  };
 }) {
   const { search } = useLocation();
   const markdown = file.mediaType.split(';')[0] === 'text/markdown' || /\.md$/i.test(file.path);
@@ -33,6 +40,13 @@ export function NativeFileView({
           publicationSequence={publicationSequence}
         />
       </div>
+      {resultScope && (
+        <NativeResultDownload
+          {...resultScope}
+          target={{ publicationId: file.publicationId, publicationSequence }}
+          file={descriptor}
+        />
+      )}
       <Link
         className="text-xs underline"
         to={{

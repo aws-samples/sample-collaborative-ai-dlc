@@ -11,6 +11,7 @@ import { nativeDraftPrompt, promptFailure } from './draft-prompt.js';
 import { nativeInteractionView } from '../shared/native-interaction.js';
 import { nativeAnswerText } from '../shared/native-pending-input.js';
 import { createNativeRevisionApi } from './revision-api.js';
+import { createNativeResultApi } from './result-api.js';
 
 const fail = (code, message) => {
   throw Object.assign(new Error(message), { code });
@@ -78,6 +79,7 @@ export const createNativeExecutionApi = ({
   publications,
   interactions,
   revisions,
+  results,
   enqueue,
   authorizeSource,
   images,
@@ -151,6 +153,13 @@ export const createNativeExecutionApi = ({
     return { row: current, body, response };
   };
   return {
+    ...(results
+      ? createNativeResultApi({
+          read: (draft, recheck) => read(draft, recheck, false),
+          revisions,
+          ...results,
+        })
+      : {}),
     ...createNativeRevisionApi({
       read: (draft, recheck) => read(draft, recheck, false),
       revisions,

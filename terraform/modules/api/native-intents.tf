@@ -41,7 +41,7 @@ resource "aws_api_gateway_resource" "native_intent_prompt" {
 }
 
 resource "aws_api_gateway_resource" "native_execution_action" {
-  for_each    = var.native_preparation_enabled && var.native_execution_enabled ? toset(["start", "cancel", "recover", "publication", "files", "graph", "interaction", "response", "outputs"]) : toset([])
+  for_each    = var.native_preparation_enabled && var.native_execution_enabled ? toset(["start", "cancel", "recover", "publication", "files", "graph", "interaction", "response", "outputs", "results"]) : toset([])
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.native_intent[0].id
   path_part   = each.value
@@ -55,6 +55,14 @@ resource "aws_api_gateway_resource" "native_execution_file" {
 
 locals {
   native_execution_routes = var.native_preparation_enabled && var.native_execution_enabled ? {
+    result_request = {
+      method = "POST", resource_id = aws_api_gateway_resource.native_execution_action["results"].id,
+      path   = "api/projects/*/native-intents/*/results", item = true
+    }
+    result_read = {
+      method = "GET", resource_id = aws_api_gateway_resource.native_execution_action["results"].id,
+      path   = "api/projects/*/native-intents/*/results", item = true
+    }
     start = {
       method = "POST", resource_id = aws_api_gateway_resource.native_execution_action["start"].id,
       path   = "api/projects/*/native-intents/*/start", item = true

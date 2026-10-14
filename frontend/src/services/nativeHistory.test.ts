@@ -175,3 +175,43 @@ it.each([
     nativeHistoryService.decision('project', 'run', { ...revision, interactionId: turn.id }),
   ).rejects.toThrow();
 });
+
+it('reads a named source baseline and binds original bytes to its exact receipt', async () => {
+  get.mockResolvedValue({
+    projectId: 'project',
+    executionId: 'run',
+    ...target,
+    status: 'captured',
+    baseline: {
+      id: 'b'.repeat(64),
+      inventory: 'native-public-files',
+      repository: { commit: 'c'.repeat(40), branch: 'main' },
+      files: [descriptor],
+    },
+  });
+  const source = await nativeHistoryService.source('project', 'run', target);
+  expect(source?.id).toBe('b'.repeat(64));
+  expect(get.mock.calls[0][0]).toContain('&source=1');
+  get.mockResolvedValue({ ...content(), sourceBaselineId: source!.id });
+  expect(
+    (await nativeHistoryService.file('project', 'run', revision, descriptor, source!.id)).content,
+  ).toBe(text);
+  get.mockResolvedValue({ ...content(), sourceBaselineId: 'c'.repeat(64) });
+  await expect(
+    nativeHistoryService.file('project', 'run', revision, descriptor, source!.id),
+  ).rejects.toThrow();
+});
+it('distinguishes an unretained source baseline from an unreadable one', async () => {
+  get.mockResolvedValue({
+    projectId: 'project',
+    executionId: 'run',
+    ...target,
+    status: 'not_retained',
+    baseline: null,
+  });
+  expect(await nativeHistoryService.source('project', 'run', target)).toBeNull();
+  get.mockRejectedValue(new Error('Unavailable'));
+  await expect(nativeHistoryService.source('project', 'run', target)).rejects.toThrow(
+    'Unavailable',
+  );
+});

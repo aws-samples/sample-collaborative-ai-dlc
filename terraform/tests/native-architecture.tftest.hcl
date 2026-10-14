@@ -97,6 +97,14 @@ run "admission_closed_retains_services_and_owners" {
     outputs = { local_filename = "/tmp/native-test.zip" }
   }
   override_module {
+    target  = module.packages["result-worker"]
+    outputs = { local_filename = "/tmp/native-test.zip" }
+  }
+  override_module {
+    target  = module.results
+    outputs = { lambda_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-results" }
+  }
+  override_module {
     target  = module.api
     outputs = { lambda_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-api", lambda_function_name = "test-api", lambda_function_version = "1", lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:test-api/invocations" }
   }
@@ -133,8 +141,8 @@ run "admission_closed_retains_services_and_owners" {
     error_message = "Admission shutdown must retain existing-run execution and credential resources."
   }
   assert {
-    condition     = toset(keys(aws_lambda_alias.authority)) == toset(["commands", "execution", "preparation", "projection"])
-    error_message = "Authority must expose exactly the four IAM-isolated caller aliases."
+    condition     = toset(keys(aws_lambda_alias.authority)) == toset(["commands", "execution", "preparation", "projection", "results"])
+    error_message = "Authority must expose exactly the five IAM-isolated caller aliases."
   }
   assert {
     condition     = local.execution_environment.NATIVE_EXECUTION_ENABLED == "true" && local.execution_environment.NATIVE_EXECUTION_ADMISSION_ENABLED == "false"
@@ -151,7 +159,7 @@ run "admission_closed_retains_services_and_owners" {
   assert {
     condition = alltrue([
       for action in flatten([
-        for policy in [aws_iam_role_policy.api.policy, aws_iam_role_policy.worker.policy, aws_iam_role_policy.execution_worker[0].policy, aws_iam_role_policy.projection.policy] :
+        for policy in [aws_iam_role_policy.api.policy, aws_iam_role_policy.worker.policy, aws_iam_role_policy.execution_worker[0].policy, aws_iam_role_policy.projection.policy, aws_iam_role_policy.results.policy] :
         [for statement in jsondecode(policy).Statement : statement.Action]
       ]) : !can(regex("^dynamodb:(Put|Update|Delete|Batch|Transact|\\*)", action)) && action != "*"
     ])

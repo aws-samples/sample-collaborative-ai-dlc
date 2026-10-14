@@ -372,7 +372,8 @@ describe.skipIf(process.platform === 'win32')('bounded native command runner', (
 
   it.each(['timeout', 'exit'])('cleans ordinary descendants after parent %s', async (ending) => {
     const pidFile = join(root, 'owned-descendant.pid');
-    const result = await run('descendant', [pidFile, ending], { timeoutMs: 200 });
+    // Let the fixture start under full-suite contention before testing cleanup.
+    const result = await run('descendant', [pidFile, ending], { timeoutMs: 2000 });
     const descendant = Number(await fs.readFile(pidFile, 'utf8'));
     expect(result).toMatchObject({
       cleanupComplete: true,

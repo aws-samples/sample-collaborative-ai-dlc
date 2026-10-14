@@ -7,6 +7,7 @@ import { nativeListQuery } from './listing.js';
 import { NATIVE_INTERACTION_LIMITS } from '../shared/native-interaction.js';
 import { nativeDraftPrompt, nativePromptRequest, promptFailure } from './draft-prompt.js';
 import { nativeRevisionQuery } from './revision-query.js';
+import { nativeResultRequest, nativeResultQuery } from './result-store.js';
 
 const COLLECTION = '/api/projects/{projectId}/native-intents';
 const ITEM = `${COLLECTION}/{intentId}`;
@@ -21,7 +22,22 @@ const GRAPH = `${ITEM}/graph`;
 const INTERACTION = `${ITEM}/interaction`;
 const RESPONSE = `${ITEM}/response`;
 const OUTPUTS = `${ITEM}/outputs`;
+const RESULTS = `${ITEM}/results`;
 const ERRORS = {
+  NATIVE_RESULT_INVALID: [400, 'Invalid native result request'],
+  NATIVE_RESULT_CONFLICT: [409, 'The result request names different immutable bytes'],
+  NATIVE_RESULT_UNAVAILABLE: [
+    503,
+    'The result download could not be verified. Retry the same request',
+  ],
+  NATIVE_RESULT_FILE_POLICY: [
+    409,
+    'This result contains files restricted by the existing export policy. No partial archive is provided',
+  ],
+  NATIVE_RESULT_ARCHIVE_PATH: [
+    409,
+    'These exact paths cannot be safely represented in a portable archive. Download eligible files individually',
+  ],
   NATIVE_ARTIFACT_REVISION_INVALID: [
     404,
     'The named native revision is unavailable or could not be verified',
@@ -316,7 +332,10 @@ export const createNativeRuntimeApi = ({
     const recover = event?.resource === RECOVER;
     const userResponse = event?.resource === RESPONSE;
     const file = event?.resource === FILE;
-    const mutation = preparation || promptEdit || start || cancel || recover || userResponse;
+    const results = event?.resource === RESULTS;
+    const resultPost = results && event.httpMethod === 'POST';
+    const mutation =
+      preparation || promptEdit || start || cancel || recover || userResponse || resultPost;
     if (
       ![
         COLLECTION,
@@ -332,14 +351,16 @@ export const createNativeRuntimeApi = ({
         INTERACTION,
         RESPONSE,
         OUTPUTS,
+        RESULTS,
       ].includes(event?.resource)
     )
       return reply(response, 404, 'NOT_FOUND', 'Route not found');
-    const methods = collection
-      ? ['GET', 'POST', 'OPTIONS']
-      : mutation
-        ? ['POST', 'OPTIONS']
-        : ['GET', 'OPTIONS'];
+    const methods =
+      collection || results
+        ? ['GET', 'POST', 'OPTIONS']
+        : mutation
+          ? ['POST', 'OPTIONS']
+          : ['GET', 'OPTIONS'];
     if (!methods.includes(event.httpMethod))
       return response(
         405,
@@ -399,7 +420,16 @@ export const createNativeRuntimeApi = ({
           )
         : null;
       const listing =
-        outputRead || revisionRead ? null : nativeListQuery(event, { collection, projectId });
+        outputRead || revisionRead || results
+          ? null
+          : nativeListQuery(event, { collection, projectId });
+      if (results && !resultPost) input = nativeResultQuery(event);
+      if (
+        resultPost &&
+        (Object.keys(event.queryStringParameters ?? {}).length ||
+          Object.keys(event.multiValueQueryStringParameters ?? {}).length)
+      )
+        return invalid();
       if (collection && event.httpMethod === 'POST') {
         if (typeof event.body !== 'string') return invalid();
         if (Buffer.byteLength(event.body) > 96 * 1024)
@@ -434,7 +464,9 @@ export const createNativeRuntimeApi = ({
           return invalid();
         try {
           const body = JSON.parse(event.body);
-          if (start) {
+          if (resultPost) {
+            input = nativeResultRequest(body);
+          } else if (start) {
             if (
               !record(body) ||
               Object.keys(body).some((key) => !['requestId', 'promptRevision'].includes(key)) ||
@@ -464,7 +496,8 @@ export const createNativeRuntimeApi = ({
           return invalid();
         }
       }
-      if ((start || userResponse || recover || promptEdit) && !input) return invalid();
+      if ((start || userResponse || recover || promptEdit || resultPost) && !input)
+        return invalid();
       const membership = async () => {
         const current = await getMembershipSnapshot(projectId, actorId);
         if (!validMembership(current)) fail('FORBIDDEN');
@@ -523,6 +556,22 @@ export const createNativeRuntimeApi = ({
       let row = await store.get(identity);
       if (!row) fail('NOT_FOUND');
       await recheck(row);
+      if (results) {
+        if (!execution?.requestResult || !execution?.result)
+          return reply(
+            response,
+            503,
+            'NATIVE_RESULT_UNAVAILABLE',
+            'Result downloads are unavailable',
+          );
+        const value = resultPost
+          ? await execution.requestResult(row, input, recheck)
+          : await execution.result(row, input, recheck);
+        await recheck(row);
+        return response(value.status === 'ready' ? 200 : 202, value, {
+          'Cache-Control': 'private, no-store',
+        });
+      }
       if (promptEdit) {
         const saved = await store.savePrompt({
           ...identity,

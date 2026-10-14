@@ -52,6 +52,7 @@ module "authority" {
     WORKFLOW_SOURCE_BINDINGS_TABLE     = var.workflow_source_bindings_table_name
     NATIVE_PACKAGE_JOBS_TABLE          = var.package_jobs_table_name
     NATIVE_EXECUTION_QUEUE_URL         = aws_sqs_queue.execution[0].url
+    NATIVE_RESULT_FUNCTION             = module.results.lambda_function_arn
     SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
     AGENT_SETTINGS_SSM_PREFIX          = local.agent_settings_prefix
     AGENT_CREDENTIAL_METADATA_FUNCTION = var.agent_credential_metadata_function_arn
@@ -64,7 +65,7 @@ module "authority" {
   depends_on                        = [aws_iam_role_policy.authority, aws_iam_role_policy_attachment.authority_basic]
 }
 resource "aws_lambda_alias" "authority" {
-  for_each         = toset(["commands", "execution", "preparation", "projection"])
+  for_each         = toset(["commands", "execution", "preparation", "projection", "results"])
   name             = each.key
   function_name    = module.authority.lambda_function_name
   function_version = module.authority.lambda_function_version

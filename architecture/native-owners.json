@@ -61,19 +61,27 @@
     "Yjs": {
       "owner": "Yjs persistence",
       "limit": "drafts only"
+    },
+    "RESULT": {
+      "owner": "native-authority",
+      "kind": "derived download jobs; no workflow completion authority",
+      "role": "authority",
+      "observations": ["results:claim/finish"]
     }
   },
   "controlWriters": [
     "lambda/native-runtime-control/store.js",
     "lambda/native-runtime-control/execution-store.js",
     "lambda/native-runtime-control/activity-store.js",
-    "lambda/native-runtime-control/projection-store.js"
+    "lambda/native-runtime-control/projection-store.js",
+    "lambda/native-runtime-control/result-store.js"
   ],
   "mutatorModules": {
     "lambda/native-runtime-control/store.js": "createNativeRuntimeStore",
     "lambda/native-runtime-control/execution-store.js": "createNativeExecutionStore",
     "lambda/native-runtime-control/activity-store.js": "createNativeActivityStore",
-    "lambda/native-runtime-control/projection-store.js": "createNativeProjectionStore"
+    "lambda/native-runtime-control/projection-store.js": "createNativeProjectionStore",
+    "lambda/native-runtime-control/result-store.js": "createNativeResultStore"
   },
   "mutatorFactories": {
     "createNativeRuntimeStore": [
@@ -91,6 +99,10 @@
       "lambda/native-runtime-control/command-service.js"
     ],
     "createNativeProjectionStore": [
+      "lambda/native-runtime-control/authority.js",
+      "lambda/native-runtime-control/command-service.js"
+    ],
+    "createNativeResultStore": [
       "lambda/native-runtime-control/authority.js",
       "lambda/native-runtime-control/command-service.js"
     ]

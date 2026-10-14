@@ -7,11 +7,13 @@ import { createNativeExecutionStore } from './execution-store.js';
 import { createNativeActivityStore } from './activity-store.js';
 import { createNativeRuntimeImagePolicy } from './runtime-images.js';
 import { createNativeProjectionStore } from './projection-store.js';
+import { createNativeResultStore } from './result-store.js';
 import { broadcastToNativeIntentChannel } from '../shared/ws-fanout.js';
 
 // Lambda's invoked ARN is supplied by AWS. IAM grants each adapter only its
 // alias ARN, never the unqualified function or a wildcard qualifier.
 export const NATIVE_AUTHORITY_OPERATIONS = Object.freeze({
+  results: { execution: ['get'], results: ['claim', 'finish'] },
   preparation: { preparation: ['get', 'claim', 'advance', 'release', 'fail', 'ready'] },
   execution: {
     preparation: ['get'],
@@ -121,6 +123,7 @@ export const handler = (event, context) => {
     });
     authority = createNativeAuthority({
       stores: {
+        results: createNativeResultStore({ ddb, tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE }),
         preparation,
         execution: {
           ...execution,

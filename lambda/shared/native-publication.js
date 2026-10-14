@@ -101,8 +101,9 @@ const validateManifest = (value, identity) => {
       'repository',
       'files',
       'question',
+      ...(value.schemaVersion === 2 ? ['sourceBaseline'] : []),
     ]) ||
-    value.schemaVersion !== 1 ||
+    ![1, 2].includes(value.schemaVersion) ||
     canonicalJson(value.scope) !==
       canonicalJson({
         projectId: scope.projectId,
@@ -129,6 +130,21 @@ const validateManifest = (value, identity) => {
     value.files.length > NATIVE_PUBLICATION_LIMITS.files
   )
     fail();
+  if (value.schemaVersion === 2) {
+    const baseline = value.sourceBaseline;
+    const absent =
+      exact(baseline, ['unavailable']) &&
+      ['file_policy', 'snapshot_limit'].includes(baseline.unavailable);
+    if (
+      !absent &&
+      (!exact(baseline, ['epoch', 'receipt']) ||
+        !Number.isSafeInteger(baseline.epoch) ||
+        baseline.epoch < 1 ||
+        baseline.epoch > scope.epoch ||
+        !object(baseline.receipt))
+    )
+      fail();
+  }
   const paths = new Set();
   let total = 0;
   for (const file of value.files) {
@@ -193,16 +209,20 @@ export const createNativePublications = ({
     if (!safeVersion(response.VersionId)) fail();
     return { key, versionId: response.VersionId };
   };
-  const get = async (pointer, maxBytes) => {
+  const get = async (pointer, maxBytes, signal) => {
     if (!object(pointer) || typeof pointer.key !== 'string' || !safeVersion(pointer.versionId))
       fail();
+    const deadline = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(120000)])
+      : AbortSignal.timeout(120000);
+    deadline.throwIfAborted();
     const response = await s3.send(
       new GetObjectCommand({
         ...base,
         Key: pointer.key,
         VersionId: pointer.versionId,
       }),
-      { abortSignal: AbortSignal.timeout(120000) },
+      { abortSignal: deadline },
     );
     if (
       response.VersionId !== pointer.versionId ||
@@ -215,27 +235,32 @@ export const createNativePublications = ({
     }
     const chunks = [];
     let count = 0;
+    const abort = () => response.Body?.destroy?.(deadline.reason);
+    deadline.addEventListener('abort', abort, { once: true });
     try {
+      deadline.throwIfAborted();
       for await (const part of response.Body) {
+        deadline.throwIfAborted();
         count += part.length;
         if (count > maxBytes || count > response.ContentLength) fail();
         chunks.push(Buffer.from(part));
       }
     } finally {
+      deadline.removeEventListener('abort', abort);
       response.Body?.destroy?.();
     }
     if (count !== response.ContentLength) fail();
     return Buffer.concat(chunks);
   };
-  const verifyFile = async (identity, manifest, fileId) => {
+  const verifyFile = async (identity, manifest, fileId, { signal } = {}) => {
     const checked = validateManifest(manifest, identity);
     const file = checked.files.find((f) => f.id === fileId);
     if (!file) fail();
-    const bytes = await get(file.object, file.bytes);
+    const bytes = await get(file.object, file.bytes, signal);
     if (bytes.length !== file.bytes || hash(bytes) !== file.sha256) fail();
     return { file, bytes };
   };
-  return Object.freeze({
+  const api = {
     async write({
       identity,
       packageId,
@@ -245,6 +270,7 @@ export const createNativePublications = ({
       files,
       questionPath = null,
       sequence = 1,
+      sourceBaseline,
     }) {
       const scope = nativePublicationScope(identity);
       if (!Array.isArray(files) || files.length > NATIVE_PUBLICATION_LIMITS.files) fail();
@@ -272,7 +298,8 @@ export const createNativePublications = ({
       // Validate all metadata before the first write. Placeholder object versions
       // are only used in this prospective validation, never published or returned.
       const manifest = {
-        schemaVersion: 1,
+        schemaVersion: sourceBaseline ? 2 : 1,
+        ...(sourceBaseline ? { sourceBaseline } : {}),
         scope: {
           projectId: scope.projectId,
           executionId: scope.executionId,
@@ -370,7 +397,30 @@ export const createNativePublications = ({
       return manifest;
     },
     file: verifyFile,
-  });
+    async source(identity, manifest, { verifyFiles = false } = {}) {
+      const checked = validateManifest(manifest, identity);
+      if (!checked.sourceBaseline || checked.sourceBaseline.unavailable) return null;
+      const sourceIdentity = { ...identity, epoch: checked.sourceBaseline.epoch };
+      const baseline = await api.read(sourceIdentity, checked.sourceBaseline.receipt, {
+        verifyFiles,
+      });
+      if (
+        baseline.schemaVersion !== 1 ||
+        baseline.sequence !== 1 ||
+        baseline.nativeSessionId !== null ||
+        baseline.outcome !== 'STOPPED' ||
+        baseline.packageId !== checked.packageId ||
+        canonicalJson(baseline.repository) !== canonicalJson(checked.repository)
+      )
+        fail();
+      return {
+        identity: sourceIdentity,
+        receipt: checked.sourceBaseline.receipt,
+        manifest: baseline,
+      };
+    },
+  };
+  return Object.freeze(api);
 };
 
 export const nativePublicationView = (receipt, manifest, projectionStatus) => ({

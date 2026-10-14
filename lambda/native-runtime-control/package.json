@@ -4,7 +4,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "build": "npm run build:api && npm run build:worker && npm run build:execution-worker && npm run build:execution-credentials && npm run build:authority && npm run build:wakeup && npm run build:projection-worker",
+    "build": "npm run build:api && npm run build:worker && npm run build:execution-worker && npm run build:execution-credentials && npm run build:authority && npm run build:wakeup && npm run build:projection-worker && npm run build:result-worker",
     "build:api": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/api/index.mjs",
     "build:worker": "esbuild worker.js --bundle --platform=node --target=node24 --format=esm --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/worker/worker.mjs",
     "build:execution-worker": "esbuild execution-worker.js --bundle --platform=node --target=node24 --format=esm --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/execution-worker/execution-worker.mjs",
@@ -14,7 +14,8 @@
     "format:check": "oxfmt --check .",
     "build:authority": "esbuild authority.js --bundle --platform=node --target=node24 --format=esm --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/authority/authority.mjs",
     "build:wakeup": "esbuild wakeup.js --bundle --platform=node --target=node24 --format=esm --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/wakeup/wakeup.mjs",
-    "build:projection-worker": "esbuild projection-worker.js --bundle --platform=node --target=node24 --format=esm --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/projection-worker/projection-worker.mjs"
+    "build:projection-worker": "esbuild projection-worker.js --bundle --platform=node --target=node24 --format=esm --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/projection-worker/projection-worker.mjs",
+    "build:result-worker": "esbuild result-worker.js --bundle --platform=node --target=node24 --format=esm --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/result-worker/result-worker.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-agentcore": "^3.1092.0",
@@ -29,6 +30,8 @@
     "@aws-sdk/client-ssm": "^3.1092.0",
     "@aws-sdk/credential-providers": "^3.1092.0",
     "@aws-sdk/lib-dynamodb": "^3.1092.0",
+    "@aws-sdk/s3-request-presigner": "^3.1092.0",
+    "archiver": "^7.0.1",
     "aws-jwt-verify": "^4.0.0",
     "gremlin": "^3.8.1",
     "gremlin-aws-sigv4": "^3.6.1",

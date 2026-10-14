@@ -1,6 +1,6 @@
 import * as fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -16,6 +16,7 @@ import { workflowSourceIdentity } from '../../shared/workflow-source-bindings.js
 import { createNativeReleaseFixture } from '../../shared/test/fixtures/native-release.js';
 import { createNativePackageS3 } from '../../shared/test/fixtures/native-package-s3.js';
 import { nativeExecutionFenceKey } from '../../shared/native-execution-fence.js';
+import { createNativePublications } from '../../shared/native-publication.js';
 
 const execute = promisify(execFile);
 const bucket = 'native-package-prepare-fixture';
@@ -85,6 +86,13 @@ const fixture = async () => {
     attestation: null,
   });
   const memory = createNativePackageS3({ expectedBucketOwner: account });
+  memory.beforeSend = async ({ name, input }) => {
+    if (name === 'PutObjectCommand' && input.Key.startsWith('native-executions/')) {
+      expect(input.ChecksumSHA256).toBe(createHash('sha256').update(input.Body).digest('base64'));
+      const stored = memory.putVersion(input.Key, input.Body);
+      return { VersionId: stored.versionId };
+    }
+  };
   const sourceId = workflowSourceIdentity(
     release.source.provider,
     release.source.repository,
@@ -226,12 +234,27 @@ describe('native execution preparation with real local Git and versioned package
     expect(
       f.memory.operations.every(
         (op) =>
-          op.name === 'GetObjectCommand' &&
-          (op.input.Key === f.fenceKey
-            ? !Object.hasOwn(op.input, 'VersionId')
-            : op.input.VersionId),
+          (op.name === 'PutObjectCommand' && op.input.Key.startsWith('native-executions/')) ||
+          (op.name === 'GetObjectCommand' &&
+            (op.input.Key === f.fenceKey
+              ? !Object.hasOwn(op.input, 'VersionId')
+              : op.input.VersionId)),
       ),
     ).toBe(true);
+    const publications = createNativePublications({
+      s3: f.memory.s3,
+      bucket: f.env.NATIVE_PUBLICATION_BUCKET,
+      accountId: account,
+    });
+    const baseline = await publications.read(f.identity, prepared.sourceBaseline.receipt, {
+      verifyFiles: true,
+    });
+    await fs.writeFile(join(f.project, 'game.js'), 'changed after trusted preparation\n');
+    expect(baseline.repository.commit).toBe(f.commit);
+    expect(baseline.files.map((file) => file.path)).toEqual(['game.js']);
+    expect(
+      (await publications.file(f.identity, baseline, baseline.files[0].id)).bytes.toString(),
+    ).toBe('original exact source\n');
     const fetch = f.calls.find((call) => call.args.includes('fetch'));
     expect(fetch.args.slice(fetch.args.indexOf('fetch'))).toEqual([
       'fetch',

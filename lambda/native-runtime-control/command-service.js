@@ -5,6 +5,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { S3Client } from '@aws-sdk/client-s3';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { fetchWorkflowSourceMembership } from '../shared/workflow-source-membership.js';
 import { createWorkflowSourceService } from '../shared/workflow-source-service.js';
@@ -22,11 +23,14 @@ import { createNativeRuntimeImagePolicy } from './runtime-images.js';
 import { nativeExecutionDeployment } from './execution-config.js';
 import { createNativeActivityStore } from './activity-store.js';
 import { nativeProjectionStatus } from './projection-store.js';
+import { createNativeResultStore, resultFailure } from './result-store.js';
+import { createNativeResultStorage } from './result-storage.js';
 
 const defaultDdb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const defaultSqs = new SQSClient({});
 const defaultS3 = new S3Client({});
 const defaultSsm = new SSMClient({});
+const defaultLambda = new LambdaClient({});
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const allowedProjects = (value) => {
   try {
@@ -55,6 +59,7 @@ export const createNativeRuntimeLambda =
     sqs = defaultSqs,
     s3 = defaultS3,
     ssm = defaultSsm,
+    lambda = defaultLambda,
     env = process.env,
     openConnection = openNeptune,
     membershipSnapshot = fetchWorkflowSourceMembership,
@@ -120,6 +125,25 @@ export const createNativeRuntimeLambda =
           nativeTable: env.NATIVE_RUNTIME_BINDINGS_TABLE,
           publications,
         }),
+        results: {
+          jobs: createNativeResultStore({ ddb, tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE }),
+          storage: createNativeResultStorage({
+            s3,
+            bucket: env.NATIVE_EXECUTION_PUBLICATION_BUCKET,
+            accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
+          }),
+          enqueue: async (input) => {
+            if (!env.NATIVE_RESULT_FUNCTION) throw resultFailure();
+            const invocation = await lambda.send(
+              new InvokeCommand({
+                FunctionName: env.NATIVE_RESULT_FUNCTION,
+                InvocationType: 'Event',
+                Payload: Buffer.from(JSON.stringify(input)),
+              }),
+            );
+            if (invocation.StatusCode !== 202) throw resultFailure();
+          },
+        },
         interactions: createNativeInteractions({
           s3,
           bucket: env.NATIVE_EXECUTION_PUBLICATION_BUCKET,
@@ -165,6 +189,8 @@ export const createNativeRuntimeLambda =
           revision: (...args) => executions().revision(...args),
           revisionFile: (...args) => executions().revisionFile(...args),
           revisionInteraction: (...args) => executions().revisionInteraction(...args),
+          requestResult: (...args) => executions().requestResult(...args),
+          result: (...args) => executions().result(...args),
           file: (...args) => executions().file(...args),
           graph: (...args) => executions().graph(...args),
           interaction: (...args) => executions().interaction(...args),

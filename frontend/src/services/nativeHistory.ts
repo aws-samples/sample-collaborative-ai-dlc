@@ -30,6 +30,12 @@ export interface NativeRevisionFile
   content: string | null;
   truncated: false;
 }
+export interface NativeSourceBaseline {
+  id: string;
+  repository: { commit: string; branch: string };
+  inventory: 'native-public-files';
+  files: NativePublishedFile[];
+}
 export interface NativePublicationPage {
   items: {
     id: string;
@@ -129,6 +135,51 @@ function answerHistory(
 }
 
 export const nativeHistoryService = {
+  async source(
+    projectId: string,
+    intentId: string,
+    revision: NativeRevisionTarget,
+  ): Promise<NativeSourceBaseline | null> {
+    const value = await api.get<unknown>(
+      `${base(projectId, intentId)}/publication?${query(revision)}&source=1`,
+    );
+    if (
+      !record(value) ||
+      value.projectId !== projectId ||
+      value.executionId !== intentId ||
+      value.publicationId !== revision.publicationId ||
+      value.publicationSequence !== revision.publicationSequence
+    )
+      invalid();
+    if (value.status === 'not_retained' && value.baseline === null) return null;
+    const b = value.baseline;
+    if (
+      value.status !== 'captured' ||
+      !record(b) ||
+      !sha(b.id) ||
+      b.inventory !== 'native-public-files' ||
+      !record(b.repository) ||
+      typeof b.repository.commit !== 'string' ||
+      !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(b.repository.commit) ||
+      typeof b.repository.branch !== 'string' ||
+      !b.repository.branch
+    )
+      invalid();
+    const inventory = decodeNativePublication({
+      id: b.id,
+      sequence: 1,
+      createdAt: '1980-01-01T00:00:00.000Z',
+      files: b.files,
+      question: null,
+      projectionStatus: 'pending',
+    });
+    return {
+      id: b.id,
+      repository: b.repository as NativeSourceBaseline['repository'],
+      inventory: 'native-public-files',
+      files: inventory.files,
+    };
+  },
   async list(
     projectId: string,
     intentId: string,
@@ -238,11 +289,12 @@ export const nativeHistoryService = {
     intentId: string,
     revision: Pick<NativePublication, 'id' | 'sequence'>,
     file: NativePublishedFile,
+    sourceBaselineId?: string,
   ): Promise<NativeRevisionFile> {
     const target = { publicationId: revision.id, publicationSequence: revision.sequence };
     if (!/^nf-[a-f0-9]{64}$/.test(file.id) || !sha(file.sha256)) invalid();
     const value = await api.get<unknown>(
-      `${base(projectId, intentId)}/files/${encodeURIComponent(file.id)}?${query(target)}&sha256=${file.sha256}`,
+      `${base(projectId, intentId)}/files/${encodeURIComponent(file.id)}?${query(target)}&sha256=${file.sha256}${sourceBaselineId ? '&source=1' : ''}`,
     );
     if (
       !record(value) ||
@@ -254,6 +306,7 @@ export const nativeHistoryService = {
       value.publicationId !== revision.id ||
       value.publicationSequence !== revision.sequence ||
       value.truncated !== false ||
+      (sourceBaselineId !== undefined && value.sourceBaselineId !== sourceBaselineId) ||
       !['utf8', 'binary', 'too_large'].includes(String(value.encoding))
     )
       invalid();

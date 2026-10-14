@@ -4,6 +4,8 @@ import { nativeHistorySearch, parseNativeHistoryLocation } from '@/lib/nativeRev
 import { NativeHistoryView } from './NativeHistoryView';
 import { NativeFileView } from './NativeFileView';
 import { WorkProductsCard } from './WorkProductsCard';
+import { NativeResultDownload } from './NativeResultDownload';
+import { NATIVE_INLINE_BYTES, type NativeRevisionFile } from '@/services/nativeHistory';
 import { NativeInteractionPanel, useNativeReply } from './NativeInteractionPanel';
 import { useOptionalAuth } from '@/contexts/AuthContext';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
@@ -116,7 +118,7 @@ function NativePublicationContent({
   const interactionId = intent.execution?.interactionId ?? null;
   const [tab, setTab] = useState('overview');
   const [publication, setPublication] = useState<NativePublication | null>(null);
-  const [files, setFiles] = useState<Record<string, NativeFileContent>>({});
+  const [files, setFiles] = useState<Record<string, NativeFileContent | NativeRevisionFile>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [graph, setGraph] = useState<NativeGraph | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
@@ -265,6 +267,21 @@ function NativePublicationContent({
       const descriptor = publication.files.find((file) => file.id === id);
       if (!descriptor) continue;
       fileRequests.current.add(id);
+      if (descriptor.bytes > NATIVE_INLINE_BYTES) {
+        setFiles((previous) => ({
+          ...previous,
+          [id]: {
+            ...descriptor,
+            fileId: descriptor.id,
+            publicationId: publication.id,
+            publicationSequence: publication.sequence,
+            encoding: 'too_large',
+            content: null,
+            truncated: false,
+          },
+        }));
+        continue;
+      }
       const requestGeneration = generation.current;
       nativeIntentsService
         .file(projectId, intentId, id)
@@ -401,6 +418,11 @@ function NativePublicationContent({
                 descriptor={publication.files.find((file) => file.id === questionFile.id)!}
                 createdAt={publication.createdAt}
                 publicationSequence={publication.sequence}
+                resultScope={{
+                  projectId: intent.projectId,
+                  executionId: intent.id,
+                  onAccessFailure,
+                }}
               />
               <Button variant="outline" onClick={() => openFile(questionFile.id)}>
                 View question file
@@ -426,7 +448,22 @@ function NativePublicationContent({
         )}
       </TabsContent>
       <TabsContent value="files">
-        <WorkProductsCard>
+        <WorkProductsCard
+          actions={
+            !error &&
+            publication && (
+              <NativeResultDownload
+                projectId={intent.projectId}
+                executionId={intent.id}
+                target={{
+                  publicationId: publication.id,
+                  publicationSequence: publication.sequence,
+                }}
+                onAccessFailure={onAccessFailure}
+              />
+            )
+          }
+        >
           {!error &&
             (publication ? (
               <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(12rem,1fr)_minmax(0,3fr)]">
@@ -458,6 +495,11 @@ function NativePublicationContent({
                         descriptor={descriptor}
                         createdAt={publication.createdAt}
                         publicationSequence={publication.sequence}
+                        resultScope={{
+                          projectId: intent.projectId,
+                          executionId: intent.id,
+                          onAccessFailure,
+                        }}
                       />
                     ) : (
                       <p className="text-sm">Loading file…</p>

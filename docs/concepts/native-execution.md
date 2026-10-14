@@ -432,6 +432,94 @@ release criteria before widening support; later capabilities are separate scope.
       outcomes tied to exact result bytes. Provide result archive, binary download,
       and source diff. Done when another member can inspect the tested result after
       the runtime stops, including failed or uncertain verification.
+      **Implemented locally (2026-10-14):** Current Files and named History revisions
+      offer binary downloads and complete ZIP archives. Protected `results` POST/GET
+      requests name project, execution, publication ID/sequence, a retry identity,
+      and, for individual files, file ID/hash. The shared revision owner resolves
+      admitted versions; neither the runtime nor its graph projection supplies read
+      authority. Current membership/entity checks run before and after reads and
+      signing. The existing membership service must remain available; its failure
+      does not grant access. A later publication, cancellation, runtime outage or
+      image-admission change cannot retarget these reads. Another current member
+      can reopen the same revision link and obtain its bytes.
+      **Transport and provenance:** The authority owns separate `RESULT#` rows with
+      conditional claims and a fifteen-minute lease. An asynchronous result Lambda
+      reads one verified file at a time, writes a bounded temporary ZIP, uploads it
+      with SHA-256, and only then commits its exact S3 version. It never runs project
+      scripts or changes execution/publication/recovery state. Generation does not
+      run in publication admission or reply dispatch. The transport covers admitted
+      limits of 1,000 files, 32 MiB per file and 256 MiB total; ZIP output is capped
+      at 260 MiB, with 512 MiB memory/disk and an 840-second operation deadline within
+      a 900-second Lambda. Runtime capture retains its existing 16 MiB per-file and
+      64 MiB aggregate limits. Archives place exact paths under `files/` and include
+      a public checksum/provenance manifest; executable modes are not in the
+      publication contract. Missing/corrupt/short/interrupted source reads do not
+      produce complete results. Duplicate and stale builders are fenced; losing
+      output versions are removed only after a confirmed lost claim. Uncertain
+      ready-write acknowledgement preserves the version that may be referenced.
+      Missing derived archives can be explicitly rebuilt without changing history.
+      Generated objects live under `native-results/v1/`, separate from required
+      publications, private checkpoints and optional debug captures. No retention,
+      TTL, decommissioning or mandatory-data deletion policy is added.
+      **Download boundary:** Before signing, the authority checks the generated
+      object's exact version, length and S3 SHA-256. URLs are GET-only bearer
+      capabilities for that object version, valid for five minutes, with attachment
+      disposition and no-store caching. Issued URLs are usable by their holders
+      until expiry even after membership changes; new issuance requires current
+      access. Transfers started before expiry may finish afterward. Client
+      identity/access/revision guards discard late callbacks and
+      expired URLs. Portable ZIP path collisions/unsafe names are rejected, with
+      individual eligible downloads still available. Existing excluded or
+      credential-shaped paths make an archive explicitly unavailable as a whole;
+      this does not expand historical `.env`/`.npmrc` visibility or rewrite history.
+      **Source comparison:** New trusted checkout preparation captures the public
+      file inventory before any package/model command, at the verified pinned
+      commit. A schema-2 publication references those immutable original bytes.
+      First admission checks the baseline; later publications must retain the same
+      reference, including through cold recovery. Oversized or credential-shaped
+      baselines record an explicit unavailable reason without blocking execution.
+      Schema-1 retained publications remain readable and report no retained
+      baseline; no mutable remote fetch or first-result substitution is used.
+      Comparisons cover added/changed/deleted/identical public files. Exact text
+      comparisons retain BOM/CRLF and the existing 3 MiB limit; binary, invalid UTF-8
+      and larger files show metadata with unavailable text comparisons. Absence
+      outside this complete public inventory does not establish deletion.
+      **Still open:** Verified workflow completion is deliberately not implemented.
+      The pending user choice is required checks plus final review, or those plus
+      separate human approval. Neither choice has been inferred. The supported
+      native protocol also lacks protected check/review/approval receipts binding
+      outcomes, required policy/configuration and accepted-command lineage to the
+      exact publication/file hashes. Results therefore report completion as
+      `not_verified` and those outcomes as `not_recorded`. Published logs, failed
+      checks, reviews and runtime prose remain inspectable agent-reported material;
+      their freshness and applicability to the result are not independently
+      established. No verification scheduler, script runner or approval inference
+      is added. This backlog item remains open for that contract and deployed
+      qualification.
+      **Deployment/compatibility:** Deploy all publication readers (authority,
+      projection and discussion/Quorum bundles), result worker/alias/IAM/routes,
+      then frontend and the new admitted runtime image. Readers accept schemas 1/2;
+      old pinned runtimes keep producing schema 1. Retained executions are not
+      repinned or migrated. Older schema-1-only reader deployments cannot read new
+      schema-2 publications. Local checks do not establish deployed IAM, browser
+      downloads, retained-image recovery or two-member live qualification.
+      **Validation:** Node 24.21.0 with
+      `NODE_OPTIONS=--no-experimental-webstorage`: the native-control, AgentCore,
+      shared and discussion suites passed 7,435 tests with three existing Bun
+      skips using `--maxWorkers=4`; this resolved process-start/timing failures
+      from the earlier unconstrained run. Subsequent normal commit-hook runs
+      reproduced an existing descendant-fixture startup timeout; its allowance
+      was raised from 200 ms to two seconds, retaining all timeout/exit and cleanup
+      assertions; all 36 focused command-runner tests passed. All 41 final focused
+      result tests passed, covering local HTTP/S3
+      transport, DynamoDB CAS, admitted size limits, byte fidelity,
+      corrupted/missing versions, aborts, retry/cleanup and source admission.
+      All 1,815 frontend tests and the frontend build passed. Lint, formatting,
+      secret scanning, SDK alignment, dependency/ownership checks, 21 wiring
+      tests, five architecture tests and 232 release tests passed. All eight
+      native-control and both discussion bundles built; the runtime entry bundled
+      for Node 22. Isolated local-backend Terraform init/validate and the mocked
+      native IAM test passed. Node 22 execution and live deployment were not run.
 - [ ] **Capability — platform Git delivery.** Add an authorized, idempotent
       intent-level delivery contract with engine-held credentials, reviewed-byte
       identity, remote confirmation, and review/merge outcomes. Define tracker

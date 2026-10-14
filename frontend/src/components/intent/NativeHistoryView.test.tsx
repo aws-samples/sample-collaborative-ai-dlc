@@ -132,6 +132,18 @@ const mount = (query = search, value = intent) =>
       </TooltipProvider>
     </MemoryRouter>,
   );
+it('keeps large current files obtainable without attempting the inline transport', async () => {
+  const current = revision(2);
+  current.files[0] = { ...current.files[0], bytes: 32 * 1024 * 1024 };
+  mocks.publication.mockResolvedValue(current);
+  mount('');
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'Files' }), { button: 0, ctrlKey: false });
+  await screen.findByText(current.files[0].path);
+  fireEvent.click(screen.getByRole('button', { name: new RegExp(current.files[0].path) }));
+  await screen.findByText(/File exceeds the 3 MiB inline limit/);
+  expect(screen.getByRole('button', { name: 'Prepare file download' })).toBeInTheDocument();
+  expect(mocks.file).not.toHaveBeenCalled();
+});
 beforeEach(() => {
   vi.clearAllMocks();
   resetSessionExpiry();
