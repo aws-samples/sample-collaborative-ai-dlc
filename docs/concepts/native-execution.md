@@ -1353,8 +1353,14 @@ release criteria before widening support; later capabilities are separate scope.
       isolated rerun passed 35 of 36: all original failing cases passed, while a
       different v2 gate wait failed. These are timing-sensitive failures with
       no established cause; they are not counted as green validation. The normal
-      hook is retried with one worker, preserving every assertion and timeout;
-      its final result is retained in the local commit evidence.
+      hook then passed with one worker: 9,907 passed and three skipped in 344
+      files, preserving every assertion and timeout. Implementation commit:
+      `acafa022d9cc26cb623680ee0a80d73f33a0255e`. The complete hook logs, including
+      the failed attempt, are retained in the local evidence directory. Both
+      dependency audits reported zero vulnerabilities. SDK alignment passed
+      with the existing unsynchronized Smithy warning in `lambda/agents`;
+      tflint and semgrep/opengrep were unavailable and their optional hook steps
+      did not run. No unrelated Git fixture or production timeout was changed.
       Node 22 and Bun are not installed here; no frontend
       change/test/build, deployment, AWS mutation, real model/provider execution,
       alert send or subscription was performed. Live alarm delivery/effective IAM,
