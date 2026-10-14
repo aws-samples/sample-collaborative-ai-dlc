@@ -496,6 +496,154 @@ archive contract. Required publications, immutable history, accepted answers,
 private recovery checkpoints, EFS workspaces, and session restore dependencies
 remain outside optional archive expiry.
 
+### Local runtime stability investigation (14 October 2026)
+
+**Historical loss remains unexplained.** The retained October 12 readiness/backend
+reviews led back to the old checkout's `native-delivery-status.md` and numeric
+probe receipts. App-session reading was unavailable; no deployed logs or
+credentials were read. The recovered evidence separates three observations:
+
+- **October 7 t3g loss:** the status record names intent
+  `f1d3504c-82ce-4312-b85d-c5bee417ead1`, AI-DLC 2.9.0, Codex 0.145.0 and
+  `agents.max_threads=4`. Its serving VM's last reported sample was at 09:46:46,
+  18 minutes 30 seconds after boot: 702 MB used, 7.3 GB free, four processes,
+  zero kernel/cgroup OOM kills. Earlier sampled concurrency reached 12 processes
+  and 2.5 GB. The record reports 424 status responses from 09:47:18, then a
+  prewarmed successor returning `existing_owner` at 09:48:11. The controller
+  preserved `DELIVERY_UNCERTAIN` and stopped the successor. The retained t3g
+  deployment receipt names runtime 126 and image index
+  `sha256:3b12b9556f3735f875561526d7671ead821f2824acbf66edf97c5042c350b76d`.
+  These are historical recorded observations, not a recovered raw incident
+  trace: exact turn start/duration, failed-process exit/signal, last unsampled
+  resource burst and predecessor descendant cleanup remain unknown. No OOM
+  diagnosis follows from the lost connection or missing SIGTERM line.
+- **Reviewer waits:** the October 6–7 status narrative reports an approximately
+  15-minute empty product-lead review, a later wait over 30 minutes, temporary
+  service errors and two reported timeouts. It names reviewer model
+  `openai.gpt-5.6-terra` versus conductor `openai.gpt-5.6-sol`. Per-reviewer
+  invocation IDs, protected outcomes, exit status and resource traces were not
+  recovered. Later completion does not resolve those failures.
+- **Local hook pressure:** retained t3f logs record five 2.9.0 hook processes
+  adding 1,270 MB anonymous memory in 399 ms; forty added 5,068 MB in 884 ms.
+  This establishes a short-burst risk, not the cause of the t3g loss. The t3l
+  flight receipt hash still matches
+  `ed68906bcbf416ee51807e098a69456659e08aeb48a225c133e7b9566abb27ff`:
+  four 7 GB container probes, two with 12,373/19,921 ms sample gaps and two
+  successful burst captures at 6,084/6,329 MB and 42/45 processes. The receipt
+  records no OOM kills. Neither the later 50-minute 2.9 survivor nor the reported
+  43-minute 2.11 survivor closes the loss.
+
+**Reproduced and corrected here:** an unresolved flight-recorder `writeFile` or
+`rename` kept the sampling guard held indefinitely. Both injected regressions
+produced one sample instead of five before correction. Sampling now updates the
+bounded ring and telemetry windows independently of the existing single guarded
+write. It starts no overlapping writes, adds no retry/restart or diagnostic
+archive, and changes no execution authority. An unavailable mount still prevents
+durable replay of newer samples; this correction cannot diagnose the old loss.
+Linux probes held each operation while a real subprocess ran for 4.2 seconds:
+four resource samples continued, the command exited cleanly, and persistence
+resumed after release.
+
+**Local qualification boundary:** the retained network-disabled Linux ARM64 image
+was `sha256:04d277b05d891422263e368cdf315564e29c556411adf464016b2328e247e47d`
+(October 7; Node 24.19.0). The current runtime/supervisor source and correction
+were bundled locally and mounted read-only into that image. Its original runner,
+executor and recorder bytes are older; this is not a newly built production
+image or a deployment. Installed CLI and retained 2.9.0 package pins are listed
+under [support matrix and settings](#support-matrix-and-settings). The inspected
+offline installation receipt still fails Sigstore verifier initialization for
+all four harnesses; no verification bypass or real model invocation was used.
+
+The one-off probe reused `executionFixture`, the production HTTP router,
+executor/command runner, supervisor, activity store, immutable publication and
+interaction codecs, and numeric flight/resource samplers. Models, package
+installation, mount inspection, AWS storage, authorization and stop-provider
+ports were scripted/injected. Four reviewer-like processes each spawned one
+nested descendant and held 16 MiB per process. Output alternated with 20-second
+quiet periods; five-second status/health polls crossed the 120-second lease
+interval. Each long run injected one malformed status response and one
+1.2-second delayed response, preserving one dispatch and session identity.
+These are scripted transport/process checks, not model/reviewer semantics.
+The container used `tini`, two CPUs, 1 GiB memory with no extra swap, 128 tasks
+and no network. The qualification bundle SHA-256 was
+`e78a02509289dfb7f26f65acc48ec3e9cc96f11aa609f8d58af11aa04ed72f1c`.
+The supervisor and runtime ran in the same Node process; these resource numbers
+include the in-memory storage fixture and are not deployed runtime sizing.
+
+| Initial scripted run | Duration   | Resource samples | Peak sampled cgroup / Node RSS | Peak processes / lag | Observed stdout bytes / persisted activity events |
+| -------------------- | ---------- | ---------------- | ------------------------------ | -------------------- | ------------------------------------------------- |
+| 1                    | 181,902 ms | 180              | 351 / 133 MiB                  | 11 / 7 ms            | 8,474,758 / 3,851                                 |
+| 2                    | 181,954 ms | 180              | 365 / 148 MiB                  | 11 / 7 ms            | 8,417,480 / 3,825                                 |
+| 3                    | 181,976 ms | 180              | 373 / 155 MiB                  | 11 / 7 ms            | 8,449,953 / 3,838                                 |
+
+All three made 36 status/health polls, retained only a 2,048-byte private stdout
+prefix while draining the full stream, returned exit 0 without a timeout or
+spawn error, and reached `AWAITING_USER`. Each recorded nine started fixture
+PIDs and zero remaining after cleanup; kernel and cgroup OOM counters did not
+increase. Runtime/supervisor parent-error and cancellation cases also passed:
+5,034/5,043 ms, exit 23 / SIGKILL, `FAILED` / `CANCELLED`, one stop and zero
+remaining fixture PIDs each. These failure outcomes were not reported as
+successful work or retried turns.
+
+Self-review strengthened the fixture to propagate unexpected descendant
+exit/error to its parent and assert all nine PIDs alive at every active poll.
+Two further three-minute runs passed **35 liveness checks each**, 36 polls,
+180 numeric samples, one dispatch, the same injected read failures, exit 0 and
+zero remaining PIDs. Their durations were **181,937 / 181,971 ms**; sampled
+cgroup peaks **356 / 376 MiB**, Node RSS **130 / 152 MiB**, process peaks 11
+and lag maxima 7 ms. Each drained 8,450,525 stdout bytes and persisted 3,840
+activity events, with no OOM-counter increase. Parent-error/cancellation repeats
+passed at 5,043/5,053 ms with the same expected failure statuses and cleanup.
+This stronger bundle was
+`sha256:a9bee013202bf417f8c850fec2fed7e382ca4cbab209213ad487dde6d075c42e`.
+Across both series, all five sustained runs passed their declared assertions;
+the first three did not include periodic descendant liveness assertions.
+
+Probe setup failures were retained as failures: an incorrect bundle entry point,
+missing injected mount-check identity, invalid/interleaved scripted terminal
+output and constructor-name matching in the fake storage adapter were corrected
+before qualification. An initial 64-task container allowed fewer than nine
+fixtures to start. A bounded reproduction recorded six PID files, Node's
+`uv_thread_create` startup assertion and three `pids.events` limit hits.
+The subsequent 128-task runs require all nine PID files and their disappearance;
+no production limit or timeout was relaxed.
+
+The command-only Linux matrix passed parent exit, exit 23, timeout, abort,
+abort while stdout persistence was blocked, and rejected persistence. Durations
+were 342, 346, 1,508, 541, 539 and 334 ms respectively; all three owned PIDs
+disappeared in each case. Timeout and abort produced SIGKILL; observer rejection
+reported `IO_ERROR`. Its 35 samples peaked at 57 MiB cgroup usage, five processes
+and 7 ms lag, with no OOM-counter increase. No unrelated process was signalled.
+
+**Validation:** host Node 24.21.0 with
+`NODE_OPTIONS=--no-experimental-webstorage`; `vitest run --config
+vitest.native-foundation.config.js` passed 62 focused recorder/resource/runner
+checks and 301 executor/router/status/recovery/interaction checks.
+`vitest run --project=agentcore --project=native-runtime-control --maxWorkers=4`
+passed 3,799, skipped three Bun-dependent tests (140 files; 127.15 seconds).
+The initial socket-restricted focused run passed 238 and failed 63 with 18
+errors; the Docker-restricted broad attempt ran no tests. Neither is a pass;
+the permitted reruns above supply the evidence. `npm run test:release` passed
+232, `test:native-wiring` 21, and `node --test
+scripts/test/native-architecture.test.mjs` five. Lint, format, secretlint,
+dependency, architecture, SDK and `release:check` checks passed; the native
+runtime-server module bundle built. Existing lint/dependency/Smithy-range,
+CodeDefender log-access and bundle-size warnings remain. Node 22 and host Bun
+were unavailable. Frontend and Terraform were not changed. Installed versions
+were checked without network: Claude 2.1.257, Codex 0.145.0, Kiro 2.19.2,
+OpenCode 1.17.20 (OpenCode required its normal Bun PATH and isolated home).
+The fix commit's normal hooks passed another 172 affected tests with
+`VITEST_MAX_WORKERS=4`; root and frontend production audits reported zero
+vulnerabilities. No hook was bypassed.
+
+Runtime stability remains open for representative real-package/model runs,
+long reviewer-heavy workload durations, retained-image cold recovery and a
+trace explaining or bounding the historical loss. The existing accepted-command,
+lost-ack, cancellation, publication, writer-generation and independent activity
+cursor contracts remain unchanged. Already admitted images retain their original
+recorder behavior; the diagnostic correction requires a new image for new
+admissions and does not repin existing runs.
+
 ### Trust and qualification limits
 
 One writer generation does not mean its tools are isolated from one another.
@@ -926,6 +1074,12 @@ release criteria before widening support; later capabilities are separate scope.
       repeated representative long and reviewer-heavy runs report durations,
       concurrency, resource use, failures, and descendant cleanup; a later successful
       run alone does not close an unexplained loss.
+      **Local investigation (2026-10-14):** [recovered evidence and bounded
+      qualification](#local-runtime-stability-investigation-14-october-2026)
+      separate historical loss, reviewer reports and hook-pressure receipts.
+      A reproduced stalled-recorder-write defect is corrected; it is not a
+      demonstrated cause of runtime death. Scripted Linux checks and current
+      source validation do not close the outstanding real-package/live evidence.
 - [ ] **Capability and verification — support matrix and settings.** State which
       package/protocol, harness, model, source provider, and settings combinations
       are supported. Qualify Claude Code, Codex, Kiro, and OpenCode before advertising
