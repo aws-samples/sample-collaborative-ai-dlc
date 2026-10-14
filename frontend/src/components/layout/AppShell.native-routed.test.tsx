@@ -333,6 +333,11 @@ it('puts the supported question before the request and keeps pinned configuratio
   }
   expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeEnabled();
   const reply = screen.getByRole('textbox', { name: 'Reply to AI-DLC' });
+  expect(
+    reply.compareDocumentPosition(
+      screen.getByRole('region', { name: 'Workflow completion evidence' }),
+    ) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
   await waitFor(() => expect(reply).not.toHaveAttribute('readonly'));
   fireEvent.change(reply, { target: { value: 'Keep this shared answer draft.' } });
   await userEvent.click(screen.getByRole('button', { name: 'Intent actions' }));

@@ -410,15 +410,6 @@ function NativePublicationContent({
         </p>
       )}
       <TabsContent value="overview" className="space-y-4">
-        {!error && publication && intent.execution && (
-          <NativeCompletionEvidence
-            projectId={projectId}
-            executionId={intentId}
-            attemptId={intent.execution.attemptId}
-            target={{ publicationId: publication.id, publicationSequence: publication.sequence }}
-            onAccessFailure={onAccessFailure}
-          />
-        )}
         {!error && interaction && intent.execution && (
           <NativeInteractionPanel
             interaction={interaction}
@@ -469,6 +460,15 @@ function NativePublicationContent({
               <p className="whitespace-pre-wrap text-sm">{intent.prompt}</p>
             </CardContent>
           </Card>
+        )}
+        {!error && publication && intent.execution && (
+          <NativeCompletionEvidence
+            projectId={projectId}
+            executionId={intentId}
+            attemptId={intent.execution.attemptId}
+            target={{ publicationId: publication.id, publicationSequence: publication.sequence }}
+            onAccessFailure={onAccessFailure}
+          />
         )}
       </TabsContent>
       <TabsContent value="files">

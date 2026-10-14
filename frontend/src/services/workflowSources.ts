@@ -86,6 +86,8 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const epoch = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const HARNESSES: WorkflowPackageHarness[] = ['claude', 'codex', 'kiro', 'opencode'];
+export const isWorkflowPackageHarness = (value: unknown): value is WorkflowPackageHarness =>
+  typeof value === 'string' && HARNESSES.includes(value as WorkflowPackageHarness);
 const invalidPackageStatus = () => new Error('Could not read package import status.');
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$/;

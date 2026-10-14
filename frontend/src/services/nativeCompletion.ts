@@ -1,5 +1,6 @@
 import { api } from './api';
 import type { NativeRevisionTarget } from './nativeHistory';
+import { isWorkflowPackageHarness, type WorkflowPackageHarness } from './workflowSources';
 
 export interface NativeWorkflowDefinition {
   protocol: 'aidlc-2.9-content-v1';
@@ -30,7 +31,7 @@ export interface NativeCompletionEvidence extends NativeRevisionTarget {
     epoch: number;
     configurationSha256: string;
     packageId: string;
-    harness: 'codex' | 'claude' | 'kiro';
+    harness: WorkflowPackageHarness;
   };
   policyStatus: 'definition_recognized' | 'unsupported';
   definition: NativeWorkflowDefinition | null;
@@ -140,7 +141,7 @@ export const nativeCompletionService = {
       !sha(value.context.configurationSha256) ||
       typeof value.context.packageId !== 'string' ||
       !/^sha256:[a-f0-9]{64}$/.test(value.context.packageId) ||
-      !['codex', 'claude', 'kiro'].includes(String(value.context.harness)) ||
+      !isWorkflowPackageHarness(value.context.harness) ||
       value.publicationId !== target.publicationId ||
       value.publicationSequence !== target.publicationSequence ||
       value.policy !== 'pinned_workflow' ||

@@ -1130,6 +1130,25 @@ release criteria before widening support; later capabilities are separate scope.
       size warnings remain. Node 22 and Bun were unavailable; no real model,
       provider, AWS or live/deployed qualification was performed. No Terraform or
       runtime producer changed in this integration.
+      **Review corrections:** completion evidence reads accept all supported
+      native harnesses through the existing package harness owner, including
+      OpenCode. An unsupported definition still permits protected member-choice
+      and delivery evidence; unknown harnesses and foreign scopes remain rejected.
+      The Codex-only definition profile is not applied to other harnesses.
+      In both native presentations, the shared Overview puts the current
+      response/reply, legacy question and original request before optional
+      completion evidence, including while that evidence loads or fails.
+      Historical/inspection evidence, recovery precedence and action guards
+      remain unchanged. These frontend corrections require no backend/schema
+      deployment and do not close the protected applied-plan/outcome evidence gap.
+      **Correction validation:** the added regressions reproduced four failures
+      before the fixes. All 204 focused tests then passed, including OpenCode
+      through the real decoder/routed page and question/reply order in both
+      presentations. The full frontend suite passed 1,895 tests with
+      `--maxWorkers=4`; the production build and lint/format/secretlint/
+      dependency/architecture/SDK checks passed on Node 24.21.0 with
+      `NODE_OPTIONS=--no-experimental-webstorage`. Existing warnings remain;
+      no backend/runtime/deployment qualification is claimed by these UI checks.
 - [ ] **Capability — platform Git delivery.** Add an authorized, idempotent
       intent-level delivery contract with engine-held credentials, reviewed-byte
       identity, remote confirmation, and review/merge outcomes. Define tracker

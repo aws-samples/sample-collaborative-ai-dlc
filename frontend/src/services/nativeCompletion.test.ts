@@ -73,6 +73,38 @@ it('keeps a protected selection distinct from engine application and delivery', 
   get.mockResolvedValue({ ...view(), memberDecision: decision(), decisionDelivery: 'uncertain' });
   expect((await read()).memberDecision?.label).toBe('Approve');
 });
+it.each(['claude', 'codex', 'kiro', 'opencode'])(
+  'preserves protected decisions for supported harness %s with an unknown definition',
+  async (harness) => {
+    get.mockResolvedValue({
+      ...view(),
+      context: { ...view().context, harness },
+      definition: null,
+      policyStatus: 'unsupported',
+      reason: 'unsupported_package_protocol',
+      memberDecision: decision(),
+      decisionDelivery: 'delivered',
+    });
+    const evidence = await read();
+    expect(evidence.context.harness).toBe(harness);
+    expect(evidence.memberDecision?.label).toBe('Approve');
+    expect(evidence.decisionDelivery).toBe('delivered');
+    expect(evidence.definition).toBeNull();
+  },
+);
+it.each(['future-harness', 'OpenCode', null, 1])(
+  'rejects unknown harness %j even when no definition is recognized',
+  async (harness) => {
+    get.mockResolvedValue({
+      ...view(),
+      context: { ...view().context, harness },
+      definition: null,
+      policyStatus: 'unsupported',
+      reason: 'unsupported_package_protocol',
+    });
+    await expect(read()).rejects.toThrow(/could not be verified/);
+  },
+);
 it.each([
   { publicationId: 'f'.repeat(64) },
   { publicationSequence: 3 },

@@ -163,6 +163,63 @@ async function loaded() {
   await screen.findByText('Choose a workflow for these changes.');
   return screen.getByRole('textbox', { name: 'Reply to AI-DLC' });
 }
+function completionTransport(
+  read: (value: unknown) => Promise<unknown>,
+  harness: NativeIntent['harness'] = 'codex',
+) {
+  const publicationId = 'f'.repeat(64);
+  const attemptId = '11111111-1111-4111-8111-111111111111';
+  intent = { ...intent, harness, execution: { ...intent.execution!, publicationId, attemptId } };
+  publication = { ...publication, id: publicationId };
+  interaction = { ...interaction, harness, publicationId };
+  const original = transport.get.getMockImplementation()!;
+  transport.get.mockImplementation((path: string) => {
+    if (!path.includes('&evidence=1')) return original(path);
+    return read({
+      schemaVersion: 1,
+      publicationId,
+      publicationSequence: 1,
+      context: {
+        projectId: intent.projectId,
+        executionId: intent.id,
+        attemptId,
+        epoch: 1,
+        configurationSha256: 'b'.repeat(64),
+        packageId: `sha256:${'c'.repeat(64)}`,
+        harness,
+      },
+      workflowCompletion: 'not_verified',
+      requiredChecks: 'not_recorded',
+      finalReview: 'not_recorded',
+      humanApproval: 'not_recorded',
+      policy: 'pinned_workflow',
+      requirementsStatus: 'unknown',
+      policyStatus: 'unsupported',
+      reason: 'unsupported_package_protocol',
+      definition: null,
+      effectivePlan: 'not_recorded',
+      engineApplication: 'not_recorded',
+      terminalOutcome: 'not_recorded',
+      memberDecision: {
+        status: 'recorded',
+        origin: 'protected_member_selection',
+        commandId: receipt().id,
+        interactionId: interaction.id,
+        contentSha256: interaction.contentSha256,
+        sequence: 2,
+        epoch: 1,
+        actorId: 'member-1',
+        acceptedAt: receipt().acceptedAt,
+        membershipRecorded: true,
+        presentedStage: 'requirements-analysis',
+        label: 'Approve',
+        additionalText: false,
+        applicationStatus: 'not_recorded',
+      },
+      decisionDelivery: 'delivered',
+    });
+  });
+}
 async function click(name: string | RegExp) {
   await act(async () => fireEvent.click(screen.getByRole('button', { name })));
 }
@@ -219,6 +276,36 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it('presents OpenCode decision and delivery evidence through the real decoder without recognizing a Codex definition', async () => {
+  completionTransport(async (value) => value, 'opencode');
+  renderPage();
+  await loaded();
+  const evidence = screen.getByRole('region', { name: 'Workflow completion evidence' });
+  await within(evidence).findByText(/Approve · requirements-analysis · member-1/);
+  expect(within(evidence).getByText(/Runtime delivery: delivered/)).toBeVisible();
+  expect(within(evidence).getByText(/no supported definition profile/)).toBeVisible();
+  expect(within(evidence).queryByText('Inspect pinned package defaults')).not.toBeInTheDocument();
+  expect(within(evidence).getByText('Workflow completion: not verified')).toBeVisible();
+  expect(transport.post).not.toHaveBeenCalled();
+});
+
+it('keeps the current reply first and usable while independent evidence loads and fails', async () => {
+  const pending = deferred<unknown>();
+  completionTransport(() => pending.promise);
+  renderPage();
+  const reply = await loaded();
+  const evidence = screen.getByRole('region', { name: 'Workflow completion evidence' });
+  expect(within(evidence).getByText(/Loading evidence/)).toBeVisible();
+  expect(reply.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await act(async () => pending.reject(new Error('evidence unavailable')));
+  await within(evidence).findByText(/Completion evidence is unavailable/);
+  expect(reply.compareDocumentPosition(evidence) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(reply).not.toHaveAttribute('readonly');
+  await typeReply('poc');
+  expect(screen.getByRole('button', { name: 'Send reply' })).toBeEnabled();
+  expect(transport.post).not.toHaveBeenCalled();
 });
 
 it('renders actual ordered text and composer tables without a fake artifact or verified question', async () => {

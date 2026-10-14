@@ -511,9 +511,18 @@ it('does not announce a question until its committed file is available', async (
   api.file.mockReturnValueOnce(pending.promise);
   renderPage();
   await screen.findByText('Loading the published question file…');
+  const evidence = screen.getByRole('region', { name: 'Workflow completion evidence' });
+  expect(
+    screen.getByText('Loading the published question file…').compareDocumentPosition(evidence) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
   expect(screen.queryByRole('heading', { name: 'Workflow question' })).not.toBeInTheDocument();
   await act(async () => pending.resolve(contents['question-1']));
   expect(screen.getByText('Which pipe style?')).toBeInTheDocument();
+  expect(
+    screen.getByRole('region', { name: 'Published question' }).compareDocumentPosition(evidence) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
 });
 
 it('handles binary content without interpreting it as markdown, an image or executable HTML', async () => {
