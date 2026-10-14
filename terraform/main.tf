@@ -521,6 +521,9 @@ module "lambda" {
   enable_native_workflow_sources               = var.enable_native_workflow_sources
   enable_native_package_jobs                   = var.enable_native_package_jobs
   native_package_jobs_host_qualified           = var.native_package_jobs_host_qualified
+  native_repair_table_name                     = module.dynamodb.native_repair_table_name
+  native_repair_table_arn                      = module.dynamodb.native_repair_table_arn
+  native_operations                            = var.native_operations
   native_package_jobs_table_name               = module.dynamodb.native_package_jobs_table_name
   native_package_jobs_table_arn                = module.dynamodb.native_package_jobs_table_arn
   native_package_jobs_table_stream_arn         = module.dynamodb.native_package_jobs_table_stream_arn

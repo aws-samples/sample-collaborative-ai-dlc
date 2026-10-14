@@ -29,6 +29,16 @@ resource "aws_iam_role_policy" "wakeup" {
     ]
   })
 }
+# This separate grant cannot address executions, revocations, or package jobs.
+resource "aws_iam_role_policy" "wakeup_checkpoint" {
+  role = aws_iam_role.wakeup.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:PutItem"], Resource = var.native_repair_table_arn, Condition = { "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["runtime"] } } },
+    ]
+  })
+}
 module "wakeup" {
   source                 = "terraform-aws-modules/lambda/aws"
   version                = "~> 8.0"
@@ -43,12 +53,13 @@ module "wakeup" {
   create_package         = false
   local_existing_package = module.packages["wakeup"].local_filename
   environment_variables = merge(local.base_environment, {
-    NATIVE_EXECUTION_QUEUE_URL    = aws_sqs_queue.execution[0].url
-    NATIVE_CANCELLATION_QUEUE_URL = aws_sqs_queue.cancellation.url
-    NATIVE_PROJECTION_QUEUE_URL   = aws_sqs_queue.projection.url
+    NATIVE_REPAIR_CHECKPOINT_TABLE = var.native_repair_table_name
+    NATIVE_EXECUTION_QUEUE_URL     = aws_sqs_queue.execution[0].url
+    NATIVE_CANCELLATION_QUEUE_URL  = aws_sqs_queue.cancellation.url
+    NATIVE_PROJECTION_QUEUE_URL    = aws_sqs_queue.projection.url
   })
   cloudwatch_logs_retention_in_days = 14
-  depends_on                        = [aws_iam_role_policy.wakeup, aws_iam_role_policy_attachment.wakeup_basic]
+  depends_on                        = [aws_iam_role_policy.wakeup, aws_iam_role_policy.wakeup_checkpoint, aws_iam_role_policy_attachment.wakeup_basic]
 }
 resource "aws_lambda_event_source_mapping" "wakeup" {
   event_source_arn               = aws_dynamodb_table.bindings.stream_arn
@@ -73,6 +84,9 @@ resource "aws_lambda_permission" "native_repair" {
   source_arn    = aws_cloudwatch_event_rule.native_repair.arn
 }
 resource "aws_cloudwatch_metric_alarm" "wakeup_errors" {
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+  alarm_description   = "Native repair: owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect scoped repair logs/checkpoint and retained queue work; never edit execution state or discard mandatory work."
   alarm_name          = "${local.name}-wakeup-errors"
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
@@ -85,6 +99,9 @@ resource "aws_cloudwatch_metric_alarm" "wakeup_errors" {
   treat_missing_data  = "notBreaching"
 }
 resource "aws_cloudwatch_metric_alarm" "stream_lag" {
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+  alarm_description   = "Native repair: owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect scoped repair logs/checkpoint and retained queue work; never edit execution state or discard mandatory work."
   alarm_name          = "${local.name}-stream-lag"
   namespace           = "AWS/Lambda"
   metric_name         = "IteratorAge"
@@ -149,6 +166,9 @@ resource "aws_cloudwatch_metric_alarm" "queue_lag" {
     cancellation = aws_sqs_queue.cancellation.name
     projection   = aws_sqs_queue.projection.name
   }
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+  alarm_description   = "Native repair: owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect scoped repair logs/checkpoint and retained queue work; never edit execution state or discard mandatory work."
   alarm_name          = "${local.name}-${each.key}-lag"
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateAgeOfOldestMessage"
@@ -159,4 +179,92 @@ resource "aws_cloudwatch_metric_alarm" "queue_lag" {
   threshold           = each.key == "cancellation" ? 60 : 600
   comparison_operator = "GreaterThanThreshold"
   treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "repair_scan_stalled" {
+  alarm_name          = "${local.name}-repair-scan-stalled"
+  alarm_description   = "No successful full repair sweep; owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect native_repair_scan logs and scoped lease, throttling and send failures. Diagnostic window, not an agreed SLO."
+  namespace           = "NativeRepair"
+  metric_name         = "ScanCompleted"
+  dimensions          = { Scope = "runtime", SourceTable = aws_dynamodb_table.bindings.name }
+  statistic           = "Sum"
+  period              = var.native_operations.full_scan_alarm_seconds
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+}
+resource "aws_cloudwatch_metric_alarm" "repair_work_errors" {
+  alarm_name          = "${local.name}-repair-work-errors"
+  namespace           = "NativeRepair"
+  metric_name         = "RepairErrors"
+  dimensions          = { Scope = "runtime", SourceTable = aws_dynamodb_table.bindings.name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+  alarm_description   = "Repair failure; owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect native_repair_row_failed pointers; failed rows retry next sweep, preserved checkpoint resumes after timeout."
+}
+resource "aws_cloudwatch_metric_alarm" "wakeup_throttles" {
+  alarm_name          = "${local.name}-wakeup-throttles"
+  namespace           = "AWS/Lambda"
+  metric_name         = "Throttles"
+  dimensions          = { FunctionName = module.wakeup.lambda_function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+  alarm_description   = "Repair or stream invocation throttled; owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Check concurrency, checkpoint age and stream lag."
+}
+resource "aws_cloudwatch_metric_alarm" "preparation_dead_letters" {
+  alarm_name          = "${local.name}-preparation-dlq"
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.dead_letter.name }
+  statistic           = "Maximum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+  alarm_description   = "Preparation dead letters; owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect authoritative preparation state and repair logs before redrive. Preserve retained data."
+}
+
+# Partial batch failures return HTTP success to Lambda; Errors alone misses them.
+resource "aws_cloudwatch_log_metric_filter" "native_repair_partial_failures" {
+  name           = "${local.name}-stream-failures"
+  log_group_name = "/aws/lambda/${module.wakeup.lambda_function_name}"
+  pattern        = "{ $.event = \"native_wakeup_retry\" }"
+  metric_transformation {
+    name          = "${local.name}-stream-failures"
+    namespace     = "NativeRepair"
+    value         = "1"
+    default_value = 0
+  }
+}
+resource "aws_cloudwatch_metric_alarm" "native_repair_partial_failures" {
+  alarm_name          = "${local.name}-stream-failures"
+  namespace           = "NativeRepair"
+  metric_name         = "${local.name}-stream-failures"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+  alarm_description   = "Partial delivery or terminal package failure; owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect scoped function logs and authoritative records; never delete or bypass failed work."
 }

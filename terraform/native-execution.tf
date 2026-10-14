@@ -126,3 +126,27 @@ output "native_package_jobs_dispatch_dead_letter_queue_arn" {
   value       = module.lambda.native_package_jobs_dispatch_dead_letter_queue_arn
   description = "Dispatch dead-letter queue; raw records must not be replayed as job authority"
 }
+
+variable "native_operations" {
+  description = "Native alarm routing. Empty actions/owner leave notifications/ownership unconfigured; scan alarm window is a diagnostic threshold, not an agreed repair SLO."
+  type = object({
+    alarm_actions           = optional(list(string), [])
+    incident_owner          = optional(string, "")
+    full_scan_alarm_seconds = optional(number, 1800)
+  })
+  default = {}
+  validation {
+    condition     = var.native_operations.full_scan_alarm_seconds >= 300 && var.native_operations.full_scan_alarm_seconds <= 86400 && var.native_operations.full_scan_alarm_seconds % 60 == 0
+    error_message = "Full scan alarm window must be a multiple of 60 seconds between 300 and 86400."
+  }
+}
+
+output "native_operations_configuration" {
+  value = {
+    alarm_actions            = var.native_operations.alarm_actions
+    incident_owner           = var.native_operations.incident_owner
+    notifications_configured = length(var.native_operations.alarm_actions) > 0
+    ownership_configured     = trimspace(var.native_operations.incident_owner) != ""
+    full_scan_alarm_seconds  = var.native_operations.full_scan_alarm_seconds
+  }
+}

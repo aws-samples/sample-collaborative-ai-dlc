@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { GetCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import { createNativeAuthority } from '../authority.js';
 import { createNativeWakeupBridge, nativeWakeupTargets } from '../wakeup.js';
 import { createNativeProjectionStore, nativeProjectionStatus } from '../projection-store.js';
@@ -12,6 +12,28 @@ import {
 } from '../publication-graph.js';
 import { executionIdentity } from '../execution-runtime.js';
 import { TABLE } from './fixtures.js';
+import { nativeRuntimeBindingKey } from '../../shared/native-runtime-binding.js';
+
+// This fixture models only checkpoint storage. Real conditional writes, cursor
+// pagination and lease races are exercised in native-repair.integration.test.js.
+const withCheckpoint = (ddb) => {
+  let state;
+  return {
+    send: async (command) => {
+      if (command.input.TableName === 'repair-checkpoints') {
+        if (command instanceof GetCommand) return { Item: structuredClone(state) };
+        if (command instanceof PutCommand) {
+          state = structuredClone(command.input.Item);
+          return {};
+        }
+      }
+      const result = await ddb.send(command);
+      if (command instanceof ScanCommand)
+        result.Items = result.Items?.filter((row) => ['RUNTIME', 'EXECUTION'].includes(row.sk));
+      return result;
+    },
+  };
+};
 
 const projection = (f, overrides = {}) => {
   const graph = memoryGraph();
@@ -51,14 +73,16 @@ describe('committed native work delivery', () => {
     const request = f.replyRequest();
     const accepted = await f.api.respond(f.prepared, 'member', request, f.recheck);
     const send = vi.fn().mockRejectedValueOnce(new Error('consumer unavailable'));
+    const repairDdb = withCheckpoint(f.ddb);
     const create = () =>
       createNativeWakeupBridge({
-        ddb: f.ddb,
+        ddb: repairDdb,
+        checkpointTable: 'repair-checkpoints',
         sqs: { send },
         tableName: TABLE,
         queues: { execution: 'execution', projection: 'projection' },
       });
-    await expect(create()({ source: 'aws.events' })).rejects.toThrow();
+    expect(await create()({ source: 'aws.events' })).toMatchObject({ repaired: false });
     send.mockResolvedValue({ MessageId: 'delivered' });
     await create()({ source: 'aws.events' });
     await create()({ source: 'aws.events' }); // duplicate delivery
@@ -78,12 +102,21 @@ describe('committed native work delivery', () => {
       send: vi
         .fn()
         .mockResolvedValueOnce({
-          Items: [{ sk: 'RUNTIME', status: 'PREPARING', projectId: 'p', executionId: 'e' }],
+          Items: [
+            {
+              ...nativeRuntimeBindingKey({ projectId: 'p', executionId: 'e' }),
+              sk: 'RUNTIME',
+              status: 'PREPARING',
+              projectId: 'p',
+              executionId: 'e',
+            },
+          ],
           LastEvaluatedKey: { pk: 'last', sk: 'RUNTIME' },
         })
         .mockResolvedValueOnce({
           Items: [
             {
+              ...nativeRuntimeBindingKey({ projectId: 'p', executionId: 'e' }),
               sk: 'EXECUTION',
               status: 'CANCEL_REQUESTED',
               scope: { projectId: 'p', executionId: 'e' },
@@ -93,7 +126,8 @@ describe('committed native work delivery', () => {
     };
     const sqs = { send: vi.fn(async () => ({ MessageId: 'ack' })) };
     await createNativeWakeupBridge({
-      ddb,
+      ddb: withCheckpoint(ddb),
+      checkpointTable: 'repair-checkpoints',
       sqs,
       tableName: TABLE,
       queues: { preparation: 'prepare', cancellation: 'urgent' },
@@ -111,6 +145,7 @@ describe('committed native work delivery', () => {
   it('repairs an expired image-revocation event for a quiet waiting execution', async () => {
     const digest = `sha256:${'a'.repeat(64)}`;
     const row = {
+      ...nativeRuntimeBindingKey({ projectId: 'project', executionId: 'execution' }),
       sk: 'EXECUTION',
       status: 'AWAITING_USER',
       scope: { projectId: 'project', executionId: 'execution' },
@@ -125,7 +160,8 @@ describe('committed native work delivery', () => {
     };
     const sqs = { send: vi.fn(async () => ({ MessageId: 'urgent' })) };
     await createNativeWakeupBridge({
-      ddb,
+      ddb: withCheckpoint(ddb),
+      checkpointTable: 'repair-checkpoints',
       sqs,
       tableName: TABLE,
       queues: { cancellation: 'urgent' },

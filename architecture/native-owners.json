@@ -67,6 +67,14 @@
       "kind": "derived download jobs; no workflow completion authority",
       "role": "authority",
       "observations": ["results:claim/finish"]
+    },
+    "REPAIR_CHECKPOINT": {
+      "owner": "native-repair-scan",
+      "kind": "hint cursor in separate repair table; never job or execution authority",
+      "role": "wakeup:runtime / native_package_repair:packages",
+      "observations": [
+        "conditional claim/checkpoint/release; expired lease takeover; failed rows revisit next sweep"
+      ]
     }
   },
   "controlWriters": [

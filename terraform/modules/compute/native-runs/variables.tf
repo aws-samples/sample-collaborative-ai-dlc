@@ -51,3 +51,14 @@ variable "preparation_admission_enabled" {
 }
 variable "cognito_user_pool_id" { type = string }
 variable "cognito_client_id" { type = string }
+
+variable "native_repair_table_name" { type = string }
+variable "native_repair_table_arn" { type = string }
+variable "native_operations" {
+  type = object({
+    alarm_actions           = optional(list(string), [])
+    incident_owner          = optional(string, "")
+    full_scan_alarm_seconds = optional(number, 1800)
+  })
+  default = {}
+}

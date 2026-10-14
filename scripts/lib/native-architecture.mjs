@@ -27,7 +27,7 @@ export const nativeArchitectureScope = (file) =>
 export const productionSource = (file) =>
   file.startsWith('lambda/') &&
   /\.m?js$/.test(file) &&
-  !/(^|\/)(test|tests|fixtures|node_modules|\.build|\.probe-build)\//.test(file);
+  !/(^|\/)(test|tests|fixtures|node_modules|\.build|\.probe-build|\.repair-build)\//.test(file);
 
 export const analyzeArchitectureSource = (file, source) => {
   const result = {

@@ -86,3 +86,6 @@ __pycache__/
 
 # Release architecture inventory is generated from one HEAD.
 reports/architecture/
+
+# Separate package repair Lambda bundle
+lambda/native-package-worker/.repair-build/

@@ -212,7 +212,13 @@ module.exports = {
     // rule can see (and forbid) any prod -> test edge. The report/metrics/graph
     // npm scripts pass `--exclude` on the CLI to keep those outputs source-only.
     exclude: {
-      path: ['\\.build/', '\\.probe-build/', '(^|/)coverage/', '(^|/)\\.stryker-tmp/'],
+      path: [
+        '\\.build/',
+        '\\.probe-build/',
+        '\\.repair-build/',
+        '(^|/)coverage/',
+        '(^|/)\\.stryker-tmp/',
+      ],
     },
     moduleSystems: ['es6', 'cjs'],
     enhancedResolveOptions: {

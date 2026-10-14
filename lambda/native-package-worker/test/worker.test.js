@@ -166,10 +166,12 @@ describe('SQS boundary', () => {
 
   it('returns a partial failure for a busy lease', async () => {
     await f.jobs.claim(KEY);
-    const s = setup();
+    const logger = { warn: vi.fn() };
+    const s = setup({ logger });
     expect(await s.worker(event())).toEqual(failed);
     expect(f.storage.read().attempts).toBe(1);
     expect(s.createAttempt).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 
   it('handles duplicate job deliveries once using terminal state', async () => {

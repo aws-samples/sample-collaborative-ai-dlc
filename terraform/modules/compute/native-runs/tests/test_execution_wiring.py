@@ -93,6 +93,15 @@ class NativeExecutionWiring(unittest.TestCase):
         self.assertEqual(actions(native_read), {"dynamodb:GetItem"})
         self.assertEqual(credentials.count("aws_dynamodb_table.bindings.arn"), 1)
 
+    def test_repair_checkpoint_writer_is_separate_from_control_authority(self):
+        source = (MODULE / "wakeup.tf").read_text()
+        checkpoint = block(source, 'resource "aws_iam_role_policy" "wakeup_checkpoint"')
+        self.assertEqual(actions(checkpoint), {"dynamodb:GetItem", "dynamodb:PutItem"})
+        self.assertIn('Resource = var.native_repair_table_arn', checkpoint)
+        self.assertIn('"dynamodb:LeadingKeys" = ["runtime"]', checkpoint)
+        self.assertNotIn('aws_dynamodb_table.bindings', checkpoint)
+        self.assertNotIn('package_jobs', checkpoint)
+
     def test_control_mutation_guard_rejects_wildcards_and_single_item_bypasses(self):
         for action in ["*", "dynamodb:*", "dynamodb:Put*", "dynamodb:UpdateItem", "dynamodb:TransactWriteItems"]:
             self.assertTrue(has_control_mutation(f'Action = ["{action}"]'))

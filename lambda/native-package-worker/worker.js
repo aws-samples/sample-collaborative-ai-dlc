@@ -162,6 +162,7 @@ export const createNativePackageWorker = ({
   cleanupReserveMs = 10_000,
   maxRecords = 10,
   now = Date.now,
+  logger = console,
 } = {}) => {
   if (
     !matches(expectedQueueArn, QUEUE) ||
@@ -308,8 +309,15 @@ export const createNativePackageWorker = ({
       if (!existing || terminal(existing)) return true;
       const claimed = await jobs.claim(pointer);
       checkBudget();
-      if (claimed?.kind === 'missing' || claimed?.kind === 'terminal') return true;
-      if (claimed?.kind === 'busy') return false;
+      if (claimed?.kind === 'missing') return true;
+      if (claimed?.kind === 'terminal') {
+        if (claimed.job?.state === 'FAILED')
+          logger.warn(
+            JSON.stringify({ event: 'native_package_worker_terminal_failure', ...pointer }),
+          );
+        return true;
+      }
+      if (claimed?.kind === 'busy') return 'busy';
       if (claimed?.kind !== 'claimed') invalid();
       job = readClaim(claimed.job, pointer);
       lease = { ...pointer, leaseToken: job.leaseToken };
@@ -421,6 +429,9 @@ export const createNativePackageWorker = ({
           const code = terminalCode(failure);
           if (code) {
             await jobs.fail({ ...lease, code });
+            logger.warn(
+              JSON.stringify({ event: 'native_package_worker_terminal_failure', ...pointer }),
+            );
             handled = true;
           }
         } else {
@@ -470,14 +481,23 @@ export const createNativePackageWorker = ({
     let fifoFailed = false;
     for (const record of event.Records) {
       let complete = false;
+      let busy = false;
       if (!fifoFailed) {
         try {
-          complete = await processPointer(readPointer(record), context);
+          const outcome = await processPointer(readPointer(record), context);
+          complete = outcome === true;
+          busy = outcome === 'busy';
         } catch {
           // No raw job/provider/SDK errors or input bodies are logged/returned.
         }
       }
       if (!complete) {
+        // Duplicate delivery during a live lease is expected retry work.
+        // It must not page the incident destination as a worker failure.
+        if (!busy && !fifoFailed)
+          logger.warn(
+            JSON.stringify({ event: 'native_package_worker_retry', messageId: record.messageId }),
+          );
         batchItemFailures.push({ itemIdentifier: record.messageId });
         if (expectedQueueArn.endsWith('.fifo')) fifoFailed = true;
       }

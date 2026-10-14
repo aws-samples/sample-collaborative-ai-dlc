@@ -463,6 +463,7 @@ module "native_package_worker_lambda" {
       patterns = [
         "!.build/.*",
         "!.probe-build/.*",
+        "!.repair-build/.*",
       ]
       commands = [
         "cd ../.. && npm run build -w native-package-worker",
@@ -525,14 +526,16 @@ resource "aws_lambda_event_source_mapping" "native_package_jobs" {
   depends_on = [aws_iam_role_policy.native_package_worker]
 }
 
-# Alarms have no actions or external notification destinations.
+# Notification actions are opt-in, using the root native_operations contract.
 resource "aws_cloudwatch_metric_alarm" "native_package_jobs_dead_letters" {
   for_each = {
     worker   = aws_sqs_queue.native_package_jobs_dead_letter.name
     dispatch = aws_sqs_queue.native_package_jobs_dispatch_dead_letter.name
   }
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
   alarm_name          = "${var.project_name}-native-package-${each.key}-dlq-${var.environment}"
-  alarm_description   = "Protected package jobs require operator recovery; do not rediscover latest or replay raw stream records as authority"
+  alarm_description   = "Package DLQ requires inspection; owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Repair requeues eligible authoritative jobs; never rediscover latest or replay raw stream records"
   namespace           = "AWS/SQS"
   metric_name         = "ApproximateNumberOfMessagesVisible"
   dimensions          = { QueueName = each.value }
@@ -545,6 +548,8 @@ resource "aws_cloudwatch_metric_alarm" "native_package_jobs_dead_letters" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "native_package_jobs_age" {
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
   alarm_name          = "${var.project_name}-native-package-job-age-${var.environment}"
   alarm_description   = "Protected package jobs are waiting beyond the prototype processing budget"
   namespace           = "AWS/SQS"
@@ -559,6 +564,8 @@ resource "aws_cloudwatch_metric_alarm" "native_package_jobs_age" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "native_package_worker_throttles" {
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
   alarm_name          = "${var.project_name}-native-package-worker-throttles-${var.environment}"
   alarm_description   = "Qualify SQS polling against reserved concurrency before increasing worker capacity"
   namespace           = "AWS/Lambda"
@@ -615,4 +622,156 @@ output "native_package_worker_role_arn" {
 output "native_package_jobs_pipe_arn" {
   description = "ARN of the qualified dispatch pipe, or null while disabled"
   value       = try(aws_pipes_pipe.native_package_jobs[0].arn, null)
+}
+
+variable "native_repair_table_name" { type = string }
+variable "native_repair_table_arn" { type = string }
+variable "native_operations" {
+  type = object({
+    alarm_actions           = optional(list(string), [])
+    incident_owner          = optional(string, "")
+    full_scan_alarm_seconds = optional(number, 1800)
+  })
+  default = {}
+}
+
+# Read-only package repair is separate from the publisher and its VPC/provider
+# access. Enabling imports still requires the existing dev readiness gates.
+resource "aws_iam_role" "native_package_repair" {
+  name               = "${var.project_name}-native-package-repair-${var.environment}"
+  assume_role_policy = local.lambda_assume_role_policy
+}
+resource "aws_iam_role_policy_attachment" "native_package_repair_basic" {
+  role       = aws_iam_role.native_package_repair.id
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+resource "aws_iam_role_policy" "native_package_repair" {
+  role = aws_iam_role.native_package_repair.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = ["dynamodb:Scan", "dynamodb:GetItem"], Resource = var.native_package_jobs_table_arn },
+      { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:PutItem"], Resource = var.native_repair_table_arn, Condition = { "ForAllValues:StringEquals" = { "dynamodb:LeadingKeys" = ["packages"] } } },
+      { Effect = "Allow", Action = ["sqs:SendMessage"], Resource = aws_sqs_queue.native_package_jobs.arn },
+    ]
+  })
+}
+module "native_package_repair_lambda" {
+  source                         = "terraform-aws-modules/lambda/aws"
+  version                        = "~> 8.0"
+  function_name                  = "${var.project_name}-native-package-repair-${var.environment}"
+  handler                        = "repair.handler"
+  runtime                        = "nodejs24.x"
+  architectures                  = ["arm64"]
+  memory_size                    = 512
+  timeout                        = 900
+  reserved_concurrent_executions = 1
+  create_role                    = false
+  lambda_role                    = aws_iam_role.native_package_repair.arn
+  source_path = [{
+    path     = "${path.module}/../../../../lambda/native-package-worker"
+    patterns = ["!.build/.*", "!.probe-build/.*", "!.repair-build/.*"]
+    commands = ["cd ../.. && npm run build:repair -w native-package-worker", ":zip lambda/native-package-worker/.repair-build"]
+  }]
+  hash_extra                        = local.native_package_worker_sources_hash
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+  environment_variables = {
+    NATIVE_PACKAGE_JOBS_ENABLED    = tostring(local.native_package_jobs_active)
+    NATIVE_PACKAGE_JOBS_TABLE      = var.native_package_jobs_table_name
+    NATIVE_PACKAGE_JOBS_QUEUE_URL  = aws_sqs_queue.native_package_jobs.url
+    NATIVE_REPAIR_CHECKPOINT_TABLE = var.native_repair_table_name
+  }
+  depends_on = [aws_iam_role_policy.native_package_repair, aws_iam_role_policy_attachment.native_package_repair_basic]
+}
+resource "aws_cloudwatch_event_rule" "native_package_repair" {
+  name                = "${var.project_name}-native-package-repair-${var.environment}"
+  schedule_expression = "rate(5 minutes)"
+  state               = local.native_package_jobs_active ? "ENABLED" : "DISABLED"
+}
+resource "aws_cloudwatch_event_target" "native_package_repair" {
+  rule = aws_cloudwatch_event_rule.native_package_repair.name
+  arn  = module.native_package_repair_lambda.lambda_function_arn
+}
+resource "aws_lambda_permission" "native_package_repair" {
+  action        = "lambda:InvokeFunction"
+  function_name = module.native_package_repair_lambda.lambda_function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.native_package_repair.arn
+}
+resource "aws_cloudwatch_metric_alarm" "native_package_repair_stalled" {
+  count               = local.native_package_jobs_active ? 1 : 0
+  alarm_name          = "${var.project_name}-native-package-repair-stalled-${var.environment}"
+  alarm_description   = "No successful package repair sweep; owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect scoped checkpoint, native_repair_scan logs and dispatch/worker DLQs. Diagnostic window, not an agreed SLO."
+  namespace           = "NativeRepair"
+  metric_name         = "ScanCompleted"
+  dimensions          = { Scope = "packages", SourceTable = var.native_package_jobs_table_name }
+  statistic           = "Sum"
+  period              = var.native_operations.full_scan_alarm_seconds
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "LessThanThreshold"
+  treat_missing_data  = "breaching"
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+}
+resource "aws_cloudwatch_metric_alarm" "native_package_repair_work_errors" {
+  alarm_name          = "${var.project_name}-native-package-repair-work-errors-${var.environment}"
+  namespace           = "NativeRepair"
+  metric_name         = "RepairErrors"
+  dimensions          = { Scope = "packages", SourceTable = var.native_package_jobs_table_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+  alarm_description   = "Package repair row failure; owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect native_repair_row_failed pointers and current job, preserve pins and attempt budgets."
+}
+resource "aws_cloudwatch_metric_alarm" "native_package_function_errors" {
+  for_each = {
+    worker = module.native_package_worker_lambda.lambda_function_name
+    repair = module.native_package_repair_lambda.lambda_function_name
+  }
+  alarm_name          = "${var.project_name}-native-package-${each.key}-errors-${var.environment}"
+  alarm_description   = "Package Lambda error/timeout; owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect function logs, lease expiry and DLQs; repair cannot revive terminal jobs."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = each.value }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+}
+
+# Partial batch failures return HTTP success to Lambda; Errors alone misses them.
+resource "aws_cloudwatch_log_metric_filter" "native_repair_partial_failures" {
+  name           = "${var.project_name}-native-package-retries-${var.environment}"
+  log_group_name = "/aws/lambda/${module.native_package_worker_lambda.lambda_function_name}"
+  pattern        = "{ ($.event = \"native_package_worker_retry\") || ($.event = \"native_package_worker_terminal_failure\") }"
+  metric_transformation {
+    name          = "${var.project_name}-native-package-worker-failures-${var.environment}"
+    namespace     = "NativeRepair"
+    value         = "1"
+    default_value = 0
+  }
+}
+resource "aws_cloudwatch_metric_alarm" "native_repair_partial_failures" {
+  alarm_name          = "${var.project_name}-native-package-retries-${var.environment}"
+  namespace           = "NativeRepair"
+  metric_name         = "${var.project_name}-native-package-worker-failures-${var.environment}"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = var.native_operations.alarm_actions
+  ok_actions          = var.native_operations.alarm_actions
+  alarm_description   = "Partial delivery or terminal package failure; owner=${var.native_operations.incident_owner == "" ? "UNASSIGNED" : var.native_operations.incident_owner}. Inspect scoped function logs and authoritative records; never delete or bypass failed work."
 }

@@ -63,8 +63,11 @@ import {
 }
 
 module "native_runs" {
-  source = "./modules/compute/native-runs"
-  count  = var.native_services_enabled ? 1 : 0
+  native_repair_table_name = module.dynamodb.native_repair_table_name
+  native_repair_table_arn  = module.dynamodb.native_repair_table_arn
+  native_operations        = var.native_operations
+  source                   = "./modules/compute/native-runs"
+  count                    = var.native_services_enabled ? 1 : 0
 
   project_name                        = var.project_name
   environment                         = var.environment

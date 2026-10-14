@@ -467,13 +467,220 @@ migration or history-deletion policy.
 
 ### Repair and diagnostics
 
-The stream bridge retries failed batches. A five-minute paginated repair scan
-rediscovers preparation, execution, cancellation, projection, and revoked-image
-work, including quiet waiting executions. Execution, cancellation, and projection
-queues have no receive-count cutoff; preparation retains its existing dead-letter
-queue. Operators must monitor wakeup failures, stream iterator age, queue age,
-and projection retries, connect alarms to alerting, and qualify repair capacity.
-Package-import queue failures also need their own monitoring and reconciliation.
+The stream bridge sends hints for committed work and reports partial stream
+failures. A five-minute schedule runs a consistent, paginated repair scan even
+when stream records or queue messages have expired. Execution, cancellation,
+and projection queues retain their existing 14-day retention and have no
+receive-count cutoff. Preparation retains its 14-day queue/DLQ and receive
+count 100. Package dispatch/worker queues and their separate protected table
+have an independent repair host; disabling package imports also disables its
+schedule and missing-sweep alarm.
+
+**Repair ownership and continuation (locally qualified 2026-10-14).**
+`lambda/shared/native-repair-scan.js` writes only the separate
+`native-repair` table. Its `runtime` and `packages` records bind schema version 1
+to the exact source table, a cursor containing only source primary keys, an
+opaque revision/owner, lease expiry, cycle failure count, cycle start and last
+successful completion. Each host has Get/Put permission only for its own scope.
+The wakeup role retains read-only control-table access; package repair can read
+jobs and send pointers but has no job mutation, source credential, graph,
+archive publication, or worker invocation permission. The execution authority
+and package worker remain the protected-state owners.
+
+A conditional revision write claims the cursor. Concurrent schedules/revocation
+batches observe a live lease and return `busy`; they cannot overwrite progress.
+Defaults are 100 evaluated rows per Scan, four concurrent rows, at most 1,000
+pages and a 240-second work budget, leaving time before the 900-second Lambda
+limit. Each acknowledged batch saves its last processed key; an entirely
+filtered page saves DynamoDB's continuation key. There is no new work index.
+The 1 MiB service page limit still applies. An invocation yields `continued`
+and releases only acknowledged progress. A crash, rejected write or lost write
+acknowledgement leaves a 960-second lease; a later schedule takes it over by
+revision CAS. An old owner cannot checkpoint or release a successor's cursor.
+A batch interrupted before checkpoint may send duplicate hints; downstream
+owners reload state and retain command/attempt/lease fencing. There is no
+claim of exactly-once transport.
+
+Row failures are logged by primary key, counted, and advanced past so one bad
+record or send cannot starve the tail. They are retried on the next complete
+sweep. A sweep containing any failed row never reports `repaired: true` or emits
+a successful `ScanCompleted`. Scan/checkpoint errors throw. SDK operations use
+one attempt, a two-second connection limit and five-second request limit, with
+an invocation abort signal. Hard Lambda timeouts also count as Lambda Errors.
+An unavailable service has no promised recovery deadline. Even after a crash,
+lease expiry and the next schedule add delay; the lease alone is not an SLO.
+
+Runtime key/scope checks reject foreign scheduling records. RESULT, OUTPUT,
+EVENT, publication history and irrelevant rows contribute scan cost but cannot
+schedule commands. Revocation absence is shared only within one scan page for
+notification discovery. Authorization still re-reads absence on every call.
+A revocation arriving after that page is discovered in a later sweep, including
+quiet waits; one sweep covers all image digests and a stream burst shares one
+sweep per invocation. A failed revocation lookup does not suppress an already
+pending cancellation hint, but fails that sweep. Cancellation, execution and
+projection sends for a row settle independently (up to 12 concurrent sends at
+the four-row default). The separate cancellation Lambda retains reserved
+concurrency two.
+
+| Lost work or failure                                                                             | Automatic repair and remaining operator responsibility                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Initial runtime notification, stream age-out, exhausted stream retry                             | Stream partial retries and periodic scan rediscover authoritative pending preparation, execution, cancellation and current publication hints. No command is authorized by scan data.                                                                                                                                                                                |
+| Partial/unacknowledged SQS send, queue retention, preparation DLQ                                | Repeated sweeps resend eligible work. Consumers reload/claim through the authority; delivery failure does not delete durable work. Inspect DLQ contents and repair logs; a terminal preparation failure is not revived.                                                                                                                                             |
+| Worker timeout/expired execution or projection lease                                             | Queue retry or repair reaches the existing owner. Its lease, runtime observation and recovery rules decide what is safe. `RECOVERY_REQUIRED`/uncertain command delivery still requires the supported explicit recovery action; repair does not replay uncertain model commands.                                                                                     |
+| Quiet wait plus expired/racing image-revocation event                                            | Every sweep checks pinned digests for nonterminal executions. Downstream revocation checks fence authorization; cancellation remains separate.                                                                                                                                                                                                                      |
+| Package QUEUED stream loss, 23-hour dispatch cutoff, four-day worker queue retention, worker DLQ | The five-minute package scan reloads each eligible candidate through `createNativePackageJobs.get`. It sends only schema/project/job pointers for current QUEUED or expired RUNNING jobs. The unchanged worker claims by CAS and checks current source access. No raw stream/DLQ body is treated as authority.                                                      |
+| Lost package attempt, archive receipt or lease                                                   | Existing candidate/release/source/materialization/archive identity remains pinned. The worker recovers the recorded candidate/receipt instead of selecting latest again. Live leases are skipped; expired attempts retain the configured attempt budget. Exhaustion and permanent denial remain terminal FAILED. Retained job/archive dependencies are not deleted. |
+| Terminal package failure or malformed protected record                                           | No automatic resurrection. Inspect current job/error, source access, attempts and DLQ evidence through authorized operations. This change adds no terminal-retry API or redrive authorization.                                                                                                                                                                      |
+| Lost asynchronous RESULT invocation or result lease                                              | Unchanged explicit user rebuild; result rows are not execution scheduling authority and repair does not regenerate them.                                                                                                                                                                                                                                            |
+
+**Alarm configuration.** Root `native_operations` is passed to both native-run
+and package modules, using the existing repository convention of opt-in
+`alarm_actions` lists. Defaults are `alarm_actions = []`, `incident_owner = ""`
+and `full_scan_alarm_seconds = 1800`. The last value is a diagnostic window,
+not an agreed repair-delay target. Root output
+`native_operations_configuration` reports these values and whether destination
+and owner references are configured. No topic, subscription, person, team,
+notification send or escalation policy is created or selected by this change.
+Without configuration the alarms remain visible but send no notifications;
+owner-bearing descriptions say `UNASSIGNED`.
+
+Routes cover wakeup Errors (including timeout), Throttles, IteratorAge, all four
+runtime queue ages, preparation DLQ, failed repair rows and absent successful
+full sweeps. Package routes cover dispatch/worker DLQs, queue age, worker
+throttles, worker/repair Lambda errors, repair row errors and absent successful
+sweeps. Log metric filters also expose stream partial failures and package
+worker retries/terminal failures, which do not necessarily increment Lambda
+Errors. `NativeRepair` scan metrics are scoped by source table and repair
+scope; retry-filter metric names include deployment identity. Package missing
+sweeps are not alarmed while imports are disabled. Existing thresholds remain;
+new failure alarms trigger on a nonzero count and a missing/zero successful
+sweep breaches the configurable diagnostic window.
+
+An authorized operator must supply the existing destination ARN(s) and incident
+ownership reference. For an SNS action, its topic policy/subscription and any
+customer-managed KMS key must permit CloudWatch alarm delivery; the repair
+Lambda does not need SNS publishing or alert-key access. This change adds no
+SNS/KMS policy grants. The checkpoint table uses AWS-owned DynamoDB encryption,
+matching the existing native control/package tables, and is excluded from
+shared runtime table grants. Mocked tests prove configuration/IAM JSON only;
+effective deployed permissions and delivery still need qualification.
+
+Triage a failed/stalled sweep using `native_repair_scan`,
+`native_repair_row_failed`, `native_wakeup_retry` and
+`native_package_worker_retry`/`native_package_worker_terminal_failure` logs,
+then inspect the scoped checkpoint, current authoritative row and applicable
+DLQ. Restore capacity, permissions, queue/graph/source availability as indicated;
+let the lease expire and the schedule resume. Do not edit execution state,
+advance a checkpoint by hand, delete mandatory work or replay raw stream bodies.
+A row-failure alarm may coexist with successful tail progress. DLQ alarms still
+require inspection after a job has recovered; this change does not purge them.
+
+**Exact local evidence.** The pre-fix injected-timeout reproduction made three
+scans of 20 active rows: 15 sends reached only the first five identities and the
+other 15 were never reached. The package host rejected scheduled events and had
+no table repair path. The saved baseline source/output and all local logs are
+under ignored `.native-evidence/repair-capacity-20261014/`; no deployed state was
+consulted or changed.
+
+The committed probe is `scripts/native-repair-probe.mjs`, restricted to loopback
+DynamoDB Local, at most 50,000 runtime rows and 200 package jobs, and injected
+SQS acknowledgements. The final 12,000-row example has 240 active, 240 quiet,
+240 terminal executions, 120 preparations, 9,600 history/output/result rows,
+and 1,560 irrelevant rows. Non-work payloads are 2,048 bytes each; two pinned
+image digests are shared. The 1,000-row example uses the same proportions.
+Package datasets have 200 or 20 jobs, equally split between queued, expired
+lease, live lease and terminal denied. These are declared examples, not an
+approved customer scale or representative production distribution.
+
+Node **24.21.0**, `NODE_OPTIONS=--no-experimental-webstorage`, DynamoDB Local
+image `sha256:ff89bd48ff32cd8d9be5fee8873b65b8854dc408f1afe881be6eb00247bc0dab`:
+
+| Runtime rows | Row concurrency | Added latency per SDK/send operation | Budget ms | Runtime elapsed ms / invocations | Runtime pages / evaluated rows | Runtime sends / distinct hints | Package elapsed ms / invocations / distinct hints |
+| ------------ | --------------- | ------------------------------------ | --------- | -------------------------------- | ------------------------------ | ------------------------------ | ------------------------------------------------- |
+| 12,000       | 1               | 0 ms                                 | 240,000   | 1,474 / 1                        | 121 / 12,000                   | 360 / 360                      | 189 / 1 / 100                                     |
+| 12,000       | 4               | 0 ms                                 | 240,000   | 973 / 1                          | 121 / 12,000                   | 360 / 360                      | 76 / 1 / 100                                      |
+| 12,000       | 4               | 5 ms                                 | 240,000   | 6,436 / 1                        | 121 / 12,000                   | 360 / 360                      | 855 / 1 / 100                                     |
+| 1,000        | 1               | 5 ms                                 | 240,000   | 1,102 / 1                        | 11 / 1,000                     | 30 / 30                        | 318 / 1 / 10                                      |
+| 1,000        | 4               | 5 ms                                 | 240,000   | 510 / 1                          | 11 / 1,000                     | 30 / 30                        | 119 / 1 / 10                                      |
+| 1,000        | 4               | 5 ms                                 | 100       | 668 / 6                          | 12 / 1,156                     | 32 / 30                        | 180 / 2 / 10                                      |
+
+The final 12,000-row/concurrency-four scan made 121 Scans, 212 Gets (211
+revocation lookups plus the checkpoint read), 379 checkpoint Puts and 360
+sends. DynamoDB Local returned 5,971 scan capacity units, 212 Get units and
+379 Put units. The old per-row algorithm would do 480 revocation lookups on
+this dataset; the new page cache did 211, without an authorization cache.
+Concurrency one required 963 checkpoint Puts. The 200-job/concurrency-four
+repair made three Scans, 151 Gets, 43 Puts and 100 sends; Local returned 22,
+151 and 43 respective capacity units. It reread 150 nonterminal jobs and skipped
+all live leases and terminal failures. The 100 ms run deliberately reread
+partial pages and duplicated two runtime/two package hints, reached the entire
+tail, and reported success only at complete sweep boundaries.
+
+These elapsed times include actual local service/SDK overhead plus the declared
+injected wall-clock delay. They exclude five-minute schedule waits, AWS service
+latency/throttling, real SQS polling, provider work and consumption/billing in
+AWS. They are single bounded observations, not percentiles or throughput limits.
+All six final profiles completed with maximum outstanding measured operations
+no greater than the selected row concurrency. Histories still consume full scan
+capacity despite server-side filtering. Large tables/many unique images can
+require multiple scheduled slices; no index or production scaling policy was
+invented from these examples.
+
+Reproduce the examples with the local image above on loopback port 18764, then:
+
+```sh
+export PATH=/Users/jwthewes/.nvm/versions/node/v24.21.0/bin:$PATH
+export NODE_OPTIONS=--no-experimental-webstorage
+node scripts/native-repair-probe.mjs --rows=12000 --concurrency=4
+node scripts/native-repair-probe.mjs --rows=12000 --concurrency=1
+node scripts/native-repair-probe.mjs --rows=12000 --concurrency=4 --latency-ms=5
+node scripts/native-repair-probe.mjs --rows=1000 --concurrency=1 --latency-ms=5
+node scripts/native-repair-probe.mjs --rows=1000 --concurrency=4 --latency-ms=5
+node scripts/native-repair-probe.mjs --rows=1000 --concurrency=4 --latency-ms=5 --budget-ms=100
+```
+
+The probe creates uniquely named disposable tables and removes only those tables
+in `finally`; all retained application data remains untouched. Local regression
+coverage additionally crosses a real 1 MiB page boundary and tests deadline
+continuation, poison/unacknowledged sends, concurrent claims, stale owners,
+throttled scans/lookups, lost checkpoint acknowledgements, quiet-wait revocation
+races, scope mismatch, stale package scan data, immutable receipt recovery,
+duplicate delivery and exhausted attempts. Local validation and remaining live
+qualification are recorded in the repair backlog entry below. Commands used
+from the project root (Node/PATH settings above) were:
+
+```sh
+npx vitest run --project=native-runtime-control --project=native-package-worker --project=shared --maxWorkers=4
+npx vitest run --config vitest.native-foundation.config.js lambda/native-runtime-control/test/architecture-contract.test.js lambda/native-runtime-control/test/runtime-images.test.js lambda/native-package-worker/test --maxWorkers=4
+npm run test:release
+npm run test:native-wiring
+node --test scripts/test/native-architecture.test.mjs
+npm run lint
+npm run format:check
+npm run secretlint
+npm run dep:check
+npm run architecture:check
+npm run sdk:check
+npm run build -w native-runtime-control
+npm run build -w native-package-worker
+npm run build:repair -w native-package-worker
+terraform -chdir=terraform fmt -check -recursive
+```
+
+The final ten repair regressions also ran with
+`DYNAMODB_LOCAL_ENDPOINT=http://127.0.0.1:18764 npx vitest run --config /tmp/native-repair-vitest.config.mjs`;
+that focused config and the output are saved with the local evidence. Terraform
+was copied to an isolated temporary directory, with source dependencies linked
+back and only a temporary `backend "local" {}` override added, following CI.
+Both installed Terraform 1.16.5 and CI-pinned 1.15.0 passed. The latter was
+downloaded only into `/tmp` and checked against its official SHA256 manifest.
+The commands there were `terraform init -backend=false -lockfile=readonly`,
+`terraform validate -no-tests` and
+`terraform test -filter=tests/native-architecture.tftest.hcl -filter=tests/native-package-repair.tftest.hcl`.
+The first sandbox attempts were blocked by local sockets/provider plugin startup;
+permitted local reruns passed. Registry initialization downloaded modules only.
+No backend state or AWS data source was contacted; tests used mock providers and
+overrode Lambda packaging. Only this working document was changed among docs.
 
 For projection lag, preserve immutable objects and restore membership and graph
 access so ordered replay can continue. Do not edit execution state or advance
@@ -1119,6 +1326,40 @@ release criteria before widening support; later capabilities are separate scope.
       table size and concurrency. Attach alarm destinations and assign incident
       ownership. Done when missed notifications are repaired within an agreed bound
       and timeouts or dead-letter work are actionable.
+      **Locally implemented, production qualification open (2026-10-14):**
+      resumable fenced scans, page-scoped revocation lookup sharing, separate
+      package-job repair, configurable alert destinations/owner references and
+      local capacity/failure evidence are recorded under **Repair and diagnostics**.
+      No agreed table/history scale, concurrent workload, maximum repair delay,
+      actual destination or incident owner is established; the question remains
+      pending. Deploy the checkpoint table, scoped policies, controller/package
+      repair bundles, environment wiring and alarms together. Retained execution,
+      command, package and archive schemas/pins are unchanged. Existing defaults
+      keep notification actions empty and package readiness gates intact.
+      **Validation:** affected native-control/package-worker/shared backend suites
+      passed 5,027 tests (159 files) on Node 24, including nine real-DynamoDB repair
+      cases; final targeted tests passed 244 plus ten real-DynamoDB repair cases.
+      All 232 release
+      tests and 22 native wiring checks passed. Isolated local-backend Terraform
+      init/validate and four mocked routing/owner/readiness scenarios passed
+      with both Terraform 1.16.5 and CI-pinned 1.15.0;
+      validation retains existing provider deprecation warnings. All eight native
+      controller bundles plus package worker and package repair built. The final
+      lint, format, secret, dependency, architecture and SDK checks passed; five
+      architecture release tests passed separately. Dependency checking retains
+      14 existing warnings (zero errors); bundles retain esbuild size warnings.
+      The first normal commit hook (four workers) passed 9,902 tests, failed five
+      in untouched native preparation/v2 Git fixtures, and skipped three. An
+      isolated rerun passed 35 of 36: all original failing cases passed, while a
+      different v2 gate wait failed. These are timing-sensitive failures with
+      no established cause; they are not counted as green validation. The normal
+      hook is retried with one worker, preserving every assertion and timeout;
+      its final result is retained in the local commit evidence.
+      Node 22 and Bun are not installed here; no frontend
+      change/test/build, deployment, AWS mutation, real model/provider execution,
+      alert send or subscription was performed. Live alarm delivery/effective IAM,
+      stream/Pipes/SQS expiry/redrive, ARM64 Lambda capacity, agreed latency bound
+      and an accepted incident owner are still required before checking this item.
 - [ ] **Capability — optional debug archive lifecycle.** Wire capture and expiry
       to the existing off-by-default preferences. Done when enabled retention is
       enforced without affecting mandatory publications, history, or recovery.
