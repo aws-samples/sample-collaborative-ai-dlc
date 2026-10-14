@@ -1069,25 +1069,198 @@ release criteria before widening support; later capabilities are separate scope.
       package hashes/harness materializations, including forks or version labels
       alone, are unsupported;
       local 2.11 logs do not supply verified package bytes for another profile.
-      **Technical evidence gap, not an open approval-policy choice:** the pinned
-      engine keeps effective plan/amendments, review/sensor outcomes and
-      approval/application/terminal state (including its local signing material)
-      in the same-UID agent-writable workspace. Its report command accepts
-      conductor-reported outcomes. A parser or local signature cannot turn those
-      into protected independent receipts. The current native transport cannot
-      attest applied plan identity, required outcome execution, applied human
-      decision, or terminal workflow completion against exact result bytes.
-      A supported engine boundary must emit protected application/outcome
-      receipts tied to package/configuration/effective plan, stage/gate,
-      generation/accepted command and immutable result identity. No such
-      receipt is fabricated, migrated or inferred here. Results report
-      `not_verified`; effective requirements stay `unknown`, and check/review/
-      application/terminal outcomes stay `not_recorded`. Failed/rejected or stale
-      agent-authored reports remain inspectable with explicitly unverified
-      applicability; no successful platform test run verifies a user's workflow.
-      No scheduler, script runner, extra approval button or dispatch authority
-      is added. This item remains open for that technical contract and deployed
-      qualification.
+      **Protected outcome boundary investigated (2026-10-14):** the available
+      pinned package has no complete protected producer that native can connect
+      with a small adapter. Its supported hooks enforce useful local protocol
+      checks, but the harness can supply their inputs and alter their authority
+      files. Calling those hooks from `executor.js`, signing their output, or
+      running another collector under the same UID would not close the boundary.
+      This is a proven package/isolation dependency, not an approval-policy
+      question. No unused receipt store, scheduler or extra approval is added.
+      Results remain `not_verified`; effective requirements remain `unknown`;
+      check/review/application/terminal outcomes remain `not_recorded`.
+
+      **Exact engine trace:** paths below are archive members under
+      `runtime/codex/.codex/`, not a mutable upstream checkout.
+      `tools/aidlc-utility.ts` (`handleIntentCreate`, `handleRecompose`) creates
+      the scope/configuration and validates forward plan amendments.
+      `tools/aidlc-lib.ts:27237` (`nextInScopeStage`, `effectivePlanAction`) gives
+      saved EXECUTE/SKIP suffixes and completed/skipped checkboxes precedence over
+      scope defaults. Project-type exclusions and conductor-reported conditional
+      skips also affect the walk; a skip is not successful execution.
+      `tools/aidlc-orchestrate.ts:2911` (`computeGate`) exempts initialization
+      and resolves the first Construction skeleton gate from a conductor
+      classification of practices prose. `isAutonomousConstructionGate`
+      (`aidlc-lib.ts:7703`) separately excludes the first actual Construction
+      approval and preserves unit-major per-unit gates from the autonomy grant.
+      `resolveReviewClass` applies stage declarations, scope caps and overrides;
+      `resolveCeremony` applies saved settings and supported environment overrides.
+      Thus a directive's `gate`, a scope name or the stock graph alone is not
+      the effective approval/check/review policy.
+
+      `aidlc-orchestrate.ts:8358` (`handleReport`) accepts conductor outcomes,
+      validates local evidence and delegates lifecycle transitions to
+      `tools/aidlc-state.ts`. `verifyApprovalDecision` checks offered text and
+      `humanActedSinceGate`; the latter reads local audit shards.
+      `hooks/aidlc-record-human-turn.ts` accepts stdin prompt/session data,
+      mints `HUMAN_TURN`, and calls
+      `tools/aidlc-testing-posture.ts:1863`
+      (`recordPlanApprovalHumanResponse`). Plan Approval challenges bind target,
+      intent, attempt floor, plan/instructions/testing-contract fingerprint,
+      questions/prompt and session; the matching response is still a local file
+      writable by the harness. Summary confirmation additionally uses
+      `aidlc-log.ts` decision/answer and `hooks/aidlc-write-audit-log.ts` to stamp
+      output ancestry. None authenticates a native accepted command or member.
+      Native `execution-lifecycle.js` sends protected `response.commandId` as
+      `requestId` and `response.text` as the resumed prompt; `executor.js`
+      invokes the harness, not a protected engine decision-application API.
+
+      `tools/aidlc-log.ts:1412` (`handleReview`) binds a declared reviewer request
+      to artifact/source fingerprints and imports canonical review bytes plus a
+      caller-supplied READY/NOT-READY verdict. It does not launch/authenticate the
+      reviewer. `tools/aidlc-sensor.ts` actually spawns sensor commands, but its
+      dispatcher exits zero for both passed and failed findings; `passed` can
+      also carry `tool-unavailable` or `script-error`. These are distinct from
+      an executed successful check. Project tests described in build/test
+      artifacts are not thereby proven executed.
+      `aidlc-state.ts:4685` (`handleCompleteWorkflow`) owns terminal state/audit
+      mutation under the local audit lock. `aidlc-orchestrate.ts:5050` also
+      emits terminal `done` from the mutable state walk; other `done` directives
+      merely acknowledge a report or utility action. None binds native result
+      object versions. Default relaxed Change Control deliberately allows
+      reviewed content drift with a notice; strict mode refuses it. A future
+      receipt must preserve that allowed decision and the old reviewed-byte
+      identity separately, not label the changed bytes as reviewed.
+
+      **Bounded proof:** recovered the preceding results session's fixture at
+      `/Users/jwthewes/development/sample-collaborative-ai-dlc-worktrees/mc-orch-b4c0d660dcfa/.native-evidence/pinned-workflow`
+      read-only, rehashed the exact archive above, and extracted fresh task-owned
+      Codex files. All five public assets in local image
+      `aidlc-native-session-recovery-local:8990203953455c85` matched
+      `native/probe-package.json`; all sixteen profiled members matched the
+      archive/catalogue. Bun 1.4.0 ran the unmodified engine with no network,
+      models, providers or guard-bypass flags. Fifty asserted checks covered
+      Express, Bugfix and Bugfix with supported strict Change Control:
+      missing artifacts/review bytes and absent/consumed human turns refused;
+      unattended hooks withheld presence; normal artifact/sensor controls worked;
+      caller-invoked human/write hooks then admitted summary confirmation and
+      stage approval; conductor-authored canonical review bytes admitted
+      `REVIEW_COMPLETED` without a reviewer process. Relaxed drift continued
+      with its notice; strict drift refused. Duplicate reports preserved
+      state/audit bytes and stale continuations refused. A copied workspace,
+      key and still-valid continuation worked in another directory, while a
+      changed MAC refused. Supported future recomposition changed the plan and
+      rejected a current-stage change. Editing only fixture state produced
+      terminal `done` without a `WORKFLOW_COMPLETED` event. These are engine
+      protocol controls and demonstrated forgeries, not completed user workflows.
+
+      Ten additional Linux checks used the current bundled native router/command
+      runner with an inert injected executor/workspace check, UID 1000,
+      `--network none --cap-drop ALL --security-opt no-new-privileges`.
+      Despite environment allowlisting, a child read a **dummy** parent variable
+      through `/proc`, read a mode-0600 fixture key, replaced a same-owner
+      mode-0400 collector module, and called same-scope status/cancel endpoints;
+      a foreign scope was rejected. No real credential was read. Source agrees:
+      `agentcore/Dockerfile:113` owns application/shared files as `node`;
+      `USER node` runs server and children; `command-runner.js` sets no UID or
+      namespace boundary. `provisioner.js` forces EFS UID/GID 1000 with a
+      mode-0700 per-run root. That isolates runs, not their tools.
+      `execution-runtime.js`/`execution.tf` grant the runtime role scoped package
+      reads, publication/checkpoint writes and fence reads, not authority-table
+      writes or authority invocation. The external authority remains protected;
+      the shared runtime role/filesystem cannot distinguish engine from harness.
+      Actual managed-runtime `/proc`, metadata credentials, mounts and IAM were
+      not qualified by this local image.
+
+      Reproduction scripts/logs are retained in
+      `/private/tmp/native-outcome-boundary-20261014/`:
+      `engine-proof.mjs` SHA-256
+      `38a6fe2a6864cafd6122517b3c659303390735f0f932edfd5bf3f00180717731`
+      and `native-proof.mjs` SHA-256
+      `0aaf29cb746e2211d6ec9353d9064c5a92dc304a50d743825a55889eb51a1088`.
+      These are temporary fixtures, not production imports. The native probe
+      ran on the image's Node 24.19.0; host bundling/regressions used Node 24.21.0.
+      The retained image's build verification records the pinned signature;
+      a fresh credential-free offline `gh attestation verify` attempt failed
+      with `no valid Sigstore verifiers could be initialized`. No verifier was
+      bypassed or replaced. Exact retained engine bytes were exercised; fresh
+      package installation/signature qualification and Node 22 were not.
+
+      **Next dependency and producer/consumer contract:** upstream
+      `awslabs/aidlc-workflows` must expose a protected execution adapter at the
+      existing orchestrate/state/log/hook seams above. It must keep plan
+      selection, amendments, conditional routing, ceremonies, autonomy and
+      terminal reduction in AI-DLC. The adapter needs protected state and
+      decision/check/reviewer ports, not a generic “sign this report” hook.
+      Required new interface semantics are
+      `applyProtectedCommand(scope, operationId, expectedHead, command)` and
+      `readProtectedOperation(scope, operationId)`; these are proposed upstream
+      operations, not existing exports or a second native workflow engine.
+      Its host must isolate engine code, state, credentials and commit authority
+      from harnesses and check/reviewer subprocesses. Read-only code or a
+      different UID alone is insufficient with shared writable state, a
+      callable signing endpoint or EFS's forced identity. Choosing and qualifying
+      that host boundary is a genuine architecture dependency; it is not
+      authorized here as a new service, fork or runtime rewrite.
+
+      The producer must accept an authenticated operation naming native
+      project/execution/binding/attempt/session, epoch/writer generation, accepted
+      command/turn sequence and expected engine head. Human application must
+      consume the exact immutable RESPONSE actor/membership attribution,
+      interaction/proposal hash and answer hash, rather than matching prompt text.
+      Its content identity must include source/package/materialization,
+      configuration and effective-plan revision/hash, including applicable
+      practices/overrides and the origin of agent-classified facts. Events must
+      name stage/gate/unit/engine attempt and distinguish selected, applied,
+      executed, reported and terminal outcomes. Check events must bind the
+      actual declared command/tool, input snapshot, exit/signal and result bytes;
+      review events must bind the independently dispatched reviewer request,
+      invocation identity and exact returned bytes/verdict, without claiming
+      review correctness. Allowed drift must retain both scopes and its notice.
+      An engine transition, new protected head and immutable operation receipt
+      must commit atomically with compare-and-swap/idempotency. A repeated
+      operation returns the same receipt; lost ACK is resolved by reading that
+      operation, never by rerunning a harness turn. Local locks/audit timestamps,
+      caller-provided attempt IDs and unprotected checkpoints cannot supply this.
+
+      Native's existing `authority.js`/`execution-store.js` remains the consumer
+      and sole protected record owner: authenticate the isolated producer,
+      verify its exact admitted package/configuration and generation/command,
+      then bind outcome bytes to the admitted publication manifest and S3 object
+      versions. The producer must retain its engine head and frozen input/output
+      byte identities. Evidence can join a publication later only through those
+      exact identities, never adjacent timestamps or mutable latest.
+      Preserve the existing RESPONSE, ANSWER and publication CAS/history owners;
+      add neither an alternative scheduler nor automatic delivery-uncertainty
+      retries. Optional evidence admission/read failures must not hold up raw
+      publication, files, history, result downloads or next-turn dispatch.
+      Existing readers are `revision-api.js`, `result-worker.js` through
+      `shared/native-completion-evidence.js`, and shared
+      `NativeCompletionEvidence` in current/history views. No writer, reader,
+      IAM, bundle, reference format or frontend changed in this investigation.
+
+      Acceptance must repeat the positive/refusal controls above and reject
+      forged hook/report/reviewer/signing requests, foreign scopes, stale plans,
+      old generations and transfer of outcomes/member choices to changed
+      input/result bytes, while preserving explicitly allowed relaxed drift.
+      Test competing answers, duplicate operations, commit-before-ACK loss,
+      cold recovery, cancellation and unsupported producers while raw results
+      and next turns remain available. Retained packages/images have no such
+      evidence and must stay unavailable; never retrofit or repin old runs.
+      Implementing this requires external package scope and an approved isolation
+      design, followed by a new verified package/image and additive consumers
+      deployed before producer admission. The documentation-only finding itself
+      requires no deployment.
+      **Boundary validation:** 400 tests passed in eleven focused
+      AgentCore/native-control/shared files at four workers on Node 24.21.0 with
+      `NODE_OPTIONS=--no-experimental-webstorage`, including real local
+      DynamoDB competing-answer/lost-ACK history and retained runtime protocols.
+      All 233 release tests and 22 wiring tests passed. Lint, formatting,
+      secretlint, SDK alignment, dependency/ownership and release checks passed;
+      existing lint/SDK/dependency warnings remain. Production bundles,
+      frontend tests/build and Terraform validation were not rerun because
+      those areas did not change.
+      Local platform tests do not validate any user's workflow or deployed IAM.
       **Deployment/compatibility:** Deploy all publication readers (authority,
       projection and discussion/Quorum bundles), result worker/alias/IAM/routes,
       then frontend and the new admitted runtime image. Readers accept schemas 1/2;
@@ -1149,6 +1322,7 @@ release criteria before widening support; later capabilities are separate scope.
       dependency/architecture/SDK checks passed on Node 24.21.0 with
       `NODE_OPTIONS=--no-experimental-webstorage`. Existing warnings remain;
       no backend/runtime/deployment qualification is claimed by these UI checks.
+
 - [ ] **Capability — platform Git delivery.** Add an authorized, idempotent
       intent-level delivery contract with engine-held credentials, reviewed-byte
       identity, remote confirmation, and review/merge outcomes. Define tracker
