@@ -302,6 +302,68 @@ opt-in still needs a decision on capture timing (draft or Start), whose pinned
 CLI/model/credential pays for it, and whether enrichment runs per publication or
 on demand. That optional decision does not gate deterministic extraction.
 
+## Platform Git delivery boundary
+
+**Contract audit, 2026-10-14:** native Git delivery is not implemented or
+qualified. Source checkout, admitted public results and v2 delivery provide
+reusable boundaries, but do not establish permission to publish a native result.
+Viewing, discussing or exporting a revision creates no Git work.
+
+`execution-config` captures one application provider/repository and binding
+revision. `execution-source` resolves its branch and exact commit before dispatch;
+the protected `EXECUTION` record retains them. The native API resolves
+`intentId` to that execution within the project and rechecks current membership
+and project identity. `native-artifact-revision` resolves named admitted
+publications and exact versioned file bytes independently of the current
+runtime, graph and latest remote branch.
+
+These publications and their source baselines contain **public file subsets**,
+not Git trees. The snapshot preserves binary, empty, BOM and CRLF bytes, but its
+manifest omits executable modes and Git object identity. Capture excludes Git,
+harness and private control paths; symlinks and submodules are unsupported.
+Source checkout also rejects LFS materialization. A missing public file can
+describe a public comparison, not authorize deletion of an excluded repository
+entry. A complete result ZIP means the admitted public inventory, not a
+complete runnable repository. Neither a live workspace, private checkpoint nor
+a mutable remote checkout can supply missing delivery bytes by implication.
+
+`RESULT` rows are independent export jobs, `EVENT` rows are observations, and
+accepted question answers authorize the next native command. None records
+authoritative checks, final review or approval of a repository result.
+Completion remains `not_verified`; required checks, final review and human
+approval remain `not_recorded`. Authored review files, stopped turns, checkmarks,
+assistant prose, graph edges and advisory Quorum results do not change this.
+
+The dedicated `execution-credentials` facade rechecks the protected run,
+attempt/epoch, image, source-binding revision, starter/delegator membership and
+connection generation. It requests `requiredAccess: read` through shared
+`source-control-credentials`. GitHub App read tokens request read permissions;
+OAuth tokens retain their underlying provider scopes, so operation isolation
+must not be mistaken for provider-enforced downscoping. The trusted preparation
+path injects the credential only for the exact-commit fetch, removes it before
+checkout/package/harness commands, disables helpers/hooks and global config,
+and restricts transport. This is source-read authority, not delivery-write
+authority. The runtime-callable legacy broker authorizes v2 `META` records; it
+cannot be borrowed by a native delivery worker. No credential grant is widened.
+
+The shared `git-providers` registry remains the provider owner. Its current
+`createPullRequest` methods also contain platform construction-branch checks,
+cleanup and, for GitHub/GitLab, base-retargeting behavior. They are not a native
+delivery transaction. Their status DTOs expose PR identity, branch/head and
+draft/open/closed/merged observations, not exact-byte review approvals. Provider
+errors can return no status; absence must not erase a previously confirmed fact.
+The v2 `record-pr` graph writer and tracker reconciler are projections/effects
+of v2 execution, not native authority. In particular, v2 `git-engine.pushBranch`
+intentionally allows `pushed: true, verified: false` after failed or mismatched
+remote confirmation. That compatibility behavior is unchanged and insufficient
+to confirm native delivery.
+
+Native configuration has no admitted tracker-source/delivery policy or tracker
+sync owner. The existing v2 issue comments and merge-triggered GitHub/GitLab
+closure do not apply automatically. Native performs no delivery-related tracker
+mutation; whether the pilot should have no integration, explicit links/comments,
+or merge-triggered updates is an unanswered product choice.
+
 ## Recovery, compatibility, and operation
 
 Cancellation has a separate queue and consumer capacity. Acceptance invalidates
@@ -1001,6 +1063,72 @@ release criteria before widening support; later capabilities are separate scope.
       identity, remote confirmation, and review/merge outcomes. Define tracker
       integration explicitly. Done when the selected provider's delivery lifecycle
       is qualified; per-unit pull requests are not required for the serial pilot.
+      **Blocked on an input and policy contract (2026-10-14):** see
+      [Platform Git delivery boundary](#platform-git-delivery-boundary).
+      Current publication/source/result schemas do not supply a deliverable Git
+      tree or authoritative review receipt. No disabled API, new record framework,
+      delivery control, automatic draft publication or inferred approval was added.
+      **Concrete choices requested, unanswered:**
+      (1) a complete admitted Git tree with modes/deletions, or an admitted change
+      set against the pinned commit that preserves every untouched base entry;
+      either needs trusted capture/admission and an explicit policy for excluded
+      entries, links, submodules and LFS, without copying credentials/private state;
+      (2) explicit publication by a current owner/admin, by any current member, or
+      automatic publication after authoritative gates;
+      (3) select GitHub, GitLab or Bitbucket and an authorized binding/repository,
+      captured source branch versus another explicit base, reserved head branch
+      per intent versus reviewed revision, and draft versus ready PR;
+      (4) observe provider-managed merges versus separately authorize platform
+      merge; and (5) no tracker integration, explicit links/comments, or
+      merge-triggered updates with separately admitted tracker identity/access.
+      None is selected by this implementation. The separate pending workflow
+      completion/check/review/approval policy remains unanswered; selecting a
+      publication mode would not create its missing protected receipts.
+      **Required next contract:** bind project/intent/execution, pinned source and
+      package/configuration, admitted result/tree and review evidence, current
+      actor/access, destination and retry identity. Any delivery state must have
+      an explicit authority owner, transactional claim/CAS/lease rules, reference
+      inventory and reconciliation of lost acknowledgements. An expired lease
+      cannot authorize replay of a possibly completed remote write. Reconcile
+      deterministic commit/branch/PR identities; reject foreign existing work
+      and branch takeover without force-pushing. Distinguish exact remote head,
+      mismatch, unavailable confirmation and accepted-write/unknown outcome.
+      Keep admission, next-turn dispatch and accessible native history independent
+      of delivery/provider failures; review/merge observations must name the
+      exact provider object and head. These are requirements, not implemented
+      scheduling or delivery state.
+      **Independent correction:** the shared Bitbucket adapter now preserves
+      existing `providerId`, `headSha`, `targetSha` and observed `draft` fields
+      when a draft creation receives HTTP 409 and recovers an existing PR.
+      Its other success paths already supplied these facts. Missing hashes stay
+      null, a ready remote PR stays ready, and non-draft response shape is
+      unchanged. This selects no native provider or publication policy.
+      Five loopback HTTP regressions cover the recovered facts, repeat lookup
+      without a second POST, and a lost creation acknowledgement followed by an
+      explicit lookup retry. The last case assumes the stored PR is visible;
+      it does not prove safety under delayed provider visibility, foreign
+      branches/PRs or concurrent native member requests.
+      **Local validation:** Node 24.21.0 with
+      `NODE_OPTIONS=--no-experimental-webstorage`: 455 focused provider,
+      credential, provenance and real local Git tests passed, followed by 29
+      source-control/retained-protocol/architecture tests. The new HTTP tests first
+      reproduced three failures, then all five passed with the correction.
+      All 233 release tests, 22 native wiring tests, lint, formatting, secret
+      scanning, dependency/ownership and SDK checks passed (existing lint,
+      dependency and SDK warnings remain). All eight native-control bundles and
+      the Bitbucket connector built; the runtime entry bundled for Node 22 with
+      external dependencies. Release metadata is valid. The initial sandbox
+      Docker denial was resolved by running the authorized local fixtures with
+      Docker access. Node 22/Bun execution, frontend/browser and live qualification
+      were not run.
+      **Compatibility and qualification:** no native schema, source/publication
+      pin, runtime image, credential/IAM, Terraform or frontend change. Rebuilding
+      existing consumers includes the shared adapter fix; deployment is not
+      performed and does not activate native delivery. The selected provider's
+      full lifecycle, exact-byte review gates, current/revoked membership,
+      branch ownership, ambiguous writes, remote review/merge and tracker behavior
+      still require implementation and authorized qualification. No live provider,
+      model, AWS, PR or tracker operation was performed.
 - [ ] **Capability — decision and revision history.** Expose earlier publications,
       comparisons, shareable file/revision links, and correlated accepted, delivered,
       applied, rejected, or uncertain answer outcomes. Done when a member can reopen

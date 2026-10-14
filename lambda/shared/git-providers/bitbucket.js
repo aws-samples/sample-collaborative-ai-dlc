@@ -825,6 +825,14 @@ const createPullRequest = async (
           prUrl: open.links?.html?.href,
           prNumber: open.id,
           existing: true,
+          ...(draft
+            ? {
+                providerId: open.id,
+                headSha: open.source?.commit?.hash ?? null,
+                targetSha: open.destination?.commit?.hash ?? null,
+                draft: Boolean(open.draft),
+              }
+            : {}),
         };
       }
       return { skipped: true, reason: 'no_changes' };
