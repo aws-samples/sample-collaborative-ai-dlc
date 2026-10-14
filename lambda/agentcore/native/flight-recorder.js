@@ -279,7 +279,10 @@ export const startNativeFlightRecorder = ({
         procs: Math.max(win.procs, next.procs ?? 0),
         samples: win.samples + 1,
       };
-      await persist();
+      // EFS persistence can stall independently of /proc sampling. Keep the
+      // in-memory ring and telemetry windows current while the single guarded
+      // write remains outstanding; never stack writes or await them on a tick.
+      void persist();
     } catch {
       // Keep the lag that coincided with a failed or hung scan.
       carriedLag = Math.max(carriedLag, tickLag);

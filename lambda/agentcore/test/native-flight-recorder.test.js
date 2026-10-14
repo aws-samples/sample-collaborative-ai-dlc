@@ -277,6 +277,44 @@ describe('flight recorder', () => {
     expect(maxActive).toBe(1);
   });
 
+  it.each(['writeFile', 'rename'])(
+    'keeps sampling through a stuck %s without stacking persistence',
+    async (operation) => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      let release;
+      const blocked = new Promise((resolve) => {
+        release = resolve;
+      });
+      let t = 0;
+      const sample = vi.fn(async () => fake(++t));
+      const fsp = {
+        ...instant,
+        [operation]: vi.fn().mockReturnValueOnce(blocked).mockResolvedValue(undefined),
+      };
+      const recorder = startNativeFlightRecorder({
+        isBusy: () => true,
+        dir,
+        sample,
+        fsp,
+        log: vi.fn(),
+      });
+      try {
+        await recorder.booted;
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(fsp[operation]).toHaveBeenCalledTimes(1);
+        expect(sample).toHaveBeenCalledTimes(5);
+        expect(recorder.window()).toMatchObject({ samples: 5, maxProcs: 5 });
+        release();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(fsp[operation]).toHaveBeenCalledTimes(2);
+        expect(recorder.window()).toMatchObject({ samples: 1, maxProcs: 6 });
+      } finally {
+        recorder.stop();
+        release();
+      }
+    },
+  );
+
   it('carries the lag of ticks skipped during a slow scan into the next sample', async () => {
     let now = 0;
     const lags = [];
