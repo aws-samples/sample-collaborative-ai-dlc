@@ -110,6 +110,46 @@ test('readable history prevents service teardown independently of executable sup
   );
 });
 
+test('stop evidence never removes retained recovery, publication, package and history references', () => {
+  const row = {
+    pk: 'a',
+    sk: 'EXECUTION',
+    schemaVersion: 1,
+    status: 'CANCELLED',
+    configuration: {
+      image: { digest: 'image' },
+      packageId: 'package',
+      materializationId: 'material',
+    },
+    recoveryCheckpoint: { id: 'checkpoint' },
+    publication: { id: 'publication' },
+    target: { runtimeArn: 'runtime' },
+  };
+  const history = { pk: 'a', sk: 'PUBLICATION#1' };
+  const before = nativeDependencyInventory([row, history]);
+  const after = nativeDependencyInventory([
+    {
+      ...row,
+      stopConfirmation: {
+        runtimeSessionId: 'private-session',
+        writerGeneration: 1,
+        confirmedAt: 1,
+      },
+    },
+    history,
+  ]);
+  assert.deepEqual(after, before);
+  const reference = after.references.find((ref) => ref.kind === 'execution');
+  for (const dependency of ['image', 'package', 'material', 'checkpoint', 'publication', 'runtime'])
+    assert.ok(reference.dependencies.includes(dependency));
+  assert.doesNotMatch(JSON.stringify(after), /private-session/);
+  assert.throws(
+    () =>
+      assertNativeRemoval(after, { admissionClosed: true, entireService: true, dependencies: [] }),
+    /protected records or readable history/,
+  );
+});
+
 test('aliases and namespace constructors cannot bypass direct-write checks', () => {
   for (const source of [
     "import { PutCommand as Hidden } from '@aws-sdk/lib-dynamodb'; new Hidden({});",

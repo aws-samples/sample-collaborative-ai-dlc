@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Link, useLocation } from 'react-router';
 import { nativeHistorySearch, parseNativeHistoryLocation } from '@/lib/nativeRevisionLinks';
 import { NativeHistoryView } from './NativeHistoryView';
+import { NativeRunInspection } from './NativeRunInspection';
 import { NativeFileView } from './NativeFileView';
 import { WorkProductsCard } from './WorkProductsCard';
 import { NativeResultDownload } from './NativeResultDownload';
@@ -76,9 +77,16 @@ export function NativeIntentContent({
         <Link
           className="underline"
           to={{ search: nativeHistorySearch(location.search, { history: true }) }}
-          aria-current={selection.mode !== 'current' ? 'page' : undefined}
+          aria-current={['history', 'revision'].includes(selection.mode) ? 'page' : undefined}
         >
           History
+        </Link>
+        <Link
+          className="underline"
+          to={{ search: nativeHistorySearch(location.search, { inspection: true }) }}
+          aria-current={selection.mode === 'inspection' ? 'page' : undefined}
+        >
+          Inspect work and export
         </Link>
       </nav>
       {selection.mode === 'current' ? (
@@ -91,6 +99,12 @@ export function NativeIntentContent({
           intent={intent}
           onAccessFailure={onAccessFailure}
           onRefresh={onRefresh}
+        />
+      ) : selection.mode === 'inspection' ? (
+        <NativeRunInspection
+          key={JSON.stringify([...identity, location.search])}
+          intent={intent}
+          onAccessFailure={onAccessFailure}
         />
       ) : (
         <NativeHistoryView

@@ -81,6 +81,39 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('native recovery contract', () => {
+  it('reads exact publication sequence and public stop evidence independently of pending turn sequence', async () => {
+    get.mockResolvedValue({
+      ...detail,
+      execution: {
+        ...execution,
+        status: 'RECOVERY_REQUIRED',
+        turnSequence: 2,
+        publicationSequence: 1,
+        stopStatus: { state: 'confirmed', confirmedAt: execution.updatedAt, privateKey: 'hidden' },
+      },
+    });
+    const result = await nativeIntentsService.get('project-1', 'run-1');
+    expect(result.execution?.publicationSequence).toBe(1);
+    expect(result.execution?.turnSequence).toBe(2);
+    expect(result.execution?.stopStatus).toEqual({
+      state: 'confirmed',
+      confirmedAt: execution.updatedAt,
+    });
+    expect(JSON.stringify(result)).not.toContain('hidden');
+  });
+  it.each([
+    { publicationSequence: 0 },
+    { publicationSequence: null },
+    { stopStatus: { state: 'confirmed', confirmedAt: null } },
+    { stopStatus: { state: 'confirmed', confirmedAt: '2030-01-01T00:00:00Z' } },
+    { stopStatus: { state: 'confirmed', confirmedAt: execution.updatedAt } },
+    { stopStatus: { state: 'pending', confirmedAt: null } },
+    { stopStatus: { state: 'unconfirmed', confirmedAt: execution.updatedAt } },
+    { stopStatus: { state: 'absent', confirmedAt: null } },
+  ])('rejects malformed or contradictory public stop/publication metadata %j', async (patch) => {
+    get.mockResolvedValue({ ...detail, execution: { ...execution, ...patch } });
+    await expect(nativeIntentsService.get('project-1', 'run-1')).rejects.toThrow();
+  });
   const recovery = { id: 'recovery-1', reason: 'RESTORE_FAILED', canRecover: true };
   const recovering = {
     ...detail,

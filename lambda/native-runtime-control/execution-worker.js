@@ -167,8 +167,18 @@ export const createNativeExecutionSupervisor =
       await authorize({ draft, execution: state.row });
       await current();
     };
-    const advance = async (patch) => {
-      state.row = await store.advance({ row: state.row, patch });
+    const advance = async (patch, stopped) => {
+      state.row = await store.advance({
+        row: state.row,
+        patch,
+        ...stopEvidence(stopped),
+      });
+    };
+    const stopEvidence = (stopped) => {
+      if (stopped?.confirmed !== true || !state.row.target) return {};
+      if (stopped.runtimeSessionId !== state.row.runtimeSessionId)
+        fail('NATIVE_EXECUTION_STOP_UNCONFIRMED');
+      return { stoppedSessionId: stopped.runtimeSessionId };
     };
     const yieldPending = async (status = state.row.status) => {
       state.row = await store.release({ row: state.row });
@@ -227,7 +237,12 @@ export const createNativeExecutionSupervisor =
         await check();
         if (stopped?.confirmed !== true || stopped.runtimeSessionId !== state.row.runtimeSessionId)
           fail('NATIVE_EXECUTION_STOP_UNCONFIRMED');
-        state.row = await store.recoveryRequired({ row: state.row, reason, recoveryId });
+        state.row = await store.recoveryRequired({
+          row: state.row,
+          reason,
+          recoveryId,
+          ...stopEvidence(stopped),
+        });
         return { pending: false, status: state.row.status, reason };
       } catch (error) {
         if (!shortTransportRetry(error)) throw error;
@@ -304,8 +319,8 @@ export const createNativeExecutionSupervisor =
         await fence.cancel(executionIdentity(state.row));
         // The original session ID remains fixed even after cancellation fences
         // the epoch. Stop uses protected runtime/session pins, never agent text.
-        await stop({ draft, execution: state.row });
-        await advance({ status: 'CANCELLED' });
+        const stopped = await stop({ draft, execution: state.row });
+        await advance({ status: 'CANCELLED' }, stopped);
         return { pending: false, status: 'CANCELLED' };
       }
       await check();
@@ -322,8 +337,8 @@ export const createNativeExecutionSupervisor =
         observe({ stage: 'decision', code: 'IMAGE_REVOKED', controlStatus: state.row.status });
         await current();
         await fence.cancel(executionIdentity(state.row));
-        await stop({ draft, execution: state.row });
-        await advance({ status: 'FAILED', failureCode: 'native_execution_image_revoked' });
+        const stopped = await stop({ draft, execution: state.row });
+        await advance({ status: 'FAILED', failureCode: 'native_execution_image_revoked' }, stopped);
         return { pending: false, status: 'FAILED', failureCode: 'native_execution_image_revoked' };
       }
       if (['DISPATCHING', 'RUNNING', 'RECOVERING'].includes(state.row.status) && fence.read) {
@@ -469,8 +484,8 @@ export const createNativeExecutionSupervisor =
         controlStatus: state.row.status,
       });
       await fence.cancel(executionIdentity(state.row));
-      await stop({ draft, execution: state.row });
-      await advance({ status: 'FAILED', failureCode: 'native_execution_failed' });
+      const stopped = await stop({ draft, execution: state.row });
+      await advance({ status: 'FAILED', failureCode: 'native_execution_failed' }, stopped);
       return { pending: false, status: 'FAILED' };
     } catch (error) {
       if (error?.code === 'NATIVE_RECOVERY_MISSING')
@@ -495,8 +510,8 @@ export const createNativeExecutionSupervisor =
         try {
           await current();
           await fence.cancel(executionIdentity(state.row));
-          await stop({ draft, execution: state.row });
-          await advance({ status: 'FAILED', failureCode: terminal });
+          const stopped = await stop({ draft, execution: state.row });
+          await advance({ status: 'FAILED', failureCode: terminal }, stopped);
           return { pending: false, status: 'FAILED', failureCode: terminal };
         } catch {
           /* A changed/cancelled owner wins. Retain its durable record. */
@@ -509,7 +524,7 @@ export const createNativeExecutionSupervisor =
         // SDK transport uncertainty retains the same attempt/session. Release
         // and send a fresh short-delay pointer instead of waiting for the long
         // queue visibility period reserved for a crashed Lambda invocation.
-        await current();
+        await current({ allowCancelled: state.row.cancelRequested });
         return yieldPending();
       }
       throw error;

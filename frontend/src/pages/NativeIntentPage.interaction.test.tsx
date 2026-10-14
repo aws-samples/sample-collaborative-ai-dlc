@@ -845,7 +845,7 @@ it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
 it.each([
   ['SESSION_LOST', 'The saved AI-DLC session needs to be restored'],
   ['CHECKPOINT_UNAVAILABLE', 'A verified recovery checkpoint is unavailable'],
-  ['DELIVERY_UNCERTAIN', 'The last agent turn could not be verified'],
+  ['DELIVERY_UNCERTAIN', 'The last command may have executed'],
   ['RESTORE_FAILED', 'The session could not be restored'],
 ] as const)(
   'keeps %s blocked without a recovery capability and never posts automatically',

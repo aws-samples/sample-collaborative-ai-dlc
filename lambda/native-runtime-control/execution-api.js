@@ -6,7 +6,11 @@ import {
   sameNativePublicationRevision,
 } from './publication-graph.js';
 import { executionIdentity } from './execution-runtime.js';
-import { nativeReplyRequest, nativeTurnSequence } from './execution-store.js';
+import {
+  nativeReplyRequest,
+  nativeTurnSequence,
+  nativeWriterGeneration,
+} from './execution-store.js';
 import { nativeDraftPrompt, promptFailure } from './draft-prompt.js';
 import { nativeInteractionView } from '../shared/native-interaction.js';
 import { nativeAnswerText } from '../shared/native-pending-input.js';
@@ -33,6 +37,16 @@ const responseView = (response, row) =>
           row.response?.commandId === response.commandId ? row.response.deliveryStatus : 'unknown',
       }
     : null;
+const stopStatus = (row) => {
+  const confirmed =
+    ['RECOVERY_REQUIRED', 'FAILED', 'CANCELLED'].includes(row.status) &&
+    row.stopConfirmation?.runtimeSessionId === row.runtimeSessionId &&
+    row.stopConfirmation?.writerGeneration === nativeWriterGeneration(row);
+  return {
+    state: confirmed ? 'confirmed' : row.status === 'CANCEL_REQUESTED' ? 'pending' : 'unconfirmed',
+    confirmedAt: confirmed ? new Date(row.stopConfirmation.confirmedAt).toISOString() : null,
+  };
+};
 
 export const nativeExecutionView = (row) =>
   row
@@ -57,6 +71,9 @@ export const nativeExecutionView = (row) =>
         projectionStatus: row.projectionStatus ?? null,
         sequence: nativeTurnSequence(row),
         interactionId: row.interaction?.id ?? null,
+        // Publication sequence is independent of a pending command's sequence.
+        publicationSequence: row.publication?.sequence ?? null,
+        stopStatus: stopStatus(row),
         responsePending:
           ['DISPATCHING', 'RECOVERING', 'RECOVERY_REQUIRED'].includes(row.status) &&
           row.response?.deliveryStatus === 'pending',

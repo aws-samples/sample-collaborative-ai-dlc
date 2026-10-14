@@ -77,6 +77,54 @@ const make = async () => {
 };
 
 describe('connected native supervisor', () => {
+  it.each([undefined, { confirmed: false }, { confirmed: false, absent: true }])(
+    'keeps terminal cancellation without a positive acknowledgement unconfirmed: %j',
+    async (observation) => {
+      const f = await make();
+      await f.dispatch();
+      await f.store.cancel(f.bindingIdentity);
+      f.ports.stop.mockResolvedValueOnce(observation);
+      await f.reconcile(f.identity);
+      expect(f.row().status).toBe('CANCELLED');
+      expect(f.row().stopConfirmation).toBeUndefined();
+      const event = [...f.rows.values()].find(
+        (row) => row.sk === `EVENT#${String(f.row().version).padStart(16, '0')}`,
+      );
+      expect(event.type).toBe('native.cancelled');
+      expect(event.summary).not.toContain('stop confirmed');
+    },
+  );
+  it('retries a lost stop acknowledgement without admitting a late command or inventing proof', async () => {
+    const f = await make();
+    await f.dispatch();
+    await f.store.cancel(f.bindingIdentity);
+    f.ports.stop.mockRejectedValueOnce(
+      Object.assign(new Error('stop acknowledgement lost'), { name: 'TimeoutError' }),
+    );
+    expect(await f.reconcile(f.identity)).toMatchObject({
+      status: 'CANCEL_REQUESTED',
+      pending: true,
+    });
+    expect(f.row().stopConfirmation).toBeUndefined();
+    const calls = f.ports.invoke.mock.calls.length;
+    await f.reconcile(f.identity);
+    expect(f.row().stopConfirmation).toMatchObject({
+      runtimeSessionId: f.row().runtimeSessionId,
+      writerGeneration: 1,
+    });
+    expect(f.ports.invoke).toHaveBeenCalledTimes(calls);
+  });
+  it('rejects a positive stop acknowledgement for another runtime session', async () => {
+    const f = await make();
+    await f.dispatch();
+    await f.store.cancel(f.bindingIdentity);
+    f.ports.stop.mockResolvedValueOnce({ confirmed: true, runtimeSessionId: 'foreign' });
+    await expect(f.reconcile(f.identity)).rejects.toMatchObject({
+      code: 'NATIVE_EXECUTION_STOP_UNCONFIRMED',
+    });
+    expect(f.row().status).toBe('CANCEL_REQUESTED');
+    expect(f.row().stopConfirmation).toBeUndefined();
+  });
   it('upgrades, pins commit before dispatch, starts once, verifies files then commits and projects', async () => {
     const f = await make();
     await f.dispatch();

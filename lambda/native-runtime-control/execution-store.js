@@ -512,7 +512,21 @@ const ROW_OPTIONAL = [
   'dispatch',
   'recovery',
   'lastRecoveryId',
+  'stopConfirmation',
 ];
+const validateStopConfirmation = (row) => {
+  if (!Object.hasOwn(row, 'stopConfirmation')) return;
+  shape(row.stopConfirmation, ['runtimeSessionId', 'writerGeneration', 'confirmedAt']);
+  check(
+    !!row.target &&
+      row.stopConfirmation.runtimeSessionId === row.runtimeSessionId &&
+      integer(row.stopConfirmation.writerGeneration, 1) &&
+      row.stopConfirmation.writerGeneration <= nativeWriterGeneration(row) &&
+      timeValue(row.stopConfirmation.confirmedAt) &&
+      row.stopConfirmation.confirmedAt >= row.startedAt &&
+      row.stopConfirmation.confirmedAt <= row.updatedAt,
+  );
+};
 const validate = (row, expectedScope) => {
   shape(row, ROW_FIELDS, ROW_OPTIONAL);
   const rowScope = scope(row.scope);
@@ -539,6 +553,7 @@ const validate = (row, expectedScope) => {
   nativeExecutionConfiguration(row.configuration);
   check(integer(nativeTurnSequence(row), 1));
   check(integer(nativeWriterGeneration(row), 1));
+  validateStopConfirmation(row);
   check(
     row.configurationSha256 === sha(canonicalJson(row.configuration)) &&
       (row.configuration.credentialBinding.source !== 'user' ||
@@ -795,6 +810,17 @@ export const createNativeExecutionStore = ({
     const value = now();
     if (!timeValue(value) || !timeValue(value + leaseMs)) fail('UNAVAILABLE');
     return value;
+  };
+  // Only the execution observer can submit this acknowledgement. The worker
+  // first closes the writer fence and validates the provider's exact response.
+  // Derive generation/time here; never accept a client-selected proof scope.
+  const stopConfirmation = (row, runtimeSessionId) => {
+    check(!!row.target && runtimeSessionId === row.runtimeSessionId);
+    return {
+      runtimeSessionId,
+      writerGeneration: nativeWriterGeneration(row),
+      confirmedAt: clock(),
+    };
   };
   const get = async (input) => {
     const currentScope = scope(input);
@@ -1158,7 +1184,7 @@ export const createNativeExecutionStore = ({
       fail('CONFLICT');
     },
     async advance(input) {
-      shape(input, ['row', 'patch']);
+      shape(input, ['row', 'patch'], ['stoppedSessionId']);
       shape(input.patch, [], ['status', 'sourceCommit', 'sourceBranch', 'target', 'failureCode']);
       const row = await owned(input.row, { allowCancelled: true });
       if (row.cancelRequested && Object.keys(input.patch).some((key) => key !== 'status'))
@@ -1187,6 +1213,10 @@ export const createNativeExecutionStore = ({
         } else if (!['REQUESTED', 'UPGRADING'].includes(row.status)) fail('CONFLICT');
       }
       const next = { ...row, ...patch, leaseExpiresAt: clock() + leaseMs };
+      if (Object.hasOwn(input, 'stoppedSessionId')) {
+        check(['FAILED', 'CANCELLED'].includes(patch.status));
+        next.stopConfirmation = stopConfirmation(row, input.stoppedSessionId);
+      }
       if (next.status === 'FAILED') {
         next.failureCode ??= 'native_execution_failed';
         delete next.recovery;
@@ -1401,7 +1431,7 @@ export const createNativeExecutionStore = ({
       return commit(row, next);
     },
     async recoveryRequired(input) {
-      shape(input, ['row', 'reason'], ['recoveryId']);
+      shape(input, ['row', 'reason'], ['recoveryId', 'stoppedSessionId']);
       check(RECOVERY_REASONS.includes(input.reason));
       if (Object.hasOwn(input, 'recoveryId')) check(matches(input.recoveryId, UUID));
       const row = await owned(input.row);
@@ -1411,6 +1441,9 @@ export const createNativeExecutionStore = ({
         unlease({
           ...row,
           status: 'RECOVERY_REQUIRED',
+          ...(Object.hasOwn(input, 'stoppedSessionId')
+            ? { stopConfirmation: stopConfirmation(row, input.stoppedSessionId) }
+            : {}),
           recovery: {
             id: input.recoveryId ?? randomUUID(),
             reason: input.reason,

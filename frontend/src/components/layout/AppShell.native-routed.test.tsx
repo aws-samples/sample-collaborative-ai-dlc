@@ -359,7 +359,7 @@ it('puts the supported question before the request and keeps pinned configuratio
 
 it.each([
   ['SESSION_LOST', true, 'The saved AI-DLC session needs to be restored'],
-  ['DELIVERY_UNCERTAIN', false, 'Recovery needs review before continuing'],
+  ['DELIVERY_UNCERTAIN', false, 'this command cannot be replayed through recovery'],
 ] as const)(
   'puts %s recovery before the published response and preserves recovery authority',
   async (reason, canRecover, explanation) => {
@@ -430,8 +430,8 @@ it.each([
 
 it.each([
   ['RUNNING', 'Agent running', true],
-  ['STOPPED', 'Agent stopped', false],
-  ['FAILED', 'Execution failed', false],
+  ['STOPPED', 'Agent stopped', true],
+  ['FAILED', 'Execution failed', true],
   ['CANCEL_REQUESTED', 'Cancellation requested', true],
   ['CANCELLED', 'Execution cancelled', false],
 ] as const)(

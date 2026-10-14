@@ -2,13 +2,20 @@ import type { NativePublishedFile } from '@/services/nativeIntents';
 import type { NativeRevisionTarget } from '@/services/nativeHistory';
 
 export interface NativeHistoryLocation {
-  mode: 'current' | 'history' | 'revision' | 'invalid';
+  mode: 'current' | 'history' | 'revision' | 'inspection' | 'invalid';
   revision?: NativeRevisionTarget;
   compare?: NativeRevisionTarget;
   file?: { id: string; sha256: string };
   discussion?: boolean;
 }
-const keys = ['nativeHistory', 'nativeRevision', 'nativeFile', 'nativeCompare', 'nativeDiscussion'];
+const keys = [
+  'nativeHistory',
+  'nativeRevision',
+  'nativeFile',
+  'nativeCompare',
+  'nativeDiscussion',
+  'nativeInspect',
+];
 const encode = (value: NativeRevisionTarget) =>
   `${value.publicationSequence}.${value.publicationId}`;
 const revision = (value: string): NativeRevisionTarget | null => {
@@ -24,6 +31,7 @@ export const parseNativeHistoryLocation = (search: string): NativeHistoryLocatio
   if (present.some((key) => !keys.includes(key) || params.getAll(key).length !== 1))
     return { mode: 'invalid' };
   if (present.length === 1 && params.get('nativeHistory') === '1') return { mode: 'history' };
+  if (present.length === 1 && params.get('nativeInspect') === '1') return { mode: 'inspection' };
   const target = revision(params.get('nativeRevision') ?? '');
   const comparison = params.has('nativeCompare')
     ? revision(params.get('nativeCompare')!)
@@ -34,6 +42,7 @@ export const parseNativeHistoryLocation = (search: string): NativeHistoryLocatio
   if (
     !target ||
     params.has('nativeHistory') ||
+    params.has('nativeInspect') ||
     comparison === null ||
     file === null ||
     (params.has('nativeDiscussion') && (params.get('nativeDiscussion') !== '1' || !file))
@@ -52,6 +61,7 @@ export const nativeHistorySearch = (
   search: string,
   target: {
     history?: boolean;
+    inspection?: boolean;
     revision?: NativeRevisionTarget;
     compare?: NativeRevisionTarget;
     file?: Pick<NativePublishedFile, 'id' | 'sha256'>;
@@ -62,6 +72,7 @@ export const nativeHistorySearch = (
   const remove = [...params.keys()].filter((key) => key.startsWith('native'));
   for (const key of remove) params.delete(key);
   if (target.history) params.set('nativeHistory', '1');
+  if (target.inspection) params.set('nativeInspect', '1');
   if (target.revision) params.set('nativeRevision', encode(target.revision));
   if (target.compare) params.set('nativeCompare', encode(target.compare));
   if (target.file) params.set('nativeFile', `${target.file.id}:${target.file.sha256}`);

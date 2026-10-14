@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   close: vi.fn(),
   discussionFor: vi.fn(),
   openDiscussionById: vi.fn(),
+  request: vi.fn(),
+  status: vi.fn(),
 }));
 vi.mock('@/services/nativeHistory', async (load) => ({
   ...(await load<typeof import('@/services/nativeHistory')>()),
@@ -32,6 +34,7 @@ vi.mock('@/services/nativeIntents', async (load) => ({
   ...(await load<typeof import('@/services/nativeIntents')>()),
   nativeIntentsService: mocks,
 }));
+vi.mock('@/services/nativeResults', () => ({ nativeResultsService: mocks }));
 vi.mock('@/hooks/useYjsDocument', async () => await import('@/test/collaborationFakes'));
 vi.mock(
   '@/components/CollaborativeTextarea',
@@ -198,6 +201,152 @@ beforeEach(() => {
   mocks.discussionFor.mockReturnValue(null);
 });
 afterEach(cleanup);
+
+const uncertainIntent = (): NativeIntent => ({
+  ...intent,
+  execution: {
+    ...intent.execution!,
+    status: 'RECOVERY_REQUIRED',
+    turnSequence: 3,
+    publicationSequence: 2,
+    recovery: { id: 'uncertain', reason: 'DELIVERY_UNCERTAIN', canRecover: false },
+    stopStatus: { state: 'confirmed', confirmedAt: stamp },
+  },
+});
+it('inspection uses the admitted publication, original request and immutable answer without dispatching a historical answer', async () => {
+  mocks.decision.mockResolvedValueOnce({
+    interaction: { harness: 'codex', messages: [{ type: 'text', text: 'Uncertain proposal' }] },
+    answer: {
+      text: 'Already accepted answer',
+      actorId: 'member',
+      acceptedAt: stamp,
+      deliveryStatus: 'uncertain',
+      deliveredAt: null,
+      uncertainAt: stamp,
+      resultingPublication: null,
+    },
+  });
+  mount('?nativeInspect=1', uncertainIntent());
+  expect(await screen.findByText('Uncertain proposal')).toBeVisible();
+  expect(screen.getByText('Original request')).toBeVisible();
+  expect(screen.getByText(/Runtime stop confirmed at/)).toBeVisible();
+  expect(screen.getByText('Already accepted answer')).toBeVisible();
+  expect(screen.getByText('Runtime delivery: uncertain')).toBeVisible();
+  expect(screen.getByText(/Delivery uncertainty recorded at/)).toBeVisible();
+  expect(mocks.revision).toHaveBeenCalledWith(intent.projectId, intent.id, {
+    publicationId: newId,
+    publicationSequence: 2,
+  });
+  expect(screen.getByRole('button', { name: 'Prepare result archive' })).toBeVisible();
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole('button', { name: /Send reply|Start agent|Recover session/ }),
+  ).not.toBeInTheDocument();
+  expect(mocks.respond).not.toHaveBeenCalled();
+  expect(mocks.publication).not.toHaveBeenCalled();
+  expect(mocks.interaction).not.toHaveBeenCalled();
+  expect(mocks.request).not.toHaveBeenCalled();
+  mocks.request.mockResolvedValueOnce({
+    status: 'ready',
+    download: {
+      downloadUrl: 'https://result.example/exact',
+      bytes: 8,
+      sha256: hash,
+      expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare result archive' }));
+  await screen.findByRole('button', { name: 'Download result archive' });
+  expect(mocks.request).toHaveBeenCalledWith(
+    intent.projectId,
+    intent.id,
+    expect.objectContaining({ publicationId: newId, publicationSequence: 2 }),
+    undefined,
+  );
+  expect(mocks.respond).not.toHaveBeenCalled();
+});
+it('inspection does not infer stop or publication sequence from an old terminal row', async () => {
+  mount('?nativeInspect=1', {
+    ...intent,
+    execution: { ...intent.execution!, status: 'CANCELLED' },
+  });
+  expect(await screen.findByText(/Runtime stop is not established/)).toBeVisible();
+  expect(await screen.findByRole('link', { name: 'Open publication 1' })).toBeVisible();
+  expect(mocks.revision).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Prepare result archive' })).not.toBeInTheDocument();
+});
+it('a missing last admitted revision in inspection never falls back to current bytes', async () => {
+  mocks.revision.mockRejectedValueOnce(new Error('named revision missing'));
+  mount('?nativeInspect=1', uncertainIntent());
+  expect(await screen.findByRole('alert')).toHaveTextContent('has not been redirected');
+  expect(mocks.publication).not.toHaveBeenCalled();
+  expect(mocks.file).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Prepare result archive' })).not.toBeInTheDocument();
+});
+it.each([401, 403, 404])(
+  'inspection propagates access denial %s and hides result actions',
+  async (status) => {
+    mocks.revision.mockRejectedValueOnce(new ApiError(status, 'denied'));
+    mount('?nativeInspect=1', uncertainIntent());
+    await screen.findByRole('alert');
+    expect(mocks.denied).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole('button', { name: 'Prepare result archive' }),
+    ).not.toBeInTheDocument();
+  },
+);
+it('inspection discards a late revision after leaving inspection', async () => {
+  let resolve!: (value: NativeRevision) => void;
+  mocks.revision.mockReturnValueOnce(
+    new Promise((done) => {
+      resolve = done;
+    }),
+  );
+  mount('?nativeInspect=1', uncertainIntent());
+  fireEvent.click(screen.getByRole('link', { name: 'History' }));
+  await act(async () => resolve(revision(2)));
+  expect(screen.queryByText('Exact old proposal')).not.toBeInTheDocument();
+  expect(mocks.decision).not.toHaveBeenCalled();
+});
+it.each(['session', 'execution', 'project', 'unmount'])(
+  'inspection discards pending history after an identity change: %s',
+  async (change) => {
+    let resolve!: (value: NativeRevision) => void;
+    mocks.revision.mockReturnValueOnce(
+      new Promise((done) => {
+        resolve = done;
+      }),
+    );
+    const value = uncertainIntent();
+    const view = (next: NativeIntent) => (
+      <MemoryRouter initialEntries={['/?nativeInspect=1']}>
+        <NativeIntentContent
+          intent={next}
+          onAccessFailure={mocks.denied}
+          onRefresh={async () => {}}
+        />
+      </MemoryRouter>
+    );
+    const rendered = render(view(value));
+    if (change === 'session') act(() => notifySessionExpired());
+    else if (change === 'unmount') rendered.unmount();
+    else {
+      const next = {
+        ...value,
+        ...(change === 'project' ? { projectId: 'project-2' } : { id: 'run-2' }),
+      };
+      mocks.revision.mockReturnValueOnce(new Promise(() => {}));
+      mocks.list.mockResolvedValueOnce({ items: [], nextBefore: null, gaps: [] });
+      rendered.rerender(view(next));
+    }
+    await act(async () => resolve(revision(2)));
+    expect(mocks.decision).not.toHaveBeenCalled();
+    expect(screen.queryByText('Exact old proposal')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Prepare result archive' }),
+    ).not.toBeInTheDocument();
+  },
+);
 
 it('opens the exact proposal, immutable answer, raw unknown file and resulting revision with no answer form', async () => {
   mount();

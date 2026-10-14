@@ -1184,6 +1184,103 @@ release criteria before widening support; later capabilities are separate scope.
       reference-aware cleanup for drafts and terminal runs. Done when members have a
       remedy for `DELIVERY_UNCERTAIN` without duplicating effects or deleting resumable
       dependencies and readable history.
+      **Implemented — inspection and stop evidence:** both native presentations share
+      `Inspect work and export` in revision navigation (`nativeInspect=1`). It shows
+      the saved request (immutable after Start), retained stop evidence, and the last
+      admitted publication through the existing exact revision/history owner. The
+      proposal, published choices, accepted actor/answer, delivery and uncertainty
+      timestamps, resulting-publication links, file downloads, source comparison,
+      and result archive use the existing protected readers and result jobs. This
+      view has no answer form and never starts or recovers a run. A pending command's
+      sequence is not the publication sequence. Old APIs without that metadata
+      require selecting an exact history entry; missing named history never falls
+      back to current bytes. Private sessions/checkpoints are not exported, and a
+      public-file inventory is not a complete runnable replacement workspace.
+      **Stop boundary:** an exact positive provider Stop acknowledgement after
+      writer fencing can now be recorded as `EXECUTION.stopConfirmation`, in the
+      same conditional transaction as `RECOVERY_REQUIRED`, `FAILED` or `CANCELLED`.
+      The execution observer supplies the acknowledged session; the authority binds
+      it to the current protected target/session, writer generation and timestamp.
+      Its public `stopStatus` contains only `confirmed`/`pending`/`unconfirmed` and
+      the confirmation timestamp. A prior generation's receipt is not confirmation
+      for its successor. Missing targets, disappearance, failed health reads,
+      cancellation acceptance and legacy terminal rows do not manufacture evidence.
+      The existing terminal cancellation path may finish without a positive provider
+      acknowledgement; its UI now says cancellation handling finished and leaves
+      stop unconfirmed. Newly written cancellation EVENT summaries likewise do
+      not claim stop confirmation. Older immutable summaries remain readable but
+      are not stop receipts; inspection uses the protected evidence field.
+      Existing cancellation is also discoverable for `STOPPED`
+      and `FAILED` rows lacking confirmation. Already-cancelled legacy rows are
+      retained without a new proof-repair command.
+      A lost stop acknowledgement retains the current owner and retry identity;
+      cancellation transport retries now release that cancellation owner's lease
+      for the existing short retry. Cancellation races, late publication/worker
+      callbacks, immutable answers and `DELIVERY_UNCERTAIN` replay refusal retain
+      their existing fences. A confirmed stop does not undo or establish the
+      absence of external effects, verify completion, or authorize another run.
+      **Remaining product decisions — no new-run action:** native draft creation
+      pins the imported package/harness; Start captures current admitted
+      source/configuration and credentials. It has no established parent-run source
+      policy or lineage acceptance operation. Decide whether a replacement uses
+      the exact original source commit, a separately specified complete source, or
+      another explicitly defined baseline; a partial public result cannot silently
+      overlay it. Define prompt/package/harness/settings carry-over and who may
+      request replacement after proven stop. The original-source option, editable
+      copied prompt, exact package and fresh Start authorization/settings were
+      raised for decision, not selected. Until decided, there is no replacement
+      draft, lineage record, automatic Start, mutable-latest package selection,
+      checkpoint/session clone, or accepted-answer replay. A future action must
+      accept parent execution/publication/decision provenance and a fresh retry ID
+      atomically with current access and the parent's stop boundary, including
+      competing members and ambiguous replies. This item remains open.
+      **Archive and cleanup — actions remain off:** hiding an item is distinct from
+      stopping a runtime or deleting data. Permission to archive/restore, discovery
+      of archived work, retention and deletion scope remain undecided. No archive
+      flag, list filtering, TTL, expiry or user-data deletion is introduced.
+      `native-dependencies` remains a read-only support/decommission inventory:
+      prepared/failed preparations, recoverable work and unknown rows stay
+      conservative, while whole-service removal requires no protected records or
+      readable history. Its executable classification is not per-run deletion
+      authority or stop proof. A stop receipt does not remove publication, answer,
+      prompt, EVENT/output, source, checkpoint, package/archive, runtime/image or
+      decoder dependencies. Any future cleanup must inventory all retained
+      references, preserve member-readable history and resumability, and define
+      the exact deletion policy first. No reference inventory semantics or
+      dependency lifecycle is changed here.
+      **Compatibility and deployment:** schema 1 accepts optional `stopConfirmation`;
+      retained rows without it remain readable and unconfirmed. The existing
+      execution observation operations accept optional `stoppedSessionId`; HTTP
+      clients cannot submit proof. `publicationSequence` and `stopStatus` are
+      additive public DTOs, decoded conservatively by the frontend. There are no
+      new routes, tables, IAM permissions, dependencies or runtime-image changes;
+      configuration/source/package pins and independent EVENT/output cursors are
+      unchanged. Deploy all store readers (authority aliases and execution
+      credentials) before the supervisor writes receipts, then the frontend.
+      Old workers may omit proof; old frontends ignore the new public fields.
+      An old strict authority reader cannot decode newly recorded receipts: keep
+      compatible readers when rolling back a worker/frontend, without deleting
+      receipts or rewriting retained runs. The predecessor-only checkpoint-loss
+      boundary remains conservative when no current-generation receipt exists.
+      **Local verification (2026-10-14, Node 24.21.0):** 305 focused backend tests
+      passed, including real DynamoDB conditional cancellation/stop writes, lost
+      acknowledgements, duplicate cancellation and late observers. The six-project
+      shared/native/package run had 8,184 passes, three skips and one unchanged
+      `native-source-transport` deadline failure; the final targeted run of all
+      native-control tests plus that source suite passed 1,449 tests. Full frontend
+      verification passed 1,845 tests; inspection tests cover exact export routing,
+      uncertain answer receipts, absent legacy proof, missing revisions, denied
+      access and late session/project/execution/unmount callbacks. Two initial
+      terminal-action expectations were updated for the newly exposed cancellation
+      action, with explicit request-routing regressions. All 233 release checks
+      (including six architecture/reference-inventory tests), 22 native wiring
+      tests, frontend typecheck/build, eight native-control bundles, lint,
+      format, secretlint, dependency, architecture and SDK checks passed. Existing
+      lint/dependency/Smithy-range, bundle-size and sandbox CodeDefender log warnings
+      remain. Node 22 and host Bun were unavailable. No Terraform change was needed.
+      No AWS mutation, real provider/model call, browser/live two-member exercise
+      or deployed qualification was performed. Deployed acknowledgement/fence,
+      identity/access, retained-image and reader-rollout qualification remain open.
 
 ### Qualify shared use and operations
 

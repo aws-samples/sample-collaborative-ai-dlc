@@ -921,6 +921,28 @@ it.each(['legacy', 'revisioned'] as const)(
   },
 );
 
+it.each(['STOPPED', 'FAILED'] as const)(
+  'uses the existing cancellation action to stop an unconfirmed %s runtime',
+  async (status) => {
+    api.get.mockResolvedValue({ ...waiting, execution: { ...execution, status } });
+    api.cancel.mockResolvedValue({
+      ...waiting,
+      execution: {
+        ...execution,
+        status: 'CANCEL_REQUESTED',
+        stopStatus: { state: 'pending', confirmedAt: null },
+      },
+    });
+    renderPage();
+    await screen.findByText('Which pipe style?');
+    expect(api.cancel).not.toHaveBeenCalled();
+    await click('Cancel execution');
+    expect(api.cancel).toHaveBeenCalledExactlyOnceWith('project-1', 'run-1');
+    expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeDisabled();
+    expect(api.start).not.toHaveBeenCalled();
+  },
+);
+
 it.each(['success', 'denial'] as const)(
   'discards an outstanding waiting poll %s after the account changes',
   async (outcome) => {
@@ -1001,7 +1023,9 @@ it.each(['STOPPED', 'FAILED', 'CANCELLED'] as const)(
     expect(screen.getByText('Which pipe style?')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
     expect(screen.queryByText('Succeeded')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
+    if (status === 'CANCELLED')
+      expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
+    else expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeEnabled();
     await act(async () => vi.advanceTimersByTimeAsync(3000));
     expect(api.get).toHaveBeenCalledTimes(2);
     await act(async () => vi.advanceTimersByTimeAsync(15000));

@@ -568,6 +568,7 @@ describe('same-session native writer recovery', () => {
       Object.assign(new Error('unconfirmed stop transport'), { name: 'TimeoutError' }),
     );
     expect(await f.reconcile(f.identity)).toMatchObject({ pending: true, status: 'DISPATCHING' });
+    expect(f.row().stopConfirmation).toBeUndefined();
     const fence = await f.ports.fence.read(executionIdentity(f.row()));
     expect(fence).toMatchObject({ state: 'FENCED', reason: 'DELIVERY_UNCERTAIN' });
     expect(await f.reconcile(f.identity)).toMatchObject({
@@ -577,6 +578,10 @@ describe('same-session native writer recovery', () => {
     expect(f.ports.stop.mock.calls[0][0].recoveryId).toBe(f.ports.stop.mock.calls[1][0].recoveryId);
     expect(f.calls.filter((command) => command === 'native-status')).toHaveLength(1);
     expect(f.calls).not.toContain('native-continue');
+    expect(f.row().stopConfirmation).toMatchObject({
+      runtimeSessionId: f.row().runtimeSessionId,
+      writerGeneration: 1,
+    });
   });
   it.each([false, true])(
     'maps SDK RuntimeClientError to a fixed stopped state (attempted=%s)',
@@ -819,7 +824,10 @@ describe('same-session native writer recovery', () => {
         f.ports.diagnostics.mock.calls.some(([event]) => event.code === 'STATUS_READ_RETRY'),
       ).toBe(false);
       if (change === 'cancel') {
-        f.ports.stop.mockImplementation(async () => ({ confirmed: true }));
+        f.ports.stop.mockImplementation(async ({ execution }) => ({
+          confirmed: true,
+          runtimeSessionId: execution.runtimeSessionId,
+        }));
         expect(await f.reconcile(f.identity)).toEqual({ pending: false, status: 'CANCELLED' });
         expect((await f.ports.fence.read(executionIdentity(f.row()))).state).toBe('CANCELLED');
       }
@@ -837,7 +845,10 @@ describe('same-session native writer recovery', () => {
         );
         return unreadable('sdk', input);
       });
-      f.ports.stop.mockImplementation(async () => ({ confirmed: true }));
+      f.ports.stop.mockImplementation(async ({ execution }) => ({
+        confirmed: true,
+        runtimeSessionId: execution.runtimeSessionId,
+      }));
       expect(await f.reconcile(f.identity)).toMatchObject({
         pending: false,
         status: 'FAILED',
@@ -856,7 +867,10 @@ describe('same-session native writer recovery', () => {
     interruptRestoreRead(f, 'recover', (input) => unreadable('sdk', input));
     await reconcile(f.identity);
     imagePolicy.revocation.mockResolvedValue(true);
-    f.ports.stop.mockImplementation(async () => ({ confirmed: true }));
+    f.ports.stop.mockImplementation(async ({ execution }) => ({
+      confirmed: true,
+      runtimeSessionId: execution.runtimeSessionId,
+    }));
     const invocations = f.ports.invoke.mock.calls.length;
     expect(await reconcile(f.identity)).toMatchObject({
       status: 'FAILED',

@@ -116,7 +116,7 @@ export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter 
                         : intent.execution.status === 'STOPPED'
                           ? 'The agent turn stopped. This does not establish that the workflow is complete.'
                           : intent.execution.status === 'CANCELLED'
-                            ? 'Cancellation is confirmed. Any committed revision remains available below.'
+                            ? 'Cancellation handling finished. Inspect work to check retained stop evidence and committed revisions.'
                             : intent.execution.status === 'FAILED'
                               ? 'Execution reported an error. Any committed revision remains available below.'
                               : 'This run uses its own runtime and workspace. You can leave this page and return to the same link.'
@@ -177,7 +177,9 @@ export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter 
               {intent.execution &&
                 (activeExecution.has(intent.execution.status) ||
                   intent.execution.status === 'WAITING_FOR_INPUT' ||
-                  intent.execution.status === 'AWAITING_USER') && (
+                  intent.execution.status === 'AWAITING_USER' ||
+                  (['STOPPED', 'FAILED'].includes(intent.execution.status) &&
+                    intent.execution.stopStatus?.state !== 'confirmed')) && (
                   <Button
                     variant="outline"
                     onClick={() => void execute('cancel')}

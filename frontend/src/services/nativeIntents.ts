@@ -109,6 +109,11 @@ export interface NativeExecution {
   };
   failureCode?: string;
   publicationId: string | null;
+  publicationSequence?: number | null;
+  stopStatus?: {
+    state: 'confirmed' | 'pending' | 'unconfirmed';
+    confirmedAt: string | null;
+  };
   projectionStatus: 'pending' | 'complete' | null;
   // Absent on the preparation / first-turn API. Absence never enables replies.
   interactionId?: string | null;
@@ -394,6 +399,11 @@ function execution(value: unknown): NativeExecution | null {
     !nullableString(value.repository.commit) ||
     (value.failureCode !== undefined && typeof value.failureCode !== 'string') ||
     (value.publicationId !== null && !validId(value.publicationId)) ||
+    (value.publicationSequence !== undefined &&
+      (value.publicationId === null
+        ? value.publicationSequence !== null
+        : !Number.isSafeInteger(value.publicationSequence) ||
+          Number(value.publicationSequence) < 1)) ||
     (value.interactionId !== undefined &&
       value.interactionId !== null &&
       !digest(value.interactionId)) ||
@@ -419,6 +429,26 @@ function execution(value: unknown): NativeExecution | null {
     throw new Error('The native execution could not be verified.');
   }
   let recovery: NativeRecovery | null | undefined;
+  let stopStatus: NativeExecution['stopStatus'];
+  if (value.stopStatus !== undefined) {
+    const candidate = value.stopStatus;
+    if (
+      !record(candidate) ||
+      !['confirmed', 'pending', 'unconfirmed'].includes(String(candidate.state)) ||
+      (candidate.state === 'confirmed'
+        ? !timestamp(candidate.confirmedAt) ||
+          !['RECOVERY_REQUIRED', 'FAILED', 'CANCELLED'].includes(String(value.status)) ||
+          Date.parse(candidate.confirmedAt) < Date.parse(value.startedAt) ||
+          Date.parse(candidate.confirmedAt) > Date.parse(value.updatedAt)
+        : candidate.confirmedAt !== null) ||
+      (candidate.state === 'pending' && value.status !== 'CANCEL_REQUESTED')
+    )
+      throw new Error('The native stop status could not be verified.');
+    stopStatus = {
+      state: candidate.state as NonNullable<NativeExecution['stopStatus']>['state'],
+      confirmedAt: candidate.confirmedAt as string | null,
+    };
+  }
   if (value.recovery === null) recovery = null;
   else if (value.recovery !== undefined) {
     const candidate = value.recovery;
@@ -464,6 +494,10 @@ function execution(value: unknown): NativeExecution | null {
     },
     ...(typeof value.failureCode === 'string' ? { failureCode: value.failureCode } : {}),
     publicationId: value.publicationId as string | null,
+    ...(value.publicationSequence !== undefined
+      ? { publicationSequence: value.publicationSequence as number | null }
+      : {}),
+    ...(stopStatus ? { stopStatus } : {}),
     projectionStatus: value.projectionStatus as NativeExecution['projectionStatus'],
     ...(value.interactionId !== undefined
       ? { interactionId: value.interactionId as string | null }

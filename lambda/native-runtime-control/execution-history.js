@@ -12,7 +12,7 @@ const labels = {
   STOPPED: 'Files published; agent turn stopped (workflow completion unverified)',
   FAILED: 'Execution failed',
   CANCEL_REQUESTED: 'Cancellation accepted; stop pending',
-  CANCELLED: 'Runtime stop confirmed',
+  CANCELLED: 'Cancellation handling finished; inspect retained stop evidence',
 };
 
 const transition = (before, row) => {

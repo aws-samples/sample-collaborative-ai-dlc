@@ -226,6 +226,8 @@ describe('native execution API with real protected storage', () => {
           commit: null,
         },
         publicationId: null,
+        publicationSequence: null,
+        stopStatus: { state: 'unconfirmed', confirmedAt: null },
         projectionStatus: null,
         sequence: 1,
         interactionId: null,

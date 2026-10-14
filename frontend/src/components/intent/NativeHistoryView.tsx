@@ -283,8 +283,9 @@ export function NativeHistoryView({
                   onAccessFailure={onAccessFailure}
                 />
                 <p className="text-sm">
-                  Read-only proposal and answer history. Return to Current to answer the current
-                  question.
+                  Read-only proposal and answer history.
+                  {intent.execution?.status === 'AWAITING_USER' &&
+                    ' Return to Current to answer the current question.'}
                 </p>
                 <Link
                   className="text-sm underline"
@@ -350,6 +351,12 @@ export function NativeHistoryView({
                           ? ` · ${new Date(decision.answer.deliveredAt).toLocaleString()}`
                           : ''}
                       </p>
+                      {decision.answer.uncertainAt && (
+                        <p className="text-sm">
+                          Delivery uncertainty recorded at{' '}
+                          {new Date(decision.answer.uncertainAt).toLocaleString()}.
+                        </p>
+                      )}
                       <p className="text-sm">
                         Engine application, rejection and verified approval/completion: not
                         recorded.

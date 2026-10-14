@@ -57,7 +57,7 @@ export const recoveryMessages: Record<NativeRecovery['reason'], string> = {
   CHECKPOINT_UNAVAILABLE:
     'A verified recovery checkpoint is unavailable. Your committed content remains available below.',
   DELIVERY_UNCERTAIN:
-    'The last agent turn could not be verified. Recovery needs review before continuing.',
+    'The last command may have executed. Inspect work and export its exact results; this command cannot be replayed through recovery.',
 };
 export const imageBlocked = (intent: NativeIntent) =>
   ['revoked', 'unapproved', 'unavailable'].includes(intent.execution?.imageStatus ?? '');
