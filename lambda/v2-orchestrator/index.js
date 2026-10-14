@@ -1836,6 +1836,27 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   await ctx.step(
                     `auto-loop-back-${stage.stageInstanceId ?? stage.stageId}-${round}`,
                     async () => {
+                      // A jump opens no gate, so this path never parks META and
+                      // never un-parks it — and the un-park is where a human
+                      // gate re-proves this run still owns a running intent. A
+                      // cancel or a relaunch that lands before the jump has no
+                      // row to supersede yet, so the proof is taken here, as an
+                      // ownership-fenced META write, before anything is
+                      // written: a lost fence rewinds no stage, spends no
+                      // loop-back and records nothing. Same idiom the lane
+                      // gates use (gate-callback.js): re-stamp the token under
+                      // itself, which leaves the row otherwise untouched.
+                      try {
+                        await store.updateExecution({
+                          executionId,
+                          orchestratorRunId: runId,
+                          fromStatus: 'RUNNING',
+                          ...(runId ? { ifOrchestratorRunId: runId } : {}),
+                        });
+                      } catch (error) {
+                        if (error?.name === 'ConditionalCheckFailedException') return null;
+                        throw error;
+                      }
                       const { open, answer } = autonomousLoopBackGate({
                         humanTaskId: `eg-validation-${stage.stageInstanceId ?? stage.stageId}-${round}-${runId}`,
                         stage,

@@ -1271,10 +1271,16 @@ describe('construction autonomy: the build-and-test loop-back', () => {
       .map(([payload]) => payload)
       .filter((payload) => payload.command === 'run-stage-start' && payload.resumeFrom)
       .map((payload) => [payload.stageId, payload.resumeFrom]);
+  // The nth RUN's id, in order. Distinct values: a run stamps its token when it
+  // claims the intent and re-stamps the same one whenever it fences a write.
   const runIdOf = (call = 0) =>
-    deps.store.updateExecution.mock.calls.map(([args]) => args.orchestratorRunId).filter(Boolean)[
-      call
-    ];
+    [
+      ...new Set(
+        deps.store.updateExecution.mock.calls
+          .map(([args]) => args.orchestratorRunId)
+          .filter(Boolean),
+      ),
+    ][call];
 
   // The container re-reads the gate it resumes from. A jump whose gate exists
   // only in the orchestrator's memory fails the target's re-run with
@@ -1319,6 +1325,46 @@ describe('construction autonomy: the build-and-test loop-back', () => {
         loopBackReason: 'three suites fail',
       });
     }
+  });
+
+  // A jump opens no gate, so nothing on this path parks META and un-parks it
+  // again — the un-park is where every human gate re-proves that this run still
+  // owns the intent. The jump's own writes therefore have to carry that proof:
+  // a cancel or a relaunch that lands before them has no row to supersede yet.
+  const afterTheOffer = (change) => {
+    ctx = makeCtx({
+      step: async (name, fn) => {
+        const value = await fn();
+        if (name.startsWith('loop-back-offer-')) change();
+        return value;
+      },
+    });
+  };
+
+  it.each([
+    {
+      name: 'a cancel',
+      change: () => {
+        execution = { ...execution, status: 'CANCELLED', completedAt: 'T-cancel' };
+      },
+    },
+    {
+      name: 'a relaunch under a new run',
+      change: () => {
+        execution = { ...execution, orchestratorRunId: 'run-relaunched' };
+      },
+    },
+  ])('retires instead of jumping when $name lands before the jump', async ({ change }) => {
+    afterTheOffer(change);
+
+    const out = await run();
+
+    expect(out).toMatchObject({ ok: false, reason: 'retired' });
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    expect(execution.loopBackCount).toBe(0);
+    expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+    expect([...storedGates.keys()].filter((id) => id.includes('si-build-and-test'))).toEqual([]);
+    expect(dispatchedResumes()).toEqual([]);
   });
 
   it('retires instead of jumping when a cancel superseded the row first', async () => {
