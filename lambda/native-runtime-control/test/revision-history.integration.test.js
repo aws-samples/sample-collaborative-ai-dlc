@@ -11,13 +11,28 @@ import { serialFixture } from './execution-serial-fixtures.js';
 import { createNativeExecutionStore, nativeResponseKey } from '../execution-store.js';
 import { createNativeExecutionApi } from '../execution-api.js';
 import { createNativeArtifactRevisions } from '../../shared/native-artifact-revision.js';
+import { buildNativePendingInput } from '../../shared/native-pending-input.js';
 
 it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
   'retains transactional answer outcomes, publication history and losing-member isolation in DynamoDB Local',
   async () => {
     const f = serialFixture();
     await f.ready();
-    const first = await f.publish();
+    const pendingInput = buildNativePendingInput({
+      gate: { stage: 'requirements-analysis' },
+      messagesText: 'Approve or Request Changes',
+      spec: {
+        version: 1,
+        questions: [
+          {
+            prompt: 'Review the exact requirements',
+            multiSelect: false,
+            options: [{ label: 'Approve' }, { label: 'Request Changes' }],
+          },
+        ],
+      },
+    });
+    const first = await f.publish({ pendingInput, text: 'Approve or Request Changes' });
     const tableName = `native-history-${randomUUID()}`;
     const raw = new DynamoDBClient({
       endpoint: process.env.DYNAMODB_LOCAL_ENDPOINT,
@@ -75,7 +90,10 @@ it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
           store.respond({
             ...f.bindingIdentity,
             actorId,
-            request: f.replyRequest({ text: actorId }),
+            request: f.replyRequest({
+              text: 'Approve',
+              selection: { answers: [{ selectedOptions: [0] }] },
+            }),
             member: {
               membershipId: `edge-${actorId}`,
               projectIdentity: f.prepared.projectIdentity,
@@ -122,6 +140,40 @@ it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
         deliveryStatus: 'delivered',
         resultingPublication: { publicationId: second.receipt.id, publicationSequence: 2 },
       });
+      const evidence = await api.revision(
+        f.prepared,
+        {
+          publicationId: first.receipt.id,
+          publicationSequence: 1,
+          evidence: true,
+        },
+        f.recheck,
+      );
+      expect(evidence).toMatchObject({
+        memberDecision: {
+          actorId: accepted.response.actorId,
+          label: 'Approve',
+          commandId: accepted.response.commandId,
+          contentSha256: first.body.contentSha256,
+        },
+        decisionDelivery: 'delivered',
+        engineApplication: 'not_recorded',
+        terminalOutcome: 'not_recorded',
+        workflowCompletion: 'not_verified',
+      });
+      expect(
+        (
+          await api.revision(
+            f.prepared,
+            {
+              publicationId: second.receipt.id,
+              publicationSequence: 2,
+              evidence: true,
+            },
+            f.recheck,
+          )
+        ).memberDecision,
+      ).toBeNull();
       const { Item: immutable } = await ddb.send(
         new GetCommand({
           TableName: tableName,

@@ -7,6 +7,7 @@ import { ArtifactMarkdown } from './ArtifactMarkdown';
 import { NativeFileView } from './NativeFileView';
 import { NativeResultDownload } from './NativeResultDownload';
 import { NativeSourceComparison } from './NativeSourceComparison';
+import { NativeCompletionEvidence } from './NativeCompletionEvidence';
 import { getNativeListing, nativeAccessDenied } from '@/hooks/useNativeIntents';
 import { currentSessionEpoch, isSessionExpiryNotified } from '@/services/sessionExpiry';
 import { nativeHistorySearch, type NativeHistoryLocation } from '@/lib/nativeRevisionLinks';
@@ -270,12 +271,13 @@ export function NativeHistoryView({
                   target={target(revision)}
                   onAccessFailure={onAccessFailure}
                 />
-                <p className="text-sm">
-                  Workflow completion is not verified for this publication. Required check results,
-                  final review and human approval receipts are not recorded. Runtime output and
-                  published verification files are agent-reported evidence; their freshness and
-                  relationship to these exact result bytes are not established.
-                </p>
+                <NativeCompletionEvidence
+                  projectId={intent.projectId}
+                  executionId={intent.id}
+                  attemptId={revision.context.attemptId}
+                  target={target(revision)}
+                  onAccessFailure={onAccessFailure}
+                />
                 <NativeSourceComparison
                   projectId={intent.projectId}
                   executionId={intent.id}

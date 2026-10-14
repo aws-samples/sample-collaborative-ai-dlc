@@ -10,6 +10,7 @@ import { createNativeArtifactRevisions } from '../shared/native-artifact-revisio
 import { createNativeResultStorage } from './result-storage.js';
 import { buildNativeResultArchive, resultEligibleFiles } from './result-archive.js';
 import { resultFailure, resultJobMatches } from './result-store.js';
+import { nativeVerificationSummary } from '../shared/native-completion-evidence.js';
 
 export const nativeResultProvenance = (execution, manifest, request, files) => ({
   schemaVersion: 1,
@@ -23,12 +24,12 @@ export const nativeResultProvenance = (execution, manifest, request, files) => (
   sourceBaseline: manifest.sourceBaseline?.receipt
     ? { status: 'captured', id: manifest.sourceBaseline.receipt.id }
     : { status: 'not_retained', reason: manifest.sourceBaseline?.unavailable ?? 'not_recorded' },
-  verification: {
-    workflowCompletion: 'not_verified',
-    requiredChecks: 'not_recorded',
-    finalReview: 'not_recorded',
-    humanApproval: 'not_recorded',
-  },
+  verification: nativeVerificationSummary(
+    request.publicationId,
+    request.publicationSequence,
+    manifest.packageId,
+    execution.configuration.harness,
+  ),
   files: files.map(({ object: _object, ...file }) => file),
 });
 

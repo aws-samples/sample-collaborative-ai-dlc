@@ -1,6 +1,11 @@
 import { nativePublicationView } from '../shared/native-publication.js';
 import { nativeInteractionView } from '../shared/native-interaction.js';
 import { NATIVE_ARTIFACT_CONTEXT_MAX_FILE_BYTES } from '../shared/native-artifact-revision.js';
+import {
+  nativeMemberDecision,
+  nativeVerificationSummary,
+  nativeWorkflowDefinition,
+} from '../shared/native-completion-evidence.js';
 
 const invalid = () => {
   throw Object.assign(new Error('The named publication could not be verified'), {
@@ -27,6 +32,30 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
       invalid();
     // A new head, recovery or cancellation cannot retarget an immutable read.
   };
+  const decision = async (row, found, manifest) => {
+    if (!found.interaction) return { interaction: null, facts: null };
+    const body = await interactions.read(
+      {
+        ...found.identity,
+        bindingId: row.bindingId,
+        runtimeSessionId: found.runtimeSessionId,
+      },
+      found.interaction,
+    );
+    if (
+      body.packageId !== manifest.packageId ||
+      body.harness !== row.configuration.harness ||
+      body.publicationId !== found.receipt.id ||
+      body.sequence !== manifest.sequence ||
+      body.nativeSessionId !== manifest.nativeSessionId ||
+      body.contentSha256 !== found.interactionContentSha256
+    )
+      invalid();
+    return {
+      interaction: nativeInteractionView(found.interaction, body),
+      facts: await store.historicalAnswer(row, found),
+    };
+  };
   return {
     async history(draft, before, recheck) {
       const row = await read(draft, recheck);
@@ -38,6 +67,39 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
     },
     async revision(draft, target, recheck) {
       const { row, found, manifest } = await locate(draft, target, recheck);
+      if (target.evidence) {
+        const { interaction, facts } = await decision(row, found, manifest);
+        const memberDecision = nativeMemberDecision(interaction, facts?.response);
+        await finish(draft, row, recheck);
+        return {
+          schemaVersion: 1,
+          context: {
+            ...found.identity,
+            configurationSha256: row.configurationSha256,
+            packageId: manifest.packageId,
+            harness: row.configuration.harness,
+          },
+          ...nativeVerificationSummary(
+            found.receipt.id,
+            manifest.sequence,
+            manifest.packageId,
+            row.configuration.harness,
+          ),
+          definition: nativeWorkflowDefinition(manifest.packageId, row.configuration.harness),
+          effectivePlan: 'not_recorded',
+          engineApplication: 'not_recorded',
+          terminalOutcome: 'not_recorded',
+          memberDecision,
+          // Delivery is an independent transport observation, never application.
+          decisionDelivery: !memberDecision
+            ? null
+            : facts.delivered
+              ? 'delivered'
+              : facts.uncertain
+                ? 'uncertain'
+                : 'unknown',
+        };
+      }
       if (target.source) {
         const { baseline } = await revisions.source(row, target);
         await finish(draft, row, recheck);
@@ -64,14 +126,12 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
         context: { ...found.identity, packageId: manifest.packageId },
         outcome: manifest.outcome,
         interactionId: found.interaction?.id ?? null,
-        verification: {
-          publicationId: found.receipt.id,
-          publicationSequence: manifest.sequence,
-          workflowCompletion: 'not_verified',
-          requiredChecks: 'not_recorded',
-          finalReview: 'not_recorded',
-          humanApproval: 'not_recorded',
-        },
+        verification: nativeVerificationSummary(
+          found.receipt.id,
+          manifest.sequence,
+          manifest.packageId,
+          row.configuration.harness,
+        ),
       };
     },
     async revisionFile(draft, target, recheck) {
@@ -86,28 +146,11 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
     },
     async revisionInteraction(draft, target, recheck) {
       const { row, found, manifest } = await locate(draft, target, recheck);
-      if (!found.interaction) {
+      const { interaction, facts } = await decision(row, found, manifest);
+      if (!interaction) {
         await finish(draft, row, recheck);
         return { interaction: null, answer: null };
       }
-      const body = await interactions.read(
-        {
-          ...found.identity,
-          bindingId: row.bindingId,
-          runtimeSessionId: found.runtimeSessionId,
-        },
-        found.interaction,
-      );
-      if (
-        body.packageId !== manifest.packageId ||
-        body.harness !== row.configuration.harness ||
-        body.publicationId !== found.receipt.id ||
-        body.sequence !== manifest.sequence ||
-        body.nativeSessionId !== manifest.nativeSessionId ||
-        body.contentSha256 !== found.interactionContentSha256
-      )
-        invalid();
-      const facts = await store.historicalAnswer(row, found);
       let answer = null;
       if (facts) {
         const { response, delivered, uncertain, publication } = facts;
@@ -144,7 +187,7 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
         };
       }
       await finish(draft, row, recheck);
-      return { interaction: nativeInteractionView(found.interaction, body), answer };
+      return { interaction, answer };
     },
   };
 };

@@ -1,0 +1,1261 @@
+{
+  "schemaVersion": 1,
+  "protocol": "aidlc-2.9-content-v1",
+  "harness": "codex",
+  "packageId": "sha256:0399ab50fa7ed00eae5a246159fdb1d594c8fd4946c6aeb72452d9d6e2770ce0",
+  "sourceCommit": "22f5d1b15a064c9ae80046e5b1761d5877e2f69f",
+  "runtimeSha256": "e66e864ac4c29f30024c32cab579eea3e0142a303596d2192b1c88b4ad69b25b",
+  "assets": [
+    {
+      "path": "tools/data/stage-graph.json",
+      "sha256": "fb6ad29af7cd625945938f86bc6b66536ebef8fa27cf9281e3700e73a5af52d7"
+    },
+    {
+      "path": "tools/data/scope-grid.json",
+      "sha256": "1dbf101c33783ff386a83101da75fbc376459f6b5cb11f097a5501ccd94a2b5d"
+    },
+    {
+      "path": "tools/aidlc-orchestrate.ts",
+      "sha256": "27dc8d13bda3e6c16a009370295dfbdb015318c6182be073a38000e77fc9d905"
+    },
+    {
+      "path": "tools/aidlc-lib.ts",
+      "sha256": "b4015363d94f78c4d85b20f1f8e7b9f0e27a108244ad48099669e9ec417fbb4c"
+    },
+    {
+      "path": "aidlc-common/protocols/stage-protocol.md",
+      "sha256": "5ac348e8aa3da5b3e3bf901e54857b6f7a538ce70cfe33ddfab71531e7084e9c"
+    }
+  ],
+  "stages": [
+    {
+      "id": "workspace-scaffold",
+      "name": "Workspace Scaffold",
+      "phase": "initialization",
+      "execution": "ALWAYS",
+      "condition": "Ensure-exists the per-intent record and in-scope phase dirs, idempotent (creates on demand, skips existing)",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": []
+    },
+    {
+      "id": "workspace-detection",
+      "name": "Workspace Detection",
+      "phase": "initialization",
+      "execution": "ALWAYS",
+      "condition": "Scans and classifies workspace — auto-proceeds (no approval gate)",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": []
+    },
+    {
+      "id": "state-init",
+      "name": "State Initialization",
+      "phase": "initialization",
+      "execution": "ALWAYS",
+      "condition": "Creates full populated state file and determines routing — auto-proceeds",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": []
+    },
+    {
+      "id": "intent-capture",
+      "name": "Intent Capture & Framing",
+      "phase": "ideation",
+      "execution": "ALWAYS",
+      "condition": "First stage of every workflow — establishes the initiative's foundation",
+      "reviewer": "aidlc-product-lead-agent",
+      "reviewClass": "advisory",
+      "sensors": [
+        {
+          "id": "claim-sources",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "market-research",
+      "name": "Market Research",
+      "phase": "ideation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when initiative has external market positioning or build-vs-buy considerations. Skip for internal tools, bug fixes, or refactors.",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "feasibility",
+      "name": "Feasibility & Constraints",
+      "phase": "ideation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when there are integration constraints, regulatory requirements, or significant technical uncertainty. Skip for trivial changes with no technical risk.",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "scope-definition",
+      "name": "Scope Definition",
+      "phase": "ideation",
+      "execution": "ALWAYS",
+      "condition": "Always executes — defines the scope boundary and prioritized backlog",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "team-formation",
+      "name": "Team Formation",
+      "phase": "ideation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when team composition, capacity, or mob planning is relevant. Skip for solo developer or small team projects.",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "rough-mockups",
+      "name": "Rough Mockups",
+      "phase": "ideation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when user-facing UI is part of the initiative; for API/backend, produce system interaction diagrams. Skip for non-UI, API-only, or infrastructure-only initiatives.",
+      "reviewer": "aidlc-product-lead-agent",
+      "reviewClass": "advisory",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "approval-handoff",
+      "name": "Approval & Handoff",
+      "phase": "ideation",
+      "execution": "ALWAYS",
+      "condition": "Always executes — compiles all Ideation artifacts into initiative brief for approval",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "reverse-engineering",
+      "name": "Reverse Engineering",
+      "phase": "inception",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when project is brownfield. On rerun the Step 1 guard checks store freshness (codekb-scope-diff) - verified-CURRENT stores may be reused by human choice, anything else rescans. Skip for greenfield projects.",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "practices-discovery",
+      "name": "Practices Discovery",
+      "phase": "inception",
+      "execution": "CONDITIONAL",
+      "condition": "Always rerun for freshness. Brownfield discovers from evidence + reverse-engineering artifacts. Greenfield prompts user via structured questions using org.md defaults.",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "requirements-analysis",
+      "name": "Requirements Analysis",
+      "phase": "inception",
+      "execution": "ALWAYS",
+      "condition": "Always executes — depth scales with project complexity",
+      "reviewer": "aidlc-product-lead-agent",
+      "reviewClass": "advisory",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "user-stories",
+      "name": "User Stories",
+      "phase": "inception",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when user-facing features, multiple personas, complex business logic, or cross-team work is involved. Skip for pure refactoring, isolated bug fixes, infrastructure-only changes, or developer tooling.",
+      "reviewer": "aidlc-product-lead-agent",
+      "reviewClass": "advisory",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "traceability",
+          "severity": "advisory",
+          "fireOn": "write"
+        }
+      ]
+    },
+    {
+      "id": "refined-mockups",
+      "name": "Refined Mockups",
+      "phase": "inception",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when user-facing UI exists and rough mockups were produced in Ideation; for APIs, refine interaction diagrams",
+      "reviewer": "aidlc-product-lead-agent",
+      "reviewClass": "advisory",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "domain-design",
+      "name": "Domain Design",
+      "phase": "inception",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when new components or logical building blocks are needed. Skip when changes are modifications to existing components only.",
+      "reviewer": "aidlc-architecture-reviewer-agent",
+      "reviewClass": "advisory",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "traceability",
+          "severity": "advisory",
+          "fireOn": "write"
+        }
+      ]
+    },
+    {
+      "id": "units-generation",
+      "name": "Units Generation",
+      "phase": "inception",
+      "execution": "ALWAYS",
+      "condition": "Always executes when in scope. Produces the dependency DAG that Stage 2.9 Delivery Planning consumes for Bolt sequencing. In the compiled scope grid, 2.7 (Units Generation) and 2.9 (Delivery Planning) travel together — both EXECUTE or both SKIP per scope.",
+      "reviewer": "aidlc-architecture-reviewer-agent",
+      "reviewClass": "advisory",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "traceability",
+          "severity": "advisory",
+          "fireOn": "write"
+        }
+      ]
+    },
+    {
+      "id": "contract-design",
+      "name": "Contract Design",
+      "phase": "inception",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when the system has any formal contract to pin down — an inter-unit boundary (more than one unit that must integrate) OR a unit that exposes a public/external API consumed outside the system. Skip only for a single self-contained unit with no inter-unit boundaries and no externally consumed API.",
+      "reviewer": "aidlc-architecture-reviewer-agent",
+      "reviewClass": "advisory",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "delivery-planning",
+      "name": "Delivery Planning",
+      "phase": "inception",
+      "execution": "ALWAYS",
+      "condition": "Always executes — capstone Inception stage, produces the detailed execution plan for Construction and Operation",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "functional-design",
+      "name": "Functional Design",
+      "phase": "construction",
+      "execution": "CONDITIONAL",
+      "condition": "New data models, complex business logic, or business rules need design. Skip if simple logic changes with no new business logic.",
+      "reviewer": "aidlc-architecture-reviewer-agent",
+      "reviewClass": "adversarial",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "linter",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "type-check",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "traceability",
+          "severity": "advisory",
+          "fireOn": "write"
+        }
+      ]
+    },
+    {
+      "id": "nfr-requirements",
+      "name": "NFR Requirements",
+      "phase": "construction",
+      "execution": "CONDITIONAL",
+      "condition": "Performance, security, scalability, reliability, or observability requirements needed, or tech stack selection needed. Skip if no NFR requirements and tech stack already determined.",
+      "reviewer": "aidlc-architecture-reviewer-agent",
+      "reviewClass": "adversarial",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "linter",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "type-check",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "traceability",
+          "severity": "advisory",
+          "fireOn": "write"
+        }
+      ]
+    },
+    {
+      "id": "nfr-design",
+      "name": "NFR Design",
+      "phase": "construction",
+      "execution": "CONDITIONAL",
+      "condition": "NFR Requirements was executed and NFR patterns need design. Skip if NFR Requirements was skipped.",
+      "reviewer": "aidlc-architecture-reviewer-agent",
+      "reviewClass": "adversarial",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "linter",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "type-check",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "traceability",
+          "severity": "advisory",
+          "fireOn": "write"
+        }
+      ]
+    },
+    {
+      "id": "infrastructure-design",
+      "name": "Infrastructure Design",
+      "phase": "construction",
+      "execution": "CONDITIONAL",
+      "condition": "Infrastructure services need mapping, deployment architecture required, or cloud resources needed. Skip if no infrastructure changes and infrastructure already defined.",
+      "reviewer": "aidlc-architecture-reviewer-agent",
+      "reviewClass": "adversarial",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "linter",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "type-check",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "traceability",
+          "severity": "advisory",
+          "fireOn": "write"
+        }
+      ]
+    },
+    {
+      "id": "code-generation",
+      "name": "Code Generation",
+      "phase": "construction",
+      "execution": "ALWAYS",
+      "condition": "Always executes for every unit in the execution plan.",
+      "reviewer": "aidlc-architecture-reviewer-agent",
+      "reviewClass": "adversarial",
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "linter",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "type-check",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "traceability",
+          "severity": "advisory",
+          "fireOn": "write"
+        }
+      ]
+    },
+    {
+      "id": "build-and-test",
+      "name": "Build and Test",
+      "phase": "construction",
+      "execution": "ALWAYS",
+      "condition": "Always executes once after all per-unit stages are finished.",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "type-check",
+          "severity": "advisory",
+          "fireOn": "write"
+        }
+      ]
+    },
+    {
+      "id": "ci-pipeline",
+      "name": "CI Pipeline",
+      "phase": "construction",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when CI pipeline needs creation or significant modification. Skip if CI already exists and is adequate.",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "linter",
+          "severity": "advisory",
+          "fireOn": "write"
+        },
+        {
+          "id": "type-check",
+          "severity": "advisory",
+          "fireOn": "write"
+        }
+      ]
+    },
+    {
+      "id": "deployment-pipeline",
+      "name": "Deployment Pipeline",
+      "phase": "operation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when CD pipeline needs creation or significant modification",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "environment-provisioning",
+      "name": "Environment Provisioning",
+      "phase": "operation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when AWS environments need provisioning or validation",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "deployment-execution",
+      "name": "Deployment Execution",
+      "phase": "operation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute after deployment pipeline and environment are ready",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "observability-setup",
+      "name": "Observability Setup",
+      "phase": "operation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when monitoring, dashboards, alarms, or tracing need configuration",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "incident-response",
+      "name": "Incident Response",
+      "phase": "operation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when operational runbooks and incident response procedures are needed",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "performance-validation",
+      "name": "Performance Validation",
+      "phase": "operation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when NFR performance targets need validation under load",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    },
+    {
+      "id": "feedback-optimization",
+      "name": "Feedback & Optimization",
+      "phase": "operation",
+      "execution": "CONDITIONAL",
+      "condition": "Execute when ongoing operational monitoring and optimization are needed",
+      "reviewer": null,
+      "reviewClass": null,
+      "sensors": [
+        {
+          "id": "required-sections",
+          "severity": "advisory",
+          "fireOn": "gate"
+        },
+        {
+          "id": "upstream-coverage",
+          "severity": "advisory",
+          "fireOn": "gate"
+        }
+      ]
+    }
+  ],
+  "plans": [
+    {
+      "id": "bugfix",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "SKIP",
+        "market-research": "SKIP",
+        "feasibility": "SKIP",
+        "scope-definition": "SKIP",
+        "team-formation": "SKIP",
+        "rough-mockups": "SKIP",
+        "approval-handoff": "SKIP",
+        "reverse-engineering": "EXECUTE",
+        "practices-discovery": "SKIP",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "SKIP",
+        "refined-mockups": "SKIP",
+        "domain-design": "SKIP",
+        "units-generation": "SKIP",
+        "contract-design": "SKIP",
+        "delivery-planning": "SKIP",
+        "functional-design": "SKIP",
+        "nfr-requirements": "SKIP",
+        "nfr-design": "SKIP",
+        "infrastructure-design": "SKIP",
+        "code-generation": "EXECUTE",
+        "build-and-test": "EXECUTE",
+        "ci-pipeline": "SKIP",
+        "deployment-pipeline": "EXECUTE",
+        "environment-provisioning": "SKIP",
+        "deployment-execution": "EXECUTE",
+        "observability-setup": "SKIP",
+        "incident-response": "SKIP",
+        "performance-validation": "SKIP",
+        "feedback-optimization": "SKIP"
+      },
+      "reviewCap": "advisory",
+      "skeleton": "off",
+      "ceremony": null,
+      "sha256": "bb7ed4120cb78f32bab55202df0bfc9320d75ba24488daafebced59cc6df87af"
+    },
+    {
+      "id": "classic",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "SKIP",
+        "market-research": "SKIP",
+        "feasibility": "SKIP",
+        "scope-definition": "SKIP",
+        "team-formation": "SKIP",
+        "rough-mockups": "SKIP",
+        "approval-handoff": "SKIP",
+        "reverse-engineering": "EXECUTE",
+        "practices-discovery": "EXECUTE",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "EXECUTE",
+        "refined-mockups": "EXECUTE",
+        "domain-design": "EXECUTE",
+        "units-generation": "EXECUTE",
+        "contract-design": "EXECUTE",
+        "delivery-planning": "EXECUTE",
+        "functional-design": "EXECUTE",
+        "nfr-requirements": "EXECUTE",
+        "nfr-design": "EXECUTE",
+        "infrastructure-design": "EXECUTE",
+        "code-generation": "EXECUTE",
+        "build-and-test": "EXECUTE",
+        "ci-pipeline": "SKIP",
+        "deployment-pipeline": "SKIP",
+        "environment-provisioning": "SKIP",
+        "deployment-execution": "SKIP",
+        "observability-setup": "SKIP",
+        "incident-response": "SKIP",
+        "performance-validation": "SKIP",
+        "feedback-optimization": "SKIP"
+      },
+      "reviewCap": "advisory",
+      "skeleton": "off",
+      "ceremony": null,
+      "sha256": "88d8a95f2c0b7fffddccd0160d7a931c6667bac34d15e24d529a6fdfa384cd06"
+    },
+    {
+      "id": "enterprise",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "EXECUTE",
+        "market-research": "EXECUTE",
+        "feasibility": "EXECUTE",
+        "scope-definition": "EXECUTE",
+        "team-formation": "EXECUTE",
+        "rough-mockups": "EXECUTE",
+        "approval-handoff": "EXECUTE",
+        "reverse-engineering": "EXECUTE",
+        "practices-discovery": "EXECUTE",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "EXECUTE",
+        "refined-mockups": "EXECUTE",
+        "domain-design": "EXECUTE",
+        "units-generation": "EXECUTE",
+        "contract-design": "EXECUTE",
+        "delivery-planning": "EXECUTE",
+        "functional-design": "EXECUTE",
+        "nfr-requirements": "EXECUTE",
+        "nfr-design": "EXECUTE",
+        "infrastructure-design": "EXECUTE",
+        "code-generation": "EXECUTE",
+        "build-and-test": "EXECUTE",
+        "ci-pipeline": "EXECUTE",
+        "deployment-pipeline": "EXECUTE",
+        "environment-provisioning": "EXECUTE",
+        "deployment-execution": "EXECUTE",
+        "observability-setup": "EXECUTE",
+        "incident-response": "EXECUTE",
+        "performance-validation": "EXECUTE",
+        "feedback-optimization": "EXECUTE"
+      },
+      "reviewCap": null,
+      "skeleton": "on",
+      "ceremony": null,
+      "sha256": "0af96f22308857ea9b9a69f9b13d3d98b09a39a04ff71b8710ad445d0fe93089"
+    },
+    {
+      "id": "express",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "SKIP",
+        "market-research": "SKIP",
+        "feasibility": "SKIP",
+        "scope-definition": "SKIP",
+        "team-formation": "SKIP",
+        "rough-mockups": "SKIP",
+        "approval-handoff": "SKIP",
+        "reverse-engineering": "EXECUTE",
+        "practices-discovery": "SKIP",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "SKIP",
+        "refined-mockups": "SKIP",
+        "domain-design": "SKIP",
+        "units-generation": "SKIP",
+        "contract-design": "SKIP",
+        "delivery-planning": "SKIP",
+        "functional-design": "SKIP",
+        "nfr-requirements": "SKIP",
+        "nfr-design": "SKIP",
+        "infrastructure-design": "SKIP",
+        "code-generation": "EXECUTE",
+        "build-and-test": "EXECUTE",
+        "ci-pipeline": "SKIP",
+        "deployment-pipeline": "EXECUTE",
+        "environment-provisioning": "SKIP",
+        "deployment-execution": "EXECUTE",
+        "observability-setup": "EXECUTE",
+        "incident-response": "SKIP",
+        "performance-validation": "SKIP",
+        "feedback-optimization": "SKIP"
+      },
+      "reviewCap": "none",
+      "skeleton": "off",
+      "ceremony": null,
+      "sha256": "b9c43e841a33bc6bd97905a21a77fbee5316652ce686a3bb63707a874d7d534a"
+    },
+    {
+      "id": "feature",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "EXECUTE",
+        "market-research": "EXECUTE",
+        "feasibility": "EXECUTE",
+        "scope-definition": "EXECUTE",
+        "team-formation": "EXECUTE",
+        "rough-mockups": "EXECUTE",
+        "approval-handoff": "EXECUTE",
+        "reverse-engineering": "EXECUTE",
+        "practices-discovery": "EXECUTE",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "EXECUTE",
+        "refined-mockups": "EXECUTE",
+        "domain-design": "EXECUTE",
+        "units-generation": "EXECUTE",
+        "contract-design": "EXECUTE",
+        "delivery-planning": "EXECUTE",
+        "functional-design": "EXECUTE",
+        "nfr-requirements": "EXECUTE",
+        "nfr-design": "EXECUTE",
+        "infrastructure-design": "EXECUTE",
+        "code-generation": "EXECUTE",
+        "build-and-test": "EXECUTE",
+        "ci-pipeline": "EXECUTE",
+        "deployment-pipeline": "EXECUTE",
+        "environment-provisioning": "EXECUTE",
+        "deployment-execution": "EXECUTE",
+        "observability-setup": "EXECUTE",
+        "incident-response": "EXECUTE",
+        "performance-validation": "EXECUTE",
+        "feedback-optimization": "EXECUTE"
+      },
+      "reviewCap": null,
+      "skeleton": "on",
+      "ceremony": null,
+      "sha256": "1b6c9a699d1beed06f5c4e0919514823f1b5184bd83f1c5ce9efaec885d25fab"
+    },
+    {
+      "id": "infra",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "SKIP",
+        "market-research": "SKIP",
+        "feasibility": "SKIP",
+        "scope-definition": "SKIP",
+        "team-formation": "SKIP",
+        "rough-mockups": "SKIP",
+        "approval-handoff": "SKIP",
+        "reverse-engineering": "SKIP",
+        "practices-discovery": "EXECUTE",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "SKIP",
+        "refined-mockups": "SKIP",
+        "domain-design": "SKIP",
+        "units-generation": "SKIP",
+        "contract-design": "SKIP",
+        "delivery-planning": "SKIP",
+        "functional-design": "SKIP",
+        "nfr-requirements": "EXECUTE",
+        "nfr-design": "EXECUTE",
+        "infrastructure-design": "EXECUTE",
+        "code-generation": "SKIP",
+        "build-and-test": "SKIP",
+        "ci-pipeline": "EXECUTE",
+        "deployment-pipeline": "EXECUTE",
+        "environment-provisioning": "EXECUTE",
+        "deployment-execution": "EXECUTE",
+        "observability-setup": "EXECUTE",
+        "incident-response": "SKIP",
+        "performance-validation": "SKIP",
+        "feedback-optimization": "SKIP"
+      },
+      "reviewCap": null,
+      "skeleton": "on",
+      "ceremony": null,
+      "sha256": "c34fd212e4e5ad25c2201dd3cce5ae4eb758b09cc6a61f19df8a265946f90cc7"
+    },
+    {
+      "id": "mvp",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "EXECUTE",
+        "market-research": "SKIP",
+        "feasibility": "EXECUTE",
+        "scope-definition": "EXECUTE",
+        "team-formation": "SKIP",
+        "rough-mockups": "EXECUTE",
+        "approval-handoff": "SKIP",
+        "reverse-engineering": "EXECUTE",
+        "practices-discovery": "EXECUTE",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "EXECUTE",
+        "refined-mockups": "EXECUTE",
+        "domain-design": "EXECUTE",
+        "units-generation": "EXECUTE",
+        "contract-design": "EXECUTE",
+        "delivery-planning": "EXECUTE",
+        "functional-design": "EXECUTE",
+        "nfr-requirements": "EXECUTE",
+        "nfr-design": "EXECUTE",
+        "infrastructure-design": "EXECUTE",
+        "code-generation": "EXECUTE",
+        "build-and-test": "EXECUTE",
+        "ci-pipeline": "EXECUTE",
+        "deployment-pipeline": "SKIP",
+        "environment-provisioning": "SKIP",
+        "deployment-execution": "SKIP",
+        "observability-setup": "SKIP",
+        "incident-response": "SKIP",
+        "performance-validation": "SKIP",
+        "feedback-optimization": "SKIP"
+      },
+      "reviewCap": null,
+      "skeleton": "on",
+      "ceremony": null,
+      "sha256": "2f5896051f7c033e2af0555cb2ba139c1a4b30eebdba31d2ac5b413828914909"
+    },
+    {
+      "id": "poc",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "EXECUTE",
+        "market-research": "SKIP",
+        "feasibility": "SKIP",
+        "scope-definition": "SKIP",
+        "team-formation": "SKIP",
+        "rough-mockups": "SKIP",
+        "approval-handoff": "SKIP",
+        "reverse-engineering": "EXECUTE",
+        "practices-discovery": "SKIP",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "SKIP",
+        "refined-mockups": "SKIP",
+        "domain-design": "SKIP",
+        "units-generation": "SKIP",
+        "contract-design": "SKIP",
+        "delivery-planning": "SKIP",
+        "functional-design": "SKIP",
+        "nfr-requirements": "SKIP",
+        "nfr-design": "SKIP",
+        "infrastructure-design": "SKIP",
+        "code-generation": "EXECUTE",
+        "build-and-test": "EXECUTE",
+        "ci-pipeline": "SKIP",
+        "deployment-pipeline": "SKIP",
+        "environment-provisioning": "SKIP",
+        "deployment-execution": "SKIP",
+        "observability-setup": "SKIP",
+        "incident-response": "SKIP",
+        "performance-validation": "SKIP",
+        "feedback-optimization": "SKIP"
+      },
+      "reviewCap": "advisory",
+      "skeleton": "on",
+      "ceremony": null,
+      "sha256": "ef9f2850bbfee7f69343dcad5c13d01c62a3f831f07005683cd1e21f4942c72e"
+    },
+    {
+      "id": "refactor",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "SKIP",
+        "market-research": "SKIP",
+        "feasibility": "SKIP",
+        "scope-definition": "SKIP",
+        "team-formation": "SKIP",
+        "rough-mockups": "SKIP",
+        "approval-handoff": "SKIP",
+        "reverse-engineering": "EXECUTE",
+        "practices-discovery": "SKIP",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "SKIP",
+        "refined-mockups": "SKIP",
+        "domain-design": "SKIP",
+        "units-generation": "SKIP",
+        "contract-design": "SKIP",
+        "delivery-planning": "SKIP",
+        "functional-design": "EXECUTE",
+        "nfr-requirements": "SKIP",
+        "nfr-design": "SKIP",
+        "infrastructure-design": "SKIP",
+        "code-generation": "EXECUTE",
+        "build-and-test": "EXECUTE",
+        "ci-pipeline": "SKIP",
+        "deployment-pipeline": "EXECUTE",
+        "environment-provisioning": "SKIP",
+        "deployment-execution": "EXECUTE",
+        "observability-setup": "SKIP",
+        "incident-response": "SKIP",
+        "performance-validation": "SKIP",
+        "feedback-optimization": "SKIP"
+      },
+      "reviewCap": null,
+      "skeleton": "off",
+      "ceremony": null,
+      "sha256": "ef1354c40a8c6306ec08afd44f599c9dc6fadfcf251ee68e826d0c80f26e983c"
+    },
+    {
+      "id": "security-patch",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "SKIP",
+        "market-research": "SKIP",
+        "feasibility": "SKIP",
+        "scope-definition": "SKIP",
+        "team-formation": "SKIP",
+        "rough-mockups": "SKIP",
+        "approval-handoff": "SKIP",
+        "reverse-engineering": "EXECUTE",
+        "practices-discovery": "SKIP",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "SKIP",
+        "refined-mockups": "SKIP",
+        "domain-design": "SKIP",
+        "units-generation": "SKIP",
+        "contract-design": "SKIP",
+        "delivery-planning": "SKIP",
+        "functional-design": "SKIP",
+        "nfr-requirements": "EXECUTE",
+        "nfr-design": "SKIP",
+        "infrastructure-design": "SKIP",
+        "code-generation": "EXECUTE",
+        "build-and-test": "EXECUTE",
+        "ci-pipeline": "SKIP",
+        "deployment-pipeline": "EXECUTE",
+        "environment-provisioning": "SKIP",
+        "deployment-execution": "EXECUTE",
+        "observability-setup": "SKIP",
+        "incident-response": "SKIP",
+        "performance-validation": "SKIP",
+        "feedback-optimization": "SKIP"
+      },
+      "reviewCap": null,
+      "skeleton": "off",
+      "ceremony": null,
+      "sha256": "62a47f7dd3c4a68e492ecfa48c11955a199a882b0c2e4c17eeee2c7ca0820603"
+    },
+    {
+      "id": "workshop",
+      "stages": {
+        "workspace-scaffold": "EXECUTE",
+        "workspace-detection": "EXECUTE",
+        "state-init": "EXECUTE",
+        "intent-capture": "SKIP",
+        "market-research": "SKIP",
+        "feasibility": "SKIP",
+        "scope-definition": "SKIP",
+        "team-formation": "SKIP",
+        "rough-mockups": "SKIP",
+        "approval-handoff": "SKIP",
+        "reverse-engineering": "EXECUTE",
+        "practices-discovery": "EXECUTE",
+        "requirements-analysis": "EXECUTE",
+        "user-stories": "EXECUTE",
+        "refined-mockups": "EXECUTE",
+        "domain-design": "EXECUTE",
+        "units-generation": "EXECUTE",
+        "contract-design": "EXECUTE",
+        "delivery-planning": "EXECUTE",
+        "functional-design": "EXECUTE",
+        "nfr-requirements": "EXECUTE",
+        "nfr-design": "EXECUTE",
+        "infrastructure-design": "EXECUTE",
+        "code-generation": "EXECUTE",
+        "build-and-test": "EXECUTE",
+        "ci-pipeline": "EXECUTE",
+        "deployment-pipeline": "EXECUTE",
+        "environment-provisioning": "EXECUTE",
+        "deployment-execution": "EXECUTE",
+        "observability-setup": "EXECUTE",
+        "incident-response": "EXECUTE",
+        "performance-validation": "EXECUTE",
+        "feedback-optimization": "EXECUTE"
+      },
+      "reviewCap": "advisory",
+      "skeleton": "on",
+      "ceremony": null,
+      "sha256": "e3504935f4912cf86008803fd59711924d632ce99349e17782d89c7c35d0e73e"
+    }
+  ]
+}

@@ -311,7 +311,11 @@ export const createNativeRuntimeApi = ({
             ? await execution.revisionInteraction(row, revision, recheck)
             : await execution.revision(row, revision, recheck);
       await recheck(row);
-      return response(200, result);
+      return response(
+        200,
+        result,
+        revision.evidence ? { 'Cache-Control': 'private, no-store' } : {},
+      );
     }
     const result = file
       ? await execution.file(row, params.fileId, recheck)

@@ -35,6 +35,13 @@ vi.mock('@/services/nativeIntents', async (load) => ({
   nativeIntentsService: mocks,
 }));
 vi.mock('@/services/nativeResults', () => ({ nativeResultsService: mocks }));
+vi.mock('@/services/nativeCompletion', () => ({
+  nativeCompletionService: {
+    read: async () => {
+      throw new Error('Evidence unavailable');
+    },
+  },
+}));
 vi.mock('@/hooks/useYjsDocument', async () => await import('@/test/collaborationFakes'));
 vi.mock(
   '@/components/CollaborativeTextarea',

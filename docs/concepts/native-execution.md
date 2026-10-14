@@ -329,10 +329,15 @@ a mutable remote checkout can supply missing delivery bytes by implication.
 
 `RESULT` rows are independent export jobs, `EVENT` rows are observations, and
 accepted question answers authorize the next native command. None records
-authoritative checks, final review or approval of a repository result.
-Completion remains `not_verified`; required checks, final review and human
-approval remain `not_recorded`. Authored review files, stopped turns, checkmarks,
-assistant prose, graph edges and advisory Quorum results do not change this.
+authoritative check/review outcomes or engine application of a decision.
+The decided completion policy follows the exact pinned AI-DLC workflow and
+selected plan: enforce its defined human gates, with no blanket extra final
+approval or platform-defined mandatory checks/reviews. Completion remains
+`not_verified` because effective plan/application/outcome evidence is unavailable.
+Protected selections can establish a member's choice for an exact proposal;
+they cannot approve later bytes or prove engine application. Authored review
+files, stopped turns, checkmarks, assistant prose, graph edges and advisory
+Quorum results do not change this.
 
 The dedicated `execution-credentials` facade rechecks the protected run,
 attempt/epoch, image, source-binding revision, starter/delegator membership and
@@ -1022,17 +1027,66 @@ release criteria before widening support; later capabilities are separate scope.
       comparisons retain BOM/CRLF and the existing 3 MiB limit; binary, invalid UTF-8
       and larger files show metadata with unavailable text comparisons. Absence
       outside this complete public inventory does not establish deletion.
-      **Still open:** Verified workflow completion is deliberately not implemented.
-      The pending user choice is required checks plus final review, or those plus
-      separate human approval. Neither choice has been inferred. The supported
-      native protocol also lacks protected check/review/approval receipts binding
-      outcomes, required policy/configuration and accepted-command lineage to the
-      exact publication/file hashes. Results therefore report completion as
-      `not_verified` and those outcomes as `not_recorded`. Published logs, failed
-      checks, reviews and runtime prose remain inspectable agent-reported material;
-      their freshness and applicability to the result are not independently
-      established. No verification scheduler, script runner or approval inference
-      is added. This backlog item remains open for that contract and deployed
+      **Completion policy decided (2026-10-14):** follow the exact pinned AI-DLC
+      workflow and its supported selected plan, including defined human gates.
+      There is no additional mandatory final human approval and no new platform
+      check/review requirement. Unknown requirements are not “approval unnecessary.”
+      **Implemented evidence inspection:** the authenticated named-publication
+      GET with `evidence=1` joins the existing immutable publication/interaction
+      and protected response/answer owners. It reports a canonical structured
+      member gate selection only when the stored selection and exact answer
+      text agree with the admitted full visible question specification.
+      This records actor, command, interaction/content hash, sequence, epoch
+      and whether membership attribution was retained, within the exact
+      project/execution/attempt/package/configuration/publication identity.
+      Approve, Request Changes, Accept as-is and supported Add-stage selections
+      remain choices for that presented proposal, never applied approvals.
+      Free-text answers and legacy missing selections are not classified.
+      Transport delivery/uncertainty remains separate. No adjacent publication,
+      later changed bytes, retry, cancellation or cold reader inherits approval.
+      Reads recheck current access, return private/no-store responses, and need
+      neither runtime liveness, current image admission nor graph access.
+      The shared current/history/inspection UI shows this evidence independently
+      of files/results/replies and discards callbacks after identity/access changes.
+      **Definition support:** `aidlc-2.9-content-v1` recognizes only the Codex
+      materialization of package
+      `sha256:0399ab50fa7ed00eae5a246159fdb1d594c8fd4946c6aeb72452d9d6e2770ce0`,
+      source commit `22f5d1b15a064c9ae80046e5b1761d5877e2f69f`, whose local
+      runtime archive SHA-256 is
+      `e66e864ac4c29f30024c32cab579eea3e0142a303596d2192b1c88b4ad69b25b`.
+      The content catalogue records checksums for the engine, library, stage
+      protocol, stage graph, scope grid and eleven scope definitions. All were
+      compared with exact archive members. The UI previews those unamended
+      defaults: three initialization stages have no human gate; other included
+      stages declare gates; skipped stages do not contribute; conditional
+      inclusion is distinct from gating. Express declares no reviewers
+      (`review_cap: none`), not an absence of human stage gates. Declared sensors
+      and review caps are shown without inventing a universal final review.
+      Construction autonomy/skeleton ceremony, review/ceremony overrides and
+      supported composed/amended plans require effective engine application
+      evidence. Previewing a definition neither selects nor applies it.
+      No complete gate-free workflow is qualified by this profile. Other
+      package hashes/harness materializations, including forks or version labels
+      alone, are unsupported;
+      local 2.11 logs do not supply verified package bytes for another profile.
+      **Technical evidence gap, not an open approval-policy choice:** the pinned
+      engine keeps effective plan/amendments, review/sensor outcomes and
+      approval/application/terminal state (including its local signing material)
+      in the same-UID agent-writable workspace. Its report command accepts
+      conductor-reported outcomes. A parser or local signature cannot turn those
+      into protected independent receipts. The current native transport cannot
+      attest applied plan identity, required outcome execution, applied human
+      decision, or terminal workflow completion against exact result bytes.
+      A supported engine boundary must emit protected application/outcome
+      receipts tied to package/configuration/effective plan, stage/gate,
+      generation/accepted command and immutable result identity. No such
+      receipt is fabricated, migrated or inferred here. Results report
+      `not_verified`; effective requirements stay `unknown`, and check/review/
+      application/terminal outcomes stay `not_recorded`. Failed/rejected or stale
+      agent-authored reports remain inspectable with explicitly unverified
+      applicability; no successful platform test run verifies a user's workflow.
+      No scheduler, script runner, extra approval button or dispatch authority
+      is added. This item remains open for that technical contract and deployed
       qualification.
       **Deployment/compatibility:** Deploy all publication readers (authority,
       projection and discussion/Quorum bundles), result worker/alias/IAM/routes,
@@ -1041,6 +1095,13 @@ release criteria before widening support; later capabilities are separate scope.
       repinned or migrated. Older schema-1-only reader deployments cannot read new
       schema-2 publications. Local checks do not establish deployed IAM, browser
       downloads, retained-image recovery or two-member live qualification.
+      The additive completion read requires the updated API before the frontend;
+      older APIs reject the new query and the view reports evidence unavailable.
+      New archive provenance names the decided policy and unknown requirements;
+      existing immutable archives remain unchanged and are not completion proof.
+      No runtime writer/schema, IAM grant, durable reference or recovery identity
+      changes for this evidence integration; existing response records are read,
+      never rewritten. Retained missing facts stay unavailable.
       **Validation:** Node 24.21.0 with
       `NODE_OPTIONS=--no-experimental-webstorage`: the native-control, AgentCore,
       shared and discussion suites passed 7,435 tests with three existing Bun
@@ -1058,6 +1119,17 @@ release criteria before widening support; later capabilities are separate scope.
       native-control and both discussion bundles built; the runtime entry bundled
       for Node 22. Isolated local-backend Terraform init/validate and the mocked
       native IAM test passed. Node 22 execution and live deployment were not run.
+      **Completion integration validation:** Node 24.21.0, with the same
+      `NODE_OPTIONS`: 4,969 native-control/shared/discussion tests passed at four
+      workers; the final harness/query/result checks passed 91 tests, including
+      DynamoDB Local competing-member/lost-acknowledgement history. All 1,885
+      frontend tests and the production build passed. Lint, format, secretlint,
+      SDK/dependency/architecture checks, 22 wiring tests and all 233 release
+      tests (including architecture/reference tests) passed; eight native-control
+      and two discussion bundles built. Existing lint/dependency/SDK and bundle
+      size warnings remain. Node 22 and Bun were unavailable; no real model,
+      provider, AWS or live/deployed qualification was performed. No Terraform or
+      runtime producer changed in this integration.
 - [ ] **Capability — platform Git delivery.** Add an authorized, idempotent
       intent-level delivery contract with engine-held credentials, reviewed-byte
       identity, remote confirmation, and review/merge outcomes. Define tracker
@@ -1081,9 +1153,10 @@ release criteria before widening support; later capabilities are separate scope.
       (4) observe provider-managed merges versus separately authorize platform
       merge; and (5) no tracker integration, explicit links/comments, or
       merge-triggered updates with separately admitted tracker identity/access.
-      None is selected by this implementation. The separate pending workflow
-      completion/check/review/approval policy remains unanswered; selecting a
-      publication mode would not create its missing protected receipts.
+      None is selected by this implementation. Workflow completion now follows
+      the pinned AI-DLC workflow/selected plan and its defined human gates,
+      without a blanket final approval. Selecting a publication mode would not
+      create the missing protected effective-plan/application/outcome receipts.
       **Required next contract:** bind project/intent/execution, pinned source and
       package/configuration, admitted result/tree and review evidence, current
       actor/access, destination and retry identity. Any delivery state must have

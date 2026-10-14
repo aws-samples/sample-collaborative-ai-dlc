@@ -38,11 +38,13 @@ export const nativeRevisionQuery = (event, kind) => {
     };
   }
   const source = query.source === '1' && ['file', 'publication'].includes(kind);
+  const evidence = query.evidence === '1' && kind === 'publication' && !source;
   const keys = [
     'publicationId',
     'publicationSequence',
     ...(kind === 'file' ? ['sha256'] : []),
     ...(source ? ['source'] : []),
+    ...(evidence ? ['evidence'] : []),
   ];
   if (
     Object.keys(query).length !== keys.length ||
@@ -55,6 +57,7 @@ export const nativeRevisionQuery = (event, kind) => {
     publicationId: query.publicationId,
     publicationSequence: sequence(query.publicationSequence),
     ...(source ? { source: true } : {}),
+    ...(evidence ? { evidence: true } : {}),
     ...(kind === 'file' ? { fileId: event.pathParameters.fileId, sha256: query.sha256 } : {}),
   };
 };

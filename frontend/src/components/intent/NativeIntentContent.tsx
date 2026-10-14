@@ -6,6 +6,7 @@ import { NativeRunInspection } from './NativeRunInspection';
 import { NativeFileView } from './NativeFileView';
 import { WorkProductsCard } from './WorkProductsCard';
 import { NativeResultDownload } from './NativeResultDownload';
+import { NativeCompletionEvidence } from './NativeCompletionEvidence';
 import { NATIVE_INLINE_BYTES, type NativeRevisionFile } from '@/services/nativeHistory';
 import { NativeInteractionPanel, useNativeReply } from './NativeInteractionPanel';
 import { useOptionalAuth } from '@/contexts/AuthContext';
@@ -409,6 +410,15 @@ function NativePublicationContent({
         </p>
       )}
       <TabsContent value="overview" className="space-y-4">
+        {!error && publication && intent.execution && (
+          <NativeCompletionEvidence
+            projectId={projectId}
+            executionId={intentId}
+            attemptId={intent.execution.attemptId}
+            target={{ publicationId: publication.id, publicationSequence: publication.sequence }}
+            onAccessFailure={onAccessFailure}
+          />
+        )}
         {!error && interaction && intent.execution && (
           <NativeInteractionPanel
             interaction={interaction}

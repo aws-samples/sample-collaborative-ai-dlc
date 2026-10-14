@@ -7,7 +7,9 @@ const fileId = `nf-${'b'.repeat(64)}`;
 const route = (kind) => {
   const base = event('get');
   const suffix =
-    kind === 'file' ? `/files/${fileId}` : `/${kind === 'history' ? 'publication' : kind}`;
+    kind === 'file'
+      ? `/files/${fileId}`
+      : `/${['history', 'evidence'].includes(kind) ? 'publication' : kind}`;
   return {
     ...base,
     resource: `${base.resource}${kind === 'file' ? '/files/{fileId}' : suffix}`,
@@ -16,7 +18,11 @@ const route = (kind) => {
     queryStringParameters:
       kind === 'history'
         ? { history: '1', beforeSequence: '10' }
-        : { ...target, ...(kind === 'file' ? { sha256: 'c'.repeat(64) } : {}) },
+        : {
+            ...target,
+            ...(kind === 'file' ? { sha256: 'c'.repeat(64) } : {}),
+            ...(kind === 'evidence' ? { evidence: '1' } : {}),
+          },
   };
 };
 const fixture = async () => {
@@ -37,7 +43,7 @@ const fixture = async () => {
   return { ...f, api, read, membership };
 };
 
-it.each(['history', 'publication', 'interaction', 'file'])(
+it.each(['history', 'publication', 'interaction', 'file', 'evidence'])(
   'authorizes and rechecks the %s read through the existing HTTP resource',
   async (kind) => {
     const f = await fixture();
@@ -50,11 +56,13 @@ it.each(['history', 'publication', 'interaction', 'file'])(
             publicationId: target.publicationId,
             publicationSequence: 1,
             ...(kind === 'file' ? { fileId, sha256: 'c'.repeat(64) } : {}),
+            ...(kind === 'evidence' ? { evidence: true } : {}),
           },
     );
+    if (kind === 'evidence') expect(result.headers['Cache-Control']).toBe('private, no-store');
   },
 );
-it.each(['history', 'publication', 'interaction', 'file'])(
+it.each(['history', 'publication', 'interaction', 'file', 'evidence'])(
   'denies %s to a nonmember before any history lookup',
   async (kind) => {
     const f = await fixture();
@@ -63,7 +71,7 @@ it.each(['history', 'publication', 'interaction', 'file'])(
     expect(f.read).not.toHaveBeenCalled();
   },
 );
-it.each(['history', 'publication', 'interaction', 'file'])(
+it.each(['history', 'publication', 'interaction', 'file', 'evidence'])(
   'withholds %s when access is revoked during the read',
   async (kind) => {
     const f = await fixture();
