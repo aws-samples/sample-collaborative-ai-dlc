@@ -115,5 +115,18 @@
       "lambda/native-runtime-control/command-service.js"
     ]
   },
-  "complexityExceptions": {}
+  "complexityExceptions": {
+    "lambda/agentcore/commands/run-stage.js:/runStageAttempt:1": {
+      "maximum": 252,
+      "reason": "Inherited unchanged from main 860cdc60 (recovery ownership and CLI integration). Preserve stage side-effect ordering during this merge; further complexity growth remains blocked."
+    },
+    "lambda/shared/v2-process-store.js:/createProcessStore/updateExecution:1": {
+      "maximum": 72,
+      "reason": "Inherited unchanged from main 860cdc60. Preserve atomic run/stage ownership conditions during this merge; further complexity growth remains blocked."
+    },
+    "lambda/v2-orchestrator/index.js:/handler/executeStage:1": {
+      "maximum": 23,
+      "reason": "Inherited unchanged from main 860cdc60. Preserve durable replay names/order and gate recovery during this merge; further complexity growth remains blocked."
+    }
+  }
 }

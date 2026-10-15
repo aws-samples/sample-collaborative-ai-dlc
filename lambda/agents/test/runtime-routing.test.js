@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
-import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
+import {
+  DeleteCommand,
+  DynamoDBDocumentClient,
+  GetCommand,
+  PutCommand,
+} from '@aws-sdk/lib-dynamodb';
 import {
   BedrockAgentCoreClient,
+  DeleteCapacityProviderSessionCommand,
   InvokeAgentRuntimeCommand,
+  StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import {
   fetchRuntimeCapabilities,
@@ -164,5 +171,123 @@ describe('agent utility runtime routing', () => {
     );
     expect(calls[1].args[0].input.runtimeSessionId).toBe(calls[2].args[0].input.runtimeSessionId);
     expect(sessions.get(calls[0].args[0].input.runtimeSessionId)).toEqual(['keys']);
+  });
+
+  describe('probes against an Instances runtime', () => {
+    const CP_ARN = 'arn:aws:bedrock-agentcore:eu-west-1:123:capacity-provider/cp-9';
+    const instancesTarget = {
+      agentRuntimeArn: MANAGED_RUNTIME_ARN,
+      qualifier: 'revision_r_1',
+      capacityProviderArn: CP_ARN,
+    };
+    const timeline = () => {
+      const steps = [];
+      ddbMock.on(PutCommand).callsFake(async (input) => {
+        steps.push(['own', input.Item.sessionId, input.Item]);
+        return {};
+      });
+      ddbMock.on(DeleteCommand).callsFake(async (input) => {
+        steps.push(['disown', input.Key.pk]);
+        return {};
+      });
+      agentcoreMock.on(InvokeAgentRuntimeCommand).callsFake(async (input) => {
+        steps.push(['invoke', input.runtimeSessionId, input]);
+        const payload = JSON.parse(Buffer.from(input.payload).toString());
+        return runtimeResponse(payload.command === 'capabilities' ? { clis: [] } : { results: {} });
+      });
+      agentcoreMock.on(StopRuntimeSessionCommand).callsFake(async (input) => {
+        steps.push(['stop', input.runtimeSessionId, input]);
+        return {};
+      });
+      agentcoreMock.on(DeleteCapacityProviderSessionCommand).callsFake(async (input) => {
+        steps.push(['delete', input.sessionId, input]);
+        return {};
+      });
+      return steps;
+    };
+
+    it('carries the capacity provider from the space snapshot, outside the SDK input', async () => {
+      ddbMock.on(GetCommand).callsFake(async (input) =>
+        input.Key.sk === 'META'
+          ? { Item: { environmentId: 'ec2', status: 'PUBLISHED', publishedRevisionId: 'r-1' } }
+          : {
+              Item: {
+                revisionId: 'r-1',
+                status: 'PUBLISHED',
+                imageDigest: 'sha256:x',
+                runtimeArn: MANAGED_RUNTIME_ARN,
+                runtimeEndpoint: 'revision_r_1',
+                runtimeCompatibilityVersion: '1',
+                capacityProviderArn: CP_ARN,
+                verification: { status: 'PASSED' },
+              },
+            },
+      );
+      await expect(
+        resolveProjectRuntimeTarget(projectTraversal('ec2'), 'project-1'),
+      ).resolves.toEqual(instancesTarget);
+    });
+
+    for (const [name, probe] of [
+      ['capabilities', () => fetchRuntimeCapabilities(instancesTarget, {}, 'project-1')],
+      [
+        'verify-mcp',
+        () =>
+          verifyMcpServers({
+            mcpServersByTier: { global: {}, project: {} },
+            projectId: 'project-1',
+            runtimeTarget: instancesTarget,
+          }),
+      ],
+    ]) {
+      it(`${name}: owns the session before invoking it and releases it afterwards`, async () => {
+        const steps = timeline();
+        await probe();
+        const kinds = steps.map(([kind]) => kind);
+        expect(kinds[0]).toBe('own');
+        expect(kinds.slice(-3)).toEqual(['stop', 'delete', 'disown']);
+        const session = steps[0][1];
+        expect(steps.filter(([kind]) => kind === 'invoke').every(([, id]) => id === session)).toBe(
+          true,
+        );
+        expect(steps[0][2]).toMatchObject({
+          capacityProviderArn: CP_ARN,
+          notBefore: expect.any(String),
+        });
+        for (const [, , input] of steps.filter(([kind]) => kind === 'invoke')) {
+          expect(input).not.toHaveProperty('capacityProviderArn');
+        }
+      });
+    }
+
+    it('does not invoke when the ownership record cannot be written', async () => {
+      ddbMock.on(PutCommand).rejects(new Error('registry unavailable'));
+      agentcoreMock.on(InvokeAgentRuntimeCommand).resolves(runtimeResponse({ results: {} }));
+      const result = await verifyMcpServers({
+        mcpServersByTier: { global: {}, project: {} },
+        projectId: 'project-1',
+        runtimeTarget: instancesTarget,
+      });
+      expect(result.error).toMatch(/registry unavailable/);
+      expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(0);
+    });
+
+    it('keeps the record (the poller finishes it) when the response is lost and the delete fails', async () => {
+      const steps = timeline();
+      agentcoreMock.on(InvokeAgentRuntimeCommand).rejects(new Error('socket hang up'));
+      agentcoreMock
+        .on(DeleteCapacityProviderSessionCommand)
+        .rejects(Object.assign(new Error('internal'), { name: 'InternalServerException' }));
+      const result = await verifyMcpServers({
+        mcpServersByTier: { global: {}, project: {} },
+        projectId: 'project-1',
+        runtimeTarget: instancesTarget,
+      });
+      expect(result.error).toMatch(/socket hang up/);
+      // Stopped and a delete attempted; the record is never removed.
+      expect(steps.map(([kind]) => kind)).toEqual(['own', 'stop']);
+      expect(agentcoreMock.commandCalls(DeleteCapacityProviderSessionCommand)).toHaveLength(1);
+      expect(ddbMock.commandCalls(DeleteCommand)).toHaveLength(0);
+    });
   });
 });

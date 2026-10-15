@@ -1441,6 +1441,178 @@ active test run or alter CLI/dependency pins.
    Leave intents `3ea1b0d3…` and failed `855edbee…` as evidence; never replay an
    answer or treat the old failed checkpoint as a safe retry.
 
+## Integration with main — 2026-10-15
+
+Merged `origin/main` at `860cdc60fe05a2c04ea98d008660bd0ce770854a`
+into `feat/native-aidlc-execution`, preserving the original native head
+`abd94b29a6019fec0979c37376d2ddc626af88e2` and its history, including
+`2d916bc` (Claude metadata/capture diagnostics) and `abd94b2` (grouped
+questions and bounded parallel checkpoint uploads). The pre-merge backup is
+`backup/native-before-main-20261015-abd94b2`. This consumes main's merged
+CLI, recovery, compute and composer changes; it is not a separate CLI upgrade.
+
+Seven conflicted files required integration: the AgentCore Dockerfile,
+output normalizer and authentication tests; intent routes; shared runtime
+target resolution; Quorum edit; and root Terraform wiring. Native backend
+guards, protected credential grants and runtime bindings remain alongside
+main's canonical session identities, atomic recovery ownership, capacity
+provider session cleanup and SDK input shaping. Both native grant tests and
+the upstream rotated-key test remain. Native still uses its protected ARM64
+microVM runtime; merging Instances support does not enable native Instances.
+
+### Corrections and regression evidence
+
+Main consolidated Codex/OpenCode/Kiro display parsing into one sink. The
+mechanical merge dropped native's `retainState: false` at that boundary and
+left its consecutive file-read display batch unbounded. The shared sink now
+forwards retention settings and flushes at native's existing pending-tool
+limit. Native's dedicated Kiro ACP path is unchanged. New Codex and OpenCode
+tests exercise visible output/errors without retaining transcript/diagnostic
+state and ensure long read-only tool sequences flush before a final message.
+
+The native private recovery adapter's version metadata also needed to follow
+the image pins inherited from main:
+
+| Harness     | Inherited image and recovery version |
+| ----------- | ------------------------------------ |
+| Claude Code | `2.1.296`                            |
+| Codex       | `0.162.1`                            |
+| OpenCode    | `1.19.0`                             |
+| Kiro CLI    | `2.29.1`                             |
+
+The recovery test checks these declarations against the Dockerfile, captures
+a fixture session, then attempts a different-version restore. Restore rejects
+it with `native_recovery_manifest_invalid` before writing either destination.
+There is no cross-version restore fallback. Existing intents/checkpoints keep
+their captured image/package pins and their original adapter; this merge does
+not repin or replay them. Offline fixture compatibility does not prove every
+new CLI's live filesystem/output behavior.
+
+The three new regressions failed on the initial merge (three failures,
+80 filtered-out tests), then passed with the corrections. The three native-only
+workspaces now use main's AWS SDK range `^3.1106.0`, with matching workspace
+lockfile declarations. The wiring guard compares required SDK dependencies
+against the root package instead of freezing the previous range.
+
+The shared Dockerfile also previously installed native's ARM64-only GitHub
+signature verifier unconditionally. With main's new amd64 build, that would
+place a wrong-architecture executable in the platform image. Its installation
+is now limited to ARM64; its version/checksum and native signature checks are
+unchanged. An offline test executes the actual Dockerfile shell branch through
+inert download/extract/install ports: amd64 installed the ARM64 binary before
+the correction and now performs no installation, while ARM64 still checks and
+installs it. This does not add native support on amd64.
+
+Three functions inherited **unchanged** from this exact main commit exceed
+the native architecture baseline: `runStageAttempt` (252),
+`createProcessStore/updateExecution` (72) and `handler/executeStage` (23).
+Their source bodies were compared with main. Explicit, function-specific
+exceptions in `architecture/native-owners.json` cap each at its inherited
+score; the baseline and authority checks are unchanged. This avoids rewriting
+upstream durable operation order or atomic ownership conditions during a merge.
+Further growth still fails the architecture gate.
+
+### Validation
+
+Node 24.21.0; Python 3.12.15 for the documentation build:
+
+- Focused native/parser/recovery suites: **1,247 passed**, 28 files.
+  The initial sandbox run passed 1,229 and blocked 18 HTTP-server tests with
+  `listen EPERM`; the same command passed all tests with loopback permitted.
+- Full backend, including upstream CLI, recovery, Instances/session cleanup
+  and native journeys: **10,297 passed, 3 skipped**, 360 passing files and
+  one skipped file. The three script-sensor tests require Bun, absent locally.
+  Local Docker graph/DynamoDB and subprocess fixtures were used.
+  A later full-suite pre-commit repetition hit **12 failures, 10,285 passes,
+  3 skips** in two Git-heavy suites (5 s test timeouts and a 10 s gate wait).
+  Rerunning those two suites with `--maxWorkers=2` passed **36 tests**.
+  Assertions/timeouts were unchanged; the precise source of the timing
+  variability is unproven. The commit retry uses `VITEST_MAX_WORKERS=2`.
+- Full frontend: **1,917 passed**, 141 files; typecheck/production build passed.
+- Release/script suite: **237 passed**. After the final image correction,
+  the affected image, retention and runtime-version suites passed **13 tests**,
+  including two added architecture branches. No full backend rerun was needed
+  for that Dockerfile-only correction.
+- Terraform formatting, isolated local-backend init with
+  `-backend=false -lockfile=readonly`, `validate -no-tests` and six mock suites
+  passed (**23 scenarios**: auth domain, WAF, native authority/package repair,
+  Yjs, managed environments). Initial isolated staging lacked two referenced
+  root inputs; adding those inputs resolved initialization. Provider startup
+  required local sockets outside the sandbox. No deployed plan/state was read.
+- Eight native-control bundles, native wiring (**22 tests**), architecture
+  (**391 production modules, zero violations**), lint, formatting, secret scan,
+  SDK alignment, dependency check and documentation build passed.
+  The enabled commit hook's root/frontend production audits found zero
+  vulnerabilities.
+  Existing lint warnings, **14 dependency warnings**, the Smithy range warning,
+  Terraform deprecations and bundle/chunk-size warnings remain non-fatal.
+  Optional TFLint and local Semgrep/OpenGrep checks are unavailable because
+  those binaries are not installed; no CI SAST or live-provider result is claimed.
+
+Reproducible commands (backend checks require local Docker/loopback):
+
+```bash
+npm ci
+npm --prefix lambda/yjs-server ci
+npm --prefix frontend ci
+NODE_OPTIONS=--no-experimental-webstorage npm test -- --maxWorkers=4
+NODE_OPTIONS=--no-experimental-webstorage npm --prefix frontend test -- --run --maxWorkers=4
+npm run test:release
+node --test scripts/test/native-runtime-images.test.mjs \
+  scripts/test/terraform-image-retention.test.mjs \
+  scripts/test/terraform-agentcore-runtime-version.test.mjs
+npm run architecture:check
+npm run test:native-wiring
+npm run sdk:check
+npm run lint
+npm run format:check
+npm run secretlint
+npm run dep:check
+npm --prefix lambda/native-runtime-control run build
+npm --prefix frontend run build
+terraform -chdir=terraform fmt -check -recursive
+uv sync --locked --group docs
+uv run --locked zensical build
+```
+
+For isolated Terraform validation, follow the CI local-backend override/init
+procedure and its six filtered `terraform test` commands. The integration used
+a temporary tracked-file copy, preserving the checkout's real backend state.
+There was no full runtime image build, live CLI/model call, deployed recovery
+test or latency qualification. Successful local checks do not establish those.
+
+### Deployment implications
+
+The ARM64 source hash includes the changed Dockerfile and adapter. Native
+preparation continues to receive `module.agentcore.image_digest`; it does
+not select an amd64 image or a mutable tag. The retained-image build resource
+and `removed` block with `destroy = false` survive the merge. Main's optional
+amd64 build is wired to the existing `enable_instances_compute` setting and
+also retains remote images. Keep that setting at its intended deployment
+value; no new capability flag is needed for native.
+
+After review, use a **fresh plan** from this checkout rather than a saved plan
+from before the merge:
+
+```bash
+./scripts/deploy-terraform.sh dev --phase plan \
+  --plan-file /tmp/native-main-dev.tfplan --skip-seed
+# Review the image build, retention, native workers and upstream shared changes.
+./scripts/deploy-terraform.sh dev --phase apply \
+  --plan-file /tmp/native-main-dev.tfplan --skip-seed
+./scripts/deploy-frontend.sh dev
+```
+
+Use the deployment credentials already configured for that stack, not the
+read-only investigation profile. Keep new admission closed until controller,
+frontend and runtime changes are available together. Then follow the fresh-run
+verification immediately above: two real question/reply rounds, one form for
+the current step, required approvals, two-member refresh/reconnect and retained
+history. Record the new immutable image/package pins. Cancel/recover only
+where the fresh run's authority exposes support. Preserve the existing active
+and failed test intents as evidence; never replay their delivered answers.
+No push, deployment, AWS action or live model call was performed for this merge.
+
 ## Open work
 
 This is the temporary native working backlog. **Capability** means missing

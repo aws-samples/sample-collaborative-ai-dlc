@@ -10,7 +10,7 @@ const rawDir = path.join(root, 'lambda', 'agentcore', 'test', 'fixtures', 'agent
 const outputFile = path.join(root, 'frontend', 'public', 'dev', 'agent-output-fixtures.json');
 const cliFiles = {
   claude: 'claude.jsonl',
-  kiro: 'kiro.txt',
+  kiro: 'kiro.jsonl',
   opencode: 'opencode.jsonl',
   codex: 'codex.jsonl',
 };

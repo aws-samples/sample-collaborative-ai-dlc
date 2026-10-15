@@ -217,6 +217,39 @@ describe('Codex JSONL parser', () => {
 });
 
 describe('Codex output normalization', () => {
+  it('keeps native stateless parsing and read batching bounded through the shared sink', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({
+      cli: 'codex',
+      retainState: false,
+      maxPendingTools: 2,
+      emit: (event) => emitted.push(event),
+    });
+    for (let i = 0; i < 5; i++)
+      sink.write(
+        line({
+          type: 'item.completed',
+          item: {
+            type: 'mcp_tool_call',
+            tool: 'fs_read',
+            status: 'completed',
+            arguments: { path: `file-${i}` },
+            result: 'read bytes',
+          },
+        }),
+      );
+    // A long tool-only turn must flush bounded batches before a final message.
+    expect(emitted).toHaveLength(2);
+    sink.write(
+      line({ type: 'item.completed', item: { type: 'agent_message', text: 'Question?' } }),
+    );
+    sink.write('not-json\n');
+    sink.write(line({ type: 'error', message: 'fixture error' }));
+    const state = sink.flush();
+    expect(state).toMatchObject({ text: '', errors: [], diagnostics: [] });
+    expect(emitted.some((event) => event.content === 'Question?')).toBe(true);
+  });
+
   it('suppresses send_output duplication while retaining text and tool failures', () => {
     const emitted = [];
     const sink = createCliOutputSink({ cli: 'codex', emit: (event) => emitted.push(event) });
@@ -253,6 +286,43 @@ describe('Codex output normalization', () => {
       level: 'error',
       title: 'Artifact write failed: a',
     });
+  });
+
+  it('keeps a distinct failure cause but shows a reused result text once', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'codex', emit: (event) => emitted.push(event) });
+    sink.write(
+      [
+        // Shell failure: the output and the `exit 1` cause are distinct.
+        line({
+          type: 'item.completed',
+          item: {
+            type: 'command_execution',
+            command: 'cat missing.css',
+            aggregated_output: 'cat: missing.css: No such file or directory',
+            exit_code: 1,
+            status: 'failed',
+          },
+        }),
+        // MCP failure without item.error: the result text doubles as the error.
+        line({
+          type: 'item.completed',
+          item: {
+            type: 'mcp_tool_call',
+            server: 'aidlc',
+            tool: 'get_upstream',
+            status: 'failed',
+            arguments: { id: 'missing' },
+            result: { content: [{ type: 'text', text: 'upstream missing' }] },
+          },
+        }),
+      ].join(''),
+    );
+    sink.flush();
+    const [shell, mcp] = emitted.map(({ display }) => display.details);
+    expect(shell).toContain('No such file or directory');
+    expect(shell).toContain('exit 1');
+    expect(mcp.split('upstream missing')).toHaveLength(2);
   });
 
   it('captures the session id and usage through the sink callbacks', () => {

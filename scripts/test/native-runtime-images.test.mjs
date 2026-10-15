@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { requiredPins, scopeHash } from '../native-runtime-images.mjs';
 
@@ -15,6 +17,52 @@ const row = (id, status, image, extra = {}) => ({
   runtimeSessionId: 'must-never-be-printed',
   ...extra,
 });
+
+for (const architecture of ['arm64', 'amd64']) {
+  test(`native-only signature verifier installation respects ${architecture} image architecture`, () => {
+    const dockerfile = readFileSync(
+      new URL('../../lambda/agentcore/Dockerfile', import.meta.url),
+      'utf8',
+    );
+    const install = dockerfile
+      .split(/^ARG GH_SHA256=.*\n/m)[1]
+      ?.match(/^RUN ([\s\S]*?)(?:\n\n|$)/)?.[1]
+      .replace(/\\\n/g, '');
+    assert.ok(install, 'expected the native verifier installation recipe');
+    // Execute the actual shell branch with inert command ports. No downloads,
+    // host installation, CLI invocation or source extraction can occur.
+    const output = execFileSync(
+      '/bin/sh',
+      [
+        '-ec',
+        `
+curl() { printf 'download\\n'; }
+sha256sum() { cat >/dev/null; printf 'checksum\\n'; }
+tar() { printf 'extract\\n'; }
+install() { printf 'install %s\\n' "$*"; }
+rm() { :; }
+${install}`,
+      ],
+      {
+        encoding: 'utf8',
+        env: {
+          PATH: '/usr/bin:/bin',
+          TARGETARCH: architecture,
+          GH_VERSION: '2.101.0',
+          GH_SHA256: 'fixture',
+        },
+      },
+    );
+    if (architecture === 'arm64') {
+      assert.match(
+        output,
+        /download\nchecksum\nextract\ninstall -m 0755 \/tmp\/gh_2\.101\.0_linux_arm64\/bin\/gh \/usr\/local\/bin\/gh/,
+      );
+    } else {
+      assert.equal(output, '', 'amd64 must not receive an ARM64 native-only executable');
+    }
+  });
+}
 
 test('lists every pin still required by resumable runs and retained checkpoints', () => {
   const pins = requiredPins([

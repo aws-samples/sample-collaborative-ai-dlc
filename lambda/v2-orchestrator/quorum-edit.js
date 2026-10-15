@@ -27,6 +27,7 @@ import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import { commandDefinition } from '../shared/agent-command-registry.js';
 import { isPlatformExecution } from '../shared/execution-backend.js';
+import { quorumEditSessionIdFor } from '../shared/runtime-session-ids.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -42,7 +43,8 @@ const DECISION_CALLBACK_TIMEOUT = { hours: 72 };
 
 // Dedicated AgentCore session per intent for quorum edits — never the stage
 // session (a parked stage conversation must not be disturbed) and ≥33 chars.
-export const quorumEditSessionIdFor = (intentId) => `aidlc-qedit-${intentId}`.padEnd(33, '0');
+// (id convention: shared/runtime-session-ids.js)
+export { quorumEditSessionIdFor };
 
 // Decode a callback completion body (pass-through serdes: raw JSON string).
 const decodeCallback = (raw) => {

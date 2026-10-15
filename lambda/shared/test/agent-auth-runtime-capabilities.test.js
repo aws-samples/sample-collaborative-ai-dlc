@@ -86,3 +86,38 @@ describe('qualification before IAM grants', () => {
     expect(issueGrant.mock.calls[0][0].bindings).toEqual([binding]);
   });
 });
+
+describe('fallback qualification on the Instances compute type', () => {
+  const instancesSnapshot = {
+    runtimeArn: 'runtime',
+    runtimeEndpoint: 'published',
+    capacityProviderArn: 'arn:aws:bedrock-agentcore:us-east-1:1:capacity-provider/cp-1',
+  };
+
+  it('uses the evidence recorded by the revision validation, without a probe session', async () => {
+    const runtime = { send: vi.fn() };
+    const snapshot = {
+      ...instancesSnapshot,
+      agentAuthProtocol: 2,
+      agentAuthModes: ['keys', 'iam'],
+    };
+    expect(await qualifyAgentAuthRuntime(snapshot, { runtime, requiredModes: ['iam'] })).toBe(
+      snapshot,
+    );
+    expect(runtime.send).not.toHaveBeenCalled();
+  });
+
+  it('refuses without opening a session when the evidence is missing', async () => {
+    const runtime = { send: vi.fn() };
+    await expect(
+      qualifyAgentAuthRuntime(instancesSnapshot, { runtime, env: {}, requiredModes: ['iam'] }),
+    ).rejects.toMatchObject({ code: 'AGENT_AUTH_RUNTIME_UNSUPPORTED' });
+    await expect(
+      qualifyAgentAuthRuntime(
+        { ...instancesSnapshot, agentAuthProtocol: 2, agentAuthModes: ['keys'] },
+        { runtime, env: {}, requiredModes: ['iam'] },
+      ),
+    ).rejects.toMatchObject({ code: 'AGENT_AUTH_RUNTIME_UNSUPPORTED' });
+    expect(runtime.send).not.toHaveBeenCalled();
+  });
+});

@@ -24,6 +24,7 @@ const fallbackSnapshot = (fallback = {}) => ({
   runtimeVersion: fallback.runtimeVersion ?? null,
   runtimeArn: fallback.runtimeArn ?? null,
   runtimeEndpoint: fallback.runtimeEndpoint ?? null,
+  capacityProviderArn: null,
   compatibilityVersion: fallback.compatibilityVersion ?? '1',
   verification: fallback.verification ?? { status: 'PASSED', source: 'legacy-runtime' },
   tools: fallback.tools ?? [],
@@ -109,6 +110,9 @@ export const resolvePublishedEnvironment = async ({
     runtimeVersion: revision.runtimeVersion ?? null,
     runtimeArn: revision.runtimeArn,
     runtimeEndpoint: revision.runtimeEndpoint ?? null,
+    // Instances revisions carry their capacity provider; intent deletion uses
+    // it to delete the sessions (and their EBS volumes) the intent created.
+    capacityProviderArn: revision.capacityProviderArn ?? null,
     compatibilityVersion,
     verification: revision.verification ?? null,
     tools: revision.flattenedRecipe?.resolvedTools ?? [],

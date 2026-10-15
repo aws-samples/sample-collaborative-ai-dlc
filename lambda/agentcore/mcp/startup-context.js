@@ -69,6 +69,8 @@ export const contextFromEnv = (env) => {
     projectId: env.V2_PROJECT_ID || null,
     stageId: env.V2_STAGE_ID || null,
     stageInstanceId: env.V2_STAGE_INSTANCE_ID || null,
+    orchestratorRunId: env.V2_ORCHESTRATOR_RUN_ID || null,
+    stageCallbackId: env.V2_STAGE_CALLBACK_ID || null,
     sectionIndex: env.V2_SECTION_INDEX ? Number(env.V2_SECTION_INDEX) : null,
     stageAttempt: env.V2_STAGE_ATTEMPT ? Number(env.V2_STAGE_ATTEMPT) : 0,
     validationRound: Number(env.V2_VALIDATION_ROUND) || 0,

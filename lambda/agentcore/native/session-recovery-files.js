@@ -19,10 +19,10 @@ export const NATIVE_RECOVERY_FILE_LIMITS = Object.freeze({
   maxDepth: 128,
 });
 export const NATIVE_RECOVERY_HARNESS_VERSIONS = Object.freeze({
-  codex: '0.145.0',
-  claude: '2.1.257',
-  opencode: '1.17.20',
-  kiro: '2.19.2',
+  codex: '0.162.1',
+  claude: '2.1.296',
+  opencode: '1.19.0',
+  kiro: '2.29.1',
 });
 const OPENCODE_EXPORT = '.native-recovery/opencode-session.json';
 const FORMATS = {

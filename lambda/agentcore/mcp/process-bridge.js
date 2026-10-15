@@ -16,6 +16,7 @@
 // graph-writer, broadcast, clock, ids, sleep) so the suite runs the whole flow —
 // including the blocking poll — with no AWS and no real timers.
 
+import { scopeStageAttempt } from '../../shared/stage-attempt.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { canonicalJson } from '../../shared/workflow-checkpoint.js';
 import { eventTypeOf } from '../../shared/v2-process-keys.js';
@@ -125,6 +126,8 @@ export const createProcessBridge = ({
   const revision = Number(revisionArg) || 0;
   // Revision 0 keeps the attempt-scoped ids and receipt keys unchanged.
   const revisionOrdinal = revision > 0 ? revision : null;
+  const owned = Boolean(scope.orchestratorRunId && scope.stageCallbackId);
+  store = scopeStageAttempt(store, scope);
 
   // The authorization the NEXT artifact write is stamped with — the receipt SK of
   // the confirmation the human actually gave for this (stage, attempt). Process
@@ -146,14 +149,14 @@ export const createProcessBridge = ({
     // concurrent lane gates and previously caused sibling stages to adopt this
     // question. Non-lane stages retain the legacy execution mirror for the
     // linear workflow UI; HUMAN#/STAGE# rows remain authoritative everywhere.
-    if (!unitSlug) {
+    if (!unitSlug && !owned) {
       await store.updateExecution({
         executionId,
         status: 'WAITING',
         pendingHumanTaskId: humanTaskId,
       });
     }
-    if (stageInstanceId) {
+    if (stageInstanceId && !owned) {
       await store
         .updateStageState({
           executionId,
@@ -172,12 +175,15 @@ export const createProcessBridge = ({
       await sleep(pollIntervalMs);
       const task = await store.getHumanTask(executionId, humanTaskId);
       if (task && task.status !== 'pending') {
+        if (task.status === 'superseded')
+          return { humanTaskId, status: 'superseded', retired: true };
         // Answered in time: clear the gate, un-park, and return the answer as before.
         if (!unitSlug) {
           await store.updateExecution({
             executionId,
             status: 'RUNNING',
             pendingHumanTaskId: null,
+            ...(owned ? { ifPendingHumanTaskId: humanTaskId } : {}),
           });
         }
         if (stageInstanceId) {

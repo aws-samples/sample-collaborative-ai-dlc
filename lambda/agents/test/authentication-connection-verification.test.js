@@ -223,3 +223,75 @@ describe('unsaved connection verification', () => {
     }
   });
 });
+
+describe('connection verification against an Instances runtime', () => {
+  const CP_ARN = 'arn:aws:bedrock-agentcore:us-east-1:111111111111:capacity-provider/cp-1';
+  const instancesTarget = { ...runtimeTarget, capacityProviderArn: CP_ARN };
+  const tracingRuntime = (steps) => ({
+    send: vi.fn(async (command) => {
+      const name = command.constructor.name;
+      steps.push([name, command.input]);
+      if (name === 'InvokeAgentRuntimeCommand') return replies.shift();
+      return {};
+    }),
+  });
+  const queue = (steps, overrides = {}) => ({
+    enqueue: vi.fn(async (record) => steps.push(['own', record])),
+    remove: vi.fn(async (id) => steps.push(['disown', id])),
+    ...overrides,
+  });
+
+  it('owns the shared probe/check session before invoking it and releases it after', async () => {
+    const steps = [];
+    agentcore = tracingRuntime(steps);
+    const cleanupStore = queue(steps);
+    const result = await createConnectionVerifier({
+      agentcore,
+      ssm,
+      repository,
+      logger,
+      cleanupStore,
+    })({
+      mode: MODE,
+      mechanism: 'oauth-machine',
+      configuration: { region: 'eu-west-1' },
+      projectId: 'p1',
+      runtimeTarget: instancesTarget,
+    });
+    expect(result.statusCode).toBe(200);
+    expect(steps.map(([kind]) => kind)).toEqual([
+      'own',
+      'InvokeAgentRuntimeCommand',
+      'InvokeAgentRuntimeCommand',
+      'StopRuntimeSessionCommand',
+      'DeleteCapacityProviderSessionCommand',
+      'disown',
+    ]);
+    const owned = steps[0][1].sessionId;
+    expect(steps[1][1].runtimeSessionId).toBe(owned);
+    expect(steps[2][1].runtimeSessionId).toBe(owned);
+    expect(steps[1][1]).not.toHaveProperty('capacityProviderArn');
+    expect(steps[4][1]).toEqual({ capacityProviderId: 'cp-1', sessionId: owned });
+  });
+
+  it('does not invoke when ownership cannot be registered', async () => {
+    const steps = [];
+    agentcore = tracingRuntime(steps);
+    const cleanupStore = queue(steps, { enqueue: vi.fn().mockRejectedValue(new Error('down')) });
+    const result = await createConnectionVerifier({
+      agentcore,
+      ssm,
+      repository,
+      logger,
+      cleanupStore,
+    })({
+      mode: MODE,
+      mechanism: 'oauth-machine',
+      configuration: { region: 'eu-west-1' },
+      projectId: 'p1',
+      runtimeTarget: instancesTarget,
+    });
+    expect(result.statusCode).toBe(502);
+    expect(agentcore.send).not.toHaveBeenCalled();
+  });
+});

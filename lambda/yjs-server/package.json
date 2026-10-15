@@ -7,9 +7,9 @@
   },
   "dependencies": {
     "@aws-lambda-powertools/logger": "^2.35.0",
-    "@aws-sdk/client-dynamodb": "^3.1092.0",
-    "@aws-sdk/client-s3": "^3.1092.0",
-    "@aws-sdk/lib-dynamodb": "^3.1092.0",
+    "@aws-sdk/client-dynamodb": "^3.1106.0",
+    "@aws-sdk/client-s3": "^3.1106.0",
+    "@aws-sdk/lib-dynamodb": "^3.1106.0",
     "aws-jwt-verify": "^4.0.0",
     "lib0": "^0.2.117",
     "ws": "^8.21.0",

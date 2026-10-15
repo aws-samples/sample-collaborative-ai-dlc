@@ -3,7 +3,7 @@ import {
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { randomUUID } from 'node:crypto';
-import { runtimeTargetInput } from './runtime-target.js';
+import { resolveRuntimeTarget, runtimeSdkInput } from './runtime-target.js';
 import { authError } from './agent-auth-catalog.js';
 
 const client = new BedrockAgentCoreClient({});
@@ -18,8 +18,24 @@ export const qualifyAgentAuthRuntime = async (
     requiredModes.every((mode) => capabilities.agentAuthModes?.includes(mode))
   )
     return capabilities;
-  const target = runtimeTargetInput({ environment: capabilities }, env.AGENTCORE_RUNTIME_ARN || '');
-  if (!target.agentRuntimeArn) return capabilities ?? {};
+  const resolved = resolveRuntimeTarget(
+    { environment: capabilities },
+    env.AGENTCORE_RUNTIME_ARN || '',
+  );
+  if (!resolved.agentRuntimeArn) return capabilities ?? {};
+  // On the Instances compute type every probe session gets a persistent EBS
+  // volume, and this shared helper has no cleanup owner for one. It does not
+  // need a probe either: an Instances revision is published only after its
+  // own validation, which recorded the image's authentication support on the
+  // snapshot (checked above). Missing evidence means that image cannot be
+  // qualified — republishing the environment re-validates it.
+  if (resolved.capacityProviderArn) {
+    throw authError(
+      'AGENT_AUTH_RUNTIME_UNSUPPORTED',
+      'The selected environment did not record authentication support; republish it to re-validate its runtime',
+    );
+  }
+  const target = runtimeSdkInput(resolved);
   try {
     const result = await runtime.send(
       new InvokeAgentRuntimeCommand({

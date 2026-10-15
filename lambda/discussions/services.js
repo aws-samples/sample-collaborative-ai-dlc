@@ -20,6 +20,7 @@ import { agentcore, ddb, ssm, s3, query } from './clients.js';
 import { createNativePublications } from '../shared/native-publication.js';
 import { createNativeArtifactRevisions } from '../shared/native-artifact-revision.js';
 import { fetchProjectIdForSprint, fetchProjectIdForIntent } from './data-access.js';
+import { discussionSessionIdFor } from '../shared/runtime-session-ids.js';
 
 const logger = new Logger({ persistentKeys: { component: 'discussions' } });
 
@@ -216,9 +217,6 @@ export const getSecret = async () => {
   if (!cachedSecret) throw new Error(`SSM parameter ${paramName} is empty`);
   return cachedSecret;
 };
-
-const discussionSessionIdFor = (intentId, discussionId) =>
-  `aidlc-discuss-${intentId}-${discussionId}`.padEnd(33, '0');
 
 const discussionRuntimeTargetFor = async (intentId, fallbackRuntimeArn) => {
   const processTable = process.env.V2_PROCESS_TABLE;

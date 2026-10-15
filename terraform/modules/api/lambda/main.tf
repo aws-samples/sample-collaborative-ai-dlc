@@ -580,8 +580,10 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         Resource = "*"
       },
       {
+        # InvokeAgentRuntime: capability, MCP and connection probes.
+        # StopRuntimeSession: end a probe's session once it answered.
         Effect = "Allow"
-        Action = ["bedrock-agentcore:InvokeAgentRuntime"]
+        Action = ["bedrock-agentcore:InvokeAgentRuntime", "bedrock-agentcore:StopRuntimeSession"]
         Resource = [
           var.agentcore_runtime_arn,
           "${var.agentcore_runtime_arn}/*",
@@ -590,8 +592,20 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
         ]
       },
       {
+        # A probe against a space's Instances runtime gets an EBS workspace;
+        # it is deleted right after the probe (shared/runtime-session.js
+        # withDisposableSession).
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem"]
+        Action   = ["bedrock-agentcore:DeleteCapacityProviderSession"]
+        Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
+      },
+      {
+        # GetItem: resolve the space's environment snapshot. PutItem/DeleteItem:
+        # the SESSION_CLEANUP# record that owns a probe session's release from
+        # before it is invoked until it is deleted (the environments poller
+        # finishes it if the probe cannot).
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem"]
         Resource = var.environment_registry_table_arn
       }
     ]
@@ -762,6 +776,13 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
         Resource = local.v2_orchestrator_function_arns
       },
       {
+        # Permanent intent deletion removes the intent's Instances sessions so
+        # their persistent EBS volumes are released with the intent.
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:DeleteCapacityProviderSession"]
+        Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
+      },
+      {
         # Stop a deleted intent's live AgentCore session(s).
         Effect = "Allow"
         Action = ["bedrock-agentcore:StopRuntimeSession"]
@@ -773,8 +794,12 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
         ]
       },
       {
+        # GetItem: resolve the assigned environment snapshot. PutItem: an
+        # Instances workspace release that fails during the intent-deletion
+        # cascade is queued as a SESSION_CLEANUP# record for the environments
+        # status poller to retry (shared/session-cleanup-store.js).
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
         Resource = var.environment_registry_table_arn
       },
     ]
@@ -2900,8 +2925,12 @@ resource "aws_iam_role_policy" "intents" {
         Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/*"]
       },
       {
+        # GetItem: resolve the assigned environment snapshot. PutItem: an
+        # Instances workspace release that fails during the intent-deletion
+        # cascade is queued as a SESSION_CLEANUP# record for the environments
+        # status poller to retry (shared/session-cleanup-store.js).
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
         Resource = var.environment_registry_table_arn
       },
       {
@@ -3045,6 +3074,13 @@ resource "aws_iam_role_policy" "intents" {
         Effect   = "Allow"
         Action   = ["s3:ListBucketVersions"]
         Resource = var.artifacts_bucket_arn
+      },
+      {
+        # Permanent intent deletion removes the intent's Instances sessions so
+        # their persistent EBS volumes are released with the intent.
+        Effect   = "Allow"
+        Action   = ["bedrock-agentcore:DeleteCapacityProviderSession"]
+        Resource = "arn:${local.partition}:bedrock-agentcore:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:capacity-provider/*"
       },
       {
         # Manual graph-projection backfill (POST .../intents/{id}/derive):

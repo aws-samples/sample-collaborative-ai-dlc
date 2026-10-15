@@ -95,6 +95,7 @@ export const createAuthenticationSettingsService = ({
   agentcore,
   logger,
   resolveTarget,
+  sessionCleanupStore = null,
   env = process.env,
   providers = AUTHENTICATION_SETTINGS_PROVIDERS,
 }) => {
@@ -107,7 +108,13 @@ export const createAuthenticationSettingsService = ({
     tableName: env.V2_PROCESS_TABLE,
     base: env.AGENT_SETTINGS_SSM_PREFIX || '',
   });
-  const verifyConnection = createConnectionVerifier({ agentcore, ssm, repository, logger });
+  const verifyConnection = createConnectionVerifier({
+    agentcore,
+    ssm,
+    repository,
+    logger,
+    cleanupStore: sessionCleanupStore,
+  });
   const resolveSpace = async (projectId) => {
     const runtimeTarget = await resolveTarget(assertIdentifier(projectId, 'projectId'));
     if (!runtimeTarget) throw authError('AGENT_AUTH_INVALID', 'Space not found');

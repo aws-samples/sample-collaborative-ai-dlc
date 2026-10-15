@@ -25,6 +25,21 @@ const createDdb = (items) => ({
       }
       return {};
     }
+    if (command.constructor.name === 'UpdateCommand') {
+      // Minimal SET applier: "name = :token" pairs, resolving expression
+      // attribute names, enough for updateRevision.
+      const current = items.get(keyOf(command.input.Key)) ?? {};
+      const names = command.input.ExpressionAttributeNames ?? {};
+      const values = command.input.ExpressionAttributeValues ?? {};
+      const next = { ...current };
+      const sets = command.input.UpdateExpression.replace(/^SET\s+/, '').split(', ');
+      for (const assignment of sets) {
+        const [rawName, token] = assignment.split(' = ');
+        next[names[rawName] ?? rawName] = values[token];
+      }
+      items.set(keyOf(command.input.Key), next);
+      return { Attributes: next };
+    }
     throw new Error(`Unsupported command ${command.constructor.name}`);
   }),
 });
@@ -90,6 +105,10 @@ describe('environment registry store', () => {
       coreImageDigest: newDigest,
       coreRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/core',
       coreRuntimeVersion: '2',
+      coreAmd64Image: {
+        imageUri: 'core-repository-amd64',
+        imageDigest: `sha256:${'d'.repeat(64)}`,
+      },
     });
 
     expect(staged).toMatchObject({
@@ -97,12 +116,36 @@ describe('environment registry store', () => {
       imageDigest: newDigest,
       runtimeCompatibilityVersion: '2',
       verification: { status: 'PASSED', source: 'core-runtime' },
+      // The amd64 variant travels with the revision it belongs to.
+      amd64Image: { imageUri: 'core-repository-amd64', imageDigest: `sha256:${'d'.repeat(64)}` },
     });
     expect(items.get('ENV#standard|META')).toMatchObject({
       publishedRevisionId: 'core-1',
       currentRevisionId: `core-2-${'b'.repeat(12)}`,
       status: 'UPDATE_AVAILABLE',
       updateAvailable: true,
+    });
+    // The published revision keeps ITS digest and gains no foreign variant —
+    // an x86 environment created in the upgrade window resolves nothing new.
+    expect(items.get('ENV#standard|REV#core-1').amd64Image).toBeUndefined();
+
+    // Re-staging the SAME digest as the published revision backfills the
+    // variant that belongs to it (pre-existing deployments gain x86 support).
+    items.get('ENV#standard|REV#core-1').imageDigest = newDigest;
+    const backfilled = await store.stageCoreRevision({
+      coreImageUri: 'core-repository',
+      coreImageDigest: newDigest,
+      coreRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/core',
+      coreRuntimeVersion: '2',
+      coreAmd64Image: {
+        imageUri: 'core-repository-amd64',
+        imageDigest: `sha256:${'d'.repeat(64)}`,
+      },
+    });
+    expect(backfilled).toBeNull();
+    expect(items.get('ENV#standard|REV#core-1').amd64Image).toEqual({
+      imageUri: 'core-repository-amd64',
+      imageDigest: `sha256:${'d'.repeat(64)}`,
     });
   });
 
@@ -292,6 +335,22 @@ describe('environment registry store', () => {
         ':fromStatus': 'DRAFT',
       },
     });
+  });
+
+  it('reports a stale fromStatus as a conditional failure, not an invalid transition', async () => {
+    // An overlapping status poll already moved the revision to READY; the
+    // slower one still believes it is VERIFYING and tries to fail it.
+    const ddb = {
+      send: vi.fn().mockResolvedValue({
+        Item: { environmentId: 'x86', revisionId: 'r-1', status: 'READY' },
+      }),
+    };
+    const store = createEnvironmentStore({ ddb, tableName: 'registry' });
+    await expect(
+      store.updateRevision('x86', 'r-1', { status: 'FAILED' }, { fromStatus: 'VERIFYING' }),
+    ).rejects.toMatchObject({ name: 'ConditionalCheckFailedException' });
+    // Only the read — no write attempted.
+    expect(ddb.send).toHaveBeenCalledTimes(1);
   });
 
   it('rejects recipe changes after a revision is queued', async () => {

@@ -256,10 +256,10 @@ describe('validation gate with findings', () => {
     deps.store.getHumanTask = vi.fn(async () => {
       round += 1;
       if (round === 1) return null;
-      if (round === 2) {
+      if (round === 2 || round === 3) {
         return { humanTaskId: 'h1', status: 'rejected', answer: { decision: 'request-changes' } };
       }
-      if (round === 3) return null;
+      if (round === 4) return null;
       return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
     });
     let attempt = 0;
@@ -420,7 +420,7 @@ describe('validation gate with findings', () => {
     deps.store.getHumanTask = vi.fn(async () => {
       call += 1;
       if (call === 1) return null;
-      if (call === 2) {
+      if (call === 2 || call === 3) {
         return {
           humanTaskId: 'h1',
           status: 'approved',
@@ -428,7 +428,7 @@ describe('validation gate with findings', () => {
           stageInstanceId: 'si-1',
         };
       }
-      if (call === 3) return null;
+      if (call === 4) return null;
       return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
     });
 
@@ -625,10 +625,10 @@ describe('validation gate with findings', () => {
     deps.store.getHumanTask = vi.fn(async () => {
       call += 1;
       if (call === 1) return null;
-      if (call === 2) {
+      if (call === 2 || call === 3) {
         return { humanTaskId: 'h1', status: 'rejected', answer: { decision: 'request-changes' } };
       }
-      if (call === 3) return null;
+      if (call === 4) return null;
       return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
     });
 
@@ -695,10 +695,10 @@ describe('validation gate with a release-integrity failure', () => {
     deps.store.getHumanTask = vi.fn(async () => {
       call += 1;
       if (call === 1) return null;
-      if (call === 2) {
+      if (call === 2 || call === 3) {
         return { humanTaskId: 'h1', status: 'rejected', answer: { decision: 'request-changes' } };
       }
-      if (call === 3) return null;
+      if (call === 4) return null;
       return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
     });
   };
@@ -1046,10 +1046,10 @@ describe('stage-approval receipt scope', () => {
     deps.store.getHumanTask = vi.fn(async () => {
       call += 1;
       if (call === 1) return null;
-      if (call === 2) {
+      if (call === 2 || call === 3) {
         return { humanTaskId: 'h1', status: 'rejected', answer: { decision: 'request-changes' } };
       }
-      if (call === 3) return null;
+      if (call === 4) return null;
       return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
     });
 
@@ -1080,10 +1080,10 @@ describe('gate evaluation of an empty produced-head observation', () => {
     deps.store.getHumanTask = vi.fn(async () => {
       call += 1;
       if (call === 1) return null;
-      if (call === 2) {
+      if (call === 2 || call === 3) {
         return { humanTaskId: 'h1', status: 'rejected', answer: { decision: 'request-changes' } };
       }
-      if (call === 3) return null;
+      if (call === 4) return null;
       return { humanTaskId: 'h2', status: 'answered', answer: { decision: 'approve' } };
     });
   };

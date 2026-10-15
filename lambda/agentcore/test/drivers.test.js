@@ -9,9 +9,8 @@ import {
   codexDriver,
   SUPPORTED_CLIS,
   buildKiroListSessions,
-  parseLatestKiroSession,
+  parseKiroSessionSource,
   buildKiroUsage,
-  parseKiroCredits,
   parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild } from '../cli/spawn.js';
@@ -160,10 +159,22 @@ describe('claude driver', () => {
 });
 
 describe('kiro driver', () => {
-  it('builds a headless chat invocation with trust-all-tools + --agent (no --mcp-config)', () => {
+  it('builds a headless v2 stream-json chat invocation with --agent (no --mcp-config)', () => {
     const inv = kiroDriver.buildInvocation({ prompt: 'go', agentName: 'aidlc' });
     expect(inv.command).toBe('kiro-cli');
-    expect(inv.args).toEqual(['chat', '--no-interactive', '--trust-all-tools', '--agent', 'aidlc']);
+    // The engine is pinned: its session store and stream-json output are what
+    // the store sync and output parser are built for.
+    expect(inv.args).toEqual([
+      'chat',
+      '--no-interactive',
+      '--trust-all-tools',
+      '--agent-engine',
+      'v2',
+      '--output-format',
+      'stream-json',
+      '--agent',
+      'aidlc',
+    ]);
     // Kiro 2.10 has no --mcp-config flag — must not be emitted.
     expect(inv.args).not.toContain('--mcp-config');
     // Prompt piped on stdin, never on argv (positional omitted) — a large prompt
@@ -176,8 +187,15 @@ describe('kiro driver', () => {
     expect(kiroDriver.envForAuth({ KIRO_API_KEY: 'k' })).toEqual({ KIRO_API_KEY: 'k' });
     expect(kiroDriver.envForAuth({})).toEqual({});
   });
+  it('passes the Kiro store locations the store sync uses to the child', () => {
+    // The child env is an allowlist, so the session tree kiro-store syncs
+    // ($KIRO_HOME/sessions) must be named explicitly when relocated.
+    expect(
+      kiroDriver.envForAuth({ XDG_DATA_HOME: '/x', KIRO_HOME: '/k', V2_KIRO_STORE_DIR: '/m' }),
+    ).toEqual({ XDG_DATA_HOME: '/x', KIRO_HOME: '/k' });
+  });
 
-  it('builds a resume invocation with --agent + --resume-id', () => {
+  it('builds a resume invocation on the same engine with --agent + --resume-id', () => {
     const inv = kiroDriver.buildResumeInvocation({
       sessionId: 'kiro-sess-9',
       answerMessage: 'the human said go',
@@ -188,6 +206,10 @@ describe('kiro driver', () => {
       'chat',
       '--no-interactive',
       '--trust-all-tools',
+      '--agent-engine',
+      'v2',
+      '--output-format',
+      'stream-json',
       '--agent',
       'aidlc',
       '--resume-id',
@@ -262,7 +284,7 @@ describe('opencode driver', () => {
   });
 });
 
-describe('Kiro session capture', () => {
+describe('Kiro session lookup', () => {
   it('lists sessions as JSON', () => {
     expect(buildKiroListSessions()).toEqual({
       command: 'kiro-cli',
@@ -270,29 +292,31 @@ describe('Kiro session capture', () => {
     });
   });
 
-  it('returns the newest session id for the cwd (by updatedAt)', () => {
-    const stdout = JSON.stringify([
-      {
-        cwd: '/other',
-        sessions: [{ sessionId: 'nope', updatedAt: '2026-06-29T23:00:00Z' }],
-      },
-      {
-        cwd: '/mnt/workspace',
-        sessions: [
-          { sessionId: 'older', updatedAt: '2026-06-29T10:00:00Z' },
-          { sessionId: 'newest', updatedAt: '2026-06-29T12:00:00Z' },
-        ],
-      },
-    ]);
-    expect(parseLatestKiroSession(stdout, '/mnt/workspace')).toBe('newest');
+  // Real 2.27 shape: one group per cwd; `source` names the store.
+  const listing = JSON.stringify([
+    {
+      cwd: '/other',
+      sessions: [{ sessionId: 'elsewhere', source: 'v2', updatedAt: '2026-10-06T08:00:00Z' }],
+    },
+    {
+      cwd: '/mnt/workspace',
+      sessions: [
+        { sessionId: 'parked-v2', source: 'v2', updatedAt: '2026-10-06T08:00:00Z' },
+        { sessionId: 'parked-classic', source: 'classic', updatedAt: '2026-10-01T08:00:00Z' },
+      ],
+    },
+  ]);
+
+  it('returns the store holding the session under the cwd', () => {
+    expect(parseKiroSessionSource(listing, '/mnt/workspace', 'parked-v2')).toBe('v2');
+    expect(parseKiroSessionSource(listing, '/mnt/workspace', 'parked-classic')).toBe('classic');
   });
 
-  it('returns null on unparseable output or no session for the cwd', () => {
-    expect(parseLatestKiroSession('not json', '/mnt/workspace')).toBeNull();
-    expect(parseLatestKiroSession(JSON.stringify([]), '/mnt/workspace')).toBeNull();
-    expect(
-      parseLatestKiroSession(JSON.stringify([{ cwd: '/x', sessions: [] }]), '/mnt/workspace'),
-    ).toBeNull();
+  it('returns null on unparseable output or a session not listed for the cwd', () => {
+    expect(parseKiroSessionSource('not json', '/mnt/workspace', 'parked-v2')).toBeNull();
+    expect(parseKiroSessionSource(JSON.stringify([]), '/mnt/workspace', 'parked-v2')).toBeNull();
+    expect(parseKiroSessionSource(listing, '/mnt/workspace', 'elsewhere')).toBeNull();
+    expect(parseKiroSessionSource(listing, '/mnt/workspace', 'missing')).toBeNull();
   });
 });
 
@@ -302,19 +326,6 @@ describe('Kiro credit capture', () => {
       command: 'kiro-cli',
       args: ['chat', '--no-interactive', '/usage'],
     });
-  });
-
-  it('parses the per-turn credits footer from a raw (ANSI-laden) stderr tail', () => {
-    // Real footer shape: dim ANSI wrapping, but the label+number are contiguous.
-    const tail = '\u001b[38;5;8m\n ▸ Credits: 0.03 • Time: 2s\n\n\u001b[0m';
-    expect(parseKiroCredits(tail)).toBeCloseTo(0.03);
-  });
-
-  it('takes the LAST credits footer (final turn) and returns null when absent', () => {
-    expect(parseKiroCredits('▸ Credits: 0.03 …\n▸ Credits: 0.11 …')).toBeCloseTo(0.11);
-    expect(parseKiroCredits('no footer here')).toBeNull();
-    expect(parseKiroCredits('')).toBeNull();
-    expect(parseKiroCredits(undefined)).toBeNull();
   });
 
   it('parses the $/credit overage rate out of /usage output', () => {

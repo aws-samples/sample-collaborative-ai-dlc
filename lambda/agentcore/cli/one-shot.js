@@ -14,11 +14,11 @@
 // Contract: never throws. Resolves
 //   { ok, text, cli, model, exitCode, metrics }
 // where `metrics` is a numeric bag ready for store.recordMetric (claude:
-// tokens from the stream-json result event; kiro: the stderr credit footer)
-// or null when the CLI reports nothing usable.
+// tokens from the stream-json result event; kiro: credits from its stream-json
+// metering) or null when the CLI reports nothing usable.
 
 import { mkdir } from 'node:fs/promises';
-import { getDriver, selectCli, parseKiroCredits } from './drivers.js';
+import { getDriver, selectCli } from './drivers.js';
 import { captureChild } from './spawn.js';
 import { resolveStageModel } from '../model-resolver.js';
 import {
@@ -27,6 +27,7 @@ import {
 } from './kiro-store.js';
 import { parseOpenCodeJsonl } from './opencode-parser.js';
 import { parseCodexJsonl } from './codex-parser.js';
+import { parseKiroJsonl } from './kiro-parser.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './opencode-store.js';
 import { cleanupCodexHome as defaultCleanupCodexHome } from './codex-store.js';
 import { isCredentialFailure } from './credential-errors.js';
@@ -77,19 +78,6 @@ export const parseClaudeOneShot = (stdout = '') => {
 // failure is diagnosable from the event log without container access.
 const SAMPLE_BYTES = 300;
 const sampleOf = (raw = '') => String(raw ?? '').slice(0, SAMPLE_BYTES);
-
-// Strip ANSI escape sequences + non-printing control chars from CLI stdout
-// (kiro-cli colorizes headless output). Keeps tab/newline/CR. Also removes
-// orphaned CSI color fragments some terminal layers leave behind.
-const stripAnsi = (text = '') =>
-  String(text ?? '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/\u001B\][\s\S]*?(?:\u0007|\u001B\\)/g, '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/(?:\u001B\[|\u009B)[0-9;?]*[ -/]*[@-~]/g, '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
-    .replace(/\[(?:\d{1,3}(?:;\d{1,3})*)?m/g, '');
 
 // Run one prompt, capture one answer. `requestedCli`/`cliModels` carry the
 // same Admin/project selection the orchestrator forwards for stages; `env`
@@ -149,12 +137,12 @@ export const runOneShotPrompt = async ({
       metrics: null,
     };
   }
-  // Kiro's SQLite conversation store: bracket exactly like resolve-conflict —
+  // Kiro's conversation store: bracket exactly like resolve-conflict —
   // restore (mount → local) before the spawn so we never run against a stale
   // local store after a microVM reap, persist after so lane conversations the
   // SAME local store holds are never lost to a later reap. The throwaway
   // one-shot session itself rides along; its distinct cwd keeps it out of the
-  // session-capture path (parseLatestKiroSession filters by cwd).
+  // workspace session list run-stage checks before a resume.
   if (cli === 'kiro') await restoreKiroStore({ env }).catch(() => false);
   const execute = () =>
     captureChild({
@@ -164,7 +152,6 @@ export const runOneShotPrompt = async ({
       cwd,
       prompt: invocation.prompt,
       promptViaStdin: invocation.promptViaStdin,
-      captureStderr: cli === 'kiro',
       timeoutMs,
       ...(spawnFn ? { spawnFn } : {}),
     });
@@ -212,6 +199,10 @@ export const runOneShotPrompt = async ({
         metrics: null,
       };
     }
+    // Kiro reports its failure as a late JSONL runError; the metadata and
+    // messages before it can fill the bounded sample, so sample the parsed
+    // error and keep the raw prefix only when no structured error exists.
+    const failure = cli === 'kiro' ? parseKiroJsonl(stdout).errors.join('\n') : '';
     return {
       ok: false,
       reason: 'cli_failed',
@@ -220,7 +211,7 @@ export const runOneShotPrompt = async ({
       model: model ?? null,
       exitCode,
       metrics: null,
-      sample: sampleOf(cli === 'kiro' ? stderr : stdout),
+      sample: sampleOf(failure || stdout),
     };
   }
 
@@ -237,28 +228,13 @@ export const runOneShotPrompt = async ({
       ...(text ? {} : { sample: sampleOf(stdout), resultSubtype }),
     };
   }
-  if (cli === 'opencode' || cli === 'codex') {
-    const parsed = cli === 'codex' ? parseCodexJsonl(stdout) : parseOpenCodeJsonl(stdout);
-    const text = parsed.text.trim();
-    return {
-      ok: Boolean(text),
-      reason: text ? null : 'empty_answer',
-      text,
-      cli,
-      model: model ?? null,
-      exitCode,
-      metrics: parsed.metrics,
-      ...(text
-        ? {}
-        : {
-            sample: sampleOf(parsed.errors.join('\n') || parsed.diagnostics.join('\n') || stdout),
-          }),
-    };
-  }
-  // Kiro: plain stdout answer (ANSI-stripped); the per-turn credit footer
-  // lands on stderr.
-  const text = stripAnsi(stdout).trim();
-  const credits = parseKiroCredits(stderr);
+  const parsed =
+    cli === 'codex'
+      ? parseCodexJsonl(stdout)
+      : cli === 'kiro'
+        ? parseKiroJsonl(stdout)
+        : parseOpenCodeJsonl(stdout);
+  const text = parsed.text.trim();
   return {
     ok: Boolean(text),
     reason: text ? null : 'empty_answer',
@@ -266,8 +242,12 @@ export const runOneShotPrompt = async ({
     cli,
     model: model ?? null,
     exitCode,
-    metrics: credits != null ? { credits } : null,
-    ...(text ? {} : { sample: sampleOf(stderr) }),
+    metrics: parsed.metrics,
+    ...(text
+      ? {}
+      : {
+          sample: sampleOf(parsed.errors.join('\n') || parsed.diagnostics.join('\n') || stdout),
+        }),
   };
 };
 

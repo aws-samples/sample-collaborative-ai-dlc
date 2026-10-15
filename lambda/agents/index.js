@@ -20,7 +20,6 @@ import { DynamoDBDocumentClient, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParametersCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
 import { PricingClient, GetProductsCommand } from '@aws-sdk/client-pricing';
-import { randomUUID } from 'node:crypto';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -44,7 +43,13 @@ import {
   isEnvironmentResolutionError,
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
-import { runtimeTargetInput } from '../shared/runtime-target.js';
+import {
+  resolveRuntimeTarget,
+  runtimeSdkInput,
+  runtimeTargetInput,
+} from '../shared/runtime-target.js';
+import { withDisposableSession } from '../shared/runtime-session.js';
+import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
 import {
   AGENT_CREDENTIAL_PROVIDERS,
   credentialProviderForCli,
@@ -64,6 +69,9 @@ import {
 import { handleNativeInteractionProbe } from './native-interaction-probe.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+// Owner of the release of every one-shot probe session on an Instances
+// runtime (shared/runtime-session.js withDisposableSession).
+const sessionCleanupStore = createSessionCleanupStore({ ddb });
 const ssm = new SSMClient({ region: process.env.AWS_REGION || 'us-east-1' });
 // Model discovery must list the profiles of the region the CLIs invoke.
 const bedrock = new BedrockClient({
@@ -103,52 +111,75 @@ export const fetchRuntimeCapabilities = async (
   projectId = null,
 ) => {
   if (!runtimeTarget.agentRuntimeArn) return null;
-  const runtimeSessionId = randomUUID();
   try {
-    let runtimeCapabilities;
-    if (Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)) {
-      const probe = await agentcore.send(
-        new InvokeAgentRuntimeCommand({
-          ...runtimeTarget,
-          runtimeSessionId,
-          contentType: 'application/json',
-          accept: 'application/json',
-          payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
-        }),
-      );
-      runtimeCapabilities = JSON.parse(await probe.response.transformToString());
-    }
-    const { agentCredentialGrant } = await prepareAgentInvocation(
+    return await withDisposableSession(
       {
-        purpose: 'capabilities',
-        projectId,
-        credentialBindings,
-        runtimeCapabilities,
+        client: agentcore,
+        target: runtimeTarget,
+        cleanupStore: sessionCleanupStore,
+        source: 'capabilities-probe',
+        context: { projectId },
       },
-      { ssm },
+      (runtimeSessionId) =>
+        probeRuntimeCapabilities({
+          runtimeTarget: runtimeSdkInput(runtimeTarget),
+          runtimeSessionId,
+          credentialBindings,
+          projectId,
+        }),
     );
-    const res = await agentcore.send(
+  } catch (e) {
+    logger.error('[capabilities] runtime invoke failed', e);
+    return null;
+  }
+};
+
+const probeRuntimeCapabilities = async ({
+  runtimeTarget,
+  runtimeSessionId,
+  credentialBindings,
+  projectId,
+}) => {
+  let runtimeCapabilities;
+  if (Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)) {
+    const probe = await agentcore.send(
       new InvokeAgentRuntimeCommand({
         ...runtimeTarget,
         runtimeSessionId,
         contentType: 'application/json',
         accept: 'application/json',
-        payload: Buffer.from(
-          JSON.stringify({
-            command: 'capabilities',
-            ...(credentialBindings ? { credentialBindings } : {}),
-            ...(projectId ? { projectId } : {}),
-            ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
-          }),
-        ),
+        payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
       }),
     );
-    const text = res.response ? await res.response.transformToString() : '';
-    return text ? JSON.parse(text) : null;
-  } catch (e) {
-    logger.error('[capabilities] runtime invoke failed', e);
-    return null;
+    runtimeCapabilities = JSON.parse(await probe.response.transformToString());
   }
+  const { agentCredentialGrant } = await prepareAgentInvocation(
+    {
+      purpose: 'capabilities',
+      projectId,
+      credentialBindings,
+      runtimeCapabilities,
+    },
+    { ssm },
+  );
+  const res = await agentcore.send(
+    new InvokeAgentRuntimeCommand({
+      ...runtimeTarget,
+      runtimeSessionId,
+      contentType: 'application/json',
+      accept: 'application/json',
+      payload: Buffer.from(
+        JSON.stringify({
+          command: 'capabilities',
+          ...(credentialBindings ? { credentialBindings } : {}),
+          ...(projectId ? { projectId } : {}),
+          ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
+        }),
+      ),
+    }),
+  );
+  const text = res.response ? await res.response.transformToString() : '';
+  return text ? JSON.parse(text) : null;
 };
 
 // Probe custom MCP servers by invoking the runtime's `verify-mcp` command IN the
@@ -156,7 +187,8 @@ export const fetchRuntimeCapabilities = async (
 // egress applies). Forwards the two-tier config + tier-scoped just-typed secrets
 // so the runtime resolves `${VAR}` refs (tier-bound, fail-closed) exactly as the
 // real agent would. Returns the runtime's { results } | { error, issues }, or a
-// { error } when no runtime is configured / the invoke fails.
+// { error } when no runtime is configured / the invoke fails. A fresh session
+// per request; on Instances it is released right after the probe.
 export const verifyMcpServers = async ({
   mcpServersByTier,
   projectId,
@@ -167,23 +199,34 @@ export const verifyMcpServers = async ({
     return { error: 'AgentCore runtime not configured' };
   }
   try {
-    const res = await agentcore.send(
-      new InvokeAgentRuntimeCommand({
-        ...runtimeTarget,
-        runtimeSessionId: randomUUID(),
-        contentType: 'application/json',
-        accept: 'application/json',
-        payload: Buffer.from(
-          JSON.stringify({
-            command: 'verify-mcp',
-            mcpServersByTier,
-            ...(projectId ? { projectId } : {}),
-            ...(unsavedSecrets ? { unsavedSecrets } : {}),
+    const text = await withDisposableSession(
+      {
+        client: agentcore,
+        target: runtimeTarget,
+        cleanupStore: sessionCleanupStore,
+        source: 'verify-mcp',
+        context: { projectId: projectId ?? null },
+      },
+      async (runtimeSessionId) => {
+        const res = await agentcore.send(
+          new InvokeAgentRuntimeCommand({
+            ...runtimeSdkInput(runtimeTarget),
+            runtimeSessionId,
+            contentType: 'application/json',
+            accept: 'application/json',
+            payload: Buffer.from(
+              JSON.stringify({
+                command: 'verify-mcp',
+                mcpServersByTier,
+                ...(projectId ? { projectId } : {}),
+                ...(unsavedSecrets ? { unsavedSecrets } : {}),
+              }),
+            ),
           }),
-        ),
-      }),
+        );
+        return res.response ? res.response.transformToString() : '';
+      },
     );
-    const text = res.response ? await res.response.transformToString() : '';
     return text ? JSON.parse(text) : { error: 'Empty response from runtime' };
   } catch (e) {
     logger.error('[verify-mcp] runtime invoke failed', e);
@@ -257,7 +300,13 @@ export const resolveProjectRuntimeTarget = async (g, projectId) => {
       compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
     },
   });
-  return runtimeTargetInput({ environment }, fallbackRuntimeArn);
+  // SDK-shaped, plus the capacity provider on Instances so probes against it
+  // get a cleanup owner (callers pass runtimeSdkInput(target) to the SDK).
+  const { capacityProviderArn } = resolveRuntimeTarget({ environment }, fallbackRuntimeArn);
+  return {
+    ...runtimeTargetInput({ environment }, fallbackRuntimeArn),
+    ...(capacityProviderArn ? { capacityProviderArn } : {}),
+  };
 };
 
 const projectRuntimeAccess = async (event, projectId, { requireEditor = false } = {}) => {
@@ -367,6 +416,7 @@ const authenticationSettings = () =>
     agentcore,
     logger,
     resolveTarget: (projectId) => withNeptune((g) => resolveProjectRuntimeTarget(g, projectId)),
+    sessionCleanupStore,
   });
 const authenticationView = (request) => authenticationSettings().authenticationView(request);
 const reviewedCredentialUpdate = (request) =>

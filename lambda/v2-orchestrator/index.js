@@ -31,7 +31,6 @@ import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
-  StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
@@ -50,7 +49,7 @@ import {
   planSegments,
   stageInstanceId as planStageInstanceId,
 } from '../shared/v2-execution-plan.js';
-import { humanTaskMatchesOwner, isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
+import { isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import {
   evaluateGatePreconditions,
   mergeFindings,
@@ -67,6 +66,7 @@ import {
 } from '../shared/stage-loopback.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
+import { sdkTarget, stopSession as stopSharedSession } from '../shared/runtime-session.js';
 import {
   awaitEngineGate,
   parseChoice,
@@ -77,7 +77,9 @@ import {
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
+import { bindGateCallback, ownsAnsweredGate, unparkGate } from './gate-callback.js';
 import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
+import { intentSessionIdFor } from '../shared/runtime-session-ids.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -127,7 +129,7 @@ const MAX_STAGE_APPROVAL_DETAIL_BYTES = 300 * 1024;
 
 // AgentCore requires a session id >= 33 chars; reuse ONE per intent so the
 // checkout stays warm across init-ws + every run-stage (matches scripts/phaseb.sh).
-const sessionIdFor = (intentId) => `aidlc-intent-${intentId}`.padEnd(33, '0');
+const sessionIdFor = intentSessionIdFor;
 
 // One AgentCore /invocations call. Returns the parsed JSON body the command
 // handler returned (init-ws / run-stage). Throws on a non-2xx transport.
@@ -138,7 +140,7 @@ const defaultInvokeRuntime = async (
 ) => {
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
-      ...target,
+      ...sdkTarget(target),
       runtimeSessionId: sessionId,
       contentType: 'application/json',
       accept: 'application/json',
@@ -162,22 +164,14 @@ const defaultInvokeRuntime = async (
   return parsed;
 };
 
-// Free a parked stage's warm microVM compute (D1 release-on-park). Resume
-// re-mounts the persistent session storage, so the parked CLI conversation is
-// not lost. Best-effort: a failed/already-stopped session must not break resume.
-const stopRuntimeSession = async (sessionId, target = { agentRuntimeArn: RUNTIME_ARN() }) => {
-  try {
-    await agentcore.send(
-      new StopRuntimeSessionCommand({
-        runtimeSessionId: sessionId,
-        ...target,
-      }),
-    );
-    return { stopped: true };
-  } catch (e) {
-    return { stopped: false, error: e.message };
-  }
-};
+// Free a parked stage's warm compute (D1 release-on-park). This is a STOP, not
+// a release: the persistent workspace (session storage on microVMs, the EBS
+// volume on Instances) survives and resume re-attaches it, so the parked CLI
+// conversation is not lost — see the retention policy in
+// shared/runtime-session.js. Best-effort: a failed/already-stopped session must
+// not break resume.
+const stopRuntimeSession = async (sessionId, target = { agentRuntimeArn: RUNTIME_ARN() }) =>
+  stopSharedSession({ client: agentcore, target, sessionId });
 
 const streamToString = async (body) => {
   if (typeof body.transformToString === 'function') return body.transformToString();
@@ -873,7 +867,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             planStageInstanceId(namespace, stage.stageId, unitSlug, sectionIndex)),
         store,
         suffix,
-        ids: { projectId, intentId, executionId },
+        ids: { projectId, intentId, executionId, orchestratorRunId: runId },
         workflowId,
         workflowVersion,
         ...(meta.aidlcRepoRef ? { aidlcRepoRef: meta.aidlcRepoRef } : {}),
@@ -951,59 +945,47 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         const expectedStageInstanceId = result.stageInstanceId ?? stage.stageInstanceId ?? null;
         const expectedCallbackOwner = `stage:${expectedStageInstanceId ?? label}`;
         const callbackBound = await ctxArg.step(`bind-callback-${humanTaskId}`, () =>
-          store.setGateCallbackId({
+          bindGateCallback(store, {
             executionId,
             humanTaskId,
             callbackId,
             stageInstanceId: expectedStageInstanceId,
             callbackOwner: expectedCallbackOwner,
+            unitSlug,
+            sectionIndex,
           }),
         );
         let answeredEarly = false;
         if (!callbackBound) {
-          // The answer can win the CAS immediately before this bind. In that
-          // case setGateCallbackId returns null because the gate is no longer
-          // pending, but no callback is needed: resume directly with the
-          // persisted answer. Any still-pending, differently owned, or already
-          // bound gate remains an invariant violation.
+          // bindGateCallback returns an answered gate owned by this stage, so a
+          // current bind is null only on a real conflict. Deployed versions
+          // checkpointed null for an answer that won the pending-only bind and
+          // then recorded this step; replaying those runs must find the same
+          // step name at the same position.
           const gateAfterBindFailure = await ctxArg.step(
             `gate-after-bind-failure-${humanTaskId}`,
             () => store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
           );
           if (gateAfterBindFailure?.status === 'superseded') {
-            ctx.logger?.info?.('run retired before gate callback bind', {
-              intentId,
-              humanTaskId,
-            });
+            logger.info('run retired before gate callback bind', { humanTaskId });
             return {
               state: 'TERMINAL',
               value: { ok: false, reason: 'retired', intentId, humanTaskId },
             };
           }
-          const ownsExpectedStage = humanTaskMatchesOwner({
-            task: gateAfterBindFailure,
+          answeredEarly = ownsAnsweredGate(gateAfterBindFailure, {
+            callbackId,
+            callbackOwner: expectedCallbackOwner,
             stageInstanceId: expectedStageInstanceId,
             unitSlug,
             sectionIndex,
           });
-          const callbackIdCompatible =
-            gateAfterBindFailure?.callbackId == null ||
-            gateAfterBindFailure.callbackId === callbackId;
-          const callbackOwnerCompatible =
-            gateAfterBindFailure?.callbackOwner == null ||
-            gateAfterBindFailure.callbackOwner === expectedCallbackOwner;
-          answeredEarly =
-            isHumanTaskAnswerStatus(gateAfterBindFailure?.status) &&
-            Boolean(gateAfterBindFailure.answeredAt || gateAfterBindFailure.answer) &&
-            ownsExpectedStage &&
-            callbackIdCompatible &&
-            callbackOwnerCompatible;
           if (!answeredEarly) {
             return {
               state: 'TERMINAL',
               value: await fail(
                 'gate_callback_conflict',
-                `gate ${humanTaskId} bind failed without an unbound answer owned by this stage`,
+                `gate ${humanTaskId} is already bound to a different stage callback`,
               ),
             };
           }
@@ -1076,7 +1058,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // over the fresh row — field incident). Verify we still own the run
         // BEFORE dispatching anything.
         const ownerRunId = await ctxArg.step(`run-owner-${humanTaskId}`, async () => {
-          const currentMeta = await store.getExecution(executionId);
+          const currentMeta = await store.getExecution(executionId, { consistentRead: true });
           return currentMeta?.orchestratorRunId ?? null;
         });
         if (runId && ownerRunId && ownerRunId !== runId) {
@@ -1092,32 +1074,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Credential resolution only permits active executions. Unpark META
         // before AgentCore restores a released session's workspace, otherwise
         // the re-clone is rejected while the execution still reads WAITING.
-        const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, async () => {
-          // Lane gates never park META: another lane may own its single pending
-          // gate pointer, and this lane's META status has remained RUNNING. The
-          // conditional ownership update leaves that status and pointer intact.
-          try {
-            if (unitSlug) {
-              await store.updateExecution({
-                executionId,
-                orchestratorRunId: runId,
-                ifOrchestratorRunId: runId,
-              });
-              return true;
-            }
-            await store.updateExecution({
-              executionId,
-              status: 'RUNNING',
-              pendingHumanTaskId: null,
-              fromStatus: 'WAITING',
-              ifOrchestratorRunId: runId,
-            });
-            return true;
-          } catch (e) {
-            if (e?.name === 'ConditionalCheckFailedException') return false;
-            throw e;
-          }
-        });
+        const ownedUnpark = await ctxArg.step(`gate-unpark-${humanTaskId}`, () =>
+          unparkGate(store, { executionId, humanTaskId, runId, unitSlug }),
+        );
         if (!ownedUnpark) {
           logger.info('run retired while unparking gate', { humanTaskId });
           return {
@@ -1132,6 +1091,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         });
       }
 
+      if (result?.reason === 'retired') {
+        return { state: 'TERMINAL', value: { ok: false, reason: 'retired', intentId } };
+      }
       if (result?.state === 'FAILED') {
         return {
           state: 'FAILED',
@@ -1351,7 +1313,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             );
             if (fanoutSection) {
               unitPlanForGate = await ctx.step(`load-unit-plan-${stage.stageId}${suffix}`, () =>
-                store.getUnitPlan(executionId).catch(() => null),
+                // Read-after-write: promote-units saved this plan just now.
+                store.getUnitPlan(executionId, { consistentRead: true }).catch(() => null),
               );
             }
           }

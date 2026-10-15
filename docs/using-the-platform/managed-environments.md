@@ -495,6 +495,184 @@ Environment variables and build commands cannot replace protected runtime
 behavior, inject secrets, change the runtime user, entrypoint, command, port,
 or health contract, or overwrite protected platform variables.
 
+### Compute types: microVMs and Instances
+
+The **compute type** decides where and how an environment's agent sessions
+run:
+
+- **microVMs** (default) — serverless AgentCore microVMs with managed session
+  storage (1 GiB at `/mnt/workspace`), billed per session.
+- **Instances** — EC2 managed instances in the platform account, provisioned
+  through AgentCore capacity providers, with a persistent EBS workspace volume
+  per session, account-level controls (Savings Plans, ODCRs, data stays
+  in-account) and sessions of up to 14 days.
+
+The **architecture** (`arm64` or `x86_64`) is a separate choice: it decides
+which image is built and which catalog tool builds apply, independently of
+where the image runs.
+
+An environment's compute is the pair `{ type, architecture }` — the compute
+type (`microvms` | `instances`) and the CPU architecture (`arm64` | `x86_64`)
+are independent axes. Which combinations a deployment can build and run is
+exposed by `GET /environments/capabilities` as a matrix
+(`combinations[].{type, architecture, available, reason?, allowedInstanceTypes?}`),
+and the **Compute** selector renders exactly the available cells. Today the
+matrix is:
+
+| type \ architecture | arm64                           | x86_64                                                 |
+| ------------------- | ------------------------------- | ------------------------------------------------------ |
+| `microvms`          | default                         | not offered by the service yet                         |
+| `instances`         | with `enable_instances_compute` | with `enable_instances_compute` + the amd64 core image |
+
+#### Enable it on the deployment
+
+The compute type is opt-in per deployment:
+
+```hcl
+enable_instances_compute = true
+
+# Optional overrides (these are the defaults)
+instances_allowed_instance_types       = ["m6i.large"] # x86_64; burstable (t-family) is not supported
+instances_allowed_instance_types_arm64 = ["m7g.large"] # arm64 (Graviton); [] disables arm64 Instances
+instances_workspace_gib                = 50
+```
+
+Enabling the flag provisions the x86_64 (amd64) build of the platform core
+image and the VPC wiring the instances attach to, and grants the status lambda
+the capacity-provider provisioning permissions. The Terraform variables are the
+only source of this configuration: both the API (capability matrix and draft
+validation) and the status poller (capacity-provider creation) read the same
+values, and the Lambda code has no defaults of its own. When the flag is off (the default), the
+Instances cells are unavailable in the capability matrix, the compute selector
+only offers microVMs, and the API rejects Instances drafts with
+`INSTANCES_COMPUTE_NOT_CONFIGURED`.
+
+Turning the flag **off again** after Instances environments have been used
+does not destroy anything that live runtimes depend on: the capacity-provider
+operator role is created unconditionally (capacity providers are retained and
+keep referencing it), and existing capacity providers, runtimes, and published
+revisions are left in place. New Instances drafts are refused, and no new
+image build of an existing Instances environment is admitted until the flag is
+re-enabled (see below).
+Workspace cleanup is not gated by the flag: the poller keeps its
+`DeleteCapacityProviderSession` permission, so queued releases still complete
+and intents on retained Instances runtimes can still be deleted.
+An instance family is built for one architecture only, so each architecture
+has its own allowlist; the capability matrix reports the list per cell, and an
+architecture whose list is empty is reported as `NO_INSTANCE_TYPES` and cannot
+be selected.
+Changing an allowlist or `instances_workspace_gib`
+produces a new capacity provider on the next runtime creation; runtimes
+created earlier keep the provider they were built with.
+
+**Build admission.** Every new image build of an existing environment —
+**Build**, **Retry**, **Rebuild** and the bulk rebuild — is checked against
+the same capability matrix before anything is created: if the environment's
+compute cell is unavailable on the deployment (flag off, its architecture's
+allowlist empty, or the x86_64 core image missing), the request is rejected
+with the cell's code (`INSTANCES_COMPUTE_NOT_CONFIGURED`, `NO_INSTANCE_TYPES`,
+`AMD64_CORE_IMAGE_MISSING`) and no revision, build context or CodeBuild run is
+created. A bulk rebuild that names environments explicitly is rejected as a
+whole and lists the unbuildable ones; the implicit "everything with an update"
+rebuild skips them and reports them under `skipped`. Saving a draft is not a
+build and stays allowed. Admission only gates new builds: published
+revisions, intents already pinned to a snapshot (including resume and
+rewind), and workspace cleanup keep working.
+
+#### Create an Instances environment
+
+With the flag enabled, **New environment** shows a **Compute** selector:
+
+- one entry per available cell of the capability matrix, for example
+  **Serverless microVMs (arm64)**, **EC2 Instances (arm64)** and
+  **EC2 Instances (x86_64)**. Instances entries list the instance types the
+  deployment allows for that architecture.
+
+Both the compute type and the architecture are fixed at creation and cannot
+be changed afterwards. The architecture — not the compute type — carries the
+build restrictions: an **x86_64** environment currently must derive directly
+from the **Standard** base (the build swaps in the published core revision's
+x86_64 image variant) and cannot select catalog tools, which are built for
+arm64 only today; use apt packages and restricted build commands under
+Advanced settings instead. An arm64 Instances environment has none of these
+restrictions.
+
+The build, security review, and publish flows are the same on both compute
+types, with one difference on Instances: runtime validation first has to
+provision an EC2 instance, so a cold start can take several minutes. The revision stays
+`VERIFYING` while the poller re-attaches to the same validation session until
+the instance is up (bounded by `MANAGED_INSTANCES_VALIDATION_MAX_POLLS`,
+30 polls by default). The poll runs every minute and can outlast that
+interval, so each revision's verification is leased to one poll at a time;
+only the lease holder creates, reuses or releases the validation session. The
+lease holder adopts a session retained by an earlier poll before it does
+anything else, so every way the validation can end, including a failed
+endpoint check, releases that session. Ending a validation is recorded before
+it is irreversible: the outcome is written together with retiring the session
+id (it is never invoked again), then the session is deleted or queued for
+cleanup, then the revision becomes `READY` or `FAILED`. A poll that finds a
+recorded outcome finishes it instead of validating again, so a failed write or
+an interrupted poll never reuses a released session and never loses its
+cleanup.
+
+#### Persistent workspaces and cost
+
+Each Instances session attaches a dedicated EBS workspace volume (gp3,
+`instances_workspace_gib`, 50 GiB by default) mounted at `/mnt/workspace`. The
+volume survives session stops, idle timeouts, and instance lifetimes — an
+intent can resume exactly where it left off, including across parallel unit
+lanes, which each get their own session and volume.
+
+Because the volume persists, it also keeps billing until its session is
+explicitly deleted. The platform distinguishes **stopping** a session (the
+compute ends, the workspace is retained and re-attached by the next invocation
+of the same session id) from **releasing** it (the workspace is deleted). The
+volume retention policy is explicit and bound to the intent's lifetime:
+
+| Event                                                      | Operation    | Workspace volume                                     |
+| ---------------------------------------------------------- | ------------ | ---------------------------------------------------- |
+| A stage is parked / a unit lane finishes                   | stop         | retained — resume re-attaches it                     |
+| A run ends (`SUCCEEDED` / `CANCELLED`)                     | stop         | retained — rewind relaunches into the same workspace |
+| Rewind / relaunch                                          | stop         | retained — re-attached by session id                 |
+| Compose, discussion assist, Quorum edit                    | stop at most | retained with the intent — the ids are reused        |
+| The intent is permanently deleted                          | **release**  | deleted with the intent                              |
+| Environment runtime validation ends                        | **release**  | deleted (disposable session)                         |
+| A space probe ends (capabilities, MCP or connection check) | **release**  | deleted right after the probe                        |
+
+A workspace is part of the intent's state for as long as the intent exists:
+a finished run can be rewound and a parked stage resumed, and both rely on
+the checkout and conversation state on the volume. On deletion, every
+session of the intent is stopped and released: the main session, all unit-lane
+sessions (including lanes from earlier plans), every compose session, the
+Quorum-edit session and one session per discussion thread. Each of these is
+derived from a record that exists before the session is first invoked (unit,
+compose and Quorum-edit rows, discussion threads), so none is missed. The
+auxiliary sessions are not released earlier because their ids are reused, and
+a deleted Instances session cannot be started again.
+
+Space-level probes (CLI capabilities, **Test** on MCP servers and on an agent
+connection) open a fresh session against the space's environment. On
+Instances the probe first records its cleanup as durable work, deferred by 15
+minutes so the poller does not race the probe, then runs, then deletes the
+session and removes the record. If the response is lost or the delete fails,
+the record stays and the poller deletes the session after the deferral. If
+the record cannot be written, the probe does not run. The fallback
+authentication qualification never opens a session on Instances: it uses the
+authentication support the revision's validation recorded, and asks to
+republish the environment if none was recorded. A release that
+fails for any reason other than the session already being gone is queued as
+durable cleanup work (`SESSION_CLEANUP#` records on the environment registry
+table) and retried by the environments status poller until the volume is gone
+— the same mechanism covers validation sessions. Whoever holds a session id
+keeps it until the release is completed or queued: if queueing itself fails,
+an intent delete returns `503` with nothing deleted, and a validation stays
+`VERIFYING` with its session until the next poll, so the identity of a volume
+is never dropped.
+
+EC2 instances themselves start on demand and are reclaimed by the capacity
+provider; you pay for instance time while sessions are active plus EBS storage
+for volumes of intents that still exist.
+
 ### What an environment build verifies
 
 The generated Dockerfile:
@@ -509,7 +687,8 @@ The generated Dockerfile:
 
 The build then checks:
 
-- ARM64 architecture and the pinned base digest.
+- The target architecture (arm64, or x86_64 for Instances environments) and
+  the pinned base digest.
 - Protected runtime files against the base.
 - Non-root execution and writable workspace behavior.
 - The generated SPDX SBOM.

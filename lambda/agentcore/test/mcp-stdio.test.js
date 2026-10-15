@@ -8,6 +8,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { createProcessStore } from '../../shared/v2-process-store.js';
 import { createV2Table, deleteV2Table, makeDdb } from './helpers/v2-table.js';
 import { contextFromEnv, validateStartupContext } from '../mcp/startup-context.js';
+import { buildMcpConfig } from '../stage-materializer.js';
 
 const entrypoint = fileURLToPath(new URL('./fixtures/mcp-stdio-entry.js', import.meta.url));
 const transports = [];
@@ -226,6 +227,78 @@ describe('MCP startup read retries', () => {
 });
 
 describe('MCP stdio transport', () => {
+  it.each(['current', 'replaced', 'cancelled'])(
+    'carries stage ownership from MCP configuration into question writes: %s run',
+    async (owner) => {
+      const executionId = `${id}-${owner}`;
+      const store = createProcessStore({ ddb: db.doc, tableName: id });
+      await store.createExecution({
+        executionId,
+        intentId: id,
+        projectId: id,
+        status: owner === 'cancelled' ? 'CANCELLED' : 'RUNNING',
+        orchestratorRunId: owner === 'replaced' ? 'run-new' : 'run1',
+      });
+      await store.putStage({
+        executionId,
+        stageInstanceId: 'si-owned',
+        stageId: 'design',
+        state: 'RUNNING',
+        stageCallbackId: 'cb1',
+      });
+      if (owner === 'current') {
+        await store.updateExecution({
+          executionId,
+          projectId: id,
+          credentialBinding: { provider: 'bedrock', source: 'user', userId: 'u-owned' },
+          ownership: {
+            orchestratorRunId: 'run1',
+            stageCallbackId: 'cb1',
+            stageInstanceId: 'si-owned',
+          },
+        });
+      }
+      const config = buildMcpConfig({
+        mcpEntry: entrypoint,
+        scope: {
+          executionId,
+          intentId: id,
+          projectId: id,
+          stageId: 'design',
+          stageInstanceId: 'si-owned',
+          role: 'author',
+          orchestratorRunId: 'run1',
+          stageCallbackId: 'cb1',
+        },
+        env: { ...env, V2_QUESTION_POLL_MS: '1', V2_QUESTION_PARK_GRACE_MS: '1' },
+      });
+      const { client, transport } = child(config.mcpServers.aidlc.env);
+      await client.connect(transport);
+      const result = await client.callTool({
+        name: 'ask_question',
+        arguments: {
+          questions: [{ text: 'Proceed?', type: 'single', options: [{ label: 'Yes' }] }],
+        },
+      });
+      const records = await store.getExecutionRecords(executionId);
+      if (owner === 'current') {
+        expect(result.isError).not.toBe(true);
+        expect(records.humanTasks).toHaveLength(1);
+        expect(records.humanTasks[0]).toMatchObject({
+          orchestratorRunId: 'run1',
+          stageCallbackId: 'cb1',
+        });
+        expect(records.stages[0].state).toBe('WAITING_FOR_HUMAN');
+        expect(records.meta.status).toBe('WAITING');
+      } else {
+        expect(result.isError).toBe(true);
+        expect(records.humanTasks).toHaveLength(0);
+        expect(records.stages[0].state).toBe('RUNNING');
+        expect(records.meta.status).toBe(owner === 'cancelled' ? 'CANCELLED' : 'RUNNING');
+      }
+    },
+  );
+
   it('preserves trusted persona identity and policy scope during startup parsing', () => {
     const policy = { learnings: 'off', summaryConfirmation: 'required', planApproval: 'required' };
     const { scope } = contextFromEnv({

@@ -407,8 +407,10 @@ class NativeExecutionWiring(unittest.TestCase):
 
     def test_build_targets_match_handlers_and_sdk_versions(self):
         package = json.loads((REPO / "lambda/native-runtime-control/package.json").read_text())
+        root_package = json.loads((REPO / "package.json").read_text())
         for package_name in ["client-s3", "client-ssm", "client-lambda", "client-secrets-manager"]:
-            self.assertEqual(package["dependencies"][f"@aws-sdk/{package_name}"], "^3.1092.0")
+            key = f"@aws-sdk/{package_name}"
+            self.assertEqual(package["dependencies"][key], root_package["devDependencies"][key])
         for target, entry in [
             ("execution-worker", "execution-worker"),
             ("execution-credentials", "execution-credentials-entry"),

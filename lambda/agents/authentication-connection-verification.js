@@ -5,6 +5,8 @@ import { authModeDescriptor } from '../shared/agent-auth-providers.js';
 import { connectionBinding } from '../shared/agent-auth-selection-strategies.js';
 import { AGENT_AUTH_MODES } from '../shared/agent-command-registry.js';
 import { prepareAgentInvocation } from '../shared/agent-credential-service.js';
+import { withDisposableSession } from '../shared/runtime-session.js';
+import { runtimeSdkInput } from '../shared/runtime-target.js';
 
 // Responses carry no runtime, grant or provider text; operators correlate through the logs.
 const STAGE_ERRORS = Object.freeze({
@@ -21,9 +23,10 @@ const STAGE_ERRORS = Object.freeze({
 const response = (statusCode, body) => ({ statusCode, body });
 
 // Checks an unsaved connection in the runtime that would use it. The probe, qualification and
-// check share one fresh session, so they all inspect the image deployed right now.
+// check share one fresh session, so they all inspect the image deployed right now. On an
+// Instances runtime that session is owned (and released) by withDisposableSession.
 export const createConnectionVerifier =
-  ({ agentcore, ssm, repository, logger }) =>
+  ({ agentcore, ssm, repository, logger, cleanupStore = null }) =>
   async ({ mode, mechanism, configuration, projectId = null, runtimeTarget }) => {
     if (!runtimeTarget?.agentRuntimeArn)
       return response(503, { error: 'Agent runtime is not configured' });
@@ -42,12 +45,34 @@ export const createConnectionVerifier =
         }),
         (await repository.getPolicy()).revision,
       );
-      const runtimeSessionId = randomUUID();
+      return await withDisposableSession(
+        {
+          client: agentcore,
+          target: runtimeTarget,
+          cleanupStore,
+          source: 'verify-connection',
+          context: { projectId },
+        },
+        (runtimeSessionId) => checkConnection({ runtimeSessionId, credentialBinding }),
+      );
+    } catch (error) {
+      if (error?.code === 'AGENT_AUTH_INVALID') return response(400, { error: error.message });
+      const rejected = stage === 'runtime' && error?.name === 'RuntimeClientError';
+      logger.error('Connection verification request failed', {
+        mode,
+        stage,
+        runtimeRejected: rejected,
+        requestId: error?.$metadata?.requestId,
+      });
+      return response(502, { error: STAGE_ERRORS[rejected ? 'rejected' : stage] });
+    }
+
+    async function checkConnection({ runtimeSessionId, credentialBinding }) {
       const invoke = async (payload) => {
         stage = 'runtime';
         const result = await agentcore.send(
           new InvokeAgentRuntimeCommand({
-            ...runtimeTarget,
+            ...runtimeSdkInput(runtimeTarget),
             runtimeSessionId,
             contentType: 'application/json',
             accept: 'application/json',
@@ -85,15 +110,5 @@ export const createConnectionVerifier =
         agentCredentialGrant,
       });
       return response(200, result ?? { verified: false, error: 'Empty response from runtime' });
-    } catch (error) {
-      if (error?.code === 'AGENT_AUTH_INVALID') return response(400, { error: error.message });
-      const rejected = stage === 'runtime' && error?.name === 'RuntimeClientError';
-      logger.error('Connection verification request failed', {
-        mode,
-        stage,
-        runtimeRejected: rejected,
-        requestId: error?.$metadata?.requestId,
-      });
-      return response(502, { error: STAGE_ERRORS[rejected ? 'rejected' : stage] });
     }
   };

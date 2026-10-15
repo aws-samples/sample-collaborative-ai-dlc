@@ -138,12 +138,13 @@ const stageStarts = () => invokes.filter((p) => p.command === 'run-stage-start')
 const eventTypes = () => deps.store.appendEvent.mock.calls.map((c) => c[0].type);
 
 // Answer stage a's validation gate with `answer` (gate-pre returns null, then
-// the post-callback re-read returns the decided gate). Later gates (a rejected
+// both the bind-time and post-callback reads return the decided gate). Later gates (a rejected
 // skip means b runs and gates too) auto-approve via the default.
 const answerValidationGate = (answer) => {
   deps.store.getHumanTask = vi
     .fn()
     .mockResolvedValueOnce(null)
+    .mockResolvedValueOnce({ humanTaskId: 'eg-validation-si-a-0', status: 'approved', answer })
     .mockResolvedValueOnce({ humanTaskId: 'eg-validation-si-a-0', status: 'approved', answer })
     .mockResolvedValue({
       humanTaskId: 'eg-later',

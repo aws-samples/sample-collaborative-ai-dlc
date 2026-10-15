@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Boxes, Check, Loader2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { ComputeBadge } from '@/components/admin/tabs/environment-builder/ComputeSelector';
 import { Button } from '@/components/ui/button';
 import {
   Select,
@@ -173,7 +174,10 @@ export function EnvironmentTab({ project, canEdit, onProjectUpdated }: Props) {
             <SelectContent>
               {environments.map((environment) => (
                 <SelectItem key={environment.environmentId} value={environment.environmentId}>
-                  {environment.name}
+                  <span className="flex items-center gap-2">
+                    <span>{environment.name}</span>
+                    <ComputeBadge compute={environment.compute} />
+                  </span>
                 </SelectItem>
               ))}
             </SelectContent>
@@ -185,6 +189,7 @@ export function EnvironmentTab({ project, canEdit, onProjectUpdated }: Props) {
             <div className="space-y-3 border-t pt-4">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs font-medium">{detail.environment.name}</span>
+                <ComputeBadge compute={detail.environment.compute} />
                 <Badge variant="secondary" className="text-[10px]">
                   compatibility {detail.publishedRevision.runtimeCompatibilityVersion}
                 </Badge>

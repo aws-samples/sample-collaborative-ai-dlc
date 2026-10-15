@@ -92,6 +92,20 @@ describe('OpenCode JSONL parser', () => {
 });
 
 describe('OpenCode output normalization', () => {
+  it('forwards native stateless retention through the common parser sink', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({
+      cli: 'opencode',
+      retainState: false,
+      emit: (event) => emitted.push(event),
+    });
+    sink.write(line({ type: 'text', part: { type: 'text', text: 'Question?' } }));
+    sink.write(line({ type: 'error', error: 'fixture error' }));
+    sink.write('not-json\n');
+    expect(sink.flush()).toMatchObject({ text: '', errors: [], diagnostics: [] });
+    expect(emitted.some((event) => event.content === 'Question?')).toBe(true);
+  });
+
   it('suppresses send_output duplication while retaining text and tool failures', () => {
     const emitted = [];
     const sink = createCliOutputSink({ cli: 'opencode', emit: (event) => emitted.push(event) });
@@ -124,5 +138,28 @@ describe('OpenCode output normalization', () => {
       level: 'error',
       title: 'Artifact write failed: a',
     });
+  });
+
+  it('keeps both the tool output and a distinct error in the failure details', () => {
+    const emitted = [];
+    const sink = createCliOutputSink({ cli: 'opencode', emit: (event) => emitted.push(event) });
+    sink.write(
+      line({
+        type: 'tool_use',
+        part: {
+          type: 'tool',
+          tool: 'bash',
+          state: {
+            status: 'error',
+            input: { command: 'npm test' },
+            output: '3 tests failed',
+            error: 'exit code 1',
+          },
+        },
+      }),
+    );
+    sink.flush();
+    expect(emitted[0].display.details).toContain('3 tests failed');
+    expect(emitted[0].display.details).toContain('exit code 1');
   });
 });

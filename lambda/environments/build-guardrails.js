@@ -81,7 +81,7 @@ export const protectedRuntimeEpilogueLines = () => [
  * workspace, in-image manifest check, SBOM shape, and the diff of the protected
  * trees against the pinned base image.
  */
-export const verificationPrologue = () => `#!/usr/bin/env bash
+export const verificationPrologue = (expectedArchitecture = 'arm64') => `#!/usr/bin/env bash
 set -Eeuo pipefail
 
 image_ref="\${1:?image reference is required}"
@@ -96,7 +96,7 @@ cleanup() {
 trap cleanup EXIT
 
 arch="$(docker image inspect "$image_ref" --format '{{.Architecture}}')"
-test "$arch" = "arm64"
+test "$arch" = "${expectedArchitecture}"
 user="$(docker image inspect "$image_ref" --format '{{.Config.User}}')"
 test "$user" = "node"
 entrypoint="$(docker image inspect "$image_ref" --format '{{json .Config.Entrypoint}}')"

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createComposePlanStart,
+  buildComposePrompt,
   buildScopeGrounding,
   scopeGridFor,
 } from '../commands/compose-plan-start.js';
@@ -204,6 +205,45 @@ describe('scopeGridFor / buildScopeGrounding', () => {
     expect(summaries.feature.executedStages).toBe(3);
     // bugfix starves build's spec (lenient warning) but still summarizes.
     expect(summaries.bugfix.executedStages).toBe(2);
+  });
+});
+
+describe('buildComposePrompt', () => {
+  const build = (overrides = {}) =>
+    buildComposePrompt({
+      mode: 'front',
+      persona: 'Run `bun {{HARNESS_DIR}}/tools/aidlc-utility.ts detect --json`.',
+      knowledge: 'See {{HARNESS_DIR}}/tools/data/stage-graph.json.',
+      grounding: 'GROUNDING',
+      intentPrompt: 'Build the thing',
+      ...overrides,
+    });
+
+  it('neutralizes the harness token in the upstream persona and knowledge', () => {
+    const prompt = build();
+    expect(prompt).not.toContain('{{HARNESS_DIR}}');
+    expect(prompt).toContain('bun <runtime-managed>/tools/aidlc-utility.ts detect --json');
+  });
+
+  it('overrides the harness procedure after the persona and before the grounding', () => {
+    const prompt = build();
+    const persona = prompt.indexOf('aidlc-utility.ts detect --json');
+    const environment = prompt.indexOf('Execution environment (overrides the procedure above)');
+    const grounding = prompt.indexOf('GROUNDING');
+    const contract = prompt.indexOf('Respond with EXACTLY ONE fenced JSON block');
+    expect(persona).toBeGreaterThanOrEqual(0);
+    expect(environment).toBeGreaterThan(persona);
+    expect(grounding).toBeGreaterThan(environment);
+    expect(contract).toBeGreaterThan(grounding);
+    expect(prompt).toContain(
+      'Unavailable harness tools are never a reason to answer with mode "failed"',
+    );
+  });
+
+  it('tolerates a missing persona or knowledge body', () => {
+    const prompt = build({ persona: null, knowledge: null });
+    expect(prompt).toContain('You are the AI-DLC composer agent');
+    expect(prompt).toContain('Execution environment');
   });
 });
 

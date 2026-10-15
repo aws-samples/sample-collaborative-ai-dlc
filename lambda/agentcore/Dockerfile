@@ -7,7 +7,7 @@
 #
 # Build context is the repo `lambda/` dir (so the image can COPY both the
 # agentcore package and the shared/ helpers it imports via ../shared).
-FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:be8929e08ae137e81b5e1edba02259e6c4cb2f5ad655092bb9f56b97e41c4536
+FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
 
 # Base tools: git (workspace checkout), curl/unzip/xz (CLI and managed-tool
 # archives), jq, procps, tini (reap orphaned CLI descendants),
@@ -20,12 +20,17 @@ RUN apt-get update \
 
 # Agent CLIs — installed for all supported drivers; selectCli picks what's
 # present at runtime. Kiro (API-key auth), Claude Code + OpenCode + Codex
-# (Bedrock).
-ARG KIRO_CLI_VERSION=2.19.2
-ARG KIRO_CLI_SHA256=84df9ddcf02156d9563910850c7a07805ea41cf6a32bc30438741878f10a5af5
-RUN curl -fsSLo /tmp/kiro-cli.zip \
-        "https://prod.download.cli.kiro.dev/stable/${KIRO_CLI_VERSION}/kirocli-aarch64-linux-musl.zip" \
-    && echo "${KIRO_CLI_SHA256}  /tmp/kiro-cli.zip" | sha256sum -c - \
+# (Bedrock). Downloads are pinned per architecture: TARGETARCH is arm64 on
+# the default build and amd64 when building the x86_64 core image for the
+# Instances compute type.
+ARG TARGETARCH
+ARG KIRO_CLI_VERSION=2.29.1
+ARG KIRO_CLI_SHA256_ARM64=4c563e3931565bd7cdf5d86c324b7316b02aa7967031d54f5fbcae24a64e0a56
+ARG KIRO_CLI_SHA256_AMD64=b7f256aa1f3b5c2668d9aec8b79ec5c4914f8dfff8b53e64a97887194aee638e
+RUN if [ "$TARGETARCH" = "amd64" ]; then arch=x86_64 sha="$KIRO_CLI_SHA256_AMD64"; else arch=aarch64 sha="$KIRO_CLI_SHA256_ARM64"; fi \
+    && curl -fsSLo /tmp/kiro-cli.zip \
+        "https://prod.download.cli.kiro.dev/stable/${KIRO_CLI_VERSION}/kirocli-${arch}-linux-musl.zip" \
+    && echo "${sha}  /tmp/kiro-cli.zip" | sha256sum -c - \
     && unzip -q /tmp/kiro-cli.zip -d /tmp/kiro-cli \
     && KIRO_CLI_SKIP_SETUP=1 /tmp/kiro-cli/kirocli/install.sh \
     && mkdir -p /opt/kiro \
@@ -33,24 +38,26 @@ RUN curl -fsSLo /tmp/kiro-cli.zip \
     && ln -sf /opt/kiro/bin/kiro-cli /usr/local/bin/kiro-cli \
     && kiro-cli --version | grep -F "${KIRO_CLI_VERSION}" \
     && rm -rf /root/.local /tmp/kiro-cli /tmp/kiro-cli.zip
-ARG CLAUDE_CODE_VERSION=2.1.257
+ARG CLAUDE_CODE_VERSION=2.1.296
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && claude --version | grep -F "${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force
-ARG OPENCODE_VERSION=1.17.20
-ARG OPENCODE_SHA256=0a41572e83a896eb008683589dfe09e17b941d06122608510f3e5f16d86d9afc
-RUN mkdir -p /opt/opencode/bin \
+ARG OPENCODE_VERSION=1.19.0
+ARG OPENCODE_SHA256_ARM64=e9841d43d3e1a8f36ed2691592d3b8b4fb097e606c8b559a277a1b845840e26b
+ARG OPENCODE_SHA256_AMD64=7bb9e61ad6feacf2e89c10a6a2c1840e3de4220bb50ba1fc7110f31806076aec
+RUN if [ "$TARGETARCH" = "amd64" ]; then arch=x64 sha="$OPENCODE_SHA256_AMD64"; else arch=arm64 sha="$OPENCODE_SHA256_ARM64"; fi \
+    && mkdir -p /opt/opencode/bin \
     && curl -fsSLo /tmp/opencode.tar.gz \
-        "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-arm64.tar.gz" \
-    && echo "${OPENCODE_SHA256}  /tmp/opencode.tar.gz" | sha256sum -c - \
+        "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-${arch}.tar.gz" \
+    && echo "${sha}  /tmp/opencode.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/opencode.tar.gz -C /opt/opencode/bin \
     && chmod +x /opt/opencode/bin/opencode \
     && /opt/opencode/bin/opencode --version | grep -F "${OPENCODE_VERSION}" \
     && rm -f /tmp/opencode.tar.gz
-# Codex — pinned for reproducibility (the npm package ships the arm64 binary).
+# Codex — pinned for reproducibility (npm resolves the platform binary).
 # The per-stage CODEX_HOME (config.toml) is materialized at run time; the
 # version assert catches a broken/mismatched install at build time.
-ARG CODEX_VERSION=0.145.0
+ARG CODEX_VERSION=0.162.1
 RUN npm install -g @openai/codex@${CODEX_VERSION} \
     && codex --version | grep -F "${CODEX_VERSION}" \
     && npm cache clean --force
@@ -60,13 +67,15 @@ RUN npm install -g @openai/codex@${CODEX_VERSION} \
 # the binary must be on PATH for the script-kind sensor runner. Document-shape
 # sensors run in-process (no bun) — this is only for the code-quality axis.
 ARG BUN_VERSION=1.4.0
-ARG BUN_SHA256=4b1a332ee861983eb93bcfe6f770fff94e3e31b2c388bdaea3c8ed35e58eed0e
-RUN mkdir -p /opt/bun/bin \
+ARG BUN_SHA256_ARM64=4b1a332ee861983eb93bcfe6f770fff94e3e31b2c388bdaea3c8ed35e58eed0e
+ARG BUN_SHA256_AMD64=2d03fb5fb83ac8b567aca0a281b2ce1a1a19d488f56c2968d88c3f25e92fe452
+RUN if [ "$TARGETARCH" = "amd64" ]; then arch=x64 sha="$BUN_SHA256_AMD64"; else arch=aarch64 sha="$BUN_SHA256_ARM64"; fi \
+    && mkdir -p /opt/bun/bin \
     && curl -fsSLo /tmp/bun.zip \
-        "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-aarch64.zip" \
-    && echo "${BUN_SHA256}  /tmp/bun.zip" | sha256sum -c - \
+        "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-${arch}.zip" \
+    && echo "${sha}  /tmp/bun.zip" | sha256sum -c - \
     && unzip -q /tmp/bun.zip -d /tmp/bun \
-    && install -m 0755 /tmp/bun/bun-linux-aarch64/bun /opt/bun/bin/bun \
+    && install -m 0755 "/tmp/bun/bun-linux-${arch}/bun" /opt/bun/bin/bun \
     && ln -sf /opt/bun/bin/bun /opt/bun/bin/bunx \
     && ln -sf /opt/bun/bin/bun /usr/local/bin/bun \
     && ln -sf /opt/bun/bin/bunx /usr/local/bin/bunx \
@@ -78,18 +87,20 @@ RUN mkdir -p /opt/bun/bin \
 # may reference it, and the mcp-validator allows `uv`/`uvx` as bare commands, so
 # the binaries must be on PATH.
 ARG UV_VERSION=0.12.6
-ARG UV_SHA256=d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
-RUN mkdir -p /opt/uv/bin \
+ARG UV_SHA256_ARM64=d58030acd26159499ac82f32da12d1b3c12a3a1bfc414232d9082070c03e128d
+ARG UV_SHA256_AMD64=8681d8921e7d520fb368991dcf5f9c1905b80f5bf2a265a0ed085c8d8e342477
+RUN if [ "$TARGETARCH" = "amd64" ]; then arch=x86_64 sha="$UV_SHA256_AMD64"; else arch=aarch64 sha="$UV_SHA256_ARM64"; fi \
+    && mkdir -p /opt/uv/bin \
     && curl -fsSLo /tmp/uv.tar.gz \
-        "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-aarch64-unknown-linux-gnu.tar.gz" \
-    && echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c - \
+        "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${arch}-unknown-linux-gnu.tar.gz" \
+    && echo "${sha}  /tmp/uv.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/uv.tar.gz -C /tmp \
-    && install -m 0755 /tmp/uv-aarch64-unknown-linux-gnu/uv /opt/uv/bin/uv \
-    && install -m 0755 /tmp/uv-aarch64-unknown-linux-gnu/uvx /opt/uv/bin/uvx \
+    && install -m 0755 "/tmp/uv-${arch}-unknown-linux-gnu/uv" /opt/uv/bin/uv \
+    && install -m 0755 "/tmp/uv-${arch}-unknown-linux-gnu/uvx" /opt/uv/bin/uvx \
     && ln -sf /opt/uv/bin/uv /usr/local/bin/uv \
     && ln -sf /opt/uv/bin/uvx /usr/local/bin/uvx \
     && uv --version | grep -F "uv ${UV_VERSION}" \
-    && rm -rf /tmp/uv-aarch64-unknown-linux-gnu /tmp/uv.tar.gz
+    && rm -rf "/tmp/uv-${arch}-unknown-linux-gnu" /tmp/uv.tar.gz
 
 # Pre-create the application directories before COPY --chmod writes into them.
 # Otherwise BuildKit may apply a file's 0644 mode to an auto-created parent,
@@ -118,16 +129,19 @@ COPY --chown=node:node shared/ /opt/shared/
 # where they are installed. Symlink so the shared helpers see the same deps.
 RUN ln -s /opt/agentcore/node_modules /opt/shared/node_modules
 
-# gh verifies upstream provenance, including the installer's offline package
-# path. Version and checksum are pinned independently of workflow selection.
+# gh verifies native upstream provenance, including the installer's offline
+# package path. Native runs are ARM64 only; the optional platform amd64 image
+# must not receive this ARM64 executable. Version/checksum stay pinned.
 ARG GH_VERSION=2.101.0
 ARG GH_SHA256=b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f
-RUN curl -fsSLo /tmp/gh.tar.gz \
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+    curl -fsSLo /tmp/gh.tar.gz \
         "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_arm64.tar.gz" \
     && echo "${GH_SHA256}  /tmp/gh.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
     && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_arm64/bin/gh" /usr/local/bin/gh \
-    && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_arm64"
+    && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_arm64"; \
+    fi
 
 # Explicit dev fixture only. Build verifies all five original public assets
 # against the successful import and verifies the signature without credentials.
@@ -143,12 +157,12 @@ USER node
 # CLI conversation-store placement (for park/resume durability):
 #  - Claude: plain JSONL — CLAUDE_CONFIG_DIR points straight at the persistent
 #    mount; append-only file needs no locking, works on the mount directly.
-#  - Kiro: SQLite — the managed mount does NOT provide the fcntl byte-range
-#    locking SQLite needs ("database is locked" on open). So XDG_DATA_HOME stays
-#    on EPHEMERAL local disk where locking works, and run-stage syncs the single
-#    data.sqlite3* store file between the mount (V2_KIRO_STORE_DIR, durable) and
-#    local XDG around each Kiro spawn so a resume after a microVM reap still
-#    recalls the conversation. See cli/kiro-store.js.
+#  - Kiro: SQLite CLI state under XDG_DATA_HOME plus v2-engine session files
+#    under ~/.kiro/sessions. The managed mount does NOT provide the fcntl
+#    byte-range locking SQLite needs ("database is locked" on open), so both
+#    stay on EPHEMERAL local disk, and run-stage syncs them with the mount
+#    (V2_KIRO_STORE_DIR, durable) around each Kiro spawn so a resume after a
+#    microVM reap still recalls the conversation. See cli/kiro-store.js.
 #  - OpenCode: SQLite — the same copy protocol, but its XDG override is applied
 #    only to OpenCode children so Kiro's global XDG placement is unchanged.
 #  - Codex: CODEX_HOME stays on EPHEMERAL local disk. run-stage restores and

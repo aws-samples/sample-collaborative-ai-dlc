@@ -147,3 +147,44 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "instances_compute_enabled" {
+  description = "Allow managed environments to target the AgentCore Instances compute type (EC2 managed instances via capacity providers)"
+  type        = bool
+  default     = false
+}
+
+variable "core_image_uri_amd64" {
+  description = "ECR repository URI of the amd64 core image (required for x86_64 environments)"
+  type        = string
+  default     = ""
+}
+
+variable "core_image_digest_amd64" {
+  description = "Digest of the amd64 core image (required for x86_64 environments)"
+  type        = string
+  default     = ""
+}
+
+variable "instances_allowed_instance_types" {
+  description = "x86_64 EC2 instance types allowed on the platform-managed capacity providers"
+  type        = list(string)
+  default     = ["m6i.large"] # burstable (t-family) is not supported by AgentCore Instances
+}
+
+variable "instances_allowed_instance_types_arm64" {
+  description = "arm64 (Graviton) EC2 instance types allowed on the platform-managed capacity providers"
+  type        = list(string)
+  default     = ["m7g.large"]
+}
+
+variable "instances_workspace_gib" {
+  description = "Size in GiB of the persistent EBS workspace volume on Instances sessions"
+  type        = number
+  default     = 50
+
+  validation {
+    condition     = var.instances_workspace_gib > 0 && floor(var.instances_workspace_gib) == var.instances_workspace_gib
+    error_message = "instances_workspace_gib must be a positive whole number of GiB."
+  }
+}

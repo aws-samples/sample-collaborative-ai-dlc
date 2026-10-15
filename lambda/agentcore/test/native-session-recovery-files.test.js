@@ -8,6 +8,7 @@ import {
   captureNativeSessionRecovery,
   nativeRecoveryProjectExclusion,
   restoreNativeSessionRecovery,
+  NATIVE_RECOVERY_HARNESS_VERSIONS,
 } from '../native/session-recovery-files.js';
 
 const id = '019a0011-2222-7333-8444-555555555555';
@@ -62,6 +63,31 @@ const withContent = (file, content) => ({
 });
 
 describe('private native recovery files', () => {
+  it('stamps the installed image CLI pin and refuses a different-version restore before writing', async () => {
+    const dockerfile = await fs.readFile(new URL('../Dockerfile', import.meta.url), 'utf8');
+    for (const [harness, arg] of Object.entries({
+      claude: 'CLAUDE_CODE_VERSION',
+      codex: 'CODEX_VERSION',
+      opencode: 'OPENCODE_VERSION',
+      kiro: 'KIRO_CLI_VERSION',
+    })) {
+      const version = dockerfile.match(new RegExp(`^ARG ${arg}=([^\\s]+)$`, 'm'))?.[1];
+      expect(NATIVE_RECOVERY_HARNESS_VERSIONS[harness]).toBe(version);
+    }
+    await rollout();
+    const checkpoint = await captureNativeSessionRecovery(options());
+    expect(checkpoint.metadata.harnessVersion).toBe(NATIVE_RECOVERY_HARNESS_VERSIONS.codex);
+    await emptyRestoreRoots();
+    checkpoint.metadata.harnessVersion = '0.145.0';
+    await expect(
+      restoreNativeSessionRecovery({ ...options(), ...checkpoint }),
+    ).rejects.toMatchObject({
+      code: 'native_recovery_manifest_invalid',
+    });
+    expect(await fs.readdir(project)).toEqual([]);
+    expect(await fs.readdir(home)).toEqual([]);
+  });
+
   it('round-trips Git, generated harness and engine state, binary bytes, modes, mtimes and empty directories', async () => {
     await rollout();
     const values = {

@@ -26,6 +26,7 @@ import { SettingsCard } from '@/components/settings/SettingsCard';
 import {
   environmentsService,
   toolsService,
+  type EnvironmentCapabilities,
   type EnvironmentDetail,
   type EnvironmentRevision,
   type ManagedEnvironment,
@@ -33,15 +34,18 @@ import {
 } from '@/services/environments';
 import { cn } from '@/lib/utils';
 import { EnvironmentBuilder } from './environment-builder/EnvironmentBuilder';
+import { ComputeBadge } from './environment-builder/ComputeSelector';
 import {
   EnvironmentRevisionWorkspace,
   isActiveRevision,
 } from './environment-builder/EnvironmentRevisionWorkspace';
 import {
+  computeOf,
   emptyEnvironmentForm,
   formFingerprint,
   formFromRevision,
   isCatalogRecipe,
+  isDefaultCompute,
   recipeFromForm,
   type EnvironmentForm,
 } from './environment-builder/model';
@@ -119,6 +123,7 @@ export function EnvironmentRegistry() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<EnvironmentFilter>('all');
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const [capabilities, setCapabilities] = useState<EnvironmentCapabilities | null>(null);
   const loadedEnvironmentId = useRef<string | null>(null);
 
   const setFormAndBaseline = useCallback((next: EnvironmentForm) => {
@@ -188,6 +193,12 @@ export function EnvironmentRegistry() {
         setError(reason instanceof Error ? reason.message : 'Failed to load environments'),
       )
       .finally(() => setLoading(false));
+    // Capability probe is best-effort: on failure the EC2 option simply stays
+    // hidden, which is the safe default.
+    environmentsService
+      .capabilities()
+      .then(setCapabilities)
+      .catch(() => setCapabilities(null));
   }, [loadList]);
 
   useEffect(() => {
@@ -259,7 +270,11 @@ export function EnvironmentRegistry() {
     (environment) =>
       environment.publishedRevisionId &&
       environment.status !== 'RETIRED' &&
-      (creating || environment.environmentId !== selectedId),
+      (creating || environment.environmentId !== selectedId) &&
+      // arm64 builds cannot start FROM an x86_64 base; x86_64 must derive from Standard.
+      (form.compute.architecture === 'x86_64'
+        ? environment.environmentId === 'standard'
+        : computeOf(environment).architecture !== 'x86_64'),
   );
   const updates = environments.filter((environment) => environment.updateAvailable);
   const activeBaseDetail =
@@ -310,6 +325,7 @@ export function EnvironmentRegistry() {
         name: form.name.trim(),
         description: form.description.trim(),
         baseEnvironmentId: form.baseEnvironmentId,
+        ...(isDefaultCompute(form.compute) ? {} : { compute: form.compute }),
         recipe: recipeFromForm(form),
       });
       setCreating(false);
@@ -507,6 +523,7 @@ export function EnvironmentRegistry() {
                         <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
                           {item.environmentId}
                         </span>
+                        <ComputeBadge compute={item.compute} className="mt-1" />
                       </span>
                       <StatusBadge
                         status={item.updateAvailable ? 'UPDATE_AVAILABLE' : item.status}
@@ -572,6 +589,7 @@ export function EnvironmentRegistry() {
                     tools={tools}
                     disabled={Boolean(busy)}
                     showId
+                    computeOptions={capabilities?.combinations ?? []}
                     actionLabel="Create draft"
                     actionBusy={busy === 'create'}
                     actionDisabled={Boolean(busy) || baseLoading || !baseRevision}
@@ -588,6 +606,7 @@ export function EnvironmentRegistry() {
                         <div className="flex flex-wrap items-center gap-2">
                           <h3 className="text-base font-semibold">{environment.name}</h3>
                           <StatusBadge status={environment.status} />
+                          <ComputeBadge compute={environment.compute} />
                         </div>
                         <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
                           <span className="font-mono text-[10px]">{environment.environmentId}</span>
@@ -694,6 +713,7 @@ export function EnvironmentRegistry() {
                           tools={tools}
                           disabled={Boolean(busy)}
                           showId={false}
+                          computeOptions={capabilities?.combinations ?? []}
                           actionLabel="Save as new revision"
                           actionBusy={busy === 'save'}
                           actionDisabled={Boolean(busy) || baseLoading || !baseRevision || !isDirty}

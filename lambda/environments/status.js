@@ -17,7 +17,6 @@ import {
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
-  StopRuntimeSessionCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import {
   RETRYABLE_ECR_ERRORS,
@@ -27,12 +26,16 @@ import {
 } from './build-lifecycle.js';
 import { createEnvironmentStore } from './store.js';
 import { evaluateScanFindings } from './fixed-tool-recipe.js';
+import { runtimeBackendFor } from './runtime-backends/index.js';
+import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
+import { SessionReleaseHandoffError, retryQueuedReleases } from '../shared/runtime-session.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ecr = new ECRClient({});
 const control = new BedrockAgentCoreControlClient({});
 const runtime = new BedrockAgentCoreClient({});
 const defaultStore = createEnvironmentStore({ ddb });
+const defaultCleanupStore = createSessionCleanupStore({ ddb });
 
 const logger = new Logger({ persistentKeys: { component: 'environments' } });
 
@@ -105,19 +108,31 @@ const invokeValidationCommand = async ({ runtimeClient, revision, payload, sessi
 };
 
 const failRevision = async (store, environmentId, revision, reason, detail = null) => {
-  const failed = await store.updateRevision(
-    environmentId,
-    revision.revisionId,
-    {
-      status: 'FAILED',
-      failure: {
-        reason,
-        detail,
-        failedAt: new Date().toISOString(),
+  let failed;
+  try {
+    failed = await store.updateRevision(
+      environmentId,
+      revision.revisionId,
+      {
+        status: 'FAILED',
+        validationSessionId: null,
+        validationAttempts: null,
+        failure: {
+          reason,
+          detail,
+          failedAt: new Date().toISOString(),
+        },
       },
-    },
-    { fromStatus: revision.status },
-  );
+      { fromStatus: revision.status },
+    );
+  } catch (error) {
+    // Another writer moved the revision since this caller read it — e.g. an
+    // overlapping status poll (validation on Instances outlasts the 1-minute
+    // schedule) that already validated it and marked it READY. Its outcome
+    // wins; this failure observation is stale.
+    if (!isConditionalFailure(error)) throw error;
+    return (await store.getRevision(environmentId, revision.revisionId)) ?? revision;
+  }
   await updateEnvironmentForRevision(store, environmentId, revision.revisionId, {
     status: 'FAILED',
   });
@@ -131,6 +146,7 @@ const createRuntimeForRevision = async ({
   controlClient = control,
 }) => {
   let created;
+  let capacityProviderArn = null;
   try {
     const resourceTags = {
       ...parseJsonEnv('MANAGED_RUNTIME_TAGS', {}),
@@ -141,9 +157,15 @@ const createRuntimeForRevision = async ({
       ...parseJsonEnv('MANAGED_RUNTIME_ENVIRONMENT', {}),
       RUNTIME_COMPATIBILITY_VERSION: revision.runtimeCompatibilityVersion,
     };
-    const networkMode = process.env.MANAGED_RUNTIME_NETWORK_MODE || 'PUBLIC';
-    const subnets = parseJsonEnv('MANAGED_RUNTIME_SUBNETS', []);
-    const securityGroups = parseJsonEnv('MANAGED_RUNTIME_SECURITY_GROUPS', []);
+    // The backend owns everything compute-specific about the runtime: network
+    // vs capacity provider, session storage vs persistent volume, and any
+    // dependency that must exist first (a capacity provider still CREATING
+    // reports pending and the poller re-enters on the next tick).
+    const backend = runtimeBackendFor(environment);
+    const prepared = await backend.prepareRuntime({ controlClient });
+    if (prepared.pending) return { environment, revision, pending: true };
+    capacityProviderArn = prepared.capacityProviderArn ?? null;
+    const computeParams = prepared.runtimeParams;
     created = await controlClient.send(
       new CreateAgentRuntimeCommand({
         agentRuntimeName: runtimeNameFor(environment.environmentId, revision.revisionId),
@@ -154,21 +176,11 @@ const createRuntimeForRevision = async ({
         },
         roleArn: process.env.MANAGED_RUNTIME_ROLE_ARN,
         protocolConfiguration: { serverProtocol: 'HTTP' },
-        networkConfiguration: {
-          networkMode,
-          ...(networkMode === 'VPC' ? { networkModeConfig: { subnets, securityGroups } } : {}),
-        },
         lifecycleConfiguration: {
           idleRuntimeSessionTimeout: 900,
           maxLifetime: 28800,
         },
-        filesystemConfigurations: [
-          {
-            sessionStorage: {
-              mountPath: '/mnt/workspace',
-            },
-          },
-        ],
+        ...computeParams,
         environmentVariables,
         tags: resourceTags,
         clientToken: clientTokenFor('runtime', environment.environmentId, revision.revisionId),
@@ -213,6 +225,7 @@ const createRuntimeForRevision = async ({
         runtimeVersion: created.agentRuntimeVersion,
         runtimeEndpoint: endpointNameFor(revision.revisionId),
         runtimeEndpointArn: null,
+        capacityProviderArn,
         failure: null,
       },
       { fromStatus: revision.status },
@@ -380,13 +393,287 @@ const inspectImage = async ({
   }
 };
 
-const verifyRuntime = async ({
+// A poll holds a revision's verification lease for at most this long. It is
+// above the status Lambda's 300 s timeout, so a live holder never loses the
+// lease mid-poll and a crashed one blocks the revision for one extra minute.
+const VERIFICATION_LEASE_MS = 6 * 60 * 1000;
+
+// Validation-session identity, minted under the verification lease. Backends
+// that reuse one session across polls (Instances: the first invoke provisions
+// an EC2 instance) persist it on the revision so the next poll reattaches
+// instead of restarting the cold start; the lease guarantees no other poll
+// mints a competing id. Per-poll backends (microVMs) use a fresh one.
+const validationSessionFor = async ({ store, backend, environment, revision }) => {
+  if (backend.validation.reuseSession && revision.validationSessionId) {
+    return { session: revision.validationSessionId, revision };
+  }
+  const session = `managed-environment-${revision.revisionId}-${randomUUID()}`.padEnd(33, '0');
+  if (!backend.validation.reuseSession) return { session, revision };
+  const updated = await store.updateRevision(
+    environment.environmentId,
+    revision.revisionId,
+    { validationSessionId: session, validationAttempts: 0 },
+    { fromStatus: 'VERIFYING' },
+  );
+  return { session, revision: updated };
+};
+
+// The two validation commands. Returns the outcome instead of throwing, so
+// the caller decides retain vs release before anything else happens.
+const attemptValidation = async ({ runtimeClient, revision, session }) => {
+  try {
+    const capabilities = await invokeValidationCommand({
+      runtimeClient,
+      revision,
+      sessionId: session,
+      payload: { command: 'capabilities' },
+    });
+    if (capabilities.ok !== true || !Array.isArray(capabilities.clis)) {
+      throw new Error('capability validation failed');
+    }
+    const nonce = `check-${revision.revisionId}`;
+    const deterministic = await invokeValidationCommand({
+      runtimeClient,
+      revision,
+      sessionId: session,
+      payload: { command: 'managed-runtime-check', nonce },
+    });
+    if (
+      deterministic.ok !== true ||
+      deterministic.nonce !== nonce ||
+      deterministic.compatibilityVersion !== revision.runtimeCompatibilityVersion ||
+      deterministic.nonRoot !== true
+    ) {
+      throw new Error('deterministic runtime validation failed');
+    }
+    return { capabilities, deterministic };
+  } catch (error) {
+    return { error };
+  }
+};
+
+const isRetryableValidationError = (backend, error) =>
+  RETRYABLE_CONTROL_ERRORS.has(error?.name) || backend.validation.isTransientInvokeError(error);
+
+const verifyRuntime = async (args) => {
+  const { store, environment, revision } = args;
+  const owner = randomUUID();
+  const leased = await store.acquireVerificationLease(
+    environment.environmentId,
+    revision.revisionId,
+    { owner, ttlMs: VERIFICATION_LEASE_MS },
+  );
+  // Another poll is verifying this revision (or it already left VERIFYING).
+  if (!leased) return { environment, revision, pending: true, leaseHeld: false };
+  try {
+    return await verifyLeasedRuntime({ ...args, revision: leased });
+  } finally {
+    await store
+      .releaseVerificationLease(environment.environmentId, revision.revisionId, owner)
+      .catch((error) =>
+        logger.warn('verification lease release failed — it expires on its own', {
+          environmentId: environment.environmentId,
+          revisionId: revision.revisionId,
+          error: error?.message ?? String(error),
+        }),
+      );
+  }
+};
+
+// Finalizing a validation is a three-step transition, each step recoverable
+// from the revision row alone (the poll can die or a write can fail between
+// any two):
+//
+//   1. RECORD   Still VERIFYING, the decided outcome (READY verification or
+//               failure) is written together with moving the session id from
+//               `validationSessionId` (reusable) to
+//               `finalizingValidationSessionId` (retired, never reused).
+//   2. RELEASE  The retired session is deleted or durably queued. Only now is
+//               the release irreversible — no verifier can pick that id up
+//               again, so a concurrent queue cleanup cannot pull a session out
+//               from under one.
+//   3. APPLY    The terminal READY/FAILED write clears both fields.
+//
+// A poll that finds a recorded outcome resumes at step 2. Step 2 is
+// idempotent (an already-deleted session is "absent"), so repeating it after a
+// lost step-3 write is safe; until step 3 lands the revision row remains the
+// session's cleanup owner.
+const recordFinalization = async ({ store, environment, revision, session, outcome }) =>
+  store.updateRevision(
+    environment.environmentId,
+    revision.revisionId,
+    {
+      validationSessionId: null,
+      validationAttempts: null,
+      finalizingValidationSessionId: session ?? null,
+      pendingFinalization: outcome,
+    },
+    { fromStatus: 'VERIFYING' },
+  );
+
+const applyFinalization = async ({ store, environment, revision, outcome }) => {
+  const cleared = {
+    validationSessionId: null,
+    validationAttempts: null,
+    finalizingValidationSessionId: null,
+    pendingFinalization: null,
+  };
+  if (outcome.status === 'READY') {
+    const ready = await store.updateRevision(
+      environment.environmentId,
+      revision.revisionId,
+      { ...cleared, status: 'READY', verification: outcome.verification, failure: null },
+      { fromStatus: 'VERIFYING' },
+    );
+    await updateEnvironmentForRevision(store, environment.environmentId, revision.revisionId, {
+      status: 'READY',
+    });
+    return ready;
+  }
+  const failed = await store.updateRevision(
+    environment.environmentId,
+    revision.revisionId,
+    { ...cleared, status: 'FAILED', failure: outcome.failure },
+    { fromStatus: 'VERIFYING' },
+  );
+  await updateEnvironmentForRevision(store, environment.environmentId, revision.revisionId, {
+    status: 'FAILED',
+  });
+  return failed;
+};
+
+const failureOutcome = (detail) => ({
+  status: 'FAILED',
+  failure: {
+    reason: 'runtime_validation_failed',
+    detail,
+    failedAt: new Date().toISOString(),
+  },
+});
+
+const verifyLeasedRuntime = async ({
   store,
   environment,
   revision,
   controlClient = control,
   runtimeClient = runtime,
+  cleanupStore = defaultCleanupStore,
 }) => {
+  const backend = runtimeBackendFor(environment);
+  const ids = { environmentId: environment.environmentId, revisionId: revision.revisionId };
+
+  // Session ownership for this poll. A session the revision already records
+  // (retained by an earlier poll, possibly after a failed release) is adopted
+  // HERE, before anything can fail, so every exit below accounts for it.
+  //   persisted  the id is on the revision row; returning `pending` leaves it
+  //              owned by the row.
+  //   ephemeral  a per-poll id (microVMs) that only this poll knows; it must
+  //              be stopped before any exit.
+  let held = revision.validationSessionId
+    ? { id: revision.validationSessionId, persisted: true }
+    : null;
+
+  const release = async (sessionId) => {
+    try {
+      await backend.releaseValidationSession({
+        runtimeClient,
+        revision,
+        sessionId,
+        cleanupStore,
+        environmentId: environment.environmentId,
+      });
+      return true;
+    } catch (error) {
+      if (!(error instanceof SessionReleaseHandoffError)) throw error;
+      logger.error(
+        'Validation session release could not be handed off — keeping ownership',
+        error,
+        {
+          ...ids,
+          sessionId,
+        },
+      );
+      return false;
+    }
+  };
+
+  // Steps 2 + 3 of the finalization (see recordFinalization).
+  const completeFinalization = async (recorded) => {
+    const sessionId = recorded.finalizingValidationSessionId;
+    if (sessionId && !(await release(sessionId))) {
+      return { environment, revision: recorded, pending: true };
+    }
+    try {
+      return {
+        environment,
+        revision: await applyFinalization({
+          store,
+          environment,
+          revision: recorded,
+          outcome: recorded.pendingFinalization,
+        }),
+      };
+    } catch (error) {
+      if (isConditionalFailure(error)) {
+        const latest = await store.getRevision(environment.environmentId, revision.revisionId);
+        return { environment, revision: latest ?? recorded, ignored: true };
+      }
+      // The outcome and retired id stay recorded; the next poll re-applies.
+      logger.warn('Validation finalization write failed — resuming on the next poll', {
+        ...ids,
+        error: error?.message ?? String(error),
+      });
+      return { environment, revision: recorded, pending: true };
+    }
+  };
+
+  // Every terminal outcome goes through here.
+  const finalize = async (outcome) => {
+    if (held && !held.persisted) {
+      // Ephemeral (microVMs): nothing reuses the id, a stop is the release.
+      if (!(await release(held.id))) return { environment, revision, pending: true };
+      held = null;
+    }
+    let recorded;
+    try {
+      recorded = await recordFinalization({
+        store,
+        environment,
+        revision,
+        session: held?.id,
+        outcome,
+      });
+    } catch (error) {
+      if (isConditionalFailure(error)) {
+        const latest = await store.getRevision(environment.environmentId, revision.revisionId);
+        return { environment, revision: latest ?? revision, ignored: true };
+      }
+      // Nothing was released: the session (if any) is still owned by the
+      // row, either as validationSessionId or — if the write actually landed
+      // — as finalizingValidationSessionId. Both are picked up next poll.
+      logger.warn('Validation outcome could not be recorded — retrying on the next poll', {
+        ...ids,
+        error: error?.message ?? String(error),
+      });
+      return { environment, revision, pending: true };
+    }
+    held = null;
+    return completeFinalization(recorded);
+  };
+
+  // Pending return. A persisted session stays owned by the row; an ephemeral
+  // one is stopped first.
+  const pending = async (current = revision) => {
+    if (held && !held.persisted) {
+      if (!(await release(held.id))) return { environment, revision: current, pending: true };
+      held = null;
+    }
+    return { environment, revision: current, pending: true };
+  };
+
+  // A previous poll decided the outcome but did not finish: resume.
+  if (revision.pendingFinalization) return completeFinalization(revision);
+
   try {
     if (!revision.runtimeArn || !revision.runtimeId || !revision.runtimeVersion) {
       throw new Error('runtime identity is incomplete');
@@ -401,13 +688,11 @@ const verifyRuntime = async ({
           }),
         );
       } catch (error) {
-        if (RETRYABLE_CONTROL_ERRORS.has(error?.name)) {
-          return { environment, revision, pending: true };
-        }
+        if (RETRYABLE_CONTROL_ERRORS.has(error?.name)) return pending();
         throw error;
       }
       if (runtimeState.status === 'CREATING' || runtimeState.status === 'UPDATING') {
-        return { environment, revision, pending: true };
+        return pending();
       }
       if (runtimeState.status !== 'READY') {
         throw new Error(runtimeState.failureReason || `runtime is ${runtimeState.status}`);
@@ -429,14 +714,10 @@ const verifyRuntime = async ({
           }),
         );
       } catch (error) {
-        if (RETRYABLE_CONTROL_ERRORS.has(error?.name)) {
-          return { environment, revision, pending: true };
-        }
+        if (RETRYABLE_CONTROL_ERRORS.has(error?.name)) return pending();
         throw error;
       }
-      if (!endpoint?.agentRuntimeEndpointArn) {
-        return { environment, revision, pending: true };
-      }
+      if (!endpoint?.agentRuntimeEndpointArn) return pending();
       const endpointRevision = await store.updateRevision(
         environment.environmentId,
         revision.revisionId,
@@ -446,7 +727,7 @@ const verifyRuntime = async ({
         },
         { fromStatus: 'VERIFYING' },
       );
-      return { environment, revision: endpointRevision, pending: true };
+      return pending(endpointRevision);
     }
     const endpoint = await controlClient.send(
       new GetAgentRuntimeEndpointCommand({
@@ -455,116 +736,106 @@ const verifyRuntime = async ({
       }),
     );
     if (endpoint.status === 'CREATING' || endpoint.status === 'UPDATING') {
+      // Nothing minted yet; an adopted session stays owned by the row.
       return { environment, revision };
     }
     if (endpoint.status !== 'READY') {
       throw new Error(endpoint.failureReason || `endpoint is ${endpoint.status}`);
     }
-    const session = `managed-environment-${revision.revisionId}-${randomUUID()}`.padEnd(33, '0');
-    let capabilities;
-    let deterministic;
-    try {
-      capabilities = await invokeValidationCommand({
-        runtimeClient,
-        revision,
-        sessionId: session,
-        payload: { command: 'capabilities' },
-      });
-      if (capabilities.ok !== true || !Array.isArray(capabilities.clis)) {
-        throw new Error('capability validation failed');
-      }
-      const nonce = `check-${revision.revisionId}`;
-      deterministic = await invokeValidationCommand({
-        runtimeClient,
-        revision,
-        sessionId: session,
-        payload: { command: 'managed-runtime-check', nonce },
-      });
-      if (
-        deterministic.ok !== true ||
-        deterministic.nonce !== nonce ||
-        deterministic.compatibilityVersion !== revision.runtimeCompatibilityVersion ||
-        deterministic.nonRoot !== true
-      ) {
-        throw new Error('deterministic runtime validation failed');
-      }
-    } finally {
-      try {
-        await runtimeClient.send(
-          new StopRuntimeSessionCommand({
-            agentRuntimeArn: revision.runtimeArn,
-            qualifier: revision.runtimeEndpoint,
-            runtimeSessionId: session,
-          }),
-        );
-      } catch (error) {
-        logger.warn('Managed runtime validation session cleanup failed', {
-          session,
-          error: error?.message ?? String(error),
-        });
-      }
+    if (!held) {
+      const minted = await validationSessionFor({ store, backend, environment, revision });
+      revision = minted.revision;
+      held = { id: minted.session, persisted: backend.validation.reuseSession };
     }
-    const completedAt = new Date().toISOString();
+    let outcome = await attemptValidation({ runtimeClient, revision, session: held.id });
+
+    // A reusable session that hit a transient error (the instance is still
+    // booting) is RETAINED for the next poll, within the backend's budget.
+    if (
+      outcome.error &&
+      backend.validation.reuseSession &&
+      isRetryableValidationError(backend, outcome.error)
+    ) {
+      const attempts = Number(revision.validationAttempts ?? 0) + 1;
+      if (attempts <= backend.validation.maxAttempts) {
+        try {
+          await store.updateRevision(
+            environment.environmentId,
+            revision.revisionId,
+            { validationAttempts: attempts },
+            { fromStatus: 'VERIFYING' },
+          );
+        } catch (error) {
+          if (!isConditionalFailure(error)) {
+            // The id is on the row; only the counter was not bumped.
+            logger.warn('Validation attempt counter not updated', {
+              ...ids,
+              error: error?.message ?? String(error),
+            });
+          }
+        }
+        return pending();
+      }
+      outcome = {
+        error: new Error(
+          `runtime validation did not complete within ${backend.validation.maxAttempts} polls: ${outcome.error?.message ?? outcome.error}`,
+          { cause: outcome.error },
+        ),
+      };
+    }
+
+    if (outcome.error) {
+      // microVMs: stop this poll's session; a fresh one next poll.
+      if (isRetryableValidationError(backend, outcome.error)) return pending();
+      return finalize(failureOutcome(outcome.error.message));
+    }
+    const { capabilities, deterministic } = outcome;
     const elevatedFindings =
       Number(revision.scanFindings?.severityCounts?.CRITICAL ?? 0) +
         Number(revision.scanFindings?.severityCounts?.HIGH ?? 0) >
       0;
-    const ready = await store.updateRevision(
-      environment.environmentId,
-      revision.revisionId,
-      {
-        status: 'READY',
-        verification: {
-          status: 'PASSED',
-          completedAt,
-          imageBuild: 'PASSED',
-          baseDigest: 'PASSED',
-          architecture: 'arm64',
-          nonRoot: deterministic.nonRoot === true,
-          workspaceWritable: deterministic.workspaceWritable === true,
-          protectedRuntime: deterministic.protectedRuntime === true,
-          sbom: 'PASSED',
-          securityScan:
-            elevatedFindings && securityFindingsAcceptedAt(revision) ? 'ACCEPTED' : 'PASSED',
-          containerStartup: 'PASSED',
-          containerShutdown: 'PASSED',
-          toolBuilds: 'PASSED',
-          endpoint: 'PASSED',
-          capabilities: capabilities.clis,
-          ...(capabilities.agentAuthProtocol
-            ? {
-                agentAuthProtocol: capabilities.agentAuthProtocol,
-                agentAuthModes: capabilities.agentAuthModes ?? [],
-              }
-            : {}),
-          deterministicCommand: 'PASSED',
-        },
-        failure: null,
-      },
-      { fromStatus: 'VERIFYING' },
-    );
-    await updateEnvironmentForRevision(store, environment.environmentId, revision.revisionId, {
+    return finalize({
       status: 'READY',
+      verification: {
+        status: 'PASSED',
+        completedAt: new Date().toISOString(),
+        imageBuild: 'PASSED',
+        baseDigest: 'PASSED',
+        architecture: backend.architecture,
+        nonRoot: deterministic.nonRoot === true,
+        workspaceWritable: deterministic.workspaceWritable === true,
+        protectedRuntime: deterministic.protectedRuntime === true,
+        sbom: 'PASSED',
+        securityScan:
+          elevatedFindings && securityFindingsAcceptedAt(revision) ? 'ACCEPTED' : 'PASSED',
+        containerStartup: 'PASSED',
+        containerShutdown: 'PASSED',
+        toolBuilds: 'PASSED',
+        endpoint: 'PASSED',
+        capabilities: capabilities.clis,
+        ...(capabilities.agentAuthProtocol
+          ? {
+              agentAuthProtocol: capabilities.agentAuthProtocol,
+              agentAuthModes: capabilities.agentAuthModes ?? [],
+            }
+          : {}),
+        deterministicCommand: 'PASSED',
+      },
     });
-    return { environment, revision: ready };
   } catch (error) {
-    if (RETRYABLE_CONTROL_ERRORS.has(error?.name)) {
-      return { environment, revision, pending: true };
-    }
+    if (RETRYABLE_CONTROL_ERRORS.has(error?.name)) return pending();
     if (isConditionalFailure(error)) {
+      // Another writer moved the revision out of VERIFYING. A persisted
+      // session stays recorded on the row (the writer that moved it owns the
+      // row); an ephemeral one is stopped.
+      await pending();
       const latest = await store.getRevision(environment.environmentId, revision.revisionId);
       return { environment, revision: latest ?? revision, ignored: true };
     }
-    return {
-      environment,
-      revision: await failRevision(
-        store,
-        environment.environmentId,
-        revision,
-        'runtime_validation_failed',
-        error.message,
-      ),
-    };
+    // Pre-invoke and unexpected failures end the validation through the same
+    // recoverable finalization as a failed invoke: the adopted session is
+    // retired and released, never silently dropped.
+    return finalize(failureOutcome(error.message));
   }
 };
 
@@ -624,15 +895,44 @@ const handleScanEvent = async ({ store, event, ecrClient, controlClient }) => {
   });
 };
 
-const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, runtimeClient }) => {
+const pollManagedEnvironmentStatus = async ({
+  store,
+  ecrClient,
+  controlClient,
+  runtimeClient,
+  cleanupStore = defaultCleanupStore,
+}) => {
   const results = [];
+  // Each item is isolated: the poll is the ONLY driver of every transition
+  // (BUILDING/SCANNING inspection, acknowledged security findings → runtime
+  // creation, VERIFYING validation, session cleanup), so one revision whose
+  // handling throws unexpectedly must not abort the passes behind it — that
+  // starves every other revision on every subsequent poll and presents as
+  // "accepted the findings and nothing happens".
+  const guarded = async (pass, revision, fn) => {
+    try {
+      results.push(await fn());
+    } catch (error) {
+      logger.error('Managed environment poll item failed', error, {
+        pass,
+        environmentId: revision.environmentId,
+        revisionId: revision.revisionId,
+      });
+      results.push({
+        environmentId: revision.environmentId,
+        revisionId: revision.revisionId,
+        pass,
+        error: error?.message ?? String(error),
+      });
+    }
+  };
   for (const status of ['BUILDING', 'SCANNING']) {
     const revisions = await store.listRevisionsByStatus(status);
     for (const revision of revisions) {
       const environment = await store.getEnvironment(revision.environmentId);
       if (!environment) continue;
-      results.push(
-        await inspectImage({
+      await guarded('inspect', revision, () =>
+        inspectImage({
           store,
           environment,
           revision,
@@ -650,8 +950,8 @@ const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, r
   )) {
     const environment = await store.getEnvironment(revision.environmentId);
     if (!environment) continue;
-    results.push(
-      await inspectImage({
+    await guarded('legacy-security', revision, () =>
+      inspectImage({
         store,
         environment,
         revision,
@@ -666,8 +966,8 @@ const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, r
   )) {
     const environment = await store.getEnvironment(revision.environmentId);
     if (!environment) continue;
-    results.push(
-      await createRuntimeForRevision({
+    await guarded('acknowledged', revision, () =>
+      createRuntimeForRevision({
         store,
         environment,
         revision,
@@ -679,17 +979,21 @@ const pollManagedEnvironmentStatus = async ({ store, ecrClient, controlClient, r
   for (const revision of verifying) {
     const environment = await store.getEnvironment(revision.environmentId);
     if (!environment) continue;
-    results.push(
-      await verifyRuntime({
+    await guarded('verify', revision, () =>
+      verifyRuntime({
         store,
         environment,
         revision,
         controlClient,
         runtimeClient,
+        cleanupStore,
       }),
     );
   }
-  return { checked: results.length, results };
+  // Releases that failed earlier (validation sessions, deleted intents) are
+  // queued on the shared cleanup store; the poller is the retry driver.
+  const sessionCleanups = await retryQueuedReleases({ client: runtimeClient, cleanupStore });
+  return { checked: results.length, results, sessionCleanups };
 };
 
 export const createStatusHandler = ({
@@ -697,6 +1001,7 @@ export const createStatusHandler = ({
   ecrClient = ecr,
   controlClient = control,
   runtimeClient = runtime,
+  cleanupStore = defaultCleanupStore,
 } = {}) =>
   createBuildLifecycleHandler({
     label: 'Managed environment',
@@ -706,6 +1011,7 @@ export const createStatusHandler = ({
         ecrClient,
         controlClient,
         runtimeClient,
+        cleanupStore,
       }),
     handleBuildEvent: (event) =>
       handleBuildEvent({
