@@ -7,6 +7,7 @@ import {
 import { __durableHandler } from './fixtures/completion-handler.js';
 import { awaitEngineGate } from '../section.js';
 import { awaitEngineGate as previousEngineGate } from './fixtures/engine-gate-before-recovery.js';
+import { loadMetaBeforeDelivery } from './fixtures/load-meta-before-delivery.js';
 import {
   loadMetaBeforeCompletion,
   finishSucceededBeforeCompletion,
@@ -296,6 +297,78 @@ const completeStage = async (runner, opName, result) => {
 };
 
 describe('orchestrator on the real durable runner (replay semantics)', () => {
+  it.each([
+    [loadMetaBeforeCompletion, 0],
+    [loadMetaBeforeDelivery, 1],
+  ])(
+    'resumes a frozen pre-delivery load-meta checkpoint (%s) without upgrading publication',
+    async (loadFrozenMeta, completionVersion) => {
+      const world = makeWorld({ stages: [{ stageId: 'a' }] });
+      let upgraded = false;
+      const loadedVersions = [];
+      let deliveryCalls = 0;
+      world.deps.publishDelivery = async () => {
+        deliveryCalls++;
+        return [];
+      };
+      let firstLoadCalls = 0;
+      let markSuspended;
+      const suspended = new Promise((resolve) => {
+        markSuspended = resolve;
+      });
+      const handler = withDurableExecution((event, ctx) => {
+        const wrapped = new Proxy(ctx, {
+          get: (target, key) =>
+            key === 'step'
+              ? async (name, fn, options) => {
+                  const result = await target.step(
+                    name,
+                    !upgraded && name === 'load-meta'
+                      ? async () => {
+                          firstLoadCalls++;
+                          return loadFrozenMeta(world.deps.store, event.executionId);
+                        }
+                      : fn,
+                    options,
+                  );
+                  if (name === 'load-meta')
+                    loadedVersions.push(result.completionPolicyVersion ?? 0);
+                  return result;
+                }
+              : typeof target[key] === 'function'
+                ? target[key].bind(target)
+                : target[key],
+        });
+        return __durableHandler(event, wrapped, world.deps);
+      });
+      const runner = new LocalDurableTestRunner({
+        handlerFunction: async (...input) => {
+          const result = await handler(...input);
+          if (result.Status === 'PENDING') {
+            upgraded = true;
+            markSuspended();
+          }
+          return result;
+        },
+      });
+      const completion = runner.run({
+        payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+      });
+      await suspended;
+      await completeStage(runner, 'stage-cb-a', { ok: true, state: 'SUCCEEDED' });
+      const execution = await completion;
+      expect(execution.getResult()).toMatchObject({ ok: true });
+      expect(execution.getInvocations().length).toBeGreaterThan(1);
+      expect(firstLoadCalls).toBe(1);
+      expect(new Set(loadedVersions)).toEqual(new Set([completionVersion]));
+      // New delivery code would call this collaborator; frozen histories never do.
+      expect(deliveryCalls).toBe(0);
+      expect(world.invokes.filter((payload) => payload.command === 'run-stage-start')).toHaveLength(
+        1,
+      );
+    },
+  );
+
   it.each(['before', 'after'])(
     'replays a frozen marker-absent checkpoint %s terminal success',
     async (boundary) => {
