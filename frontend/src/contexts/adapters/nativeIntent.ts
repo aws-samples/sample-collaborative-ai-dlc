@@ -542,6 +542,30 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
     },
     [projectId, handleFailure],
   );
+  const acceptExecution = useCallback(
+    (execution: NativeExecution) => {
+      const revision = nativeAccessRevision(projectId);
+      if (!current(generation.current, revision)) return;
+      setLoaded((previous) =>
+        previous?.accessRevision === revision
+          ? acceptDetail(
+              previous,
+              {
+                ...previous.value,
+                execution: {
+                  ...execution,
+                  // Reply acknowledgements do not re-read image policy. Keep
+                  // the last policy observation until the status owner does.
+                  imageStatus: execution.imageStatus ?? previous.value.execution?.imageStatus,
+                },
+              },
+              revision,
+            )
+          : previous,
+      );
+    },
+    [projectId, current],
+  );
 
   return {
     projectId,
@@ -554,6 +578,7 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
     execute,
     refresh,
     publicationFailure,
+    acceptExecution,
     promptDraft,
     savingPrompt,
     promptUncertain,

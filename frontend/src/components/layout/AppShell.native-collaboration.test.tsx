@@ -236,9 +236,142 @@ beforeEach(() => {
     value: vi.fn(() => ({ matches: true, addEventListener() {}, removeEventListener() {} })),
   });
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 describe('shared native reply drafts', () => {
+  it('shows three minutes of quiet runtime waiting using the existing pollers, then prioritizes the admitted form', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(time));
+    const view = member('Ada');
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(
+        within(view.container).getByRole('textbox', { name: 'Reply to AI-DLC' }),
+      ).not.toHaveAttribute('readonly');
+    });
+    const accepted = receipt('Use a 120px gap.');
+    let execution = waiting({
+      status: 'DISPATCHING',
+      responsePending: true,
+      turnSequence: 3,
+      revision: 10,
+    });
+    service.get.mockImplementation(async () => execution);
+    service.interaction.mockResolvedValue(interaction(accepted));
+    service.respond.mockResolvedValue({ execution: execution.execution, response: accepted });
+    fireEvent.change(within(view.container).getByRole('textbox', { name: 'Reply to AI-DLC' }), {
+      target: { value: accepted.text },
+    });
+    await act(async () =>
+      fireEvent.click(within(view.container).getByRole('button', { name: 'Send reply' })),
+    );
+    const progress = () => within(view.container).getByRole('region', { name: 'Reply progress' });
+    expect(progress()).toHaveTextContent('Reply accepted. Delivery pending.');
+
+    execution = waiting({
+      status: 'RUNNING',
+      responsePending: false,
+      turnSequence: 3,
+      revision: 11,
+    });
+    service.interaction.mockResolvedValue(
+      interaction({ ...accepted, deliveryStatus: 'delivered' }),
+    );
+    service.outputs.mockResolvedValueOnce({
+      outputs: [
+        {
+          seq: 1,
+          stageInstanceId: null,
+          kind: 'stdout',
+          timestamp: time,
+          content: 'private tool arguments never belong in a progress card',
+          display: { type: 'tool', details: 'private detail' },
+        },
+      ],
+      nextAfter: null,
+      events: [
+        {
+          revision: 11,
+          eventId: 'native-11',
+          type: 'native.running',
+          timestamp: time,
+          summary: 'Turn 3 · writer 1: Runtime delivery confirmed',
+          stageInstanceId: null,
+          actor: null,
+        },
+      ],
+      nextEventAfter: null,
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    expect(progress()).toHaveTextContent('Reply delivered. Waiting for the next AI-DLC response.');
+    const before = {
+      reads: service.get.mock.calls.length,
+      activity: service.outputs.mock.calls.length,
+    };
+    for (let i = 0; i < 60; i++)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+    expect(progress()).toHaveTextContent('Waiting since reply acceptance: 3m');
+    expect(progress()).toHaveTextContent('Execution update last observed 3m');
+    expect(progress()).toHaveTextContent('Activity checked');
+    expect(progress()).not.toHaveTextContent(/private|model thinking|complete|outdated/);
+    expect(service.outputs.mock.calls.length - before.activity).toBe(90);
+    expect(service.get.mock.calls.length - before.reads).toBe(60);
+    expect(service.outputs).toHaveBeenLastCalledWith('project', 'one', 1, 11);
+    expect(service.respond).toHaveBeenCalledTimes(1);
+
+    service.outputs.mockReturnValueOnce(new Promise(() => {}));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(14_000);
+    });
+    expect(progress()).toHaveTextContent('Activity has not refreshed recently');
+    const stalledCalls = service.outputs.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(6000);
+    });
+    expect(service.outputs).toHaveBeenCalledTimes(stalledCalls);
+    expect(service.respond).toHaveBeenCalledTimes(1);
+
+    // A next interaction is admitted by execution/publication, regardless of a
+    // stalled activity transport. It has an empty draft and requires a new click.
+    const next = 'f'.repeat(64);
+    execution = waiting({ interactionId: next, turnSequence: 3, revision: 12 });
+    service.publication.mockResolvedValue({
+      id: 'publication',
+      sequence: 3,
+      createdAt: time,
+      files: [],
+      question: null,
+      projectionStatus: 'complete',
+    });
+    service.interaction.mockResolvedValue({
+      ...interaction(null, next),
+      sequence: 3,
+      messages: [{ type: 'text', text: 'Confirm the next required human decision.' }],
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await vi.waitFor(() => {
+      expect(progress()).toHaveTextContent('Your reply is needed.');
+      expect(within(view.container).getByRole('textbox', { name: 'Reply to AI-DLC' })).toHaveValue(
+        '',
+      );
+    });
+    const box = within(view.container).getByRole('textbox', { name: 'Reply to AI-DLC' });
+    const response = within(view.container).getByText('Confirm the next required human decision.');
+    expect(box.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(view.container).getByRole('button', { name: 'Send reply' })).toBeDisabled();
+    expect(service.respond).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
   it('two members edit one revision-specific draft with presence, and both see the one accepted answer', async () => {
     const ada = member('Ada');
     const adaBox = await replyBox(ada);

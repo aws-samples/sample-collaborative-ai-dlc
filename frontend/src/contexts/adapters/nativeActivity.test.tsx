@@ -46,6 +46,45 @@ beforeEach(() => {
   state.outputs.mockResolvedValue({ outputs: [], nextAfter: null });
 });
 describe('native durable transcript adapter', () => {
+  it('retains history references on empty polls and ages a stalled read without another request', async () => {
+    vi.useFakeTimers();
+    try {
+      const current = adapter();
+      state.outputs.mockResolvedValueOnce({
+        outputs: [row(1)],
+        nextAfter: null,
+        events: [{ revision: 3, eventId: 'native-3' }],
+        nextEventAfter: null,
+      });
+      const { result, unmount } = renderHook(() => useNativeActivity(current));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const first = result.current;
+      expect(first.observedAt).toBe(Date.now());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000);
+      });
+      expect(result.current.rows).toBe(first.rows);
+      expect(result.current.events).toBe(first.events);
+      expect(state.outputs).toHaveBeenLastCalledWith('p1', 'i1', 1, 3);
+      state.outputs.mockReturnValueOnce(new Promise(() => {}));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+      expect(state.outputs).toHaveBeenCalledTimes(3);
+      expect(result.current.now - result.current.observedAt!).toBe(20_000);
+      expect(result.current.rows).toBe(first.rows);
+      expect(result.current.events).toBe(first.events);
+      unmount();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(state.outputs).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it('replays more than 64 rows and catches up on reconnect without duplicates', async () => {
     state.outputs
       .mockResolvedValueOnce({

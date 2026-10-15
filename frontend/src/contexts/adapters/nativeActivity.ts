@@ -12,10 +12,13 @@ import { currentSessionEpoch, isSessionExpiryNotified } from '@/services/session
 // after access revocation. Periodic replay also covers lost notifications.
 export function useNativeActivity(adapter: NativeIntentAdapter) {
   const { projectId, intentId, intent } = adapter;
+  const enabled = Boolean(intent);
   const [rows, setRows] = useState<IntentOutput[]>([]);
   const [events, setEvents] = useState<NativeActivityEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [observedAt, setObservedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now);
   const scope = JSON.stringify([projectId, intentId, currentSessionEpoch()]);
   const loadedScope = useRef(scope);
   const generation = useRef(0);
@@ -25,7 +28,7 @@ export function useNativeActivity(adapter: NativeIntentAdapter) {
   const dirty = useRef(false);
   const alive = useRef(false);
   const replay = useCallback(async () => {
-    if (!alive.current || !intent) return;
+    if (!alive.current || !enabled) return;
     if (busy.current) {
       dirty.current = true;
       return;
@@ -53,18 +56,13 @@ export function useNativeActivity(adapter: NativeIntentAdapter) {
             eventCursor.current,
           );
           if (!current()) return;
-          setRows((previous) => {
-            if (!current()) return previous;
-            const map = new Map(previous.map((row) => [row.seq, row]));
-            for (const row of page.outputs) map.set(row.seq, row);
-            return [...map.values()].toSorted((a, b) => a.seq - b.seq);
-          });
-          setEvents((previous) => {
-            if (!current()) return previous;
-            const map = new Map(previous.map((event) => [event.revision, event]));
-            for (const event of page.events ?? []) map.set(event.revision, event);
-            return [...map.values()].toSorted((a, b) => a.revision - b.revision);
-          });
+          // The service verifies strict ordering after each independent cursor.
+          // One reader owns them, including retries. Empty polls keep the same
+          // arrays; there is no full-history merge/sort on every two-second tick.
+          if (page.outputs.length)
+            setRows((previous) => (current() ? [...previous, ...page.outputs] : previous));
+          if (page.events?.length)
+            setEvents((previous) => (current() ? [...previous, ...page.events!] : previous));
           cursor.current = page.outputs.at(-1)?.seq ?? after;
           const previousEvent = eventCursor.current;
           eventCursor.current = page.events?.at(-1)?.revision ?? previousEvent;
@@ -78,6 +76,7 @@ export function useNativeActivity(adapter: NativeIntentAdapter) {
           after = cursor.current;
         } while (current());
       } while (dirty.current && current());
+      if (current()) setObservedAt(Date.now());
     } catch (failure) {
       if (current()) {
         // A resource/action denial is not proof of lost project membership.
@@ -87,6 +86,7 @@ export function useNativeActivity(adapter: NativeIntentAdapter) {
           setEvents([]);
           cursor.current = 0;
           eventCursor.current = 0;
+          setObservedAt(null);
         }
         setError('Activity could not be refreshed. History may be incomplete; retry refresh.');
       }
@@ -96,7 +96,7 @@ export function useNativeActivity(adapter: NativeIntentAdapter) {
         setLoading(false);
       }
     }
-  }, [projectId, intentId, intent]);
+  }, [projectId, intentId, enabled]);
   const replayRef = useRef(replay);
   replayRef.current = replay;
   useEffect(() => {
@@ -107,8 +107,10 @@ export function useNativeActivity(adapter: NativeIntentAdapter) {
     setRows([]);
     setEvents([]);
     setError(null);
-    alive.current = Boolean(intent);
-    if (!intent) {
+    setObservedAt(null);
+    setNow(Date.now());
+    alive.current = enabled;
+    if (!enabled) {
       generation.current++;
       busy.current = false;
       cursor.current = 0;
@@ -136,7 +138,12 @@ export function useNativeActivity(adapter: NativeIntentAdapter) {
     const statusOff = realtimeService.onStatusChange((status) => {
       if (subscription === generation.current && status === 'connected') void replayRef.current();
     });
-    const timer = setInterval(() => void replayRef.current(), 2000);
+    const timer = setInterval(() => {
+      // Reuse the history clock even when a read stalls. This is observation
+      // age, never a runtime heartbeat or evidence of execution progress.
+      setNow(Date.now());
+      void replayRef.current();
+    }, 2000);
     return () => {
       alive.current = false;
       generation.current++;
@@ -146,13 +153,15 @@ export function useNativeActivity(adapter: NativeIntentAdapter) {
       clearInterval(timer);
       realtimeService.disconnect(`native-intent:${projectId}:${intentId}`);
     };
-  }, [projectId, intentId, Boolean(intent), scope]);
+  }, [projectId, intentId, enabled, scope]);
   const visible = intent && loadedScope.current === scope;
   return {
     rows: visible ? rows : [],
     events: visible ? events : [],
     error: visible ? error : null,
     loading,
+    observedAt: visible ? observedAt : null,
+    now,
     replay,
   };
 }

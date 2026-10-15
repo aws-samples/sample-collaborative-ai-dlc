@@ -23,6 +23,7 @@ import {
   nativeReplyTextValid,
   NATIVE_REPLY_MAX_BYTES,
   type NativeIntent,
+  type NativeExecution,
   type NativeInteractionView,
   type NativeReplyRequest,
   type NativeUserReply,
@@ -99,6 +100,7 @@ export function useNativeReply({
   scopeCurrent,
   onAccessFailure,
   onRefresh,
+  onAccepted,
   userName = '',
 }: {
   intent: NativeIntent;
@@ -106,6 +108,7 @@ export function useNativeReply({
   scopeCurrent: () => boolean;
   onAccessFailure: (error: unknown) => void;
   onRefresh: () => Promise<void>;
+  onAccepted?: (execution: NativeExecution) => void;
   userName?: string;
 }) {
   const [state, setState] = useState<'idle' | 'sending' | 'uncertain' | 'accepted' | 'conflict'>(
@@ -237,6 +240,7 @@ export function useNativeReply({
       }
       setAccepted(result.response);
       setState('accepted');
+      onAccepted?.(result.execution);
       void onRefresh();
       return 'accepted';
     } catch (err) {
@@ -277,6 +281,7 @@ export function useNativeReply({
     editable,
     canSubmit,
     awaitingReply,
+    interactionReady: interaction !== null,
     errorFor: (outcome: string) =>
       outcome === 'conflict'
         ? 'This question changed or another member already answered. Refresh status to see the current turn.'
@@ -347,26 +352,19 @@ export function NativeInteractionPanel({
   executionStatus: NonNullable<NativeIntent['execution']>['status'];
 }) {
   const bytes = new TextEncoder().encode(reply.text).length;
-  const stopped = ['CANCELLED', 'STOPPED', 'FAILED'].includes(executionStatus);
   const recovery = ['RECOVERY_REQUIRED', 'RECOVERING'].includes(executionStatus);
   return (
     <section aria-label="Published AI-DLC response" className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-sm">AI-DLC response</CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Turn {interaction.sequence} · {new Date(interaction.createdAt).toLocaleString()}
-          </p>
-        </CardHeader>
-        <CardContent className="min-w-0 space-y-4 overflow-x-auto">
-          {interaction.messages.map((message, index) => (
-            <div key={index} className="prose prose-sm max-w-none break-words dark:prose-invert">
-              <ArtifactMarkdown content={message.text} />
-            </div>
-          ))}
-        </CardContent>
-      </Card>
       <NativePresentationNotice interaction={interaction} />
+      {!reply.receipt && (
+        <p className="text-sm">
+          Review the{' '}
+          <a href="#native-assistant-response" className="underline">
+            AI-DLC response
+          </a>{' '}
+          before answering.
+        </p>
+      )}
       {reply.structured && !reply.receipt ? (
         <section aria-label="Answer AI-DLC" className="space-y-2">
           {reply.answerEditor ? (
@@ -451,21 +449,6 @@ export function NativeInteractionPanel({
               {reply.error}
             </p>
           )}
-          {reply.receipt && (
-            <p role="status" className="text-sm text-muted-foreground">
-              {recovery
-                ? 'Your reply is saved.'
-                : stopped
-                  ? 'Reply accepted. Execution is no longer continuing.'
-                  : executionStatus === 'CANCEL_REQUESTED'
-                    ? 'Reply accepted. Cancellation requested.'
-                    : reply.receipt.deliveryStatus === 'pending'
-                      ? 'Reply accepted. Delivery pending.'
-                      : reply.receipt.deliveryStatus === 'delivered'
-                        ? 'Reply delivered. Waiting for the next AI-DLC response.'
-                        : 'Reply accepted. Historical delivery confirmation is unavailable.'}
-            </p>
-          )}
           {!reply.receipt && !reply.editable && reply.state === 'idle' && (
             <p className="text-sm text-muted-foreground">
               {recovery
@@ -482,6 +465,21 @@ export function NativeInteractionPanel({
           </Button>
         </form>
       )}
+      <Card id="native-assistant-response">
+        <CardHeader>
+          <CardTitle className="text-sm">AI-DLC response</CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Turn {interaction.sequence} · {new Date(interaction.createdAt).toLocaleString()}
+          </p>
+        </CardHeader>
+        <CardContent className="min-w-0 space-y-4 overflow-x-auto">
+          {interaction.messages.map((message, index) => (
+            <div key={index} className="prose prose-sm max-w-none break-words dark:prose-invert">
+              <ArtifactMarkdown content={message.text} />
+            </div>
+          ))}
+        </CardContent>
+      </Card>
     </section>
   );
 }

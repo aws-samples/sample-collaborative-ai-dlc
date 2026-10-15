@@ -17,6 +17,7 @@ import { NativeIntentContent } from '@/components/intent/NativeIntentContent';
 import { NativePromptEditor } from '@/components/intent/NativePromptEditor';
 import { currentSessionEpoch } from '@/services/sessionExpiry';
 import { useNativeListingVersion } from '@/hooks/useNativeIntents';
+import type { useNativeActivity } from '@/contexts/adapters/nativeActivity';
 import {
   useNativeIntentAdapter,
   type NativeIntentAdapter,
@@ -42,7 +43,15 @@ function NativeWorkspace({ projectId, intentId }: { projectId: string; intentId:
   return <NativeWorkspaceView adapter={useNativeIntentAdapter(projectId, intentId)} />;
 }
 
-export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter }) {
+export function NativeWorkspaceView({
+  adapter,
+  activity,
+  onViewActivity,
+}: {
+  adapter: NativeIntentAdapter;
+  activity?: ReturnType<typeof useNativeActivity>;
+  onViewActivity?: () => void;
+}) {
   const [configurationOpen, setConfigurationOpen] = useState(false);
   const {
     projectId,
@@ -199,6 +208,9 @@ export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter 
             intent={intent}
             onAccessFailure={publicationFailure}
             onRefresh={refresh}
+            onAccepted={adapter.acceptExecution}
+            activity={activity}
+            onViewActivity={onViewActivity}
           />
           <NativeIntentConfigurationDialog
             intent={intent}

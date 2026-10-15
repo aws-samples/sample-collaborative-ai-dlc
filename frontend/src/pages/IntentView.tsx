@@ -105,7 +105,11 @@ const errorMessage = (value: string) => {
 export default function IntentView() {
   const context = useIntent();
   return context.executionBackend === 'native' && context.nativeWorkspace ? (
-    <NativeWorkspaceView adapter={context.nativeWorkspace} />
+    <NativeWorkspaceView
+      adapter={context.nativeWorkspace}
+      activity={context.nativeActivity}
+      onViewActivity={() => context.focusOutput(null)}
+    />
   ) : (
     <PlatformIntentView />
   );
