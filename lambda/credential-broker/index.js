@@ -1,4 +1,4 @@
-import { authorizeAgentCredentialRequest } from './agent-authentication.js';
+import { authorizeAgentCredentialRequest } from './agent-authentication-entry.js';
 import {
   isAgentCredentialAction,
   loggableAgentCredentialErrorCode,
