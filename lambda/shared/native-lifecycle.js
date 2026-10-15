@@ -15,6 +15,18 @@ const BOUNDARIES = new Set([
   'packageVerificationCompleted',
   'installationStarted',
   'installationCompleted',
+  'packageInstallationStarted',
+  'packageInstallationCompleted',
+  'projectPinStarted',
+  'projectPinCompleted',
+  'harnessConfigurationStarted',
+  'harnessConfigurationCompleted',
+  'initializationVerificationStarted',
+  'initializationVerificationCompleted',
+  'workspaceBaselineStarted',
+  'workspaceBaselineCompleted',
+  'workspaceSnapshotStarted',
+  'workspaceSnapshotCompleted',
   'checkpointVerificationStarted',
   'checkpointVerificationCompleted',
   'checkpointDownloadStarted',
@@ -23,6 +35,8 @@ const BOUNDARIES = new Set([
   'filesystemRestoreCompleted',
   'harnessLaunched',
   'firstOutput',
+  'firstUsefulOutput',
+  'harnessUsageObserved',
   'harnessCompleted',
   'interactionUploadStarted',
   'interactionUploadCompleted',
@@ -34,6 +48,12 @@ const BOUNDARIES = new Set([
   'checkpointUploadCompleted',
   'publicationStarted',
   'publicationCompleted',
+  'publicationVerificationStarted',
+  'publicationVerificationCompleted',
+  'interactionVerificationStarted',
+  'interactionVerificationCompleted',
+  'authorityAdmissionStarted',
+  'authorityAdmissionCompleted',
   'graphStarted',
   'graphCompleted',
 ]);
@@ -49,6 +69,15 @@ export const recordNativeBoundary = (identity, boundary, at = Date.now(), counts
   if (!BOUNDARIES.has(boundary) || !Number.isSafeInteger(at)) return;
   const event = { type: 'native.lifecycle', boundary, at };
   if (boundary === 'executionFailed') event.code = nativeRuntimeFailureCode(counts);
+  if (boundary === 'harnessUsageObserved') {
+    for (const key of ['durationMs', 'durationApiMs', 'numTurns'])
+      if (
+        Number.isSafeInteger(own(counts, key)) &&
+        own(counts, key) >= 0 &&
+        own(counts, key) <= (key === 'numTurns' ? 100000 : 86400000)
+      )
+        event[key] = own(counts, key);
+  }
   if (boundary === 'questionPresentation') {
     if (
       [...NATIVE_PRESENTATION_REASONS, 'structured', 'unsafe_path', 'credential'].includes(

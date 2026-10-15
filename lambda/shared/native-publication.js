@@ -24,6 +24,30 @@ const safeVersion = (v) =>
 const exact = (v, fields) =>
   object(v) && Object.keys(v).length === fields.length && fields.every((f) => Object.hasOwn(v, f));
 
+// Keep the same four-request bound as private checkpoints. A failed inventory
+// drains all started operations and never advances to its manifest commit.
+const eachFile = async (files, operation) => {
+  let next = 0;
+  let failed = false;
+  let failure;
+  await Promise.all(
+    Array.from({ length: Math.min(4, files.length) }, async () => {
+      while (!failed && next < files.length) {
+        const index = next++;
+        try {
+          await operation(files[index], index);
+        } catch (error) {
+          if (!failed) {
+            failed = true;
+            failure = error;
+          }
+        }
+      }
+    }),
+  );
+  if (failed) throw failure;
+};
+
 export const nativePublicationScope = (input) => {
   if (
     !object(input) ||
@@ -209,7 +233,7 @@ export const createNativePublications = ({
     if (!safeVersion(response.VersionId)) fail();
     return { key, versionId: response.VersionId };
   };
-  const get = async (pointer, maxBytes, signal) => {
+  const get = async (pointer, maxBytes, signal, verifySha256 = null) => {
     if (!object(pointer) || typeof pointer.key !== 'string' || !safeVersion(pointer.versionId))
       fail();
     const deadline = signal
@@ -228,12 +252,16 @@ export const createNativePublications = ({
       response.VersionId !== pointer.versionId ||
       !Number.isSafeInteger(response.ContentLength) ||
       response.ContentLength < 0 ||
-      response.ContentLength > maxBytes
+      response.ContentLength > maxBytes ||
+      (verifySha256 !== null && response.ContentLength !== maxBytes)
     ) {
       response.Body?.destroy?.();
       fail();
     }
-    const chunks = [];
+    // Admission needs an exact digest, not four accumulated source files.
+    // Member file downloads and manifest decoding still collect their bytes.
+    const chunks = verifySha256 === null ? [] : null;
+    const digest = verifySha256 === null ? null : createHash('sha256');
     let count = 0;
     const abort = () => response.Body?.destroy?.(deadline.reason);
     deadline.addEventListener('abort', abort, { once: true });
@@ -243,14 +271,16 @@ export const createNativePublications = ({
         deadline.throwIfAborted();
         count += part.length;
         if (count > maxBytes || count > response.ContentLength) fail();
-        chunks.push(Buffer.from(part));
+        if (chunks) chunks.push(Buffer.from(part));
+        else digest.update(part);
       }
     } finally {
       deadline.removeEventListener('abort', abort);
       response.Body?.destroy?.();
     }
     if (count !== response.ContentLength) fail();
-    return Buffer.concat(chunks);
+    if (digest && digest.digest('hex') !== verifySha256) fail();
+    return chunks ? Buffer.concat(chunks) : null;
   };
   const verifyFile = async (identity, manifest, fileId, { signal } = {}) => {
     const checked = validateManifest(manifest, identity);
@@ -291,47 +321,48 @@ export const createNativePublications = ({
           sha256: hash(file.content),
           role: file.role,
           mediaType: media(file.path),
-          content: file.content,
+          content: Buffer.from(file.content),
         };
       });
       if (new Set(normalized.map((f) => f.path)).size !== normalized.length) fail();
       // Validate all metadata before the first write. Placeholder object versions
       // are only used in this prospective validation, never published or returned.
-      const manifest = {
-        schemaVersion: sourceBaseline ? 2 : 1,
-        ...(sourceBaseline ? { sourceBaseline } : {}),
-        scope: {
-          projectId: scope.projectId,
-          executionId: scope.executionId,
-          attemptId: scope.attemptId,
-          epoch: scope.epoch,
+      const manifest = validateManifest(
+        {
+          schemaVersion: sourceBaseline ? 2 : 1,
+          ...(sourceBaseline ? { sourceBaseline } : {}),
+          scope: {
+            projectId: scope.projectId,
+            executionId: scope.executionId,
+            attemptId: scope.attemptId,
+            epoch: scope.epoch,
+          },
+          packageId,
+          sequence,
+          createdAt: now(),
+          nativeSessionId,
+          outcome,
+          repository,
+          files: normalized.map(({ content: _content, ...file }) => ({
+            ...file,
+            object: { key: fileKey(scope, file), versionId: 'prospective' },
+          })),
+          question: questionPath
+            ? (() => {
+                const f = normalized.find((entry) => entry.path === questionPath);
+                return f ? { fileId: f.id, path: f.path, sha256: f.sha256 } : {};
+              })()
+            : null,
         },
-        packageId,
-        sequence,
-        createdAt: now(),
-        nativeSessionId,
-        outcome,
-        repository,
-        files: normalized.map(({ content: _content, ...file }) => ({
-          ...file,
-          object: { key: fileKey(scope, file), versionId: 'prospective' },
-        })),
-        question: questionPath
-          ? (() => {
-              const f = normalized.find((entry) => entry.path === questionPath);
-              return f ? { fileId: f.id, path: f.path, sha256: f.sha256 } : {};
-            })()
-          : null,
-      };
-      validateManifest(manifest, identity);
-      for (let index = 0; index < normalized.length; index += 1) {
-        const file = normalized[index];
+        identity,
+      );
+      await eachFile(normalized, async (file, index) => {
         manifest.files[index].object = await put(
           fileKey(scope, file),
           file.content,
           file.mediaType,
         );
-      }
+      });
       const data = Buffer.from(canonicalJson(manifest));
       if (data.length > NATIVE_PUBLICATION_LIMITS.manifestBytes) fail();
       const sha256 = hash(data);
@@ -392,8 +423,12 @@ export const createNativePublications = ({
           )
       )
         fail();
+      // The manifest was just fully validated and is locally owned. Re-running
+      // that O(files) validation for every file made admission quadratic.
       if (verifyFiles)
-        for (const file of manifest.files) await verifyFile(identity, manifest, file.id);
+        await eachFile(manifest.files, (file) =>
+          get(file.object, file.bytes, undefined, file.sha256),
+        );
       return manifest;
     },
     file: verifyFile,

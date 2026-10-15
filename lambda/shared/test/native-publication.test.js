@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createNativePublications,
   nativePublicationPath,
@@ -71,6 +71,106 @@ const setup = () => {
     },
   };
 };
+
+it.each(['upload', 'verify'])(
+  'bounds %s inventory work to four and drains failures',
+  async (mode) => {
+    const f = setup();
+    const data = input();
+    data.files.push(
+      ...Array.from({ length: 10 }, (_, i) => ({
+        path: `src/more-${i}.txt`,
+        role: 'code',
+        content: Buffer.from('saved'),
+      })),
+    );
+    const receipt = await f.store.write(data);
+    let entered = 0;
+    let active = 0;
+    let peak = 0;
+    let manifestWrites = 0;
+    const releases = [];
+    const store = createNativePublications({
+      bucket: 'native-results-test',
+      accountId: '123456789012',
+      s3: {
+        async send(command) {
+          const p = command.input;
+          const write = command.constructor.name === 'PutObjectCommand';
+          if (write && p.Key.includes('/manifests/')) manifestWrites++;
+          if (p.Key.includes('/files/')) {
+            const index = entered++;
+            active++;
+            peak = Math.max(peak, active);
+            try {
+              await new Promise((resolve) => releases.push(resolve));
+              if (index === 0) throw new Error('injected transfer failure');
+            } finally {
+              active--;
+            }
+          }
+          if (write) return { VersionId: 'valid-version' };
+          const content = f.objects.get(`${p.Key}:${p.VersionId}`);
+          return {
+            VersionId: p.VersionId,
+            ContentLength: content.length,
+            Body: Readable.from([content]),
+          };
+        },
+      },
+    });
+    let settled = false;
+    const operation =
+      mode === 'upload' ? store.write(data) : store.read(identity, receipt, { verifyFiles: true });
+    const rejected = expect(
+      operation.finally(() => {
+        settled = true;
+      }),
+    ).rejects.toThrow('injected transfer failure');
+    await vi.waitFor(() => expect(entered).toBe(4));
+    releases[0]();
+    await vi.waitFor(() => expect(active).toBe(3));
+    expect(settled).toBe(false);
+    releases.slice(1).forEach((release) => release());
+    await rejected;
+    expect({ entered, active, peak, manifestWrites }).toEqual({
+      entered: 4,
+      active: 0,
+      peak: 4,
+      manifestWrites: 0,
+    });
+  },
+);
+
+it('freezes all publication bytes and metadata before concurrent uploads', async () => {
+  const f = setup();
+  const data = input();
+  const receiptPromise = f.store.write(data);
+  data.files[1].content.fill(42);
+  data.repository.branch = 'changed-after-call';
+  const receipt = await receiptPromise;
+  const manifest = await f.store.read(identity, receipt, { verifyFiles: true });
+  expect(manifest.repository.branch).toBe('develop');
+  expect((await f.store.file(identity, manifest, manifest.files[1].id)).bytes).toEqual(
+    Buffer.from([0, 255, 128, 12]),
+  );
+});
+
+it.each([undefined, null, 0])('never commits after a non-Error rejection (%s)', async (failure) => {
+  const keys = [];
+  const store = createNativePublications({
+    bucket: 'native-results-test',
+    accountId: '123456789012',
+    s3: {
+      async send(command) {
+        keys.push(command.input.Key);
+        throw failure;
+      },
+    },
+  });
+  await expect(store.write(input())).rejects.toBe(failure);
+  expect(keys.every((key) => key.includes('/files/'))).toBe(true);
+});
 
 it.each(['short', 'long', 'interrupted', 'aborted'])(
   'rejects and closes a %s immutable file transfer',

@@ -70,6 +70,64 @@ const expectNoSecret = (events, secret) => {
   }
 };
 
+it('reports first useful output once and bounded CLI query timings without raw fields', () => {
+  const observations = [];
+  const log = createNativeActivityLog({ writerGeneration: 1 });
+  const turn = log.turn({
+    sequence: 1,
+    harness: 'claude',
+    onObservation: (boundary, counts) => observations.push({ boundary, ...counts }),
+  });
+  turn.write(
+    Buffer.from(
+      codex(
+        { type: 'system', subtype: 'init', session_id: MODEL },
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'Working.' }] } },
+        {
+          type: 'result',
+          subtype: 'success',
+          result: 'Question?',
+          usage: { input_tokens: 5 },
+          duration_ms: 4000,
+          duration_api_ms: 2300,
+          num_turns: 2,
+          private: MODEL,
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          result: 'Question?',
+          usage: { input_tokens: 5 },
+          duration_ms: -1,
+          duration_api_ms: MODEL,
+          num_turns: 100001,
+        },
+      ),
+    ),
+  );
+  turn.close();
+  expect(observations).toEqual([
+    { boundary: 'firstUsefulOutput' },
+    { boundary: 'harnessUsageObserved', durationMs: 4000, durationApiMs: 2300, numTurns: 2 },
+    { boundary: 'harnessUsageObserved' },
+  ]);
+  expect(JSON.stringify(observations)).not.toContain(MODEL);
+});
+
+it('retains activity when a timing observer throws', () => {
+  const log = createNativeActivityLog({ writerGeneration: 1 });
+  const turn = log.turn({
+    sequence: 1,
+    harness: 'codex',
+    onObservation: () => {
+      throw Error('telemetry');
+    },
+  });
+  turn.write(Buffer.from(codex(thread, message('a', 'Still available'))));
+  turn.close();
+  expect(visible(log.pull(0).events).join('')).toContain('Still available');
+});
+
 describe('native activity public boundary', () => {
   it.each([
     [

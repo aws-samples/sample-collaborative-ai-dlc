@@ -759,12 +759,13 @@ export const createNativeExecutor = ({
       spoolDirectory: join(ownerDirectory, 'activity'),
     }));
   };
-  const timing = (boundary) => {
+  const timing = (boundary, counts = {}) => {
     current.report.timings ??= {};
     current.report.timings[boundary] = Date.now();
     recordNativeBoundary(current.identity, boundary, current.report.timings[boundary], {
       sequence: current.report.sequence,
       writerGeneration: current.writerGeneration,
+      ...counts,
     });
   };
   const report = () =>
@@ -883,6 +884,7 @@ export const createNativeExecutor = ({
       model: configuration.model,
       forbiddenBytes,
       signal,
+      onObservation: timing,
     });
     onActivity(activityTurn);
     activityTurn.lifecycle({ title: 'Preparing native harness' });
@@ -913,10 +915,14 @@ export const createNativeExecutor = ({
     if (!continuing)
       for (const invocation of [
         {
+          phase: 'packageInstallation',
+          title: 'Installing verified workflow package',
           command: pkg.binaryPath,
           args: ['use', pkg.version, '--from', pkg.directory, '--offline', '--json'],
         },
         {
+          phase: 'projectPin',
+          title: 'Pinning workflow to this workspace',
           command: binary,
           args: [
             'config',
@@ -931,6 +937,8 @@ export const createNativeExecutor = ({
           ],
         },
         {
+          phase: 'harnessConfiguration',
+          title: 'Configuring native harness',
           command: binary,
           args: [
             'config',
@@ -946,9 +954,16 @@ export const createNativeExecutor = ({
             '--json',
           ],
         },
-      ])
-        await run(invocation, baseEnv);
+      ]) {
+        const { phase, title, ...command } = invocation;
+        activityTurn.lifecycle({ title });
+        timing(`${phase}Started`);
+        await run(command, baseEnv);
+        timing(`${phase}Completed`);
+      }
     if (!continuing) {
+      timing('initializationVerificationStarted');
+      activityTurn.lifecycle({ title: 'Verifying workflow installation' });
       const inspection = await inspectInitialization({
         projectDirectory: project,
         installRoot: join(root, 'machine/data'),
@@ -963,6 +978,7 @@ export const createNativeExecutor = ({
       await checkDirectories();
       if (configuration.harness === 'claude') await configureNativeClaudeSessionEnd(project);
       current.package = structuredClone(pkg);
+      timing('initializationVerificationCompleted');
     }
     timing('installationCompleted');
     return {
@@ -992,7 +1008,17 @@ export const createNativeExecutor = ({
   }) => {
     // A spec from an earlier turn must never describe this turn's question.
     await clearNativePendingSpec(project);
-    const beforeFiles = (await snapshot({ project, signal, forbiddenBytes })).files.map(fileRef);
+    activityTurn.lifecycle({ title: 'Inspecting workspace' });
+    timing('workspaceBaselineStarted');
+    let beforeFiles;
+    {
+      const baseline = await snapshot({ project, signal, forbiddenBytes });
+      beforeFiles = baseline.files.map(fileRef);
+      timing('workspaceBaselineCompleted', {
+        files: baseline.files.length,
+        bytes: baseline.totalBytes,
+      });
+    }
     const modelEnv = {
       ...auth,
       ...baseEnv,
@@ -1043,6 +1069,7 @@ export const createNativeExecutor = ({
     );
     timing('harnessCompleted');
     const completed = output.finish();
+    activityTurn.lifecycle({ title: 'Checking completed workspace' });
     await checkDirectories();
     const formDiagnostic = (details) => {
       recordNativeBoundary(current.identity, 'questionPresentation', Date.now(), {
@@ -1056,7 +1083,9 @@ export const createNativeExecutor = ({
       onDiagnostic: formDiagnostic,
     });
     const renderedSpec = rendered.spec;
+    timing('workspaceSnapshotStarted');
     const files = await snapshot({ project, signal, forbiddenBytes });
+    timing('workspaceSnapshotCompleted', { files: files.files.length, bytes: files.totalBytes });
     const pendingInput = buildNativePendingInput({
       gate: nativeGateFromSnapshot(files),
       spec: renderedSpec,
@@ -1143,13 +1172,14 @@ export const createNativeExecutor = ({
 
   // Public receipts and private CLI recovery bytes complete before the local head moves.
   const publishNativeTurn = async (
-    { signal, pkg, configuration, forbiddenBytes },
+    { signal, pkg, configuration, forbiddenBytes, activityTurn },
     { completed, files, pendingInput, presentation, nativeSessionId, outcome, nextPromptEvidence },
   ) => {
     const publicationOutcome =
       outcome.kind === 'waiting_for_input' ? 'WAITING_FOR_INPUT' : 'STOPPED';
     const questionPath = outcome.evidence?.questions[0]?.path ?? null;
-    timing('publicationStarted');
+    activityTurn.lifecycle({ title: 'Saving workflow files' });
+    timing('publicationStarted', { files: files.files.length, bytes: files.totalBytes });
     const uploaded = await publish({
       identity: current.identity,
       sequence: current.report.sequence,
@@ -1166,7 +1196,7 @@ export const createNativeExecutor = ({
       signal,
     });
     checkCancelled();
-    timing('publicationCompleted');
+    timing('publicationCompleted', { files: files.files.length, bytes: files.totalBytes });
     const publication = uploaded?.receipt;
     if (
       uploaded?.uploaded !== true ||
@@ -1206,6 +1236,7 @@ export const createNativeExecutor = ({
       filesCount: publication.filesCount,
     };
     timing('interactionUploadStarted');
+    activityTurn.lifecycle({ title: 'Saving response and form' });
     const interaction = nativeInteractionReceipt(
       await publishInteraction({
         identity: current.identity,
@@ -1240,6 +1271,7 @@ export const createNativeExecutor = ({
       // Quiescent private session state is required for the next reply.
       // Public artifact/message uploads alone are not a resumable session.
       timing('checkpointCaptureStarted');
+      activityTurn.lifecycle({ title: 'Capturing exact recovery checkpoint' });
       const captured = await captureRecovery({
         project,
         home: current.home,
@@ -1249,10 +1281,15 @@ export const createNativeExecutor = ({
         signal,
         limits: RECOVERY_CAPTURE_LIMITS,
       });
-      timing('checkpointCaptureCompleted');
+      const captureCounts = {
+        files: captured.files.length,
+        bytes: captured.files.reduce((total, file) => total + file.bytes, 0),
+      };
+      timing('checkpointCaptureCompleted', captureCounts);
       await checkDirectories();
       checkCancelled();
-      timing('checkpointUploadStarted');
+      timing('checkpointUploadStarted', captureCounts);
+      activityTurn.lifecycle({ title: 'Saving recovery checkpoint' });
       recoveryCheckpoint = await publishRecovery({
         identity: current.identity,
         writerGeneration: current.writerGeneration,
@@ -1277,7 +1314,8 @@ export const createNativeExecutor = ({
         recoveryCheckpoint.manifest?.sha256 !== recoveryCheckpoint.id
       )
         fail('native_execution_recovery_unconfirmed');
-      timing('checkpointUploadCompleted');
+      timing('checkpointUploadCompleted', captureCounts);
+      activityTurn.lifecycle({ title: 'Checkpoint uploaded; awaiting publication verification' });
     }
     await checkpoint('publication_ready', {
       outcome: publicationOutcome,

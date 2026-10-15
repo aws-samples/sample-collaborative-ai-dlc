@@ -1187,6 +1187,240 @@ procedures. Release qualification must record exact pins and exercise real
 upgrade, recovery, authorization, and delivery behavior in an authorized
 isolated deployment.
 
+## Runtime latency optimization — 2026-10-15
+
+**Speed is an active acceptance item, not deferred UI work.** This backend pass
+starts at `004d871`; it preserves the stabilization contract below. Frontend work
+and the independent architecture audit have separate owners. No model, reasoning,
+reviewer, human-gate, CLI/dependency, credential or authority policy was changed.
+
+### Critical path and attribution
+
+Read-only `solution-read`/`us-east-1` queries reverified STS account `746558295630`,
+role `ReadOnly/jwthewes-Isengard`, the two exact execution keys already documented
+below, and bounded original runtime log streams. The 3ea1b0d3 window was
+07:14–07:40 UTC (68 numeric lifecycle records); d26495a3 was 11:02–11:22 UTC
+(29 records). Consistent reads still show `AWAITING_USER` revision 1337/turn 4
+and `FAILED` revision 682/turn 2 respectively. Server-projected OUTPUT queries
+returned only keys, turn/sequence, timestamps and display-type categories:
+62 and 35 records, fully paginated. No transcript, source, checkpoint or private
+S3 body was read. Lifecycle and OUTPUT cursors remain independent.
+
+3ea1b0d3 still pins image `8c6bb210…`, Sonnet 5 and AI-DLC 2.11.0; d26495a3
+pins image `19ab158c…`, Claude 2.1.296, Sonnet 5.5 and the same package
+`sha256:9fdb284f4601d3c8c2d828abda2b9b98f3ecaca149870da3a11dbc2ee24805b1`.
+`GetAgentRuntime` again returned version 2 / image `19ab158c…`. READY is resource
+availability, not successful execution. The execution worker now reports code hash
+`nLHw/MvCwXzwZ+hS4xrftda1JvOeSuy7TK1FT6r100g=`, last modified
+**12:49:15 UTC**, after the incident. Its current source commit was not established;
+do not ascribe these historical timings to that worker or this local candidate.
+
+The complete non-overlapping 3ea1b0d3 table remains in the next section. Its
+important boundaries, plus the later initial start, are:
+
+| Phase (seconds)                                                        | 3ea start |       3ea replies 2 / 3 / 4 | d264 start |
+| ---------------------------------------------------------------------- | --------: | --------------------------: | ---------: |
+| Acceptance → runtime acceptance, including queue/availability/dispatch |    63.318 |       3.208 / 4.130 / 2.242 |     52.058 |
+| Preparation, including verified package and checkout on initial start  |     8.467 |       0.052 / 0.055 / 0.096 |      7.345 |
+| Installation/configuration/initial verification                        |   190.306 |                   0 / 0 / 0 |    194.885 |
+| CLI process, including workflow/tools/hooks/subagents/API              |   111.794 | 443.956 / 110.511 / 229.435 |     72.050 |
+| Files and interaction upload                                           |     0.710 |       1.250 / 1.439 / 1.840 |      0.698 |
+| Exact private capture                                                  |     1.813 |       1.545 / 1.543 / 1.660 |      1.835 |
+| Private checkpoint upload                                              |    18.684 |    37.609 / 36.955 / 34.666 |      4.485 |
+| Upload → authority admission, including polling and verification       |     7.190 |       9.167 / 8.435 / 8.795 |      8.313 |
+| Unattributed arithmetic remainder                                      |     0.452 |       0.437 / 0.495 / 0.503 |      0.402 |
+| Acceptance → admitted publication (not browser paint)                  |   402.734 | 497.224 / 163.563 / 279.237 |    342.071 |
+
+The later d264 reply was delivered in **4.466 s**, ran the CLI for **287.431 s**,
+then failed at optional-form intake 168 ms after CLI completion. It has no
+answer-to-next-question measurement. Installation was not repeated. Native's
+five-second queue poll is one possible contributor to the post-upload tail,
+not an explanation for minutes inside the CLI. Queue residence, runtime startup,
+verification and notification were not individually measured by the old image.
+WebSocket delivery and browser paint remain unmeasured.
+
+Raw first-output timing is misleading as a user-feedback metric. 3ea's first
+useful captured message/tool/edit appeared **20.077 / 43.082 / 38.188 / 38.732 s**
+after CLI launch, versus approximately 1.8–2.1 s for its first raw frame.
+d264's useful offsets were **44.320 / 31.729 s**. Its second turn contained
+17 tool events, three edits and three messages; 3ea turn 2 contained 19 tools,
+five edits and four messages. These are captured activity categories, not exact
+tool-start counts, reviewer identities or notification times. Largest gaps
+between useful events were 44.755 s for 3ea turn 2 and 26.564 s for d264 turn 2.
+They do not prove inactivity. **CLI elapsed is not model-only inference time.**
+
+### Implemented backend improvements
+
+- Public-file upload and exact-version verification now use at most **four**
+  transfers, matching the existing private-checkpoint bound. Every started
+  transfer drains after failure; no manifest is committed for an incomplete
+  upload. Input bytes/metadata are copied before the first await.
+- Verification validates the full manifest **once**, rather than revalidating
+  and cloning all N entries for each of N files. Each exact version is still read
+  and hashed. Verification streams into hashes without collecting four source
+  bodies; member file downloads continue returning exact bytes. No protected
+  read is cached, no unchanged file is assumed valid, and request counts do not
+  decrease by omitting verification.
+- Existing numeric lifecycle telemetry now separates package installation,
+  project pinning, harness configuration, initialization verification, before/
+  after workspace snapshots, publication/interaction/checkpoint verification and
+  atomic admission. Snapshot/upload boundaries include bounded file/byte counts.
+  `firstUsefulOutput` means a normalized public activity event, not browser paint.
+  Claude `harnessUsageObserved` records only bounded optional `durationMs`,
+  `durationApiMs`, `numTurns` from the CLI's own usage-bearing result. Reported API
+  durations are not authoritative billing/inference time and must not be added
+  to enclosing CLI elapsed or blindly summed across overlapping query scopes.
+- Runtime phase notices travel through existing `activity-v1` OUTPUT records:
+  “Installing verified workflow package”, “Pinning workflow to this workspace”,
+  “Configuring native harness”, “Verifying workflow installation”, “Inspecting
+  workspace”, “Checking completed workspace”, “Saving workflow
+  files”, “Saving response and form”, “Capturing exact recovery checkpoint”,
+  “Saving recovery checkpoint”, and “Checkpoint uploaded; awaiting publication
+  verification”. They do not create an answerable form or assert admission.
+
+**UI integration:** there is no new public API/schema requirement. Consume the
+existing `kind: lifecycle`, `display.type: system`, `display.title` and capture
+timestamp as informational progress; do not parse English titles as authority.
+The added detailed boundaries/counts are operator lifecycle/status telemetry,
+not a new scheduling channel. UI elapsed time may be shown without inventing
+percent completion; only the existing admitted interaction unlocks a reply.
+
+### Repeatable local probes
+
+`npm run benchmark:native-publication` runs the production publication owner
+with 16/128/512 files of 4 KiB and 0/5 ms synthetic object delays. Five samples
+per case; arithmetic means below, not a claimed p95 or live AWS speedup.
+Before measurements used `004d871`, after measurements use this candidate:
+
+| Files | Injected delay per object | Upload before → after (ms) | Verify before → after (ms) |
+| ----- | ------------------------: | -------------------------: | -------------------------: |
+| 16    |                      5 ms |                    97 → 29 |                   101 → 30 |
+| 128   |                      5 ms |                  747 → 187 |                  822 → 189 |
+| 512   |                      5 ms |                2,916 → 732 |                3,712 → 734 |
+| 512   |                      0 ms |                      6 → 7 |                    582 → 6 |
+
+For the 512-file delayed case, before/after verification ranges were
+3,637–3,868 / 729–738 ms. Each sample still makes exactly N+1 PUTs and N+1 GETs;
+delayed peak request count changes from one to four. Existing limits remain
+1,000 files, 32 MiB/file, 256 MiB/inventory, 1 MiB/manifest. Verification retains
+only stream chunks/digests rather than full source files. Publication still owns
+a bounded copy of its upload input. No timing threshold depends on a fast host:
+regressions assert concurrency, exact bytes, failure draining and atomicity.
+
+The existing network-disabled installed-Claude smoke now also emits numeric
+installation phases, loopback request arrival offsets and JSON byte counts,
+parent-query/API samples and capture counts/times. No request content is emitted.
+The final run used Claude **2.1.296**, attested AI-DLC **2.11.0**, three turns,
+the actual Agent tool/cwd change, 12 typed scope choices and exact restore:
+installation/pin/configuration **1.854 / 0.395 / 0.173 s**; CLI turns
+**1.981 / 2.493 / 1.079 s**; capture **128 / 121 / 116 ms**, 341/343/343 files
+and approximately 10.2–10.4 MB. Single samples, local tmpfs, inert loopback
+responses, no provider calls. The fixture did not reproduce a 190-second
+installation and cannot attribute that gap to EFS or a particular command.
+The new deployed phase boundaries are needed to establish that cause.
+The public runtime archive contains 2,523 files / 71.5 MB, so filesystem
+materialization is a concrete candidate to measure. The offline fixture also
+supplies public trust roots explicitly; production verification can use a
+different trust-root bootstrap path. Neither EFS metadata latency nor network
+bootstrap is established as the historical cause. This pass does not cache or
+skip signature/trust verification to make installation appear faster.
+
+Parent loopback requests were 164–169 KB: approximately 27.9 KB system JSON,
+74.2 KB / 24 tool definitions and 62–67 KB messages; the subagent request was
+48 KB. The current native first-turn instruction for a short fixture request is
+3,372 bytes. JSON bytes are not token counts. Removing that instruction alone
+would not remove most context and would break the question/authority contract.
+Pinned Claude settings register five pre-Bash hooks and two post-Bash hooks,
+plus session/prompt/stop hooks; their guards and workflow work are not optional
+performance noise. The intake fixture often takes their no-active-workflow
+paths. It does not qualify the cost of active-stage reviewers or all hook bodies.
+
+The historical ECR digest was no longer locally cached; an attempted automatic
+pull failed with an expired registry token. No reauthentication/profile change
+was attempted. The probe instead used cached ARM64 image
+`aidlc-agentcore@sha256:0160d0651416335f172bf1f8f3523d59ac3db867120cf983be70a34a8161201e`
+with the candidate adapter mounted read-only. That cache has the same installed
+Claude pin but lacks `gh`; the exact **2.101.0** verifier already pinned in the
+repository Dockerfile was downloaded from its public release, checksum
+`b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f` verified,
+and mounted read-only at `/usr/local/bin/gh`. Signature/ref/issuer verification
+remained active. A derived-image build failed because its builder could not
+resolve the local image; the direct read-only mount avoided that dependency.
+No production image was built or deployed. Qualification now uses `--pull never`
+so a missing image is explicit instead of implicitly contacting a registry.
+
+Reproduce with the normal `npm run test:native-qualification`, plus the installed
+smoke command in the stabilization section. When using the above cache, add
+`--mount type=bind,src=/tmp/native-opt-image-fixture/gh,dst=/usr/local/bin/gh,readonly`
+to that Docker command. The verifier prerequisite is the existing Dockerfile's
+pinned binary, not a bypass or dependency upgrade.
+
+### Prioritized speed work and acceptance
+
+| Priority / symptom                           | Evidence and action / owner                                                                                         | Expected impact and validation                                                                                                                                                                 | State                                                     |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| P1: question reply takes minutes             | 111–444 s inside CLI/workflow; runtime adds query/API and useful-output observations, UI shows honest elapsed phase | Attribution before changing quality; collect every serial boundary and identify useful-output gaps on one fresh authorized run                                                                 | Backend instrumentation done; live/UI verification needed |
+| P1: post-turn verification scales poorly     | Quadratic manifest validation and serial public I/O; backend uses one validation and four streaming transfers       | Local 512-file verification 3.71 → 0.73 s at synthetic 5 ms I/O; likely seconds, not minutes, saved on larger live publications (estimate)                                                     | Implemented and locally measured                          |
+| P1: 190–195 s first-install wait             | Split install/pin/configuration/verification now; retain exact package trust                                        | Attribute at least 95% of install interval before selecting an optimization. If EFS extraction dominates, evaluate an exact pinned read-only image/cache projection with recovery tests        | Instrumentation done; actual cause unmeasured             |
+| P1: long interval without useful feedback    | First useful activity 20–44 s despite raw frame at ~2 s; fixed preparation/save notices use existing output channel | Under healthy local transport each phase notice precedes its work; live target: show accepted state immediately and current phase within one existing poll cycle plus measured transport delay | Backend done; UI owner / live qualification               |
+| P2: remaining 7–9 s upload-to-admission tail | Five-second polling plus exact verification/authority; new boundaries split these                                   | Measure verification versus poll/notification before changing cadence. Do not shorten safety deadlines or add another scheduler                                                                | Diagnostics done; cadence unchanged                       |
+| P2: repeated context/tools/hooks             | 164–169 KB inert request, many live completed tools; inspect active-stage attribution next                          | No model/reasoning/reviewer/context reduction without separately approved paired quality/latency experiment                                                                                    | Decision/evidence needed                                  |
+| P2: avoidable extra question turns           | Typed asks and grouped current-step forms already qualified                                                         | One accepted complete form → one continuation; no mode-selection repair turn or replay                                                                                                         | Preserved by composed journey                             |
+| P3: immutable upload reuse                   | Content-addressed private objects already reconcile exact bytes; public history pins versions                       | Investigate only if upload remains dominant; cache must not replace owner/access or hash verification                                                                                          | Deferred by measured priority                             |
+
+Architecturally, serial turns, exact checkpointing and atomic admission are
+necessary correctness boundaries, not evidence of a minutes-long scheduler
+defect. The unnecessary serial public I/O and quadratic validation were concrete
+local choices worth changing. Splitting large functions alone cannot shorten
+the observed CLI/workflow intervals. Global decomposition findings belong to the
+separate audit; this pass adds no scheduler, cache service or alternate authority.
+There is no evidence yet supporting a model switch or lower reasoning as the
+default. A separately authorized comparison may measure those tradeoffs.
+
+### Validation and qualification limits
+
+All host checks used Node 24.21.0. The installed fixture uses the cached image's
+Node 24.19.0. Final candidate results:
+
+| Command / boundary                                                | Result                                                                                                                                                                                                     |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run test:native-qualification`                               | 926 backend tests; 286 UI/service tests; one WebSocket scenario (32 deliberately filtered cases); six architecture regressions; 22 wiring checks; 391 production modules with zero architecture violations |
+| Separate network-disabled installed-Claude smoke described above  | Three same-session turns, Agent/cwd metadata, exact restore and 12 typed choices passed; zero external provider calls                                                                                      |
+| Focused publication suite                                         | 41 passed, including bounded concurrency, byte mutation, failure draining and non-Error rejection                                                                                                          |
+| `npm test -- --maxWorkers=2`                                      | 10,352 passed, five failed, three skipped; 357 files passed, three failed, one skipped                                                                                                                     |
+| Isolated preparation rerun                                        | All 33 passed, including the three cases that timed out in the full run                                                                                                                                    |
+| Isolated root-config Git integration rerun                        | Both previously failing cases passed; 73 unrelated cases deliberately filtered                                                                                                                             |
+| `npm run test:release`                                            | 248 passed, zero failed/skipped                                                                                                                                                                            |
+| Lint, format, secretlint, dependency, SDK and architecture checks | Passed; dependency check retains 14 existing warnings and SDK check retains its existing Smithy-major warning                                                                                              |
+| Native runtime-control build                                      | Passed, with existing bundle-size warnings                                                                                                                                                                 |
+| `uv run --frozen --group docs zensical build`                     | Passed, no issues                                                                                                                                                                                          |
+
+The full-suite failures remain a qualification caveat: three preparation
+symlink/submodule/LFS tests exceeded their five-second limits; Git merge
+serialization exceeded 30 seconds; the section-integration forced-conflict test
+did not reach its gate before its wait expired. Those paths were unchanged and
+all five passed in isolated reruns, but that does not establish the reason for
+the full-run failures. The three full-suite skips require Bun. An initial
+isolated Git command selected an excluding configuration and ran no tests;
+the root-config rerun above is the actual evidence.
+
+During development, six qualification cases exposed missing optional telemetry
+fields in injected ports. The fix allows absent counts without changing required
+manifest validators; the final 926-test run includes it. An initial sandboxed
+focused run had 191 passes and eight local-listen permission failures; the same
+tests passed with host permissions (199 passed). Neither result is evidence of
+AWS or model behavior. No frontend source changed; its relevant existing
+qualification suites passed, while the UI owner retains responsibility for the
+combined frontend build and browser assessment.
+
+The ordinary qualification command explicitly skips its installed-image tier
+without the fixture prerequisites; the separate successful Docker command
+supplies that evidence here. Other installed harnesses and active-stage model/
+reviewer behavior remain unqualified. Parent review and a separately authorized
+fresh-run measurement must establish deployed image alignment, first useful
+browser feedback, two complete question/reply/checkpoint cycles, phase attribution
+and unchanged recovery before any live speed or stability claim.
+
 ## Answer latency and grouped forms — 2026-10-15
 
 ### Measured deployed evidence

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { nativeTurnSequence, nativeWriterGeneration } from './execution-store.js';
 import { executionIdentity, executionRuntimeConfiguration } from './execution-runtime.js';
 import { nativeFileExclusion } from '../shared/native-project-files.js';
+import { recordNativeBoundary } from '../shared/native-lifecycle.js';
 export const fail = (code) => {
   throw Object.assign(new Error(code), { code });
 };
@@ -438,6 +439,12 @@ export const verifyCompletedNativeTurn = async ({
   yieldPending,
 }) => {
   const receipt = report.receipt;
+  const timing = (boundary, counts = {}) =>
+    recordNativeBoundary(executionIdentity(state.row), boundary, Date.now(), {
+      sequence: nativeTurnSequence(state.row),
+      ...counts,
+    });
+  timing('publicationVerificationStarted');
   const manifest = await publications.read(executionIdentity(state.row), receipt, {
     verifyFiles: true,
   });
@@ -465,10 +472,15 @@ export const verifyCompletedNativeTurn = async ({
       fail('NATIVE_PUBLICATION_INVALID');
   }
   await check();
+  timing('publicationVerificationCompleted', {
+    files: manifest.files?.length,
+    bytes: manifest.files?.reduce((total, file) => total + file.bytes, 0),
+  });
   const interaction = report.interaction;
   let interactionContentSha256;
   if (interaction) {
     if (!interactions) fail('NATIVE_INTERACTION_INVALID');
+    timing('interactionVerificationStarted');
     const body = await interactions.read(executionIdentity(state.row), interaction);
     if (
       body.packageId !== state.row.configuration.packageId ||
@@ -480,6 +492,7 @@ export const verifyCompletedNativeTurn = async ({
       fail('NATIVE_INTERACTION_INVALID');
     interactionContentSha256 = body.contentSha256;
     await check();
+    timing('interactionVerificationCompleted');
   }
   const checkpoint = report.checkpoint;
   if (checkpoint) {
@@ -491,11 +504,13 @@ export const verifyCompletedNativeTurn = async ({
       manifest,
     );
   }
+  timing('authorityAdmissionStarted');
   state.row = await store.publish({
     row: state.row,
     publication: receipt,
     ...(interaction ? { interaction, interactionContentSha256 } : {}),
     ...(checkpoint ? { checkpoint } : {}),
   });
+  timing('authorityAdmissionCompleted');
   return yieldPending();
 };

@@ -19,6 +19,40 @@ import { executionIdentity } from '../execution-runtime.js';
 import { executionFixture } from './execution-fixtures.js';
 
 const CANARY = 'secret-canary-prompt-model-token-session-content-DO-NOT-LOG';
+
+it('emits only bounded numeric CLI timing fields without evaluating getters', () => {
+  const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+  try {
+    recordNativeBoundary({}, 'harnessUsageObserved', 100, {
+      durationMs: 300,
+      durationApiMs: 200,
+      numTurns: 2,
+      prompt: CANARY,
+    });
+    expect(JSON.parse(log.mock.calls[0][0])).toEqual({
+      type: 'native.lifecycle',
+      boundary: 'harnessUsageObserved',
+      at: 100,
+      durationMs: 300,
+      durationApiMs: 200,
+      numTurns: 2,
+    });
+    recordNativeBoundary({}, 'harnessUsageObserved', 101, {
+      get durationMs() {
+        throw Error(CANARY);
+      },
+      durationApiMs: 86400001,
+      numTurns: -1,
+    });
+    expect(JSON.parse(log.mock.calls[1][0])).toEqual({
+      type: 'native.lifecycle',
+      boundary: 'harnessUsageObserved',
+      at: 101,
+    });
+  } finally {
+    log.mockRestore();
+  }
+});
 const REQUEST_ID = 'a4444444-4444-4444-8444-444444444444';
 const scope = {
   projectId: 'diagnostic-project',

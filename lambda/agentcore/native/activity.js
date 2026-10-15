@@ -277,7 +277,17 @@ export const createNativeActivityLog = ({
       for (const resolve of resume) resolve();
     }
   };
-  const turn = ({ sequence, harness, model, forbiddenBytes = [], signal }) => {
+  const turn = ({ sequence, harness, model, forbiddenBytes = [], signal, onObservation }) => {
+    // The observer receives only numeric/closed-schema telemetry, never the
+    // normalized text or raw harness event. A telemetry failure cannot stop work.
+    const observe = (boundary, counts = {}) => {
+      try {
+        onObservation?.(boundary, counts);
+      } catch {
+        /* advisory */
+      }
+    };
+    let usefulOutput = false;
     if (open) open.close({ failed: true });
     if (spoolDirectory) {
       try {
@@ -357,6 +367,10 @@ export const createNativeActivityLog = ({
         omittedDiagnostics++;
         return;
       }
+      if (!usefulOutput && event.display.type !== 'system') {
+        usefulOutput = true;
+        observe('firstUsefulOutput');
+      }
       push({ kind, capturedAt: now(), ...event });
     };
     let sink;
@@ -401,7 +415,24 @@ export const createNativeActivityLog = ({
         retainState: false,
         maxPendingTools: 64,
         emit: (value) => emitPublic(value),
-        onUsage: (metrics) => {
+        onUsage: (metrics, event) => {
+          if (harness === 'claude') {
+            const counts = {};
+            for (const [key, field] of Object.entries({
+              durationMs: 'duration_ms',
+              durationApiMs: 'duration_api_ms',
+              numTurns: 'num_turns',
+            })) {
+              const value = event?.[field];
+              if (
+                Number.isSafeInteger(value) &&
+                value >= 0 &&
+                value <= (key === 'numTurns' ? 100000 : 86400000)
+              )
+                counts[key] = value;
+            }
+            observe('harnessUsageObserved', counts);
+          }
           if (model === undefined) return;
           usageSamples++;
           emitPublic(

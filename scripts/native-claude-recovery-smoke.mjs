@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { runNativeCommand } from '../lambda/agentcore/native/command-runner.js';
 import { createNativeTurnOutput } from '../lambda/agentcore/native/turn-output.js';
 import {
@@ -25,6 +26,8 @@ let turn = 1;
 let toolSent = false;
 let agentSent = false;
 let engineSent = false;
+let invocationStarted = 0;
+let requestSamples = [];
 const packageDirectory = process.env.NATIVE_QUALIFICATION_PACKAGE;
 const engineEnv = {};
 if (packageDirectory) {
@@ -73,7 +76,8 @@ if (packageDirectory) {
     AIDLC_OFFLINE: '1',
     AIDLC_PROJECT_DIR: project,
   });
-  const run = async (command, args) => {
+  const run = async (phase, command, args) => {
+    const started = performance.now();
     const result = await runNativeCommand({
       command,
       args,
@@ -87,9 +91,23 @@ if (packageDirectory) {
       `Offline pinned installer failed: ${result.stdout} ${result.stderr}`,
     );
     assert.equal(result.cleanupComplete, true);
+    console.log(
+      JSON.stringify({
+        probe: 'installed-initialization',
+        phase,
+        elapsedMs: Math.round(performance.now() - started),
+      }),
+    );
   };
-  await run(`${pkg}/aidlc-linux-arm64`, ['use', '2.11.0', '--from', pkg, '--offline', '--json']);
-  await run(`${root}/bin/aidlc`, [
+  await run('package-installation', `${pkg}/aidlc-linux-arm64`, [
+    'use',
+    '2.11.0',
+    '--from',
+    pkg,
+    '--offline',
+    '--json',
+  ]);
+  await run('project-pin', `${root}/bin/aidlc`, [
     'config',
     '--pin',
     '2.11.0',
@@ -100,7 +118,7 @@ if (packageDirectory) {
     '--offline',
     '--json',
   ]);
-  await run(`${root}/bin/aidlc`, [
+  await run('harness-configuration', `${root}/bin/aidlc`, [
     'config',
     '--harness',
     'claude',
@@ -131,6 +149,14 @@ const server = createServer(async (req, res) => {
     return;
   }
   const request = JSON.parse(raw);
+  requestSamples.push({
+    atMs: Math.round(performance.now() - invocationStarted),
+    bytes: Buffer.byteLength(raw),
+    systemBytes: Buffer.byteLength(JSON.stringify(request.system ?? null)),
+    toolsBytes: Buffer.byteLength(JSON.stringify(request.tools ?? [])),
+    messagesBytes: Buffer.byteLength(JSON.stringify(request.messages ?? [])),
+    toolDefinitions: request.tools?.length ?? 0,
+  });
   let content;
   if (packageDirectory && turn === 1 && !engineSent) {
     engineSent = true;
@@ -223,6 +249,8 @@ try {
       nativeSessionId: turn > 1 ? id : null,
     });
     let trace = '';
+    requestSamples = [];
+    invocationStarted = performance.now();
     const command = await runNativeCommand({
       command: '/usr/local/bin/claude',
       args: [
@@ -257,6 +285,33 @@ try {
     });
     assert.equal(command.exitCode, 0, 'CLI fixture exit');
     assert.equal(command.cleanupComplete, true, 'CLI descendants reaped');
+    const elapsedMs = Math.round(performance.now() - invocationStarted);
+    const frames = trace
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const hooks = frames.filter(
+      (event) =>
+        event.type === 'system' &&
+        ['hook_started', 'hook_response', 'hook_progress'].includes(event.subtype),
+    );
+    const results = frames.filter(
+      (event) => event.type === 'result' && event.parent_tool_use_id == null,
+    );
+    console.log(
+      JSON.stringify({
+        probe: 'installed-turn',
+        turn,
+        elapsedMs,
+        requests: requestSamples,
+        observedHookFrames: hooks.length,
+        completedParentQueries: results.length,
+        reportedApiMs: results.map((event) =>
+          Number.isSafeInteger(event.duration_api_ms) ? event.duration_api_ms : null,
+        ),
+        externalProviderCalls: 0,
+      }),
+    );
     let completed;
     try {
       completed = output.finish();
@@ -327,7 +382,17 @@ try {
         }),
       );
     }
+    const captureStarted = performance.now();
     const captured = await adapter.captureNativeSessionRecovery(options);
+    console.log(
+      JSON.stringify({
+        probe: 'installed-capture',
+        turn,
+        elapsedMs: Math.round(performance.now() - captureStarted),
+        files: captured.files.length,
+        bytes: captured.files.reduce((n, file) => n + file.bytes, 0),
+      }),
+    );
     const transcript = captured.files.find(
       (file) => file.scope === 'home' && file.path.endsWith(`/${id}.jsonl`),
     );

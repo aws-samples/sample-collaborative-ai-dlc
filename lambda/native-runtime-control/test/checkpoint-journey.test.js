@@ -242,6 +242,7 @@ it.each([
     stderr: '',
   };
   const commands = [];
+  let setupCommands = 0;
   const runtime = createNativeExecutor({
     env,
     root,
@@ -250,7 +251,10 @@ it.each([
     inspectMount: async () => ({}),
     inspectInitialization: async () => ({ ok: true }),
     commandRunner: async (input) => {
-      if (input.timeoutMs !== null) return clean;
+      if (input.timeoutMs !== null) {
+        setupCommands++;
+        return clean;
+      }
       if (++turns > 1) {
         expect(input.args).toContain('--resume');
         expect(input.args).toContain(nativeSessionId);
@@ -370,6 +374,20 @@ it.each([
     expect(f.row().status).toBe('AWAITING_USER');
     const first = f.row();
     expect(first.recoveryCheckpoint.sequence).toBe(1);
+    expect(setupCommands).toBe(3);
+    const progress = await runtime.activity({ ...executionIdentity(row), after: 0 });
+    expect(
+      progress.events
+        .filter((event) => event.kind === 'lifecycle')
+        .map((event) => event.display.title),
+    ).toEqual(
+      expect.arrayContaining([
+        'Installing verified workflow package',
+        'Saving workflow files',
+        'Saving recovery checkpoint',
+        'Checkpoint uploaded; awaiting publication verification',
+      ]),
+    );
     let previous = first;
     let latestAnswer;
     let persistedFailure;
@@ -454,6 +472,18 @@ it.each([
         await supervisor(f.identity);
       } else await supervisor(f.identity);
       const completed = await runtime.settle();
+      expect(setupCommands).toBe(3); // Progress reporting never repeats installation or a model turn.
+      expect(completed.timings.packageInstallationStarted).toBeUndefined();
+      expect(completed.timings.workspaceBaselineCompleted).toBeTypeOf('number');
+      if (completed.status === 'publication_ready') {
+        for (const [before, after] of [
+          ['workspaceSnapshotStarted', 'workspaceSnapshotCompleted'],
+          ['publicationStarted', 'publicationCompleted'],
+          ['checkpointCaptureStarted', 'checkpointCaptureCompleted'],
+          ['checkpointUploadStarted', 'checkpointUploadCompleted'],
+        ])
+          expect(completed.timings[after]).toBeGreaterThanOrEqual(completed.timings[before]);
+      }
       expect(commands.at(-1)).toMatchObject({ exitCode: 0, cleanupComplete: true });
       if (completed.status === 'failed') {
         persistedFailure = JSON.parse(

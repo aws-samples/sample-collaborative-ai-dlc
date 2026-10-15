@@ -259,6 +259,9 @@ export const createNativeExecutionSupervisor =
       verifiedPublication,
     ) => {
       if (!checkpoints || !receipt || !interaction) fail('NATIVE_RECOVERY_INVALID');
+      recordNativeBoundary(executionIdentity(state.row), 'checkpointVerificationStarted', now(), {
+        sequence: nativeTurnSequence(state.row),
+      });
       const manifest = await checkpoints.read(executionIdentity(state.row), receipt, {
         verifyFiles: true,
       });
@@ -305,6 +308,11 @@ export const createNativeExecutionSupervisor =
         fail('NATIVE_RECOVERY_INVALID');
       verifyPublicProjectFiles(manifest, publicManifest);
       await check();
+      recordNativeBoundary(executionIdentity(state.row), 'checkpointVerificationCompleted', now(), {
+        sequence: manifest.sequence,
+        files: manifest.files?.length,
+        bytes: manifest.files?.reduce((total, file) => total + file.bytes, 0),
+      });
       return manifest;
     };
     const status = () =>

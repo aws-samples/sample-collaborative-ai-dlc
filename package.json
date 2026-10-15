@@ -48,6 +48,7 @@
   "scripts": {
     "test": "vitest run",
     "test:native-qualification": "node scripts/native-qualification.mjs",
+    "benchmark:native-publication": "node scripts/native-publication-benchmark.mjs",
     "test:native-foundation": "vitest run --config vitest.native-foundation.config.js",
     "test:native-policies": "node --test scripts/test/native-package-policies.test.mjs",
     "test:aidlc-compatibility": "vitest run --config vitest.aidlc-compatibility.config.js",
