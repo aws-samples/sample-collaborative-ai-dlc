@@ -1382,25 +1382,30 @@ default. A separately authorized comparison may measure those tradeoffs.
 All host checks used Node 24.21.0. The installed fixture uses the cached image's
 Node 24.19.0. Final candidate results:
 
-| Command / boundary                                                | Result                                                                                                                                                                                                     |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npm run test:native-qualification`                               | 926 backend tests; 286 UI/service tests; one WebSocket scenario (32 deliberately filtered cases); six architecture regressions; 22 wiring checks; 391 production modules with zero architecture violations |
-| Separate network-disabled installed-Claude smoke described above  | Three same-session turns, Agent/cwd metadata, exact restore and 12 typed choices passed; zero external provider calls                                                                                      |
-| Focused publication suite                                         | 41 passed, including bounded concurrency, byte mutation, failure draining and non-Error rejection                                                                                                          |
-| `npm test -- --maxWorkers=2`                                      | 10,352 passed, five failed, three skipped; 357 files passed, three failed, one skipped                                                                                                                     |
-| Isolated preparation rerun                                        | All 33 passed, including the three cases that timed out in the full run                                                                                                                                    |
-| Isolated root-config Git integration rerun                        | Both previously failing cases passed; 73 unrelated cases deliberately filtered                                                                                                                             |
-| `npm run test:release`                                            | 248 passed, zero failed/skipped                                                                                                                                                                            |
-| Lint, format, secretlint, dependency, SDK and architecture checks | Passed; dependency check retains 14 existing warnings and SDK check retains its existing Smithy-major warning                                                                                              |
-| Native runtime-control build                                      | Passed, with existing bundle-size warnings                                                                                                                                                                 |
-| `uv run --frozen --group docs zensical build`                     | Passed, no issues                                                                                                                                                                                          |
+| Command / boundary                                                | Result                                                                                                                                                                                                         |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npm run test:native-qualification`                               | 926 backend tests; 286 UI/service tests; one WebSocket scenario (32 deliberately filtered cases); six architecture regressions; 22 wiring checks; 391 production modules with zero architecture violations     |
+| Separate network-disabled installed-Claude smoke described above  | Three same-session turns, Agent/cwd metadata, exact restore and 12 typed choices passed; zero external provider calls                                                                                          |
+| Focused publication suite                                         | 41 passed, including bounded concurrency, byte mutation, failure draining and non-Error rejection                                                                                                              |
+| `npm test -- --maxWorkers=2`                                      | 10,352 passed, five failed, three skipped; 357 files passed, three failed, one skipped                                                                                                                         |
+| Normal implementation commit hook, `VITEST_MAX_WORKERS=1`         | 10,357 passed, three skipped; 360 files passed, one skipped; 620.22 seconds. Staged lint/format/secrets, SDK/dependency checks and both production dependency audits passed; audits found zero vulnerabilities |
+| Isolated preparation rerun                                        | All 33 passed, including the three cases that timed out in the full run                                                                                                                                        |
+| Isolated root-config Git integration rerun                        | Both previously failing cases passed; 73 unrelated cases deliberately filtered                                                                                                                                 |
+| `npm run test:release`                                            | 248 passed, zero failed/skipped                                                                                                                                                                                |
+| Lint, format, secretlint, dependency, SDK and architecture checks | Passed; dependency check retains 14 existing warnings and SDK check retains its existing Smithy-major warning                                                                                                  |
+| Native runtime-control build                                      | Passed, with existing bundle-size warnings                                                                                                                                                                     |
+| `uv run --frozen --group docs zensical build`                     | Passed, no issues                                                                                                                                                                                              |
 
 The full-suite failures remain a qualification caveat: three preparation
 symlink/submodule/LFS tests exceeded their five-second limits; Git merge
 serialization exceeded 30 seconds; the section-integration forced-conflict test
 did not reach its gate before its wait expired. Those paths were unchanged and
 all five passed in isolated reruns, but that does not establish the reason for
-the full-run failures. The three full-suite skips require Bun. An initial
+the full-run failures. The final ordinary commit hook then passed the complete
+10,357-test backend selection with one worker; the earlier failed run remains
+recorded rather than relabelled. Implementation commit
+`b6a59b3c8ca2ff4d0b40414c7e56e50034f776b4` used no hook bypass or timeout changes.
+The three full-suite skips require Bun. An initial
 isolated Git command selected an excluding configuration and ran no tests;
 the root-config rerun above is the actual evidence.
 
