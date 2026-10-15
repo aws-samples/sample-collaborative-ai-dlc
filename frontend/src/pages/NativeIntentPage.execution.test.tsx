@@ -84,6 +84,11 @@ const execution: NativeExecution = {
   publicationId: 'pub-1',
   projectionStatus: 'complete',
 };
+function executionStatus() {
+  return within(screen.getByRole('region', { name: 'Native execution status' })).getByRole(
+    'status',
+  );
+}
 const waiting: NativeIntent = { ...ready, execution };
 const publication: NativePublication = {
   id: 'pub-1',
@@ -214,7 +219,7 @@ it('starts only explicitly, deduplicates pending clicks and reuses the request I
     ['project-1', 'run-1', requestId],
     ['project-1', 'run-1', requestId],
   ]);
-  expect(screen.getByRole('status')).toHaveTextContent('Start requested');
+  expect(executionStatus()).toHaveTextContent('Start requested');
   expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole('button', { name: 'Intent actions' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'Intent configuration' }));
@@ -269,7 +274,7 @@ it.each([
   await screen.findByText(ready.prompt);
   await click('Start agent');
   expect(screen.getByRole('alert').textContent).toBe(message);
-  expect(screen.getByRole('status')).toHaveTextContent('Workspace ready');
+  expect(executionStatus()).toHaveTextContent('Workspace ready');
   expect(screen.getByRole('button', { name: 'Start agent' })).toBeEnabled();
 });
 
@@ -291,7 +296,7 @@ it('reuses the same Start request after an actionable error and clears feedback 
     ['project-1', 'run-1', requestId],
   ]);
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  expect(screen.getByRole('status')).toHaveTextContent('Start requested');
+  expect(executionStatus()).toHaveTextContent('Start requested');
 });
 
 it.each([
@@ -436,7 +441,7 @@ it('does not let a GET begun before Start erase its accepted execution', async (
   await click('Refresh status');
   await click('Start agent');
   await act(async () => pending.resolve(ready));
-  expect(screen.getByRole('status')).toHaveTextContent('Agent running');
+  expect(executionStatus()).toHaveTextContent('Agent running');
   expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
 });
 
@@ -461,7 +466,7 @@ it('does not regress a newer execution when the Start acknowledgement arrives la
       },
     }),
   );
-  expect(screen.getByRole('status')).toHaveTextContent('Waiting for input');
+  expect(executionStatus()).toHaveTextContent('Waiting for input');
   expect(screen.getByText('Which pipe style?')).toBeInTheDocument();
 });
 
@@ -768,9 +773,9 @@ it('observes another member cancelling a legacy wait after graph projection catc
     .mockResolvedValue(waiting);
   api.publication.mockResolvedValue({ ...publication, projectionStatus: 'pending' });
   await act(async () => renderPage());
-  expect(screen.getByRole('status')).toHaveTextContent('Agent running');
+  expect(executionStatus()).toHaveTextContent('Agent running');
   await act(async () => vi.advanceTimersByTimeAsync(3000));
-  expect(screen.getByRole('status')).toHaveTextContent('Waiting for input');
+  expect(executionStatus()).toHaveTextContent('Waiting for input');
   expect(screen.getByText('Which pipe style?')).toBeInTheDocument();
   await act(async () =>
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'Graph' }), { button: 0 }),
@@ -788,14 +793,14 @@ it('observes another member cancelling a legacy wait after graph projection catc
     },
   });
   await act(async () => vi.advanceTimersByTimeAsync(3000));
-  expect(screen.getByRole('status')).toHaveTextContent('Cancellation requested');
+  expect(executionStatus()).toHaveTextContent('Cancellation requested');
   expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeDisabled();
   api.get.mockResolvedValueOnce({
     ...waiting,
     execution: { ...execution, status: 'CANCELLED', updatedAt: '2026-09-29T09:06:00Z' },
   });
   await act(async () => vi.advanceTimersByTimeAsync(3000));
-  expect(screen.getByRole('status')).toHaveTextContent('Execution cancelled');
+  expect(executionStatus()).toHaveTextContent('Execution cancelled');
   expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
   expect(api.cancel).not.toHaveBeenCalled();
   const requests = api.get.mock.calls.length;
@@ -832,9 +837,9 @@ it.each(['legacy timestamps', 'server revision', 'missing revision'] as const)(
       },
     });
     await act(async () => vi.advanceTimersByTimeAsync(3000));
-    expect(screen.getByRole('status')).toHaveTextContent('Cancellation requested');
+    expect(executionStatus()).toHaveTextContent('Cancellation requested');
     await act(async () => oldRefresh.resolve(stale));
-    expect(screen.getByRole('status')).toHaveTextContent('Cancellation requested');
+    expect(executionStatus()).toHaveTextContent('Cancellation requested');
     expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeDisabled();
     api.get.mockResolvedValueOnce({
       ...waiting,
@@ -846,7 +851,7 @@ it.each(['legacy timestamps', 'server revision', 'missing revision'] as const)(
       },
     });
     await act(async () => vi.advanceTimersByTimeAsync(3000));
-    expect(screen.getByRole('status')).toHaveTextContent('Execution cancelled');
+    expect(executionStatus()).toHaveTextContent('Execution cancelled');
     expect(api.cancel).not.toHaveBeenCalled();
   },
 );
@@ -871,7 +876,7 @@ it.each(['legacy', 'revisioned'] as const)(
     });
     await click('Cancel execution');
     await act(async () => oldPoll.resolve(waiting));
-    expect(screen.getByRole('status')).toHaveTextContent('Cancellation requested');
+    expect(executionStatus()).toHaveTextContent('Cancellation requested');
     expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeDisabled();
     expect(screen.getByText('Which pipe style?')).toBeInTheDocument();
     api.get.mockResolvedValueOnce({
@@ -884,7 +889,7 @@ it.each(['legacy', 'revisioned'] as const)(
       },
     });
     await act(async () => vi.advanceTimersByTimeAsync(3000));
-    expect(screen.getByRole('status')).toHaveTextContent('Execution cancelled');
+    expect(executionStatus()).toHaveTextContent('Execution cancelled');
     const requests = api.get.mock.calls.length;
     await act(async () => vi.advanceTimersByTimeAsync(15000));
     expect(api.get).toHaveBeenCalledTimes(requests);
@@ -910,7 +915,7 @@ it.each(['legacy', 'revisioned'] as const)(
       },
     });
     await act(async () => vi.advanceTimersByTimeAsync(3000));
-    expect(screen.getByRole('status')).toHaveTextContent('Execution cancelled');
+    expect(executionStatus()).toHaveTextContent('Execution cancelled');
     await act(async () =>
       oldCancel.resolve({
         ...waiting,
@@ -922,7 +927,7 @@ it.each(['legacy', 'revisioned'] as const)(
         },
       }),
     );
-    expect(screen.getByRole('status')).toHaveTextContent('Execution cancelled');
+    expect(executionStatus()).toHaveTextContent('Execution cancelled');
     expect(screen.queryByRole('button', { name: 'Cancel execution' })).not.toBeInTheDocument();
     const requests = api.get.mock.calls.length;
     await act(async () => vi.advanceTimersByTimeAsync(15000));
@@ -1021,7 +1026,7 @@ it.each(['success', 'denial'] as const)(
     await act(async () => vi.advanceTimersByTimeAsync(15000));
     expect(api.get).toHaveBeenCalledTimes(3);
     expect(screen.getByText(nextAccount.prompt)).toBeVisible();
-    expect(screen.getByRole('status')).toHaveTextContent('Workspace ready');
+    expect(executionStatus()).toHaveTextContent('Workspace ready');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.queryByText('Which pipe style?')).not.toBeInTheDocument();
   },
@@ -1041,7 +1046,7 @@ it('keeps polling after a stale preparation-only response and accepts the later 
     });
   await act(async () => renderPage());
   await act(async () => vi.advanceTimersByTimeAsync(3000));
-  expect(screen.getByRole('status')).toHaveTextContent('Agent running');
+  expect(executionStatus()).toHaveTextContent('Agent running');
   await act(async () => vi.advanceTimersByTimeAsync(3000));
   expect(api.get).toHaveBeenCalledTimes(3);
   expect(screen.getByText('Which pipe style?')).toBeInTheDocument();
@@ -1057,7 +1062,7 @@ it('cancels explicitly and disables cancellation while the server acknowledges t
   await screen.findByText('Which pipe style?');
   await click('Cancel execution');
   expect(api.cancel).toHaveBeenCalledWith('project-1', 'run-1');
-  expect(screen.getByRole('status')).toHaveTextContent('Cancellation requested');
+  expect(executionStatus()).toHaveTextContent('Cancellation requested');
   expect(screen.getByRole('button', { name: 'Cancel execution' })).toBeDisabled();
   expect(
     within(screen.getByRole('region', { name: 'Published question' })).getByText(

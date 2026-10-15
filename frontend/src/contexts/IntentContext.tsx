@@ -110,6 +110,7 @@ interface OutputPane {
 export interface IntentContextValue {
   executionBackend?: 'platform' | 'native';
   nativeWorkspace?: NativeIntentAdapter;
+  nativeActivity?: ReturnType<typeof useNativeActivity>;
   activityEvents?: IntentActivityEvent[];
   activityError?: string | null;
   projectId: string;
@@ -328,9 +329,11 @@ function NativeIntentAdapterProvider({
   const { projectId = '', intentId = '' } = useParams();
   const nativeWorkspace = useNativeIntentAdapter(projectId, intentId);
   const activity = useNativeActivity(nativeWorkspace);
-  const ensureOutputs = useCallback(() => {
-    void activity.replay();
-  }, [activity.replay]);
+  const outputRows = useMemo(() => new Map([[INTENT_OUTPUT_KEY, activity.rows]]), [activity.rows]);
+  const outputBuffers = useMemo(
+    () => new Map([[INTENT_OUTPUT_KEY, activity.rows.map((row) => row.content).join('')]]),
+    [activity.rows],
+  );
   const [agentFocus, setAgentFocus] = useState<AgentFocusRequest | null>(null);
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
   const unsupported = async (): Promise<never> => {
@@ -339,6 +342,7 @@ function NativeIntentAdapterProvider({
   const value: IntentContextValue = {
     executionBackend: 'native',
     nativeWorkspace,
+    nativeActivity: activity,
     activityEvents: activity.events,
     activityError: activity.error,
     projectId,
@@ -358,11 +362,11 @@ function NativeIntentAdapterProvider({
     steering: [],
     sensorsByStage: new Map(),
     artifactsByStage: new Map(),
-    outputRows: new Map([[INTENT_OUTPUT_KEY, activity.rows]]),
-    outputBuffers: new Map([[INTENT_OUTPUT_KEY, activity.rows.map((row) => row.content).join('')]]),
+    outputRows,
+    outputBuffers,
     outputVersion: activity.rows.length,
     stageNameOf: () => 'Agent activity',
-    ensureOutputs,
+    ensureOutputs: activity.replay,
     outputPaneStatus: () => (activity.loading ? 'loading' : 'seeded'),
     selectedStageId,
     setSelectedStageId,

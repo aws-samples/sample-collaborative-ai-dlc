@@ -9,6 +9,8 @@ import { NativeResultDownload } from './NativeResultDownload';
 import { NativeCompletionEvidence } from './NativeCompletionEvidence';
 import { NATIVE_INLINE_BYTES, type NativeRevisionFile } from '@/services/nativeHistory';
 import { NativeInteractionPanel, useNativeReply } from './NativeInteractionPanel';
+import { NativeExecutionProgress } from './NativeExecutionProgress';
+import type { useNativeActivity } from '@/contexts/adapters/nativeActivity';
 import { useOptionalAuth } from '@/contexts/AuthContext';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { nativeGraphMatchesPublication } from '@/lib/nativeTraceability';
@@ -33,19 +35,28 @@ import {
   type NativeFileContent,
   type NativeGraph,
   type NativeIntent,
+  type NativeExecution,
   type NativeInteractionView,
   type NativePublication,
 } from '@/services/nativeIntents';
+
+interface NativeContentProps {
+  intent: NativeIntent;
+  onAccessFailure: (error: unknown) => void;
+  onRefresh: () => Promise<void>;
+  onAccepted?: (execution: NativeExecution) => void;
+  activity?: ReturnType<typeof useNativeActivity>;
+  onViewActivity?: () => void;
+}
 
 export function NativeIntentContent({
   intent,
   onAccessFailure,
   onRefresh,
-}: {
-  intent: NativeIntent;
-  onAccessFailure: (error: unknown) => void;
-  onRefresh: () => Promise<void>;
-}) {
+  onAccepted,
+  activity,
+  onViewActivity,
+}: NativeContentProps) {
   const location = useLocation();
   const session = useSyncExternalStore(onSessionChanged, currentSessionEpoch);
   useNativeListingVersion();
@@ -100,6 +111,9 @@ export function NativeIntentContent({
           intent={intent}
           onAccessFailure={onAccessFailure}
           onRefresh={onRefresh}
+          onAccepted={onAccepted}
+          activity={activity}
+          onViewActivity={onViewActivity}
         />
       ) : selection.mode === 'inspection' ? (
         <NativeRunInspection
@@ -123,11 +137,10 @@ function NativePublicationContent({
   intent,
   onAccessFailure,
   onRefresh,
-}: {
-  intent: NativeIntent;
-  onAccessFailure: (error: unknown) => void;
-  onRefresh: () => Promise<void>;
-}) {
+  onAccepted,
+  activity,
+  onViewActivity,
+}: NativeContentProps) {
   const { projectId, id: intentId } = intent;
   const publicationId = intent.execution?.publicationId ?? null;
   const interactionId = intent.execution?.interactionId ?? null;
@@ -137,7 +150,9 @@ function NativePublicationContent({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [graph, setGraph] = useState<NativeGraph | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
-  const [interaction, setInteraction] = useState<NativeInteractionView | null>(null);
+  const [loadedInteraction, setInteraction] = useState<NativeInteractionView | null>(null);
+  const interaction =
+    publication && loadedInteraction?.sequence === publication.sequence ? loadedInteraction : null;
   const [error, setError] = useState<string | null>(null);
   const [reloadRevision, setReloadRevision] = useState(0);
   const alive = useRef(true);
@@ -211,7 +226,7 @@ function NativePublicationContent({
   const executionStatus = intent.execution?.status;
   const responsePending = intent.execution?.responsePending;
   useEffect(() => {
-    if (!publication || !interactionId || error) return;
+    if (!publicationId || !interactionId || error) return;
     const requestGeneration = generation.current;
     let active = true;
     nativeIntentsService
@@ -220,8 +235,7 @@ function NativePublicationContent({
         if (!active || !current(requestGeneration)) return;
         if (
           value.id !== interactionId ||
-          value.publicationId !== publication.id ||
-          value.sequence !== publication.sequence ||
+          value.publicationId !== publicationId ||
           value.harness !== intent.harness ||
           turnSequence === undefined ||
           value.sequence > turnSequence ||
@@ -239,7 +253,7 @@ function NativePublicationContent({
   }, [
     projectId,
     intentId,
-    publication,
+    publicationId,
     interactionId,
     turnSequence,
     executionStatus,
@@ -248,7 +262,14 @@ function NativePublicationContent({
     error,
     current,
     failed,
+    reloadRevision,
   ]);
+  // Publication and interaction reads are independent. Neither text nor an
+  // answer form is exposed until both verify the same admitted revision.
+  useEffect(() => {
+    if (publication && loadedInteraction && publication.sequence !== loadedInteraction.sequence)
+      failed(new Error('Interaction does not match the current publication'), generation.current);
+  }, [publication, loadedInteraction, failed]);
 
   const replyFailure = useCallback((err: unknown) => failed(err, generation.current), [failed]);
   const auth = useOptionalAuth();
@@ -267,6 +288,7 @@ function NativePublicationContent({
     scopeCurrent,
     onAccessFailure: replyFailure,
     onRefresh,
+    onAccepted,
     userName: auth?.user?.displayName || auth?.user?.email || '',
   });
 
@@ -387,6 +409,14 @@ function NativePublicationContent({
 
   return (
     <Tabs value={tab} onValueChange={setTab} className="space-y-4">
+      {intent.execution && (
+        <NativeExecutionProgress
+          execution={intent.execution}
+          reply={reply}
+          activity={activity}
+          onViewActivity={onViewActivity}
+        />
+      )}
       <TabsList aria-label="Native intent views">
         <TabsTrigger value="overview">Overview</TabsTrigger>
         <TabsTrigger value="files">Files</TabsTrigger>

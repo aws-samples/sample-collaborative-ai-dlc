@@ -553,6 +553,149 @@ it('preserves the draft and request identity through navigation, an uncertain PO
   expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
 });
 
+it('shows sending and accepted feedback before a slow status refresh, with one POST', async () => {
+  const post = deferred<unknown>();
+  const detail = deferred<unknown>();
+  transport.post.mockReturnValueOnce(post.promise);
+  renderPage();
+  await typeReply('poc');
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-09-29T12:01:00Z'));
+  const submittedAt = Date.now();
+  const original = transport.get.getMockImplementation()!;
+  transport.get.mockImplementation((path: string) =>
+    path.endsWith('/run-1') ? detail.promise : original(path),
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: 'Send reply' }));
+  const progress = screen.getByRole('region', { name: 'Reply progress' });
+  expect(within(progress).getByRole('status')).toHaveTextContent('Sending reply…');
+  expect(Date.now() - submittedAt).toBe(0);
+  const form = screen.getByRole('form', { name: 'Reply to AI-DLC' });
+  expect(progress.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(
+    form.compareDocumentPosition(screen.getByText(messages[0].text)) &
+      Node.DOCUMENT_POSITION_FOLLOWING,
+  ).toBeTruthy();
+  expect(transport.post).toHaveBeenCalledTimes(1);
+  await act(async () => post.resolve(accept(transport.post.mock.calls[0][1])));
+  expect(within(progress).getByRole('status')).toHaveTextContent(
+    'Reply accepted. Delivery pending.',
+  );
+  expect(screen.getByText('Continuing agent')).toBeInTheDocument();
+  expect(screen.queryByText('AI-DLC is waiting for your reply.')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
+  expect(Date.now() - submittedAt).toBe(0);
+  expect(transport.post).toHaveBeenCalledTimes(1);
+  await act(async () => detail.resolve(intent));
+});
+
+it('loads the next form with concurrent verified reads instead of a publication waterfall', async () => {
+  const pub = deferred<unknown>();
+  const turn = deferred<unknown>();
+  const starts: Record<string, number> = {};
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const start = Date.parse('2026-09-29T12:00:00Z');
+  vi.setSystemTime(start);
+  const original = transport.get.getMockImplementation()!;
+  transport.get.mockImplementation((path: string) => {
+    if (path.endsWith('/publication')) {
+      starts.publication = Date.now() - start;
+      return pub.promise;
+    }
+    if (path.endsWith('/interaction')) {
+      starts.interaction = Date.now() - start;
+      return turn.promise;
+    }
+    return original(path);
+  });
+  await act(async () => {
+    renderPage();
+  });
+  expect(starts).toEqual({ publication: 0, interaction: 0 });
+  vi.setSystemTime(start + 800);
+  await act(async () => pub.resolve(publication));
+  expect(screen.queryByRole('textbox', { name: 'Reply to AI-DLC' })).not.toBeInTheDocument();
+  vi.setSystemTime(start + 1200);
+  await act(async () => turn.resolve(interaction));
+  await loaded();
+  expect(Date.now() - start).toBe(1200);
+  expect(transport.get.mock.calls.filter(([path]) => path.endsWith('/publication'))).toHaveLength(
+    1,
+  );
+  expect(transport.get.mock.calls.filter(([path]) => path.endsWith('/interaction'))).toHaveLength(
+    1,
+  );
+  expect(transport.post).not.toHaveBeenCalled();
+});
+
+it('withholds an early interaction until its publication verifies the same revision', async () => {
+  const pub = deferred<unknown>();
+  const original = transport.get.getMockImplementation()!;
+  transport.get.mockImplementation((path: string) =>
+    path.endsWith('/publication') ? pub.promise : original(path),
+  );
+  renderPage();
+  await screen.findByText('Loading the published AI-DLC response…');
+  expect(screen.queryByText(messages[0].text)).not.toBeInTheDocument();
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  await act(async () => pub.resolve({ ...publication, sequence: 99 }));
+  await screen.findByText(/Published content could not be verified or loaded/);
+  expect(screen.queryByText(messages[0].text)).not.toBeInTheDocument();
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  expect(transport.post).not.toHaveBeenCalled();
+});
+
+it('keeps a newer cancellation authoritative when a reply acknowledgement arrives late', async () => {
+  const post = deferred<unknown>();
+  intent.execution = { ...intent.execution!, revision: 10 };
+  transport.post.mockReturnValueOnce(post.promise);
+  renderPage();
+  await typeReply('poc');
+  await click('Send reply');
+  const acknowledged = accept(transport.post.mock.calls[0][1]);
+  acknowledged.execution = { ...acknowledged.execution!, revision: 11 };
+  intent.execution = {
+    ...intent.execution!,
+    status: 'CANCELLED',
+    revision: 12,
+    updatedAt: '2026-09-29T12:02:00Z',
+  };
+  await click('Refresh status');
+  expect(screen.getByText('Execution cancelled')).toBeInTheDocument();
+  await act(async () => post.resolve(acknowledged));
+  expect(screen.getByText('Execution cancelled')).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'Reply progress' })).toHaveTextContent(
+    'Reply accepted. Execution is no longer continuing.',
+  );
+  expect(screen.queryByText('Continuing agent')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
+  expect(transport.post).toHaveBeenCalledTimes(1);
+});
+
+it('retains a blocked image observation when the reply acknowledgement omits policy metadata', async () => {
+  const post = deferred<unknown>();
+  intent.execution = { ...intent.execution!, revision: 10, imageStatus: 'retained' };
+  transport.post.mockReturnValueOnce(post.promise);
+  renderPage();
+  await typeReply('poc');
+  await click('Send reply');
+  intent.execution = { ...intent.execution!, imageStatus: 'revoked' };
+  await click('Refresh status');
+  const warning =
+    'Execution is unavailable for this runtime image. Committed results remain readable.';
+  expect(screen.getByText(warning)).toBeInTheDocument();
+  const acknowledged = accept(transport.post.mock.calls[0][1]);
+  acknowledged.execution = { ...acknowledged.execution!, revision: 11, imageStatus: undefined };
+  await act(async () => post.resolve(acknowledged));
+  expect(screen.getByText(warning)).toBeInTheDocument();
+  expect(screen.getByRole('region', { name: 'Reply progress' })).toHaveTextContent(
+    'Reply accepted. Delivery pending.',
+  );
+  expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
+  expect(transport.post).toHaveBeenCalledTimes(1);
+});
+
 it('restores a protected accepted reply on reload, then shows a new interaction with an empty editable form', async () => {
   accept({ requestId: '', interactionId: initialInteraction.id, contentSha256: '', text: 'poc' });
   renderPage();
