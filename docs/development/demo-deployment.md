@@ -92,12 +92,24 @@ the Lambda module otherwise treats every missing local archive as a
 timestamp-driven rebuild.
 
 The workflow uses a draft plan to generate the Lambda module's package plans,
-builds every content-addressed ZIP, removes the generated `lambda/*/.build`
-directories, and then creates the final saved Terraform plan. The final plan
-therefore hashes the clean release source while the referenced ZIPs already
-exist. Apply reuses those exact packages, so neither missing files nor changed
-source hashes can invalidate the saved plan. Source changes still produce and
-deploy new content-addressed archives.
+builds every content-addressed ZIP (including nested managed-environment and
+tool packages), removes the generated `lambda/*/.build` directories, and then
+creates the final saved Terraform plan. Package paths retain their subdirectories.
+Before apply, it checks that the local archives needed by Lambda creates,
+replacements, and code updates are present, readable, and nonempty. A missing or
+unresolved package stops the job before any resources are modified. Unchanged
+functions and configuration-only updates do not require their old local ZIPs.
+The final plan hashes the clean release source and apply reuses the built
+packages. Source changes still produce and deploy new content-addressed archives.
+
+The pre-apply validator comes from the immutable executing workflow commit
+(`github.workflow_sha`), independently of the release tag or deployment commit.
+Before configuring AWS credentials, the workflow uses checkout's read-only Git
+access to fetch that exact commit and extract the standalone inspector into the
+runner's temporary directory. The deployment checkout stays on the selected
+release, and archive paths are checked relative to its Terraform directory.
+Manual deployments of older releases therefore retain the package and protected
+resource guards even when their bundled inspector predates the package-check mode.
 
 ## Deployment concurrency
 

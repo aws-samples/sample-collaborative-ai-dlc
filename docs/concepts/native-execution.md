@@ -1527,7 +1527,8 @@ Node 24.21.0; Python 3.12.15 for the documentation build:
   3 skips** in two Git-heavy suites (5 s test timeouts and a 10 s gate wait).
   Rerunning those two suites with `--maxWorkers=2` passed **36 tests**.
   Assertions/timeouts were unchanged; the precise source of the timing
-  variability is unproven. The commit retry uses `VITEST_MAX_WORKERS=2`.
+  variability is unproven. The full-suite commit retry with
+  `VITEST_MAX_WORKERS=2` passed **10,297 tests, 3 skips**.
 - Full frontend: **1,917 passed**, 141 files; typecheck/production build passed.
 - Release/script suite: **237 passed**. After the final image correction,
   the affected image, retention and runtime-version suites passed **13 tests**,
@@ -1582,6 +1583,21 @@ There was no full runtime image build, live CLI/model call, deployed recovery
 test or latency qualification. Successful local checks do not establish those.
 
 ### Deployment implications
+
+The final fetch found one newer main commit,
+`b5d68d5d2f12292d56a21aab917e4d8f9538aa0b` (#535). It was integrated in a
+second merge after `c997db2584fa7b0646fd650db04c60efe38fd5de`, without conflicts.
+It changes demo CI packaging, its standalone plan inspector, fixtures and
+documentation; runtime/frontend code, Terraform configuration and dependency
+pins are unchanged. Demo CI now builds nested Lambda package plans and loads
+the pre-apply validator from the immutable executing workflow commit. The
+combined inspector retains native EFS/image/service-removal guards before the
+new local-archive checks. The new deployment fixtures plus native image/storage
+retention tests passed **23 tests**. The local deployment commands below are
+unchanged. The full release/script suite then passed **248 tests, zero failures
+or skips**; lint, formatting, secret scan, architecture and docs build were
+rechecked. Backend/frontend and Terraform results above still apply because
+none of their source, configuration or dependency files changed in this refresh.
 
 The ARM64 source hash includes the changed Dockerfile and adapter. Native
 preparation continues to receive `module.agentcore.image_digest`; it does
