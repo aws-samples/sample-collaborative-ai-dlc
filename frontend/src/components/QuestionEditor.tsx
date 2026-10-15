@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
@@ -28,6 +28,8 @@ interface Props {
   onBlur?: () => void;
   /** Offer a question-anchored discussion (platform). Native threads anchor runs and artifacts. */
   discussable?: boolean;
+  /** Native validates the whole bound answer set before sending it. */
+  validateAnswer?: (answer: StructuredAnswer) => string | null;
 }
 
 export default function QuestionEditor({
@@ -40,6 +42,7 @@ export default function QuestionEditor({
   onFocus,
   onBlur,
   discussable = true,
+  validateAnswer,
 }: Props) {
   const {
     selections,
@@ -63,6 +66,9 @@ export default function QuestionEditor({
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inFlight = useRef(false);
+  const native = scope.kind === 'native';
+  const Container = native ? 'form' : 'div';
 
   // Seed from the saved draft ONCE, when the editor syncs — not when the draft
   // prop changes, which would clobber the user's in-progress answer.
@@ -74,13 +80,19 @@ export default function QuestionEditor({
   }, [synced]);
 
   const handleSubmit = async () => {
-    if (disabled || submitting) return;
+    if (disabled || !synced || inFlight.current) return;
     const answer = toStructuredAnswer();
     const allAnswered = answer.answers.every(
       (a) => a.selectedOptions.length > 0 || (a.freeText && a.freeText.trim().length > 0),
     );
     if (!allAnswered) return;
+    const invalid = validateAnswer?.(answer);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
 
+    inFlight.current = true;
     setSubmitting(true);
     setError(null);
     try {
@@ -88,6 +100,7 @@ export default function QuestionEditor({
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit answer');
       setSubmitting(false);
+      inFlight.current = false;
     }
   };
 
@@ -98,9 +111,28 @@ export default function QuestionEditor({
   });
 
   const remoteCount = remoteUsers.size;
+  const validationError = allAnswered
+    ? validateAnswer?.({
+        answers: question.questions.map((_, i) => ({
+          selectedOptions: selections.get(i) || [],
+          freeText: freeTexts.get(i) || '',
+        })),
+      })
+    : null;
 
   return (
-    <div className="rounded-lg border border-agent-waiting/40 bg-agent-waiting/5 p-3">
+    <Container
+      aria-label={native ? 'Workflow questions' : undefined}
+      className="rounded-lg border border-agent-waiting/40 bg-agent-waiting/5 p-3"
+      onSubmit={
+        native
+          ? (event) => {
+              event.preventDefault();
+              void handleSubmit();
+            }
+          : undefined
+      }
+    >
       {remoteCount > 0 && (
         <div className="flex items-center gap-1 mb-3">
           {Array.from(remoteUsers.values()).map((u, i) => (
@@ -116,9 +148,12 @@ export default function QuestionEditor({
         </div>
       )}
 
-      {error && (
-        <div className="text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded px-2 py-1 mb-3">
-          {error}
+      {(error || validationError) && (
+        <div
+          role="alert"
+          className="text-xs text-destructive bg-destructive/10 border border-destructive/20 rounded px-2 py-1 mb-3"
+        >
+          {error || validationError}
         </div>
       )}
 
@@ -156,8 +191,9 @@ export default function QuestionEditor({
 
       <Button
         size="sm"
-        onClick={handleSubmit}
-        disabled={disabled || !allAnswered || submitting}
+        type={native ? 'submit' : 'button'}
+        onClick={native ? undefined : handleSubmit}
+        disabled={disabled || !synced || !allAnswered || submitting || !!validationError}
         className="mt-4 gap-1.5 bg-agent-success hover:bg-agent-success/90 text-white"
       >
         {submitting && <Loader2 className="h-3 w-3 animate-spin" />}
@@ -167,7 +203,7 @@ export default function QuestionEditor({
             ? 'Submit All Answers'
             : 'Submit Answer'}
       </Button>
-    </div>
+    </Container>
   );
 }
 
@@ -377,67 +413,82 @@ function StructuredQuestionBlock({
 
         {/* App-injected "Other (free text)" — only when the agent hasn't
             supplied its own free-text-style option (handled inline above). */}
-        {!question.options.some((opt) => requiresFreeTextOption(opt)) && (
-          <div
-            className={cn(
-              'p-2 rounded-md border transition-colors',
-              isOtherActive ? 'bg-primary/10 border-primary/30' : 'bg-card border-border',
-            )}
-          >
-            <label className="flex items-start gap-2 cursor-pointer" onClick={handleOtherToggle}>
-              <span className="mt-0.5 flex-shrink-0">
-                {isSingle ? (
-                  <span
-                    className={cn(
-                      'w-4 h-4 rounded-full border-2 flex items-center justify-center',
-                      isOtherActive && selectedOptions.length === 0
-                        ? 'border-primary bg-primary'
-                        : 'border-muted-foreground/30',
-                    )}
-                  >
-                    {isOtherActive && selectedOptions.length === 0 && (
-                      <span className="w-2 h-2 rounded-full bg-white" />
-                    )}
-                  </span>
-                ) : (
-                  <span
-                    className={cn(
-                      'w-4 h-4 rounded border-2 flex items-center justify-center',
-                      isOtherActive ? 'border-primary bg-primary' : 'border-muted-foreground/30',
-                    )}
-                  >
-                    {isOtherActive && (
-                      <svg
-                        className="w-2.5 h-2.5 text-white"
-                        fill="none"
-                        viewBox="0 0 24 24"
-                        stroke="currentColor"
-                        strokeWidth={3}
-                      >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                      </svg>
-                    )}
-                  </span>
-                )}
-              </span>
-              <span className="text-sm font-medium text-muted-foreground">Other (free text)</span>
-            </label>
-            {showTextarea && (
-              <div className="mt-1.5 ml-6">
-                <CollaborativeTextarea
-                  yText={freeTextDoc}
-                  awareness={awareness}
-                  value={freeText}
-                  placeholder="Type your answer..."
-                  className="w-full px-2 py-1 border border-border rounded-md text-sm bg-background"
-                  rows={2}
-                  disabled={disabled}
-                  onFocus={onFocus}
-                  onBlur={onBlur}
-                />
-              </div>
-            )}
-          </div>
+        {question.options.length === 0 ? (
+          <CollaborativeTextarea
+            aria-label={`Answer question ${questionIndex + 1}`}
+            yText={freeTextDoc}
+            awareness={awareness}
+            value={freeText}
+            placeholder="Type your answer..."
+            className="w-full px-2 py-1 border border-border rounded-md text-sm bg-background"
+            rows={3}
+            disabled={disabled}
+            onFocus={onFocus}
+            onBlur={onBlur}
+          />
+        ) : (
+          !question.options.some((opt) => requiresFreeTextOption(opt)) && (
+            <div
+              className={cn(
+                'p-2 rounded-md border transition-colors',
+                isOtherActive ? 'bg-primary/10 border-primary/30' : 'bg-card border-border',
+              )}
+            >
+              <label className="flex items-start gap-2 cursor-pointer" onClick={handleOtherToggle}>
+                <span className="mt-0.5 flex-shrink-0">
+                  {isSingle ? (
+                    <span
+                      className={cn(
+                        'w-4 h-4 rounded-full border-2 flex items-center justify-center',
+                        isOtherActive && selectedOptions.length === 0
+                          ? 'border-primary bg-primary'
+                          : 'border-muted-foreground/30',
+                      )}
+                    >
+                      {isOtherActive && selectedOptions.length === 0 && (
+                        <span className="w-2 h-2 rounded-full bg-white" />
+                      )}
+                    </span>
+                  ) : (
+                    <span
+                      className={cn(
+                        'w-4 h-4 rounded border-2 flex items-center justify-center',
+                        isOtherActive ? 'border-primary bg-primary' : 'border-muted-foreground/30',
+                      )}
+                    >
+                      {isOtherActive && (
+                        <svg
+                          className="w-2.5 h-2.5 text-white"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                          strokeWidth={3}
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </span>
+                  )}
+                </span>
+                <span className="text-sm font-medium text-muted-foreground">Other (free text)</span>
+              </label>
+              {showTextarea && (
+                <div className="mt-1.5 ml-6">
+                  <CollaborativeTextarea
+                    yText={freeTextDoc}
+                    awareness={awareness}
+                    value={freeText}
+                    placeholder="Type your answer..."
+                    className="w-full px-2 py-1 border border-border rounded-md text-sm bg-background"
+                    rows={2}
+                    disabled={disabled}
+                    onFocus={onFocus}
+                    onBlur={onBlur}
+                  />
+                </div>
+              )}
+            </div>
+          )
         )}
       </div>
     </div>

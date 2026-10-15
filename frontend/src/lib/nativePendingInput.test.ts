@@ -4,6 +4,7 @@ import {
   nativeAnswerText,
   nativePendingInput,
   nativeSelectionPayload,
+  nativeFormError,
 } from './nativePendingInput';
 
 // Same vectors as lambda/shared/test/native-pending-input.test.js: the
@@ -57,6 +58,45 @@ const batch = nativePendingInput({
 });
 
 describe('native answer rendering parity', () => {
+  it('supports bounded v2 mixed forms without changing legacy question or gate contracts', () => {
+    const questions = Array.from({ length: 6 }, (_, index) => ({
+      ...batch.questions[0],
+      id: `q${index + 1}`,
+      header: `Q${index + 1}`,
+      ...(index === 5 ? { multiSelect: false, options: [] } : {}),
+    }));
+    const form = nativePendingInput({ ...batch, schemaVersion: 2, questions });
+    const answers = questions.map((_, i) =>
+      i === 5
+        ? { selectedOptions: [], freeText: 'Must work offline.' }
+        : { selectedOptions: [0, 2] },
+    );
+    expect(nativeFormError(form, { answers })).toBeNull();
+    expect(nativeAnswerText(form, { answers })).toContain('6. Q6: Must work offline.');
+    expect(nativeFormError(form, { answers: answers.slice(1) })).toBeTruthy();
+    expect(
+      nativeFormError(form, { answers: answers.map(() => ({ selectedOptions: [] })) }),
+    ).toBeTruthy();
+    expect(
+      nativeFormError(form, {
+        answers: answers.map(() => ({ selectedOptions: [], freeText: 'x'.repeat(4001) })),
+      }),
+    ).toContain('4,000');
+    expect(
+      nativeFormError(form, {
+        answers: answers.map(() => ({ selectedOptions: [], freeText: 'x'.repeat(3000) })),
+      }),
+    ).toContain('16 KiB');
+    expect(() => nativePendingInput({ ...form, schemaVersion: 1 })).toThrow();
+    expect(() =>
+      nativePendingInput({
+        ...form,
+        questions: Array.from({ length: 33 }, (_, i) => ({ ...questions[0], id: `q${i + 1}` })),
+      }),
+    ).toThrow();
+    expect(nativeAnswerText(gate, { answers: [{ selectedOptions: [0] }] })).toBe('Approve');
+  });
+
   it('matches the controller rendering', () => {
     expect(nativeAnswerText(gate, { answers: [{ selectedOptions: [0] }] })).toBe('Approve');
     expect(

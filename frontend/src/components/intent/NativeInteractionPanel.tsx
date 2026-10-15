@@ -8,6 +8,7 @@ import { generateColor } from '@/utils/colors';
 import QuestionEditor from '@/components/QuestionEditor';
 import {
   nativeAnswerText,
+  nativeFormError,
   nativeQuestionForEditor,
   nativeSelectionPayload,
 } from '@/lib/nativePendingInput';
@@ -358,6 +359,7 @@ export function NativeInteractionPanel({
               userName={reply.answerEditor.userName}
               disabled={!['idle', 'uncertain'].includes(reply.state) || !reply.awaitingReply}
               discussable={false}
+              validateAnswer={(selection) => nativeFormError(reply.structured!, selection)}
               onAnswer={async (selection) => {
                 const outcome = await reply.submit(selection);
                 if (outcome !== 'accepted' && outcome !== 'denied')
@@ -368,8 +370,8 @@ export function NativeInteractionPanel({
             <p className="text-sm text-muted-foreground">Loading the shared answer…</p>
           )}
           <p className="text-xs text-muted-foreground">
-            Project members choose together; one member submits. The exact option is sent to AI-DLC,
-            which records it in the workflow.
+            Answer the questions together in this form. Project members can edit together; one
+            member submits the complete answer set to AI-DLC.
           </p>
           {reply.error && (
             <p role="alert" className="text-sm text-destructive">

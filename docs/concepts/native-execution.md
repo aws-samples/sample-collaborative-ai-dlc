@@ -226,6 +226,30 @@ interaction, content digest, and request identity. The authority rechecks
 membership and atomically records one immutable accepted answer with the next
 execution command. Stale or competing submissions cannot replace it.
 
+The native UI presents all unanswered questions already available at one
+workflow step in one collaborative form. New runtime instructions declare
+guided in-app interaction using the pinned methodology's explicit-preference
+protocol, avoiding an extra guide/file/chat question where that protocol is
+supported. The native renderer accepts version 2 question specs: up to 32
+questions, each with 2–16 choices or no choices for a written answer. Every
+prompt and option must occur in the rendered response; the admitted
+interaction digest covers the entire definition. Version 1 remains readable
+with its original four-question and choice-only constraints. Missing,
+inconsistent or oversized specs fall back to the assistant response and free
+text, without truncating or inventing questions. The reserved spec stays
+bounded to 64 KiB; answer limits remain 4,000 characters per written field and
+16 KiB for the canonical complete reply.
+
+Required summary confirmations and stage approvals stay separate human
+interactions. A form is display data from the current turn, not permission to
+skip stages or proof that a model correctly followed every methodology
+instruction. The platform does not infer questions from English prose or
+automatically submit mode answers to an already admitted run. Unsent drafts
+use the existing revision-scoped Yjs transport; native drafts survive
+connected-peer reload/reconnect, not server restart or expiry of the last
+client's 60-second grace period. Accepted replies remain durable and readable
+independently of drafts.
+
 The supervisor delivers that answer to the same pinned native conversation.
 The engine interprets it and decides the next methodology step. Acceptance,
 delivery, and an engine-applied decision are different events; a successful
@@ -1162,6 +1186,260 @@ behavior, or the complete user journey. Use the [testing guide](../development/t
 procedures. Release qualification must record exact pins and exercise real
 upgrade, recovery, authorization, and delivery behavior in an authorized
 isolated deployment.
+
+## Answer latency and grouped forms — 2026-10-15
+
+### Measured deployed evidence
+
+Investigated project `22371643-2db5-42a4-a571-e47fc35745f5`, intent
+`3ea1b0d3-6991-430c-9e3c-a787c5d1f9f4`, using only `solution-read` in
+`us-east-1` (also `AWS_DEFAULT_REGION=us-east-1`, `AWS_PAGER=""`).
+STS verified account `746558295630`,
+`arn:aws:sts::746558295630:assumed-role/ReadOnly/jwthewes-Isengard`.
+The initial sandbox credential-process attempt failed at the macOS Keychain;
+the same profile succeeded with the permitted host read. No fallback identity
+or cloud mutation was used.
+
+The consistent target partition query was fully paginated (90 records, then
+100 after turn 4 completed). Table:
+`collaborative-ai-dlc-native-runs-dev`; partition:
+`NATIVE#99fa6f548c8667515e66d8caae44a6b669a6b00241deff43e22544a324a16294`.
+The latest checked `EXECUTION` was `AWAITING_USER`, version **1337**, turn **4**,
+updated **07:39:01.358 UTC**. `PUBLICATION#0000000000000004` contains 42 files;
+publication ID
+`584cabbd079c2542803950408064b9b7e050fc9d5715bedeaa9b0aba52c60030`,
+interaction ID
+`0c54d6d5e60080b96e0bc545b8b586bbcc9bf65eda8b13fce5ac2be81bc2daf2`,
+checkpoint ID
+`dc1f735ffc6f77e44b6c2252665dba2c670af0d83b2eca8e21a2ad50f1c46f77`.
+The latest lifecycle event cursor is **1328**; the independent
+`OUTPUT_CURSOR` is **seq/index 62**, writer generation **1**. Turn completion
+and publication `STOPPED` do not establish workflow completion or runtime
+stop. The waiting run was left untouched.
+
+Live pins: Claude / **`global.anthropic.claude-sonnet-5`**, AI-DLC **2.11.0**,
+upstream commit `6a378b53c0a4fe0641ed7d8de8dfff94264d5b6a`,
+package `sha256:9fdb284f4601d3c8c2d828abda2b9b98f3ecaca149870da3a11dbc2ee24805b1`,
+materialization `sha256:8c277086e76f1b47fabccaa6be4fc3f9b39efa1f9e2ed2cab18517e561caeb24`,
+image **`sha256:8c6bb2107cce12f566bf9130fcbe5dbd2ce22eb8dd8aa264663cdc4b19b2e7d3`**.
+Attempt `4d042480-19a7-461c-a026-5d6b433fc74f`,
+binding `12971c76-4376-4e59-ba44-a16a456e5f6e`,
+runtime session `6fd3fb2d-4a84-418f-9240-a4d0c394cce2`,
+Claude session `57cbad44-1fe1-49f0-91dc-3a1884b4760a`, epoch/writer **1/1**.
+AgentCore runtime
+`native_95c1e3000e45e1cfaeba8278e025cded-PnwUioE6z5`, version **2**, was READY;
+metadata reports the same image and creation at **07:14:44.946683 UTC**.
+The source repository checkout is pinned separately to
+`d99d2511c43f07ff2451e7e13f5a8f45b16dfce2`.
+
+All following times are UTC on October 15 (Berlin is UTC+2). Totals end at
+durable authority publication, not a measured browser paint.
+
+| Turn | Start/answer accepted | Dispatch attempted | Delivery confirmed | Publication admitted | Total seconds |
+| ---- | --------------------- | ------------------ | ------------------ | -------------------- | ------------: |
+| 1    | 07:14:27.781          | 07:15:06.002       | 07:15:31.325       | 07:21:10.515         |       402.734 |
+| 2    | 07:22:11.465          | 07:22:14.515       | 07:22:14.851       | 07:30:28.689         |       497.224 |
+| 3    | 07:30:52.715          | 07:30:56.641       | 07:30:57.010       | 07:33:36.278         |       163.563 |
+| 4    | 07:34:13.836          | 07:34:15.875       | 07:34:16.232       | 07:38:53.073         |       279.237 |
+
+The corresponding acceptance/dispatch/delivery/publication `EVENT#` revision
+numbers are `1/28/29/460`, `476/478/479/960`, `972/974/975/1094`,
+and `1102/1104/1105/1328` (zero-pad each to 16 digits).
+
+| Turn | Accepted → runtime accepted | Prepare | Install | CLI/model/tools | Files + interaction upload | Capture | Checkpoint upload | Upload → admission | Other |   Total |
+| ---- | --------------------------: | ------: | ------: | --------------: | -------------------------: | ------: | ----------------: | -----------------: | ----: | ------: |
+| 1    |                      63.318 |   8.467 | 190.306 |         111.794 |                      0.710 |   1.813 |            18.684 |              7.190 | 0.452 | 402.734 |
+| 2    |                       3.208 |   0.052 |       0 |         443.956 |                      1.250 |   1.545 |            37.609 |              9.167 | 0.437 | 497.224 |
+| 3    |                       4.130 |   0.055 |       0 |         110.511 |                      1.439 |   1.543 |            36.955 |              8.435 | 0.495 | 163.563 |
+| 4    |                       2.242 |   0.096 |       0 |         229.435 |                      1.840 |   1.660 |            34.666 |              8.795 | 0.503 | 279.237 |
+
+All durations are seconds. “Other” is the arithmetic remainder between
+observed boundaries, not an attributed activity. First output after CLI
+launch: **1.778 / 1.840 / 1.816 / 2.068 s**, included in CLI time above.
+Continuation setup is already reused. Initial installation explains 190 s
+of turn 1, but cannot explain reply latency. Queue/wakeup delay is not
+separately instrumented; acceptance-to-dispatch is only **3.050 / 3.926 /
+2.039 s** for replies. CLI/model/tool elapsed dominates, particularly
+**444/497 s** on turn 2. These measurements cannot split model inference
+from tools/hooks, infer token throughput, or establish cost.
+
+Numeric lifecycle evidence came from the exact log group:
+
+```text
+/aws/bedrock-agentcore/runtimes/native_95c1e3000e45e1cfaeba8278e025cded-PnwUioE6z5-exec_be25ae5035970d89d758d7a3af0e6a82
+2026/10/15/[runtime-logs]fa848276-78c7-427b-b49c-158e40cd52ba
+```
+
+Queries used bounded windows, filter `"native.lifecycle"` and complete
+pagination. `harnessLaunched → harnessCompleted` on turn 2 is
+`1792048934958 → 1792049378914`; `checkpointUploadStarted →
+checkpointUploadCompleted` is `1792049381913 → 1792049419522`.
+Turn 4's corresponding pairs are `1792049656479 → 1792049885914` and
+`1792049889612 → 1792049924278`. Both interaction-upload and capture-stage
+boundaries were emitted, proving the new diagnostics are deployed. Resource
+metadata alone does not prove an image's source commit equals local HEAD
+`2d916bc4a782a92f461896b8bb7d881e134ec39f`; no such equivalence is claimed.
+
+Worker log group `/aws/lambda/collaborative-ai-dlc-native-runs-dev-execution`
+corroborates dispatch starts at **07:22:14.614**, **07:30:56.743** and
+**07:34:15.977**. Streams:
+`2026/10/15/[$LATEST]e09e8a38c71c447ea453658443df1214` (turns 2/4) and
+`2026/10/15/[$LATEST]6aa8fbe09a1e42859fa67692dedf5a27` (turns 1/3).
+An exact-intent authority log lookup around the first answer found no
+correlatable records; authority code does not emit per-command identity
+logs. Durable transactional lifecycle records establish acceptance/admission;
+no Lambda request ID or separate queue timestamp is inferred.
+
+Only the selected published `pendingInput` definitions for revisions **2
+and 3** were read from their exact S3 versions, size/hash verified, projected
+in memory, with conversation fields discarded. Revision 2 offered Guide me /
+file / chat. Revision 3 contained **all four** current workflow questions,
+including a multi-select with five options. The observed run did not lose
+those four questions: its avoidable interaction was the earlier mode choice.
+No source archive, checkpoint body, private CLI file, broad conversation or
+EFS mount was read. No read permission denials occurred after resolving the
+local Keychain sandbox limitation. Frontend notification, refresh and paint
+latency remain unmeasured.
+
+### Native changes and local proof
+
+The exact pinned public `core/aidlc-common/protocols/stage-protocol.md`,
+`harness/claude/skills/aidlc/question-rendering.md` and
+`core/tools/aidlc-log.ts` were inspected at commit `6a378b5…`.
+The protocol reuses `answer_mode`, supports a preference already stated in
+the request through `--on-instruction`, and requires separate summary
+confirmation only when the ceremony enables it. The Claude terminal annex
+limits its picker to four questions/four choices; native uses its own
+already-existing spec-file renderer, not that terminal picker. The log tool
+rejects delegated checkpoint/approval records. Native now declares the
+chosen guided-form preference in the initial transport instruction, tells
+the adapter to copy all currently available definitions, and preserves those
+human boundaries. It does not match English mode-question prose or submit
+synthetic protected answers.
+
+`native-pending-input.js` and its frontend mirror support bounded version 2
+forms, including written-only questions. Version 2 additionally checks that
+every prompt was rendered, not just option labels. The existing canonical
+answer and interaction digest contract is unchanged. All fields are required;
+the frontend validates the complete answer's byte budget before sending.
+`QuestionEditor` uses one native form, waits for Yjs synchronization and
+guards duplicate submit events. Existing revision-specific collaboration,
+membership/session checks, immutable request IDs and uncertain-ack retry
+remain in place. A retry resends the frozen original answer set even if a
+collaborator has subsequently changed a draft.
+
+`native-recovery-checkpoint.js` now uploads at most **four files concurrently**.
+It still copies/checks every input, preserves canonical inventory order and
+exact version/hash receipts, reconciles uncertain writes, drains started
+uploads on failure, and publishes the manifest only after complete success.
+Controller verification, capture budgets, cancellation/fencing and
+checkpoint admission are unchanged. The previous serial loop was a measured
+secondary cost (35–38 s per reply); no live speedup or fourfold improvement is
+claimed from the local concurrency change.
+
+Fail-before/pass-after evidence: the new upload tests observed only one
+started upload where four were required on the old implementation; the
+six-question mixed-form capture returned `null` on the old implementation.
+Production-composed Claude subprocess journeys now cover six mixed questions
+→ one protected answer → separate summary confirmation → separate unanswered
+stage approval, on one native session with admitted checkpoints throughout.
+An additional journey fails capture after the grouped answer and retains the
+previous admitted publication/checkpoint. Duplicate replies, a lost runtime
+acknowledgement, competing members, incomplete forms, cancellation and
+unconfirmed stop remain covered. Browser-component tests use actual Yjs
+documents with a local relay: shared edits, reload, next-interaction isolation,
+complete validation and frozen-request retry. The scripted methodology/model
+ports do not establish real model compliance with the new instructions.
+
+Validation on Node 24.21.0:
+
+- Focused runtime/controller/storage suites: **352 passed, 0 failed**.
+- Affected broader backend suites (`native-runtime-control`, `agentcore`,
+  `shared`, four workers, local Docker graph/DynamoDB): **7,430 passed,
+  0 failed, 3 skipped** across 255 passing files and one skipped file.
+  The three skipped script-sensor tests require Bun, absent locally.
+- Full frontend suite: **1,905 passed, 0 failed** across 140 files.
+- Frontend typecheck and production build, eight native-control bundles,
+  architecture check (**380 modules, 0 violations**), architecture tests
+  (**6 passed**), native wiring (**22 passed**), lint and dependency checks
+  passed. Dependency checks retain **14 warnings, 0 errors**; existing
+  lint and bundle/chunk-size warnings remain.
+- The first typecheck caught two test-only TypeScript annotations; both were
+  corrected and typecheck passed. No unrelated test failure was suppressed.
+
+Re-run the affected checks without live providers:
+
+```bash
+npx vitest run --config vitest.native-foundation.config.js --maxWorkers=4 \
+  lambda/shared/test/native-pending-input.test.js \
+  lambda/shared/test/native-recovery-checkpoint.test.js \
+  lambda/shared/test/native-interaction.test.js \
+  lambda/agentcore/test/native-pending-question.test.js \
+  lambda/agentcore/test/native-executor.test.js \
+  lambda/native-runtime-control/test/checkpoint-journey.test.js \
+  lambda/native-runtime-control/test/interaction-loop.test.js
+npx vitest run --project native-runtime-control --project agentcore --project shared --maxWorkers=4
+(cd frontend && NODE_OPTIONS=--no-experimental-webstorage npx vitest run --maxWorkers=4)
+npm run architecture:check
+node --test scripts/test/native-architecture.test.mjs
+npm run test:native-wiring
+npm run typecheck:frontend
+npm run lint
+npm run dep:check
+npm run build --workspace=native-runtime-control
+npm --prefix frontend run build
+```
+
+No real provider/model call, CLI upgrade, deployment or push was performed.
+
+### Fresh-run verification after review and deployment
+
+Controller/frontend decoding must ship before any new image emits version 2
+pending inputs. Runtime images stay pinned: this active run's existing
+configuration and accepted replies are never rewritten. New initial transport
+instructions and faster checkpoint uploads require a fresh admission on the
+new image. Updated frontend/controller readers continue to support the active
+run's existing version 1 interactions.
+
+With separate deployment authorization and the existing deployment
+credentials/configuration (not this investigation's `solution-read` session):
+
+```bash
+AIDLC_SKIP_NPM_CI=1 ./scripts/deploy-terraform.sh dev --phase plan \
+  --plan-file /tmp/native-forms-dev.tfplan --skip-seed
+# Review image, native authority/worker and decoder changes in the saved plan.
+./scripts/deploy-terraform.sh dev --phase apply \
+  --plan-file /tmp/native-forms-dev.tfplan --skip-seed
+./scripts/deploy-frontend.sh dev
+```
+
+The existing apply path includes authentication inventory initialization;
+`--skip-seed` only suppresses workflow reseeding. Keep new-run admission closed
+during the rollout window until all consumers are ready. Do not repin the
+active test run or alter CLI/dependency pins.
+
+1. In the selected space, import the already trusted AI-DLC 2.11.0 package and
+   create a fresh Claude/Sonnet 5 native intent. Record exact package/image,
+   attempt/session/writer pins. Request a small feature with several genuine
+   decisions at requirements time; explicitly keep required workflow approvals.
+2. Require no guide/file/chat mode-selection turn. Compare the current
+   published question definitions with the one form: all currently available
+   questions/options must appear, including written-only answers where offered.
+   Do not prescribe invented questions just to hit a test count.
+3. With two members, fill complementary fields. Verify incomplete submission
+   is disabled, reload/reconnect retains the current shared draft, and one
+   submission produces one durable accepted reply and one continuation.
+   Record UTC acceptance, dispatch, first output, CLI completion, capture,
+   upload and admission; also capture browser receipt/paint timestamps.
+4. Answer the next required confirmation/question once. Require the next
+   admitted question/result and checkpoint on the same session. Review old
+   history revisions and accepted answers after refresh; do not autoapprove
+   gates or interpret publication `STOPPED` as workflow completion.
+5. Exercise cancellation only when offered on the **fresh** run; verify stop
+   evidence and retained history. Exercise recovery only if authority exposes
+   an eligible episode with `canRecover: true`. Otherwise mark it unexercised.
+   Leave intents `3ea1b0d3…` and failed `855edbee…` as evidence; never replay an
+   answer or treat the old failed checkpoint as a safe retry.
 
 ## Open work
 

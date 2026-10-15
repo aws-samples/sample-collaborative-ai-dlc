@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   setSelection: vi.fn(),
   setFreeText: vi.fn(),
   toStructuredAnswer: vi.fn(),
+  synced: true,
 }));
 vi.mock('@/hooks/useCollaborativeStructuredAnswer', () => ({
   useCollaborativeStructuredAnswer: () => ({
@@ -17,7 +18,7 @@ vi.mock('@/hooks/useCollaborativeStructuredAnswer', () => ({
     setFreeText: mocks.setFreeText,
     getFreeText: () => null,
     addContributor: vi.fn(),
-    synced: true,
+    synced: mocks.synced,
     awareness: null,
     remoteUsers: new Map(),
     initFromDraft: vi.fn(),
@@ -43,9 +44,25 @@ const answer = { answers: [{ selectedOptions: [0] }] };
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.toStructuredAnswer.mockReturnValue(answer);
+  mocks.synced = true;
 });
 
 describe('QuestionEditor response availability', () => {
+  it('waits for shared document synchronization even with a populated local draft', () => {
+    mocks.synced = false;
+    const onAnswer = vi.fn();
+    render(
+      <QuestionEditor
+        question={question}
+        scope={{ kind: 'intent', id: 'i1', projectId: 'p1' }}
+        userName="U"
+        onAnswer={onAnswer}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Submit Answer' })).toBeDisabled();
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
   it('disables choices and submission when a previously open editor becomes unavailable', async () => {
     const onAnswer = vi.fn().mockResolvedValue(undefined);
     const props = {

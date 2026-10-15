@@ -90,10 +90,30 @@ export const nativeFirstTurnPrompt = ({ harness, request } = {}) => {
     'in your normal assistant response, preserve any normal workflow artifacts, leave ' +
     'the native workflow waiting, and end this turn. The platform will show your response and files to ' +
     'the user. Do not approve a gate, answer on behalf of the user, or continue past that wait. ' +
+    NATIVE_QUESTION_MODE_INSTRUCTION +
     NATIVE_PENDING_SPEC_INSTRUCTION +
     NATIVE_INTAKE_ANSWER_INSTRUCTION
   );
 };
+
+// AI-DLC 2.11.0 stage-protocol §3 Step 2 supports an already expressed
+// interaction preference via `--on-instruction`, and reuses answer_mode.
+// This is a rendering preference, never an answer to a business question.
+const NATIVE_QUESTION_MODE_INSTRUCTION =
+  'Native UI interaction preference: "Guide me through the current workflow step\'s available ' +
+  'questions together in one form." Use the pinned workflow\'s supported explicit-preference ' +
+  'path for Guide me; record the mode decision with the engine and use that exact preference ' +
+  'with --on-instruction where supported. Do not spend a turn asking guide/file/chat again. ' +
+  "Honor an explicit later user change and the engine's answer_mode reuse. " +
+  'This preference grants no autonomy over answers, summaries, approvals or stage gates. ' +
+  'The native form is the question renderer for this noninteractive invocation: it supports ' +
+  'up to 32 questions and 16 options per question, plus free text. Collect ALL unanswered ' +
+  'questions already available at the CURRENT workflow step into one form, copying their ' +
+  'complete prompts and option sets from the workflow question definitions. Do not split ' +
+  'them to fit a terminal question tool, invent future questions, combine stages, or merge ' +
+  'a required summary confirmation or approval with the questions it follows. ' +
+  'If a form exceeds these bounded limits, explain the limit and preserve all questions; ' +
+  'never truncate them. Use only capabilities supported by the pinned workflow. ';
 
 // The pinned engine's intake plan offer is a bare `ask` emitted before any
 // workflow state exists, so `report --user-input` cannot record it. The engine
@@ -114,13 +134,16 @@ const NATIVE_INTAKE_ANSWER_INSTRUCTION =
 // only answer. It lives in a reserved, unpublished project directory.
 export const NATIVE_PENDING_SPEC_PATH = '.native-control/pending-question.json';
 const NATIVE_PENDING_SPEC_INSTRUCTION =
-  'Whenever you end a turn with a structured question or approval for the user, also write ' +
+  'Whenever you end a turn with questions or an approval for the user, also write ' +
   `the exact question spec you rendered as JSON to ${NATIVE_PENDING_SPEC_PATH} in the project ` +
-  'directory, replacing any earlier file: {"version":1,"questions":[{"prompt":"...","header":"...",' +
+  'directory, replacing any earlier file: {"version":2,"questions":[{"prompt":"...","header":"...",' +
   '"multiSelect":false,"options":[{"label":"...","description":"..."}]}]}. Use the exact option ' +
   'labels from the spec, without numbers, letters or "(Recommended)", and keep rendering the ' +
-  "question normally in your response. The user's reply will contain the exact selected " +
-  'label(s); record it with the workflow command that question requires.';
+  'complete question prompts normally in your response. For a free-text question use ' +
+  '"options":[] and "multiSelect":false; never invent choices. Every question requires an answer. ' +
+  "The user's reply contains the exact selected label(s) and free text, numbered by the " +
+  'question header when there are multiple questions. Record every answer with the workflow ' +
+  'command that question requires, without re-asking answered questions.';
 
 /** Stage held at an engine approval gate ([?]) in this snapshot, or null. */
 export const nativeGateFromSnapshot = (snapshot) => {

@@ -18,7 +18,7 @@ export interface NativePendingQuestion {
 }
 
 export interface NativePendingInput {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   kind: 'approval' | 'choice';
   source: 'engine-gate' | 'rendered-question';
   stage: string | null;
@@ -42,13 +42,13 @@ export function nativePendingInput(value: unknown): NativePendingInput {
   if (
     !record(value) ||
     !keysExactly(value, ['schemaVersion', 'kind', 'source', 'stage', 'questions']) ||
-    value.schemaVersion !== 1 ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
     !['approval', 'choice'].includes(String(value.kind)) ||
     value.source !== (value.kind === 'approval' ? 'engine-gate' : 'rendered-question') ||
     (value.stage !== null && typeof value.stage !== 'string') ||
     !Array.isArray(value.questions) ||
     value.questions.length < 1 ||
-    value.questions.length > 4
+    value.questions.length > (value.schemaVersion === 1 ? 4 : 32)
   )
     throw new Error('Invalid native question');
   const questions = value.questions.map((entry: unknown, index: number): NativePendingQuestion => {
@@ -61,7 +61,8 @@ export function nativePendingInput(value: unknown): NativePendingInput {
       (entry.header !== null && !singleLine(entry.header, 80)) ||
       typeof entry.multiSelect !== 'boolean' ||
       !Array.isArray(entry.options) ||
-      entry.options.length < 2 ||
+      (entry.options.length < 2 &&
+        !(value.schemaVersion === 2 && entry.options.length === 0 && !entry.multiSelect)) ||
       entry.options.length > 16
     )
       throw new Error('Invalid native question');
@@ -84,7 +85,7 @@ export function nativePendingInput(value: unknown): NativePendingInput {
     };
   });
   return {
-    schemaVersion: 1,
+    schemaVersion: value.schemaVersion,
     kind: value.kind as NativePendingInput['kind'],
     source: value.source as NativePendingInput['source'],
     stage: value.stage as string | null,
@@ -133,10 +134,23 @@ export function nativeAnswerText(input: NativePendingInput, selection: Structure
   if (selection.answers.length !== input.questions.length) throw new Error('Invalid answer');
   const render = (entry: NativePendingQuestion, answer: StructuredAnswer['answers'][number]) => {
     const selected = [...answer.selectedOptions].sort((a, b) => a - b);
-    if (selected.some((i) => !entry.options[i]) || (!entry.multiSelect && selected.length > 1))
+    if (
+      selected.some((i) => !Number.isSafeInteger(i) || !entry.options[i]) ||
+      new Set(selected).size !== selected.length ||
+      (!entry.multiSelect && selected.length > 1)
+    )
       throw new Error('Invalid answer');
     const labels = selected.map((i) => entry.options[i].label).join(', ');
     const freeText = answer.freeText?.trim() ? answer.freeText : undefined;
+    if (
+      freeText &&
+      (freeText.length > 4000 ||
+        // eslint-disable-next-line no-control-regex
+        /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(freeText))
+    )
+      throw new Error(
+        'Each written answer must be at most 4,000 characters without control characters.',
+      );
     if (!labels && !freeText) throw new Error('Invalid answer');
     if (!freeText) return labels;
     return labels ? `${labels}\n\n${freeText}` : freeText;
@@ -148,6 +162,23 @@ export function nativeAnswerText(input: NativePendingInput, selection: Structure
       return `${index + 1}. ${title}: ${render(entry, selection.answers[index]).replace(/\n\n/g, ' — ')}`;
     })
     .join('\n');
+}
+
+/** Validate the entire form before freezing one protected response request. */
+export function nativeFormError(
+  input: NativePendingInput,
+  selection: StructuredAnswer,
+): string | null {
+  try {
+    const text = nativeAnswerText(input, nativeSelectionPayload(selection));
+    if (new TextEncoder().encode(text).length > 16 * 1024)
+      return 'The complete answer must fit within 16 KiB. Shorten the written answers before submitting.';
+    return null;
+  } catch (error) {
+    return error instanceof Error && error.message !== 'Invalid answer'
+      ? error.message
+      : 'Answer every question before submitting.';
+  }
 }
 
 /** Selection as the controller validates it: blank free text omitted. */

@@ -505,6 +505,30 @@ export const createNativeRecoveryCheckpoints = (options) => {
     }
     return files;
   };
+  const uploadInventory = async (scope, files, manifest) => {
+    let next = 0;
+    let failure;
+    // Keep each exact-version receipt at its canonical inventory index. Drain
+    // every started upload before returning or rejecting; the manifest is the
+    // commit record and must never be written for an incomplete inventory.
+    await Promise.all(
+      Array.from({ length: Math.min(4, files.length) }, async () => {
+        while (!failure && next < files.length) {
+          const index = next++;
+          try {
+            manifest.files[index].object = await put(
+              fileKey(scope, files[index]),
+              files[index].content,
+              'application/octet-stream',
+            );
+          } catch (error) {
+            failure ??= error;
+          }
+        }
+      }),
+    );
+    if (failure) throw failure;
+  };
   return Object.freeze({
     async publish(input) {
       shape(input, ['identity', ...METADATA, 'files'], ['forbiddenBytes']);
@@ -540,13 +564,7 @@ export const createNativeRecoveryCheckpoints = (options) => {
       const prospective = Buffer.from(canonicalJson(manifest));
       if (prospective.length > NATIVE_RECOVERY_LIMITS.manifestBytes) invalid();
       excludeSecrets(prospective, secrets);
-      for (let index = 0; index < files.length; index++) {
-        manifest.files[index].object = await put(
-          fileKey(scope, files[index]),
-          files[index].content,
-          'application/octet-stream',
-        );
-      }
+      await uploadInventory(scope, files, manifest);
       const bytes = Buffer.from(canonicalJson(manifest));
       if (bytes.length > NATIVE_RECOVERY_LIMITS.manifestBytes) invalid();
       excludeSecrets(bytes, secrets);

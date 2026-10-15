@@ -47,6 +47,56 @@ const approvalTurn = {
 };
 
 describe('native pending input capture', () => {
+  it('captures a complete current-step form with more than four mixed questions', () => {
+    const questions = [
+      ...Array.from({ length: 5 }, (_, index) => ({
+        prompt: `Current question ${index + 1}?`,
+        header: `Q${index + 1}`,
+        multiSelect: index === 1,
+        options: [{ label: 'Small' }, { label: 'Large' }],
+      })),
+      { prompt: 'What constraints apply?', header: 'Constraints', options: [] },
+    ];
+    const form = buildNativePendingInput({
+      spec: { version: 2, questions },
+      messagesText: `${questions.map((q) => q.prompt).join('\n')}\nSmall Large`,
+    });
+    expect(form?.questions).toHaveLength(6);
+    expect(form.schemaVersion).toBe(2);
+    const selection = {
+      answers: [
+        { selectedOptions: [0] },
+        { selectedOptions: [1, 0] },
+        { selectedOptions: [1] },
+        { selectedOptions: [0] },
+        { selectedOptions: [1] },
+        { selectedOptions: [], freeText: 'Must work offline.' },
+      ],
+    };
+    expect(nativeAnswerText(form, selection)).toBe(
+      '1. Q1: Small\n2. Q2: Small, Large\n3. Q3: Large\n4. Q4: Small\n5. Q5: Large\n6. Constraints: Must work offline.',
+    );
+    for (const answers of [
+      selection.answers.slice(0, 5),
+      [...selection.answers.slice(0, 5), { selectedOptions: [] }],
+    ])
+      expect(() => nativeSelection(form, { answers })).toThrow();
+    expect(() => nativePendingInput({ ...form, schemaVersion: 1 })).toThrow();
+    expect(
+      buildNativePendingInput({
+        spec: { version: 2, questions },
+        messagesText: 'Small Large', // No unpublished prompts, including free-text prompts.
+      }),
+    ).toBeNull();
+    expect(
+      buildNativePendingInput({
+        gate: { stage: 'requirements-analysis' },
+        spec: { version: 2, questions },
+        messagesText: `${questions.map((q) => q.prompt).join('\n')}\nSmall Large`,
+      }),
+    ).toBeNull(); // A stage approval cannot absorb an ordinary question batch.
+  });
+
   it('captures the rendered question spec when every label was shown', () => {
     const input = buildNativePendingInput({ spec: planSpec, messagesText: planChoiceText });
     expect(input).toEqual({

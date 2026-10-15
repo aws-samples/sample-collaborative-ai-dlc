@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Link, MemoryRouter, Route, Routes } from 'react-router';
 import { ApiError } from '@/services/api';
+import { canonicalJson, nativePendingInput } from '@/lib/nativePendingInput';
 import { clearNativeIntents } from '@/hooks/useNativeIntents';
 import { resetCollaborationFakes } from '@/test/collaborationFakes';
 import {
@@ -276,6 +277,78 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it('submits one complete grouped form, retries identical bytes after a lost ack and restores the receipt on reload', async () => {
+  const pendingInput = nativePendingInput({
+    schemaVersion: 2,
+    kind: 'choice',
+    source: 'rendered-question',
+    stage: null,
+    questions: [
+      {
+        id: 'q1',
+        prompt: 'Which platforms?',
+        header: 'Platforms',
+        multiSelect: true,
+        options: [
+          { label: 'Web', description: null },
+          { label: 'Mobile', description: null },
+        ],
+      },
+      {
+        id: 'q2',
+        prompt: 'What constraints apply?',
+        header: 'Constraints',
+        multiSelect: false,
+        options: [],
+      },
+    ],
+  });
+  interaction = {
+    ...interaction,
+    pendingInput,
+    contentSha256: createHash('sha256')
+      .update(canonicalJson({ messages, pendingInput }))
+      .digest('hex'),
+  };
+  const pending = deferred<unknown>();
+  transport.post.mockReturnValueOnce(pending.promise);
+  const page = renderPage();
+  const form = await screen.findByRole('form', { name: 'Workflow questions' });
+  expect(within(form).getByRole('button', { name: 'Submit All Answers' })).toBeDisabled();
+  fireEvent.click(within(form).getByText('Web'));
+  fireEvent.click(within(form).getByText('Mobile'));
+  expect(within(form).getByRole('button', { name: 'Submit All Answers' })).toBeDisabled();
+  fireEvent.change(within(form).getByRole('textbox', { name: 'Answer question 2' }), {
+    target: { value: 'Offline support.' },
+  });
+  fireEvent.submit(form);
+  fireEvent.submit(form);
+  expect(transport.post).toHaveBeenCalledTimes(1);
+  const [path, request] = transport.post.mock.calls[0];
+  expect(request).toMatchObject({
+    interactionId: interaction.id,
+    contentSha256: interaction.contentSha256,
+    text: '1. Platforms: Web, Mobile\n2. Constraints: Offline support.',
+    selection: {
+      answers: [{ selectedOptions: [0, 1] }, { selectedOptions: [], freeText: 'Offline support.' }],
+    },
+  });
+  await act(async () => pending.reject(new ApiError(502, 'unconfirmed')));
+  fireEvent.change(within(form).getByRole('textbox', { name: 'Answer question 2' }), {
+    target: { value: 'A later collaborator draft' },
+  });
+  fireEvent.submit(form);
+  expect(transport.post.mock.calls[1]).toEqual([path, request]);
+  await screen.findByText('Reply accepted. Delivery pending.');
+  page.unmount();
+  clearNativeIntents();
+  renderPage();
+  await screen.findByText('Reply accepted. Delivery pending.');
+  expect(screen.getByRole('textbox', { name: 'Reply to AI-DLC' })).toHaveValue(request.text);
+  expect(screen.queryByRole('form', { name: 'Workflow questions' })).not.toBeInTheDocument();
+  expect(transport.post).toHaveBeenCalledTimes(2);
 });
 
 it('presents OpenCode decision and delivery evidence through the real decoder without recognizing a Codex definition', async () => {

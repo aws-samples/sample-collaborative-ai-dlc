@@ -16,7 +16,7 @@
 // the controller re-renders and compares before accepting a selection.
 
 export const NATIVE_PENDING_INPUT_LIMITS = Object.freeze({
-  questions: 4,
+  questions: 32,
   optionsMin: 2,
   // AI-DLC 2.11.0 offers compose plus eleven ready-made plans before an intent exists.
   optionsMax: 16,
@@ -58,7 +58,7 @@ const prose = (value, max) =>
   // oxlint-disable-next-line no-control-regex -- Preserve tabs and line endings only.
   !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
 
-const question = (value, index) => {
+const question = (value, index, version) => {
   if (!exact(value, ['id', 'prompt', 'header', 'multiSelect', 'options'])) fail();
   if (value.id !== `q${index + 1}`) fail();
   if (!prose(value.prompt, NATIVE_PENDING_INPUT_LIMITS.promptChars)) fail();
@@ -67,7 +67,8 @@ const question = (value, index) => {
   const { options } = value;
   if (
     !Array.isArray(options) ||
-    options.length < NATIVE_PENDING_INPUT_LIMITS.optionsMin ||
+    (options.length < NATIVE_PENDING_INPUT_LIMITS.optionsMin &&
+      !(version === 2 && options.length === 0 && !value.multiSelect)) ||
     options.length > NATIVE_PENDING_INPUT_LIMITS.optionsMax
   )
     fail();
@@ -89,7 +90,7 @@ const question = (value, index) => {
 /** Validate a stored pending input. Returns a deep copy. */
 export const nativePendingInput = (value) => {
   if (!exact(value, ['schemaVersion', 'kind', 'source', 'stage', 'questions'])) fail();
-  if (value.schemaVersion !== 1) fail();
+  if (![1, 2].includes(value.schemaVersion)) fail();
   if (!['approval', 'choice'].includes(value.kind)) fail();
   if (value.source !== (value.kind === 'approval' ? 'engine-gate' : 'rendered-question')) fail();
   if (value.stage !== null && !/^[a-z][a-z0-9-]{0,127}$/.test(value.stage)) fail();
@@ -97,10 +98,10 @@ export const nativePendingInput = (value) => {
   if (
     !Array.isArray(value.questions) ||
     value.questions.length < 1 ||
-    value.questions.length > NATIVE_PENDING_INPUT_LIMITS.questions
+    value.questions.length > (value.schemaVersion === 1 ? 4 : NATIVE_PENDING_INPUT_LIMITS.questions)
   )
     fail();
-  value.questions.forEach(question);
+  value.questions.forEach((entry, index) => question(entry, index, value.schemaVersion));
   if (value.kind === 'approval') {
     const [gate] = value.questions;
     const labels = gate.options.map((option) => option.label);
@@ -121,11 +122,13 @@ export const nativePendingInput = (value) => {
 };
 
 // Agent-written spec (from the runtime transport instruction):
-// { version: 1, questions: [{ prompt, header?, multiSelect?, options: [{ label, description? }] }] }
+// { version: 1|2, questions: [{ prompt, header?, multiSelect?, options: [{ label, description? }] }] }
+// Version 1 retains its original four-question, choice-only contract. Version 2
+// supports complete current-step forms and options:[] for a written answer.
 const normalizeSpec = (spec) => {
   if (
     !exact(spec, ['version', 'questions']) ||
-    spec.version !== 1 ||
+    ![1, 2].includes(spec.version) ||
     !Array.isArray(spec.questions)
   )
     fail();
@@ -167,8 +170,8 @@ const normalizeSpec = (spec) => {
  *   complete rendered spec matching the supported gate protocol is classified
  *   as approval. A marker alone does not identify a fork's decision protocol.
  * - spec: the agent-written rendered question spec (already JSON-parsed), or null.
- * - messagesText: the turn's assistant text. Every rendered option label must
- *   appear in it, so a spec can never show options the member was not shown.
+ * - messagesText: the turn's assistant text. Every rendered option label and
+ *   (in version 2) prompt must appear in it. No unpublished definitions.
  */
 export const buildNativePendingInput = ({ gate = null, spec = null, messagesText = '' }) => {
   let questions = null;
@@ -176,10 +179,12 @@ export const buildNativePendingInput = ({ gate = null, spec = null, messagesText
     try {
       questions = normalizeSpec(spec);
       if (
-        questions.some((entry) =>
-          entry.options?.some?.(
-            (option) => typeof option.label !== 'string' || !messagesText.includes(option.label),
-          ),
+        questions.some(
+          (entry) =>
+            (spec.version === 2 && !messagesText.includes(entry.prompt)) ||
+            entry.options?.some?.(
+              (option) => typeof option.label !== 'string' || !messagesText.includes(option.label),
+            ),
         )
       )
         questions = null;
@@ -190,7 +195,7 @@ export const buildNativePendingInput = ({ gate = null, spec = null, messagesText
   if (!questions) return null;
   try {
     return nativePendingInput({
-      schemaVersion: 1,
+      schemaVersion: spec.version,
       kind: gate ? 'approval' : 'choice',
       source: gate ? 'engine-gate' : 'rendered-question',
       stage: gate ? gate.stage : null,

@@ -1189,30 +1189,21 @@ describe('native invocation and first-wait classification', () => {
     ['opencode', '/aidlc'],
   ])('preserves the exact request and transport annex with the %s marker', (harness, marker) => {
     const request = '\uFEFF  # Fix the pipes\r\n\r\n$literal `text` — keep trailing space  \n';
-    const annex =
-      'Platform transport instruction: The request above is the exact user request. ' +
-      'Start a new native AI-DLC workflow using its normal filesystem artifacts. ' +
-      'Do not invent missing scope, requirements, or human answers. At the first workflow ' +
-      'question or approval that needs a person, present the complete proposal and questions ' +
-      'in your normal assistant response, preserve any normal workflow artifacts, leave ' +
-      'the native workflow waiting, and end this turn. The platform will show your response and files to ' +
-      'the user. Do not approve a gate, answer on behalf of the user, or continue past that wait. ' +
-      // Task-3: the rendered question spec, so members can select exact options.
-      'Whenever you end a turn with a structured question or approval for the user, also write ' +
-      'the exact question spec you rendered as JSON to .native-control/pending-question.json in the project ' +
-      'directory, replacing any earlier file: {"version":1,"questions":[{"prompt":"...","header":"...",' +
-      '"multiSelect":false,"options":[{"label":"...","description":"..."}]}]}. Use the exact option ' +
-      'labels from the spec, without numbers, letters or "(Recommended)", and keep rendering the ' +
-      "question normally in your response. The user's reply will contain the exact selected " +
-      'label(s); record it with the workflow command that question requires.' +
-      // The stateless intake plan offer is answered through `next`, never `report`.
-      " If the question was the engine's plan offer made before any workflow state exists " +
-      '(no aidlc-state.md yet), then when the user replies, record their choice by re-running ' +
-      'the engine with the chosen plan in front of the original request text, passed unchanged ' +
-      'as one shell-safe argument: `aidlc engine orchestrate next compose <original request>` for ' +
-      'compose, or `aidlc engine orchestrate next --scope <plan> <original request>` for a named ' +
-      'plan. Do not use report for that answer.';
-    expect(nativeFirstTurnPrompt({ harness, request })).toBe(`${marker} ${request}\n\n${annex}`);
+    const prompt = nativeFirstTurnPrompt({ harness, request });
+    expect(prompt.startsWith(`${marker} ${request}\n\nPlatform transport instruction:`)).toBe(true);
+    expect(prompt).toContain('Guide me through the current workflow step');
+    expect(prompt).toContain('together in one form');
+    expect(prompt).toContain('--on-instruction where supported');
+    expect(prompt).toContain(
+      'ALL unanswered questions already available at the CURRENT workflow step',
+    );
+    expect(prompt).toContain('never invent choices');
+    expect(prompt).toContain('"version":2');
+    expect(prompt).toContain('a required summary confirmation or approval');
+    expect(prompt).toContain('This preference grants no autonomy');
+    expect(prompt).toContain('Do not approve a gate, answer on behalf of the user');
+    expect(prompt).toContain('aidlc engine orchestrate next compose <original request>');
+    expect(prompt).toContain('Do not use report for that answer.');
   });
   it.each([undefined, null, '', 'CODEX', 'unknown', ['codex'], {}])(
     'refuses an unsupported prompt harness: %j',

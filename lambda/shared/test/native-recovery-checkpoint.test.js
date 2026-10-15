@@ -171,6 +171,62 @@ const fileGets = (calls) =>
   );
 
 describe('private native recovery checkpoint', () => {
+  it('uploads four files concurrently, preserves inventory order and commits the manifest last', async () => {
+    const { store, memory, calls } = setup();
+    const releases = [];
+    memory.before = async (command) => {
+      if (command.constructor.name === 'PutObjectCommand' && command.input.Key.includes('/files/'))
+        await new Promise((resolve) => releases.push(resolve));
+    };
+    const pending = store.publish(input());
+    // Flush scheduled promises; no timing or fast-host requirement.
+    await Promise.resolve();
+    expect(releases).toHaveLength(4);
+    expect(calls.some((call) => call.input.Key.includes('/manifests/'))).toBe(false);
+    // Complete out of order. Receipts must stay bound to their own file.
+    releases
+      .splice(0)
+      .toReversed()
+      .forEach((release) => release());
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    expect(calls.some((call) => call.input.Key.includes('/manifests/'))).toBe(false);
+    releases.shift()();
+    const receipt = await pending;
+    const restored = await store.readFiles(identity, receipt);
+    expect(restored.files.map((entry) => `${entry.scope}/${entry.path}`)).toEqual(
+      input()
+        .files.map((entry) => `${entry.scope}/${entry.path}`)
+        .toSorted(),
+    );
+    for (const entry of restored.files) expect(sha(entry.content)).toBe(entry.sha256);
+    expect(
+      calls.filter((call) => call.constructor.name === 'PutObjectCommand').at(-1).input.Key,
+    ).toBe(receipt.manifest.key);
+  });
+
+  it('drains started uploads on failure, starts no more files and never publishes a partial manifest', async () => {
+    const { store, memory, calls } = setup();
+    const releases = [];
+    memory.before = async (command) => {
+      if (command.constructor.name === 'PutObjectCommand' && command.input.Key.includes('/files/'))
+        await new Promise((resolve, reject) => releases.push({ resolve, reject }));
+    };
+    let settled = false;
+    const pending = store.publish(input()).finally(() => {
+      settled = true;
+    });
+    const rejection = expect(pending).rejects.toMatchObject(UNAVAILABLE);
+    await Promise.resolve();
+    expect(releases).toHaveLength(4);
+    releases[0].reject(new Error('offline upload failure'));
+    await vi.waitFor(() => expect(fileGets(calls)).toHaveLength(1));
+    expect(settled).toBe(false);
+    releases.slice(1).forEach(({ resolve }) => resolve());
+    await rejection;
+    expect(releases).toHaveLength(4);
+    expect(calls.some((call) => call.input.Key.includes('/manifests/'))).toBe(false);
+  });
+
   it('preserves full identity, pins, private session files, binary bytes, modes and exact mtimes', async () => {
     const { store, calls } = setup();
     const source = input();
