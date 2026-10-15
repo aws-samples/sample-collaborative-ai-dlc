@@ -1,6 +1,7 @@
 // Controller-only, best-effort metadata. Never serialize an SDK error or a
 // runtime report: both can contain credentials, prompts and provider bodies.
 import { createHash } from 'node:crypto';
+import { NATIVE_RUNTIME_FAILURE_CODES } from '../shared/native-execution-failure.js';
 
 const PHASES = new Set(['start', 'continue', 'status', 'recover', 'unknown']);
 const STAGES = new Set(['sdk', 'http', 'body', 'report', 'call', 'decision']);
@@ -39,57 +40,7 @@ const STATUSES = new Set([
   'recovering',
   'recovery_ready',
 ]);
-const RUNTIME_CODES = new Set([
-  'native_execution_failed',
-  'native_execution_initialization_failed',
-  'native_execution_initialization_unverified',
-  'native_execution_cleanup_incomplete',
-  'native_execution_status_unconfirmed',
-  'native_execution_start_incomplete',
-  'native_execution_existing_owner',
-  'native_execution_owner_conflict',
-  'native_execution_owner_invalid',
-  'native_execution_local_record_unavailable',
-  'native_execution_reply_conflict',
-  'native_execution_reply_admission_unconfirmed',
-  'native_execution_interaction_unconfirmed',
-  'native_execution_recovery_unconfirmed',
-  'native_execution_recovery_failed',
-  'native_execution_cancelled',
-  'native_execution_command_failed',
-  // Harness output contract failures (agentcore/native/turn-output.js).
-  'native_execution_output_invalid',
-  'native_execution_output_failed',
-  'native_execution_output_incomplete',
-  'native_execution_output_terminal',
-  'native_execution_output_session',
-  'native_execution_output_credential',
-  'native_execution_output_limit',
-  'native_execution_directory_changed',
-  'native_execution_request_invalid',
-  'native_execution_busy',
-  'native_execution_checkout_commit_mismatch',
-  'native_execution_checkout_exists',
-  'native_execution_checkout_failed',
-  'native_execution_checkout_link',
-  'native_execution_claude_settings_invalid',
-  'native_execution_configuration_invalid',
-  'native_execution_credentials_missing',
-  'native_execution_directory_invalid',
-  'native_execution_disabled',
-  'native_execution_file_invalid',
-  'native_execution_harness_invalid',
-  'native_execution_lfs_unavailable',
-  'native_execution_local_record_invalid',
-  'native_execution_options_invalid',
-  'native_execution_package_invalid',
-  'native_execution_preparation_invalid',
-  'native_execution_private_state_tracked',
-  'native_execution_publication_unconfirmed',
-  'native_execution_scope_mismatch',
-  'native_execution_start_failed',
-  'native_execution_submodules_unavailable',
-]);
+const RUNTIME_CODES = new Set(NATIVE_RUNTIME_FAILURE_CODES);
 const ERROR_CODES = new Set([
   'NATIVE_EXECUTION_RUNTIME_UNAVAILABLE',
   'NATIVE_EXECUTION_RUNTIME_MISMATCH',
@@ -238,6 +189,9 @@ export const nativeDiagnosticReport = (row, report) => {
   return {
     status: enumeration(STATUSES, own(report, 'status')),
     runtimeCode: enumeration(RUNTIME_CODES, own(report, 'code')),
+    ...(own(report, 'recoveryFailureCode') !== undefined
+      ? { recoveryFailureCode: enumeration(RUNTIME_CODES, own(report, 'recoveryFailureCode')) }
+      : {}),
     sequence: counter(own(report, 'sequence')),
     expectedSequence: counter(own(row, 'turnSequence') ?? 1),
     writerGeneration: counter(reportedGeneration),
@@ -266,6 +220,7 @@ export const emitNativeExecutionDiagnostic = (sink, input) => {
     for (const [key, values] of [
       ['status', STATUSES],
       ['runtimeCode', RUNTIME_CODES],
+      ['recoveryFailureCode', RUNTIME_CODES],
       ['errorCode', ERROR_CODES],
       ['errorName', ERROR_NAMES],
       ['reason', REASONS],

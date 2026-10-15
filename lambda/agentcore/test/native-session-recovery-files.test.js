@@ -384,6 +384,108 @@ describe('harness session selection', () => {
     ).rejects.toMatchObject({ code: 'native_recovery_home_path_invalid' });
   });
 
+  it('captures a second Claude turn with the pinned CLI agent metadata and restores exact bytes', async () => {
+    const base = `.claude/projects/project-key/${id}`;
+    const transcript = `${JSON.stringify({ sessionId: id, cwd: project })}\n`;
+    await write('home', `${base}.jsonl`, transcript);
+    const first = await captureNativeSessionRecovery(options({ harness: 'claude' }));
+    // Claude 2.1.257 persistAgentMetadata writes this sibling when Agent runs.
+    const sidecar = Buffer.from(
+      JSON.stringify({ agentType: 'Explore', toolUseId: 'tool-local', description: 'inspect' }),
+    );
+    await write('home', `${base}/subagents/agent-child.jsonl`, '{"type":"assistant"}\n');
+    await write('home', `${base}/subagents/agent-child.meta.json`, sidecar);
+    await fs.appendFile(join(home, `${base}.jsonl`), transcript);
+    const second = await captureNativeSessionRecovery(options({ harness: 'claude' }));
+    expect(first.files).toHaveLength(1);
+    expect(second.files).toHaveLength(3);
+    await emptyRestoreRoots();
+    await restoreNativeSessionRecovery({ ...options({ harness: 'claude' }), ...second });
+    expect(await fs.readFile(join(home, `${base}/subagents/agent-child.meta.json`))).toEqual(
+      sidecar,
+    );
+    expect(await fs.readFile(join(home, `${base}.jsonl`), 'utf8')).toBe(transcript.repeat(2));
+  });
+
+  it.each([
+    { content: '{', code: 'session_invalid' },
+    { content: 'null', code: 'session_invalid' },
+    { content: '[]', code: 'session_invalid' },
+    { content: '{}', code: 'session_invalid' },
+    { content: '{"agentType":false}', code: 'session_invalid' },
+    { content: '{"agentType":"Explore"}', orphan: true, code: 'session_missing' },
+    { content: '{"agentType":"Explore"}', foreign: true, code: 'home_path_invalid' },
+    { content: '{"agentType":"fixture-credential"}', credential: true, code: 'credential_content' },
+  ])('rejects unqualified Claude agent metadata: %j', async (scenario) => {
+    const base = `.claude/projects/project-key/${id}`;
+    await write('home', `${base}.jsonl`, `${JSON.stringify({ sessionId: id, cwd: project })}\n`);
+    if (!scenario.orphan)
+      await write('home', `${base}/subagents/agent-child.jsonl`, '{"type":"assistant"}\n');
+    await write(
+      'home',
+      `${base}/subagents/${scenario.foreign ? 'unknown' : 'agent-child'}.meta.json`,
+      scenario.content,
+    );
+    await expect(
+      captureNativeSessionRecovery(
+        options({
+          harness: 'claude',
+          forbiddenBytes: scenario.credential ? ['fixture-credential'] : [],
+        }),
+      ),
+    ).rejects.toMatchObject({ code: `native_recovery_${scenario.code}` });
+  });
+
+  it('rejects late writes and size overflow in a recognized Claude metadata sidecar', async () => {
+    const base = `.claude/projects/project-key/${id}`;
+    await write('home', `${base}.jsonl`, `${JSON.stringify({ sessionId: id, cwd: project })}\n`);
+    await write('home', `${base}/subagents/agent-child.jsonl`, '{"type":"assistant"}\n');
+    const path = await write(
+      'home',
+      `${base}/subagents/agent-child.meta.json`,
+      '{"agentType":"Explore"}',
+    );
+    const io = {
+      ...fs,
+      open: async (target, ...args) => {
+        if (target === path) await fs.appendFile(path, ' ');
+        return fs.open(target, ...args);
+      },
+    };
+    await expect(
+      captureNativeSessionRecovery(options({ harness: 'claude', io })),
+    ).rejects.toMatchObject({ code: 'native_recovery_changed' });
+    await fs.writeFile(
+      path,
+      JSON.stringify({ agentType: 'Explore', description: 'x'.repeat(2048) }),
+    );
+    await expect(
+      captureNativeSessionRecovery(options({ harness: 'claude', limits: { maxFileBytes: 1024 } })),
+    ).rejects.toMatchObject({ code: 'native_recovery_limit' });
+  });
+
+  it('rejects symlinked metadata and modified recovery metadata bytes', async () => {
+    const base = `.claude/projects/project-key/${id}`;
+    await write('home', `${base}.jsonl`, `${JSON.stringify({ sessionId: id, cwd: project })}\n`);
+    await write('home', `${base}/subagents/agent-child.jsonl`, '{"type":"assistant"}\n');
+    const path = await write(
+      'home',
+      `${base}/subagents/agent-child.meta.json`,
+      '{"agentType":"Explore"}',
+    );
+    const checkpoint = await captureNativeSessionRecovery(options({ harness: 'claude' }));
+    await fs.unlink(path);
+    await fs.symlink(`${base}.jsonl`, path);
+    await expect(
+      captureNativeSessionRecovery(options({ harness: 'claude' })),
+    ).rejects.toMatchObject({ code: 'native_recovery_symlink' });
+    await emptyRestoreRoots();
+    checkpoint.files.find((file) => file.path.endsWith('.meta.json')).content = Buffer.from('{}');
+    await expect(
+      restoreNativeSessionRecovery({ ...options({ harness: 'claude' }), ...checkpoint }),
+    ).rejects.toMatchObject({ code: 'native_recovery_manifest_invalid' });
+  });
+
   it('preserves known empty Claude sidecar directories and rejects unknown empty ones', async () => {
     const base = `.claude/projects/project-key/${id}`;
     await write('home', `${base}.jsonl`, `${JSON.stringify({ sessionId: id, cwd: project })}\n`);

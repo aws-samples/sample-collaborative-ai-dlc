@@ -952,6 +952,45 @@ it.each(['STOPPED', 'FAILED'] as const)(
   },
 );
 
+it.each([
+  [
+    'native_recovery_home_path_invalid',
+    'Native execution could not save this session’s recovery file layout.',
+  ],
+  ['native_recovery_changed', 'Files changed while native execution was saving the turn.'],
+  ['native_recovery_limit', 'The turn exceeded the native file capture limits.'],
+  ['native_recovery_session_identity', 'Native execution could not verify the session checkpoint.'],
+  ['native_execution_failed', 'Execution reported an error.'],
+])(
+  'shows a safe %s failure with retained files and no replay action',
+  async (failureCode, message) => {
+    api.get.mockResolvedValue({
+      ...waiting,
+      execution: {
+        ...execution,
+        status: 'FAILED',
+        failureCode,
+        stopStatus: { state: 'confirmed', confirmedAt: '2026-09-29T09:05:00Z' },
+      },
+    });
+    renderPage();
+    await screen.findByText('Which pipe style?');
+    expect(
+      screen.getByText(`${message} Any committed revision remains available below.`),
+    ).toBeVisible();
+    expect(screen.getByText(`Failure: ${failureCode}`)).toBeVisible();
+    expect(
+      screen.queryByRole('button', {
+        name: /Start agent|Recover session|Retry execution|Cancel execution/,
+      }),
+    ).not.toBeInTheDocument();
+    await click('Refresh status');
+    expect(screen.getByText('Which pipe style?')).toBeVisible();
+    expect(api.start).not.toHaveBeenCalled();
+    expect(api.cancel).not.toHaveBeenCalled();
+  },
+);
+
 it.each(['success', 'denial'] as const)(
   'discards an outstanding waiting poll %s after the account changes',
   async (outcome) => {

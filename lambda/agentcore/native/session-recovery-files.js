@@ -235,7 +235,8 @@ const homeAllowed = (harness, id, path, metadata) => {
   return (
     path === `${base}.jsonl` ||
     path.startsWith(`${base}/tool-results/`) ||
-    (path.startsWith(`${base}/subagents/`) && path.endsWith('.jsonl')) ||
+    (path.startsWith(`${base}/subagents/`) &&
+      (path.endsWith('.jsonl') || /\/agent-[A-Za-z0-9_-]{1,128}\.meta\.json$/.test(path))) ||
     path === `${base}/journal.jsonl` ||
     path.startsWith(`.claude/projects/${key}/memory/`) ||
     path.startsWith(`.claude/file-history/${id}/`) ||
@@ -244,6 +245,17 @@ const homeAllowed = (harness, id, path, metadata) => {
       (path.endsWith('.json') || path.endsWith('/.highwatermark'))) ||
     /^\.claude\/plans\/[^/]+\.md$/.test(path)
   );
+};
+
+// The pinned Claude CLI persists agent metadata alongside its transcript.
+// Retain only paired, recognized metadata within the selected session tree;
+// restore still verifies all bytes, paths, ownership and credential exclusions.
+const validateClaudeAgentMetadata = (entry, paths) => {
+  const transcript = entry.path.replace(/\.meta\.json$/, '.jsonl');
+  if (!paths.has(transcript)) fail('session_missing');
+  const metadata = json(entry.content);
+  if (!plain(metadata) || typeof metadata.agentType !== 'string' || !metadata.agentType.length)
+    fail('session_invalid');
 };
 const homeDirectoryAllowed = (harness, id, path, metadata) => {
   if (path === '') return true;
@@ -269,6 +281,26 @@ const homeDirectoryAllowed = (harness, id, path, metadata) => {
     ) ||
     path === '.claude/plans'
   );
+};
+
+const validateClaudeSession = (ctx, entries, metadata) => {
+  const base = `.claude/projects/${metadata.claudeProjectKey}/${ctx.nativeSessionId}`;
+  const main = entries.find((entry) => entry.path === `${base}.jsonl`);
+  if (!main) fail('session_missing');
+  const rows = jsonl(main.content);
+  if (
+    !rows.some((row) => row.sessionId === ctx.nativeSessionId) ||
+    rows.some((row) => row.sessionId !== undefined && row.sessionId !== ctx.nativeSessionId) ||
+    rows.some((row) => row.cwd !== undefined && row.cwd !== ctx.project)
+  )
+    fail('session_identity');
+  const paths = new Set(entries.map((entry) => entry.path));
+  for (const entry of entries) {
+    if (!entry.path.startsWith(`${base}/`)) continue;
+    if (entry.path.endsWith('.jsonl')) jsonl(entry.content);
+    if (entry.path.startsWith(`${base}/subagents/`) && entry.path.endsWith('.meta.json'))
+      validateClaudeAgentMetadata(entry, paths);
+  }
 };
 
 const validateSession = (ctx, files, metadata) => {
@@ -317,25 +349,7 @@ const validateSession = (ctx, files, metadata) => {
     jsonl(entries.find((f) => f.path.endsWith('.jsonl')).content);
     return;
   }
-  if (ctx.harness === 'claude') {
-    const main = entries.find(
-      (f) =>
-        f.path === `.claude/projects/${metadata.claudeProjectKey}/${ctx.nativeSessionId}.jsonl`,
-    );
-    if (!main) fail('session_missing');
-    const rows = jsonl(main.content);
-    if (
-      !rows.some((r) => r.sessionId === ctx.nativeSessionId) ||
-      rows.some((r) => r.sessionId !== undefined && r.sessionId !== ctx.nativeSessionId) ||
-      rows.some((r) => r.cwd !== undefined && r.cwd !== ctx.project)
-    )
-      fail('session_identity');
-    const sessionDirectory = `.claude/projects/${metadata.claudeProjectKey}/${ctx.nativeSessionId}/`;
-    for (const entry of entries)
-      if (entry.path.startsWith(sessionDirectory) && entry.path.endsWith('.jsonl'))
-        jsonl(entry.content);
-    return;
-  }
+  if (ctx.harness === 'claude') return validateClaudeSession(ctx, entries, metadata);
   const sessions = new Map();
   for (const entry of entries) {
     const first = jsonl(entry.content)[0];

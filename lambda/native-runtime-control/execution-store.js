@@ -2,6 +2,7 @@
 // authorization. Membership, credential resolution, image qualification, and
 // manifest/file verification remain the caller's responsibility.
 import { createHash, randomUUID } from 'node:crypto';
+import { NATIVE_RUNTIME_FAILURE_CODES } from '../shared/native-execution-failure.js';
 import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import {
   nativeRuntimeBindingKey,
@@ -53,8 +54,7 @@ const TRANSITIONS = {
   CANCELLED: [],
 };
 const FAILURE_CODES = [
-  'native_execution_failed',
-  'native_execution_configuration_invalid',
+  ...NATIVE_RUNTIME_FAILURE_CODES,
   'native_execution_access_denied',
   'native_execution_source_changed',
   'native_execution_runtime_mismatch',

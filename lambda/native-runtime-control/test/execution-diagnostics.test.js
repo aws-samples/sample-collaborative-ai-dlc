@@ -96,6 +96,45 @@ const payload = {
 
 describe('native controller diagnostic privacy boundary', () => {
   it.each([
+    'native_recovery_home_path_invalid',
+    'native_recovery_adapter_failed',
+    'native_recovery_cancelled',
+    'native_recovery_time_failed',
+    'native_snapshot_changed',
+  ])('retains %s through both the runtime report mapper and diagnostic sink', (code) => {
+    const s = sinks();
+    s.diagnostics({
+      ...nativeDiagnosticReport(row, { ...identity, status: 'failed', code }),
+      phase: 'status',
+      stage: 'report',
+      code: 'REPORT_OBSERVED',
+    });
+    expect(s.events()[0].runtimeCode).toBe(code);
+    s.assertPrivate();
+  });
+
+  it('retains a safe restore cause without serializing the recovery error', () => {
+    const s = sinks();
+    s.diagnostics({
+      ...nativeDiagnosticReport(row, {
+        ...identity,
+        status: 'stopped_needs_review',
+        code: 'native_execution_recovery_failed',
+        recoveryFailureCode: 'native_recovery_time_failed',
+        message: CANARY,
+      }),
+      phase: 'recover',
+      stage: 'report',
+      code: 'REPORT_OBSERVED',
+    });
+    expect(s.events()[0]).toMatchObject({
+      runtimeCode: 'native_execution_recovery_failed',
+      recoveryFailureCode: 'native_recovery_time_failed',
+    });
+    s.assertPrivate();
+  });
+
+  it.each([
     ['legacy both absent', undefined, undefined, []],
     ['legacy accepts generation one', undefined, 1, []],
     ['legacy rejects generation two', undefined, 2, ['writerGeneration']],
@@ -602,7 +641,10 @@ describe('supervisor decision diagnostics preserve protected behavior', () => {
       message: CANARY,
     }));
     await f.run(f.identity);
-    expect(f.row()).toMatchObject({ status: 'FAILED', failureCode: 'native_execution_failed' });
+    expect(f.row()).toMatchObject({
+      status: 'FAILED',
+      failureCode: 'native_execution_initialization_unverified',
+    });
     expect(f.events().at(-1)).toMatchObject({
       code: 'RUNTIME_TERMINAL',
       status: 'failed',
@@ -627,6 +669,9 @@ describe('supervisor decision diagnostics preserve protected behavior', () => {
       code: 'native_execution_initialization_unverified',
     }));
     await run(f.identity);
-    expect(f.row()).toMatchObject({ status: 'FAILED', failureCode: 'native_execution_failed' });
+    expect(f.row()).toMatchObject({
+      status: 'FAILED',
+      failureCode: 'native_execution_initialization_unverified',
+    });
   });
 });

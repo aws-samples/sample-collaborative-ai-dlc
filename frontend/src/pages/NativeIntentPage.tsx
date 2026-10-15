@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { nativeIntentStatusLabel, nativeIntentTitle } from '@/lib/intentDiscovery';
+import { nativeExecutionFailureMessage } from '@/lib/nativeExecutionFailure';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { NativeIntentContent } from '@/components/intent/NativeIntentContent';
@@ -118,7 +119,7 @@ export function NativeWorkspaceView({ adapter }: { adapter: NativeIntentAdapter 
                           : intent.execution.status === 'CANCELLED'
                             ? 'Cancellation handling finished. Inspect work to check retained stop evidence and committed revisions.'
                             : intent.execution.status === 'FAILED'
-                              ? 'Execution reported an error. Any committed revision remains available below.'
+                              ? `${nativeExecutionFailureMessage(intent.execution.failureCode)} Any committed revision remains available below.`
                               : 'This run uses its own runtime and workspace. You can leave this page and return to the same link.'
                 : intent.status === 'READY'
                   ? 'This run has its own verified workspace. The agent has not started.'

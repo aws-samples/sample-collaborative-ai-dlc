@@ -216,6 +216,86 @@ const make = (options = {}) => {
 };
 
 describe('native first-turn executor', () => {
+  it('persists a capture failure even when runtime telemetry throws', async () => {
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {
+      throw new Error('logger unavailable');
+    });
+    try {
+      const { executor, request } = make({
+        ports: {
+          publishRecovery: vi.fn(),
+          captureRecovery: async () => {
+            throw Object.assign(new Error('private details'), {
+              code: 'native_recovery_adapter_failed',
+            });
+          },
+        },
+      });
+      await executor.start(request);
+      expect(await executor.settle()).toMatchObject({
+        status: 'failed',
+        code: 'native_recovery_adapter_failed',
+      });
+      expect(
+        JSON.parse(await fs.readFile(join(root, '.native-control/first-turn/status.json'), 'utf8')),
+      ).toMatchObject({ code: 'native_recovery_adapter_failed' });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it.each(['known', 'unknown', 'getter', 'coercion'])(
+    'persists only a closed failure identity after successful output/uploads: %s',
+    async (kind) => {
+      const getter = vi.fn(() => {
+        throw new Error('private-error-canary');
+      });
+      const error = new Error('private-error-canary');
+      if (kind === 'getter') Object.defineProperty(error, 'code', { get: getter });
+      else
+        error.code =
+          kind === 'known'
+            ? 'native_recovery_home_path_invalid'
+            : kind === 'coercion'
+              ? { toString: getter, toJSON: getter }
+              : 'native_recovery_private_error_canary';
+      const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const publishRecovery = vi.fn();
+      try {
+        const { executor, request, ports } = make({
+          ports: {
+            captureRecovery: async () => {
+              throw error;
+            },
+            publishRecovery,
+          },
+        });
+        await executor.start(request);
+        const report = await executor.settle();
+        const expected = kind === 'known' ? error.code : 'native_execution_failed';
+        expect(report).toMatchObject({ status: 'failed', code: expected });
+        expect(ports.publish).toHaveBeenCalledTimes(1);
+        expect(ports.publishInteraction).toHaveBeenCalledTimes(1);
+        expect(publishRecovery).not.toHaveBeenCalled();
+        const persisted = await fs.readFile(
+          join(root, '.native-control/first-turn/status.json'),
+          'utf8',
+        );
+        expect(JSON.parse(persisted).code).toBe(expected);
+        expect(persisted).not.toContain('private-error-canary');
+        expect(log.mock.calls.map(([line]) => JSON.parse(line))).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ boundary: 'executionFailed', code: expected, sequence: 1 }),
+          ]),
+        );
+        expect(JSON.stringify(log.mock.calls)).not.toContain('private-error-canary');
+        expect(getter).not.toHaveBeenCalled();
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
   const reply = (request, head, changes = {}) => ({
     ...request,
     command: 'native-continue',

@@ -26,7 +26,7 @@ import {
 
 const clone = (v) => structuredClone(v);
 const hash = (v) => createHash('sha256').update(v).digest('hex');
-export const executionFixture = () => {
+export const executionFixture = ({ harness = 'codex', model = 'openai.example' } = {}) => {
   const prepared = {
     ...nativeRuntimeBindingKey(IDENTITY),
     ...IDENTITY,
@@ -36,7 +36,7 @@ export const executionFixture = () => {
     status: 'READY',
     version: 7,
     requestFingerprint: `sha256:${'d'.repeat(64)}`,
-    request: request(),
+    request: { ...request(), harness },
     candidate: candidate(),
     archiveReceipt: receipt(),
     imageUri: IMAGE.uri,
@@ -44,8 +44,8 @@ export const executionFixture = () => {
     ...resources({ ...IDENTITY, bindingId: OTHER }),
   };
   const configuration = {
-    harness: 'codex',
-    model: 'openai.example',
+    harness,
+    model,
     promptSha256: hash(prepared.request.prompt),
     packageId: prepared.candidate.packagePin.packageId,
     materializationId: prepared.candidate.materializationId,

@@ -928,6 +928,219 @@ cursor contracts remain unchanged. Already admitted images retain their original
 recorder behavior; the diagnostic correction requires a new image for new
 admissions and does not repin existing runs.
 
+### Claude checkpoint capture correction (15 October 2026)
+
+**Proven native defects:** the existing Claude recovery adapter rejected the
+`subagents/agent-<id>.meta.json` file written beside a subagent transcript by the
+pinned Claude Code 2.1.257 binary. Separately, the controller diagnostic mapper
+and sink omitted every `native_recovery_*` and `native_snapshot_*` code, and
+terminal reconciliation replaced the runtime's failure identity with
+`native_execution_failed` in authority state.
+
+The local retained incident image is
+`sha256:7d392590e9a0cbcfb817c6b8246eef77bfd09b84de3cb6031fa42bb7d7bf834f`.
+Static inspection of its installed binary confirmed the paired metadata
+producer; neither Claude nor a model was run. Before these changes, its
+`executor.js`, `session-recovery-files.js` and `command-runner.js` matched the
+checkout at `fcd7386ea7ee38b2252b23ebac114bb66a6cf40e` byte-for-byte. Their SHA-256
+values were, respectively:
+
+```text
+e32c73fb7b6d9121b692c483be96bf7a76d7632db6be9b7f1e1e38cc36406363
+7ae39cf101b76df7c5815cbcac03c94d31de863a50a4d0d08d42d0cc38247b09
+cd286864c7d66cc17cf0f65209b9fdd5749c4b3dc280903f65c396a353aad79d
+```
+
+**Correction:** private recovery capture and restore accept a recognized agent
+metadata filename only inside the selected Claude session's subagent tree, with
+a paired transcript and valid JSON containing an `agentType` string. Exact
+bytes, hashes, ownership, hardlink/symlink checks, credential exclusions and
+mutation detection still apply. Other unknown sidecars still fail closed. No
+CLI version, dependency, harness-format pin or public file-exclusion policy
+changed. Existing runtime limits remain 20,000 files, 40,000 entries, 64 MiB per
+file, 256 MiB total and depth 64; this change does not add a retry or relax a
+limit. Capture honors cancellation and detects late writes; a complete
+wall-clock capture deadline is not established by this work.
+
+The shared closed failure registry now supplies the executor, both controller
+diagnostic boundaries and authority validation. Error getters, arbitrary
+namespace-shaped codes, messages, paths and content are not admitted as failure
+identities. Known causes survive in runtime status, controller logs, the
+transactional lifecycle event and API `failureCode`; restore wrappers retain a
+separate sanitized `recoveryFailureCode` in diagnostic reports. Legacy generic
+failures remain readable. The UI explains recognized capture categories and
+continues to show the exact safe code and retained publication.
+Content-free lifecycle boundaries now distinguish interaction upload, private
+capture and checkpoint upload. Terminal logging cannot block status persistence.
+
+**Historical incident remains qualified:** intent
+`855edbee-e42d-4bd6-b01c-b7767bc77109` in project
+`22371643-2db5-42a4-a571-e47fc35745f5` used Sonnet 5 / AI-DLC 2.11.0 and the image
+above. Attempt `8f78b388-7437-4a04-b64a-444f311d729c`, runtime session
+`7878eba8-7af5-47b4-8f1c-5efe05ee45ce`, Claude session
+`9922f4e6-facd-41e7-86e0-3205e836cb17`: both CLI turns completed, publication and
+checkpoint 1 were admitted, and the accepted answer was delivered. On
+2026-10-14 at 13:35:43–44 UTC turn 2 uploaded files and its interaction, then
+failed before `checkpointUploadStarted`; stop was confirmed at 13:35:46.300 UTC.
+The last investigated authority state was `FAILED`, revision 1194, turn 2,
+writer 1, with no second checkpoint/admission or recoverable episode. Agent
+activity makes the reproduced sidecar defect plausible, but the old controller
+discarded the actual code. This is **not proof** that this exact sidecar caused
+that run's rejection, nor evidence for the previous Opus model mismatch.
+Do not replay its delivered answer or present checkpoint 1 as a safe retry.
+
+**Regression evidence:** initially six tests failed: the second Claude capture
+returned `native_recovery_home_path_invalid`, and five known recovery/snapshot
+causes became `unknown`. With the old terminal mapping temporarily restored,
+both delivered-answer journey cases failed because authority stored
+`native_execution_failed` instead of the capture cause. They pass with the fix.
+The production executor, command runner, supervisor, store, API, immutable
+publication/interaction/checkpoint validators and fence are composed with real
+local subprocesses and files. AWS, initialization and model responses are inert
+ports. Five journeys cover three successful turns/two replies on the same
+session, second-turn capture rejection, third-turn snapshot rejection,
+cancellation before admission, and unconfirmed external stop. They verify
+retained checkpoint/file bytes, failure persistence/history/API, exact answer
+delivery, no admission of incomplete work, no replay and no unsafe recovery.
+Adapter regressions reject malformed/orphan/unknown/credential-bearing metadata,
+late writes, oversized files, symlinks and changed hashes.
+
+An additional network-disabled Linux ARM64 check used the retained image's
+original adapter and a locally bundled corrected adapter on synthetic tmpfs
+files. First capture passed; the old second capture rejected the paired
+metadata; corrected second capture and exact transcript/metadata restore passed.
+This is filesystem compatibility evidence, not a real CLI/model/package
+journey or EFS qualification. Two initial container setup attempts failed on
+module resolution; the self-contained bundle resolved those setup errors.
+
+**Checks:** focused native suites: 173 passed, none skipped; frontend execution
+page: 71 passed; full frontend: 1,900 passed in 139 files. The affected
+`native-runtime-control`, `agentcore` and `shared` backend run (including
+DynamoDB Local and Gremlin) passed 7,420 tests, skipped three Bun-dependent
+sensor tests, and timed out in five real-Git fixture tests. Rerunning their
+three files serially with the original timeouts passed all 62 tests
+(`code-traceability`, `native-execution-prepare`, `resolve-conflict`).
+Architecture: 380 production modules, zero violations; architecture regression
+tests: six passed; native wiring: 22 passed. Dependency analysis: zero errors,
+14 existing warnings. Root lint, frontend typecheck/build, all eight native
+Lambda bundles and changed-file formatting passed; existing lint/dependency/
+bundle-size warnings remain. The local commit also runs the repository's
+lint-staged/secretlint, dependency, advisory audit, frontend typecheck and
+changed-file Vitest hooks.
+The first sandboxed focused run could not open eight local loopback test
+sockets (`listen EPERM`); the permitted unsandboxed run passed those tests.
+No live AWS read, cloud mutation, model call, push or deployment was performed
+in this implementation session.
+
+Reproduction/check commands (local only):
+
+```bash
+npx vitest run --config vitest.native-foundation.config.js \
+  lambda/native-runtime-control/test/checkpoint-journey.test.js \
+  lambda/native-runtime-control/test/execution-diagnostics.test.js \
+  lambda/agentcore/test/native-executor.test.js \
+  lambda/agentcore/test/native-session-recovery-files.test.js
+npx vitest run --project native-runtime-control --project agentcore --project shared
+npx vitest run --project agentcore --maxWorkers=1 \
+  test/code-traceability.test.js test/native-execution-prepare.test.js \
+  test/resolve-conflict.test.js
+(cd frontend && NODE_OPTIONS=--no-experimental-webstorage npx vitest run)
+npm run architecture:check
+node --test scripts/test/native-architecture.test.mjs
+npm run test:native-wiring
+npm run dep:check
+npm run lint
+npm run build --workspace=native-runtime-control
+npm --prefix frontend run build
+```
+
+**Release and fresh-intent smoke test (not executed):** after separate
+deployment/model authorization, the release operator reviews the saved plan
+and uses the normal deployment credentials and existing environment config.
+These commands are not authorized under this session's `solution-read` profile.
+Do not change this investigation's AWS identity or CLI pins to run them.
+
+```bash
+AIDLC_SKIP_NPM_CI=1 ./scripts/deploy-terraform.sh dev --phase plan \
+  --plan-file /tmp/native-capture-dev.tfplan --skip-seed
+# Review the saved plan and its exact runtime image + native Lambda changes.
+./scripts/deploy-terraform.sh dev --phase apply \
+  --plan-file /tmp/native-capture-dev.tfplan --skip-seed
+./scripts/deploy-frontend.sh dev
+```
+
+The apply script also performs its existing authentication inventory
+initialization; `--skip-seed` suppresses workflow reseeding, not that step.
+Deploy the authority, execution worker, runtime image and frontend together.
+New admissions must pin the new image; existing failed runs keep their old pin.
+
+1. In selected space `22371643-2db5-42a4-a571-e47fc35745f5`, use workflow package
+   import to create a **fresh** native intent with the already selected trusted
+   AI-DLC package, Claude and Sonnet 5. Record its actual admitted package ID,
+   materialization, model, image digest, attempt/session and writer identities.
+2. Request: “First ask which small code change to explore. After my first answer,
+   use one short Explore subagent, save a plan in this workspace and ask me to
+   confirm its scope. After my second answer, implement it and run local tests.
+   Do not publish changes outside this workspace.” Verify question/publication/
+   checkpoint 1 before replying; activity text alone is insufficient.
+3. Reply once with a bounded change. Require the subagent-bearing second turn to
+   reach `interactionUploadCompleted`, `checkpointCaptureCompleted`,
+   `checkpointUploadCompleted`, then admitted publication/checkpoint 2. Confirm
+   the second question is visible. Refresh/reconnect and verify the same question,
+   accepted-answer delivery state and separate output/lifecycle cursors.
+4. Reply once to confirm the plan. Require publication/checkpoint 3 and the next
+   question or result. Inspect published history 1 and 2: exact old content must
+   remain readable, with no replay on refresh. Record test results as reported
+   work; a stopped turn does not prove workflow completion.
+5. Exercise cancellation only while the fresh run's UI offers it; retain the
+   latest admitted revision and verify durable stop confirmation. Recovery is a
+   separate check only if the UI/authority actually exposes an eligible
+   `RECOVERY_REQUIRED` episode with `canRecover: true`; otherwise mark live
+   recovery unexercised. Do not induce a cloud failure or recover the old intent.
+
+**Minimal remaining historical diagnostic:** only the stopped run's existing
+`/mnt/native/.native-control/first-turn/status.json` could establish its original
+safe code without replay. No authorized existing mount is available in this
+checkout. Earlier automatic approval review rejected broad S3 interaction,
+publication-file and checkpoint body downloads; those reads were not repeated.
+The following prepared single-file read is for an operator who already has an
+authorized read-only mount of that exact run and this checkout. It emits only
+a closed code and two numeric fields after checking all incident identities.
+It does not authorize creating a mount/host/runtime or reading CLI files.
+
+```bash
+NATIVE_DIAGNOSTIC_MOUNT=/already-authorized/exact-run-mount node --input-type=module <<'JS'
+import { open, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { nativeRuntimeFailureCode } from './lambda/shared/native-execution-failure.js';
+const root = await realpath(process.env.NATIVE_DIAGNOSTIC_MOUNT);
+const path = `${root}/.native-control/first-turn/status.json`;
+if (await realpath(path) !== path) throw Error('Unexpected link');
+const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+try {
+  const stat = await handle.stat();
+  if (!stat.isFile() || stat.size < 1 || stat.size > 32768) throw Error('Invalid status size');
+  const bytes = Buffer.alloc(stat.size);
+  const read = await handle.read(bytes, 0, bytes.length, 0);
+  if (read.bytesRead !== bytes.length) throw Error('Incomplete status read');
+  const row = JSON.parse(bytes.toString('utf8'));
+  const expected = {
+    projectId: '22371643-2db5-42a4-a571-e47fc35745f5',
+    executionId: '855edbee-e42d-4bd6-b01c-b7767bc77109',
+    attemptId: '8f78b388-7437-4a04-b64a-444f311d729c',
+    runtimeSessionId: '7878eba8-7af5-47b4-8f1c-5efe05ee45ce',
+  };
+  if (!Object.entries(expected).every(([key, value]) => row[key] === value))
+    throw Error('Wrong run');
+  const numeric = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
+  console.log(JSON.stringify({
+    code: nativeRuntimeFailureCode(row),
+    sequence: numeric(row.sequence), updatedAt: numeric(row.updatedAt),
+  }));
+} finally { await handle.close(); }
+JS
+```
+
 ### Trust and qualification limits
 
 One writer generation does not mean its tools are isolated from one another.

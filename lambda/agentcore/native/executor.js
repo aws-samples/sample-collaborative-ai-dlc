@@ -31,6 +31,7 @@ import {
 } from './initialization-evidence.js';
 import { inspectNativeEfsWorkspace } from './efs-workspace.js';
 import { snapshotNativeExecutionFiles } from './execution-files.js';
+import { nativeRuntimeFailureCode } from '../../shared/native-execution-failure.js';
 import {
   captureNativeSessionRecovery,
   restoreNativeSessionRecovery,
@@ -1029,6 +1030,7 @@ export const createNativeExecutor = ({
       nativeSessionId: publication.nativeSessionId,
       filesCount: publication.filesCount,
     };
+    timing('interactionUploadStarted');
     const interaction = nativeInteractionReceipt(
       await publishInteraction({
         identity: current.identity,
@@ -1050,6 +1052,7 @@ export const createNativeExecutor = ({
       interaction.nativeSessionId !== nativeSessionId
     )
       fail('native_execution_interaction_unconfirmed');
+    timing('interactionUploadCompleted');
     let recoveryCheckpoint;
     const continuation = {
       promptEvidence: nextPromptEvidence ?? null,
@@ -1060,6 +1063,7 @@ export const createNativeExecutor = ({
     if (publishRecovery) {
       // Quiescent private session state is required for the next reply.
       // Public artifact/message uploads alone are not a resumable session.
+      timing('checkpointCaptureStarted');
       const captured = await captureRecovery({
         project,
         home: current.home,
@@ -1069,6 +1073,7 @@ export const createNativeExecutor = ({
         signal,
         limits: RECOVERY_CAPTURE_LIMITS,
       });
+      timing('checkpointCaptureCompleted');
       await checkDirectories();
       checkCancelled();
       timing('checkpointUploadStarted');
@@ -1129,11 +1134,7 @@ export const createNativeExecutor = ({
       await publishNativeTurn(prepared, result);
     } catch (error) {
       // Never expose raw port/subprocess errors (which may contain credentials).
-      const code = /^(native_execution|native_snapshot|native_recovery)_[a-z_]{1,64}$/.test(
-        error?.code ?? '',
-      )
-        ? error.code
-        : 'native_execution_failed';
+      const code = nativeRuntimeFailureCode(error);
       current.report = {
         ...current.report,
         status: poisoned
@@ -1144,6 +1145,11 @@ export const createNativeExecutor = ({
         code,
         updatedAt: Date.now(),
       };
+      recordNativeBoundary(current.identity, 'executionFailed', current.report.updatedAt, {
+        code,
+        sequence: current.report.sequence,
+        writerGeneration: current.writerGeneration,
+      });
       // Unconfirmed subprocess cleanup must halt all subsequent filesystem
       // reads/writes: a surviving writer could race the supervisor.
       if (!poisoned) {
@@ -1766,13 +1772,14 @@ export const createNativeExecutor = ({
             ...current.report,
             status: 'stopped_needs_review',
             code: 'native_execution_recovery_failed',
-            recoveryFailureCode: /^(?:native_recovery|native_execution)_[a-z_]{1,64}$/.test(
-              error?.code ?? '',
-            )
-              ? error.code
-              : 'native_execution_recovery_failed',
+            recoveryFailureCode: nativeRuntimeFailureCode(error),
             updatedAt: Date.now(),
           };
+          recordNativeBoundary(current.identity, 'executionFailed', current.report.updatedAt, {
+            code: current.report.recoveryFailureCode,
+            sequence: current.report.sequence,
+            writerGeneration: current.writerGeneration,
+          });
           if (!poisoned) {
             try {
               await persist();

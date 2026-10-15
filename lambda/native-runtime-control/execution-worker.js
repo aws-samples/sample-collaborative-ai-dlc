@@ -20,6 +20,7 @@ import {
   verifyCompletedNativeTurn,
 } from './execution-lifecycle.js';
 import { createHash } from 'node:crypto';
+import { nativeRuntimeFailureCode } from '../shared/native-execution-failure.js';
 import gremlin from 'gremlin';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
@@ -485,7 +486,7 @@ export const createNativeExecutionSupervisor =
       });
       await fence.cancel(executionIdentity(state.row));
       const stopped = await stop({ draft, execution: state.row });
-      await advance({ status: 'FAILED', failureCode: 'native_execution_failed' }, stopped);
+      await advance({ status: 'FAILED', failureCode: nativeRuntimeFailureCode(report) }, stopped);
       return { pending: false, status: 'FAILED' };
     } catch (error) {
       if (error?.code === 'NATIVE_RECOVERY_MISSING')
