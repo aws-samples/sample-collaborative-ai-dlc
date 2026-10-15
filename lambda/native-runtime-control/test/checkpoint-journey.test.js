@@ -27,6 +27,9 @@ it.each([
   { kind: 'form', turns: 3 },
   { kind: 'scope', turns: 3 },
   { kind: 'scope-query-loop', turns: 3 },
+  { kind: 'scope-output-silent', turns: 3 },
+  { kind: 'scope-output-markup', turns: 3 },
+  { kind: 'scope-output-mismatch', turns: 2, code: 'native_execution_output_result' },
   { kind: 'scope-credential', turns: 2, code: 'native_execution_output_credential' },
   { kind: 'scope-cross-credential', turns: 2, code: 'native_execution_output_credential' },
   { kind: 'scope-capture-cwd', turns: 2, code: 'native_recovery_session_cwd_invalid' },
@@ -142,8 +145,22 @@ it.each([
       console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,session_id:id,result:'Subagent work finished.',stop_reason:'end_turn',terminal_reason:'completed'}));
       console.log(JSON.stringify({type:'system',subtype:'init',session_id:id}));
     }
+    if(kind==='scope-output-markup' && turn===2)
+      console.log(JSON.stringify({type:'assistant',session_id:id,parent_tool_use_id:null,
+        message:{role:'assistant',content:[{type:'text',text:'<cc-memory filenames="fixture.md">'+result+'</cc-memory>'}]}}));
+    if(kind==='scope-output-mismatch' && turn===2)
+      console.log(JSON.stringify({type:'assistant',session_id:id,parent_tool_use_id:null,
+        message:{role:'assistant',content:[{type:'text',text:'Different current question'}]}}));
     console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,session_id:id,
       result,stop_reason:'end_turn',terminal_reason:'completed'}));
+    if(kind==='scope-output-silent' && turn===2) {
+      console.log(JSON.stringify({type:'system',subtype:'task_notification',session_id:id}));
+      console.log(JSON.stringify({type:'system',subtype:'init',session_id:id}));
+      console.log(JSON.stringify({type:'assistant',session_id:id,parent_tool_use_id:null,
+        message:{role:'assistant',content:[{type:'text',text:'No response requested.'}]}}));
+      console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,session_id:id,
+        result:'',stop_reason:'end_turn',terminal_reason:'completed'}));
+    }
   `,
   );
   const latest = new Map();
@@ -525,6 +542,22 @@ it.each([
           expect(persistedFailure.timings.checkpointCaptureCompleted).toBeUndefined();
           expect(persistedFailure.timings.checkpointUploadStarted).toBeUndefined();
           expect(writes.some((key) => key.includes('/interactions/'))).toBe(true);
+        }
+        if (scenario.kind === 'scope-output-mismatch') {
+          expect(persistedFailure.outputDiagnostic).toMatchObject({
+            reason: 'result_mismatch',
+            recordType: 'result',
+          });
+          expect(persistedFailure.timings.outputRejected).toBeTypeOf('number');
+          expect(persistedFailure.timings.publicationStarted).toBeUndefined();
+          expect(persistedFailure.timings.checkpointCaptureStarted).toBeUndefined();
+          expect(diagnostics).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                outputDiagnostic: expect.objectContaining({ reason: 'result_mismatch' }),
+              }),
+            ]),
+          );
         }
       } else if (scenario.kind !== 'cancel') {
         expect(f.row().status).toBe('AWAITING_USER');

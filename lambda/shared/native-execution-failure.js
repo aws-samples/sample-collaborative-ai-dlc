@@ -20,6 +20,11 @@ export const NATIVE_RUNTIME_FAILURE_CODES = Object.freeze([
   'native_execution_cancelled',
   'native_execution_command_failed',
   'native_execution_output_invalid',
+  'native_execution_output_json',
+  'native_execution_output_utf8',
+  'native_execution_output_shape',
+  'native_execution_output_text',
+  'native_execution_output_result',
   'native_execution_output_failed',
   'native_execution_output_incomplete',
   'native_execution_output_terminal',
@@ -102,6 +107,71 @@ export const NATIVE_RUNTIME_FAILURE_CODES = Object.freeze([
   ].map((suffix) => `native_snapshot_${suffix}`),
 ]);
 const codes = new Set(NATIVE_RUNTIME_FAILURE_CODES);
+
+const OUTPUT_REASONS = new Set([
+  'json_grammar',
+  'duplicate_field',
+  'field_limit',
+  'record_limit',
+  'depth_limit',
+  'utf8',
+  'record_shape',
+  'message_shape',
+  'text_shape',
+  'text_limit',
+  'text_encoding',
+  'no_visible_text',
+  'result_shape',
+  'result_empty',
+  'result_mismatch',
+  'session',
+  'terminal',
+  'failed',
+  'incomplete',
+  'credential',
+  'query_limit',
+  'unexpected',
+]);
+const OUTPUT_TYPES = new Set([
+  'system',
+  'assistant',
+  'user',
+  'result',
+  'stream_event',
+  'thread.started',
+  'turn.started',
+  'turn.completed',
+  'turn.failed',
+  'item.completed',
+  'text',
+  'step_finish',
+  'error',
+  'other',
+  'none',
+]);
+const own = (value, key) => {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+// Runtime status, lifecycle logger and controller diagnostic sinks share this
+// closed projection. Never retain raw frames, error messages or arbitrary types.
+export const nativeOutputDiagnostic = (input) => {
+  const reason = own(input, 'reason');
+  if (!OUTPUT_REASONS.has(reason)) return undefined;
+  const result = { reason };
+  const recordType = own(input, 'recordType');
+  if (OUTPUT_TYPES.has(recordType)) result.recordType = recordType;
+  for (const key of ['recordIndex', 'queries', 'messages', 'textBytes', 'resultBytes']) {
+    const value = own(input, key);
+    if (Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647) result[key] = value;
+  }
+  return result;
+};
 
 export const nativeRuntimeFailureCode = (error) => {
   try {

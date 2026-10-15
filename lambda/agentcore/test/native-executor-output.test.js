@@ -74,7 +74,7 @@ describe('bounded completed native turn output', () => {
     (result) => {
       const events = claude();
       events[2] = { ...events[2], result };
-      expect(() => collect(events, { harness: 'claude' })).toThrow('output_invalid');
+      expect(() => collect(events, { harness: 'claude' })).toThrow('output_result');
     },
   );
 
@@ -155,7 +155,7 @@ describe('bounded completed native turn output', () => {
       ]) {
         const collector = createNativeTurnOutput({ harness: 'codex' });
         for (const byte of Buffer.from(invalidWire)) collector.write(Buffer.from([byte]));
-        expect(() => collector.finish()).toThrow('output_invalid');
+        expect(() => collector.finish()).toThrow('output_json');
       }
     },
   );
@@ -379,7 +379,7 @@ describe('bounded completed native turn output', () => {
   it('rejects malformed or duplicate JSON fields without retaining diagnostics', () => {
     const collector = createNativeTurnOutput({ harness: 'codex' });
     collector.write(Buffer.from('{"type":"thread.started","thread_id":"one","thread_id":"two"}\n'));
-    expect(() => collector.finish()).toThrow('output_invalid');
+    expect(() => collector.finish()).toThrow('output_json');
   });
 });
 
@@ -387,6 +387,116 @@ describe('Claude 2.1.296 query loop within one invocation', () => {
   // Sanitized actual installed-CLI sequence: Agent notification causes another
   // parent query after a successful result, announced by same-session init.
   const notification = { type: 'system', subtype: 'task_notification', session_id: session };
+  const silent = () => [
+    ...claude('No response requested.').slice(0, 2),
+    { ...claude()[2], result: '' },
+  ];
+  it('retains this invocation’s completed response through an explicitly completed silent follow-up', () => {
+    expect(
+      collect([...claude('Current question'), notification, ...silent()], {
+        harness: 'claude',
+      }).messages,
+    ).toEqual([{ type: 'text', text: 'Current question' }]);
+    expect(
+      collect([...claude('Current question'), silent()[0], silent()[2]], {
+        harness: 'claude',
+      }).messages,
+    ).toEqual([{ type: 'text', text: 'Current question' }]);
+  });
+  it('does not use a checkpoint or substantive response as an empty-result fallback', () => {
+    for (const events of [
+      silent(),
+      [...claude(), silent()[0]],
+      [...claude(), silent()[0], claude('Different question')[1], silent()[2]],
+      [...claude(), ...silent().slice(0, 2), { ...silent()[2], terminal_reason: 'aborted_tools' }],
+      [...claude(), ...silent().slice(0, 2), { ...silent()[2], is_error: true }],
+      [...claude(), ...silent().slice(0, 2), { ...silent()[2], stop_reason: undefined }],
+    ])
+      expect(() => collect(events, { harness: 'claude', nativeSessionId: session })).toThrow();
+  });
+  it('compares the pinned terminal projection while preserving all assistant display bytes', () => {
+    const raw = '<cc-memory filenames="fixture.md">Summary</cc-memory>\nQuestion?';
+    const events = claude(raw);
+    events[2].result = 'Summary\nQuestion?';
+    expect(collect(events, { harness: 'claude' }).messages).toEqual([{ type: 'text', text: raw }]);
+    const parts = claude('Question?');
+    parts[1].message.content.unshift({ type: 'text', text: 'Proposal\n' });
+    expect(collect(parts, { harness: 'claude' }).messages).toEqual([
+      { type: 'text', text: 'Proposal\n' },
+      { type: 'text', text: 'Question?' },
+    ]);
+    for (const raw of [
+      '<different-tag>Question?</different-tag>',
+      '<cc-memory-not-a-tag>Question?</cc-memory-not-a-tag>',
+      `<cc-memory ${'x'.repeat(1025)}>Question?</cc-memory>`,
+      'Truncated Question?',
+    ]) {
+      const invalid = claude(raw);
+      invalid[2].result = 'Question?';
+      expect(() => collect(invalid, { harness: 'claude' })).toThrow('output_result');
+    }
+  });
+  it('checks credentials before and after the terminal display projection', () => {
+    for (const raw of [
+      '<cc-memory filenames="PRIVATE_TOKEN">Question?</cc-memory>',
+      'PRIVATE_<cc-memory></cc-memory>TOKEN',
+    ]) {
+      const events = claude(raw);
+      events[2].result = raw.includes('filenames') ? 'Question?' : 'PRIVATE_TOKEN';
+      expect(() =>
+        collect(events, { harness: 'claude', forbiddenBytes: ['PRIVATE_TOKEN'] }),
+      ).toThrow('output_credential');
+    }
+  });
+  it('reports the first rejected boundary once without raw text and continues draining', () => {
+    const diagnostics = [];
+    const output = createNativeTurnOutput({
+      harness: 'claude',
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
+    const events = claude('private fixture text');
+    events[2].result = 'different private fixture text';
+    output.write(Buffer.from(events.map(JSON.stringify).join('\n') + '\n'));
+    expect(diagnostics).toEqual([
+      {
+        reason: 'result_mismatch',
+        recordType: 'result',
+        recordIndex: 3,
+        queries: 1,
+        messages: 1,
+        textBytes: 20,
+        resultBytes: 30,
+      },
+    ]);
+    output.write(Buffer.from('{"anything":"later private payload"}\n'));
+    expect(diagnostics).toHaveLength(1);
+    expect(() => output.finish()).toThrow('native_execution_output_result');
+    expect(JSON.stringify(diagnostics)).not.toContain('private');
+  });
+  it('keeps malformed JSON, invalid UTF-8 and unusable text distinct from terminal rejection', () => {
+    for (const [bytes, code, reason] of [
+      [Buffer.from('{"type":"result","type":"user"}\n'), 'json', 'duplicate_field'],
+      [Buffer.from([0xc3, 0x28]), 'utf8', 'utf8'],
+      [
+        Buffer.from(claude('bad\u0000text').map(JSON.stringify).join('\n')),
+        'text',
+        'text_encoding',
+      ],
+    ]) {
+      const diagnostics = [];
+      const output = createNativeTurnOutput({
+        harness: 'claude',
+        onDiagnostic: (value) => {
+          diagnostics.push(value);
+          throw new Error('observer failure');
+        },
+      });
+      output.write(bytes);
+      expect(() => output.finish()).toThrow(`native_execution_output_${code}`);
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0].reason).toBe(reason);
+    }
+  });
   it('keeps both completed parent responses and waits for the last declared query', () => {
     const events = [
       ...claude('Initial response').slice(0, 2),

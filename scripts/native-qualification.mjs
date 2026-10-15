@@ -83,6 +83,8 @@ run(
     'src/services/nativeIntents.interaction.test.ts',
     'src/services/nativeHistory.test.ts',
     'src/lib/nativePendingInput.test.ts',
+    'src/components/layout/AppShell.native-collaboration.test.tsx',
+    'src/contexts/adapters/nativeActivity.test.tsx',
   ],
   resolve(root, 'frontend'),
 );

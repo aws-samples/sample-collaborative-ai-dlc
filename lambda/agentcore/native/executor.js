@@ -1044,6 +1044,10 @@ export const createNativeExecutor = ({
       harness: configuration.harness,
       nativeSessionId: continuing ? current.head.nativeSessionId : null,
       forbiddenBytes,
+      onDiagnostic: (diagnostic) => {
+        current.report.outputDiagnostic = diagnostic;
+        timing('outputRejected', diagnostic);
+      },
     });
     await checkpoint('running', { packageId: pkg.packageId });
     activityTurn.lifecycle({ title: 'Agent started' });

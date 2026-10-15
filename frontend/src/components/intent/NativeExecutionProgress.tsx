@@ -78,7 +78,7 @@ export function NativeExecutionProgress({
   const since = Date.parse(reply.receipt?.acceptedAt ?? execution.startedAt);
   // Only categorical, public observation metadata is surfaced here. Tool
   // arguments, transcript text and implementation diagnostics stay out.
-  const { lastAt, lastLabel } = useMemo(() => {
+  const { lastAt, lastLabel, runtimeUpdate } = useMemo(() => {
     const output = activity?.rows.findLast(
       (row) => !row.display?.hiddenByDefault && Date.parse(row.timestamp) >= since,
     );
@@ -90,6 +90,14 @@ export function NativeExecutionProgress({
       lastLabel: eventIsLatest
         ? 'Execution update'
         : (activityLabels[output?.display?.type ?? ''] ?? 'Agent activity'),
+      runtimeUpdate: activity?.rows.findLast(
+        (row) =>
+          row.kind === 'lifecycle' &&
+          row.display?.type === 'system' &&
+          !row.display.hiddenByDefault &&
+          row.display.title &&
+          Date.parse(row.timestamp) >= since,
+      ),
     };
   }, [activity?.rows, activity?.events, since]);
   const stale = activity?.observedAt != null && Date.parse(now) - activity.observedAt > 10_000;
@@ -118,6 +126,12 @@ export function NativeExecutionProgress({
             ? `${lastLabel} last observed ${formatDuration(lastAt, now)} ago.`
             : 'No activity has been observed for this turn yet.'}{' '}
           Quiet intervals do not confirm that the agent has stopped.
+        </p>
+      )}
+      {continuing && runtimeUpdate && (
+        <p className="break-words text-sm text-muted-foreground">
+          Last runtime update: {runtimeUpdate.display!.title}{' '}
+          <span className="text-xs">({formatDuration(runtimeUpdate.timestamp, now)} ago)</span>
         </p>
       )}
       {activity && (

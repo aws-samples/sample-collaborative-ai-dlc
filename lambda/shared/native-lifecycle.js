@@ -1,7 +1,7 @@
 // Fixed-schema timings only: no prompts, environment, filesystem paths,
 // credentials, session IDs or private transcripts enter lifecycle telemetry.
 import { NATIVE_PRESENTATION_REASONS } from './native-pending-input.js';
-import { nativeRuntimeFailureCode } from './native-execution-failure.js';
+import { nativeOutputDiagnostic, nativeRuntimeFailureCode } from './native-execution-failure.js';
 
 const BOUNDARIES = new Set([
   'accepted',
@@ -37,6 +37,7 @@ const BOUNDARIES = new Set([
   'firstOutput',
   'firstUsefulOutput',
   'harnessUsageObserved',
+  'outputRejected',
   'harnessCompleted',
   'interactionUploadStarted',
   'interactionUploadCompleted',
@@ -69,6 +70,7 @@ export const recordNativeBoundary = (identity, boundary, at = Date.now(), counts
   if (!BOUNDARIES.has(boundary) || !Number.isSafeInteger(at)) return;
   const event = { type: 'native.lifecycle', boundary, at };
   if (boundary === 'executionFailed') event.code = nativeRuntimeFailureCode(counts);
+  if (boundary === 'outputRejected') Object.assign(event, nativeOutputDiagnostic(counts));
   if (boundary === 'harnessUsageObserved') {
     for (const key of ['durationMs', 'durationApiMs', 'numTurns'])
       if (

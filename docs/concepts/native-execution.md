@@ -2455,6 +2455,304 @@ specific transport-compliance gap rather than changing human policy or claiming
 that passing offline tests proves live reliability. This is the single remaining
 real-model/deployed qualification boundary, not authorization to execute it here.
 
+## Output-adapter incident and combined integration — 2026-10-15
+
+**Release assessment: offline qualification is evidence for the tested protocol
+variants, not a declaration of deployed stability.** Intent `455d6055` failed in
+the output adapter before its fourth publication. The retained evidence does not
+identify the exact rejected frame. This pass fixes independently reproduced
+installed-CLI contract defects, retains the first safe rejection diagnosis, and
+integrates the completed progress UI. It does not claim to have recovered the
+missing historical output or repaired/replayed this execution.
+
+### Live evidence and preservation
+
+All AWS reads used `solution-read`, `us-east-1` for both region variables and an
+empty pager. STS again identified account `746558295630`, role
+`ReadOnly/jwthewes-Isengard`. The target is project
+`22371643-2db5-42a4-a571-e47fc35745f5`, intent
+`455d6055-72a1-4076-a425-4a7adfccae8f`.
+Consistent, fully paginated scalar projections of
+`collaborative-ai-dlc-native-runs-dev`, partition
+`NATIVE#99482e92a0caaa956d8203363d639e1439de1f9945fc67ef62bbe9c0156f6870`,
+returned 145 records: 109 OUTPUT, 18 EVENT, five ANSWER, three each PUBLICATION,
+RESPONSE and RESPONSE_REQUEST, and four owner/cursor/projection records.
+The OUTPUT cursor is **109**, last durable EVENT revision **1816**, and current
+EXECUTION revision **1826**. These are different cursors, not lost events.
+
+Authority is **FAILED**, turn 4, writer generation 1, epoch 1, with
+`native_execution_output_invalid`. Attempt
+`37dc1b34-f656-4934-b9c8-002a84b85c07`, runtime binding
+`c94e4fe4-1860-4d3f-8703-7473f76044b1`, runtime session
+`8433b065-1713-42f9-bbd2-c18f6e1680e0`, Claude session
+`6bf66a99-fa63-4010-a81a-e7b0138f4227`. Stop confirmation matches that writer
+and runtime session at **14:57:46.527 UTC**. Last record update was
+14:57:55.988 UTC. No recovery offer was recorded. The API requires an eligible
+`RECOVERY_REQUIRED` boundary; a retained older checkpoint does not make this
+FAILED, delivered-answer state safely retryable.
+
+The last answer was accepted at **14:42:18.274 UTC**, delivered at
+**14:42:22.675 UTC**, sequence 4, command
+`5a97635d-4cac-43cb-8bd2-4ec3764f3a77`, request
+`22e338c5-1944-4926-ba60-3b4fd1d457e8`. It binds interaction
+`f6c46cf8185aea8c12fc38ebd17efb1392158e3370a0666bb17e5db728272dba`.
+Three publications/checkpoints survive; latest publication
+`2d677d61a8dd8cc54ddd6a020cabb80eae391b27a2a06d44fb61640268eda29a`
+contains 41 files and checkpoint
+`10ea703652a123c1a8da19aab7f0affffc2e1de768a95834f21e0dd0850d9009`.
+There is no fourth publication/checkpoint. Publication `STOPPED` describes its
+CLI stop, not verified workflow completion. The fourth turn produced activity
+and may have changed files, but that work is not an admitted saved revision.
+**Do not replay the answer or substitute checkpoint 3 as a safe retry.**
+
+The admitted model is `global.anthropic.claude-sonnet-5-5`, harness Claude,
+configuration SHA `f11fca2b4ec27b2f7b61f010ccf5b8b8150666d791e95033bdf546e8295fab9b`.
+Its package ID is the attested AI-DLC 2.11.0 package previously qualified here,
+`sha256:9fdb284f4601d3c8c2d828abda2b9b98f3ecaca149870da3a11dbc2ee24805b1`.
+The execution configuration identifies the package by hash; it does not itself
+contain a separate version field. `GetAgentRuntime` version 2 and the execution
+pin agree on image
+`sha256:6063ed5c8134cc79ff60ecea337eabc157d820142e3671b8fbf6a3c1ab4fc001`,
+runtime `native_ceb5916a86930cfc50376c2b63226629-aWb5vI2Brb`. Its preparation
+record's version 1 is not the admitted executable version 2.
+
+That exact ARM64 image was already cached locally. Read-only, network-disabled
+inspection found Claude **2.1.296** and Node **24.19.0**. SHA-256 comparison of
+the installed executor, output adapter, activity owner, pending-input owner and
+session-recovery adapter matches stabilization `475deda` / `004d871`.
+The output adapter is unchanged between that source and `b6a59b3`, while executor
+and activity hashes prove the later optimization is **not** installed in this
+image. This is file-level source alignment, not a claim that the entire image
+was built from a particular Git HEAD. The user's source checkout commit
+`d99d2511c43f07ff2451e7e13f5a8f45b16dfce2` is unrelated runtime-source evidence.
+Current controller code hashes:
+
+- Execution worker `collaborative-ai-dlc-native-runs-dev-execution`:
+  `nLHw/MvCwXzwZ+hS4xrftda1JvOeSuy7TK1FT6r100g=`, modified 12:49:15 UTC.
+- API `collaborative-ai-dlc-native-runs-dev-api`:
+  `7bwBj+AlrTdC/r/O/g1S8PH4QFUpTxTXkNETqwzX8I4=`, modified 12:48:21 UTC.
+
+Their source revisions and the deployed frontend revision were not established.
+READY runtime metadata does not establish successful native execution.
+
+### Measured critical path and first-failure limitation
+
+UTC runtime log group:
+`/aws/bedrock-agentcore/runtimes/native_ceb5916a86930cfc50376c2b63226629-aWb5vI2Brb-exec_6ea0efba7a15991a5098f9b9ec7e105c`;
+stream `2026/10/15/[runtime-logs]c9f180fa-83c6-4e47-bfa7-07c4c33c8db8`.
+Reads were bounded to 14:04–14:59. Worker correlation used
+`/aws/lambda/collaborative-ai-dlc-native-runs-dev-execution`, principally stream
+`2026/10/15/[$LATEST]ba8633f7a7764d278c59c6440985879b`
+and polling stream `2026/10/15/[$LATEST]9be39602ad82498d8e80f9b9a5a84bde`.
+Scope hash `e6af983cddc3c567400ed903fcdc66600979e96e61747c30af7dcca50bbf86be`.
+No Lambda request ID was recovered from the scoped projection.
+
+| Boundary                        | Turn 1       | Turn 2       | Turn 3       | Turn 4                 |
+| ------------------------------- | ------------ | ------------ | ------------ | ---------------------- |
+| Start/reply accepted            | 14:04:59.615 | 14:24:56.568 | 14:36:45.473 | 14:42:18.274           |
+| Runtime accepted                | 14:05:51.888 | 14:25:02.717 | 14:36:49.601 | 14:42:22.496           |
+| Reply delivered                 | n/a          | 14:25:02.894 | 14:36:49.772 | 14:42:22.675           |
+| CLI start                       | 14:09:32.297 | 14:25:03.033 | 14:36:49.928 | 14:42:22.864           |
+| CLI process completed           | 14:10:53.363 | 14:30:08.536 | 14:39:18.627 | 14:57:45.563           |
+| CLI elapsed, seconds            | 81.066       | 305.503      | 148.699      | 922.699                |
+| Exact capture, seconds          | 1.647        | 1.944        | 1.605        | not reached            |
+| Checkpoint upload, seconds      | 5.069        | 9.777        | 9.590        | not reached            |
+| Authority admission             | 14:11:08.877 | 14:30:30.023 | 14:39:41.195 | none                   |
+| Acceptance → admission, seconds | 369.262      | 333.455      | 175.722      | failed after 928.253 s |
+
+First installation consumed **210.437 s** (14:06:01.658–14:09:32.095).
+Continuation preparation consumed 52/59/60 ms, with installation absent or
+1 ms; repeated installation does not explain reply latency. Successful-turn
+files/interaction upload consumed 0.718/1.142/1.404 s; upload-to-admission
+tails were 7.957/8.403/9.774 s. Those tails include polling and verification,
+not measured browser delay. Table phases are not a sum of nested API durations.
+The fourth invocation had first raw output after 1.913 s, then 63 public output
+records (27 tool, 19 edit, 11 message, six system). Two usage samples were recorded;
+their token/API counters must not be summed as authoritative cost or model time.
+The dominant interval is **CLI/workflow/tools/hooks/subagents**, not proven
+model-only inference. The earlier synthetic publication speedup remains synthetic.
+
+Decisive safe sequence: `harnessCompleted` and
+`executionFailed(native_execution_output_invalid)` at **14:57:45.563**,
+worker failed report at **14:57:46.178**, `RUNTIME_TERMINAL` at **14:57:46.240**,
+durable failure/stop at **14:57:46.527**. No fourth `questionPresentation`,
+publication or capture boundary exists. In the matching executor,
+`runNativeCommand` returned past its exit/cleanup gate and `output.finish()`
+rejected before form intake. This does **not** establish successful CLI terminal
+semantics: the parser keeps an earlier rejection until process completion.
+The old catch reduced JSON, text and result rejection to one code.
+
+Server-side metadata predicates found no retained public message containing the
+known memory-markup prefixes or `No response requested.` sentinel. Only record
+identities/counts were returned. This is not raw-output evidence and does not
+rule out a terminal projection that never entered the public activity stream.
+The exact historical first rejection remains unknown. No available permitted
+read is known to recover a branch that was never retained.
+
+One automatic approval review rejected an initial broad nested-record projection
+before it ran because it could contain private response/recovery material.
+Explicit scalar projections succeeded instead. Two initially guessed Lambda
+names returned ResourceNotFound; corrected names from Terraform succeeded.
+No IAM denial, S3 body read, private CLI read, runtime invocation, model call or
+cloud mutation occurred. The missing raw historical output is a qualification
+limit, not justification to bypass those boundaries.
+
+### Corrected output contract and finite protocol matrix
+
+The pinned installed CLI's public program establishes two terminal projection
+rules: it can suppress the exact no-response sentinel to an empty result on a
+completed background-notification query, and removes bounded Claude memory tags
+from the terminal last-text-block projection. Native incorrectly treated either
+as disagreement with otherwise completed assistant output.
+Both defects reproduce without provider access, using the **same installed CLI
+pin**, inert loopback responses and `--network none`. They are verified native
+compatibility defects; neither is asserted as this historical incident's cause.
+
+| Variant / boundary                                                                          | Required behavior and coverage                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Plain response; multiple text blocks                                                        | Preserve original assistant blocks; compare terminal result with the supported last-block or retained concatenated projection.                                                                                                 |
+| Bounded `cc-memory` / `cc_memory` / `ccmemory` tags and uppercase equivalents               | Compare the exact CLI projection only; keep original bytes and credential checks. Other tags, overlong attributes and truncated/different text remain rejected.                                                                |
+| Completed background follow-up with empty result                                            | Require a new same-session parent query, explicit completed/end_turn terminal, and an already completed response in this invocation. Allow no new text or the exact CLI sentinel only. Never substitute a previous checkpoint. |
+| First empty query, substantive text with empty result, deferred/failed/incomplete follow-up | Reject; an earlier successful query cannot hide a later failed or unfinished query.                                                                                                                                            |
+| Child output and multiple parent queries                                                    | Preserve existing parent identity, same-session fencing, bounded 32-query loop and informational post-result frame rules.                                                                                                      |
+| Malformed/duplicate JSON, bad UTF-8, unusable text, shape/size/depth limits                 | Reject with a bounded specific category; continue draining the child stream without replay.                                                                                                                                    |
+| Credential-bearing original or projected text, mismatched session, unsafe terminal          | Fail closed. No form degradation, tag normalization or diagnostic path bypasses these checks.                                                                                                                                  |
+| Optional form metadata, v1/v2/v3 typed/grouped asks and gates                               | Existing nonfatal display degradation and protected answer/checkpoint admission remain unchanged.                                                                                                                              |
+
+`turn-output.js` now records the first rejection as closed `reason`, `recordType`,
+record/query/message counts and text/result byte counts. No raw text, options,
+paths, provider error or arbitrary error property is retained. The executor writes
+that projection through its existing owner status and `outputRejected` lifecycle
+boundary immediately; both controller mapper and diagnostic sink apply the same
+closed projection. Specific public failure categories distinguish JSON, UTF-8,
+shape, text and result failures. Existing generic/legacy failures remain readable.
+Telemetry remains advisory, and a diagnostic callback failure cannot alter the
+parser outcome. Publication and checkpoint authority are unchanged.
+
+The production-composed regression starts with an admitted typed scope form,
+accepts/delivers a member answer, runs a real subprocess, then invokes production
+interaction/publication/checkpoint validation and atomic authority admission.
+Against the original adapter, both silent-follow-up and memory-projection
+journeys failed where the user should receive the next question. The candidate
+admits three turns, retains exact checkpoints, and does not redispatch the answer
+on duplicate/lost acknowledgement. A genuine result mismatch still fails before
+publication/capture, retains the prior admitted checkpoint and preserves its
+safe first-rejection diagnosis through runtime/controller sinks.
+
+Why the earlier baseline missed this: its actual installed Agent/background
+scenario always returned nonempty, identical plain terminal text. It qualified
+session layout and repeated parent queries, but not the CLI's terminal display
+projection or silent follow-up. The expanded existing smoke now makes four
+same-session turns: typed offer, background completion plus silent follow-up,
+multiple text blocks after exact restore, and memory-markup projection. It still
+uses the real installed CLI/attested engine, cwd change, subagent metadata and
+capture after each stop; **model answers are scripted, not qualified compliance**.
+
+### UI integration and architecture follow-ups
+
+Frontend commit `faacbba2a7334cf1f8997d3e40a4f96c5eeaa5cf` was cherry-picked as
+`e971638`, preserving attribution. It adds immediate sending/acceptance feedback,
+separate pending/delivered/unknown/uncertain states, elapsed and stale activity
+observations, progress above tabs, current question before the prior response,
+concurrent immutable reads, non-overlapping polling and fewer history transforms.
+The handoff consumes the existing `kind: lifecycle`, `display.type: system`,
+`display.title` and timestamp directly for “Last runtime update”. No new DTO,
+schema or scheduler was introduced; titles never authorize answers. Old images
+without phase notices keep generic progress. A rendered AppShell regression uses
+the **actual backend activity producer**, keeps output/lifecycle cursor arguments
+separate, displays checkpoint-saving/verification notices, and keeps an accepted
+reply read-only with submission disabled until another interaction is admitted.
+Browser paint and deployed WebSocket delay remain unmeasured.
+
+The independent architecture audit measured immutable `004d871`: **88 native
+family modules, 29,522 physical lines, 1,980 functions, 20 functions above B20**.
+B is `1 + if + ternary + loop + non-default case + catch`, not cognitive
+complexity. It found zero production cycles/errors and 14 dependency warnings
+(868 modules / 4,068 dependencies). Largest relevant scores include API route
+coordinator B67, projection JSON consumer B45, probe turn B40, restore B37,
+supervisor B37 and output reducer B35. These quantify review cost, not latency.
+
+| Ordered follow-up                                               | Concrete cost / acceptance boundary                                                                                                | State                                                                  |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Current-path protocol fixtures                                  | Exercise installed terminal variants before changing reducers; preserve hostile/incomplete cases                                   | Expanded in this pass; live model compliance open                      |
+| Batch activity notifications                                    | Current store broadcasts each committed row and re-queries subscribers; preserve durable rows/cursors, notify committed batch once | Measured code-path opportunity; no speculative rewrite                 |
+| Coalesce duplicate detail reads                                 | Repeated adapter loads and up to 25 listing detail hydrations; preserve membership/pin checks and freshness                        | Follow-up after notification fixture                                   |
+| Route dispatch table; remove genuinely unused projected mutator | API B67 and fixture-only `execution-store.projected` increase maintenance surface                                                  | Follow-up with caller/legacy route tests                               |
+| Isolate protocol and restore planning                           | Reducer state and restore planning combine many validated variants                                                                 | Supported variants now explicit; decomposition deferred                |
+| Executor/supervisor turn context                                | Shared turn state and nested catch hierarchy obscure first-cause diagnosis                                                         | First output rejection retained now; broader refactor follows evidence |
+
+This is a finite ordered list, not authorization for wholesale architecture
+replacement. Exact checkpoints, quiescent writers and atomic waiting-state
+admission remain justified. The measured minutes occur primarily inside the CLI;
+splitting controllers cannot remove them. Public I/O optimization and UI feedback
+are integrated, but their live improvement is still unmeasured.
+
+### Combined validation and limited remaining live acceptance
+
+Host validation uses Node 24.21.0; the installed image uses Node 24.19.0.
+The focused parser/journey/diagnostic suites passed **158 tests**. Before-proof
+against the original output adapter failed **both** supported projection journeys
+(24 deliberately filtered cases); the candidate passes them. The combined native
+qualification passed **941 backend tests, 307 UI/service tests, one real local
+WebSocket scenario** (32 deliberately filtered cases), **six architecture
+regressions and 22 wiring checks**. Architecture checked 391 production modules
+with zero violations. The installed tier passed all **four** same-session turns,
+exact restore before turn 3 and all 12 typed scope choices. A final rerun added
+explicit assertions that silent and memory-projection terminal variants occurred;
+all four turns/captures passed again with zero external provider calls.
+
+The first sandboxed qualification attempt passed 887 tests and failed 54 with
+local-socket restrictions, including two uncaught `listen EPERM` errors. The
+host-permission rerun passed the backend/UI/WebSocket tiers, then correctly
+failed the architecture threshold (output reducer B42 > B36). Terminal-result
+validation was isolated in a named helper without relaxing that threshold, and
+the complete command above then passed. These earlier failures are retained as
+evidence, not counted as green runs.
+
+All **248 release tests**, the frontend production build and all eight native
+controller bundles passed. Lint, format, secretlint, SDK alignment and dependency
+checks passed; dependency checking retains 14 existing warnings and SDK checking
+its existing Smithy-major warning. Builds retain existing size warnings.
+`uv run --frozen --group docs zensical build` passed after allowing its existing
+local cache lock; the first sandbox attempt failed before building. The first
+full frontend run (four workers) passed 1,930 tests and failed one history export
+button wait; all 30 history tests then passed in isolation with unchanged
+assertions/timeouts. The full rerun with two workers passed **1,931 tests in 141
+files** (73.63 s). The ordinary commit-hook result is recorded below when complete.
+No deployed browser, real model, AWS mutation,
+push or deployment was performed.
+
+Reproduce the installed tier with the cached immutable image and previously
+attested release directory (no implicit registry pull):
+
+```sh
+export PATH=/Users/jwthewes/.nvm/versions/node/v24.21.0/bin:$PATH
+npm run test:native-qualification -- \
+  --image 746558295630.dkr.ecr.us-east-1.amazonaws.com/collaborative-ai-dlc-agentcore-dev@sha256:6063ed5c8134cc79ff60ecea337eabc157d820142e3671b8fbf6a3c1ab4fc001 \
+  --assets /tmp/native-qualification-aidlc-2.11.0
+```
+
+After independent parent review, the remaining live qualification is **one fresh,
+explicitly authorized intent**, with the failed intent preserved. First verify
+the newly built runtime's exact digest/file hashes, controller bundles and
+frontend against the reviewed commit; old admitted runs retain their image pins.
+In the existing selected space, exercise the typed scope offer with every actual
+choice present, mixed grouped current-step questions, two explicit member replies,
+a required human gate, and a supported background-agent completion. Observe the
+checkpoint and publication after each stop, refresh/reconnect without duplicate
+submission, and verify phase notices do not unlock an unadmitted form. Do not
+force a workflow gate/subagent where the pinned workflow does not require it.
+
+Collect acceptance/delivery, first useful output, CLI/query/API observations,
+capture/upload/verification/admission and browser display timestamps. If output
+is rejected, the single necessary evidence projection is the existing
+`outputRejected` record plus the matching controller `outputDiagnostic`, identity
+and timestamp—not raw conversations/checkpoints. That fresh execution and any
+deployment require separate authorization; neither was performed here. A matching
+image, complete progression and honest bounded failure evidence are the finite
+release criterion, not another aggregate test count or a promise that CLI minutes
+have disappeared.
+
 ## Open work
 
 This is the temporary native working backlog. **Capability** means missing

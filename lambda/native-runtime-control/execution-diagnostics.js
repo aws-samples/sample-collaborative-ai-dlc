@@ -1,7 +1,10 @@
 // Controller-only, best-effort metadata. Never serialize an SDK error or a
 // runtime report: both can contain credentials, prompts and provider bodies.
 import { createHash } from 'node:crypto';
-import { NATIVE_RUNTIME_FAILURE_CODES } from '../shared/native-execution-failure.js';
+import {
+  NATIVE_RUNTIME_FAILURE_CODES,
+  nativeOutputDiagnostic,
+} from '../shared/native-execution-failure.js';
 
 const PHASES = new Set(['start', 'continue', 'status', 'recover', 'unknown']);
 const STAGES = new Set(['sdk', 'http', 'body', 'report', 'call', 'decision']);
@@ -186,12 +189,14 @@ export const nativeDiagnosticReport = (row, report) => {
     writerGeneration: storedGeneration ?? 1,
   };
   const response = own(row, 'response');
+  const outputDiagnostic = nativeOutputDiagnostic(own(report, 'outputDiagnostic'));
   return {
     status: enumeration(STATUSES, own(report, 'status')),
     runtimeCode: enumeration(RUNTIME_CODES, own(report, 'code')),
     ...(own(report, 'recoveryFailureCode') !== undefined
       ? { recoveryFailureCode: enumeration(RUNTIME_CODES, own(report, 'recoveryFailureCode')) }
       : {}),
+    ...(outputDiagnostic ? { outputDiagnostic } : {}),
     sequence: counter(own(report, 'sequence')),
     expectedSequence: counter(own(row, 'turnSequence') ?? 1),
     writerGeneration: counter(reportedGeneration),
@@ -217,6 +222,8 @@ export const emitNativeExecutionDiagnostic = (sink, input) => {
       stage: enumeration(STAGES, own(input, 'stage')),
       code: enumeration(CODES, own(input, 'code')),
     };
+    const outputDiagnostic = nativeOutputDiagnostic(own(input, 'outputDiagnostic'));
+    if (outputDiagnostic) value.outputDiagnostic = outputDiagnostic;
     for (const [key, values] of [
       ['status', STATUSES],
       ['runtimeCode', RUNTIME_CODES],

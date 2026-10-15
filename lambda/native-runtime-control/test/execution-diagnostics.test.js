@@ -130,6 +130,74 @@ const payload = {
 };
 
 describe('native controller diagnostic privacy boundary', () => {
+  it('preserves bounded output rejection evidence through runtime, mapper, sink and lifecycle', () => {
+    const s = sinks();
+    const getter = vi.fn(() => {
+      throw new Error(CANARY);
+    });
+    const diagnostic = {
+      reason: 'result_mismatch',
+      recordType: 'result',
+      recordIndex: 41,
+      queries: 2,
+      messages: 8,
+      textBytes: 1200,
+      resultBytes: 250,
+      rawFrame: CANARY,
+      get prompt() {
+        return getter();
+      },
+    };
+    const expected = {
+      reason: 'result_mismatch',
+      recordType: 'result',
+      recordIndex: 41,
+      queries: 2,
+      messages: 8,
+      textBytes: 1200,
+      resultBytes: 250,
+    };
+    s.diagnostics({
+      ...nativeDiagnosticReport(row, {
+        ...identity,
+        status: 'failed',
+        code: 'native_execution_output_result',
+        outputDiagnostic: diagnostic,
+      }),
+      phase: 'status',
+      stage: 'report',
+      code: 'REPORT_OBSERVED',
+    });
+    expect(s.events()[0]).toMatchObject({
+      runtimeCode: 'native_execution_output_result',
+      outputDiagnostic: expected,
+    });
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      recordNativeBoundary({}, 'outputRejected', 100, diagnostic);
+      expect(JSON.parse(log.mock.calls[0][0])).toEqual({
+        type: 'native.lifecycle',
+        boundary: 'outputRejected',
+        at: 100,
+        ...expected,
+      });
+      s.diagnostics({
+        outputDiagnostic: {
+          reason: 'result_empty',
+          recordType: CANARY,
+          queries: Infinity,
+          get messages() {
+            return getter();
+          },
+        },
+      });
+      expect(s.events()[1].outputDiagnostic).toEqual({ reason: 'result_empty' });
+      expect(getter).not.toHaveBeenCalled();
+      s.assertPrivate();
+    } finally {
+      log.mockRestore();
+    }
+  });
   it.each([
     'native_recovery_home_path_invalid',
     'native_recovery_session_id_mismatch',
@@ -236,19 +304,29 @@ describe('native controller diagnostic privacy boundary', () => {
     s.assertPrivate();
   });
 
-  it.each(['invalid', 'failed', 'incomplete', 'terminal', 'session', 'credential', 'limit'])(
-    'reports the harness output failure code native_execution_output_%s',
-    (suffix) => {
-      const s = sinks();
-      s.diagnostics({
-        phase: 'status',
-        stage: 'report',
-        code: 'REPORT_OBSERVED',
-        runtimeCode: `native_execution_output_${suffix}`,
-      });
-      expect(s.events()[0]).toMatchObject({ runtimeCode: `native_execution_output_${suffix}` });
-    },
-  );
+  it.each([
+    'invalid',
+    'failed',
+    'incomplete',
+    'terminal',
+    'session',
+    'credential',
+    'limit',
+    'json',
+    'utf8',
+    'shape',
+    'text',
+    'result',
+  ])('reports the harness output failure code native_execution_output_%s', (suffix) => {
+    const s = sinks();
+    s.diagnostics({
+      phase: 'status',
+      stage: 'report',
+      code: 'REPORT_OBSERVED',
+      runtimeCode: `native_execution_output_${suffix}`,
+    });
+    expect(s.events()[0]).toMatchObject({ runtimeCode: `native_execution_output_${suffix}` });
+  });
 
   it('never coerces untrusted values or evaluates diagnostic getters', () => {
     const s = sinks();

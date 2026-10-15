@@ -26,6 +26,7 @@ let turn = 1;
 let toolSent = false;
 let agentSent = false;
 let engineSent = false;
+let parentReplies = 0;
 let invocationStarted = 0;
 let requestSamples = [];
 const packageDirectory = process.env.NATIVE_QUALIFICATION_PACKAGE;
@@ -189,8 +190,21 @@ const server = createServer(async (req, res) => {
         subagent_type: 'Explore',
       },
     };
-  } else content = { type: 'text', text: `Fixture question ${turn}?` };
+  } else {
+    const silentFollowUp =
+      turn === 2 && request.tools?.some((tool) => tool.name === 'Agent') && parentReplies++ > 0;
+    content = {
+      type: 'text',
+      text: silentFollowUp
+        ? 'No response requested.'
+        : turn === 4
+          ? '<cc-memory filenames="fixture.md">Fixture question 4?</cc-memory>'
+          : `Fixture question ${turn}?`,
+    };
+  }
   const tool = content.type === 'tool_use';
+  const contentBlocks =
+    turn === 3 && !tool ? [{ type: 'text', text: 'Fixture proposal 3.' }, content] : [content];
   const message = {
     id: `msg-fixture-${calls}`,
     type: 'message',
@@ -206,7 +220,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' }).end(
       JSON.stringify({
         ...message,
-        content: [content],
+        content: contentBlocks,
         stop_reason: reason,
       }),
     );
@@ -216,17 +230,19 @@ const server = createServer(async (req, res) => {
   const send = (type, value) =>
     res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...value })}\n\n`);
   send('message_start', { message });
-  send('content_block_start', {
-    index: 0,
-    content_block: tool ? { ...content, input: {} } : { type: 'text', text: '' },
-  });
-  send('content_block_delta', {
-    index: 0,
-    delta: tool
-      ? { type: 'input_json_delta', partial_json: JSON.stringify(content.input) }
-      : { type: 'text_delta', text: content.text },
-  });
-  send('content_block_stop', { index: 0 });
+  for (const [index, block] of contentBlocks.entries()) {
+    send('content_block_start', {
+      index,
+      content_block: tool ? { ...block, input: {} } : { type: 'text', text: '' },
+    });
+    send('content_block_delta', {
+      index,
+      delta: tool
+        ? { type: 'input_json_delta', partial_json: JSON.stringify(block.input) }
+        : { type: 'text_delta', text: block.text },
+    });
+    send('content_block_stop', { index });
+  }
   send('message_delta', {
     delta: { stop_reason: reason, stop_sequence: null },
     usage: { output_tokens: 10 },
@@ -243,7 +259,7 @@ try {
   ).version;
   assert.equal(installed, adapter.NATIVE_RECOVERY_HARNESS_VERSIONS.claude);
   let first;
-  for (turn = 1; turn <= 3; turn++) {
+  for (turn = 1; turn <= 4; turn++) {
     const output = createNativeTurnOutput({
       harness: 'claude',
       nativeSessionId: turn > 1 ? id : null,
@@ -306,12 +322,26 @@ try {
         requests: requestSamples,
         observedHookFrames: hooks.length,
         completedParentQueries: results.length,
+        assistantTextBlocks: frames
+          .filter((event) => event.type === 'assistant' && event.parent_tool_use_id == null)
+          .map((event) => event.message.content.filter((part) => part.type === 'text').length),
+        terminalResultBytes: results.map((event) => Buffer.byteLength(event.result ?? '')),
         reportedApiMs: results.map((event) =>
           Number.isSafeInteger(event.duration_api_ms) ? event.duration_api_ms : null,
         ),
         externalProviderCalls: 0,
       }),
     );
+    // Prove the installed CLI emitted the intended variants. A fixture that
+    // happens not to consume its background notification must not pass this tier.
+    if (turn === 2) {
+      assert.ok(results.length >= 2, 'background notification starts another parent query');
+      assert.equal(results.at(-1).result, '', 'CLI suppresses the silent response sentinel');
+      assert.equal(results.at(-1).terminal_reason, 'completed');
+      assert.equal(results.at(-1).stop_reason, 'end_turn');
+    }
+    if (turn === 4)
+      assert.equal(results.at(-1).result, 'Fixture question 4?', 'CLI removes memory markup');
     let completed;
     try {
       completed = output.finish();
@@ -349,9 +379,17 @@ try {
     assert.ok(completed.messages.length >= 1);
     assert.ok(
       completed.messages.every(
-        (message) => message.type === 'text' && message.text === `Fixture question ${turn}?`,
+        (message) =>
+          message.type === 'text' &&
+          (message.text === `Fixture question ${turn}?` ||
+            (turn === 3 && message.text === 'Fixture proposal 3.') ||
+            (turn === 4 &&
+              message.text ===
+                '<cc-memory filenames="fixture.md">Fixture question 4?</cc-memory>')),
       ),
     );
+    if (turn === 3)
+      assert.ok(completed.messages.some((message) => message.text === 'Fixture proposal 3.'));
     console.log(JSON.stringify({ turn, cli: installed, cliCompleted: true }));
     if (turn === 1 && packageDirectory) {
       const ask = JSON.parse(
@@ -419,7 +457,7 @@ try {
     }
     console.log(JSON.stringify({ turn, checkpointVerified: true, files: captured.files.length }));
   }
-  console.log(JSON.stringify({ passed: 3, restoredBeforeTurn: 3, providerCalls: 0 }));
+  console.log(JSON.stringify({ passed: 4, restoredBeforeTurn: 3, providerCalls: 0 }));
 } finally {
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));

@@ -19,6 +19,8 @@ import {
 } from '@/test/collaborationFakes';
 import { AppShell } from './AppShell';
 import IntentView from '@/pages/IntentView';
+// @ts-expect-error Exercise the real backend output producer; no frontend production import.
+import { createNativeActivityLog } from '../../../../lambda/agentcore/native/activity.js';
 
 // Task-2 shared collaboration on the real native shell: two signed-in members
 // render the deployed providers/page; only service boundaries and the Yjs
@@ -242,6 +244,48 @@ afterEach(() => {
 });
 
 describe('shared native reply drafts', () => {
+  it('renders real runtime phase notices without admitting an unverified next question', async () => {
+    const accepted = { ...receipt('Use a 120px gap.'), deliveryStatus: 'delivered' as const };
+    service.get.mockResolvedValue(
+      waiting({ status: 'RUNNING', turnSequence: 3, revision: 11, responsePending: false }),
+    );
+    service.interaction.mockResolvedValue(interaction(accepted));
+    const log = createNativeActivityLog({
+      writerGeneration: 1,
+      now: () => Date.parse(time) + 1000,
+    });
+    const turn = log.turn({ sequence: 3, harness: 'claude' });
+    turn.lifecycle({ title: 'Saving recovery checkpoint' });
+    turn.lifecycle({ title: 'Checkpoint uploaded; awaiting publication verification' });
+    const records = log.pull().events;
+    expect(records).toHaveLength(2);
+    service.outputs.mockResolvedValueOnce({
+      outputs: records.map((record: any) => ({
+        seq: record.index,
+        stageInstanceId: null,
+        kind: record.kind,
+        content: record.content,
+        timestamp: new Date(record.capturedAt).toISOString(),
+        display: record.display,
+      })),
+      nextAfter: null,
+      events: [],
+      nextEventAfter: null,
+    });
+    const view = member('Ada');
+    const progress = await within(view.container).findByRole('region', { name: 'Reply progress' });
+    await waitFor(() =>
+      expect(progress).toHaveTextContent(
+        'Last runtime update: Checkpoint uploaded; awaiting publication verification',
+      ),
+    );
+    expect(progress).toHaveTextContent('Reply delivered.');
+    expect(within(view.container).getByRole('textbox')).toHaveAttribute('readonly');
+    expect(within(view.container).getByRole('button', { name: 'Send reply' })).toBeDisabled();
+    expect(service.respond).not.toHaveBeenCalled();
+    expect(service.outputs).toHaveBeenCalledWith('project', 'one', 0, 0);
+    turn.close();
+  });
   it('shows three minutes of quiet runtime waiting using the existing pollers, then prioritizes the admitted form', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(time));

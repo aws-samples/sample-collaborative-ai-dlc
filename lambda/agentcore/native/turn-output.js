@@ -2,6 +2,10 @@
 // arbitrarily large tool output) are validated and drained, never retained.
 // Only completed user-visible assistant messages may leave this module.
 import { nativeInteractionMessages } from '../../shared/native-interaction.js';
+import {
+  nativeOutputDiagnostic,
+  nativeRuntimeFailureCode,
+} from '../../shared/native-execution-failure.js';
 
 const OVERFLOW = Symbol('oversized-field');
 const LIMIT = 64 * 1024;
@@ -28,11 +32,21 @@ const CLAUDE_POST_RESULT_SYSTEM = new Set([
   'notification',
   'informational',
 ]);
-const invalid = (suffix = 'invalid') => {
+const invalid = (suffix = 'json', reason = suffix === 'json' ? 'json_grammar' : suffix) => {
   throw Object.assign(new Error(`native_execution_output_${suffix}`), {
     code: `native_execution_output_${suffix}`,
+    outputReason: reason,
   });
 };
+// Claude 2.1.296's result producer removes only these bounded memory annotations.
+// Keep the original assistant bytes in the interaction; normalize solely for
+// comparison with the terminal result, after the original credential check.
+const claudeResultText = (text) =>
+  text.replace(
+    /<\/?(?:cc-memory|cc_memory|ccmemory|CC-MEMORY|CC_MEMORY|CCMEMORY)(?=[\s/>])[^>]{0,1024}>/g,
+    '',
+  );
+const CLAUDE_SILENT_RESPONSE = 'No response requested.';
 const leaf = true;
 const projection = {
   type: leaf,
@@ -84,7 +98,7 @@ const createProjectionParser = (onRecord) => {
       if (parent.array) parent.value.push(value);
       else if (parent.child) parent.value[parent.key] = value;
       retained++;
-      if (retained > 8192) invalid();
+      if (retained > 8192) invalid('json', 'record_limit');
     }
     parent.state = 'comma';
   };
@@ -96,12 +110,12 @@ const createProjectionParser = (onRecord) => {
     const current = token;
     token = null;
     if (current.key) {
-      if (current.overflow) invalid();
+      if (current.overflow) invalid('json', 'field_limit');
       const key = JSON.parse(current.raw);
       const parent = stack.at(-1);
       parent.key = key;
       parent.child = Object.hasOwn(parent.schema ?? {}, key) ? parent.schema[key] : null;
-      if (parent.child && Object.hasOwn(parent.value, key)) invalid();
+      if (parent.child && Object.hasOwn(parent.value, key)) invalid('json', 'duplicate_field');
       parent.state = 'colon';
     } else {
       let value = null;
@@ -203,7 +217,7 @@ const createProjectionParser = (onRecord) => {
         unicode: 0,
       };
     } else if (!isKey && (character === '{' || character === '[')) {
-      if (stack.length >= 64) invalid();
+      if (stack.length >= 64) invalid('json', 'depth_limit');
       const array = character === '[';
       const keep = Boolean(schema && typeof schema === 'object');
       stack.push({
@@ -237,13 +251,14 @@ export const createNativeTurnOutput = ({
   harness,
   nativeSessionId: expectedSession = null,
   forbiddenBytes = [],
+  onDiagnostic,
 } = {}) => {
   if (
     !['codex', 'claude', 'opencode', 'kiro'].includes(harness) ||
     (expectedSession !== null &&
       (typeof expectedSession !== 'string' || !SESSION.test(expectedSession)))
   )
-    invalid();
+    invalid('shape', 'record_shape');
   const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   let failure = null;
   let session = null;
@@ -254,15 +269,19 @@ export const createNativeTurnOutput = ({
   let claudeFinalText = null;
   let claudeQueryStart = 0;
   let claudeQueries = 1;
+  let records = 0;
+  let recordType = 'none';
+  let resultBytes = 0;
+  let claudeLastBlock = null;
   const messages = [];
   const ids = new Set();
   const secrets = forbiddenBytes
     .map((value) => Buffer.from(value).toString('utf8'))
     .filter(Boolean);
   const add = (value) => {
-    if (typeof value !== 'string' || !value.length) invalid();
+    if (typeof value !== 'string' || !value.length) invalid('text', 'text_shape');
     bytes += Buffer.byteLength(value);
-    if (bytes > LIMIT || messages.length >= 256) invalid('limit');
+    if (bytes > LIMIT || messages.length >= 256) invalid('limit', 'text_limit');
     if (secrets.some((secret) => value.includes(secret))) invalid('credential');
     messages.push({ type: 'text', text: value });
   };
@@ -290,9 +309,10 @@ export const createNativeTurnOutput = ({
       [undefined, null].includes(event.parent_tool_use_id) &&
       [undefined, false].includes(event.prevent_continuation)
     ) {
-      if (++claudeQueries > 32) invalid('limit');
+      if (++claudeQueries > 32) invalid('limit', 'query_limit');
       completed = false;
       claudeFinalText = null;
+      claudeLastBlock = null;
       claudeQueryStart = messages.length;
       return;
     }
@@ -305,8 +325,51 @@ export const createNativeTurnOutput = ({
     if (informational) return;
     invalid('terminal');
   };
+  // Terminal projection has its own contract; it never admits a publication.
+  const completeClaudeQuery = (event) => {
+    if (event.subtype !== 'success' || event.is_error !== false) invalid('failed');
+    // Success is also used for deferred tools and interrupted queries.
+    // Explicit reasons must establish a completed response, independently
+    // of subtype/is_error. Older/local-command results can omit the reason.
+    if (
+      (event.terminal_reason !== undefined && event.terminal_reason !== 'completed') ||
+      ![undefined, null, 'end_turn', 'stop_sequence'].includes(event.stop_reason) ||
+      Object.hasOwn(event, 'deferred_tool_use')
+    )
+      invalid('terminal');
+    // Result text is a CLI projection, not necessarily a verbatim copy:
+    // current producers use the last text block and remove memory markup;
+    // retained producers/fixtures concatenate a multi-block response.
+    resultBytes = typeof event.result === 'string' ? Buffer.byteLength(event.result) : 0;
+    if (typeof event.result !== 'string' || resultBytes > LIMIT) invalid('result', 'result_shape');
+    if (secrets.some((secret) => event.result.includes(secret))) invalid('credential');
+    if (event.result.length === 0) {
+      // A background notification can start a second parent query which
+      // completes without another response. Only retain work from an
+      // already completed query in THIS invocation, never a prior checkpoint.
+      const silent =
+        claudeQueryStart > 0 &&
+        event.terminal_reason === 'completed' &&
+        event.stop_reason === 'end_turn' &&
+        (messages.length === claudeQueryStart ||
+          (messages.length === claudeQueryStart + 1 && claudeFinalText === CLAUDE_SILENT_RESPONSE));
+      if (!silent) invalid('result', 'result_empty');
+      for (const message of messages.splice(claudeQueryStart))
+        bytes -= Buffer.byteLength(message.text);
+    } else if (messages.length === claudeQueryStart) add(event.result);
+    else if (
+      ![claudeFinalText, claudeLastBlock].some(
+        (text) => text === event.result || claudeResultText(text) === event.result,
+      )
+    )
+      invalid('result', 'result_mismatch');
+    completed = true;
+  };
   const parser = createProjectionParser((event) => {
-    if (!event || typeof event !== 'object' || Array.isArray(event)) invalid();
+    records++;
+    if (!event || typeof event !== 'object' || Array.isArray(event))
+      invalid('shape', 'record_shape');
+    recordType = event.type;
     // Incremental ACP presentation is independent of the final interaction record.
     if (harness === 'kiro' && event.transport === 'kiro-acp-activity' && event.schemaVersion === 1)
       return;
@@ -335,7 +398,8 @@ export const createNativeTurnOutput = ({
       }
       if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
         if (!started || !session) invalid('incomplete');
-        if (typeof event.item.id !== 'string' || ids.has(event.item.id)) invalid();
+        if (typeof event.item.id !== 'string' || ids.has(event.item.id))
+          invalid('shape', 'message_shape');
         ids.add(event.item.id);
         add(event.item.text);
       }
@@ -347,39 +411,21 @@ export const createNativeTurnOutput = ({
       if (event.parent_tool_use_id !== undefined && event.parent_tool_use_id !== null) return;
       if (event.type === 'assistant') {
         if (event.message?.role !== 'assistant' || !session) invalid('session');
+        if (!Array.isArray(event.message.content)) invalid('shape', 'message_shape');
         const start = messages.length;
-        for (const part of event.message.content ?? []) {
+        for (const part of event.message.content) {
+          if (!part || typeof part !== 'object') invalid('shape', 'message_shape');
           if (part.type === 'text') add(part.text);
         }
-        if (messages.length > start)
+        if (messages.length > start) {
           claudeFinalText = messages
             .slice(start)
             .map((message) => message.text)
             .join('');
+          claudeLastBlock = messages.at(-1).text;
+        }
       }
-      if (event.type === 'result') {
-        if (event.subtype !== 'success' || event.is_error !== false) invalid('failed');
-        // Success is also used for deferred tools and interrupted queries.
-        // Explicit reasons must establish a completed response, independently
-        // of subtype/is_error. Older/local-command results can omit the reason.
-        if (
-          (event.terminal_reason !== undefined && event.terminal_reason !== 'completed') ||
-          ![undefined, null, 'end_turn', 'stop_sequence'].includes(event.stop_reason) ||
-          Object.hasOwn(event, 'deferred_tool_use')
-        )
-          invalid('terminal');
-        // Claude repeats its final assistant response in the terminal result.
-        // Require exact agreement; never silently substitute a different text.
-        if (
-          typeof event.result !== 'string' ||
-          event.result.length === 0 ||
-          Buffer.byteLength(event.result) > LIMIT
-        )
-          invalid();
-        if (messages.length === claudeQueryStart) add(event.result);
-        else if (claudeFinalText !== event.result) invalid();
-        completed = true;
-      }
+      if (event.type === 'result') completeClaudeQuery(event);
     } else if (harness === 'opencode') {
       if (event.type === 'error') invalid('failed');
       if (event.type === 'text' && event.part?.type === 'text') {
@@ -408,25 +454,61 @@ export const createNativeTurnOutput = ({
       completed = true;
     }
   });
+  const reject = (error) => {
+    if (failure) return;
+    const safeCode = nativeRuntimeFailureCode(error);
+    const code = safeCode.startsWith('native_execution_output_')
+      ? safeCode
+      : 'native_execution_output_shape';
+    const reason = Object.getOwnPropertyDescriptor(error ?? {}, 'outputReason')?.value;
+    const diagnostic = nativeOutputDiagnostic({
+      reason: reason ?? 'unexpected',
+      recordType: typeof recordType === 'string' ? recordType : 'other',
+      recordIndex: code === 'native_execution_output_json' ? records + 1 : records,
+      queries: claudeQueries,
+      messages: messages.length,
+      textBytes: bytes,
+      resultBytes,
+    });
+    failure = Object.assign(new Error(code), { code, outputDiagnostic: diagnostic });
+    try {
+      onDiagnostic?.(diagnostic);
+    } catch {
+      // Advisory telemetry must not change the parser result.
+    }
+  };
+  const decode = (chunk, stream) => {
+    try {
+      return decoder.decode(chunk, { stream });
+    } catch {
+      invalid('utf8', 'utf8');
+    }
+  };
   return {
     write(chunk) {
       if (ended) invalid('terminal');
       if (failure) return;
       try {
-        parser.write(decoder.decode(chunk, { stream: true }));
+        parser.write(decode(chunk, true));
       } catch (error) {
-        failure = error?.code ?? 'native_execution_output_invalid';
+        reject(error);
       }
     },
     finish() {
       if (ended) invalid('terminal');
       ended = true;
-      if (failure) throw Object.assign(new Error(failure), { code: failure });
+      if (failure) throw failure;
       try {
-        parser.write(decoder.decode());
+        parser.write(decode(undefined, false));
         parser.end();
         if (!completed || !session) invalid('incomplete');
-        const normalized = nativeInteractionMessages(messages);
+        if (!messages.some((message) => message.text.trim())) invalid('text', 'no_visible_text');
+        let normalized;
+        try {
+          normalized = nativeInteractionMessages(messages);
+        } catch {
+          invalid('text', 'text_encoding');
+        }
         // Also reject credentials split across adjacent completed messages.
         if (
           secrets.some((secret) =>
@@ -439,8 +521,8 @@ export const createNativeTurnOutput = ({
           invalid('credential');
         return { nativeSessionId: session, messages: normalized };
       } catch (error) {
-        if (/^native_execution_output_[a-z]+$/.test(error?.code ?? '')) throw error;
-        invalid();
+        reject(error);
+        throw failure;
       }
     },
   };
