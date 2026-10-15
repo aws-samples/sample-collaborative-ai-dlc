@@ -139,7 +139,12 @@ const normalizeSpec = (spec) => {
     return {
       id: `q${index + 1}`,
       prompt: typeof entry.prompt === 'string' ? entry.prompt.trim() : entry.prompt,
-      header: entry.header == null ? null : String(entry.header).trim() || null,
+      header:
+        entry.header == null
+          ? null
+          : typeof entry.header === 'string'
+            ? entry.header.trim() || null
+            : entry.header,
       multiSelect: entry.multiSelect === undefined ? false : entry.multiSelect,
       options: Array.isArray(entry.options)
         ? entry.options.map((option) => {
@@ -154,7 +159,11 @@ const normalizeSpec = (spec) => {
                   ? option.label.replace(/\s*\(Recommended\)\s*$/i, '').trim()
                   : option.label,
               description:
-                option.description == null ? null : String(option.description).trim() || null,
+                option.description == null
+                  ? null
+                  : typeof option.description === 'string'
+                    ? option.description.trim() || null
+                    : option.description,
             };
           })
         : entry.options,
@@ -162,57 +171,108 @@ const normalizeSpec = (spec) => {
   });
 };
 
+// Typed AI-DLC 2.11 intake asks can be copied unchanged into the existing
+// reserved display transport: { version: 3, ask: <engine JSON> }. Commands are
+// checked as bounded data, never executed or sent to the browser. The resumed
+// harness uses the engine's original request-bound command after a member reply.
+const askSpec = (spec) => {
+  if (!exact(spec, ['version', 'ask']) || spec.version !== 3) fail();
+  const ask = spec.ask;
+  if (!object(ask) || ask.kind !== 'ask' || ask.response_route !== 'next') fail();
+  if (!prose(ask.question, NATIVE_PENDING_INPUT_LIMITS.promptChars)) fail();
+  const command = (value) => line(value, 4096);
+  const scopes = ask.scope_commands;
+  if (
+    !Array.isArray(scopes) ||
+    !scopes.length ||
+    scopes.length >= NATIVE_PENDING_INPUT_LIMITS.optionsMax
+  )
+    fail();
+  if (
+    scopes.some(
+      (row) =>
+        !object(row) ||
+        !line(row.scope, NATIVE_PENDING_INPUT_LIMITS.labelChars) ||
+        !command(row.command) ||
+        (row.stages !== undefined &&
+          !line(row.stages, NATIVE_PENDING_INPUT_LIMITS.descriptionChars)),
+    )
+  )
+    fail();
+  if (!command(ask.compose_command)) fail();
+  let options;
+  if (ask.ask_type === 'compose-offer') {
+    options = [
+      { label: 'compose' },
+      ...scopes.map((row) => ({ label: row.scope, description: row.stages })),
+    ];
+  } else if (ask.ask_type === 'scope-confirm') {
+    if (
+      !command(ask.confirm_command) ||
+      !line(ask.proposed_scope, NATIVE_PENDING_INPUT_LIMITS.labelChars) ||
+      !Array.isArray(ask.choices) ||
+      ask.choices.length !== 2 ||
+      ask.choices.some((choice) => !object(choice) || !command(choice.command)) ||
+      ask.choices[0].command !== ask.confirm_command ||
+      ask.choices[1].command !== ask.compose_command
+    )
+      fail();
+    options = ask.choices.map((choice) => ({ label: choice.label }));
+  } else fail();
+  return { version: 2, questions: [{ prompt: ask.question, header: null, options }] };
+};
+
+export const NATIVE_PRESENTATION_REASONS = Object.freeze([
+  'absent',
+  'invalid_json',
+  'too_large',
+  'invalid_schema',
+  'unsupported_ask',
+  'stale_spec',
+  'read_failed',
+]);
+/** Closed display condition, hashed with the interaction. No raw rejected data. */
+export const nativePresentation = (value) => {
+  if (
+    !exact(value, ['status', 'reason']) ||
+    value.status !== 'degraded' ||
+    !NATIVE_PRESENTATION_REASONS.includes(value.reason)
+  )
+    fail();
+  return { status: 'degraded', reason: value.reason };
+};
+
 /**
- * Build the pending input for a completed turn. Returns null (free-text reply)
- * whenever nothing structured can be established safely.
- *
- * - gate: { stage } when engine state shows that stage held at `[?]`. Only a
- *   complete rendered spec matching the supported gate protocol is classified
- *   as approval. A marker alone does not identify a fork's decision protocol.
- * - spec: the agent-written rendered question spec (already JSON-parsed), or null.
- * - messagesText: the turn's assistant text. Every rendered option label and
- *   (in version 2) prompt must appear in it. A single non-gate choice may instead
- *   appear under its exact heading with all its labels. Its complete spec prompt
- *   is rendered by the form. No prose-derived options or inferred approvals.
+ * The explicit spec is the display source, not corroboration for assistant prose.
+ * Its exact bounded bytes are credential-checked by the runtime before upload.
+ * A held marker labels only the known gate shape; ordinary/summary questions at
+ * that marker remain choices and cannot confer approval or advance the engine.
  */
-export const buildNativePendingInput = ({ gate = null, spec = null, messagesText = '' }) => {
-  let questions = null;
-  if (spec !== null) {
-    try {
-      questions = normalizeSpec(spec);
-      const headedChoice =
-        !gate &&
-        questions.length === 1 &&
-        questions[0].options?.length >= 2 &&
-        questions[0].header &&
-        messagesText
-          .split(/\r?\n/)
-          .some((line) =>
-            [questions[0].header, `**${questions[0].header}**`].includes(line.trim()),
-          );
-      if (
-        questions.some(
-          (entry) =>
-            (spec.version === 2 && !messagesText.includes(entry.prompt) && !headedChoice) ||
-            entry.options?.some?.(
-              (option) => typeof option.label !== 'string' || !messagesText.includes(option.label),
-            ),
-        )
-      )
-        questions = null;
-    } catch {
-      questions = null;
-    }
-  }
-  if (!questions) return null;
+export const buildNativePendingInput = ({ gate = null, spec = null } = {}) => {
+  if (spec === null) return null;
   try {
-    return nativePendingInput({
-      schemaVersion: spec.version,
-      kind: gate ? 'approval' : 'choice',
-      source: gate ? 'engine-gate' : 'rendered-question',
-      stage: gate ? gate.stage : null,
+    const normalized = spec.version === 3 ? askSpec(spec) : spec;
+    const questions = normalizeSpec(normalized);
+    const choice = {
+      schemaVersion: normalized.version,
+      kind: 'choice',
+      source: 'rendered-question',
+      stage: null,
       questions,
-    });
+    };
+    if (gate) {
+      try {
+        return nativePendingInput({
+          ...choice,
+          kind: 'approval',
+          source: 'engine-gate',
+          stage: gate.stage,
+        });
+      } catch {
+        /* A summary or fork's choices are not a platform approval. */
+      }
+    }
+    return nativePendingInput(choice);
   } catch {
     return null;
   }

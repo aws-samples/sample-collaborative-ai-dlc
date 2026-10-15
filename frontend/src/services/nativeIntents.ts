@@ -132,6 +132,17 @@ export interface NativeInteractionView {
   messages: { type: 'text'; text: string }[];
   /** Task-3: the structured question this turn presented, or null for free text. */
   pendingInput?: NativePendingInput | null;
+  presentation?: {
+    status: 'degraded';
+    reason:
+      | 'absent'
+      | 'invalid_json'
+      | 'too_large'
+      | 'invalid_schema'
+      | 'unsupported_ask'
+      | 'stale_spec'
+      | 'read_failed';
+  };
   contentSha256: string;
   createdAt: string;
   response?: NativeUserReply | null;
@@ -581,11 +592,38 @@ async function interaction(value: unknown): Promise<NativeInteractionView> {
       throw invalidInteraction();
     }
   }
+  let presentation: NativeInteractionView['presentation'];
+  if (value.presentation !== undefined) {
+    const p = value.presentation;
+    if (
+      !record(p) ||
+      Object.keys(p).length !== 2 ||
+      p.status !== 'degraded' ||
+      typeof p.reason !== 'string' ||
+      ![
+        'absent',
+        'invalid_json',
+        'too_large',
+        'invalid_schema',
+        'unsupported_ask',
+        'stale_spec',
+        'read_failed',
+      ].includes(String(p.reason)) ||
+      pendingInput !== null
+    )
+      throw invalidInteraction();
+    presentation = {
+      status: 'degraded',
+      reason: p.reason as NonNullable<NativeInteractionView['presentation']>['reason'],
+    };
+  }
   // The server hashes canonical JSON (sorted keys); v2 covers the presented
   // question too. Verify the displayed bytes and options before binding a reply.
-  const canonical = pendingInput
-    ? canonicalJson({ messages, pendingInput })
-    : JSON.stringify(messages.map(({ text, type }) => ({ text, type })));
+  const canonical = presentation
+    ? canonicalJson({ messages, pendingInput, presentation })
+    : pendingInput
+      ? canonicalJson({ messages, pendingInput })
+      : JSON.stringify(messages.map(({ text, type }) => ({ text, type })));
   const hash = Array.from(
     new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(canonical))),
   )
@@ -606,6 +644,7 @@ async function interaction(value: unknown): Promise<NativeInteractionView> {
     publicationId: value.publicationId,
     messages,
     pendingInput,
+    ...(presentation ? { presentation } : {}),
     contentSha256: value.contentSha256,
     createdAt: value.createdAt,
     ...(response !== undefined ? { response } : {}),

@@ -382,3 +382,58 @@ describe('bounded completed native turn output', () => {
     expect(() => collector.finish()).toThrow('output_invalid');
   });
 });
+
+describe('Claude 2.1.296 query loop within one invocation', () => {
+  // Sanitized actual installed-CLI sequence: Agent notification causes another
+  // parent query after a successful result, announced by same-session init.
+  const notification = { type: 'system', subtype: 'task_notification', session_id: session };
+  it('keeps both completed parent responses and waits for the last declared query', () => {
+    const events = [
+      ...claude('Initial response').slice(0, 2),
+      notification,
+      claude('Initial response')[2],
+      ...claude('Final question'),
+    ];
+    expect(collect(events, { harness: 'claude' }, 1).messages.map((m) => m.text)).toEqual([
+      'Initial response',
+      'Final question',
+    ]);
+  });
+  it('does not substitute an earlier result for an incomplete or failed next query', () => {
+    for (const following of [
+      claude().slice(0, 1),
+      claude().slice(0, 2),
+      [...claude().slice(0, 2), { ...claude()[2], terminal_reason: 'model_error' }],
+    ])
+      expect(() =>
+        collect([...claude(), notification, ...following], { harness: 'claude' }),
+      ).toThrow();
+  });
+  it('still rejects undeclared queries, duplicate results and changed-session init', () => {
+    for (const following of [
+      claude()[1],
+      claude()[2],
+      { ...claude()[0], session_id: 'other' },
+      { ...claude()[0], prevent_continuation: true },
+    ])
+      expect(() =>
+        collect([...claude(), notification, following], { harness: 'claude' }),
+      ).toThrow();
+  });
+  it('accepts a result-only follow-up and keeps the total output bound', () => {
+    expect(
+      collect([...claude('First'), claude()[0], claude('Final')[2]], {
+        harness: 'claude',
+      }).messages.map((m) => m.text),
+    ).toEqual(['First', 'Final']);
+    expect(() =>
+      collect([...claude('x'.repeat(40000)), ...claude('x'.repeat(40000))], { harness: 'claude' }),
+    ).toThrow('output_limit');
+  });
+});
+
+it('bounds the number of declared Claude queries within one invocation', () => {
+  expect(() =>
+    collect(Array.from({ length: 33 }, () => claude('short')).flat(), { harness: 'claude' }),
+  ).toThrow('output_limit');
+});

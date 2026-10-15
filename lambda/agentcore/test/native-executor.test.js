@@ -1197,13 +1197,13 @@ describe('native invocation and first-wait classification', () => {
     expect(prompt).toContain(
       'ALL unanswered questions already available at the CURRENT workflow step',
     );
-    expect(prompt).toContain('never invent choices');
+    expect(prompt).toContain('Do not invent a plan list');
     expect(prompt).toContain('"version":2');
     expect(prompt).toContain('a required summary confirmation or approval');
     expect(prompt).toContain('This preference grants no autonomy');
     expect(prompt).toContain('Do not approve a gate, answer on behalf of the user');
-    expect(prompt).toContain('aidlc engine orchestrate next compose <original request>');
-    expect(prompt).toContain('Do not use report for that answer.');
+    expect(prompt).toContain('compose_command, scope_commands or choices');
+    expect(prompt).toContain('Do not reconstruct those commands');
   });
   it.each([undefined, null, '', 'CODEX', 'unknown', ['codex'], {}])(
     'refuses an unsupported prompt harness: %j',

@@ -26,11 +26,21 @@ it.each([
   { kind: 'complete', turns: 3 },
   { kind: 'form', turns: 3 },
   { kind: 'scope', turns: 3 },
+  { kind: 'scope-query-loop', turns: 3 },
   { kind: 'scope-credential', turns: 2, code: 'native_execution_output_credential' },
+  { kind: 'scope-cross-credential', turns: 2, code: 'native_execution_output_credential' },
   { kind: 'scope-capture-cwd', turns: 2, code: 'native_recovery_session_cwd_invalid' },
   { kind: 'scope-capture-id', turns: 2, code: 'native_recovery_session_id_mismatch' },
-  { kind: 'form-invalid', turns: 2, code: 'native_execution_question_spec_invalid' },
-  { kind: 'form-invalid-match', turns: 2, code: 'native_execution_question_spec_invalid' },
+  { kind: 'form-invalid', turns: 3 },
+  { kind: 'form-invalid-match', turns: 3 },
+  { kind: 'form-absent', turns: 3, degraded: 'absent' },
+  { kind: 'form-oversized', turns: 3, degraded: 'too_large' },
+  { kind: 'form-schema', turns: 3, degraded: 'invalid_schema' },
+  { kind: 'form-unsupported', turns: 3, degraded: 'unsupported_ask' },
+  { kind: 'upload-publication', turns: 2, code: 'native_execution_failed' },
+  { kind: 'upload-interaction', turns: 2, code: 'native_execution_failed' },
+  { kind: 'upload-checkpoint', turns: 2, code: 'native_execution_failed' },
+  { kind: 'admission-ack', turns: 3 },
   { kind: 'form-capture', turns: 2, code: 'native_recovery_home_path_invalid' },
   { kind: 'capture', turns: 2, code: 'native_recovery_home_path_invalid' },
   { kind: 'snapshot', turns: 3, code: 'native_snapshot_link' },
@@ -63,7 +73,7 @@ it.each([
       if(rows[0].sessionId!==id || rows[0].cwd!==process.cwd() ||
          rows.filter(x=>x.type==='fixture_turn').length!==turn-1) throw Error('session history changed');
       const expected=form
-        ? turn===2 ? scope ? 'classic' : '1. Q1: Small\\n2. Q2: Small, Large\\n3. Q3: Small\\n4. Q4: Small\\n5. Q5: Small\\n6. Constraints: Must work offline.' : 'Looks correct'
+        ? turn===2 ? scope ? 'classic' : '1. Q1: Small\\n2. Q2: Small, Large\\n3. Q3: Small\\n4. Q4: Small\\n5. Q5: Small\\n6. Constraints: Must work offline.' : ['form-invalid','form-absent','form-oversized','form-schema','form-unsupported'].includes(kind) ? 'answer-2' : 'Looks correct'
         : 'answer-'+(turn-1);
       if(prompt!==expected) throw Error('answer changed or replayed');
       // Layout and shape observed in pinned Claude 2.1.257 persistAgentMetadata.
@@ -111,10 +121,27 @@ it.each([
         result='**Confirm**\\nLooks correct / Request changes';
         questions[0].prompt='Plan recorded: '+process.env.AWS_BEARER_TOKEN_BEDROCK;
       }
+      if(kind==='scope-cross-credential' && turn===2) {
+        result='fixture-model-'; questions[0].header='token';
+      }
       if(kind==='form-invalid-match' && turn===2) questions[0].options.push({label:'Unpublished choice'});
-      await fs.writeFile('.native-control/pending-question.json',kind==='form-invalid' && turn===2 ? '{broken' : JSON.stringify({version:2,questions}));
+      const spec = scope && turn===1
+        ? {version:3,ask:{kind:'ask',ask_type:'compose-offer',response_route:'next',question:'Choose the plan for this task.',
+          compose_command:'aidlc engine orchestrate next compose --request fixture',
+          scope_commands:plans.slice(1).map(scope=>({scope,command:'aidlc engine orchestrate next --scope '+scope+' --request fixture'}))}}
+        : {version:2,questions};
+      if (kind!=='form-absent' || turn!==2)
+        await fs.writeFile('.native-control/pending-question.json', turn!==2 ? JSON.stringify(spec) :
+          kind==='form-invalid' ? '{broken' : kind==='form-oversized' ? 'x'.repeat(70000) :
+          kind==='form-schema' ? JSON.stringify({version:2,questions:[]}) :
+          kind==='form-unsupported' ? JSON.stringify({version:3,ask:{kind:'ask',ask_type:'fork'}}) : JSON.stringify(spec));
     }
     console.log(JSON.stringify({type:'system',subtype:'init',session_id:id}));
+    if(kind==='scope-query-loop' && turn===2) {
+      console.log(JSON.stringify({type:'system',subtype:'task_notification',session_id:id}));
+      console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,session_id:id,result:'Subagent work finished.',stop_reason:'end_turn',terminal_reason:'completed'}));
+      console.log(JSON.stringify({type:'system',subtype:'init',session_id:id}));
+    }
     console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,session_id:id,
       result,stop_reason:'end_turn',terminal_reason:'completed'}));
   `,
@@ -130,6 +157,17 @@ it.each([
       expect(p.ExpectedBucketOwner).toBe(f.configuration.accountId);
       const current = latest.get(p.Key);
       if (command.constructor.name === 'PutObjectCommand') {
+        const fault = scenario.kind.slice('upload-'.length);
+        if (
+          turns === 2 &&
+          scenario.kind.startsWith('upload-') &&
+          ((fault === 'publication' &&
+            p.Key.includes('/manifests/') &&
+            !p.Key.startsWith('native-recovery/')) ||
+            (fault === 'interaction' && p.Key.includes('/interactions/')) ||
+            (fault === 'checkpoint' && p.Key.startsWith('native-recovery/')))
+        )
+          throw new Error('injected upload failure');
         if ((p.IfNoneMatch === '*' && current) || (p.IfMatch && p.IfMatch !== current?.etag))
           throw Object.assign(new Error('conditional conflict'), {
             name: 'PreconditionFailed',
@@ -181,6 +219,18 @@ it.each([
     NATIVE_RUNTIME_ACCOUNT_ID: storage.accountId,
   };
   let turns = 0;
+  const publish = f.store.publish;
+  let lostAdmissionAck = false;
+  const observedStore = { ...f.store };
+  if (scenario.kind === 'admission-ack')
+    observedStore.publish = async (input) => {
+      const result = await publish(input);
+      if (turns === 2 && !lostAdmissionAck) {
+        lostAdmissionAck = true;
+        throw new Error('admission acknowledgement lost');
+      }
+      return result;
+    };
   const clean = {
     exitCode: 0,
     signal: null,
@@ -250,7 +300,7 @@ it.each([
   let loseAck = scenario.kind === 'form';
   const diagnostics = [];
   const supervisor = createNativeExecutionSupervisor({
-    store: f.store,
+    store: observedStore,
     preparationStore: f.preparationStore,
     now: f.now,
     upgrade: async ({ execution }) => ({ ready: true, target: f.target(execution) }),
@@ -299,7 +349,14 @@ it.each([
   const recheck = async () => {};
   const settle = async () => {
     for (let i = 0; i < 10; i++) {
-      await supervisor(f.identity);
+      try {
+        await supervisor(f.identity);
+      } catch (error) {
+        if (scenario.kind !== 'admission-ack' || error.message !== 'admission acknowledgement lost')
+          throw error;
+        expect(f.row().status).toBe('AWAITING_USER');
+        f.tick();
+      }
       await runtime.settle();
       if (['AWAITING_USER', 'FAILED', 'CANCELLED'].includes(f.row().status)) {
         await supervisor(f.identity); // Finish projection; duplicate pointer is harmless.
@@ -319,9 +376,17 @@ it.each([
     for (let turn = 2; turn <= scenario.turns; turn++) {
       const question = await api.interaction(f.prepared, recheck);
       const scope = scenario.kind.startsWith('scope');
-      const form = scenario.kind.startsWith('form') || scope;
-      if (!form)
+      const form = question.pendingInput !== null;
+      if (!scenario.kind.startsWith('form') && !scope)
         expect(question.messages).toEqual([{ type: 'text', text: `Question ${turn - 1}?` }]);
+      if ((scenario.kind === 'form-invalid' || scenario.degraded) && turn === 3) {
+        expect(question.presentation).toEqual({
+          status: 'degraded',
+          reason: scenario.degraded ?? 'invalid_json',
+        });
+        expect(question.pendingInput).toBeNull();
+        expect(f.row().recoveryCheckpoint.sequence).toBe(2);
+      }
       const selection = form
         ? {
             answers:
@@ -417,7 +482,7 @@ it.each([
             expect.objectContaining({ code: 'RUNTIME_TERMINAL', runtimeCode: scenario.code }),
           ]),
         );
-        if (scenario.kind === 'scope-credential') {
+        if (['scope-credential', 'scope-cross-credential'].includes(scenario.kind)) {
           expect(persistedFailure.timings.publicationStarted).toBeUndefined();
           expect(JSON.stringify(persistedFailure)).not.toContain('fixture-model-token');
           expect(
@@ -443,7 +508,7 @@ it.each([
     expect(final.attemptId).toBe(first.attemptId);
     expect(final.runtimeSessionId).toBe(first.runtimeSessionId);
     expect(final.writerGeneration).toBe(1);
-    if (!['complete', 'form', 'scope'].includes(scenario.kind)) {
+    if (scenario.code || scenario.kind === 'cancel') {
       expect(final.status).toBe(scenario.kind === 'cancel' ? 'CANCELLED' : 'FAILED');
       expect(final.publication).toEqual(previous.publication);
       expect(final.recoveryCheckpoint).toEqual(previous.recoveryCheckpoint);
@@ -481,9 +546,10 @@ it.each([
     await supervisor(f.identity);
     expect(turns).toBe(scenario.turns); // Neither duplicate answer nor queue pointer replays work.
     expect(final.publication.sequence).toBe(
-      ['complete', 'form', 'scope'].includes(scenario.kind) ? 3 : scenario.turns - 1,
+      scenario.code || scenario.kind === 'cancel' ? scenario.turns - 1 : scenario.turns,
     );
-    if (scenario.kind === 'form') {
+    if (scenario.kind === 'admission-ack') expect(lostAdmissionAck).toBe(true);
+    if (scenario.kind.startsWith('form') && !scenario.code) {
       const finalQuestion = await api.interaction(f.prepared, recheck);
       expect(finalQuestion.pendingInput.kind).toBe('approval');
       expect(finalQuestion.pendingInput.stage).toBe('requirements-analysis');

@@ -1,5 +1,7 @@
 export function nativeExecutionFailureMessage(code: string | undefined): string {
   switch (code) {
+    case 'native_execution_question_spec_unsafe':
+      return 'The question file failed a filesystem safety check. Previously admitted work is retained.';
     case 'native_execution_question_spec_invalid':
       return 'The workflow returned a question form that native execution could not verify.';
     case 'native_recovery_session_cwd_invalid':

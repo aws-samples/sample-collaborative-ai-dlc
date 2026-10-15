@@ -533,3 +533,25 @@ it.each([
   expect(mocks.list).not.toHaveBeenCalled();
   expect(mocks.revision).not.toHaveBeenCalled();
 });
+
+it('preserves the explicit degraded-form condition in a selected historical revision', async () => {
+  mocks.decision.mockResolvedValue({
+    interaction: {
+      id: 'a'.repeat(64),
+      sequence: 1,
+      harness: 'codex',
+      messages: [{ type: 'text', text: 'Saved proposal' }],
+      pendingInput: null,
+      presentation: { status: 'degraded', reason: 'invalid_json' },
+    },
+    answer: null,
+  });
+  mount();
+  await screen.findByText(
+    'The structured question form is unavailable for this turn. The response and checkpoint are saved.',
+  );
+  expect(
+    screen.queryByRole('region', { name: 'Published question choices' }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Submit Answer' })).not.toBeInTheDocument();
+});

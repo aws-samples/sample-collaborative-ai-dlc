@@ -46,217 +46,130 @@ const approvalTurn = {
   messagesText: 'Approve Request Changes Accept as-is',
 };
 
-describe('native pending input capture', () => {
-  it('renders an explicit single choice under its visible heading without requiring duplicated prompt prose', () => {
-    const spec = {
+describe('native pending input display contract', () => {
+  it.each(['', 'Different prose', '**Plan**', 'Summary\nOnly one label'])(
+    'renders exact explicit definitions independently of prose: %s',
+    (messagesText) => {
+      const input = buildNativePendingInput({ spec: { ...planSpec, version: 2 }, messagesText });
+      expect(input.questions[0].options.map((o) => o.label)).toEqual(['Compose', 'Express']);
+      expect(input.questions[0].prompt).toBe(planSpec.questions[0].prompt);
+    },
+  );
+  it('groups mixed current-step questions; requires every answer', () => {
+    const questions = [
+      ...Array.from({ length: 5 }, (_, i) => ({
+        prompt: `Question ${i}?`,
+        multiSelect: i === 1,
+        options: [{ label: 'Small' }, { label: 'Large' }],
+      })),
+      { prompt: 'Constraints?', options: [] },
+    ];
+    const input = buildNativePendingInput({
+      spec: { version: 2, questions },
+      messagesText: 'See the form.',
+    });
+    expect(input.questions).toHaveLength(6);
+    expect(() =>
+      nativeSelection(input, { answers: questions.map(() => ({ selectedOptions: [] })) }),
+    ).toThrow();
+    expect(() => nativePendingInput({ ...input, schemaVersion: 1 })).toThrow();
+  });
+  it('keeps summary questions separate from engine approval even at a held marker', () => {
+    const gate = { stage: 'requirements-analysis' };
+    const summary = {
       version: 2,
       questions: [
         {
-          prompt: 'Choose the plan for this task.',
-          header: 'Plan',
-          options: [{ label: 'compose' }, { label: 'bugfix' }, { label: 'classic' }],
+          prompt: 'Confirm the summary?',
+          options: [{ label: 'Looks correct' }, { label: 'Request changes' }],
         },
       ],
     };
-    const messagesText =
-      '**Plan**\n\n- **compose**: tailor the plan\n- **bugfix**: 5 stages\n- **classic**: 14 stages';
+    expect(buildNativePendingInput({ gate, spec: summary }).kind).toBe('choice');
     expect(
-      buildNativePendingInput({ spec, messagesText })?.questions[0].options.map((o) => o.label),
-    ).toEqual(['compose', 'bugfix', 'classic']);
-    expect(buildNativePendingInput({ spec, messagesText: 'compose bugfix classic' })).toBeNull();
-    expect(buildNativePendingInput({ spec, messagesText: '**Plan** compose bugfix' })).toBeNull();
-    expect(buildNativePendingInput({ spec, messagesText, gate: { stage: 'plan' } })).toBeNull();
-    expect(
-      buildNativePendingInput({
-        spec: { ...approvalSpec, version: 2 },
-        gate: { stage: 'requirements-analysis' },
-        messagesText: '**Approval**\nApprove / Request Changes / Accept as-is',
-      }),
-    ).toBeNull(); // Valid gate labels/heading cannot replace its full prompt.
-    expect(
-      buildNativePendingInput({
-        spec: {
-          version: 2,
-          questions: [{ prompt: 'What constraints apply?', header: 'Constraints', options: [] }],
-        },
-        messagesText: '**Constraints**',
-      }),
-    ).toBeNull();
+      buildNativePendingInput({ ...approvalTurn, messagesText: 'Review the proposal.' }).kind,
+    ).toBe('approval');
+    expect(buildNativePendingInput({ spec: approvalSpec }).kind).toBe('choice');
+    expect(buildNativePendingInput({ gate })).toBeNull();
+    const fork = structuredClone(approvalSpec);
+    fork.questions[0].options = [{ label: 'Ship it' }, { label: 'Revise' }];
+    expect(buildNativePendingInput({ gate, spec: fork }).kind).toBe('choice'); // never translated into approval
   });
-  it('captures a complete current-step form with more than four mixed questions', () => {
-    const questions = [
-      ...Array.from({ length: 5 }, (_, index) => ({
-        prompt: `Current question ${index + 1}?`,
-        header: `Q${index + 1}`,
-        multiSelect: index === 1,
-        options: [{ label: 'Small' }, { label: 'Large' }],
-      })),
-      { prompt: 'What constraints apply?', header: 'Constraints', options: [] },
-    ];
-    const form = buildNativePendingInput({
-      spec: { version: 2, questions },
-      messagesText: `${questions.map((q) => q.prompt).join('\n')}\nSmall Large`,
-    });
-    expect(form?.questions).toHaveLength(6);
-    expect(form.schemaVersion).toBe(2);
-    const selection = {
-      answers: [
-        { selectedOptions: [0] },
-        { selectedOptions: [1, 0] },
-        { selectedOptions: [1] },
-        { selectedOptions: [0] },
-        { selectedOptions: [1] },
-        { selectedOptions: [], freeText: 'Must work offline.' },
-      ],
-    };
-    expect(nativeAnswerText(form, selection)).toBe(
-      '1. Q1: Small\n2. Q2: Small, Large\n3. Q3: Large\n4. Q4: Small\n5. Q5: Large\n6. Constraints: Must work offline.',
-    );
-    for (const answers of [
-      selection.answers.slice(0, 5),
-      [...selection.answers.slice(0, 5), { selectedOptions: [] }],
-    ])
-      expect(() => nativeSelection(form, { answers })).toThrow();
-    expect(() => nativePendingInput({ ...form, schemaVersion: 1 })).toThrow();
-    expect(
-      buildNativePendingInput({
-        spec: { version: 2, questions },
-        messagesText: 'Small Large', // No unpublished prompts, including free-text prompts.
-      }),
-    ).toBeNull();
-    expect(
-      buildNativePendingInput({
-        gate: { stage: 'requirements-analysis' },
-        spec: { version: 2, questions },
-        messagesText: `${questions.map((q) => q.prompt).join('\n')}\nSmall Large`,
-      }),
-    ).toBeNull(); // A stage approval cannot absorb an ordinary question batch.
-  });
-
-  it('captures the rendered question spec when every label was shown', () => {
-    const input = buildNativePendingInput({ spec: planSpec, messagesText: planChoiceText });
-    expect(input).toEqual({
-      schemaVersion: 1,
-      kind: 'choice',
-      source: 'rendered-question',
-      stage: null,
+  it.each([
+    null,
+    {},
+    { version: 9, questions: [] },
+    { version: 2, questions: [] },
+    { version: 2, questions: [{ prompt: 'Question?', options: [{ label: 'Only one' }] }] },
+    {
+      version: 2,
       questions: [
         {
-          id: 'q1',
-          prompt: 'No ready-made plan clearly fits. How should I proceed?',
-          header: 'Plan Choice',
-          multiSelect: false,
-          options: [
-            { label: 'Compose', description: 'Tailor a plan to this task' },
-            { label: 'Express', description: '9 of 33 stages' },
-          ],
+          prompt: 'Question?',
+          options: Array.from({ length: 17 }, (_, i) => ({ label: `Option ${i}` })),
         },
       ],
-    });
+    },
+    {
+      version: 2,
+      questions: [{ prompt: 'Question?', options: [{ label: 'Same' }, { label: 'Same' }] }],
+    },
+  ])('rejects unusable display shape without inventing questions: %j', (spec) => {
+    expect(buildNativePendingInput({ spec })).toBeNull();
   });
-
-  it("captures AI-DLC 2.11.0's twelve-option plan offer and bounds the option count", () => {
-    const plans = [
+  it('retains v1 and refuses malformed stored approvals', () => {
+    expect(buildNativePendingInput({ spec: planSpec }).schemaVersion).toBe(1);
+    const input = buildNativePendingInput(approvalTurn);
+    input.questions[0].options = [
+      { label: 'Approve', description: null },
+      { label: 'Skip', description: null },
+    ];
+    expect(() => nativePendingInput(input)).toThrow();
+  });
+  it('uses typed engine asks, not a universal production scope list or shell execution', () => {
+    const ask = {
+      kind: 'ask',
+      ask_type: 'compose-offer',
+      response_route: 'next',
+      question: 'Choose a plan?',
+      compose_command: 'aidlc engine orchestrate next compose --request fixture-request',
+      scope_commands: [
+        {
+          scope: 'custom-a',
+          command: 'aidlc next --scope custom-a --request fixture-request',
+          stages: '3 stages',
+        },
+        { scope: 'custom-b', command: 'aidlc next --scope custom-b --request fixture-request' },
+      ],
+    };
+    const input = buildNativePendingInput({ spec: { version: 3, ask } });
+    expect(input.questions[0].options.map((o) => o.label)).toEqual([
       'compose',
-      'bugfix',
-      'classic',
-      'enterprise',
-      'express',
-      'feature',
-      'infra',
-      'mvp',
-      'poc',
-      'refactor',
-      'security-patch',
-      'workshop',
-    ];
-    const text = ['**Plan**', 'Which should I use?', ...plans.map((plan) => `- **${plan}**`)].join(
-      '\n',
-    );
-    const spec = (labels) => ({
-      version: 1,
-      questions: [
-        {
-          prompt: 'Which should I use?',
-          header: 'Plan',
-          options: labels.map((label) => ({ label })),
-        },
-      ],
-    });
-    expect(
-      buildNativePendingInput({ spec: spec(plans), messagesText: text }).questions[0].options.map(
-        (option) => option.label,
-      ),
-    ).toEqual(plans);
-    const many = Array.from({ length: 17 }, (_, index) => `plan-${index}`);
-    expect(buildNativePendingInput({ spec: spec(many), messagesText: many.join('\n') })).toBeNull();
-  });
-
-  it('never shows options the member was not shown, and tolerates no or bad specs', () => {
-    const invented = structuredClone(planSpec);
-    invented.questions[0].options.push({ label: 'Approve everything' });
-    expect(buildNativePendingInput({ spec: invented, messagesText: planChoiceText })).toBeNull();
-    expect(buildNativePendingInput({ spec: null, messagesText: planChoiceText })).toBeNull();
-    for (const bad of [
-      {},
-      { version: 2, questions: [] },
-      { ...planSpec, futureProtocol: true },
-      { version: 1, questions: [{ prompt: 'x', options: [{ label: 'Only' }] }] },
-      { version: 1, questions: [{ prompt: 'x', extra: 1, options: [] }] },
-      'text',
-      [],
-    ]) {
-      expect(buildNativePendingInput({ spec: bad, messagesText: planChoiceText })).toBeNull();
-    }
-  });
-
-  it('requires the complete presented gate protocol instead of synthesizing or dropping choices', () => {
-    const gate = { stage: 'requirements-analysis' };
-    expect(buildNativePendingInput({ gate, messagesText: 'Ready for review.' })).toBeNull();
-    const rendered = buildNativePendingInput(approvalTurn);
-    expect(rendered.questions[0].prompt).toBe(
-      'Requirements complete. How would you like to proceed?',
-    );
-    expect(rendered.questions[0].options.map((o) => o.label)).toEqual([
-      'Approve',
-      'Request Changes',
-      'Accept as-is',
+      'custom-a',
+      'custom-b',
     ]);
-    expect(rendered.questions[0].options[0].description).toBe('Continue to user stories');
-    const incompatible = structuredClone(approvalSpec);
-    incompatible.questions[0].options.push({ label: 'Skip review entirely' });
+    expect(nativeAnswerText(input, { answers: [{ selectedOptions: [2] }] })).toBe('custom-b');
+    expect(JSON.stringify(input)).not.toContain('--request');
     expect(
       buildNativePendingInput({
-        ...approvalTurn,
-        spec: incompatible,
-        messagesText: `${approvalTurn.messagesText} Skip review entirely`,
+        spec: { version: 3, ask: { ...ask, response_route: 'arbitrary-fork' } },
       }),
     ).toBeNull();
+    const confirm = {
+      ...ask,
+      ask_type: 'scope-confirm',
+      proposed_scope: 'custom-a',
+      confirm_command: ask.scope_commands[0].command,
+      choices: [
+        { label: 'Use the offered plan', command: ask.scope_commands[0].command },
+        { label: 'Tailor the plan', command: ask.compose_command },
+      ],
+    };
     expect(
-      buildNativePendingInput({ ...approvalTurn, messagesText: 'Approve Accept as-is' }),
-    ).toBeNull();
-    // A fork's renamed choices are not translated into the platform's labels.
-    incompatible.questions[0].options = [{ label: 'Ship it' }, { label: 'Revise' }];
-    expect(
-      buildNativePendingInput({
-        ...approvalTurn,
-        spec: incompatible,
-        messagesText: 'Ship it or Revise',
-      }),
-    ).toBeNull();
-  });
-
-  it('rejects approval inputs that drop a protocol label or invent one', () => {
-    const base = buildNativePendingInput(approvalTurn);
-    const missing = structuredClone(base);
-    missing.questions[0].options = missing.questions[0].options.filter(
-      (o) => o.label !== 'Request Changes',
-    );
-    missing.questions[0].options.push({ label: 'Approve later', description: null });
-    expect(() => nativePendingInput(missing)).toThrow();
-    const multi = structuredClone(base);
-    multi.questions[0].multiSelect = true;
-    expect(() => nativePendingInput(multi)).toThrow();
+      buildNativePendingInput({ spec: { version: 3, ask: confirm } }).questions[0].options.map(
+        (o) => o.label,
+      ),
+    ).toEqual(['Use the offered plan', 'Tailor the plan']);
   });
 });
 
@@ -329,4 +242,13 @@ describe('native answer rendering', () => {
       expect(() => nativeSelection(choice, bad)).toThrow();
     }
   });
+});
+
+it('does not coerce malformed header/description objects into an apparently valid form', () => {
+  for (const field of ['header', 'description']) {
+    const spec = structuredClone(approvalSpec);
+    if (field === 'header') spec.questions[0].header = { private: 'ignored' };
+    else spec.questions[0].options[0].description = { private: 'ignored' };
+    expect(buildNativePendingInput({ ...approvalTurn, spec })).toBeNull();
+  }
 });

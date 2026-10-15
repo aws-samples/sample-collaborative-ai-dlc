@@ -18,9 +18,8 @@ jobs:
         with:
           node-version: 24
       - run: npm ci
-      - run: npm run architecture:check
-      - run: node --test scripts/test/native-architecture.test.mjs
-      - run: npm run test:native-wiring
+      - run: npm --prefix frontend ci
+      - run: npm run test:native-qualification
       - run: npm run architecture:map
       - uses: actions/upload-artifact@v4
         with:

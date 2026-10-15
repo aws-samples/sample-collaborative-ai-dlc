@@ -330,3 +330,41 @@ describe('task-3 structured pending input (schema v2)', () => {
     await expect(f.interactions.read(identity, receipt)).rejects.toBeTruthy();
   });
 });
+
+describe('degraded presentation is immutable display data', () => {
+  it('round-trips the warning with retained content and binds it into the reply hash', async () => {
+    const f = fixture();
+    const presentation = { status: 'degraded', reason: 'invalid_schema' };
+    const receipt = await f.interactions.write({ ...input(), presentation });
+    const body = await f.interactions.read(identity, receipt);
+    expect(body.schemaVersion).toBe(3);
+    expect(body.contentSha256).toBe(
+      hash(canonicalJson({ messages: input().messages, pendingInput: null, presentation })),
+    );
+    expect(nativeInteractionView(receipt, body)).toMatchObject({
+      pendingInput: null,
+      presentation,
+    });
+    expect(body.messages).toEqual(input().messages);
+    const bytes = JSON.parse(f.objects.get(`${receipt.object.key}\0${receipt.object.versionId}`));
+    bytes.presentation.reason = 'absent';
+    f.objects.set(
+      `${receipt.object.key}\0${receipt.object.versionId}`,
+      Buffer.from(canonicalJson(bytes)),
+    );
+    await expect(f.interactions.read(identity, receipt)).rejects.toMatchObject({
+      code: 'NATIVE_INTERACTION_INVALID',
+    });
+  });
+  it.each([
+    { status: 'degraded', reason: 'private/path' },
+    { status: 'degraded', reason: 'absent', prompt: 'private' },
+    { status: 'approved', reason: 'absent' },
+  ])('rejects arbitrary display-condition payloads before upload', async (presentation) => {
+    const f = fixture();
+    await expect(f.interactions.write({ ...input(), presentation })).rejects.toMatchObject({
+      code: 'NATIVE_INTERACTION_INVALID',
+    });
+    expect(f.s3.send).not.toHaveBeenCalled();
+  });
+});

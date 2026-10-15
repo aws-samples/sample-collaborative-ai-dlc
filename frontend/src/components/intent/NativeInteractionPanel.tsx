@@ -320,6 +320,23 @@ function ReplyPresence({ users }: { users: Map<number, AwarenessUser> }) {
   );
 }
 
+export function NativePresentationNotice({ interaction }: { interaction: NativeInteractionView }) {
+  if (interaction.presentation?.status !== 'degraded') return null;
+  return (
+    <div role="status" className="rounded-md border p-3 text-sm">
+      <p>
+        The structured question form is unavailable for this turn. The response and checkpoint are
+        saved.
+      </p>
+      <p>
+        Review the published response and files. If the choices or question are unclear, ask AI-DLC
+        to present the current questions again when this turn is open for a reply. Nothing has been
+        answered or approved automatically.
+      </p>
+    </div>
+  );
+}
+
 export function NativeInteractionPanel({
   interaction,
   reply,
@@ -349,6 +366,7 @@ export function NativeInteractionPanel({
           ))}
         </CardContent>
       </Card>
+      <NativePresentationNotice interaction={interaction} />
       {reply.structured && !reply.receipt ? (
         <section aria-label="Answer AI-DLC" className="space-y-2">
           {reply.answerEditor ? (

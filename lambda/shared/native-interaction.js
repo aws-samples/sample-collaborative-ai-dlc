@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { canonicalJson } from './workflow-checkpoint.js';
 import { nativePublicationScope } from './native-publication.js';
-import { nativePendingInput } from './native-pending-input.js';
+import { nativePendingInput, nativePresentation } from './native-pending-input.js';
 
 const SHA = /^[a-f0-9]{64}$/;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -121,14 +121,34 @@ const BODY_FIELDS = [
 // v1: messages only. v2 (task-3): plus a structured pendingInput, and the
 // content hash covers both, so a reply bound to contentSha256 is bound to the
 // exact options the member was shown.
-export const nativeInteractionContentSha256 = (messages, pendingInput = undefined) =>
-  hash(canonicalJson(pendingInput === undefined ? messages : { messages, pendingInput }));
+export const nativeInteractionContentSha256 = (
+  messages,
+  pendingInput = undefined,
+  presentation = undefined,
+) =>
+  hash(
+    canonicalJson(
+      presentation !== undefined
+        ? { messages, pendingInput: pendingInput ?? null, presentation }
+        : pendingInput === undefined
+          ? messages
+          : { messages, pendingInput },
+    ),
+  );
 
 const validate = (value, identity) => {
   const v2 = object(value) && value.schemaVersion === 2;
+  const v3 = object(value) && value.schemaVersion === 3;
   if (
-    !exact(value, v2 ? [...BODY_FIELDS, 'pendingInput'] : BODY_FIELDS) ||
-    ![1, 2].includes(value.schemaVersion) ||
+    !exact(
+      value,
+      v3
+        ? [...BODY_FIELDS, 'pendingInput', 'presentation']
+        : v2
+          ? [...BODY_FIELDS, 'pendingInput']
+          : BODY_FIELDS,
+    ) ||
+    ![1, 2, 3].includes(value.schemaVersion) ||
     canonicalJson(value.scope) !== canonicalJson(scopeOf(identity).scope) ||
     !sequence(value.sequence) ||
     value.kind !== 'assistant_turn' ||
@@ -142,14 +162,24 @@ const validate = (value, identity) => {
     fail();
   const messages = nativeInteractionMessages(value.messages);
   let pendingInput;
-  if (v2) {
+  if (v2 || (v3 && value.pendingInput !== null)) {
     try {
       pendingInput = nativePendingInput(value.pendingInput);
     } catch {
       fail();
     }
   }
-  if (value.contentSha256 !== nativeInteractionContentSha256(messages, pendingInput)) fail();
+  let presentation;
+  if (v3) {
+    try {
+      presentation = nativePresentation(value.presentation);
+    } catch {
+      fail();
+    }
+    if (pendingInput !== undefined) fail(); // A degraded form is never a structured approval.
+  }
+  if (value.contentSha256 !== nativeInteractionContentSha256(messages, pendingInput, presentation))
+    fail();
   return structuredClone(value);
 };
 
@@ -177,6 +207,7 @@ export const createNativeInteractions = ({
       publicationId,
       messages,
       pendingInput = null,
+      presentation = null,
     }) {
       const { scope, prefix } = scopeOf(identity);
       const normalized = nativeInteractionMessages(messages);
@@ -191,7 +222,7 @@ export const createNativeInteractions = ({
       }
       const body = validate(
         {
-          schemaVersion: input ? 2 : 1,
+          schemaVersion: presentation ? 3 : input ? 2 : 1,
           scope,
           sequence: turnSequence,
           kind: 'assistant_turn',
@@ -201,8 +232,13 @@ export const createNativeInteractions = ({
           publicationId,
           createdAt: now(),
           messages: normalized,
-          contentSha256: nativeInteractionContentSha256(normalized, input),
+          contentSha256: nativeInteractionContentSha256(
+            normalized,
+            input,
+            presentation ?? undefined,
+          ),
           ...(input ? { pendingInput: input } : {}),
+          ...(presentation ? { pendingInput: input ?? null, presentation } : {}),
         },
         identity,
       );
@@ -293,6 +329,7 @@ export const nativeInteractionView = (receipt, body) => ({
   publicationId: body.publicationId,
   messages: structuredClone(body.messages),
   pendingInput: body.schemaVersion === 2 ? structuredClone(body.pendingInput) : null,
+  ...(body.schemaVersion === 3 ? { presentation: structuredClone(body.presentation) } : {}),
   contentSha256: body.contentSha256,
   createdAt: body.createdAt,
 });

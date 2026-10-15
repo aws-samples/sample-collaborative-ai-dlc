@@ -7,6 +7,7 @@ import { ArtifactMarkdown } from './ArtifactMarkdown';
 import { NativeFileView } from './NativeFileView';
 import { NativeResultDownload } from './NativeResultDownload';
 import { NativeSourceComparison } from './NativeSourceComparison';
+import { NativePresentationNotice } from './NativeInteractionPanel';
 import { NativeCompletionEvidence } from './NativeCompletionEvidence';
 import { getNativeListing, nativeAccessDenied } from '@/hooks/useNativeIntents';
 import { currentSessionEpoch, isSessionExpiryNotified } from '@/services/sessionExpiry';
@@ -313,6 +314,9 @@ export function NativeHistoryView({
                     ))
                   ) : (
                     <p>No assistant proposal was recorded with this publication.</p>
+                  )}
+                  {decision.interaction && (
+                    <NativePresentationNotice interaction={decision.interaction} />
                   )}
                   {decision.interaction?.pendingInput && (
                     <section aria-label="Published question choices" className="space-y-2">

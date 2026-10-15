@@ -302,20 +302,24 @@ it('renders every explicitly offered scope as a choice and submits its exact lab
   const scopeMessages = [
     {
       type: 'text' as const,
-      text: '**Plan**\n\n' + plans.map((label) => `- **${label}**`).join('\n'),
+      text: 'The complete plan offer is in the form below.',
     },
   ];
   const pendingInput = nativePendingInput(
     buildNativePendingInput({
       spec: {
-        version: 2,
-        questions: [
-          {
-            prompt: 'Choose the plan for this task.',
-            header: 'Plan',
-            options: plans.map((label) => ({ label })),
-          },
-        ],
+        version: 3,
+        ask: {
+          kind: 'ask',
+          ask_type: 'compose-offer',
+          response_route: 'next',
+          question: 'Choose the plan for this task.',
+          compose_command: 'aidlc engine orchestrate next compose --request fixture',
+          scope_commands: plans.slice(1).map((scope) => ({
+            scope,
+            command: `aidlc engine orchestrate next --scope ${scope} --request fixture`,
+          })),
+        },
       },
       messagesText: scopeMessages[0].text,
     }),
@@ -349,6 +353,44 @@ it('renders every explicitly offered scope as a choice and submits its exact lab
     text: 'classic',
     selection: { answers: [{ selectedOptions: [2] }] },
   });
+});
+
+it('keeps a degraded form explicitly waiting, submits once and retains its notice and accepted reply on refresh', async () => {
+  const presentation = { status: 'degraded' as const, reason: 'invalid_json' as const };
+  interaction = {
+    ...interaction,
+    pendingInput: null,
+    presentation,
+    contentSha256: createHash('sha256')
+      .update(canonicalJson({ messages: interaction.messages, pendingInput: null, presentation }))
+      .digest('hex'),
+  };
+  const page = renderPage();
+  await screen.findByText(
+    'The structured question form is unavailable for this turn. The response and checkpoint are saved.',
+  );
+  expect(screen.queryByRole('form', { name: 'Workflow questions' })).not.toBeInTheDocument();
+  const field = await screen.findByRole('textbox', { name: 'Reply to AI-DLC' });
+  await userEvent.type(field, 'Please present the current questions and options.');
+  fireEvent.submit(screen.getByRole('form', { name: 'Reply to AI-DLC' }));
+  fireEvent.submit(screen.getByRole('form', { name: 'Reply to AI-DLC' }));
+  await screen.findByText('Reply accepted. Delivery pending.');
+  expect(transport.post).toHaveBeenCalledTimes(1);
+  expect(transport.post.mock.calls[0][1]).toMatchObject({
+    interactionId: interaction.id,
+    contentSha256: interaction.contentSha256,
+    text: 'Please present the current questions and options.',
+  });
+  expect(transport.post.mock.calls[0][1]).not.toHaveProperty('selection');
+  page.unmount();
+  renderPage();
+  await screen.findByText(
+    'The structured question form is unavailable for this turn. The response and checkpoint are saved.',
+  );
+  expect(
+    await screen.findByDisplayValue('Please present the current questions and options.'),
+  ).toHaveAttribute('readonly');
+  expect(transport.post).toHaveBeenCalledTimes(1);
 });
 
 it('submits one complete grouped form, retries identical bytes after a lost ack and restores the receipt on reload', async () => {

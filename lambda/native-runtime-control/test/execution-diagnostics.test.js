@@ -1,3 +1,4 @@
+import { recordNativeBoundary } from '../../shared/native-lifecycle.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer, request } from 'node:http';
 import { once } from 'node:events';
@@ -100,6 +101,7 @@ describe('native controller diagnostic privacy boundary', () => {
     'native_recovery_session_id_mismatch',
     'native_recovery_session_cwd_invalid',
     'native_execution_question_spec_invalid',
+    'native_execution_question_spec_unsafe',
     'native_recovery_adapter_failed',
     'native_recovery_cancelled',
     'native_recovery_time_failed',
@@ -677,4 +679,43 @@ describe('supervisor decision diagnostics preserve protected behavior', () => {
       failureCode: 'native_execution_initialization_unverified',
     });
   });
+});
+
+it('persists bounded presentation reason/hash/counts without raw fields or getters', () => {
+  const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+  const getter = vi.fn(() => {
+    throw Error('private getter');
+  });
+  try {
+    recordNativeBoundary({ projectId: 'fixture' }, 'questionPresentation', 123, {
+      reason: 'invalid_schema',
+      sha256: 'a'.repeat(64),
+      suppliedQuestions: 6,
+      suppliedOptions: 12,
+      prompt: CANARY,
+      options: [CANARY],
+      raw: CANARY,
+    });
+    const event = JSON.parse(info.mock.calls[0][0]);
+    expect(event).toMatchObject({
+      reason: 'invalid_schema',
+      sha256: 'a'.repeat(64),
+      suppliedQuestions: 6,
+      suppliedOptions: 12,
+    });
+    expect(JSON.stringify(event)).not.toContain(CANARY);
+    const hostile = Object.defineProperties(
+      {},
+      { reason: { get: getter }, sha256: { get: getter }, bytes: { get: getter } },
+    );
+    expect(() => recordNativeBoundary({}, 'questionPresentation', 123, hostile)).not.toThrow();
+    expect(getter).not.toHaveBeenCalled();
+    expect(JSON.parse(info.mock.calls[1][0])).toEqual({
+      type: 'native.lifecycle',
+      boundary: 'questionPresentation',
+      at: 123,
+    });
+  } finally {
+    info.mockRestore();
+  }
 });

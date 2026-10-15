@@ -47,7 +47,8 @@ export const NATIVE_RUNTIME_FAILURE_CODES = Object.freeze([
   'native_execution_preparation_invalid',
   'native_execution_private_state_tracked',
   'native_execution_publication_unconfirmed',
-  'native_execution_question_spec_invalid',
+  'native_execution_question_spec_invalid', // Retained failures remain readable.
+  'native_execution_question_spec_unsafe',
   'native_execution_scope_mismatch',
   'native_execution_start_failed',
   'native_execution_submodules_unavailable',

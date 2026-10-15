@@ -1318,10 +1318,10 @@ human boundaries. It does not match English mode-question prose or submit
 synthetic protected answers.
 
 `native-pending-input.js` and its frontend mirror support bounded version 2
-forms, including written-only questions. Version 2 additionally checks that
-every prompt was rendered, not just option labels, with the bounded single-choice
-heading exception documented in the October 15 post-merge incident below. The existing canonical
-answer and interaction digest contract is unchanged. All fields are required;
+forms, including written-only questions. The stabilization pass below supersedes
+the earlier prose-duplication check: explicit bounded form data is the display
+source, not corroboration for assistant prose. Legacy v1/v2 interaction hashes
+remain byte-compatible; degraded presentation uses the new v3 envelope. All fields are required;
 the frontend validates the complete answer's byte budget before sending.
 `QuestionEditor` uses one native form, waits for Yjs synchronization and
 guards duplicate submit events. Existing revision-specific collaboration,
@@ -1787,12 +1787,12 @@ extractor was added.
 
 A concrete transport regression was reproduced: a valid v2 single-choice spec
 under the response's exact **Plan** heading is discarded solely because its
-prompt is not duplicated verbatim in the prose. The adapter now accepts that
+prompt is not duplicated verbatim in the prose. Commit `5584adc` accepted that
 single non-gate headed choice when all explicit option labels are present, and
 the existing form displays its full prompt/options. Grouped/free-text prompts
 and stage gates retain their complete-prompt checks. Missing specs retain
 legacy compatibility; malformed, oversized, unsafe, null or unmatched supplied
-specs now fail as `native_execution_question_spec_invalid` instead of silently
+specs were made fatal as `native_execution_question_spec_invalid` instead of silently
 admitting a textbox. No incomplete turn is published to authority. All form
 fields also pass the existing known-credential byte boundary before either
 public upload, including credentials split across adjacent fields. This covers
@@ -1800,7 +1800,8 @@ prompts and descriptions that the form renders without duplicating in prose.
 
 The original sidecar was not retained in permitted evidence, so its exact
 rejection reason remains unknown. Tests establish the supported headed-form
-correction and make future malformed-form failures explicit; they do not
+correction and encoded fatal malformed-form behavior as success. That policy was
+a regression, superseded by the stabilization pass below; those tests did not
 retroactively reconstruct that missing file or rewrite admitted history.
 
 ### Regression evidence and recovery
@@ -1933,6 +1934,282 @@ qualification: any new cwd/ID/form failure now records a distinct safe code in
 runtime lifecycle, durable state and UI. A further private retained-state read
 would require separate, narrowly reviewed authorization; it is not needed to
 apply or test the independently reproduced fixes.
+
+## Native stabilization and form regression — 2026-10-15
+
+This section supersedes the fatal optional-form policy in `5584adc`. Passing
+helper tests was not a sufficient serial acceptance criterion. The baseline
+below is **offline qualification**, not a claim that deployed native execution
+or real-model adherence to the workflow is stable.
+
+### Current incident: verified boundary and limits
+
+Only intent `d26495a3-a178-4881-9707-c739074ce6cf` in space
+`22371643-2db5-42a4-a571-e47fc35745f5` was read. All AWS operations used
+`solution-read`, `AWS_REGION=us-east-1`, `AWS_DEFAULT_REGION=us-east-1`, and
+`AWS_PAGER=""`. STS verified account `746558295630`, assumed role
+`ReadOnly/jwthewes-Isengard`. A sandbox Keychain failure was resolved with the
+same profile outside the sandbox; no fallback profile was used.
+
+Consistent DynamoDB pagination completed the entire target partition (one
+page, 53 records). The table is `collaborative-ai-dlc-native-runs-dev`; the key
+is `NATIVE#25ce2b2c9013f1309f37d955c858e39de8e7e30442d9d49ab3efd9b037a83cc7`.
+The execution is `FAILED`, revision **682**, turn **2**, writer **1**, epoch **1**.
+The separate output cursor is **35**; neither an output cursor nor activity text
+is completion/stop authority.
+
+| UTC                       | Evidence                                                                                                                                      |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 11:03:00.573              | `EVENT#0000000000000001`: start accepted.                                                                                                     |
+| 11:07:15.124–11:08:27.174 | First CLI invocation: 72.050 s; initial installation took 194.885 s.                                                                          |
+| 11:08:27.313–11:08:34.331 | Files/interaction/capture/upload: 7.018 s; capture 1.835 s, checkpoint upload 4.485 s.                                                        |
+| 11:08:42.644              | `EVENT#0000000000000382`: publication 1 admitted; awaiting member reply.                                                                      |
+| 11:15:10.799              | `EVENT#0000000000000396`: reply accepted.                                                                                                     |
+| 11:15:15.265              | `EVENT#0000000000000399` and delivered-answer record: delivery confirmed (4.466 s after acceptance).                                          |
+| 11:15:15.397–11:20:02.828 | Second CLI invocation: 287.431 s. Preparation 51 ms; repeated installation 0 ms.                                                              |
+| 11:20:02.996              | Runtime `executionFailed`, code `native_execution_question_spec_invalid`, **168 ms after CLI completion**, before publication/capture starts. |
+| 11:20:05.389              | `EVENT#0000000000000676`: failure admitted; exact runtime-session stop confirmed.                                                             |
+
+Attempt `4cffb294-9d6e-4db1-998e-f50f57047195`, binding
+`3236b54c-2b26-4c18-98e0-9d9e914c6b8d`, runtime session
+`3d3c7c23-18dc-4dfe-9a92-275769216c86`, Claude session
+`b7b999de-bbbb-4f4c-93bb-3feacf0a89e0`. The reply request is
+`740e87db-ab25-41cd-84ba-7bf1d1caf15b`, command
+`bde4ddbe-a6de-4090-a2ec-297d6519b39a`.
+
+The exact runtime log group is
+`/aws/bedrock-agentcore/runtimes/native_ce28e08af4dd9d687076bae71f9dc649-ugpRd12P22-exec_62f37b9adcf55da8c0b502ccce730f87`, stream
+`2026/10/15/[runtime-logs]d062a3c5-5529-4fc8-9e28-8668549cafe7`.
+Bounded 11:02–11:22 UTC reads returned 29 lifecycle records in two pages and no
+`native.flight.previous` records. Execution-worker group
+`/aws/lambda/collaborative-ai-dlc-native-runs-dev-execution` recorded dispatch
+in streams `2026/10/15/[$LATEST]2c8731cb1b934455b54f9b575796c437` (first) and
+`2026/10/15/[$LATEST]bc1b4a9bc1964bacb0a9d4fa70130849` (reply). Matching
+API/authority/provisioner queries yielded no additional incident records;
+request IDs were not recorded in the selected lifecycle events.
+
+Publication 1 remains independently retained (`PUBLICATION#0000000000000001`):
+17 files, publication `f30b2b1d5cc7cc6b9e8f0f8c121aefaabb01e2c035a8537ac7ee4ae153e247db`,
+interaction `f81cf4870f719c0d3350a6a70a4c41a98bb4469ae6238486032170b576899293`,
+checkpoint `78357b3b1208bfacf4fff29a3e9d8f476663cff18e74161ad75c497a1f5c8318`.
+`ANSWER#<interaction-id>#delivered` is durable. No second publication or
+checkpoint was admitted. The publication receipt says `STOPPED` (workflow
+wait format not established), while controller admission was `AWAITING_USER`;
+these are distinct contracts. There is no eligible recovery episode. **Do not
+restore checkpoint 1 or replay the delivered answer as a safe retry.**
+
+Live runtime version **2**, model `global.anthropic.claude-sonnet-5-5`, Claude
+**2.1.296**, image
+`sha256:19ab158cd91479ea30ff420f25e27cc1b030864e184349dc61d87b2decf22a07`
+(ARM64, built 09:56:29.773 UTC). AI-DLC **2.11.0**, source commit
+`6a378b53c0a4fe0641ed7d8de8dfff94264d5b6a`, package
+`sha256:9fdb284f4601d3c8c2d828abda2b9b98f3ecaca149870da3a11dbc2ee24805b1`.
+The execution repository commit `d99d2511c43f07ff2451e7e13f5a8f45b16dfce2`
+is the checked-out project source, not the platform build.
+
+`GetAgentRuntime` confirmed the exact pinned image/version. The local copy of
+that immutable image has byte-identical `executor.js`, `session-recovery-files.js`
+and `native-pending-input.js` to `5584adc`. Live Lambda code SHA-256 values also
+match retained local deployment archives: API `7bwBj+AlrTdC/r/O/g1S8PH4QFUpTxTXkNETqwzX8I4=`,
+authority `fOPm6G1LqzmvlJphVDvsyT63WzKw+vnbiQNRgiGA0iw=`, execution
+`iBGODMxgHIOSU6lfOANaK/RE+dYHliG2we6bVz/STmQ=`. No deployment mismatch was
+observed at these boundaries; authenticated browser/frontend bytes were not
+independently inspected.
+
+**Verified cause class:** native optional-form handling terminated an otherwise
+completed CLI turn before publication. The old code collapses filesystem-safety/read/JSON/schema,
+gate classification and prose-matching errors to the same code. This establishes
+the failure boundary, not whether that historical rejection was benign. The exact
+rejected sidecar/branch remains unknown. Automatic approval review rejected a
+selected-question S3 operation because it parsed the private interaction body
+before projection; it was not retried or bypassed. No conversation, private CLI
+checkpoint or EFS body was fetched. This limitation does not block correcting
+the demonstrated fatal-display contract. It would require separately approved,
+server-side minimal projection to learn more from retained private content;
+there is no claim that the deleted second-turn sidecar still exists.
+
+### Serial contract and finite defect classes
+
+| Boundary / owner                                                 | Source of truth and supported variants                                                                                          | Failure behavior / acceptance evidence                                                                                                                                                                                                         |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Admission: execution configuration, image policy, package loader | Immutable model/harness/image/package/source pins; four advertised harness guards; retained images remain pinned.               | Reject changed identity/pins or revoked image; configuration/image-policy/legacy suites.                                                                                                                                                       |
+| Installed CLI/workflow: executor, turn-output, command-runner    | Verified package; owned serial invocation/session; every parent query must finish, process/descendants must stop.               | Output/session/credential failures stay fatal. Same-session Claude notification query loops are accepted only through explicit new `system/init`, bounded to 32 queries and existing byte/message limits. No native retry/model call is added. |
+| Question transport: native-pending-input, reserved spec reader   | Optional bounded display JSON; v1/v2 explicit forms and v3 typed AI-DLC intake ask. No options inferred from prose.             | Missing/invalid/oversized display data becomes explicit degraded presentation, not fatal execution loss. Unsafe files/links/known credentials still fail closed.                                                                               |
+| Member answer: execution API/store, frontend reply owner         | Exact interaction/content digest, actor membership/session, immutable request identity and complete selection.                  | One accepted reply; frozen lost-ack retry; no replay after delivery; no display metadata can approve or advance the engine.                                                                                                                    |
+| Continuation: supervisor/executor                                | Same session and immutable accepted text, fenced writer/turn identities.                                                        | Status reconciliation and supported recovery preserve dispatch uncertainty; do not manufacture a new session/answer.                                                                                                                           |
+| Files → interaction → private checkpoint: execution ports        | Verified versioned bytes, exact hashes/session/layout; four concurrent checkpoint workers.                                      | Failure leaves previous admitted work visible; partial public uploads are not completion. v3 degraded condition is hashed into interaction content.                                                                                            |
+| Atomic waiting admission: execution lifecycle/store              | Public/interaction/checkpoint receipts verified before atomic publication record.                                               | Lost admission acknowledgement reconciles committed state; no second CLI continuation; stale writer cannot commit.                                                                                                                             |
+| UI/history/reconnect/stop/recovery                               | Admitted revision and independent lifecycle/output cursors; explicit stop evidence and server-issued eligible recovery episode. | Render exact choices, preserve recorded answers and degraded notice, never infer stop/completion from activity; unsupported recovery stays unavailable.                                                                                        |
+
+Closed defects in this pass:
+
+1. **Fatal optional display validation:** malformed JSON/schema/size or absent
+   data now admits the valid completed turn only after the usual publication,
+   checkpoint and authority checks. Its v3 interaction carries a closed
+   `presentation: {status:"degraded", reason}`; the UI/history explicitly explain
+   the missing form and offer the existing protected reply path. No automatic
+   repair turn or silent valid-approval fallback is introduced.
+2. **Prose duplication as a false authority check:** explicit bounded labels,
+   prompts, headings and descriptions render directly. Normalization and exact
+   selection validation remain. A held workflow marker classifies only the
+   known gate shape as approval; a summary or fork's differently labelled form
+   remains an ordinary choice and does not acquire approval semantics.
+3. **Reformatting typed intake choices and reconstructing commands:** the same
+   reserved transport now accepts `{version:3, ask:<engine JSON>}` for
+   `compose-offer`/`scope-confirm`, using `scope_commands`/`choices` and the
+   engine's question. There is no production universal scope list. Commands
+   remain private data, never browser labels or native shell execution; the
+   harness is instructed to preserve the emitted `--request` command after a
+   real member choice. Unknown ask routes/types degrade explicitly.
+4. **Discarded diagnostic distinctions:** the existing lifecycle/owner status
+   now records only closed reason categories, bounded byte/structural counts
+   and SHA-256. The immutable interaction preserves the degraded condition
+   after owner cleanup. Invalid raw specs are never uploaded; known credentials
+   are checked even in malformed/ignored fields, across adjacent strings, and
+   across assistant-text/form fields before publication. Malformed non-string
+   headers/descriptions are not coerced into apparently valid display text.
+5. **One CLI result incorrectly equated with process completion:** the actual
+   installed Claude test with an `Agent` tool produced a task notification,
+   successful result, another same-session `system/init`, and another parent
+   result. The old parser rejected this as `native_execution_output_terminal`.
+   The bounded query-loop reader retains both completed responses and requires
+   the last declared query to finish. Changed sessions, duplicate undeclared
+   results, failed/incomplete/deferred queries remain rejected. This is a newly
+   reproduced local defect, not an asserted historical cause for `d26495a3`.
+6. **Fragmented acceptance:** `npm run test:native-qualification` now joins the
+   existing production-composed journey, UI/history, compatibility, recovery,
+   architecture and wiring suites. The native CI workflow runs this secretless
+   tier. An explicit installed tier uses the same network-disabled Claude
+   smoke, extended with the genuine attested workflow and subagent behavior.
+
+The earlier cwd/session identity correction, `.meta.json` inventory, exact
+restoration, credential exclusions and four-worker upload behavior remain.
+The unresolved same-UID protected-completion policy is unchanged:
+`not_verified` is still not proof of workflow completion.
+
+### Repeatable qualification and boundaries
+
+Use supported Node 24. The installed tier requires the public AI-DLC 2.11.0
+release directory containing `aidlc-linux-arm64`, `aidlc-runtime-2.11.0.tar.gz`,
+`version.json`, `checksums.txt`, `aidlc-release.intoto.jsonl`, plus public
+`trusted-root.jsonl` from `gh attestation trusted-root`. The script checks the
+four asset hashes against this exact incident pin; the genuine installer
+verifies the attestation. A fixture-only `gh` wrapper supplies the public roots
+via `--custom-trusted-root`; it does not bypass signature/ref/issuer checks.
+No host credentials are passed into the container. Release assets and trust
+roots must be prepared outside the network-disabled qualification container.
+
+```bash
+export PATH=/Users/jwthewes/.nvm/versions/node/v24.21.0/bin:$PATH
+npm run test:native-qualification
+npm run test:native-qualification --   --image 746558295630.dkr.ecr.us-east-1.amazonaws.com/collaborative-ai-dlc-agentcore-dev@sha256:19ab158cd91479ea30ff420f25e27cc1b030864e184349dc61d87b2decf22a07   --assets /tmp/native-qualification-aidlc-2.11.0
+```
+
+The image supplies installed Claude; the checkout supplies the candidate native
+adapter. This does **not** claim a new image was built/deployed. Omitting the
+installed flags prints `NOT RUN`. CI uses deterministic scripted harness output
+and real composed native owners; it does not download an image or require
+secrets/models. Actual installed qualification currently covers Claude only.
+Codex/Kiro/OpenCode retain their existing advertised capability guards and
+scripted parser/session/interaction tests; they are **not** newly qualified as
+installed runtimes by this pass.
+
+Acceptance scenarios are finite: typed scope options/one protected answer;
+mixed grouped form/complete submission; separate summary and approval; three
+same-session CLI turns/cwd/subagent metadata/exact restore; reload/history/lost
+ack and independent cursors; malformed/absent/oversized/unmatched display;
+unsafe path/credentials/session negatives; partial upload/atomic admission
+acknowledgement loss/cancellation and honest retained-checkpoint recovery.
+The first turn's genuine pinned engine ask had **12 options**. Installed
+checkpoint inventories had **341 / 343 / 343 files**, with exact restore before
+turn 3 and **zero external provider calls**. The local provider is inert loopback
+SSE. It exercises real CLI/tool/filesystem behavior; it is not evidence that a
+real model emits every workflow form correctly. The installed tier exercises
+the actual intake engine and normal hooks; summary/approval progression uses
+scripted workflow evidence in the separate production-composed journey, not a
+claimed end-to-end real-model methodology run.
+
+A prior-turn file is removed before each invocation. The native host cannot
+prove a model-written same-turn form is semantically current merely because
+its JSON is valid; the transport instructs replacement/removal on step change,
+and only explicit engine/state/member authority can advance work. No prose
+matching heuristic is reintroduced to pretend to solve this semantic limit.
+Human approval policy remains owned by the pinned workflow, not this renderer.
+
+Earlier red
+acceptance: **2 failures** for malformed/prose-mismatch journeys (`FAILED`
+instead of `AWAITING_USER`), plus **2 failures / 2 passes** for the observed
+multi-query parser sequence. The old installed parser also failed the real
+network-disabled subagent sequence; the corrected installed run passed all
+three captures and exact restore. Initial expanded qualification failed four
+obsolete prompt-string assertions; after updating them to the emitted-command
+contract it passed **850 backend / 286 UI** checks, **6 architecture regression**
+checks and **22 wiring** checks. Those counts describe coverage, not readiness.
+
+The final repeatable command (including `--image` and `--assets`) passed
+**855 backend tests / 286 rendered UI/service tests / 1 real native WebSocket
+scenario (32 intentionally filtered service tests) / 6 architecture tests /
+22 wiring tests**, plus the actual installed three-turn/capture/restore tier.
+A further cross-message/form credential regression failed before the combined
+byte guard, then correctly stopped before public upload after the guard.
+The diagnostic suite verifies both failure-code mapper/sink layers and proves
+that presentation telemetry does not evaluate getters or emit raw fields.
+The 32-query resource guard has its own negative regression. Automatic review
+rejected removing that newly introduced guard; it was retained and tested.
+
+| Additional check                                                    | Actual result                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Full backend, Node 24, `npm test -- --maxWorkers=2`                 | Initial broad run: 10,343 passed, 3 skipped. Final run: 10,347 passed, 1 failed, 3 skipped. The unchanged Yjs 1→2→4→2 worker-scaling test returned WebSocket upgrade 404; its isolated service-suite rerun passed all 33 tests. This intermittent failure remains unexplained and is not reported as an all-green full suite. |
+| Full frontend, `VITEST_MAX_WORKERS=2 npm --prefix frontend test`    | 1,923 passed, 141 files.                                                                                                                                                                                                                                                                                                      |
+| Frontend build/typecheck; `npm run build -w native-runtime-control` | Passed; existing large bundle/chunk warnings.                                                                                                                                                                                                                                                                                 |
+| `npm run test:release`                                              | 248 passed, 0 failed/skipped.                                                                                                                                                                                                                                                                                                 |
+| Lint, formatting, secretlint, dependency check, SDK check           | Passed. Formatting initially found one file, corrected before final verification. Dependency check retains 14 high-fan-in warnings; SDK check retains the existing Smithy 4-versus-3 warning; no dependency versions changed.                                                                                                 |
+| Architecture and native wiring                                      | 391 production modules, 0 violations; 22 wiring checks passed.                                                                                                                                                                                                                                                                |
+
+The targeted WebSocket acceptance scenario exercises real signed revision scopes, two-member
+editing, denied cross-identity/revision access, token expiry and reconnect. The
+full isolated Yjs rerun covers the scaling scenario separately; native changes
+do not alter Yjs ownership/routing code.
+
+The three backend skips are the existing Bun-dependent script-sensor integration
+cases on the host. The installed workflow tier runs Bun-backed release code in
+the image. No failing check was renamed as a pass; obsolete prompt assertions,
+the optional-display regressions, the real CLI loop and the cross-field byte
+guard were corrected and rerun. No deployment, push, remote execution or model
+call was performed. The same-UID completion question and installed qualification
+for other harnesses remain outside this pass's proven baseline.
+
+### Finite remaining live qualification (after parent review)
+
+No deployment recommendation is made before review of this whole pass. A
+future authorized deployment must ship the new controller reader and frontend
+v3 decoder with/before the new runtime image. The ordinary deployment path is
+`scripts/deploy-terraform.sh`; no CLI/dependency pins are changed here. Retained
+v1/v2 interactions and runtimes remain readable; this does not rewrite their
+initial instructions or any accepted answers. `d26495a3` remains failed evidence.
+
+After parent review and separate deployment/model authorization, qualify **one
+fresh intent** in the existing selected space, using the normal workflow-import
+UI and a bounded disposable request. Collect immutable image/package/harness/
+model pins first. The member must select an actual typed plan option, answer a
+mixed current-step form together, and then respond to its separate summary
+confirmation when the pinned workflow requires one. Inspect at least three
+admitted turns/checkpoints, refresh/reconnect before and after one answer, and
+verify immutable recorded answers plus independent output/lifecycle cursors.
+A required approval must remain visibly waiting until a member explicitly
+submits it. Capture acceptance/dispatch/CLI/capture/upload/admission timings
+and the bounded `questionPresentation` events for each turn; do not substitute
+activity text for admission. If the form degrades, work must remain saved and
+waiting with an explicit notice, not `FAILED`.
+
+Cancellation may be exercised on this fresh fixture only after its question and
+checkpoint are admitted; require exact session stop evidence. Recovery is tested
+only if the API returns an eligible episode; never manufacture runtime loss,
+force a stale checkpoint, or replay delivered answers. If the live model does
+not export complete current-step display definitions, retain that evidence as a
+specific transport-compliance gap rather than changing human policy or claiming
+that passing offline tests proves live reliability. This is the single remaining
+real-model/deployed qualification boundary, not authorization to execute it here.
 
 ## Open work
 

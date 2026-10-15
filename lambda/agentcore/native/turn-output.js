@@ -252,6 +252,8 @@ export const createNativeTurnOutput = ({
   let bytes = 0;
   let ended = false;
   let claudeFinalText = null;
+  let claudeQueryStart = 0;
+  let claudeQueries = 1;
   const messages = [];
   const ids = new Set();
   const secrets = forbiddenBytes
@@ -275,6 +277,34 @@ export const createNativeTurnOutput = ({
       invalid('session');
     session = value;
   };
+  const afterCompleted = (event) => {
+    // Claude 2.1.296 may consume a completed background-agent notification
+    // in another parent query before this same CLI process exits. A new
+    // same-session init explicitly starts that query; every query must still
+    // end successfully. Never treat an earlier result as the final stop.
+    if (
+      harness === 'claude' &&
+      event.type === 'system' &&
+      event.subtype === 'init' &&
+      event.session_id === session &&
+      [undefined, null].includes(event.parent_tool_use_id) &&
+      [undefined, false].includes(event.prevent_continuation)
+    ) {
+      if (++claudeQueries > 32) invalid('limit');
+      completed = false;
+      claudeFinalText = null;
+      claudeQueryStart = messages.length;
+      return;
+    }
+    const informational =
+      harness === 'claude' &&
+      typeof event.session_id === 'string' &&
+      (event.type === 'prompt_suggestion' ||
+        (event.type === 'system' && CLAUDE_POST_RESULT_SYSTEM.has(event.subtype))) &&
+      (event.prevent_continuation === undefined || event.prevent_continuation === false);
+    if (informational) return;
+    invalid('terminal');
+  };
   const parser = createProjectionParser((event) => {
     if (!event || typeof event !== 'object' || Array.isArray(event)) invalid();
     // Incremental ACP presentation is independent of the final interaction record.
@@ -290,14 +320,8 @@ export const createNativeTurnOutput = ({
     ])
       observeSession(value);
     if (completed) {
-      const informational =
-        harness === 'claude' &&
-        typeof event.session_id === 'string' &&
-        (event.type === 'prompt_suggestion' ||
-          (event.type === 'system' && CLAUDE_POST_RESULT_SYSTEM.has(event.subtype))) &&
-        (event.prevent_continuation === undefined || event.prevent_continuation === false);
-      if (informational) return;
-      invalid('terminal');
+      afterCompleted(event);
+      return;
     }
     if (harness === 'codex') {
       // Codex 0.145 emits `error` for every server error notification,
@@ -352,7 +376,7 @@ export const createNativeTurnOutput = ({
           Buffer.byteLength(event.result) > LIMIT
         )
           invalid();
-        if (!messages.length) add(event.result);
+        if (messages.length === claudeQueryStart) add(event.result);
         else if (claudeFinalText !== event.result) invalid();
         completed = true;
       }

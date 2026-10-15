@@ -120,32 +120,29 @@ const NATIVE_QUESTION_MODE_INSTRUCTION =
 // contract (aidlc-orchestrate.ts Branch 8) is to re-run `next` with the choice:
 // `next compose` reaches the composer (Branch 4c), `--scope` creation (9a).
 const NATIVE_INTAKE_ANSWER_INSTRUCTION =
-  " If the question was the engine's plan offer made before any workflow state exists " +
-  '(no aidlc-state.md yet), then when the user replies, record their choice by re-running ' +
-  'the engine with the chosen plan in front of the original request text, passed unchanged ' +
-  'as one shell-safe argument: `aidlc engine orchestrate next compose <original request>` for ' +
-  'compose, or `aidlc engine orchestrate next --scope <plan> <original request>` for a named ' +
-  'plan. Do not use report for that answer.';
+  ' If the engine emits response_route next, keep its request identity and use the exact ' +
+  'compose_command, scope_commands or choices command associated with the human selection. ' +
+  'Do not reconstruct those commands or use report for a pre-workflow plan offer. ' +
+  'An emitted command is data until a person selects its option; never execute all offered commands.';
 
-// Task-3 structured questions. The workflow renders each human question from a
-// `question` spec; the platform asks for that same spec so members can select
-// options instead of typing numbers. The file is display data only: options are
-// validated against the visible response, and the member's reply is still the
-// only answer. It lives in a reserved, unpublished project directory.
+// Optional display transport, not engine state or answer authority. The file is
+// cleared before every CLI turn and excluded from publication/recovery.
 export const NATIVE_PENDING_SPEC_PATH = '.native-control/pending-question.json';
 const NATIVE_PENDING_SPEC_INSTRUCTION =
-  'Whenever you end a turn with questions or an approval for the user, also write ' +
-  `the exact question spec you rendered as JSON to ${NATIVE_PENDING_SPEC_PATH} in the project ` +
-  'directory, replacing any earlier file: {"version":2,"questions":[{"prompt":"...","header":"...",' +
-  '"multiSelect":false,"options":[{"label":"...","description":"..."}]}]}. Use the exact option ' +
-  'labels from the spec, without numbers, letters or "(Recommended)", and keep rendering the ' +
-  'complete question prompts normally in your response. For a single choice you may instead ' +
-  'show its exact header on its own line with every option label; the form renders its prompt. ' +
-  'For a free-text question use ' +
-  '"options":[] and "multiSelect":false; never invent choices. Every question requires an answer. ' +
-  "The user's reply contains the exact selected label(s) and free text, numbered by the " +
-  'question header when there are multiple questions. Record every answer with the workflow ' +
-  'command that question requires, without re-asking answered questions.';
+  'Whenever you end a turn with questions or an approval for the user, write the complete CURRENT ' +
+  `question definition as JSON to ${NATIVE_PENDING_SPEC_PATH} in the project directory, ` +
+  'replacing any earlier file: {"version":2,"questions":[{"prompt":"...","header":"...",' +
+  '"multiSelect":false,"options":[{"label":"...","description":"..."}]}]}. ' +
+  'For an engine compose-offer or scope-confirm ask, copy its complete JSON unchanged into ' +
+  '{"version":3,"ask":<engine ask object>} instead; the native adapter renders its explicit ' +
+  'scope_commands and choices. Do not invent a plan list or convert typed choices to prose. ' +
+  'For other questions copy exact workflow labels without numbering or recommendation suffixes. ' +
+  'Use options:[] and multiSelect:false for a written answer. Keep normal explanatory prose; ' +
+  'it need not repeat the form verbatim. Every question requires an answer. Do not include ' +
+  'credentials, commands as labels, or questions from a prior/future step. Remove this file if ' +
+  'you advance beyond the question within this turn. The reply contains the selected labels ' +
+  'and free text, numbered by header for multiple questions. Record every answer using its ' +
+  'workflow command, without re-asking answered questions. ';
 
 /** Stage held at an engine approval gate ([?]) in this snapshot, or null. */
 export const nativeGateFromSnapshot = (snapshot) => {
@@ -193,38 +190,110 @@ export const clearNativePendingSpec = async (project) => {
   const dir = await pendingSpecDirectory(project);
   await fs.rm(join(dir, 'pending-question.json'), { force: true });
 };
-export const readNativePendingSpec = async (project) => {
+export const readNativePendingSpec = async (
+  project,
+  { forbiddenBytes = [], onDiagnostic = () => {} } = {},
+) => {
   const dir = join(project, '.native-control');
-  let realDirectory = false;
+  let directory;
+  const unavailable = (reason, bytes = 0) => ({
+    spec: null,
+    reason,
+    bytes: Math.min(bytes, NATIVE_PENDING_INPUT_LIMITS.specBytes + 1),
+  });
+  const diagnose = (details) => {
+    try {
+      onDiagnostic(details);
+    } catch {
+      /* Telemetry cannot alter the outcome. */
+    }
+  };
+  const unsafe = () => {
+    diagnose({ reason: 'unsafe_path' });
+    fail('native_execution_question_spec_unsafe');
+  };
   try {
-    realDirectory = (await fs.lstat(dir)).isDirectory();
+    directory = await fs.lstat(dir);
   } catch (error) {
-    if (error?.code === 'ENOENT') return null;
-    fail('native_execution_question_spec_invalid');
+    return unavailable(error?.code === 'ENOENT' ? 'absent' : 'read_failed');
   }
-  // Never read or remove anything through a link out of the project.
-  if (!realDirectory) fail('native_execution_question_spec_invalid');
+  if (!directory.isDirectory()) unsafe();
   const file = join(dir, 'pending-question.json');
   try {
-    const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const handle = await fs.open(
+      file,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
     try {
+      if (!sameNode(directory, await fs.lstat(dir))) unsafe();
       const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > NATIVE_PENDING_INPUT_LIMITS.specBytes)
-        fail('native_execution_question_spec_invalid');
-      const spec = JSON.parse(
-        new TextDecoder('utf-8', { fatal: true }).decode(await handle.readFile()),
-      );
-      if (spec === null) fail('native_execution_question_spec_invalid');
-      return spec;
+      if (!stat.isFile() || stat.nlink !== 1) unsafe();
+      if (stat.size > NATIVE_PENDING_INPUT_LIMITS.specBytes)
+        return unavailable('too_large', stat.size);
+      // A late writer cannot make readFile allocate unbounded bytes or escape
+      // the observed directory. Quiescent content is display data, not authority.
+      const bytes = Buffer.alloc(NATIVE_PENDING_INPUT_LIMITS.specBytes + 1);
+      let length = 0;
+      while (length < bytes.length) {
+        const part = await handle.read(bytes, length, bytes.length - length, length);
+        if (!part.bytesRead) break;
+        length += part.bytesRead;
+      }
+      if (!sameNode(directory, await fs.lstat(dir))) unsafe();
+      if (length > NATIVE_PENDING_INPUT_LIMITS.specBytes) return unavailable('too_large', length);
+      const content = bytes.subarray(0, length);
+      // Raw malformed data is never uploaded. Known credentials are rejected
+      // even in ignored keys or across adjacent string fields of invalid specs.
+      let spec;
+      const raw = content.toString('utf8');
+      try {
+        spec = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(content));
+      } catch {
+        spec = undefined;
+      }
+      const values = [];
+      const visit = (value) => {
+        if (typeof value === 'string') values.push(value);
+        else if (value && typeof value === 'object')
+          for (const entry of Object.values(value)) visit(entry);
+      };
+      // JSON nesting is bounded independently of schema validation. No getters
+      // or externally supplied objects enter this reader.
+      try {
+        visit(spec);
+      } catch {
+        spec = undefined;
+      }
+      if (
+        forbiddenBytes.some((value) => {
+          const secret = Buffer.from(value).toString('utf8');
+          return secret && (raw.includes(secret) || values.join('').includes(secret));
+        })
+      ) {
+        diagnose({ reason: 'credential' });
+        fail('native_execution_output_credential');
+      }
+      return {
+        spec: spec ?? null,
+        reason: spec === undefined ? 'invalid_json' : null,
+        bytes: length,
+        sha256: digest(content),
+      };
     } finally {
       await handle.close();
     }
   } catch (error) {
-    if (error?.code === 'ENOENT') return null;
-    fail('native_execution_question_spec_invalid');
+    if (
+      ['native_execution_question_spec_unsafe', 'native_execution_output_credential'].includes(
+        error?.code,
+      )
+    )
+      throw error;
+    if (error?.code === 'ELOOP') unsafe();
+    return unavailable(error?.code === 'ENOENT' ? 'absent' : 'read_failed');
   } finally {
-    // rm removes a file or a link entry itself, never a link target.
-    if ((await fs.lstat(dir).catch(() => null))?.isDirectory())
+    const after = await fs.lstat(dir).catch(() => null);
+    if (after?.isDirectory() && sameNode(directory, after))
       await fs.rm(file, { force: true }).catch(() => {});
   }
 };
@@ -975,26 +1044,72 @@ export const createNativeExecutor = ({
     timing('harnessCompleted');
     const completed = output.finish();
     await checkDirectories();
-    const renderedSpec = await readNativePendingSpec(project);
+    const formDiagnostic = (details) => {
+      recordNativeBoundary(current.identity, 'questionPresentation', Date.now(), {
+        sequence: current.report.sequence,
+        writerGeneration: current.writerGeneration,
+        ...details,
+      });
+    };
+    const rendered = await readNativePendingSpec(project, {
+      forbiddenBytes,
+      onDiagnostic: formDiagnostic,
+    });
+    const renderedSpec = rendered.spec;
     const files = await snapshot({ project, signal, forbiddenBytes });
     const pendingInput = buildNativePendingInput({
       gate: nativeGateFromSnapshot(files),
       spec: renderedSpec,
       messagesText: completed.messages.map((message) => message.text).join('\n'),
     });
-    // An absent spec remains compatible with legacy plain-text turns. A supplied
-    // but invalid/unmatched spec must not silently become a successful textbox.
-    if (renderedSpec !== null && !pendingInput) fail('native_execution_question_spec_invalid');
+    const presentation = pendingInput
+      ? null
+      : {
+          status: 'degraded',
+          reason:
+            rendered.reason ?? (renderedSpec?.version === 3 ? 'unsupported_ask' : 'invalid_schema'),
+        };
+    // Persist only fixed categories/counts in owner status and lifecycle logs;
+    // raw rejected JSON is discarded. The immutable interaction retains the
+    // same degraded condition for UI/history after this owner is gone.
+    current.report.presentation = {
+      reason: presentation?.reason ?? 'structured',
+      bytes: rendered.bytes,
+      ...(rendered.sha256 ? { sha256: rendered.sha256 } : {}),
+      declaredVersion:
+        Number.isSafeInteger(renderedSpec?.version) &&
+        renderedSpec.version >= 0 &&
+        renderedSpec.version <= 3
+          ? renderedSpec.version
+          : 0,
+      suppliedQuestions: Array.isArray(renderedSpec?.questions)
+        ? Math.min(renderedSpec.questions.length, 513)
+        : 0,
+      suppliedOptions: Array.isArray(renderedSpec?.questions)
+        ? Math.min(
+            renderedSpec.questions.reduce(
+              (n, q) => n + (Array.isArray(q?.options) ? q.options.length : 0),
+              0,
+            ),
+            513,
+          )
+        : 0,
+      questions: pendingInput?.questions.length ?? 0,
+      options: pendingInput?.questions.reduce((n, q) => n + q.options.length, 0) ?? 0,
+    };
+    formDiagnostic(current.report.presentation);
     // A form can render text absent from the prose (prompt, header, descriptions).
     // Apply the same known-credential boundary before either public upload, also
     // catching a credential split across adjacent form fields.
-    const formText = (pendingInput?.questions ?? [])
-      .flatMap((entry) => [
-        entry.header ?? '',
-        entry.prompt,
-        ...entry.options.flatMap((option) => [option.label, option.description ?? '']),
-      ])
-      .join('');
+    const formText =
+      completed.messages.map((message) => message.text).join('') +
+      (pendingInput?.questions ?? [])
+        .flatMap((entry) => [
+          entry.header ?? '',
+          entry.prompt,
+          ...entry.options.flatMap((option) => [option.label, option.description ?? '']),
+        ])
+        .join('');
     if (
       forbiddenBytes.some((value) => {
         const secret = Buffer.from(value).toString('utf8');
@@ -1015,13 +1130,21 @@ export const createNativeExecutor = ({
     };
     checkCancelled();
     await checkpoint('publishing', { nativeSessionId, outputTruncated: outcome.outputTruncated });
-    return { completed, files, pendingInput, nativeSessionId, outcome, nextPromptEvidence };
+    return {
+      completed,
+      files,
+      pendingInput,
+      presentation,
+      nativeSessionId,
+      outcome,
+      nextPromptEvidence,
+    };
   };
 
   // Public receipts and private CLI recovery bytes complete before the local head moves.
   const publishNativeTurn = async (
     { signal, pkg, configuration, forbiddenBytes },
-    { completed, files, pendingInput, nativeSessionId, outcome, nextPromptEvidence },
+    { completed, files, pendingInput, presentation, nativeSessionId, outcome, nextPromptEvidence },
   ) => {
     const publicationOutcome =
       outcome.kind === 'waiting_for_input' ? 'WAITING_FOR_INPUT' : 'STOPPED';
@@ -1093,6 +1216,7 @@ export const createNativeExecutor = ({
         publicationId: receipt.id,
         messages: completed.messages,
         pendingInput,
+        presentation,
         signal,
       }),
       current.identity,
