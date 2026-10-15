@@ -139,7 +139,9 @@ const NATIVE_PENDING_SPEC_INSTRUCTION =
   'directory, replacing any earlier file: {"version":2,"questions":[{"prompt":"...","header":"...",' +
   '"multiSelect":false,"options":[{"label":"...","description":"..."}]}]}. Use the exact option ' +
   'labels from the spec, without numbers, letters or "(Recommended)", and keep rendering the ' +
-  'complete question prompts normally in your response. For a free-text question use ' +
+  'complete question prompts normally in your response. For a single choice you may instead ' +
+  'show its exact header on its own line with every option label; the form renders its prompt. ' +
+  'For a free-text question use ' +
   '"options":[] and "multiSelect":false; never invent choices. Every question requires an answer. ' +
   "The user's reply contains the exact selected label(s) and free text, numbered by the " +
   'question header when there are multiple questions. Record every answer with the workflow ' +
@@ -196,23 +198,30 @@ export const readNativePendingSpec = async (project) => {
   let realDirectory = false;
   try {
     realDirectory = (await fs.lstat(dir)).isDirectory();
-  } catch {
-    return null;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    fail('native_execution_question_spec_invalid');
   }
   // Never read or remove anything through a link out of the project.
-  if (!realDirectory) return null;
+  if (!realDirectory) fail('native_execution_question_spec_invalid');
   const file = join(dir, 'pending-question.json');
   try {
     const handle = await fs.open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > NATIVE_PENDING_INPUT_LIMITS.specBytes) return null;
-      return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await handle.readFile()));
+      if (!stat.isFile() || stat.size > NATIVE_PENDING_INPUT_LIMITS.specBytes)
+        fail('native_execution_question_spec_invalid');
+      const spec = JSON.parse(
+        new TextDecoder('utf-8', { fatal: true }).decode(await handle.readFile()),
+      );
+      if (spec === null) fail('native_execution_question_spec_invalid');
+      return spec;
     } finally {
       await handle.close();
     }
-  } catch {
-    return null;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    fail('native_execution_question_spec_invalid');
   } finally {
     // rm removes a file or a link entry itself, never a link target.
     if ((await fs.lstat(dir).catch(() => null))?.isDirectory())
@@ -973,6 +982,26 @@ export const createNativeExecutor = ({
       spec: renderedSpec,
       messagesText: completed.messages.map((message) => message.text).join('\n'),
     });
+    // An absent spec remains compatible with legacy plain-text turns. A supplied
+    // but invalid/unmatched spec must not silently become a successful textbox.
+    if (renderedSpec !== null && !pendingInput) fail('native_execution_question_spec_invalid');
+    // A form can render text absent from the prose (prompt, header, descriptions).
+    // Apply the same known-credential boundary before either public upload, also
+    // catching a credential split across adjacent form fields.
+    const formText = (pendingInput?.questions ?? [])
+      .flatMap((entry) => [
+        entry.header ?? '',
+        entry.prompt,
+        ...entry.options.flatMap((option) => [option.label, option.description ?? '']),
+      ])
+      .join('');
+    if (
+      forbiddenBytes.some((value) => {
+        const secret = Buffer.from(value).toString('utf8');
+        return secret && formText.includes(secret);
+      })
+    )
+      fail('native_execution_output_credential');
     const nativeSessionId = completed.nativeSessionId;
     let outcome = classifyNativeFirstWait({
       snapshot: files,

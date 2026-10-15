@@ -47,6 +47,42 @@ const approvalTurn = {
 };
 
 describe('native pending input capture', () => {
+  it('renders an explicit single choice under its visible heading without requiring duplicated prompt prose', () => {
+    const spec = {
+      version: 2,
+      questions: [
+        {
+          prompt: 'Choose the plan for this task.',
+          header: 'Plan',
+          options: [{ label: 'compose' }, { label: 'bugfix' }, { label: 'classic' }],
+        },
+      ],
+    };
+    const messagesText =
+      '**Plan**\n\n- **compose**: tailor the plan\n- **bugfix**: 5 stages\n- **classic**: 14 stages';
+    expect(
+      buildNativePendingInput({ spec, messagesText })?.questions[0].options.map((o) => o.label),
+    ).toEqual(['compose', 'bugfix', 'classic']);
+    expect(buildNativePendingInput({ spec, messagesText: 'compose bugfix classic' })).toBeNull();
+    expect(buildNativePendingInput({ spec, messagesText: '**Plan** compose bugfix' })).toBeNull();
+    expect(buildNativePendingInput({ spec, messagesText, gate: { stage: 'plan' } })).toBeNull();
+    expect(
+      buildNativePendingInput({
+        spec: { ...approvalSpec, version: 2 },
+        gate: { stage: 'requirements-analysis' },
+        messagesText: '**Approval**\nApprove / Request Changes / Accept as-is',
+      }),
+    ).toBeNull(); // Valid gate labels/heading cannot replace its full prompt.
+    expect(
+      buildNativePendingInput({
+        spec: {
+          version: 2,
+          questions: [{ prompt: 'What constraints apply?', header: 'Constraints', options: [] }],
+        },
+        messagesText: '**Constraints**',
+      }),
+    ).toBeNull();
+  });
   it('captures a complete current-step form with more than four mixed questions', () => {
     const questions = [
       ...Array.from({ length: 5 }, (_, index) => ({

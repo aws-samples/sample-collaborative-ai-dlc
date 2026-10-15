@@ -410,6 +410,64 @@ describe('harness session selection', () => {
     ).rejects.toMatchObject({ code: 'native_recovery_home_path_invalid' });
   });
 
+  it('captures and restores two Claude turns whose Bash cwd moved inside the project', async () => {
+    const path = `.claude/projects/project-key/${id}.jsonl`;
+    const firstRow = JSON.stringify({ type: 'user', sessionId: id, cwd: project }) + '\n';
+    await write('home', path, firstRow);
+    const first = await captureNativeSessionRecovery(options({ harness: 'claude' }));
+    await fs.mkdir(join(project, 'nested'), { mode: 0o700 });
+    // Actual Claude 2.1.296 emits the tool-result and later assistant rows with
+    // its current Bash cwd, while keeping the original project key and session.
+    const secondRow =
+      JSON.stringify({ type: 'user', sessionId: id, cwd: join(project, 'nested') }) + '\n';
+    await fs.appendFile(join(home, path), secondRow);
+    const second = await captureNativeSessionRecovery(options({ harness: 'claude' }));
+    expect(first.files[0].content).toEqual(Buffer.from(firstRow));
+    await emptyRestoreRoots();
+    await restoreNativeSessionRecovery({ ...options({ harness: 'claude' }), ...second });
+    expect(await fs.readFile(join(home, path))).toEqual(Buffer.from(firstRow + secondRow));
+    expect((await fs.stat(join(project, 'nested'))).isDirectory()).toBe(true);
+  });
+
+  it.each(['outside', 'traversal', 'relative', 'wrong-type', 'foreign-session', 'uncaptured'])(
+    'still rejects Claude %s identity evidence before capture or restore',
+    async (kind) => {
+      const path = `.claude/projects/project-key/${id}.jsonl`;
+      const firstRow = JSON.stringify({ type: 'user', sessionId: id, cwd: project }) + '\n';
+      await write('home', path, firstRow);
+      const checkpoint = await captureNativeSessionRecovery(options({ harness: 'claude' }));
+      const cwd =
+        {
+          outside: `${project}-other`,
+          traversal: `${project}/nested/..`,
+          relative: 'nested',
+          'wrong-type': null,
+          uncaptured: `${project}/missing`,
+        }[kind] ?? project;
+      const row = {
+        type: 'user',
+        sessionId: kind === 'foreign-session' ? childId : id,
+        cwd: kind === 'wrong-type' ? null : cwd,
+      };
+      const content = Buffer.from(firstRow + JSON.stringify(row) + '\n');
+      await fs.writeFile(join(home, path), content);
+      const code =
+        kind === 'foreign-session'
+          ? 'native_recovery_session_id_mismatch'
+          : 'native_recovery_session_cwd_invalid';
+      await expect(
+        captureNativeSessionRecovery(options({ harness: 'claude' })),
+      ).rejects.toMatchObject({ code });
+      checkpoint.files[0] = withContent(checkpoint.files[0], content);
+      await emptyRestoreRoots();
+      await expect(
+        restoreNativeSessionRecovery({ ...options({ harness: 'claude' }), ...checkpoint }),
+      ).rejects.toMatchObject({ code });
+      expect(await fs.readdir(project)).toEqual([]);
+      expect(await fs.readdir(home)).toEqual([]);
+    },
+  );
+
   it('captures a second Claude turn with the pinned CLI agent metadata and restores exact bytes', async () => {
     const base = `.claude/projects/project-key/${id}`;
     const transcript = `${JSON.stringify({ sessionId: id, cwd: project })}\n`;

@@ -43,6 +43,9 @@ vi.mock('@/contexts/DiscussionContext', () => ({
   },
 }));
 import NativeIntentPage from './NativeIntentPage';
+// Exercise the production producer as well as the rendered consumer.
+// @ts-expect-error The backend JS workspace intentionally has no frontend declarations.
+import { buildNativePendingInput } from '../../../lambda/shared/native-pending-input.js';
 
 const messages: NativeInteractionView['messages'] = [
   { type: 'text', text: 'Choose a workflow for these changes.' },
@@ -277,6 +280,75 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it('renders every explicitly offered scope as a choice and submits its exact label once', async () => {
+  // Sanitized shape from the admitted 2026-10-15 scope response. These are
+  // fixture options, not a production list or an inference from assistant prose.
+  const plans = [
+    'compose',
+    'bugfix',
+    'classic',
+    'enterprise',
+    'express',
+    'feature',
+    'infra',
+    'mvp',
+    'poc',
+    'refactor',
+    'security-patch',
+    'workshop',
+  ];
+  const scopeMessages = [
+    {
+      type: 'text' as const,
+      text: '**Plan**\n\n' + plans.map((label) => `- **${label}**`).join('\n'),
+    },
+  ];
+  const pendingInput = nativePendingInput(
+    buildNativePendingInput({
+      spec: {
+        version: 2,
+        questions: [
+          {
+            prompt: 'Choose the plan for this task.',
+            header: 'Plan',
+            options: plans.map((label) => ({ label })),
+          },
+        ],
+      },
+      messagesText: scopeMessages[0].text,
+    }),
+  );
+  interaction = {
+    ...interaction,
+    messages: scopeMessages,
+    pendingInput,
+    contentSha256: createHash('sha256')
+      .update(
+        canonicalJson({
+          messages: scopeMessages,
+          pendingInput,
+        }),
+      )
+      .digest('hex'),
+  };
+  renderPage();
+  const form = await screen.findByRole('form', { name: 'Workflow questions' });
+  for (const plan of plans) expect(within(form).getByText(plan)).toBeVisible();
+  expect(screen.queryByRole('textbox', { name: 'Reply to AI-DLC' })).not.toBeInTheDocument();
+  expect(within(form).getByRole('button', { name: 'Submit Answer' })).toBeDisabled();
+  fireEvent.click(within(form).getByText('classic'));
+  fireEvent.submit(form);
+  fireEvent.submit(form);
+  await screen.findByText('Reply accepted. Delivery pending.');
+  expect(transport.post).toHaveBeenCalledTimes(1);
+  expect(transport.post.mock.calls[0][1]).toMatchObject({
+    interactionId: interaction.id,
+    contentSha256: interaction.contentSha256,
+    text: 'classic',
+    selection: { answers: [{ selectedOptions: [2] }] },
+  });
 });
 
 it('submits one complete grouped form, retries identical bytes after a lost ack and restores the receipt on reload', async () => {

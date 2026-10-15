@@ -1319,7 +1319,8 @@ synthetic protected answers.
 
 `native-pending-input.js` and its frontend mirror support bounded version 2
 forms, including written-only questions. Version 2 additionally checks that
-every prompt was rendered, not just option labels. The existing canonical
+every prompt was rendered, not just option labels, with the bounded single-choice
+heading exception documented in the October 15 post-merge incident below. The existing canonical
 answer and interaction digest contract is unchanged. All fields are required;
 the frontend validates the complete answer's byte budget before sending.
 `QuestionEditor` uses one native form, waits for Yjs synchronization and
@@ -1628,6 +1629,310 @@ history. Record the new immutable image/package pins. Cancel/recover only
 where the fresh run's authority exposes support. Preserve the existing active
 and failed test intents as evidence; never replay their delivered answers.
 No push, deployment, AWS action or live model call was performed for this merge.
+
+## Post-merge checkpoint and scope-form incident — 2026-10-15
+
+### Verified deployed evidence
+
+Investigated only space `22371643-2db5-42a4-a571-e47fc35745f5`, intent
+`36c84e37-e8ca-4714-9280-15d6ef581596`, with `AWS_PROFILE=solution-read`,
+`AWS_REGION=us-east-1`, `AWS_DEFAULT_REGION=us-east-1`, `AWS_PAGER=""` on
+all AWS operations. STS identified account `746558295630`, assumed role
+`ReadOnly/jwthewes-Isengard`. No cloud mutation, provider/model call, session
+replay, EFS mount, private CLI state read or deployment was performed.
+
+The consistent target partition query completed in one page, **49 records**,
+including **31 output records**. Table `collaborative-ai-dlc-native-runs-dev`:
+
+```text
+pk = NATIVE#8c4e433ae4c6f5cda04e6ec9a897e1f1224d72950a0d93330ee36bd5288bb15d
+attempt = 06adfdf9-9e65-4745-a0e2-24211317d928
+binding = b499c743-2df0-49f5-a5d0-573ee020525c
+runtime session = 60a29f48-e287-431f-a146-ead1010e585b
+Claude session = 2040251b-fd2b-4c6c-a3f1-a54b051b04df
+```
+
+The authority is **FAILED, revision 698, turn 2, writer 1, epoch 1** with
+`native_recovery_session_identity`. `stopConfirmation.confirmedAt` is
+**09:11:22.397 UTC**, for that runtime session/writer. The resource's separate
+AgentCore `READY` status is not execution success. `OUTPUT_CURSOR` is
+`seq=31,index=31,writerGeneration=1`; it is not the lifecycle revision cursor.
+
+Admitted pins:
+
+- Harness `claude`, model **`global.anthropic.claude-sonnet-5-5`**.
+- AI-DLC **2.11.0**, `awslabs/aidlc-workflows`, source commit
+  `6a378b53c0a4fe0641ed7d8de8dfff94264d5b6a`.
+- Package `sha256:9fdb284f4601d3c8c2d828abda2b9b98f3ecaca149870da3a11dbc2ee24805b1`;
+  materialization `sha256:8c277086e76f1b47fabccaa6be4fc3f9b39efa1f9e2ed2cab18517e561caeb24`.
+- Image **`sha256:cdd4831539710acf53ed8d462a33c3df9591fbbe689f15c7d5bc6f0959b4dad5`**,
+  ECR repository `collaborative-ai-dlc-agentcore-dev`, ARM64, built
+  **08:43:17.661 UTC**. Installed Claude is **2.1.296**.
+- AgentCore runtime `native_d64341373a9acc8fe9dce748c6bf2fed-vP07aT5qWk`,
+  version **2**, endpoint `exec_aa98e89f5d6c2ec47b634e3b8bffd9a4`.
+  Targeted `GetAgentRuntime` confirms this version/image.
+- Configuration SHA `70dbbeeec0562c78dcea30f0547562aa9fe7fd874d7d72f36637be75a7946f3d`.
+  Application repository source `d99d2511c43f07ff2451e7e13f5a8f45b16dfce2`
+  is distinct from the platform runtime source revision.
+
+The exact local image was inspected offline, bypassing its runtime entrypoint.
+Its `native/executor.js`, `native/session-recovery-files.js`, and shared
+`native-pending-input.js` match checkout **ad6f206** byte-for-byte. The earlier
+capture diagnostics and grouped-form changes are present. Live API, authority,
+provisioner and execution Lambda `CodeSha256` values match retained local
+Terraform ZIPs; their last modifications were **08:44:51–08:46:18 UTC**.
+Their execution-image settings match the admitted digest. Public CloudFront
+`index.html` and main asset `index-B-m76Vpm.js` also match the pre-change local
+build. Main asset SHA256:
+`7f1c5dfcb329c2f9725a76b4b6658dd2825d2caf9084144ee2dff760c192ac0f`.
+This verifies those artifacts, not an authenticated browser paint or every
+lazy-loaded asset. No deployment mismatch was found in the checked path.
+
+| Event                                 | UTC                         | Evidence                                                    |
+| ------------------------------------- | --------------------------- | ----------------------------------------------------------- |
+| Start accepted                        | 08:59:16.832                | `EVENT#0000000000000001`                                    |
+| Turn 1 delivery confirmed             | 09:00:09.393                | `EVENT#0000000000000033`                                    |
+| First form sidecar created            | 09:04:32.032                | `OUTPUT#0000000000000004`, `Created: pending-question.json` |
+| Publication/checkpoint 1 admitted     | 09:04:59.607                | `EVENT#0000000000000378`, AWAITING_USER                     |
+| Answer accepted                       | 09:05:39.181                | `EVENT#0000000000000394`                                    |
+| Answer dispatch / delivery            | 09:05:43.045 / 09:05:43.385 | events 396 / 397 and immutable delivered-answer record      |
+| Turn 2 CLI launched / completed       | 09:05:43.479 / 09:11:17.979 | numeric runtime lifecycle                                   |
+| Files / interaction uploads completed | 09:11:19.425 / 09:11:19.461 | numeric runtime lifecycle                                   |
+| Checkpoint capture started            | 09:11:19.461                | no subsequent capture-completed/upload-started boundary     |
+| Runtime failed                        | 09:11:21.203                | `executionFailed`, `native_recovery_session_identity`       |
+| FAILED and stop confirmed             | 09:11:22.397                | `EVENT#0000000000000692`, authoritative stop confirmation   |
+
+The answer has request ID `c128def2-0287-4531-b429-def9fcea4a4c`, command ID
+`033def0c-49c1-42f1-a524-c4455641ff8a`; no answer content was retrieved.
+`ANSWER#9f1d3194e8babcdcabdfe785318ee53b03ad3772c0602acb2eb320620d3bba1b#delivered`
+establishes delivery, independently of activity text.
+
+Runtime logs, bounded **08:55–09:13 UTC**, fully paginated (34 lifecycle events):
+
+```text
+/aws/bedrock-agentcore/runtimes/native_d64341373a9acc8fe9dce748c6bf2fed-vP07aT5qWk-exec_aa98e89f5d6c2ec47b634e3b8bffd9a4
+2026/10/15/[runtime-logs]39e450ec-82fa-4d1e-a423-32e4d15397ca
+```
+
+Worker group `/aws/lambda/collaborative-ai-dlc-native-runs-dev-execution`,
+streams `2026/10/15/[$LATEST]0e045ddf5aa8492da39de529c5a10be2` and
+`2026/10/15/[$LATEST]992cb0af1f25490ab5f26735ea81f33f`, corroborate dispatches
+at **08:59:53.995** and **09:05:43.146**. Targeted API/authority/provisioner
+intent filters returned no matching records in this window; no per-command
+Lambda request ID or separate queue latency is inferred. The flight-recorder
+replay filter returned no events; that does not prove a runtime-wide absence
+of resource problems. Here the causal boundary is an explicit capture rejection.
+
+Turn 1 took **342.775 s** acceptance to admission, including **195.654 s**
+installation, **73.046 s** CLI/tools, **1.544 s** capture and **4.087 s**
+checkpoint upload. Turn 2 took **343.216 s** acceptance to terminal failure:
+**3.864 s** to dispatch, **334.500 s** CLI/tools, **1.255 s** files/interaction
+upload and **1.742 s** capture before rejection. Setup reused the installation.
+These are observed intervals, not a split of inference/tool work, a bill, or
+frontend latency. This incident does not demonstrate a fourfold live speedup.
+
+### Reproduced native defects and corrections
+
+**Checkpoint contract.** The deployed Claude validator required every recorded
+`cwd` to equal the original project root. Static inspection of the installed
+public CLI shows its transcript serializer records the current Bash cwd. A
+network-disabled container using that exact **2.1.296** executable and an inert
+loopback response server reproduced two successful turns on one session:
+turn 2 executes `mkdir -p nested && cd nested && pwd`, after which user/tool-result
+and assistant rows contain `cwd: <project>/nested`, with unchanged session ID.
+The deployed adapter then fails with **the same `native_recovery_session_identity`**.
+This is a proven native compatibility bug, not a CLI version upgrade request.
+
+`session-recovery-files.js` now separately verifies the selected session ID and
+allows canonical cwd values only for project directories actually present in
+the checkpoint's directory inventory. Outside, noncanonical, excluded,
+uncaptured and symlinked directories remain unsupported; capture/restore
+hashes, file inventory, exact roots, ownership and credential exclusions remain
+unchanged. Restore validates before writing. Narrow safe codes
+`native_recovery_session_id_mismatch` and `native_recovery_session_cwd_invalid`
+pass through both controller diagnostic allowlists, durable failure evidence
+and user-facing explanations. Legacy `native_recovery_session_identity` remains
+readable.
+
+**Historical qualification:** the live code proves an identity-check rejection,
+but its old code combines missing/foreign session ID and cwd mismatch. The
+private rejected row was not read. Nested cwd is reproduced using the identical
+CLI/image and is a concrete correction; it is not proof of which field that
+historical row contained. No IAM, network, timeout, model-mismatch or OOM cause
+is established for this run.
+
+**Scope form.** Only the selected 1,451-byte S3 interaction version was read,
+size/hash verified, projecting its scope question in memory. Publication 1's
+interaction ID is
+`9f1d3194e8babcdcabdfe785318ee53b03ad3772c0602acb2eb320620d3bba1b`, S3 version
+`oii_eX8YlRKIRZRpj8hyYla3i7.YlYdW` in bucket
+`collaborative-ai-dlc-native-runs-dev-pub-49df4ac0`. The versioned key is
+`native-executions/v1/ee28fcaa443a25ec4c61a3d60a90ab80176ec9225851a32aca7a803f31fa45b6/06adfdf9-9e65-4745-a0e2-24211317d928/1/interactions/9f1d3194e8babcdcabdfe785318ee53b03ad3772c0602acb2eb320620d3bba1b.json`.
+
+The response explicitly presents a **Plan** heading and twelve labelled choices:
+compose, bugfix, classic, enterprise, express, feature, infra, mvp, poc, refactor,
+security-patch and workshop. It is not intentionally a written-only question.
+But the admitted interaction has **no `pendingInput`**. The frontend correctly
+uses its legacy textbox for that shape. A sanitized activity record confirms
+`pending-question.json` was written; its private content was withheld, and the
+reader deleted it without recording why parsing/validation failed.
+
+The exact public pinned `core/tools/aidlc-orchestrate.ts` was inspected:
+`freshWorkOfferDirective`/`composeOfferAskDirective` emit a typed `ask`,
+`response_route: next`, `compose_command` and `scope_commands`; those choices
+come from the pinned workflow, not platform defaults. The native form still
+uses the model's explicit bounded spec and verifies every option label against
+the rendered response. No production list of scopes or English-prose option
+extractor was added.
+
+A concrete transport regression was reproduced: a valid v2 single-choice spec
+under the response's exact **Plan** heading is discarded solely because its
+prompt is not duplicated verbatim in the prose. The adapter now accepts that
+single non-gate headed choice when all explicit option labels are present, and
+the existing form displays its full prompt/options. Grouped/free-text prompts
+and stage gates retain their complete-prompt checks. Missing specs retain
+legacy compatibility; malformed, oversized, unsafe, null or unmatched supplied
+specs now fail as `native_execution_question_spec_invalid` instead of silently
+admitting a textbox. No incomplete turn is published to authority. All form
+fields also pass the existing known-credential byte boundary before either
+public upload, including credentials split across adjacent fields. This covers
+prompts and descriptions that the form renders without duplicating in prose.
+
+The original sidecar was not retained in permitted evidence, so its exact
+rejection reason remains unknown. Tests establish the supported headed-form
+correction and make future malformed-form failures explicit; they do not
+retroactively reconstruct that missing file or rewrite admitted history.
+
+### Regression evidence and recovery
+
+Eight new assertions failed before the changes (76 existing tests passed),
+covering the nested-cwd case, narrow rejection identities and headed form.
+The four-file initial focused run then passed **98 tests**. The production-
+composed journey now includes a twelve-option scope form, protected answer,
+second-turn cwd change, publication/checkpoint admission and another question
+on the same session; outside cwd, foreign ID and malformed/unmatched forms
+exercise later failure. Existing cancellation/unconfirmed-stop, grouped mixed
+inputs, explicit approval, duplicate/lost-ack, member, revision and no-replay
+cases remain. A rendered native-page test passes the production backend form
+builder's result through the real UI and checks all twelve choices and one
+exact `classic` answer/request. No fixture contains the user's answers or
+private CLI/source content.
+
+The new offline installed-CLI regression is executable from this checkout:
+
+```sh
+image='746558295630.dkr.ecr.us-east-1.amazonaws.com/collaborative-ai-dlc-agentcore-dev@sha256:cdd4831539710acf53ed8d462a33c3df9591fbbe689f15c7d5bc6f0959b4dad5'
+docker run --rm --network none --read-only --tmpfs /tmp:rw,exec,mode=1777 \
+  --user node -v "$PWD:/fixture:ro" --entrypoint node "$image" \
+  /fixture/scripts/native-claude-recovery-smoke.mjs
+```
+
+Appending `/opt/agentcore/native/session-recovery-files.js` selects the old
+image adapter: turn 1 captures, turn 2 completes its CLI result then fails
+`native_recovery_session_identity`. Without that argument the corrected
+checkout adapter passes **three CLI turns/three captures**, restoring exact
+checkpoint bytes before turn 3. The server returns scripted messages only;
+there are **zero provider calls**. This exercises actual installed-CLI output,
+filesystem and resume behavior, not inference or live workflow semantics.
+
+The earlier suites used handwritten transcript rows whose cwd stayed at the
+root, and v2 form fixtures whose prompt text matched exactly. Those tests
+qualified neither the installed CLI's cwd changes nor a model's sidecar/prose
+agreement. The earlier Opus/model mismatch was confirmed. The metadata-sidecar
+defect was independently reproduced, but intent `855edbee` still has an unknown
+exact historical capture rejection. Those issues and this cwd adapter bug
+concern distinct interfaces; passing many unit tests did not qualify their
+composition. Old runtime 424/existing-owner losses remain
+unexplained, with no evidence that they caused this capture rejection.
+
+Current publication **1** (`5da3fe63dbb07fe83e30b16d655a193eb225ba29a55dfc667ca55c7c7ac3e0fb`)
+retains **19 files** and checkpoint
+`72d637b3ecd13c3a81421e9d592dadf084fecbcfffd96b06b66c512adc95b368`.
+Turn 2's uploads and activity (including creation of a requirements-question
+file) do not constitute publication/checkpoint 2: neither was admitted. The
+answer was delivered and `recovery` is absent. `execution-store.recover`
+requires a server-issued eligible `RECOVERY_REQUIRED` episode, so this FAILED
+run cannot safely retry/restore checkpoint 1. Keep it as evidence.
+
+Validation used host **Node 24.21.0** (the offline image uses Node 24.19.0).
+No dependencies were changed. Commands ran from the repository root with the
+Node 24 directory first on PATH and `NODE_OPTIONS=--no-experimental-webstorage`.
+
+| Check                                                                                                                                                               | Result                                                                                                                  |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `npx vitest run --config vitest.native-foundation.config.js` with the seven executor/output/recovery/question/journey/diagnostic/shared-form files                  | **277 passed**                                                                                                          |
+| `VITEST_MAX_WORKERS=2 npm test`                                                                                                                                     | **10,308 passed, 5 timed out, 3 Bun-only skipped**; 358 files passed, 2 failed, 1 skipped                               |
+| Serial rerun: `npx vitest run --project=agentcore lambda/agentcore/test/git-engine.test.js lambda/agentcore/test/lane.test.js --maxWorkers=1 --no-file-parallelism` | **87 passed**; all five failures were 30-second timeouts in these unchanged files                                       |
+| `VITEST_MAX_WORKERS=2 npm --prefix frontend test`                                                                                                                   | **1,921 passed**, 141 files                                                                                             |
+| `npm run test:release`                                                                                                                                              | **248 passed**, no failures/skips                                                                                       |
+| `npm run test:native-wiring`                                                                                                                                        | **22 passed**                                                                                                           |
+| Exact installed-CLI fixture, old / corrected adapter                                                                                                                | Old exits **1** after successful CLI turn 2; corrected exits **0**, **3 turns/3 captures**, exact restore before turn 3 |
+| `npm --prefix frontend run build`, `npm run build -w native-runtime-control`                                                                                        | Passed                                                                                                                  |
+| `npm run lint`, `npm run format:check`, `npm run secretlint`, `npm run dep:check`, `npm run architecture:check`, `npm run sdk:check`                                | Passed; architecture: **391 modules, 0 violations**                                                                     |
+
+The full backend run preceded the final form-credential guard. Its affected
+native path was rerun in the final 277-test set. The added credential journey
+failed before the guard (unsafe form reached AWAITING_USER) and passed after
+it, rejecting before uploads and preserving the prior checkpoint. A final
+single-case rerun also checks no credential bytes in saved objects/failure
+status (**1 passed, 12 intentionally filtered out**).
+
+Qualification limits: the first final-focused attempt passed 269 tests and
+hit eight sandbox `listen EPERM` failures; all 277 passed with loopback access.
+The full backend run is reported as observed rather than relabelled all-green
+by adding reruns. SDK check retains the pre-existing Smithy range warning in
+`lambda/agents`; frontend build retains its large-chunk warning. Release tests
+printed local CodeDefender log-permission warnings but all 248 passed. No
+unrelated timeout, Git test, SDK/CLI pin or retention policy was changed. The
+working draft was formatted and its repository links checked; no documentation
+publication/navigation change was made.
+
+### Deployment and finite live qualification (not executed)
+
+No CLI/dependency pins changed. The correction requires a newly built ARM64
+runtime image **and** the native controllers' additive safe-code support;
+frontend deployment adds the specific failure explanations. Existing admitted
+runs retain their pins and immutable forms/answers. A deployment does not
+repair this FAILED intent or silently update a running image.
+
+The parent/operator, with separately authorized deployment credentials, can
+use the checkout's existing deployment commands (none run in this investigation):
+
+```sh
+./scripts/deploy-terraform.sh dev --phase plan
+# Review the plan, including retained old native image pins, before applying.
+./scripts/deploy-terraform.sh dev --phase apply
+./scripts/deploy-frontend.sh dev
+```
+
+Verify the new Lambda image setting and newly admitted intent digest against
+the build, rather than inferring deployment from Git HEAD. Keep intent `36c84e37`
+unchanged. In the same selected space create **one fresh test intent**, using
+an operator-approved model/package:
+
+1. Include a harmless nested working directory in the test task and exercise
+   a Bash cwd change within it. Do not direct access outside the test project.
+2. At scope selection, verify every actual offered plan is a labelled choice
+   in one form; choose it explicitly. Do not pre-answer other human gates.
+3. Answer two workflow question rounds. Check each delivered-answer identity,
+   `checkpointCaptureCompleted`, `checkpointUploadCompleted` and the next
+   authority-admitted interaction/checkpoint, all on the same native session.
+4. Refresh/reconnect and, if available, open a second member tab. Verify exact
+   recorded answers/history, shared unsent drafts and no duplicate continuation.
+   Keep required summary confirmation and approval as separate human decisions.
+5. At the next admitted waiting point, use supported cancellation and verify
+   confirmed stop plus retained history. Test recovery only if authority offers
+   an eligible recovery episode; never force one or restore an older checkpoint
+   after an already-delivered answer.
+
+No broad S3 conversation/source/checkpoint bodies were downloaded and no
+previous approval rejection was bypassed. No IAM read denial occurred in the
+completed targeted reads. The missing historical row/sidecar cannot be recovered
+from these permitted projections. The next diagnostic is this bounded fresh
+qualification: any new cwd/ID/form failure now records a distinct safe code in
+runtime lifecycle, durable state and UI. A further private retained-state read
+would require separate, narrowly reviewed authorization; it is not needed to
+apply or test the independently reproduced fixes.
 
 ## Open work
 

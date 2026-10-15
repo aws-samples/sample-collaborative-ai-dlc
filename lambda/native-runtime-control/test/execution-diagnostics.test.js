@@ -97,6 +97,9 @@ const payload = {
 describe('native controller diagnostic privacy boundary', () => {
   it.each([
     'native_recovery_home_path_invalid',
+    'native_recovery_session_id_mismatch',
+    'native_recovery_session_cwd_invalid',
+    'native_execution_question_spec_invalid',
     'native_recovery_adapter_failed',
     'native_recovery_cancelled',
     'native_recovery_time_failed',

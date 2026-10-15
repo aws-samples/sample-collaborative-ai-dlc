@@ -65,17 +65,29 @@ describe('reserved rendered-question spec file', () => {
     const outside = await mkdtemp(join(tmpdir(), 'native-secret-'));
     await writeFile(join(outside, 'pending-question.json'), '{"version":1,"questions":[]}');
     await symlink(outside, join(project, '.native-control'));
-    expect(await readNativePendingSpec(project)).toBeNull();
+    await expect(readNativePendingSpec(project)).rejects.toMatchObject({
+      code: 'native_execution_question_spec_invalid',
+    });
     await clearNativePendingSpec(project); // replaces the link with a real directory
     await symlink(
       join(outside, 'pending-question.json'),
       join(project, '.native-control/pending-question.json'),
     );
-    expect(await readNativePendingSpec(project)).toBeNull();
+    await expect(readNativePendingSpec(project)).rejects.toMatchObject({
+      code: 'native_execution_question_spec_invalid',
+    });
     await writeFile(join(project, '.native-control/pending-question.json'), 'x'.repeat(70 * 1024));
-    expect(await readNativePendingSpec(project)).toBeNull();
+    await expect(readNativePendingSpec(project)).rejects.toMatchObject({
+      code: 'native_execution_question_spec_invalid',
+    });
     await writeFile(join(project, '.native-control/pending-question.json'), '{not json');
-    expect(await readNativePendingSpec(project)).toBeNull();
+    await expect(readNativePendingSpec(project)).rejects.toMatchObject({
+      code: 'native_execution_question_spec_invalid',
+    });
+    await writeFile(join(project, '.native-control/pending-question.json'), 'null');
+    await expect(readNativePendingSpec(project)).rejects.toMatchObject({
+      code: 'native_execution_question_spec_invalid',
+    });
     expect(await readdir(outside)).toEqual(['pending-question.json']);
   });
 });

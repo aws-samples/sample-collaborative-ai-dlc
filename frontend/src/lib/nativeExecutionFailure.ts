@@ -1,5 +1,11 @@
 export function nativeExecutionFailureMessage(code: string | undefined): string {
   switch (code) {
+    case 'native_execution_question_spec_invalid':
+      return 'The workflow returned a question form that native execution could not verify.';
+    case 'native_recovery_session_cwd_invalid':
+      return 'The session referenced a working directory outside its captured project directories.';
+    case 'native_recovery_session_id_mismatch':
+      return 'The checkpoint contained a different session identity.';
     case 'native_recovery_home_path_invalid':
     case 'native_recovery_session_layout_unsupported':
       return 'Native execution could not save this session’s recovery file layout.';

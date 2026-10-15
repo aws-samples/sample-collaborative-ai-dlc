@@ -171,17 +171,29 @@ const normalizeSpec = (spec) => {
  *   as approval. A marker alone does not identify a fork's decision protocol.
  * - spec: the agent-written rendered question spec (already JSON-parsed), or null.
  * - messagesText: the turn's assistant text. Every rendered option label and
- *   (in version 2) prompt must appear in it. No unpublished definitions.
+ *   (in version 2) prompt must appear in it. A single non-gate choice may instead
+ *   appear under its exact heading with all its labels. Its complete spec prompt
+ *   is rendered by the form. No prose-derived options or inferred approvals.
  */
 export const buildNativePendingInput = ({ gate = null, spec = null, messagesText = '' }) => {
   let questions = null;
   if (spec !== null) {
     try {
       questions = normalizeSpec(spec);
+      const headedChoice =
+        !gate &&
+        questions.length === 1 &&
+        questions[0].options?.length >= 2 &&
+        questions[0].header &&
+        messagesText
+          .split(/\r?\n/)
+          .some((line) =>
+            [questions[0].header, `**${questions[0].header}**`].includes(line.trim()),
+          );
       if (
         questions.some(
           (entry) =>
-            (spec.version === 2 && !messagesText.includes(entry.prompt)) ||
+            (spec.version === 2 && !messagesText.includes(entry.prompt) && !headedChoice) ||
             entry.options?.some?.(
               (option) => typeof option.label !== 'string' || !messagesText.includes(option.label),
             ),

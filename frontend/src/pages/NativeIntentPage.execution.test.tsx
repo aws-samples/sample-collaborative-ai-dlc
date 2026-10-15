@@ -954,6 +954,15 @@ it.each(['STOPPED', 'FAILED'] as const)(
 
 it.each([
   [
+    'native_recovery_session_cwd_invalid',
+    'The session referenced a working directory outside its captured project directories.',
+  ],
+  ['native_recovery_session_id_mismatch', 'The checkpoint contained a different session identity.'],
+  [
+    'native_execution_question_spec_invalid',
+    'The workflow returned a question form that native execution could not verify.',
+  ],
+  [
     'native_recovery_home_path_invalid',
     'Native execution could not save this session’s recovery file layout.',
   ],

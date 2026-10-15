@@ -25,6 +25,12 @@ import { ACTOR } from './fixtures.js';
 it.each([
   { kind: 'complete', turns: 3 },
   { kind: 'form', turns: 3 },
+  { kind: 'scope', turns: 3 },
+  { kind: 'scope-credential', turns: 2, code: 'native_execution_output_credential' },
+  { kind: 'scope-capture-cwd', turns: 2, code: 'native_recovery_session_cwd_invalid' },
+  { kind: 'scope-capture-id', turns: 2, code: 'native_recovery_session_id_mismatch' },
+  { kind: 'form-invalid', turns: 2, code: 'native_execution_question_spec_invalid' },
+  { kind: 'form-invalid-match', turns: 2, code: 'native_execution_question_spec_invalid' },
   { kind: 'form-capture', turns: 2, code: 'native_recovery_home_path_invalid' },
   { kind: 'capture', turns: 2, code: 'native_recovery_home_path_invalid' },
   { kind: 'snapshot', turns: 3, code: 'native_snapshot_link' },
@@ -45,7 +51,8 @@ it.each([
     import * as fs from 'node:fs/promises';
     import {join,dirname} from 'node:path';
     const id=process.argv[2],turn=Number(process.argv[3]),kind=process.argv[4];
-    const form=kind.startsWith('form');
+    const scope=kind.startsWith('scope');
+    const form=kind.startsWith('form') || scope;
     let prompt=''; for await(const bytes of process.stdin) prompt+=bytes.toString();
     const file=join(process.env.HOME,'.claude','projects','project-key',id+'.jsonl');
     if(turn===1) {
@@ -56,7 +63,7 @@ it.each([
       if(rows[0].sessionId!==id || rows[0].cwd!==process.cwd() ||
          rows.filter(x=>x.type==='fixture_turn').length!==turn-1) throw Error('session history changed');
       const expected=form
-        ? turn===2 ? '1. Q1: Small\\n2. Q2: Small, Large\\n3. Q3: Small\\n4. Q4: Small\\n5. Q5: Small\\n6. Constraints: Must work offline.' : 'Looks correct'
+        ? turn===2 ? scope ? 'classic' : '1. Q1: Small\\n2. Q2: Small, Large\\n3. Q3: Small\\n4. Q4: Small\\n5. Q5: Small\\n6. Constraints: Must work offline.' : 'Looks correct'
         : 'answer-'+(turn-1);
       if(prompt!==expected) throw Error('answer changed or replayed');
       // Layout and shape observed in pinned Claude 2.1.257 persistAgentMetadata.
@@ -65,9 +72,14 @@ it.each([
       await fs.writeFile(agent+'.jsonl',JSON.stringify({type:'assistant',agentId:'child'})+'\\n',{mode:0o600});
       await fs.writeFile(agent+'.meta.json',JSON.stringify({agentType:'Explore',toolUseId:'fixture-tool'}),{mode:0o600});
     }
+    if(scope && turn===2) {
+      await fs.mkdir('nested',{mode:0o700});
+      await fs.appendFile(file,JSON.stringify({type:'user',sessionId:kind==='scope-capture-id'?'foreign-session':id,
+        cwd:kind==='scope-capture-cwd'?process.cwd()+'-other':join(process.cwd(),'nested')})+'\\n');
+    }
     await fs.appendFile(file,JSON.stringify({type:'fixture_turn',turn})+'\\n');
     await fs.writeFile('work.txt','saved turn '+turn+'\\n',{mode:0o600});
-    if(kind.includes('capture') && turn===2)
+    if(kind.includes('capture') && !scope && turn===2)
       await fs.writeFile(join(file.slice(0,-6),'unknown.sqlite'),'unsupported session layout',{mode:0o600});
     if(kind==='snapshot' && turn===3) await fs.symlink('work.txt','unsafe-link');
     let result='Question '+turn+'?';
@@ -79,7 +91,8 @@ it.each([
       await fs.writeFile('aidlc/active-space','default\\n');
       await fs.writeFile('aidlc/spaces/default/intents/active-intent','fixture\\n');
       await fs.writeFile(dir+'/aidlc-state.md','- **Current Stage**: requirements-analysis\\n- ['+(turn===3?'?':'-')+'] requirements-analysis — EXECUTE\\n');
-      const questions=turn===1 ? [
+      const plans=['compose','bugfix','classic','enterprise','express','feature','infra','mvp','poc','refactor','security-patch','workshop'];
+      const questions=turn===1 && scope ? [{prompt:'Choose the plan for this task.',header:'Plan',options:plans.map(label=>({label}))}] : turn===1 ? [
         ...Array.from({length:5},(_,i)=>({prompt:'Current question '+(i+1)+'?',header:'Q'+(i+1),
           multiSelect:i===1,options:[{label:'Small'},{label:'Large'}]})),
         {prompt:'What constraints apply?',header:'Constraints',options:[]},
@@ -92,9 +105,14 @@ it.each([
       }];
       // The inert protocol fixture exposes every currently available definition,
       // never a future stage or an auto-answered summary/approval.
-      result=questions.map(q=>q.prompt+'\\n'+q.options.map(o=>o.label).join(' / ')).join('\\n');
+      result=turn===1 && scope ? '**Plan**\\n\\n'+plans.map(label=>'- **'+label+'**').join('\\n') : questions.map(q=>q.prompt+'\\n'+q.options.map(o=>o.label).join(' / ')).join('\\n');
       await fs.writeFile(dir+'/questions.md',result+'\\n');
-      await fs.writeFile('.native-control/pending-question.json',JSON.stringify({version:2,questions}));
+      if(kind==='scope-credential' && turn===2) {
+        result='**Confirm**\\nLooks correct / Request changes';
+        questions[0].prompt='Plan recorded: '+process.env.AWS_BEARER_TOKEN_BEDROCK;
+      }
+      if(kind==='form-invalid-match' && turn===2) questions[0].options.push({label:'Unpublished choice'});
+      await fs.writeFile('.native-control/pending-question.json',kind==='form-invalid' && turn===2 ? '{broken' : JSON.stringify({version:2,questions}));
     }
     console.log(JSON.stringify({type:'system',subtype:'init',session_id:id}));
     console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,session_id:id,
@@ -300,26 +318,29 @@ it.each([
     let persistedFailure;
     for (let turn = 2; turn <= scenario.turns; turn++) {
       const question = await api.interaction(f.prepared, recheck);
-      const form = scenario.kind.startsWith('form');
+      const scope = scenario.kind.startsWith('scope');
+      const form = scenario.kind.startsWith('form') || scope;
       if (!form)
         expect(question.messages).toEqual([{ type: 'text', text: `Question ${turn - 1}?` }]);
       const selection = form
         ? {
             answers:
-              turn === 2
-                ? [
-                    { selectedOptions: [0] },
-                    { selectedOptions: [0, 1] },
-                    { selectedOptions: [0] },
-                    { selectedOptions: [0] },
-                    { selectedOptions: [0] },
-                    { selectedOptions: [], freeText: 'Must work offline.' },
-                  ]
-                : [{ selectedOptions: [0] }],
+              turn === 2 && scope
+                ? [{ selectedOptions: [2] }]
+                : turn === 2
+                  ? [
+                      { selectedOptions: [0] },
+                      { selectedOptions: [0, 1] },
+                      { selectedOptions: [0] },
+                      { selectedOptions: [0] },
+                      { selectedOptions: [0] },
+                      { selectedOptions: [], freeText: 'Must work offline.' },
+                    ]
+                  : [{ selectedOptions: [0] }],
           }
         : null;
       if (form) {
-        expect(question.pendingInput.questions).toHaveLength(turn === 2 ? 6 : 1);
+        expect(question.pendingInput.questions).toHaveLength(turn === 2 && !scope ? 6 : 1);
         expect(question.pendingInput.schemaVersion).toBe(2);
         expect(question.messages[0].text).not.toContain('How would you like to answer');
       }
@@ -396,6 +417,13 @@ it.each([
             expect.objectContaining({ code: 'RUNTIME_TERMINAL', runtimeCode: scenario.code }),
           ]),
         );
+        if (scenario.kind === 'scope-credential') {
+          expect(persistedFailure.timings.publicationStarted).toBeUndefined();
+          expect(JSON.stringify(persistedFailure)).not.toContain('fixture-model-token');
+          expect(
+            [...objects.values()].some((object) => object.bytes.includes('fixture-model-token')),
+          ).toBe(false);
+        }
         if (scenario.kind.includes('capture')) {
           expect(persistedFailure.timings.interactionUploadCompleted).toBeTypeOf('number');
           expect(persistedFailure.timings.checkpointCaptureStarted).toBeTypeOf('number');
@@ -415,7 +443,7 @@ it.each([
     expect(final.attemptId).toBe(first.attemptId);
     expect(final.runtimeSessionId).toBe(first.runtimeSessionId);
     expect(final.writerGeneration).toBe(1);
-    if (!['complete', 'form'].includes(scenario.kind)) {
+    if (!['complete', 'form', 'scope'].includes(scenario.kind)) {
       expect(final.status).toBe(scenario.kind === 'cancel' ? 'CANCELLED' : 'FAILED');
       expect(final.publication).toEqual(previous.publication);
       expect(final.recoveryCheckpoint).toEqual(previous.recoveryCheckpoint);
@@ -453,7 +481,7 @@ it.each([
     await supervisor(f.identity);
     expect(turns).toBe(scenario.turns); // Neither duplicate answer nor queue pointer replays work.
     expect(final.publication.sequence).toBe(
-      ['complete', 'form'].includes(scenario.kind) ? 3 : scenario.turns - 1,
+      ['complete', 'form', 'scope'].includes(scenario.kind) ? 3 : scenario.turns - 1,
     );
     if (scenario.kind === 'form') {
       const finalQuestion = await api.interaction(f.prepared, recheck);

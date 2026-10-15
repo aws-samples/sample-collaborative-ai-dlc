@@ -290,10 +290,31 @@ const validateClaudeSession = (ctx, entries, metadata) => {
   const rows = jsonl(main.content);
   if (
     !rows.some((row) => row.sessionId === ctx.nativeSessionId) ||
-    rows.some((row) => row.sessionId !== undefined && row.sessionId !== ctx.nativeSessionId) ||
-    rows.some((row) => row.cwd !== undefined && row.cwd !== ctx.project)
+    rows.some((row) => row.sessionId !== undefined && row.sessionId !== ctx.nativeSessionId)
   )
-    fail('session_identity');
+    fail('session_id_mismatch');
+  // Claude's transcript cwd follows Bash cd; it is not the session's immutable
+  // project identity. Keep the exact session/project-key checks and accept only
+  // canonical directories that this checkpoint actually captures. The same
+  // check runs before restore writes anything. Excluded/private directories,
+  // external paths and symlinks cannot become recoverable working directories.
+  const directories = new Set(
+    metadata.directories
+      .filter((entry) => entry.scope === 'project')
+      .map((entry) => join(ctx.project, entry.path)),
+  );
+  if (
+    rows.some(
+      (row) =>
+        row.cwd !== undefined &&
+        (typeof row.cwd !== 'string' ||
+          !isAbsolute(row.cwd) ||
+          resolve(row.cwd) !== row.cwd ||
+          !inside(ctx.project, row.cwd) ||
+          !directories.has(row.cwd)),
+    )
+  )
+    fail('session_cwd_invalid');
   const paths = new Set(entries.map((entry) => entry.path));
   for (const entry of entries) {
     if (!entry.path.startsWith(`${base}/`)) continue;
