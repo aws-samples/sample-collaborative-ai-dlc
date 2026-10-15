@@ -1190,9 +1190,11 @@ isolated deployment.
 ## Runtime latency optimization — 2026-10-15
 
 **Speed is an active acceptance item, not deferred UI work.** This backend pass
-starts at `004d871`; it preserves the stabilization contract below. Frontend work
-and the independent architecture audit have separate owners. No model, reasoning,
-reviewer, human-gate, CLI/dependency, credential or authority policy was changed.
+starts at `004d871`; it preserves the stabilization contract below. These
+measurements predate the combined frontend integration and architecture findings
+recorded under **Output-adapter incident and combined integration** below. No
+model, reasoning, reviewer, human-gate, CLI/dependency, credential or authority
+policy was changed.
 
 ### Critical path and attribution
 
@@ -1357,23 +1359,24 @@ pinned binary, not a bypass or dependency upgrade.
 
 ### Prioritized speed work and acceptance
 
-| Priority / symptom                           | Evidence and action / owner                                                                                         | Expected impact and validation                                                                                                                                                                 | State                                                     |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| P1: question reply takes minutes             | 111–444 s inside CLI/workflow; runtime adds query/API and useful-output observations, UI shows honest elapsed phase | Attribution before changing quality; collect every serial boundary and identify useful-output gaps on one fresh authorized run                                                                 | Backend instrumentation done; live/UI verification needed |
-| P1: post-turn verification scales poorly     | Quadratic manifest validation and serial public I/O; backend uses one validation and four streaming transfers       | Local 512-file verification 3.71 → 0.73 s at synthetic 5 ms I/O; likely seconds, not minutes, saved on larger live publications (estimate)                                                     | Implemented and locally measured                          |
-| P1: 190–195 s first-install wait             | Split install/pin/configuration/verification now; retain exact package trust                                        | Attribute at least 95% of install interval before selecting an optimization. If EFS extraction dominates, evaluate an exact pinned read-only image/cache projection with recovery tests        | Instrumentation done; actual cause unmeasured             |
-| P1: long interval without useful feedback    | First useful activity 20–44 s despite raw frame at ~2 s; fixed preparation/save notices use existing output channel | Under healthy local transport each phase notice precedes its work; live target: show accepted state immediately and current phase within one existing poll cycle plus measured transport delay | Backend done; UI owner / live qualification               |
-| P2: remaining 7–9 s upload-to-admission tail | Five-second polling plus exact verification/authority; new boundaries split these                                   | Measure verification versus poll/notification before changing cadence. Do not shorten safety deadlines or add another scheduler                                                                | Diagnostics done; cadence unchanged                       |
-| P2: repeated context/tools/hooks             | 164–169 KB inert request, many live completed tools; inspect active-stage attribution next                          | No model/reasoning/reviewer/context reduction without separately approved paired quality/latency experiment                                                                                    | Decision/evidence needed                                  |
-| P2: avoidable extra question turns           | Typed asks and grouped current-step forms already qualified                                                         | One accepted complete form → one continuation; no mode-selection repair turn or replay                                                                                                         | Preserved by composed journey                             |
-| P3: immutable upload reuse                   | Content-addressed private objects already reconcile exact bytes; public history pins versions                       | Investigate only if upload remains dominant; cache must not replace owner/access or hash verification                                                                                          | Deferred by measured priority                             |
+| Priority / symptom                           | Evidence and action / owner                                                                                         | Expected impact and validation                                                                                                                                                                 | State                                           |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| P1: question reply takes minutes             | 111–444 s inside CLI/workflow; runtime adds query/API and useful-output observations, UI shows honest elapsed phase | Attribution before changing quality; collect every serial boundary and identify useful-output gaps on one fresh authorized run                                                                 | Runtime/UI integrated; live verification needed |
+| P1: post-turn verification scales poorly     | Quadratic manifest validation and serial public I/O; backend uses one validation and four streaming transfers       | Local 512-file verification 3.71 → 0.73 s at synthetic 5 ms I/O; likely seconds, not minutes, saved on larger live publications (estimate)                                                     | Implemented and locally measured                |
+| P1: 190–195 s first-install wait             | Split install/pin/configuration/verification now; retain exact package trust                                        | Attribute at least 95% of install interval before selecting an optimization. If EFS extraction dominates, evaluate an exact pinned read-only image/cache projection with recovery tests        | Instrumentation done; actual cause unmeasured   |
+| P1: long interval without useful feedback    | First useful activity 20–44 s despite raw frame at ~2 s; fixed preparation/save notices use existing output channel | Under healthy local transport each phase notice precedes its work; live target: show accepted state immediately and current phase within one existing poll cycle plus measured transport delay | Runtime/UI integrated; live qualification open  |
+| P2: remaining 7–9 s upload-to-admission tail | Five-second polling plus exact verification/authority; new boundaries split these                                   | Measure verification versus poll/notification before changing cadence. Do not shorten safety deadlines or add another scheduler                                                                | Diagnostics done; cadence unchanged             |
+| P2: repeated context/tools/hooks             | 164–169 KB inert request, many live completed tools; inspect active-stage attribution next                          | No model/reasoning/reviewer/context reduction without separately approved paired quality/latency experiment                                                                                    | Decision/evidence needed                        |
+| P2: avoidable extra question turns           | Typed asks and grouped current-step forms already qualified                                                         | One accepted complete form → one continuation; no mode-selection repair turn or replay                                                                                                         | Preserved by composed journey                   |
+| P3: immutable upload reuse                   | Content-addressed private objects already reconcile exact bytes; public history pins versions                       | Investigate only if upload remains dominant; cache must not replace owner/access or hash verification                                                                                          | Deferred by measured priority                   |
 
 Architecturally, serial turns, exact checkpointing and atomic admission are
 necessary correctness boundaries, not evidence of a minutes-long scheduler
 defect. The unnecessary serial public I/O and quadratic validation were concrete
 local choices worth changing. Splitting large functions alone cannot shorten
-the observed CLI/workflow intervals. Global decomposition findings belong to the
-separate audit; this pass adds no scheduler, cache service or alternate authority.
+the observed CLI/workflow intervals. The subsequent combined-integration section
+records the independent decomposition audit; this pass adds no scheduler, cache
+service or alternate authority.
 There is no evidence yet supporting a model switch or lower reasoning as the
 default. A separately authorized comparison may measure those tradeoffs.
 
@@ -2621,11 +2624,11 @@ compatibility defects; neither is asserted as this historical incident's cause.
 
 `turn-output.js` now records the first rejection as closed `reason`, `recordType`,
 record/query/message counts and text/result byte counts. No raw text, options,
-paths, provider error or arbitrary error property is retained. The executor writes
-that projection through its existing owner status and `outputRejected` lifecycle
-boundary immediately; both controller mapper and diagnostic sink apply the same
-closed projection. Specific public failure categories distinguish JSON, UTF-8,
-shape, text and result failures. Existing generic/legacy failures remain readable.
+paths, provider error or arbitrary error property is retained. The executor exposes
+that projection in its existing runtime report and emits `outputRejected`
+immediately; the existing terminal owner-status write persists it. Both controller
+mapper and diagnostic sink apply the same closed projection. Specific public
+failure categories distinguish JSON, UTF-8, shape, text and result failures. Existing generic/legacy failures remain readable.
 Telemetry remains advisory, and a diagnostic callback failure cannot alter the
 parser outcome. Publication and checkpoint authority are unchanged.
 
@@ -2705,9 +2708,9 @@ The first sandboxed qualification attempt passed 887 tests and failed 54 with
 local-socket restrictions, including two uncaught `listen EPERM` errors. The
 host-permission rerun passed the backend/UI/WebSocket tiers, then correctly
 failed the architecture threshold (output reducer B42 > B36). Terminal-result
-validation was isolated in a named helper without relaxing that threshold, and
-the complete command above then passed. These earlier failures are retained as
-evidence, not counted as green runs.
+validation was isolated in a named B11 helper, leaving the reducer at B32 without
+relaxing that threshold, and the complete command above then passed. These earlier
+failures are retained as evidence, not counted as green runs.
 
 All **248 release tests**, the frontend production build and all eight native
 controller bundles passed. Lint, format, secretlint, SDK alignment and dependency
@@ -2718,9 +2721,21 @@ local cache lock; the first sandbox attempt failed before building. The first
 full frontend run (four workers) passed 1,930 tests and failed one history export
 button wait; all 30 history tests then passed in isolation with unchanged
 assertions/timeouts. The full rerun with two workers passed **1,931 tests in 141
-files** (73.63 s). The ordinary commit-hook result is recorded below when complete.
-No deployed browser, real model, AWS mutation,
-push or deployment was performed.
+files** (73.63 s).
+
+Implementation commit `e41be7ab221c64810d961a7ddd9f05dcb66629d0` passed the
+ordinary hook with `VITEST_MAX_WORKERS=1`: **1,549 affected backend tests in
+50 files**, 73.25 s, staged lint/format/secrets, dependency boundaries and frontend
+typechecking. Both production dependency audits found zero vulnerabilities.
+The subsequent full `npm test -- --maxWorkers=1` passed **10,372 tests**, with
+**three skipped** (Bun is unavailable), **360 passing files and one skipped file**,
+in **764.06 s**. No assertion, timeout, dependency or hook was bypassed to obtain
+these results. Final full lint/format/secret scans passed again. Optional
+semgrep/opengrep were unavailable; no SAST result is claimed. Terraform sources
+were unchanged; this pass ran the 22 native wiring checks, not a deployment or
+new Terraform plan. UI attribution is retained in `e971638460a46e677ca794ebdb95c3257645f43c`.
+
+No deployed browser, real model, AWS mutation, push or deployment was performed.
 
 Reproduce the installed tier with the cached immutable image and previously
 attested release directory (no implicit registry pull):
