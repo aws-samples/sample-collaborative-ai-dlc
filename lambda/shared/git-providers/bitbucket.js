@@ -719,7 +719,7 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
 const findPullRequest = async (
   ctx,
   repoId,
-  { sourceBranch, targetBranch = null, state = 'OPEN' },
+  { sourceBranch, targetBranch = null, state = 'OPEN', strict = false },
 ) => {
   const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
 
@@ -728,18 +728,23 @@ const findPullRequest = async (
   // field explicitly (BCLOUD-23659). Without `(draft=true OR draft=false)` a
   // draft unit-PR is silently missed at fan-in, so keep the clause on every
   // lookup regardless of state.
-  let query = `source.branch.name="${sourceBranch}" AND state="${stateFilter}" AND (draft=true OR draft=false)`;
+  let query = `source.branch.name=${JSON.stringify(sourceBranch)} AND state="${stateFilter}" AND (draft=true OR draft=false)`;
   if (targetBranch) {
-    query += ` AND destination.branch.name="${targetBranch}"`;
+    query += ` AND destination.branch.name=${JSON.stringify(targetBranch)}`;
   }
 
   const res = await bbFetch(
     ctx,
     `${API_BASE}/repositories/${workspace}/${repoSlug}/pullrequests?q=${encodeURIComponent(query)}&pagelen=100`,
   );
-  if (!res.ok) return null;
+  if (!res.ok) {
+    if (strict) throw new ProviderError(res.status, 'Pull-request lookup failed');
+    return null;
+  }
 
   const data = await res.json();
+  if (strict && (!Array.isArray(data.values) || data.next))
+    throw new ProviderError(409, 'Pull-request lookup incomplete');
   return Array.isArray(data.values) && data.values.length > 0 ? data.values[0] : null;
 };
 
@@ -847,6 +852,19 @@ const createPullRequest = async (
         }
       : {}),
   };
+};
+
+const getBranchHead = async (ctx, repoId, branch) => {
+  const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
+  const res = await bbFetch(
+    ctx,
+    `${API_BASE}/repositories/${workspace}/${repoSlug}/refs/branches/${encodeURIComponent(branch)}`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new ProviderError(res.status, 'Branch lookup failed');
+  const data = await res.json();
+  if (!data.target?.hash) throw new ProviderError(502, 'Invalid branch response');
+  return data.target.hash;
 };
 
 const compareBranches = async (ctx, repoId, { base, head }) => {
@@ -1055,6 +1073,7 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
   createPullRequest,
   compareBranches,
@@ -1089,6 +1108,7 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
   createPullRequest,
   compareBranches,
