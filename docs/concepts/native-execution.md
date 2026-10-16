@@ -1359,6 +1359,10 @@ pinned binary, not a bypass or dependency upgrade.
 
 ### Prioritized speed work and acceptance
 
+The following table records the 2026-10-15 assessment. Current task status and
+remaining acceptance criteria are maintained under
+[Stabilize and optimize native execution](#stabilize-and-optimize-native-execution).
+
 | Priority / symptom                           | Evidence and action / owner                                                                                         | Expected impact and validation                                                                                                                                                                 | State                                           |
 | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
 | P1: question reply takes minutes             | 111–444 s inside CLI/workflow; runtime adds query/API and useful-output observations, UI shows honest elapsed phase | Attribution before changing quality; collect every serial boundary and identify useful-output gaps on one fresh authorized run                                                                 | Runtime/UI integrated; live verification needed |
@@ -2675,6 +2679,10 @@ complexity. It found zero production cycles/errors and 14 dependency warnings
 coordinator B67, projection JSON consumer B45, probe turn B40, restore B37,
 supervisor B37 and output reducer B35. These quantify review cost, not latency.
 
+The following table records the audit's recommendations at this revision.
+Their current implementation order and acceptance criteria live in
+[Open work](#stabilize-and-optimize-native-execution).
+
 | Ordered follow-up                                               | Concrete cost / acceptance boundary                                                                                                | State                                                                  |
 | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | Current-path protocol fixtures                                  | Exercise installed terminal variants before changing reducers; preserve hostile/incomplete cases                                   | Expanded in this pass; live model compliance open                      |
@@ -2774,6 +2782,121 @@ This is the temporary native working backlog. **Capability** means missing
 product behavior, **issue** means a gap confirmed in current source, and
 **verification** means evidence still needed. Complete the serial pilot's
 release criteria before widening support; later capabilities are separate scope.
+
+This document is the single tracker for native issues, decisions, implementation
+and remaining verification. Earlier incident/audit sections preserve dated
+evidence; this **Open work** section owns current task status. The separate
+2026-10-15 review report is historical evidence, not another work list. Its
+actionable follow-ups were reconciled here on 2026-10-16.
+
+### Stabilize and optimize native execution
+
+The reviewed baseline is `3bb52c7`: bounded publication I/O, single manifest
+validation, immediate reply feedback, runtime phase notices and the two installed
+Claude terminal-projection corrections are implemented locally. Local checks do
+not close the remaining live stability or latency work. Keep each simplification
+independently reviewable; preserve the existing authority and checkpoint owners.
+
+- [ ] **Verification — local installed-CLI journeys for all supported harnesses.**
+      **Current implementation task, authorized 2026-10-16.** Extend
+      `npm run test:native-qualification` to select the native image by immutable
+      digest and exercise Claude, Codex, OpenCode and Kiro. Reuse production
+      workflow/CLI/process/parser/checkpoint code and existing controller/storage
+      test adapters, with small harness-specific provider fixtures. Start with
+      start → question → protected answer → next question → checkpoint → exact
+      restore → continuation. Cover actual supported tool/background-query and
+      terminal variants, interruptions, incomplete output, duplicate delivery and
+      first-rejection diagnostics; retain hostile-input and authority checks.
+      Done when each harness has an explicit installed pass or a concrete
+      unsupported/blocked boundary, no silent skips, and applicable regressions
+      fail against the offending implementation. Record image, installed versions,
+      package provenance, host/container environment and safe phase timings.
+      Keep one runner; do not build a local platform replica, duplicate the
+      scheduler/authority model, patch CLI internals to fake support or create
+      another test framework. Provider calls and deployment remain separate
+      qualification. Claude's four-turn installed baseline is already passing;
+      the existing **support matrix and settings** item owns broader live support.
+- [ ] **Issue — slow first installation.** Historical deployed installation took
+      190–210 seconds while the cached local fixture's installation/configuration
+      took roughly 2–3 seconds. Use the existing phase observations and matching
+      image/package inputs to attribute installation, pinning, configuration,
+      extraction and verification; distinguish local filesystem from deployed
+      storage. Done when the expensive phase is identified with comparable
+      evidence before selecting a cache or image-packaging change. Any candidate
+      must preserve exact package trust, immutable pins and cold restoration.
+- [ ] **Issue — minutes inside CLI/workflow execution.** The latest failed
+      invocation lasted 922.699 seconds; successful reply intervals also took
+      minutes. Attribute serial queries, provider/API waits, workflow tools,
+      hooks, subagents, repeated work and request/context sizes through existing
+      owners. Done when dominant intervals and quiet gaps have evidence, and any
+      optimization has a paired same-scenario comparison with unchanged quality
+      and human gates. Do not label total CLI time as inference or sum overlapping
+      query counters. Model/reasoning changes, reduced reviewer work and an upstream
+      typed workflow interface require a separate supported decision.
+- [ ] **Verification — feedback and post-turn latency.** Measure acceptance →
+      delivery, captured output → browser display, capture/upload, verification →
+      atomic admission and next-form display on one aligned candidate. Existing
+      7–10 second upload-to-admission tails include polling and verification;
+      measure their contributions before changing cadence. Done when immediate
+      submission/acceptance feedback, stale/unavailable observations, runtime
+      notices and reconnect are verified with timestamps and never unlock an
+      unadmitted form. Reuse the existing **live lifecycle and upgrade** and
+      **activity and observability** qualification rather than another test run
+      tracker. Live speedup from the implemented I/O/UI changes remains open.
+- [ ] **Issue — obsolete projection mutation in fixtures.** Recheck callers of
+      `lambda/native-runtime-control/execution-store.js`'s `projected()` mutator.
+      Move fixtures to the current projection owner, then retire the production-
+      uncalled transition. Done when tests exercise the real projection path and
+      historical field reads, post-publication lease release and ownership
+      behavior remain compatible. Complete this before batching activity hints.
+- [ ] **Issue — activity notification fan-out.** The audited activity store awaits
+      a broadcast for each committed row and repeats subscriber lookup. Emit one
+      content-free high-watermark hint per committed batch through the existing
+      notification path. Done when every OUTPUT row is retained, notification
+      work is bounded per batch, and cursor/hash reconciliation, denied reads,
+      duplicate ingestion and lost-hint replay still pass.
+- [ ] **Issue — duplicate detail reads.** Coalesce overlapping loads in
+      `frontend/src/contexts/adapters/nativeIntent.ts` and review the up-to-25
+      listing detail hydrations in `hooks/useNativeIntents.ts`. Done when a scope
+      has one in-flight detail refresh with measured fewer requests, while
+      revision ordering, account/session/access generations, uncertain mutations
+      and collection-versus-detail authorization remain intact. Follow the
+      notification change; retain the existing adapters and service layer.
+- [ ] **Issue — concentrated API route classification.** Replace repeated route
+      classification in `lambda/native-runtime-control/api.js` with local route
+      descriptors feeding existing handlers. Done when duplicate decisions are
+      removed and legacy routes, strict path/query validation, pre/post membership
+      checks and special rejection DTOs pass. This is a maintainability change;
+      no runtime speedup is assumed.
+- [ ] **Issue — mutually exclusive harness parser state.** After installed
+      contract coverage, select the applicable harness reducer once in
+      `lambda/agentcore/native/turn-output.js`. Preserve shared bounded JSON/session
+      checks and keep lossy activity rendering separate from terminal authority.
+      Done when impossible cross-harness state is removed and multi-query,
+      silent/markup projections, terminal agreement, credentials and retained
+      protocols pass without raising the existing complexity budget.
+- [ ] **Issue — interleaved checkpoint restore planning.** Build one validated
+      restore plan in `lambda/agentcore/native/session-recovery-files.js`, reuse
+      its indexes and existing format identifiers, and preserve independent
+      readback verification. Done when exact bytes, paths, mtimes/modes, hardlinks,
+      session ancestry and partial-restore rejection remain covered. Defer this
+      higher-risk refactor until the installed recovery journeys pass.
+- [ ] **Issue — shared executor turn state.** Consolidate mutable admission and
+      terminal state around a per-turn context in the existing executor after
+      protocol/restore coverage. Done when duplicated state decisions are removed
+      while command-specific fsync → acknowledgement → spawn ordering, poison
+      state, cancellation and cold-owner rejection remain unchanged.
+- [ ] **Issue — supervisor failure classification.** Give activity catch-up an
+      explicit observation outcome and reuse existing lifecycle helpers in
+      `lambda/native-runtime-control/execution-worker.js`. Done when backlog,
+      transport and ownership failures cannot be confused, while final-output
+      draining, status-only retry and exact stop acknowledgement pass. Follow
+      the lower-risk fixture, notification and read simplifications.
+
+Immutable upload reuse remains deferred unless measurements show uploads still
+dominate. The current content-addressed/versioned receipts and hash/access checks
+must remain authoritative. Broader caches, workflow-interface redesign and a
+complete local cloud/platform emulator are not part of the active task.
 
 ### Complete the serial product journey
 
@@ -3595,6 +3718,13 @@ release criteria before widening support; later capabilities are separate scope.
       are unavailable from the current public signals. No live model call,
       deployment or AWS mutation was performed; this item remains open for that
       evidence.
+      **Current update (2026-10-16):** `3bb52c7` includes immediate reply feedback,
+      delivery distinctions, elapsed/stale observations and runtime phase notices
+      through the existing output owner. The production-producer-to-UI regression
+      passed independent qualification. Current latency acceptance and notification
+      simplification are tracked under
+      [Stabilize and optimize native execution](#stabilize-and-optimize-native-execution);
+      deployed browser timing and complete CLI attribution remain open.
 - [ ] **Verification — runtime stability.** Revisit historically reported mid-turn
       runtime losses and reviewer timeouts on the current package/image. Done when
       repeated representative long and reviewer-heavy runs report durations,
@@ -3606,6 +3736,16 @@ release criteria before widening support; later capabilities are separate scope.
       A reproduced stalled-recorder-write defect is corrected; it is not a
       demonstrated cause of runtime death. Scripted Linux checks and current
       source validation do not close the outstanding real-package/live evidence.
+      **Current update (2026-10-16):** the
+      [output-adapter incident](#output-adapter-incident-and-combined-integration-2026-10-15)
+      failed before checkpoint four after 922.699 seconds in the CLI. Its exact
+      first rejected frame was not retained; two demonstrated installed-Claude
+      defects were fixed and first-rejection diagnostics added in `e41be7a`.
+      Independent qualification at `3bb52c7` passed 941 backend and 307 UI/service
+      tests, the local WebSocket scenario, architecture/wiring checks and four
+      actual installed-Claude turns with exact restore. This does not close the
+      historical cause or live stability. The new local all-harness task above
+      extends that baseline; the failed run stays untouched.
 - [ ] **Capability and verification — support matrix and settings.** State which
       package/protocol, harness, model, source provider, and settings combinations
       are supported. Qualify Claude Code, Codex, Kiro, and OpenCode before advertising
@@ -3620,12 +3760,16 @@ release criteria before widening support; later capabilities are separate scope.
       require reload; subsequent changes cannot retarget an admitted run. New
       structured gate capture requires the complete visible supported spec, while
       old interactions/configuration hashes and retained bytes remain unchanged.
-      **Still open:** real pinned-model/deployed qualification for all four
-      harnesses, current package/forks, and same-session cold recovery. The local
-      offline package attempt was blocked by Sigstore trust initialization, not
-      credited as a successful installation. No model/provider call, deployment
-      or AWS mutation was performed. Existing product decisions listed elsewhere
-      in this backlog remain unchanged.
+      **Current update (2026-10-16):** the 2026-10-14 local package attempt was
+      blocked by Sigstore trust initialization. Later qualification used the
+      attested AI-DLC 2.11.0 package successfully with actual Claude 2.1.296:
+      four same-session turns, typed scope choices and exact restore passed at
+      `3bb52c7`. Installed local qualification for Codex, OpenCode and Kiro is
+      assigned to the local all-harness task above; do not count scripted parser
+      fixtures as installed-CLI evidence. **Still open:** real pinned-model/deployed
+      qualification for all four harnesses, current package/forks, and same-session
+      cold recovery. No model/provider call, deployment or AWS mutation was
+      performed. Existing product decisions elsewhere in this backlog are unchanged.
 - [ ] **Verification — live lifecycle and upgrade.** Complete one useful task from
       source selection through decisions, implementation, tests, final review, and
       obtainable result. Start with the oldest supported retained image, park,
