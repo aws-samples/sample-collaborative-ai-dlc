@@ -53,6 +53,7 @@ const RUNTIME_HANDLERS = Object.freeze(
     'policy.skeleton.switch@v1',
     'policy.summary-confirmation.off@v1',
     'prompt.learnings@v1',
+    'protocol.construction-autonomy.gate-waiver@v1',
     'protocol.loopback.gate-offered@v1',
     'protocol.plan-approval.outcome-gate@v1',
     'review.adversarial@v1',
@@ -190,7 +191,7 @@ const AIDLC_CAPABILITIES = Object.freeze([
     }),
     defaultWhenAbsent: null,
     capabilityPresentIf: null,
-    note: 'The plan pins an advisory reviewer to one terminal pass and NOT-READY neither fails the stage nor triggers repair. Its findings are carried into the approval prompt\u2019s findings section AND the structured gate row, which is upstream\u2019s at-the-gate presentation; the timeline note remains as the durable record. `adversarial` resumes the lead for one repair turn between NOT-READY rounds, bounded by the stage wall-clock budget. An adversarial verdict still NOT-READY after that loop is surfaced at a gated stage\u2019s approval gate as an advisory finding (`review_advisory_findings`) and `approve` remains, as upstream lets a post-cap NOT-READY be approved like any other gate. Residual: a codex lead, or any lead with no resumable CLI session, gets no repair turn, so its next round re-reviews the same revision.',
+    note: 'The plan pins an advisory reviewer to one terminal pass and NOT-READY neither fails the stage nor triggers repair. Its findings are carried into the approval prompt\u2019s findings section AND the structured gate row, which is upstream\u2019s at-the-gate presentation; the timeline note remains as the durable record. `adversarial` resumes the lead for one repair turn between NOT-READY rounds, bounded by the stage wall-clock budget. An adversarial verdict still NOT-READY after that loop is surfaced at a gated stage\u2019s approval gate as an advisory finding (`review_advisory_findings`) and `approve` remains, as upstream lets a post-cap NOT-READY be approved like any other gate. On a gate a construction autonomy grant would waive, the same verdict \u2014 or a reviewer that recorded none \u2014 is instead a BLOCKING overridable finding (`review_not_ready`): the gate opens for a human, plain `approve` is withheld and accepting the objection is recorded. That is deliberately stricter than upstream, which lets a post-cap NOT-READY be approved like any other gate. Residual: a codex lead, or any lead with no resumable CLI session, gets no repair turn, so its next round re-reviews the same revision.',
   }),
   Object.freeze({
     key: 'STAGE:review_artifact',
@@ -405,6 +406,26 @@ const AIDLC_CAPABILITIES = Object.freeze([
     appliesTo: `recommender: stage.produces includes ${LOOP_BACK_RESULTS_ARTIFACT}; target: in-scope stage immediately before it, with workspaceRequires === true || produces includes ${PLAN_APPROVAL_ARTIFACT}`,
     note: 'Upstream loops build-and-test back to code generation AUTONOMOUSLY, up to three times per intent. The platform reproduces the bound and the routing but OFFERS the jump to the human at the validation gate build-and-test already has: the agent records a recommendation through `emit_stage_note`\u2019s `loopBackRecommended` field (written by the platform onto the stage row, never parsed from prose), and the gate then carries a third `loop-back` option naming the code-generation stage immediately before. Choosing it resets both stage rows, which bumps their attempt and makes every prior plan-approval and review receipt invisible, and re-runs code generation with the reason and the reviewer\u2019s feedback. At three recorded loop-backs the option is withheld and the gate says so. `approximated`, not `native`: the bound is faithful, the autonomy is deliberately not. Residual: in scopes that run code generation per unit (classic, enterprise, feature, mvp, workshop) build-and-test has no linear target, so the gate shows the recommendation as a note and those scopes keep the rewind API.',
   }),
+  // Construction Autonomy Mode is protocol prose plus a state field upstream, not
+  // a frontmatter field, so like the two entries above it is keyed on the closure
+  // shipping the construction protocol at all and never appears in the
+  // frontmatter fidelity report.
+  Object.freeze({
+    key: 'PROTOCOL:construction-autonomy',
+    blockType: 'PROTOCOL',
+    field: 'construction-autonomy',
+    planKey: null,
+    policy: null,
+    handling: 'native',
+    handler: 'protocol.construction-autonomy.gate-waiver@v1',
+    values: null,
+    defaultWhenAbsent: null,
+    capabilityPresentIf:
+      'runtimeFilePresent:core/aidlc-common/protocols/stage-protocol-construction.md',
+    appliesTo:
+      'construction-phase stages other than the plan\u2019s first non-skipped construction stage with a sequential gate (a per-unit stage inside a parallel section is never that anchor), excluding a gate that carries a fan-out approval or a Plan Approval',
+    note: 'Upstream records the human\u2019s grant in `Construction Autonomy Mode` (`unset`/`gated`/`autonomous`, only the exact `autonomous` truthy) and waives the remaining construction stage gates. The platform freezes the same two-valued grant onto the intent at create, or escalates it from the one construction gate that always stays human through a `grant-autonomy` answer (`v2.autonomy.mode_set`). The grant is written by value inside a durable step, so a replay records it once. A waived gate still runs the full gate-precondition evaluation; only an EMPTY findings list over OBSERVED outputs auto-approves (outputs the runner could not observe halt, because the evaluator never reports them missing), writing the same attempt-scoped `stage-approval` receipt with the protocol\u2019s marker input plus `v2.gate.auto_approved`, and anything else \u2014 a blocking sensor, a terminal adversarial NOT-READY, a missing required artifact, learning candidates waiting for the learnings ritual, or an evaluation error \u2014 opens the ordinary human gate with its findings. The first construction stage, every Plan Approval, every fan-out approval, a stage failure, and any loop-back recommendation (offered, at the bound, or with no target) remain human, which is upstream\u2019s halt-and-ask set. `native`: the grant, its scope, the anchor carve-out and the halt-and-ask set are all reproduced. Residuals: (1) upstream additionally refuses a blocking-sensor override under autonomy \u2014 here an autonomous gate never overrides at all (it halts), so the refusal has nothing to refuse; (2) the grant governs only the once-per-workflow sequential gates. Per-unit stages inside a parallel section keep their own ceremony \u2014 the skeleton gate and the section ladder (`v2.units.autonomy_set`, whose `UNITPLAN.autonomyMode` is a SEPARATE decision from this grant), so a scope with a unit DAG still batches its lane approvals there. In those scopes the anchor is the first sequential construction gate after the lanes (for example build-and-test): that gate stays human and is where `grant-autonomy` is offered; (3) a terminal adversarial NOT-READY halts a waived gate instead of being auto-approved, which is stricter than upstream; (4) once given, the grant holds for the rest of the intent, rewinds included, until the intent is cancelled: cancel clears it and records the withdrawal on the grant\u2019s provenance, so a rewind after a cancel relaunches gated. Cancel is only accepted while the intent is parked or failed; a waived gate never parks, so an autonomous run can be cancelled once it halts at a human gate, a question or a failure; (5) a waived gate judges the stage\u2019s evidence, not its test results: a build-and-test stage that succeeds with failing tests but raises no finding and records no loop-back recommendation is approved under autonomy, and a blocking results sensor is what halts it.',
+  }),
 ]);
 
 // Registry invariants, checked once at import: a claim of fidelity that names no
@@ -557,6 +578,30 @@ const resolveCapabilities = (library = {}) =>
   );
 
 /**
+ * The protocol capabilities a release record's stored evidence proves, for a
+ * reader that has the record but not the closure (the release listing).
+ *
+ * The evidence names each PROTOCOL capability the closure ships, and each is
+ * keyed on one runtime file. Those files are recovered and resolved again, so a
+ * capability registered after the evidence was computed is still reported when
+ * it is keyed on a file the evidence already proves. No evidence proves nothing.
+ */
+const protocolCapabilitiesFromEvidence = (fidelityGaps) => {
+  const present = new Set(
+    (Array.isArray(fidelityGaps) ? fidelityGaps : [])
+      .filter((gap) => gap?.blockType === 'PROTOCOL' && gap.value === 'present')
+      .map((gap) => gap.field),
+  );
+  const runtimeFilePaths = AIDLC_CAPABILITIES.filter(
+    (entry) =>
+      entry.blockType === 'PROTOCOL' &&
+      present.has(entry.field) &&
+      String(entry.capabilityPresentIf).startsWith('runtimeFilePresent:'),
+  ).map((entry) => entry.capabilityPresentIf.slice('runtimeFilePresent:'.length));
+  return resolveCapabilities({ runtimeFilePaths });
+};
+
+/**
  * The release-mode default for a field the catalog OMITS: the registry's
  * `defaultWhenAbsent`, but only where the capability is present. `null` means
  * "stay inert", which is what every field but SCOPE.change_control does.
@@ -652,6 +697,7 @@ export {
   defaultWhenAbsent,
   isQuestionChannelOutput,
   planApprovalApplies,
+  protocolCapabilitiesFromEvidence,
   resolveCapabilities,
   unhandledCapabilities,
   unhonouredValues,
@@ -672,6 +718,7 @@ export default {
   defaultWhenAbsent,
   isQuestionChannelOutput,
   planApprovalApplies,
+  protocolCapabilitiesFromEvidence,
   resolveCapabilities,
   unhandledCapabilities,
   unhonouredValues,
