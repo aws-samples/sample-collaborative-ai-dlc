@@ -2355,10 +2355,10 @@ The image supplies installed Claude; the checkout supplies the candidate native
 adapter. This does **not** claim a new image was built/deployed. Omitting the
 installed flags prints `NOT RUN`. CI uses deterministic scripted harness output
 and real composed native owners; it does not download an image or require
-secrets/models. Actual installed qualification currently covers Claude only.
-Codex/Kiro/OpenCode retain their existing advertised capability guards and
-scripted parser/session/interaction tests; they are **not** newly qualified as
-installed runtimes by this pass.
+secrets/models. **Historical scope of this pass:** installed qualification
+covered Claude only. Codex/Kiro/OpenCode were not qualified as installed runtimes
+by that pass. The current commands, installed matrix and unresolved gaps are in
+[the single local qualification task](#stabilize-and-optimize-native-execution).
 
 Acceptance scenarios are finite: typed scope options/one protected answer;
 mixed grouped form/complete submission; separate summary and approval; three
@@ -2816,6 +2816,172 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       another test framework. Provider calls and deployment remain separate
       qualification. Claude's four-turn installed baseline is already passing;
       the existing **support matrix and settings** item owns broader live support.
+
+      **Implemented locally, acceptance still open (2026-10-16):**
+      `86852aa2820097fb6f7e8e317c1d3c1ac3df6117` adds the installed matrix;
+      `721673f0b3c3cc4ca90f64b8862f470a3ada9052` fixes two reproduced OpenCode
+      compatibility defects. `bb35a1f2bd5ce480133c0f729fc4dac0c8a813f3` makes
+      the real Claude background fixture event-driven and its assertion failures
+      content-free. All findings and follow-up work remain in this item.
+      The complete selected matrix exits **1 / FAIL**; do not check this task off
+      while the cancellation and recovery/workflow gaps below remain.
+
+      ```bash
+      export PATH=/Users/jwthewes/.nvm/versions/node/v24.21.0/bin:$PATH
+      npm run test:native-qualification -- --cli all \
+        --image 746558295630.dkr.ecr.us-east-1.amazonaws.com/collaborative-ai-dlc-agentcore-dev@sha256:70c9fcd3595f2a785cc78d1ca339b3cd9bb6a488d332253512e373b21c895650 \
+        --assets /tmp/native-qualification-aidlc-2.11.0
+      ```
+
+      Add `--installed-only` to repeat just the Docker cases. `--cli` also accepts
+      `claude`, `codex`, `opencode`, `kiro`, or a comma-separated selection.
+      Existing `--image … --assets …` syntax retains Claude as its default,
+      including its original four-turn baseline plus the new composed and failure
+      cases. With no installed inputs, the fast command explicitly prints
+      `Installed CLI/workflow tier: NOT RUN`. A selected missing image, binary,
+      asset, failed case or blocked case cannot fall back to scripted success.
+      Every selected CLI is attempted; FAIL wins over BLOCKED, and a matrix with
+      only a blocked gap exits 2. No installed Docker tier was added to CI.
+
+      **Inputs and isolation:** macOS 27.0.1 ARM64, host Node 24.21.0, image Node
+      24.19.0; installed pins are checked exactly. The earlier supplied digest
+      `sha256:6063ed5c8134cc79ff60ecea337eabc157d820142e3671b8fbf6a3c1ab4fc001`
+      was no longer in the local cache. The immutable `70c9fcd…` image above was
+      already cached and contains the same four CLI pins. Nothing was pulled,
+      rebuilt or upgraded. This is the image's installed binaries with candidate
+      production modules mounted from the checkout, **not** an unmodified
+      candidate production image. Original release assets stay read-only; the
+      shared package helper verifies the four existing SHA-256 pins and supplies
+      public trust roots to the genuine installer's signature/ref/issuer checks.
+      The CLI/model environments are explicit and use inert values only. Docker
+      uses `--pull never --network none --read-only --user node --init`, read-only
+      mounts and disposable tmpfs. The host gives each container a unique name
+      and removes that container after completion or its ten-minute watchdog.
+      Fixture requests are bounded at 4 MiB each and 32 per CLI fixture server;
+      successful query counts are also asserted. No production state, private
+      S3/EFS body, provider credential, remote run or historical intent was read
+      or changed.
+
+      | Actual installed CLI | Passing installed evidence | Remaining selected status/boundary |
+      | --- | --- | --- |
+      | Claude 2.1.296 | Preserved four-turn attested AI-DLC 2.11.0 baseline: 12 genuine typed choices, Agent/cwd metadata, multiple parent queries with an actually emitted empty silent terminal result, multiple text blocks, memory-markup projection, captures and exact restore. Separate production-composed three-turn journey admits two protected immutable answers, survives lost runtime and admission acknowledgements, rejects duplicate/competing answers, restores before turn 3 and leaves the last question unanswered. Failed/truncated provider streams are rejected. | **FAIL cancellation:** the real tool descendant remains live in state `S` after cancellation and an additional 760 ms observation, while `runNativeCommand` reports `cleanupComplete: true`. |
+      | Codex 0.162.1 | Actual Responses transport, ordinary/tool/cwd output, three same-session turns without the workflow package; malformed/failed stream rejection and cancellation with the known descendant gone. Attested workflow installation and the real engine's typed offer run successfully in the composed path. | **FAIL recovery:** default installed `history_mode: paginated` is deliberately rejected by production capture as `native_recovery_session_layout_unsupported`, before admission. Exact restore and protected continuation remain unqualified. No legacy-mode override or history-guard relaxation was introduced. |
+      | OpenCode 1.19.0 | Actual compatible-provider transport, separate title query, tools/cwd, three same-session turns, real `export --pure` / `import --pure` / verification and continuation after restore without the workflow package. Failed and truncated primary streams are rejected. The attested workflow's initialization checks pass after the manifest correction. | **FAIL cancellation** with the same live-descendant condition as Claude. **Workflow blocked offline:** launch emits no stdout/stderr and makes zero local provider requests before the unchanged 60 s fixture deadline. Startup logs stop during generated `.opencode` configuration loading; the installed binary starts a background `@opencode-ai/plugin` dependency install there, and the isolated fixture has no populated dependency cache. The exact pending await was not instrumented. Do not count the package-free session test as workflow/typed-answer qualification. |
+      | Kiro 2.29.1 | Actual version command and production v2 ACP adapter invocation with inert authentication, bounded termination and confirmed runner process-group cleanup. | **BLOCKED:** no supported deterministic local v2 provider configuration was established. The inert-key invocation produces no terminal report before the 15 s bound. Session creation/authentication phase is not established by that timeout. Undocumented internal mock-response/KAS/test-engine switches were not used; no installed workflow, typed offers, recovery or model result is claimed. |
+
+      **Required follow-up within this task:** qualify cleanup of the real
+      Claude/OpenCode tools' separate process groups before trusting the runner's
+      all-writers-stopped evidence; qualify Codex paginated-history dependency
+      closure before extending recovery; supply and verify an exact offline
+      OpenCode dependency closure without altering package hooks/permissions;
+      establish a supported Kiro v2 deterministic provider input, or retain its
+      explicit local boundary. These are newly exposed existing gaps, not green
+      acceptance. The disposable container confines the observed live child;
+      container teardown is not proof that the production command runner cleaned
+      it up. No broad process-supervision or recovery-format redesign was added
+      to this implementation.
+
+      **Verified corrections and old/fixed evidence:** the original OpenCode
+      initializer rejected the genuine AI-DLC 2.11 `json-entries` root-contribution
+      policy. The installed package now passes initialization with its entry
+      digests still validated. The added regression fails against the original
+      `2544548` inspector (1 failed / 113 deliberately filtered) and passes after
+      correction. Real OpenCode export/import also reordered JSON object keys:
+      session ID, directory and parsed messages were equal, while serialization
+      differed. Recovery now compares parsed messages with exact values and array
+      order; original checkpoint bytes remain immutable. The old implementation
+      fails the new key-order case while the three changed-text/message-order/
+      part-order rejection cases pass; the corrected 191-test combined
+      initialization/recovery suite and real installed round trip pass. No
+      accepted record, package pin, credential rule or human gate was rewritten.
+      Separately, the pre-`e41be7a` output module mounted read-only into the same
+      image fails the actual Claude turn-2 silent/background sequence with
+      `native_execution_output_invalid`; the corrected module passes all four
+      original turns. This is not a replay or explanation of intent `455d6055`:
+      its historical first rejected frame remains unavailable.
+
+      **Finite coverage layers:** one shared Docker selector and installed runner,
+      three small provider wire fixtures and a shared attested-package helper;
+      the existing Claude scenario keeps its specialized background/projection
+      assertions. Production `nativeExecutionInvocation`, command runner,
+      initializer, output reducer, package hooks, snapshot and recovery code are
+      reused. The composed path uses the real executor, supervisor, execution API,
+      receipt/checkpoint/fence owners and existing in-memory DynamoDB/S3 test
+      ports; the S3 fixture was extracted from the existing checkpoint journey.
+      It does not implement another scheduler or cloud stack. Controller answer
+      acceptance/delivery is not an engine completion receipt or model-compliance
+      proof. Existing production
+      tests retain malformed/incomplete/failed streams, wrong-session and
+      credential rejection, nonfatal presentation, immutable answers, lost-ack
+      and duplicate guards, recovery and first-rejection persistence. The installed
+      truncated-stream case proves a primary query received truncated SSE and
+      rejects any subsequent retry; it is not a model/network reliability test.
+      The separate CLI-only session tier never claims controller admission.
+      The installed exact restores reuse the admitted local writer and original
+      paths, not a deployed cold-generation takeover. No raw prompts, assistant
+      output, tool arguments or credentials are emitted in fixture reports.
+
+      **Bounded measurements from the final all-CLI run (samples, not SLOs):**
+      the shared controller journey's Claude setup took 1,590 ms installation,
+      384 ms pinning, 163 ms harness configuration and 10 ms initialization
+      verification. Turns took 1,795 / 1,409 / 1,088 ms, with primary request
+      counts **2 / 2 / 1**, and first useful activity after launch at
+      **1,395 / 1,022 / 682 ms**. Continuations run no installer commands: exactly
+      three setup processes total, three top-level CLI launches and two measured
+      workspace scans per turn. Requests were 265,227–267,197 bytes (including
+      74,198 bytes of tool definitions); captures were 126 / 130 / 135 ms and
+      exact restore/verification of 342 files took 621 ms. OpenCode's package-free
+      turns took 1,174 / 1,128 / 1,154 ms with **2 / 2 / 1 total requests** (the
+      first includes its title query), 30,720–31,263 bytes per primary request,
+      and 1,144 ms for import/verification of the 8,711-byte session export.
+      Codex's package-free turns took 5,116 / 5,141 / 5,100 ms despite the first
+      primary request arriving at 76 / 62 / 68 ms; that repeatable local overhead
+      is exposed for attribution, not assigned to provider latency. Its composed
+      first turn took 7,119 ms with two requests of 161,867 / 162,566 bytes before
+      checkpoint rejection. Do not compare different CLI/prompt scenarios as a
+      speed ranking. Same-image Claude old/fixed baseline comparisons preserve
+      the scenario and query shape (2 initial requests; 5 on the background/tool
+      turn); the demonstrated change is acceptance of the emitted variant, not
+      a speedup. These samples do not establish deployed install/network/storage,
+      cold-start, model/tool usefulness, browser feedback or end-to-end latency;
+      the historical 190–210 s installation and 922.699 s CLI interval remain
+      separate evidence.
+
+      **Validation:** final complete command at the code in `86852aa` passed
+      **1,213 backend, 307 UI/service, one real localhost WebSocket scenario**
+      (32 intentionally filtered tests), six architecture regressions and 22
+      wiring checks; 391 production modules, zero architecture violations.
+      Its installed matrix then returned FAIL for the explicit cases above.
+      `npm run test:release`: **252 passed**; the new four host-command tests
+      include a deliberately mocked Docker transport to verify aggregate status
+      and container cleanup, not installed CLI evidence. Lint, secretlint,
+      dependency and SDK checks and the frontend build passed. Existing lint,
+      14 dependency warnings, the existing Smithy range warning and bundle-size
+      warnings remain. Normal commit hooks passed 781 affected tests for the
+      fixes and 26 for the harness; root/frontend audits reported zero
+      vulnerabilities. Full backend/frontend suites, Node 22, live models,
+      deployed IAM/runtime and browser qualification were not rerun or claimed.
+      The subsequent fixture-only `bb35a1f` change passed two installed four-turn
+      runs (one through the default Claude matrix invocation) and the installed
+      old-adapter negative comparison; the composed three-turn journey still
+      passed and cancellation still failed. That commit's hook found no affected
+      Vitest tests; installed runs, lint/secret checks and formatting provide its
+      validation rather than a claimed extra unit-test count.
+
+      **Retained development failures/limits:** private-directory/preparation
+      fixture mistakes were corrected to the production contracts. One repeat
+      of the older Claude fixture let the child finish before the parent response
+      and correctly failed the mandatory silent-follow-up assertion. Waiting for
+      the terminal frame then hit the existing deadline because the CLI drains
+      children before that frame; `bb35a1f` instead releases the actual child
+      response after observing the actual parent assistant frame. The same
+      terminal/projection assertions and timeouts remain. An earlier continuously
+      truncated OpenCode stream exceeded the 32-request fixture budget; sustained
+      malformed-stream retry behavior remains unqualified. The checked-in finite
+      case explicitly truncates one primary response and returns a non-retryable
+      error on a subsequent request, and asserts that the primary truncation
+      really occurred. None of these earlier failures is recorded as a pass.
+
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
       took roughly 2–3 seconds. Use the existing phase observations and matching
@@ -3744,8 +3910,9 @@ complete local cloud/platform emulator are not part of the active task.
       Independent qualification at `3bb52c7` passed 941 backend and 307 UI/service
       tests, the local WebSocket scenario, architecture/wiring checks and four
       actual installed-Claude turns with exact restore. This does not close the
-      historical cause or live stability. The new local all-harness task above
-      extends that baseline; the failed run stays untouched.
+      historical cause or live stability. The local all-harness task above now
+      records the 2026-10-16 installed matrix, two OpenCode corrections and explicit
+      cancellation/recovery/provider gaps; the failed run stays untouched.
 - [ ] **Capability and verification — support matrix and settings.** State which
       package/protocol, harness, model, source provider, and settings combinations
       are supported. Qualify Claude Code, Codex, Kiro, and OpenCode before advertising
@@ -3764,9 +3931,12 @@ complete local cloud/platform emulator are not part of the active task.
       blocked by Sigstore trust initialization. Later qualification used the
       attested AI-DLC 2.11.0 package successfully with actual Claude 2.1.296:
       four same-session turns, typed scope choices and exact restore passed at
-      `3bb52c7`. Installed local qualification for Codex, OpenCode and Kiro is
-      assigned to the local all-harness task above; do not count scripted parser
-      fixtures as installed-CLI evidence. **Still open:** real pinned-model/deployed
+      `3bb52c7`. The 2026-10-16 installed matrix is recorded in the local
+      all-harness task above: Claude protected continuation and OpenCode
+      package-free exact restore pass, while cancellation, Codex paginated
+      recovery, OpenCode offline workflow startup and Kiro provider input remain
+      explicit gaps. Do not count scripted fixtures or CLI-only turns as full
+      installed workflow qualification. **Still open:** real pinned-model/deployed
       qualification for all four harnesses, current package/forks, and same-session
       cold recovery. No model/provider call, deployment or AWS mutation was
       performed. Existing product decisions elsewhere in this backlog are unchanged.
