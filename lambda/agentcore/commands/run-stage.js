@@ -95,7 +95,6 @@ import {
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
-import { workspaceRelativePath } from '../repo-paths.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { CHECKPOINTS, chosenLabel } from '../mcp/process-bridge.js';
@@ -120,6 +119,10 @@ import {
 } from '../../shared/v2-execution-plan.js';
 import { humanTaskMatchesOwner, isHumanTaskAnswerStatus } from '../../shared/v2-process-keys.js';
 import { credentialProviderForCli } from '../../shared/agent-auth-contracts.js';
+import {
+  mergeChangedFileProvenance,
+  unknownChangedFileProvenance,
+} from '../../shared/changed-file-provenance.js';
 import { eventTypeOf } from '../../shared/v2-process-keys.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 
@@ -629,6 +632,20 @@ const summarizeSensorDetail = (detail) => {
   return '';
 };
 
+// A stage can safely scope sensors only when every repository reported known
+// provenance. One unknown repository widens the whole workspace scan because a
+// failed Git collection may hide a relevant path in any sensor's match set.
+const changedFileProvenanceFromGitResults = (results = []) =>
+  results.length === 0
+    ? unknownChangedFileProvenance('no_repository_results')
+    : mergeChangedFileProvenance(
+        results.map((result) => ({
+          source: result.repo ?? 'unknown repository',
+          provenance:
+            result.provenance ?? unknownChangedFileProvenance('missing_repository_provenance'),
+        })),
+      );
+
 // Run the stage's deterministic sensors. Records a SensorRun verdict +
 // broadcasts an `agent.note` per sensor, and returns
 // `{ held, verdicts }` — `held` is a human-readable reason string when a
@@ -648,6 +665,7 @@ const runStageSensors = async ({
   openGraph,
   loadBlockScript,
   workspaceDir,
+  changedFileProvenance = unknownChangedFileProvenance('not_provided'),
   env,
   spawnFn,
   store,
@@ -675,6 +693,7 @@ const runStageSensors = async ({
       executionId,
       loadBlockScript,
       workspaceDir,
+      changedFileProvenance,
       env,
       spawnFn,
       store,
@@ -717,6 +736,7 @@ const runSensorsWithGraph = async ({
   executionId,
   loadBlockScript,
   workspaceDir,
+  changedFileProvenance = unknownChangedFileProvenance('not_provided'),
   env,
   spawnFn,
   store,
@@ -735,6 +755,7 @@ const runSensorsWithGraph = async ({
     substitutions: {},
     spawnFn,
     childEnv: env,
+    changedFileProvenance,
   });
 
   const verdicts = await runner.runStageSensors({
@@ -1119,18 +1140,6 @@ const workAtRiskFailure = (gitResult) => {
   // commit at all — the loss mode the engine exists to close).
   return { code: uncommitted ? 'git_commit_failed' : 'push_failed', detail };
 };
-
-// Whether a git result names every file it changed. A partial list is worse
-// than none: a consumer of `changedFiles: []` cannot tell "nothing changed" from
-// "the engine could not say". True only when the engine succeeded, reported at
-// least one repo, and every repo reported an explicit `files` array or a clean
-// commit.
-const gitReportsAllFiles = (gitResult) =>
-  Boolean(gitResult?.ok) &&
-  (gitResult?.results ?? []).length > 0 &&
-  gitResult.results.every(
-    (gitChange) => Array.isArray(gitChange.files) || gitChange.reason === 'clean',
-  );
 
 // The post-agent sensor pass. Release mode splits the sensors into a write pass
 // here (narrowed to the attempt's changed files) and a gate pass after the
@@ -3840,6 +3849,8 @@ const runStageAttempt = async (
         repos,
         workspaceDir,
         branch,
+        baseBranch,
+        baseBranches,
         gitProvider,
         repoProviders,
         projectId,
@@ -4159,6 +4170,8 @@ const runStageAttempt = async (
     repos,
     workspaceDir,
     branch,
+    baseBranch,
+    baseBranches,
     gitProvider,
     repoProviders,
     projectId,
@@ -4417,6 +4430,48 @@ const runStageAttempt = async (
     );
   }
 
+  let completedGitResult = gitResult;
+  let completedGitError = null;
+  let attemptProvenance = mergeChangedFileProvenance(
+    [leadDraftGit, gitResult].filter(Boolean).map((attemptGit) => ({
+      provenance: changedFileProvenanceFromGitResults(attemptGit.results),
+    })),
+  );
+  let changedFileProvenance = attemptProvenance;
+  let changedFiles = changedFileProvenance.state === 'known' ? changedFileProvenance.files : null;
+  let recoveredCommitRefs = null;
+  // Lead drafts, parked legs and repair turns belong to this same stage attempt.
+  // Recover their full delta before each sensor plane and returning feedback.
+  // A failed recovery remains unknown instead of exposing a partial file list.
+  const refreshCompletedGitResult = async () => {
+    const refsKey = JSON.stringify(stageCodeCommitRefs);
+    if (
+      (carriedCodeCommitRefs.length > 0 || leadDraftGit?.committed || repairCommitted) &&
+      refsKey !== recoveredCommitRefs
+    ) {
+      recoveredCommitRefs = refsKey;
+      try {
+        completedGitResult = await gitResultForCommitRefs({
+          commitRefs: stageCodeCommitRefs,
+          repos,
+          workspaceDir,
+        });
+        completedGitError = null;
+      } catch (error) {
+        completedGitError = error;
+      }
+    }
+    changedFileProvenance = mergeChangedFileProvenance([
+      { provenance: attemptProvenance },
+      {
+        provenance: completedGitError
+          ? unknownChangedFileProvenance('git_commit_refs_failed', completedGitError.message)
+          : changedFileProvenanceFromGitResults(completedGitResult.results),
+      },
+    ]);
+    changedFiles = changedFileProvenance.state === 'known' ? changedFileProvenance.files : null;
+  };
+
   // The lead repair turn: re-enter the SAME conversation with one deterministic
   // message and commit whatever it rewrote. Hoisted out of the checkpoint ladder
   // because the adversarial reviewer loop needs the identical machinery between
@@ -4474,6 +4529,8 @@ const runStageAttempt = async (
           repos,
           workspaceDir,
           branch,
+          baseBranch,
+          baseBranches,
           gitProvider,
           repoProviders,
           projectId,
@@ -4487,6 +4544,10 @@ const runStageAttempt = async (
           committed: false,
           results: [{ repo: '-', reason: 'engine_crashed', detail: error?.message }],
         }));
+        attemptProvenance = mergeChangedFileProvenance([
+          { provenance: attemptProvenance },
+          { provenance: changedFileProvenanceFromGitResults(repairGit.results) },
+        ]);
         const refsBefore = stageCodeCommitRefs.length;
         stageCodeCommitRefs = mergeCodeCommitRefs(stageCodeCommitRefs, repairGit);
         if (stageCodeCommitRefs.length > refsBefore) repairCommitted = true;
@@ -4546,6 +4607,8 @@ const runStageAttempt = async (
     stageFindings = mergeFindings(stageFindings, ladder.findings);
   }
 
+  await refreshCompletedGitResult();
+
   // 6. Deterministic sensors, WRITE plane — the verification axis that runs
   // AFTER the agent and BEFORE the reviewer. Graph sensors evaluate the produced
   // artifacts' content in-process; script sensors spawn against the workspace
@@ -4558,39 +4621,6 @@ const runStageAttempt = async (
   // The list is the authored sensors PLUS the platform-injected ones (see
   // withPlatformSensors) — hence the gate checks the merged list.
   if (withPlatformSensors(stage).length > 0) {
-    // `fire_on: write` sensors inspect only what THIS attempt changed, so the
-    // list must be TRUSTWORTHY or absent: a partial list silently narrows the
-    // sweep and turns a real finding into "no files match". It is therefore null
-    // unless the git engine succeeded, reported at least one repo, and every repo
-    // reported an explicit `files` array (a clean commit counts as none). Paths are projected from repo-relative
-    // (git's space) into workspace-relative (the sensor glob's space).
-    // The attempt's files, not only this leg's: a stage that parked on a
-    // checkpoint committed its first leg already, and checkpoint repair turns
-    // commit on their own. When either happened, the list is rebuilt from the
-    // attempt's commit references.
-    const sweepsWrites = withPlatformSensors(stage).some((sensor) => sensor.fireOn === 'write');
-    const attemptGitResult =
-      sweepsWrites && (carriedCodeCommitRefs.length > 0 || repairCommitted)
-        ? await gitResultForCommitRefs({
-            commitRefs: stageCodeCommitRefs,
-            repos,
-            workspaceDir,
-          }).catch(() => null)
-        : gitResult;
-    const multiRepo = repos.length > 1;
-    const attemptChangedFiles = gitReportsAllFiles(attemptGitResult)
-      ? [
-          ...new Set(
-            attemptGitResult.results.flatMap((gitChange) =>
-              (gitChange.files ?? [])
-                .map((file) =>
-                  workspaceRelativePath({ repo: gitChange.repo, file, multi: multiRepo }),
-                )
-                .filter(Boolean),
-            ),
-          ),
-        ].toSorted()
-      : null;
     const writePlane = await runStageSensors({
       stage,
       stageInstanceId,
@@ -4602,11 +4632,12 @@ const runStageAttempt = async (
       openGraph,
       loadBlockScript: loadScript,
       workspaceDir,
+      changedFileProvenance,
       env,
       spawnFn,
       store,
       publish,
-      ...postAgentSensorPass({ methodologyRelease, attemptChangedFiles }),
+      ...postAgentSensorPass({ methodologyRelease, attemptChangedFiles: changedFiles }),
     }).catch(() => null);
     if (writePlane?.held) {
       return fail(stageInstanceId, 'sensor_blocked', writePlane.held);
@@ -4821,6 +4852,8 @@ const runStageAttempt = async (
     }
   }
 
+  await refreshCompletedGitResult();
+
   // 6b. Deterministic sensors, GATE plane. `fire_on: gate` fires
   // once per existing declared deliverable as the stage opens its gate, so it
   // runs HERE — after the reviewer loop has finished rewriting artifacts — and
@@ -4858,6 +4891,7 @@ const runStageAttempt = async (
         store,
         publish,
         planes: ['gate'],
+        changedFileProvenance,
       });
     } catch (error) {
       gatePlaneError = error?.message ?? String(error);
@@ -4932,15 +4966,8 @@ const runStageAttempt = async (
   // evidence edges on top. Projection is intentionally best-effort: missing or
   // malformed evidence and Neptune outages must not turn successful
   // implementation work into an execution failure.
-  let completedGitResult = gitResult;
   try {
-    if (carriedCodeCommitRefs.length > 0 || repairCommitted) {
-      completedGitResult = await gitResultForCommitRefs({
-        commitRefs: stageCodeCommitRefs,
-        repos,
-        workspaceDir,
-      });
-    }
+    if (completedGitError) throw completedGitError;
     const projected = await ingestStageCodeTraceability({
       openGraph,
       scope: {
@@ -5047,16 +5074,6 @@ const runStageAttempt = async (
     sectionIndex,
     state: 'SUCCEEDED',
   });
-  // Same trustworthiness rule as the `fire_on: write` sensor feed above: a
-  // partial list is worse than none, because a downstream consumer reading
-  // `changedFiles: []` cannot tell "this stage changed nothing" from "the git
-  // engine could not say". Null unless the engine succeeded, reported at least
-  // one repo, and every repo reported an explicit `files` array or a clean commit.
-  const changedFiles = gitReportsAllFiles(completedGitResult)
-    ? [
-        ...new Set(completedGitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
-      ].toSorted()
-    : null;
   const commitSha =
     completedGitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ??
     null;
@@ -5092,6 +5109,7 @@ const runStageAttempt = async (
     unitSlug,
     sectionIndex,
     cli,
+    changedFileProvenance,
     changedFiles,
     commitSha,
     verification:
@@ -5170,6 +5188,7 @@ export const __test = {
   isBenignKiroEmptyCompletion,
   buildReviewerPrompt,
   renderReviewerReadScope,
+  changedFileProvenanceFromGitResults,
   runCheckpointLadder,
   SHARED_CONTRACT_ARTIFACTS,
   changedApprovedInputs,

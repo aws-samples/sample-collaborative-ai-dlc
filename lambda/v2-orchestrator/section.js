@@ -50,6 +50,7 @@
 // wakes: a superseded gate (cancel/rewind) retires the run with NO writes.
 
 import processKeysPkg from '../shared/v2-process-keys.js';
+import { normalizeChangedFileProvenance } from '../shared/changed-file-provenance.js';
 import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
 import { buildIntentAttribution } from './pr-attribution.js';
 import { bindGateCallback, unparkGate } from './gate-callback.js';
@@ -125,6 +126,24 @@ const isIntegratedUnitPr = (row) => row?.state === 'MERGED' || row?.state === 'P
 // Derived in shared/runtime-session-ids.js (the intent-deletion teardown
 // rebuilds the same ids from there).
 export { laneSessionIdFor };
+
+export const feedbackChangedFileReport = (result = {}) => {
+  // Explicit provenance is authoritative. Older stage results may only carry
+  // changedFiles; preserve those as known provenance without allowing an
+  // explicit unknown state to collapse back to a file list.
+  const changedFileProvenance = normalizeChangedFileProvenance(
+    result.changedFileProvenance ??
+      (Array.isArray(result.changedFiles)
+        ? { state: 'known', files: result.changedFiles }
+        : undefined),
+  );
+  const changedFiles = changedFileProvenance.state === 'known' ? changedFileProvenance.files : null;
+  const changedFilesSummary =
+    changedFileProvenance.state === 'known'
+      ? changedFiles.join(', ') || 'none'
+      : `unknown (${changedFileProvenance.reason})`;
+  return { changedFileProvenance, changedFiles, changedFilesSummary };
+};
 
 // ── engine gates ─────────────────────────────────────────────────────────────
 // An approval gate the ENGINE opens (skeleton / ladder / batch / halt / the
@@ -1096,6 +1115,8 @@ export const runParallelSection = async (segment, toolkit) => {
       }
 
       const result = revision.result ?? {};
+      const { changedFileProvenance, changedFiles, changedFilesSummary } =
+        feedbackChangedFileReport(result);
       const refs = (next.comments ?? [])
         .map((comment) => `${comment.repository}#${comment.prNumber}:${comment.id}`)
         .join(', ');
@@ -1104,7 +1125,7 @@ export const runParallelSection = async (segment, toolkit) => {
         marker,
         '',
         `Handled comments: ${refs}`,
-        `Changed files: ${(result.changedFiles ?? []).join(', ') || 'none'}`,
+        `Changed files: ${changedFilesSummary}`,
         `Verification: ${result.verification ?? 'stage completed'}`,
         `Commit: ${result.commitSha ?? 'no new commit'}`,
       ].join('\n');
@@ -1132,7 +1153,8 @@ export const runParallelSection = async (segment, toolkit) => {
           fromStates: ['RUNNING'],
           fields: {
             output: summary,
-            changedFiles: result.changedFiles ?? [],
+            changedFileProvenance,
+            changedFiles,
             verification: result.verification ?? 'Stage completed',
             commitSha: result.commitSha ?? null,
           },

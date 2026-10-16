@@ -28,6 +28,7 @@ import { writeFile, mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import {
   SENSOR_RESULT,
+  SENSOR_APPLICABILITY,
   sensorKind,
   severityGate,
   validateScriptSpec,
@@ -36,7 +37,13 @@ import {
   evalRequiredSections,
   evalUpstreamCoverage,
   evalGraphCoverage,
+  TOOL_UNAVAILABLE_EXIT,
 } from '../shared/v2-sensor-contract.js';
+import {
+  knownChangedFileProvenance,
+  normalizeChangedFileProvenance,
+  unknownChangedFileProvenance,
+} from '../shared/changed-file-provenance.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -77,6 +84,7 @@ const gatePlane = (sensor, plane) =>
 // here would change how every historical verdict is read.
 const notApplicable = (reason, extra = {}) => ({
   result: SENSOR_RESULT.INCONCLUSIVE,
+  applicability: SENSOR_APPLICABILITY.NOT_APPLICABLE,
   detail: { notApplicable: true, reason, ...extra },
 });
 
@@ -118,8 +126,8 @@ const globToRegExp = (glob) => {
 };
 
 // Recursively list workspace files (relative paths), skipping VCS/dependency
-// dirs that would never be a stage's code output. Best-effort: a missing dir
-// yields []. Bounded by `cap` so a huge monorepo can't run the glob unbounded.
+// dirs that would never be a stage's code output. Completeness is part of the
+// result: a read failure or cap hit means absence cannot prove inapplicability.
 const SKIP_DIRS = new Set([
   '.git',
   'node_modules',
@@ -133,29 +141,192 @@ const SKIP_DIRS = new Set([
   '.next',
   'coverage',
 ]);
-const listFiles = async (root, { cap = 5000 } = {}) => {
-  const out = [];
+const MAX_ENUMERATION_FAILURES = 20;
+
+const listFiles = async (root, { cap = 5000, readdirFn = readdir } = {}) => {
+  const limit = Number.isSafeInteger(cap) && cap >= 0 ? cap : 5000;
+  const files = [];
+  const failures = [];
+  let failuresOmitted = 0;
+  let truncated = false;
+
   const walk = async (dir, rel) => {
-    if (out.length >= cap) return;
+    if (truncated) return;
     let entries;
     try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
+      entries = await readdirFn(dir, { withFileTypes: true });
+    } catch (error) {
+      if (failures.length < MAX_ENUMERATION_FAILURES) {
+        failures.push({
+          directory: rel || '.',
+          code: typeof error?.code === 'string' ? error.code : 'READ_FAILED',
+        });
+      } else {
+        failuresOmitted += 1;
+      }
       return;
     }
-    for (const e of entries) {
-      if (out.length >= cap) return;
-      const childRel = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) {
-        if (SKIP_DIRS.has(e.name)) continue;
-        await walk(path.join(dir, e.name), childRel);
-      } else if (e.isFile()) {
-        out.push(childRel);
+    for (const entry of entries) {
+      if (truncated) return;
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (SKIP_DIRS.has(entry.name)) continue;
+        await walk(path.join(dir, entry.name), childRel);
+      } else if (entry.isFile()) {
+        if (files.length >= limit) {
+          truncated = true;
+          return;
+        }
+        files.push(childRel);
       }
     }
   };
+
   await walk(root, '');
-  return out;
+  const complete = !truncated && failures.length === 0;
+  return {
+    files,
+    complete,
+    scanned: files.length,
+    cap: limit,
+    ...(truncated ? { reason: 'file_limit_exceeded' } : {}),
+    ...(!truncated && failures.length > 0 ? { reason: 'directory_read_failed' } : {}),
+    ...(failures.length > 0 ? { failures } : {}),
+    ...(failuresOmitted > 0 ? { failuresOmitted } : {}),
+  };
+};
+
+const summarizeEnumeration = ({
+  complete,
+  scanned,
+  cap,
+  reason = null,
+  failures = [],
+  failuresOmitted = 0,
+}) => ({
+  complete,
+  scanned,
+  cap,
+  ...(reason ? { reason } : {}),
+  ...(failures.length > 0 ? { failures } : {}),
+  ...(failuresOmitted > 0 ? { failuresOmitted } : {}),
+});
+
+// Narrow a globbed workspace file list to the paths attributed to this stage.
+// Matching is exact: suffix matching would conflate identically named files in
+// different repositories of a multi-repository workspace. Unknown provenance
+// deliberately widens to every match.
+const scopeToChangedFiles = (files, provenance) => {
+  const normalized = normalizeChangedFileProvenance(provenance);
+  if (normalized.state === 'unknown') return files;
+  if (normalized.files.length === 0) return [];
+  const exact = new Set(normalized.files);
+  return files.filter((file) => exact.has(file));
+};
+
+const projectRootOf = (file, projectRoots) => {
+  let best = '';
+  for (const root of projectRoots) {
+    if (root && file.startsWith(`${root}/`) && root.length > best.length) best = root;
+  }
+  return best;
+};
+
+// Project-scoped analyzers compile an entire project and may report a diagnostic
+// against an untouched consumer. Widen changed-file provenance to every matched
+// file in each affected project so those diagnostics cannot become false PASSes.
+const expandToAffectedProjects = ({ globbed, changed, allFiles, configFile }) => {
+  const rootOfConfig = (file) =>
+    file === configFile ? '' : file.slice(0, -(configFile.length + 1));
+  const isConfig = (file) => file === configFile || file.endsWith(`/${configFile}`);
+  const projectRoots = allFiles.filter(isConfig).map(rootOfConfig);
+  const allRoots = new Set(projectRoots);
+  const globbedSet = new Set(globbed);
+  const affected = new Set();
+
+  for (const file of changed) {
+    if (isConfig(file)) {
+      const root = rootOfConfig(file);
+      allRoots.add(root);
+      affected.add(root);
+    } else if (globbedSet.has(file)) {
+      affected.add(projectRootOf(file, [...allRoots]));
+    } else {
+      // Deleted paths are absent from the workspace walk but still affect the
+      // deepest surviving project root that owned them.
+      affected.add(projectRootOf(file, [...allRoots]));
+    }
+  }
+
+  if (affected.size === 0) return [];
+  const roots = [...allRoots];
+  return globbed.filter((file) => affected.has(projectRootOf(file, roots)));
+};
+
+// Select runnable files and preserve whether that selection was proven or had
+// to be widened. Unknown provenance scans every glob match and stays UNKNOWN so
+// a blocking harness failure cannot be mistaken for an irrelevant check. Only
+// a known provenance set with no relevant files is NOT_APPLICABLE.
+const selectSensorFiles = ({ globbed, provenance, scope, allFiles, configFile, enumeration }) => {
+  const normalized = normalizeChangedFileProvenance(provenance);
+  if (!enumeration?.complete) {
+    return {
+      applicability: SENSOR_APPLICABILITY.UNKNOWN,
+      files: [...globbed],
+      provenance: normalized,
+      selectionComplete: false,
+    };
+  }
+  if (normalized.state === 'unknown') {
+    return {
+      applicability: SENSOR_APPLICABILITY.UNKNOWN,
+      files: [...globbed],
+      provenance: normalized,
+      selectionComplete: true,
+    };
+  }
+
+  const files =
+    scope === 'project'
+      ? expandToAffectedProjects({
+          globbed,
+          changed: normalized.files,
+          allFiles,
+          configFile,
+        })
+      : scopeToChangedFiles(globbed, normalized);
+  return {
+    applicability:
+      files.length > 0 ? SENSOR_APPLICABILITY.APPLICABLE : SENSOR_APPLICABILITY.NOT_APPLICABLE,
+    files,
+    provenance: normalized,
+    selectionComplete: true,
+  };
+};
+
+// Sensor scripts need only executable discovery, a writable package-manager home/temp
+// location, and locale/timezone settings. Build a new object instead of forwarding
+// the AgentCore environment: repository credentials, AWS credentials, provider
+// tokens, MCP secrets, proxy credentials, and unrelated CLI state must never reach
+// deterministic sensor children.
+const SENSOR_ENV_ALLOWLIST = Object.freeze([
+  'PATH',
+  'HOME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TZ',
+]);
+
+const sensorChildEnv = (source = {}) => {
+  const env = {};
+  for (const name of SENSOR_ENV_ALLOWLIST) {
+    if (typeof source?.[name] === 'string') env[name] = source[name];
+  }
+  return env;
 };
 
 // Spawn a child and collect stdout/stderr + exit, enforcing a hard timeout.
@@ -167,7 +338,7 @@ const runChild = ({ file, args, timeoutMs, cwd, env, spawnFn = spawn }) =>
     let stderr = '';
     let timedOut = false;
     let settled = false;
-    const child = spawnFn(file, args, { cwd, env, shell: false });
+    const child = spawnFn(file, args, { cwd, env: sensorChildEnv(env), shell: false });
 
     const finish = (exitCode) => {
       if (settled) return;
@@ -198,24 +369,318 @@ const runChild = ({ file, args, timeoutMs, cwd, env, spawnFn = spawn }) =>
     child.on('close', (code) => finish(code));
   });
 
-// Read a sensor's stdout JSON `pass` field if present; falls back to the exit
-// code. Upstream per-sensor scripts exit 0 and carry the verdict in stdout
-// `{"pass": bool, ...}`, so the exit code alone under-reports a clean FAIL.
-const resultFromScript = ({ exitCode, stdout }) => {
-  if (exitCode === 0 && typeof stdout === 'string' && stdout.trim()) {
+const STDERR_BUDGET = 500;
+const DETAIL_BUDGET_BYTES = 120_000;
+const SAMPLE_FILES = 5;
+const REDACTED_DIAGNOSTIC = '[REDACTED]';
+const CREDENTIAL_LABEL =
+  '[A-Za-z0-9_-]*(?:secret|password|passwd|token|credential|private[-_]?key|api[-_]?key|authorization|cookie|signature)[A-Za-z0-9_-]*';
+const JSON_DOUBLE_CREDENTIAL_PATTERN = new RegExp(
+  `(["']${CREDENTIAL_LABEL}["']\\s*:\\s*)"(?:\\\\.|[^"\\\\])*"`,
+  'gi',
+);
+const JSON_SINGLE_CREDENTIAL_PATTERN = new RegExp(
+  `(["']${CREDENTIAL_LABEL}["']\\s*:\\s*)'(?:\\\\.|[^'\\\\])*'`,
+  'gi',
+);
+const ASSIGNED_CREDENTIAL_PATTERN = new RegExp(
+  `(\\b(${CREDENTIAL_LABEL})\\b\\s*[:=]\\s*)(?!\\[REDACTED\\])([^\\s,;}\\][{]+)`,
+  'gi',
+);
+const ARGUMENT_CREDENTIAL_PATTERN = new RegExp(`(--?${CREDENTIAL_LABEL}\\b\\s+)([^\\s]+)`, 'gi');
+const QUERY_CREDENTIAL_PATTERN = new RegExp(`([?&]${CREDENTIAL_LABEL}=)([^&#\\s]+)`, 'gi');
+const SENSITIVE_ENV_NAME =
+  /(?:^|_)(?:secret|password|passwd|token|credentials?|private_key|api_key|authorization|cookie|signature|askpass|netrc|access_key_id)(?:_|$)/i;
+const SENSITIVE_FIELD_NAME =
+  /(?:secret|password|passwd|token|credential|privatekey|apikey|authorization|cookie|signature|askpass|netrc)/i;
+const SENSITIVE_PATH_PATTERN =
+  /(?:~|\/(?:[^/\s"'():]+\/)*)(?:\.aws\/credentials|\.git-credentials|\.netrc|\.npmrc|\.pypirc|\.docker\/config\.json|\.config\/gcloud\/application_default_credentials\.json|run\/secrets\/[^\s"'():]+)/gi;
+
+const sensitiveEnvironmentValues = (source = {}) =>
+  [
+    ...new Set(
+      Object.entries(source)
+        .filter(([name]) => SENSITIVE_ENV_NAME.test(String(name)))
+        .map(([, value]) => (typeof value === 'string' ? value : ''))
+        // Replacing very short values globally would destroy ordinary diagnostics;
+        // labelled forms are still covered by the structural patterns below.
+        .filter((value) => value.length >= 4 && value !== REDACTED_DIAGNOSTIC),
+    ),
+  ].toSorted((a, b) => b.length - a.length);
+
+const credentialField = (key) => {
+  const normalized = String(key).replaceAll(/[-_]/g, '').toLowerCase();
+  return SENSITIVE_FIELD_NAME.test(normalized) || ['setcookie', 'accesskeyid'].includes(normalized);
+};
+
+// Sensor processes execute repository-controlled tooling. Treat every diagnostic
+// as untrusted and redact credentials before it can become a SensorRun, activity
+// note, UI payload, or deduplication key.
+const redactCredentialText = (value, sensitiveValues = []) => {
+  let text = String(value);
+  for (const sensitiveValue of sensitiveValues) {
+    text = text.replaceAll(sensitiveValue, REDACTED_DIAGNOSTIC);
+  }
+  text = text.replace(
+    /-----BEGIN ([A-Z0-9 ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----/g,
+    REDACTED_DIAGNOSTIC,
+  );
+  text = text.replace(
+    /\b((?:authorization|proxy-authorization)\s*[:=])([^\r\n,;]+)/gi,
+    (_match, prefix) => `${prefix} ${REDACTED_DIAGNOSTIC}`,
+  );
+  text = text.replace(
+    /\b(bearer|basic)\s+[A-Za-z0-9._~+/-]{8,}={0,2}/gi,
+    `$1 ${REDACTED_DIAGNOSTIC}`,
+  );
+  text = text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)([^/\s@]+)@/gi, `$1${REDACTED_DIAGNOSTIC}@`);
+  text = text.replace(JSON_DOUBLE_CREDENTIAL_PATTERN, `$1"${REDACTED_DIAGNOSTIC}"`);
+  text = text.replace(JSON_SINGLE_CREDENTIAL_PATTERN, `$1'${REDACTED_DIAGNOSTIC}'`);
+  text = text.replace(ASSIGNED_CREDENTIAL_PATTERN, `$1${REDACTED_DIAGNOSTIC}`);
+  text = text.replace(ARGUMENT_CREDENTIAL_PATTERN, `$1${REDACTED_DIAGNOSTIC}`);
+  text = text.replace(QUERY_CREDENTIAL_PATTERN, `$1${REDACTED_DIAGNOSTIC}`);
+  text = text.replace(SENSITIVE_PATH_PATTERN, REDACTED_DIAGNOSTIC);
+  text = text.replace(
+    /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}(?:-[A-Za-z0-9-]{10,})*)\b|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{16,}\b|\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g,
+    REDACTED_DIAGNOSTIC,
+  );
+  return text;
+};
+
+const redactDiagnostic = (value, sensitiveValues = [], seen = new WeakMap()) => {
+  if (typeof value === 'string') return redactCredentialText(value, sensitiveValues);
+  if (Array.isArray(value))
+    return value.map((entry) => redactDiagnostic(entry, sensitiveValues, seen));
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+
+  const redacted = {};
+  seen.set(value, redacted);
+  for (const [key, entry] of Object.entries(value)) {
+    redacted[key] = credentialField(key)
+      ? entry == null
+        ? entry
+        : REDACTED_DIAGNOSTIC
+      : redactDiagnostic(entry, sensitiveValues, seen);
+  }
+  return redacted;
+};
+
+const tailDiagnostic = (stderr, sensitiveValues = []) => {
+  const text =
+    typeof stderr === 'string' ? redactCredentialText(stderr, sensitiveValues).trim() : '';
+  if (!text) return null;
+  if (text.length <= STDERR_BUDGET) return text;
+  return `…${text.slice(-STDERR_BUDGET)}`;
+};
+
+const OMISSION_REASON = 'detail size budget';
+const jsonByteLength = (value) => Buffer.byteLength(JSON.stringify(value), 'utf8');
+const JSON_KEY_BYTES = Object.freeze({
+  harnessFailures: jsonByteLength('harnessFailures'),
+  files: jsonByteLength('files'),
+  filesOmitted: jsonByteLength('filesOmitted'),
+  omissionReason: jsonByteLength('omissionReason'),
+});
+const OMISSION_REASON_BYTES = jsonByteLength(OMISSION_REASON);
+const jsonArrayByteLength = (count, contentBytes) => 2 + contentBytes + Math.max(0, count - 1);
+
+// Calculate the exact encoded size without repeatedly serializing the growing
+// detail object. Each candidate is serialized once; all subsequent accounting
+// is constant time, so high-cardinality sensor output remains linear.
+const summarizedDetailByteLength = ({
+  harnessFailureCount,
+  harnessFailureBytes,
+  fileCount,
+  fileBytes,
+  filesOmitted,
+}) => {
+  let bytes = 2; // opening and closing object braces
+  let propertyCount = 0;
+  const addProperty = (key, valueBytes) => {
+    if (propertyCount > 0) bytes += 1; // comma between object properties
+    bytes += JSON_KEY_BYTES[key] + 1 + valueBytes; // key, colon, value
+    propertyCount += 1;
+  };
+
+  if (harnessFailureCount > 0) {
+    addProperty('harnessFailures', jsonArrayByteLength(harnessFailureCount, harnessFailureBytes));
+  }
+  if (fileCount > 0) addProperty('files', jsonArrayByteLength(fileCount, fileBytes));
+  if (filesOmitted > 0) {
+    addProperty('filesOmitted', String(filesOmitted).length);
+    addProperty('omissionReason', OMISSION_REASON_BYTES);
+  }
+  return bytes;
+};
+
+// Collapse repeated harness failures and keep the persisted SensorRun detail
+// below the DynamoDB item ceiling. Grouping consumes only the redacted detail:
+// different secret values in otherwise-identical failures collapse together,
+// and no raw credential can be retained in a key or copied into persistence.
+// Candidates retain first-seen order. The byte-accounting pass includes an
+// entry only when the complete final shape (including omission metadata) fits.
+const summarizeFileResults = (fileResults, sensitiveValues = []) => {
+  const groups = new Map();
+  const files = [];
+  for (const entry of fileResults) {
+    const safeDetail = redactDiagnostic(entry.detail, sensitiveValues);
+    const reason = safeDetail?.reason;
+    if (reason === 'script-error' || reason === 'tool-unavailable') {
+      const key = `${reason}|${safeDetail?.exitCode ?? ''}|${safeDetail?.stderr ?? ''}`;
+      const group = groups.get(key) ?? {
+        reason,
+        result: entry.result,
+        exitCode: safeDetail?.exitCode ?? null,
+        stderr: safeDetail?.stderr ?? null,
+        fileCount: 0,
+        sampleFiles: [],
+      };
+      group.fileCount += 1;
+      if (group.sampleFiles.length < SAMPLE_FILES) group.sampleFiles.push(entry.file);
+      groups.set(key, group);
+    } else {
+      files.push({
+        file: entry.file,
+        result: entry.result,
+        timedOut: entry.timedOut,
+        ...(safeDetail ? { detail: safeDetail } : {}),
+      });
+    }
+  }
+
+  const harnessFailures = [...groups.values()];
+  const totalRepresentedFiles =
+    files.length + harnessFailures.reduce((total, group) => total + group.fileCount, 0);
+  const includedHarnessFailures = [];
+  const includedFiles = [];
+  const size = {
+    harnessFailureCount: 0,
+    harnessFailureBytes: 0,
+    fileCount: 0,
+    fileBytes: 0,
+  };
+  let representedFiles = 0;
+
+  const includeWhenBounded = (entry, representedCount, kind) => {
+    const entryBytes = jsonByteLength(entry);
+    const harnessFailure = kind === 'harnessFailure';
+    const projected = {
+      harnessFailureCount: size.harnessFailureCount + (harnessFailure ? 1 : 0),
+      harnessFailureBytes: size.harnessFailureBytes + (harnessFailure ? entryBytes : 0),
+      fileCount: size.fileCount + (harnessFailure ? 0 : 1),
+      fileBytes: size.fileBytes + (harnessFailure ? 0 : entryBytes),
+      filesOmitted: totalRepresentedFiles - representedFiles - representedCount,
+    };
+    if (summarizedDetailByteLength(projected) > DETAIL_BUDGET_BYTES) return;
+
+    Object.assign(size, projected);
+    representedFiles += representedCount;
+    if (harnessFailure) includedHarnessFailures.push(entry);
+    else includedFiles.push(entry);
+  };
+
+  for (const group of harnessFailures) {
+    includeWhenBounded(group, group.fileCount, 'harnessFailure');
+  }
+  for (const file of files) includeWhenBounded(file, 1, 'file');
+
+  const detail = {};
+  if (includedHarnessFailures.length > 0) detail.harnessFailures = includedHarnessFailures;
+  if (includedFiles.length > 0) detail.files = includedFiles;
+  const filesOmitted = totalRepresentedFiles - representedFiles;
+  if (filesOmitted > 0) {
+    detail.filesOmitted = filesOmitted;
+    detail.omissionReason = OMISSION_REASON;
+  }
+  return detail;
+};
+
+// Read the declared verdict protocol. Upstream stdout-json sensors use non-zero
+// exits for harness failures, while custom exit-code sensors retain the classic
+// non-zero-is-FAIL convention. A stdout-json sensor may report PASS or FAIL only
+// by emitting exactly one JSON value with a boolean `pass` field on exit zero.
+const resultFromScript = ({
+  exitCode,
+  stdout,
+  stderr = '',
+  verdictMode = 'exit-code',
+  sensitiveValues = [],
+} = {}) => {
+  const stdoutText = typeof stdout === 'string' ? stdout.trim() : '';
+  const diagnostic = tailDiagnostic(stderr, sensitiveValues);
+  const inconclusive = (reason, extra = {}) => ({
+    result: SENSOR_RESULT.INCONCLUSIVE,
+    detail: redactDiagnostic(
+      {
+        reason,
+        exitCode: exitCode ?? null,
+        stderr: diagnostic,
+        ...extra,
+      },
+      sensitiveValues,
+    ),
+  });
+
+  if (exitCode === 0 && verdictMode === 'stdout-json') {
+    if (!stdoutText) return inconclusive('missing-verdict', { stdout: null });
+
+    let parsed;
     try {
-      const parsed = JSON.parse(stdout.trim().split(/\r?\n/).at(-1));
+      // Parse the complete trimmed stream, not only its final line. This rejects
+      // leading/trailing log output and multiple values instead of silently
+      // accepting a valid-looking fragment as the sensor verdict.
+      parsed = JSON.parse(stdoutText);
+    } catch {
+      return inconclusive('invalid-verdict', {
+        stdout: tailDiagnostic(stdoutText, sensitiveValues),
+      });
+    }
+
+    if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') {
+      return inconclusive('invalid-verdict', {
+        stdout: tailDiagnostic(stdoutText, sensitiveValues),
+      });
+    }
+    if (typeof parsed.pass !== 'boolean') {
+      return inconclusive('invalid-verdict', {
+        stdout: tailDiagnostic(stdoutText, sensitiveValues),
+      });
+    }
+    return {
+      result: parsed.pass ? SENSOR_RESULT.PASS : SENSOR_RESULT.FAIL,
+      detail: redactDiagnostic(parsed, sensitiveValues),
+    };
+  }
+
+  // Preserve the existing optional JSON verdict behavior for exit-code sensors.
+  // Their declared protocol still permits exit-code fallback when output is
+  // absent or malformed.
+  if (exitCode === 0 && stdoutText) {
+    try {
+      const parsed = JSON.parse(stdoutText.split(/\r?\n/).at(-1));
       if (typeof parsed?.pass === 'boolean') {
         return {
           result: parsed.pass ? SENSOR_RESULT.PASS : SENSOR_RESULT.FAIL,
-          detail: parsed,
+          detail: redactDiagnostic(parsed, sensitiveValues),
         };
       }
     } catch {
-      /* not JSON — fall through to exit-code mapping */
+      /* exit-code sensors fall through to their declared exit-code mapping */
     }
   }
-  return { result: resultFromExit(exitCode), detail: null };
+
+  if (exitCode === TOOL_UNAVAILABLE_EXIT) return inconclusive('tool-unavailable');
+  const nonZero = exitCode !== 0 && exitCode !== 2 && exitCode != null;
+  if (nonZero && verdictMode === 'stdout-json') return inconclusive('script-error');
+
+  return {
+    result: resultFromExit(exitCode),
+    detail:
+      exitCode === 0
+        ? null
+        : redactDiagnostic({ exitCode: exitCode ?? null, stderr: diagnostic }, sensitiveValues),
+  };
 };
 
 // A pinned sensor whose script could not be verified or read has not produced a
@@ -238,7 +703,10 @@ export const createSensorRunner = ({
   substitutions = {},
   spawnFn = spawn,
   childEnv = process.env,
+  changedFileProvenance = null,
+  fileListOptions = {},
 } = {}) => {
+  const sensitiveValues = sensitiveEnvironmentValues(childEnv);
   // Evaluate one `graph` sensor against the artifacts this stage produced. Each
   // produced artifact's content is read from Neptune and fed to the in-process
   // evaluator. The worst result across the produced artifacts wins (a single
@@ -320,32 +788,84 @@ export const createSensorRunner = ({
   const runScriptSensor = async ({ sensor, stageId, changedFiles = null, plane = null }) => {
     const validation = validateScriptSpec(sensor);
     if (!validation.ok) {
-      return { result: SENSOR_RESULT.BLOCKED, detail: { error: validation.error } };
+      return {
+        result: SENSOR_RESULT.BLOCKED,
+        applicability: SENSOR_APPLICABILITY.UNKNOWN,
+        detail: { error: validation.error },
+      };
     }
     const spec = validation.spec;
 
     if (!workspaceDir) {
-      return { result: SENSOR_RESULT.INCONCLUSIVE, detail: { reason: 'no workspace' } };
-    }
-    const matcher = sensor.matches ? globToRegExp(sensor.matches) : null;
-    const onGatePlane = gatePlane(sensor, plane);
-    const writePlane =
-      !onGatePlane && sensor.fireOn === FIRE_ON_WRITE && Array.isArray(changedFiles);
-    const all = writePlane ? changedFiles : await listFiles(workspaceDir);
-    const matched = matcher ? all.filter((f) => matcher.test(f)) : all;
-    if (matched.length === 0) {
-      if (onGatePlane) {
-        return notApplicable('no matching deliverable at the gate', {
-          fireOn: FIRE_ON_GATE,
-          matches: sensor.matches ?? null,
-        });
-      }
       return {
         result: SENSOR_RESULT.INCONCLUSIVE,
+        applicability: SENSOR_APPLICABILITY.UNKNOWN,
+        detail: { reason: 'no workspace' },
+      };
+    }
+    const matcher = sensor.matches ? globToRegExp(sensor.matches) : null;
+    const enumeration = await listFiles(workspaceDir, fileListOptions);
+    const all = enumeration.files;
+    const globbed = matcher ? all.filter((file) => matcher.test(file)) : all;
+    const onGatePlane = gatePlane(sensor, plane);
+    // Explicit provenance is authoritative, including an unknown reason. Keep
+    // the older changedFiles argument for direct write-plane callers only.
+    const provenance = normalizeChangedFileProvenance(
+      changedFileProvenance ??
+        (sensor.fireOn === FIRE_ON_WRITE && Array.isArray(changedFiles)
+          ? knownChangedFileProvenance(changedFiles)
+          : unknownChangedFileProvenance('not_provided')),
+    );
+    const scope = spec.scope;
+    const selection = selectSensorFiles({
+      globbed,
+      // Gate sensors inspect every existing deliverable after repair, even
+      // when this attempt has a known empty delta.
+      provenance: onGatePlane ? knownChangedFileProvenance(all) : provenance,
+      scope,
+      allFiles: all,
+      configFile: spec.projectConfig,
+      enumeration,
+    });
+
+    const { applicability, files: matched, selectionComplete } = selection;
+    if (!selectionComplete) {
+      return {
+        result: SENSOR_RESULT.INCONCLUSIVE,
+        applicability,
         detail: {
-          reason: 'no files match',
+          reason: 'workspace enumeration incomplete',
           matches: sensor.matches ?? null,
-          ...(writePlane ? { fireOn: FIRE_ON_WRITE, changedFiles: changedFiles.length } : {}),
+          scope,
+          applicability,
+          provenance,
+          enumeration: summarizeEnumeration(enumeration),
+        },
+      };
+    }
+    if (matched.length === 0) {
+      if (onGatePlane) {
+        return {
+          ...notApplicable('no matching deliverable at the gate', {
+            fireOn: FIRE_ON_GATE,
+            matches: sensor.matches ?? null,
+            provenance,
+          }),
+          applicability,
+        };
+      }
+      const reason = globbed.length === 0 ? 'no files match' : 'no changed files match';
+      return {
+        result: SENSOR_RESULT.INCONCLUSIVE,
+        applicability,
+        detail: {
+          reason,
+          matches: sensor.matches ?? null,
+          scope,
+          applicability,
+          provenance,
+          globbed: globbed.length,
+          changed: provenance.state === 'known' ? provenance.files.length : null,
         },
       };
     }
@@ -382,14 +902,24 @@ export const createSensorRunner = ({
       // The verdict is shown to users, so it keeps the generic text; the loader's
       // own message (which can name storage keys) goes to the operator log only.
       if (scriptError) {
-        logger.warn('sensor script could not be loaded', {
-          sensorId: spec.sensorId ?? null,
-          name: scriptError?.name ?? null,
-          code: scriptError?.code ?? null,
-          msg: scriptError?.message ?? String(scriptError),
-        });
+        logger.warn(
+          'sensor script could not be loaded',
+          redactDiagnostic(
+            {
+              sensorId: spec.sensorId ?? null,
+              name: scriptError?.name ?? null,
+              code: scriptError?.code ?? null,
+              msg: scriptError?.message ?? String(scriptError),
+            },
+            sensitiveValues,
+          ),
+        );
       }
-      return { result: SENSOR_RESULT.BLOCKED, detail: { error: 'sensor has no script' } };
+      return {
+        result: SENSOR_RESULT.BLOCKED,
+        applicability,
+        detail: { error: 'sensor has no script' },
+      };
     }
     const scriptDir = path.join(workspaceDir, '.aidlc', 'sensors');
     await mkdir(scriptDir, { recursive: true });
@@ -398,6 +928,7 @@ export const createSensorRunner = ({
     const { file, args } = buildScriptArgv(spec, { scriptPath, substitutions });
 
     // One run per matching file (the upstream scripts take a single --file-path).
+    const verdictMode = spec.verdictMode;
     const fileResults = [];
     let worst = SENSOR_RESULT.PASS;
     for (const rel of matched) {
@@ -409,13 +940,28 @@ export const createSensorRunner = ({
         env: childEnv,
         spawnFn,
       });
-      const { result, detail } = resultFromScript(run);
+      const { result, detail } = resultFromScript({ ...run, verdictMode, sensitiveValues });
       fileResults.push({ file: rel, result, timedOut: run.timedOut, detail });
       if (result === SENSOR_RESULT.FAIL) worst = SENSOR_RESULT.FAIL;
       else if (result === SENSOR_RESULT.BLOCKED && worst !== SENSOR_RESULT.FAIL)
         worst = SENSOR_RESULT.BLOCKED;
+      else if (
+        result === SENSOR_RESULT.INCONCLUSIVE &&
+        worst !== SENSOR_RESULT.FAIL &&
+        worst !== SENSOR_RESULT.BLOCKED
+      )
+        worst = SENSOR_RESULT.INCONCLUSIVE;
     }
-    return { result: worst, detail: { files: fileResults } };
+    return {
+      result: worst,
+      applicability,
+      detail: {
+        scope,
+        applicability,
+        provenance,
+        ...summarizeFileResults(fileResults, sensitiveValues),
+      },
+    };
   };
 
   // Run every sensor declared on a stage and return the verdicts. Each verdict:
@@ -458,17 +1004,23 @@ export const createSensorRunner = ({
             ? await runGraphSensor({ sensor, outputArtifacts, consumes, plane })
             : await runScriptSensor({ sensor, stageId, changedFiles, plane });
       } catch (e) {
-        outcome = { result: SENSOR_RESULT.BLOCKED, detail: { error: e.message } };
+        outcome = {
+          result: SENSOR_RESULT.BLOCKED,
+          applicability: SENSOR_APPLICABILITY.UNKNOWN,
+          detail: { error: e.message },
+        };
       }
-      const { held: severityHeld } = severityGate(outcome.result, sensor.severity);
+      const applicability = outcome.applicability ?? SENSOR_APPLICABILITY.APPLICABLE;
+      const { held: severityHeld } = severityGate(outcome.result, sensor.severity, applicability);
       const held = outcome.fatal === true || severityHeld;
       verdicts.push({
         sensorId: sensor.sensorId,
         kind,
         severity: sensor.severity ?? 'advisory',
         result: outcome.result,
+        applicability,
         held,
-        detail: outcome.detail ?? null,
+        detail: redactDiagnostic(outcome.detail ?? null, sensitiveValues),
         // Only a plane-aware call states the plane, so a legacy verdict object
         // stays exactly the shape every historical consumer reads.
         ...(plane ? { plane } : {}),
@@ -480,4 +1032,18 @@ export const createSensorRunner = ({
   return { runStageSensors, runGraphSensor, runScriptSensor };
 };
 
-export const __test = { globToRegExp, listFiles, resultFromScript, notApplicable };
+export const __test = {
+  notApplicable,
+  globToRegExp,
+  listFiles,
+  resultFromScript,
+  scopeToChangedFiles,
+  expandToAffectedProjects,
+  selectSensorFiles,
+  projectRootOf,
+  tailDiagnostic,
+  summarizeFileResults,
+  redactCredentialText,
+  redactDiagnostic,
+  sensitiveEnvironmentValues,
+};

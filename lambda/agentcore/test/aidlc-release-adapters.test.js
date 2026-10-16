@@ -3,7 +3,10 @@
 // sensor `fire_on` planes. Each case also pins the legacy shape, because a
 // catalog without the new fields must produce byte-identical output.
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createSensorRunner } from '../sensor-runner.js';
 import {
   INVOKE_DIALECT_ANNEX,
@@ -229,6 +232,13 @@ describe('AGENT.maxTurns on the OpenCode driver', () => {
 });
 
 describe('sensor fire_on planes', () => {
+  let workspaceDir;
+  beforeEach(async () => {
+    workspaceDir = await mkdtemp(path.join(tmpdir(), 'sensor-release-adapter-'));
+  });
+  afterEach(async () => {
+    await rm(workspaceDir, { recursive: true, force: true });
+  });
   const graph = {
     lookupArtifacts: vi.fn(async () => []),
   };
@@ -253,7 +263,7 @@ describe('sensor fire_on planes', () => {
     const created = createSensorRunner({
       graph,
       loadBlockScript: async () => 'export default 1;',
-      workspaceDir: '/nonexistent-workspace',
+      workspaceDir,
       spawnFn: vi.fn(),
     });
     const [verdict] = await created.runStageSensors({
@@ -266,13 +276,14 @@ describe('sensor fire_on planes', () => {
   });
 
   it('narrows a write-plane sensor to this attempt\u2019s changed files', async () => {
+    await writeFile(path.join(workspaceDir, 'untouched.ts'), 'export {};');
     const spawnFn = vi.fn(() => {
       throw new Error('should not spawn: no changed file matches');
     });
     const created = createSensorRunner({
       graph,
       loadBlockScript: async () => 'export default 1;',
-      workspaceDir: '/nonexistent-workspace',
+      workspaceDir,
       spawnFn,
     });
     const [verdict] = await created.runStageSensors({
@@ -283,9 +294,9 @@ describe('sensor fire_on planes', () => {
     expect(spawnFn).not.toHaveBeenCalled();
     expect(verdict.result).toBe('INCONCLUSIVE');
     expect(verdict.detail).toMatchObject({
-      reason: 'no files match',
-      fireOn: 'write',
-      changedFiles: 2,
+      reason: 'no changed files match',
+      applicability: 'NOT_APPLICABLE',
+      provenance: { state: 'known', files: ['README.md', 'docs/guide.md'] },
     });
     expect(verdict.detail.notApplicable).toBeUndefined();
   });

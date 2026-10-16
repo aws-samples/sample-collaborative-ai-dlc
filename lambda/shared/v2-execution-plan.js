@@ -31,6 +31,7 @@ import {
   unhandledCapabilities,
 } from './aidlc-capabilities.js';
 import { compileStageGraph, compileRules } from './compile.js';
+import { validateSensorContractFields } from './v2-sensor-contract.js';
 import { isLoopBackRecommenderStage, loopBackApplies } from './stage-loopback.js';
 import { stageSkipBlockReason } from './stage-skip.js';
 
@@ -228,6 +229,16 @@ const resolveSensors = (stage, stageId, sensorsById, errors, { policyEnabled = f
           err('sensor_missing_command', `sensor "${sid}" has no command`, { stageId, ref: sid }),
         );
       }
+      const contract = validateSensorContractFields({ ...sensor, sensorId: sid });
+      for (const issue of contract.errors) {
+        errors.push(
+          err(issue.code, `sensor "${sid}" ${issue.message}`, {
+            stageId,
+            ref: sid,
+            field: issue.field,
+          }),
+        );
+      }
       return {
         sensorId: sid,
         severity: sensor.severity ?? 'advisory',
@@ -237,6 +248,11 @@ const resolveSensors = (stage, stageId, sensorsById, errors, { policyEnabled = f
         category: sensor.category ?? null,
         matches: sensor.matches ?? null,
         scriptRef: sensor.scriptRef ?? null,
+        // Preserve legacy plan byte identity. The runner applies defaults for
+        // absent fields; authored values still cross this validated boundary.
+        ...Object.fromEntries(
+          Object.entries(contract.fields).filter(([field]) => sensor[field] != null),
+        ),
         // `fire_on` (≥2.7.0) decides which candidate set the runner sweeps, so it
         // has to reach the runtime on the plan — without it the whole plane was
         // inert. Emitted ONLY when authored AND in release mode: an unpinned run

@@ -87,7 +87,7 @@ describe('fire_on planes — partitioning', () => {
     for (const verdict of verdicts) {
       expect(Object.hasOwn(verdict, 'plane')).toBe(false);
       expect(Object.keys(verdict).toSorted()).toEqual(
-        ['detail', 'held', 'kind', 'result', 'sensorId', 'severity'].toSorted(),
+        ['applicability', 'detail', 'held', 'kind', 'result', 'sensorId', 'severity'].toSorted(),
       );
     }
   });
@@ -156,12 +156,13 @@ describe('fire_on gate plane — one run per EXISTING declared deliverable', () 
     expect(verdicts[0].result).toBe('PASS');
 
     const nothing = await runner({}).runStageSensors({
-      sensors: [GATE_SENSOR],
+      sensors: [{ ...GATE_SENSOR, severity: 'blocking' }],
       outputArtifacts: [{ artifact: 'notes', optional: true }],
       stageId: 's',
       planes: ['gate'],
     });
     expect(nothing[0].detail).toMatchObject({ notApplicable: true, fireOn: 'gate' });
+    expect(nothing[0]).toMatchObject({ applicability: 'NOT_APPLICABLE', held: false });
     // Nothing to inspect is nothing to decide: it must not reach the human.
     expect(sensorGateFindings({ sensorVerdicts: nothing })).toEqual([]);
   });
@@ -294,6 +295,72 @@ describe('fire_on gate plane — script sensors sweep the deliverables, not the 
       planes: ['write'],
     });
     expect(write[0].detail.files.map((f) => f.file)).toEqual(['src/touched.ts']);
+  });
+
+  it.each([
+    { state: 'known', files: [] },
+    { state: 'unknown', reason: 'git_diff_failed' },
+  ])('sweeps gate deliverables with $state provenance', async (provenance) => {
+    await writeFile(path.join(ws, 'a.ts'), 'export {};');
+    const [verdict] = await createSensorRunner({
+      workspaceDir: ws,
+      changedFileProvenance: provenance,
+      loadBlockScript: async () => 'BODY',
+      spawnFn: spawnOf('{"pass":true}'),
+    }).runStageSensors({
+      sensors: [scriptSensor({ fireOn: 'gate', severity: 'blocking' })],
+      changedFiles: [],
+      planes: ['gate'],
+    });
+    expect(verdict).toMatchObject({
+      result: 'PASS',
+      held: false,
+      detail: { provenance, files: [{ file: 'a.ts' }] },
+    });
+  });
+
+  it('keeps explicit unknown provenance when a write caller supplies an empty legacy list', async () => {
+    await writeFile(path.join(ws, 'a.ts'), 'export {};');
+    const [verdict] = await createSensorRunner({
+      workspaceDir: ws,
+      changedFileProvenance: { state: 'unknown', reason: 'git_diff_failed' },
+      loadBlockScript: async () => 'BODY',
+      spawnFn: spawnOf('', 127),
+    }).runStageSensors({
+      sensors: [scriptSensor({ fireOn: 'write', severity: 'blocking' })],
+      changedFiles: [],
+      planes: ['write'],
+    });
+    expect(verdict).toMatchObject({
+      result: 'INCONCLUSIVE',
+      applicability: 'UNKNOWN',
+      held: true,
+      detail: {
+        provenance: { state: 'unknown', reason: 'git_diff_failed' },
+        harnessFailures: [{ reason: 'tool-unavailable', sampleFiles: ['a.ts'], fileCount: 1 }],
+      },
+    });
+  });
+
+  it('holds a gate sensor when enumeration cannot prove there are no deliverables', async () => {
+    await writeFile(path.join(ws, 'a.ts'), 'export {};');
+    const [verdict] = await createSensorRunner({
+      workspaceDir: ws,
+      changedFileProvenance: { state: 'known', files: [] },
+      fileListOptions: { cap: 0 },
+      loadBlockScript: async () => 'BODY',
+      spawnFn: spawnOf('{"pass":true}'),
+    }).runStageSensors({
+      sensors: [scriptSensor({ fireOn: 'gate', severity: 'blocking' })],
+      planes: ['gate'],
+    });
+    expect(verdict).toMatchObject({
+      result: 'INCONCLUSIVE',
+      applicability: 'UNKNOWN',
+      held: true,
+      detail: { reason: 'workspace enumeration incomplete' },
+    });
+    expect(verdict.detail.notApplicable).toBeUndefined();
   });
 
   // The gate sensor's child never exits. The
