@@ -1,8 +1,7 @@
 import * as fs from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import { expect, it, vi } from 'vitest';
 import { createNativeExecutor } from '../../agentcore/native/executor.js';
 import { createNativeExecutionPorts } from '../../agentcore/native/execution-prepare.js';
@@ -18,6 +17,7 @@ import { createNativeExecutionApi, nativeExecutionView } from '../execution-api.
 import { executionIdentity } from '../execution-runtime.js';
 import { executionFixture } from './execution-fixtures.js';
 import { ACTOR } from './fixtures.js';
+import { memoryNativeObjects } from './memory-objects.js';
 
 // Real subprocesses, filesystem capture and production runtime/controller/
 // authority/publication/checkpoint validators. Only AWS, package initialization
@@ -163,55 +163,25 @@ it.each([
     }
   `,
   );
-  const latest = new Map();
-  const objects = new Map();
-  const writes = [];
-  let version = 0;
-  const s3 = {
-    send: vi.fn(async (command) => {
+  const { s3, objects, writes } = memoryNativeObjects({
+    bucket: f.configuration.publicationBucket,
+    accountId: f.configuration.accountId,
+    before: async (command) => {
       const p = command.input;
-      expect(p.Bucket).toBe(f.configuration.publicationBucket);
-      expect(p.ExpectedBucketOwner).toBe(f.configuration.accountId);
-      const current = latest.get(p.Key);
-      if (command.constructor.name === 'PutObjectCommand') {
-        const fault = scenario.kind.slice('upload-'.length);
-        if (
-          turns === 2 &&
-          scenario.kind.startsWith('upload-') &&
-          ((fault === 'publication' &&
-            p.Key.includes('/manifests/') &&
-            !p.Key.startsWith('native-recovery/')) ||
-            (fault === 'interaction' && p.Key.includes('/interactions/')) ||
-            (fault === 'checkpoint' && p.Key.startsWith('native-recovery/')))
-        )
-          throw new Error('injected upload failure');
-        if ((p.IfNoneMatch === '*' && current) || (p.IfMatch && p.IfMatch !== current?.etag))
-          throw Object.assign(new Error('conditional conflict'), {
-            name: 'PreconditionFailed',
-            $metadata: { httpStatusCode: 412 },
-          });
-        const bytes = Buffer.from(p.Body);
-        const item = {
-          bytes,
-          version: `immutable-${++version}`,
-          etag: `"${createHash('sha256').update(bytes).digest('hex')}"`,
-        };
-        objects.set(`${p.Key}\0${item.version}`, item);
-        latest.set(p.Key, item);
-        writes.push(p.Key);
-        return { VersionId: item.version, ETag: item.etag };
-      }
-      expect(command.constructor.name).toBe('GetObjectCommand');
-      const item = p.VersionId ? objects.get(`${p.Key}\0${p.VersionId}`) : current;
-      if (!item) throw Object.assign(new Error('missing'), { name: 'NoSuchKey' });
-      return {
-        VersionId: item.version,
-        ETag: item.etag,
-        ContentLength: item.bytes.length,
-        Body: Readable.from([item.bytes]),
-      };
-    }),
-  };
+      const fault = scenario.kind.slice('upload-'.length);
+      if (
+        command.constructor.name === 'PutObjectCommand' &&
+        turns === 2 &&
+        scenario.kind.startsWith('upload-') &&
+        ((fault === 'publication' &&
+          p.Key.includes('/manifests/') &&
+          !p.Key.startsWith('native-recovery/')) ||
+          (fault === 'interaction' && p.Key.includes('/interactions/')) ||
+          (fault === 'checkpoint' && p.Key.startsWith('native-recovery/')))
+      )
+        throw new Error('injected upload failure');
+    },
+  });
   const storage = {
     s3,
     bucket: f.configuration.publicationBucket,

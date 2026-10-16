@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { runNativeCommand } from '../lambda/agentcore/native/command-runner.js';
 import { createNativeTurnOutput } from '../lambda/agentcore/native/turn-output.js';
@@ -13,6 +13,9 @@ import {
   buildNativePendingInput,
   nativeAnswerText,
 } from '../lambda/shared/native-pending-input.js';
+
+import { prepareQualificationPackage } from './native-qualification-package.mjs';
+import { sendClaudeResponse } from './native-qualification-provider.mjs';
 
 const adapter = await import(
   process.argv[2] || '../lambda/agentcore/native/session-recovery-files.js'
@@ -32,44 +35,7 @@ let requestSamples = [];
 const packageDirectory = process.env.NATIVE_QUALIFICATION_PACKAGE;
 const engineEnv = {};
 if (packageDirectory) {
-  // This qualification case is for the incident's exact public package. These
-  // are fixture checks, not production package selection or a version upgrade.
-  const pins = {
-    'aidlc-linux-arm64': '18e6fefcd3591aefd66d8a485fba5deaa870c6bbc6fd3e389d4b0b2032ce9f35',
-    'aidlc-runtime-2.11.0.tar.gz':
-      '68906435223b47d6dfda59d79def78974d7b37e38b5649a56402a0007a41fad4',
-    'version.json': '5711b7af08fc8c293576fdde9252b6b9fe13a7041f7db5f0dd33f6b56223c1e9',
-    'checksums.txt': 'c49098da9ce425afbc5c5beeaae395aa8480c6f887107b0b455cc1143cac2ac9',
-  };
-  const pkg = `${root}/package`,
-    tools = `${root}/tools`;
-  await fs.mkdir(pkg);
-  await fs.mkdir(tools);
-  for (const [name, hash] of Object.entries(pins)) {
-    const bytes = await fs.readFile(`${packageDirectory}/${name}`);
-    assert.equal(createHash('sha256').update(bytes).digest('hex'), hash);
-    await fs.writeFile(`${pkg}/${name}`, bytes);
-  }
-  await fs.copyFile(
-    `${packageDirectory}/aidlc-release.intoto.jsonl`,
-    `${pkg}/aidlc-release.intoto.jsonl`,
-  );
-  await fs.chmod(`${pkg}/aidlc-linux-arm64`, 0o700);
-  const gh = ['/usr/bin/gh', '/usr/local/bin/gh'].find((path) => {
-    try {
-      return process.getBuiltinModule('node:fs').existsSync(path);
-    } catch {
-      return false;
-    }
-  });
-  assert.ok(gh);
-  // Fixture-only transport of public trust roots. All signature, issuer,
-  // repository, ref and source-digest checks in the real installer still run.
-  await fs.writeFile(
-    `${tools}/gh`,
-    `#!/bin/sh\nexec ${gh} "$@" --custom-trusted-root ${packageDirectory}/trusted-root.jsonl\n`,
-    { mode: 0o700 },
-  );
+  const { directory: pkg, tools } = await prepareQualificationPackage(root, packageDirectory);
   Object.assign(engineEnv, {
     PATH: `${tools}:${root}/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin`,
     AIDLC_INSTALL_ROOT: `${root}/data`,
@@ -205,50 +171,7 @@ const server = createServer(async (req, res) => {
   const tool = content.type === 'tool_use';
   const contentBlocks =
     turn === 3 && !tool ? [{ type: 'text', text: 'Fixture proposal 3.' }, content] : [content];
-  const message = {
-    id: `msg-fixture-${calls}`,
-    type: 'message',
-    role: 'assistant',
-    model: request.model,
-    content: [],
-    stop_reason: null,
-    stop_sequence: null,
-    usage: { input_tokens: 10, output_tokens: 1 },
-  };
-  const reason = tool ? 'tool_use' : 'end_turn';
-  if (!request.stream) {
-    res.writeHead(200, { 'content-type': 'application/json' }).end(
-      JSON.stringify({
-        ...message,
-        content: contentBlocks,
-        stop_reason: reason,
-      }),
-    );
-    return;
-  }
-  res.writeHead(200, { 'content-type': 'text/event-stream' });
-  const send = (type, value) =>
-    res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...value })}\n\n`);
-  send('message_start', { message });
-  for (const [index, block] of contentBlocks.entries()) {
-    send('content_block_start', {
-      index,
-      content_block: tool ? { ...block, input: {} } : { type: 'text', text: '' },
-    });
-    send('content_block_delta', {
-      index,
-      delta: tool
-        ? { type: 'input_json_delta', partial_json: JSON.stringify(block.input) }
-        : { type: 'text_delta', text: block.text },
-    });
-    send('content_block_stop', { index });
-  }
-  send('message_delta', {
-    delta: { stop_reason: reason, stop_sequence: null },
-    usage: { output_tokens: 10 },
-  });
-  send('message_stop', {});
-  res.end();
+  sendClaudeResponse(res, request, contentBlocks, `msg-fixture-${calls}`);
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const id = randomUUID();
