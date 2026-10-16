@@ -115,7 +115,16 @@ function SetupGuide({
         With the tag policy, tag each repository to share with{' '}
         <code className="font-mono">aidlc=true</code>. The value must be exactly{' '}
         <code className="font-mono">true</code>. This tag grants access: limit who can set it, also
-        when a repository is created.
+        when a repository is created, with the deny in the{' '}
+        <a
+          className="underline underline-offset-2"
+          href="https://github.com/aws-samples/sample-collaborative-ai-dlc/blob/main/docs/getting-started/setup.md#codecommit-code-host"
+          target="_blank"
+          rel="noreferrer"
+        >
+          setup guide
+        </a>
+        .
       </li>
       <li>Paste the role ARN and region above, then test and save.</li>
     </ol>

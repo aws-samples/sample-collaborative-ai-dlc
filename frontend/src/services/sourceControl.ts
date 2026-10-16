@@ -57,9 +57,9 @@ export const SOURCE_CONTROL_AUTH_OPTIONS: Record<GitProvider, SourceControlAuthO
   codecommit: [
     {
       authType: 'codecommit-role',
-      label: 'IAM role in the repository account',
+      label: 'Platform CodeCommit connection',
       description:
-        'You create an IAM role that trusts this platform; it is assumed per request with a session policy scoped to the repository. No personal connection, no OAuth app.',
+        'Managed by your platform admin; assumed per request with a session policy scoped to the repository. No personal connection, no OAuth app.',
       requiresDelegationConfirmation: false,
     },
   ],

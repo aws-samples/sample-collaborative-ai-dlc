@@ -108,11 +108,17 @@ const adminConfig = (connection) => {
 const mapBounded = async (items, limit, fn) => {
   const results = Array.from({ length: items.length });
   let next = 0;
+  let failed = false;
   const worker = async () => {
-    while (next < items.length) {
+    while (!failed && next < items.length) {
       const index = next;
       next += 1;
-      results[index] = await fn(items[index], index);
+      try {
+        results[index] = await fn(items[index], index);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
     }
   };
   const workers = Array.from({ length: Math.min(limit, items.length) }, worker);
