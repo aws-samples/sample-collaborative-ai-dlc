@@ -7,6 +7,7 @@ import {
   assumeCodeCommitRole,
   codeCommitPermissionsPolicy,
   codeCommitSessionPolicy,
+  codeCommitTagPermissionsPolicy,
   codeCommitTrustPolicy,
   isCodeCommitExternalId,
   isCodeCommitRoleArn,
@@ -89,10 +90,16 @@ describe('session policies', () => {
     );
     expect(JSON.stringify(policy)).not.toContain('DeleteRepository');
   });
-  it('discover is the only repo-less profile and grants listing only', () => {
+  it('discover is the only repo-less profile and grants listing + per-repo read', () => {
+    // The list route reads each repository to drop the ones the role cannot
+    // access, so discover grants GetRepository alongside ListRepositories.
     const policy = codeCommitSessionPolicy({ repoArn: null, access: 'discover' });
     expect(policy.Statement).toHaveLength(1);
-    expect(policy.Statement[0].Action).toEqual(['codecommit:ListRepositories']);
+    expect(policy.Statement[0].Action).toEqual([
+      'codecommit:ListRepositories',
+      'codecommit:GetRepository',
+    ]);
+    expect(policy.Statement[0].Resource).toBe('*');
     expect(() => codeCommitSessionPolicy({ repoArn: null, access: 'read' })).toThrow(/repository/i);
     expect(() => codeCommitSessionPolicy({ repoArn: REPO, access: 'admin' })).toThrow(/access/);
   });
@@ -230,5 +237,36 @@ describe('codeCommitPermissionsPolicy', () => {
     const block = /<!-- codecommit-permissions-policy[^>]*-->\s*```json\n([\s\S]*?)\n```/.exec(doc);
     expect(block).not.toBeNull();
     expect(JSON.parse(block[1])).toEqual(codeCommitPermissionsPolicy());
+  });
+});
+
+describe('codeCommitTagPermissionsPolicy', () => {
+  it('lists on "*" and scopes tagged repositories to the account/region (#531 admin card)', () => {
+    const policy = codeCommitTagPermissionsPolicy({
+      region: 'eu-west-1',
+      accountId: '123456789012',
+    });
+    const [list, tagged] = policy.Statement;
+    expect(list).toMatchObject({ Action: 'codecommit:ListRepositories', Resource: '*' });
+    expect(tagged.Resource).toBe('arn:aws:codecommit:eu-west-1:123456789012:*');
+    expect(tagged.Condition).toEqual({ StringEquals: { 'aws:ResourceTag/aidlc': 'true' } });
+    // Never widens to repository management.
+    expect(JSON.stringify(policy)).not.toContain('codecommit:*');
+  });
+
+  it('renders placeholders before a connection fills the region/account', () => {
+    const policy = codeCommitTagPermissionsPolicy();
+    expect(policy.Statement[1].Resource).toBe('arn:aws:codecommit:<region>:<account-id>:*');
+  });
+
+  it('derives the partition from the region for the gov/cn forms', () => {
+    expect(
+      codeCommitTagPermissionsPolicy({ region: 'us-gov-west-1', accountId: '123456789012' })
+        .Statement[1].Resource,
+    ).toBe('arn:aws-us-gov:codecommit:us-gov-west-1:123456789012:*');
+    expect(
+      codeCommitTagPermissionsPolicy({ region: 'cn-north-1', accountId: '123456789012' })
+        .Statement[1].Resource,
+    ).toBe('arn:aws-cn:codecommit:cn-north-1:123456789012:*');
   });
 });
