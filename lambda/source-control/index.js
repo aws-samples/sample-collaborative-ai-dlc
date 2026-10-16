@@ -143,9 +143,8 @@ const normalizeProviderSelections = (data = {}) => {
       selections[item.provider] = {
         authType: item.authType,
         confirmDelegation: item.confirmDelegation,
-        // codecommit-role: the tenant role and the committer identity.
-        ...(item.roleArn ? { roleArn: item.roleArn } : {}),
-        ...(item.externalId ? { externalId: item.externalId } : {}),
+        // codecommit-role: only the committer identity. The role and external
+        // ID come from the one platform connection, not the selection (#531).
         ...(item.committerName ? { committerName: item.committerName } : {}),
         ...(item.committerEmail ? { committerEmail: item.committerEmail } : {}),
       };
