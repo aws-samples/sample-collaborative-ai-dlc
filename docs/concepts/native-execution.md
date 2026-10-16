@@ -3259,6 +3259,108 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       performance. Both the local task and representative runtime-stability
       acceptance remain open.
 
+      **Approved OpenCode bin-link correction (2026-10-16, after `6c4ae11`):**
+      parent approved the narrow dependency-alias representation as part of this
+      supported-CLI fix. No general symlink support, access/trust policy,
+      filesystem reach, hooks or human permissions are changed. The preceding
+      pending-decision/FAIL records describe the prior revision and remain as
+      historical evidence.
+
+      The actual pinned npm installer produces these seven direct entries in
+      `.opencode/node_modules/.bin`; the fixture asserts that all seven really
+      occur. Production validation does not special-case their names.
+
+      | Link name | Exact relative target text |
+      | --- | --- |
+      | `download-msgpackr-prebuilds` | `../msgpackr-extract/bin/download-prebuilds.js` |
+      | `node-gyp-build-optional-packages` | `../node-gyp-build-optional-packages/bin.js` |
+      | `node-gyp-build-optional-packages-optional` | `../node-gyp-build-optional-packages/optional.js` |
+      | `node-gyp-build-optional-packages-test` | `../node-gyp-build-optional-packages/build-test.js` |
+      | `node-which` | `../which/bin/node-which` |
+      | `uuid` | `../uuid/dist-node/bin/uuid` |
+      | `yaml` | `../yaml/bin.mjs` |
+
+      One small shared validator now defines the runtime/controller link plan:
+      OpenCode only, project scope, direct `.bin` entries, relative UTF-8 text,
+      independently captured regular targets within `.opencode/node_modules`.
+      It requires captured real directories for **every raw traversal step**,
+      including steps normalized away by `..`, as well as target ancestors.
+      Absolute/escaping targets, chains, directory targets, hard-linked alias
+      inodes (not represented by this format), missing files or
+      parents, cross-scope links, duplicate/file/directory collisions, aliases
+      used as parents, credentials/private-control paths and unknown fields
+      reject the checkpoint. Path/depth/entry limits include aliases; aggregate
+      byte limits also count link text. The existing file/object size limits,
+      object-version checks and independent SHA-256 verification remain.
+
+      Capture uses `lstat` and byte-preserving `readlink`, never follows an alias,
+      and retains exact text, Linux's fixed `0777` link mode and nanosecond mtime.
+      The independently opened regular files, links and directories must retain
+      their observed identities/stat values throughout capture. Device checks
+      reject filesystem crossings; a bounded Linux mount-namespace read also
+      rejects same-device bind mounts in the alias/target paths. Restore validates
+      the whole manifest and file hashes before writes, creates and checks real
+      same-filesystem parents, writes targets before aliases, then reads back
+      link text/mode/time and independent target bytes/identities. Timestamp
+      restoration uses no-follow operations. No restore write uses an alias as a
+      parent. A changed source, target or parent rejects the operation and leaves
+      a partial restore unusable under the existing recovery rules. This remains
+      a fenced/quiescent filesystem protocol, not a sandbox against arbitrary
+      hostile same-UID code.
+
+      **Compatibility/deployment:** link-free captures retain filesystem schema
+      **1** exactly. Only captures containing these aliases use nested filesystem
+      schema **2** with `binLinks`; the checkpoint envelope, receipt, object-key
+      namespace and OpenCode session-export format remain version 1. Link text
+      and attributes participate in the immutable manifest hash; targets retain
+      their independent file hashes/object versions. New readers accept the
+      old link-free meaning unchanged; old readers reject filesystem 2 rather
+      than ignoring aliases. Deploy controller/checkpoint readers before enabling
+      a new writer image, and retain that reader capability while any such
+      checkpoints exist. Recovery still requires the checkpoint's exact image,
+      package/session/configuration and writer/epoch admission; no new metadata
+      is sent to an old image by repinning or migrating an existing run.
+      Historical hashes/manifests and retained-image fixtures are untouched.
+      Public publication filtering and immutable-answer authority are unchanged.
+
+      **Old/fixed evidence:** mounting the original `6c4ae11` recovery module into
+      the same cached image, with the same real workflow/cache and new journey
+      assertions, still fails capture at `native_recovery_symlink`. Corrected
+      code passes the actual installed workflow and existing cold-controller
+      path: 12 genuine typed choices, two protected immutable answers, lost
+      runtime/admission acknowledgements, seven exact aliases, 4,005 files,
+      erased project/HOME, verified restore into writer generation 2, unchanged
+      attempt/epoch, one filesystem restore with new/duplicate recovery receipts
+      and zero duplicate replay. Prior question text reaches the resumed
+      deterministic provider request. Cancellation still observes the real tool
+      descendant gone. Neither workflow initialization nor npm bin links were
+      mocked, deleted or disabled.
+
+      Focused final Linux validation passes all **360 recovery/manifest tests**,
+      including the same-device mount case. The first host test draft exposed
+      macOS's umask-derived symlink mode (`0755`, unlike Linux `0777`) and a test
+      clone that converted Buffer to Uint8Array; the fixture now models the
+      installed Linux mode, with explicit no-follow mode restoration on macOS.
+      A subsequent host fixture also exposed macOS `link(2)` following the source
+      symlink, creating an already-supported regular-file hard link. The alias
+      inode rejection test now runs explicitly on Linux and asserts that it
+      really created a symlink before checking rejection; its Linux run passes.
+      Four added raw-traversal regressions also failed the first validator draft:
+      normalizing `missing/..` or `file/..` must not manufacture a traversable
+      directory. The corrected shared plan validates those intermediate parents.
+      No assertions, architecture ceilings or timeouts were relaxed.
+
+      First passing installed samples: captures took **1,516 / 1,549 / 1,545 ms**
+      for approximately **65 MB**, below the unchanged 256 MiB private-object
+      body limit. Primary query counts are **3 / 2 / 1**, with one extra first-turn
+      title query. Cold restore rebuilds two machine projections (five setup
+      commands total), with six workspace scans and no replay. The first request
+      after cold restore arrived at **54,546 ms**, within the unchanged 60-second
+      command bound; the pre-request wait is not attributed to a specific cause
+      and is not provider latency evidence. Keep that observation visible in this
+      existing optimization tracker rather than changing timeouts or claiming
+      deployed performance. Full matrix/static results and commit evidence follow.
+
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
       took roughly 2–3 seconds. Use the existing phase observations and matching

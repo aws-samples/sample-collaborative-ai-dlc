@@ -6,6 +6,7 @@
 import { createHash } from 'node:crypto';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { canonicalJson } from './workflow-checkpoint.js';
+import { nativeRecoveryBinLinks } from './native-recovery-bin-links.js';
 
 export const NATIVE_RECOVERY_LIMITS = Object.freeze({
   files: 20_000,
@@ -238,10 +239,11 @@ const sessionMetadata = (value) => {
     'home',
     'directories',
     'hardlinks',
+    ...(data?.schemaVersion === 2 ? ['binLinks'] : []),
     ...(value.harness === 'claude' ? ['claudeProjectKey'] : []),
   ]);
   if (
-    data.schemaVersion !== 1 ||
+    ![1, 2].includes(data.schemaVersion) ||
     data.harness !== value.harness ||
     data.nativeSessionId !== value.nativeSessionId ||
     data.format !== SESSION_FORMATS[value.harness] ||
@@ -300,6 +302,11 @@ const sessionMetadata = (value) => {
       first ??= file;
       linked.add(key);
     }
+  }
+  try {
+    nativeRecoveryBinLinks(data, value.files, NATIVE_RECOVERY_LIMITS);
+  } catch {
+    invalid();
   }
 };
 const manifestValue = (value, identity) => {

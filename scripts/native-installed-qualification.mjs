@@ -602,6 +602,7 @@ try {
     let lostAdmissionAck = false;
     let paging;
     let coldRestored = false;
+    const coldRecovery = ['codex', 'opencode'].includes(harness);
     const recoveryAcks = [];
     const controls = [];
     const observedStore = {
@@ -633,25 +634,45 @@ try {
         restoreRecovery: async (input) => {
           assert.equal(coldRestored, false, 'Recovery retry must not restore twice');
           const restored = await restoreNativeSessionRecovery(input);
-          const after = await codexHistory({
-            directory: project,
-            env: lastInput.env,
-            provider,
-            sessionId: input.nativeSessionId,
-            forkId: paging.forkId,
-          });
-          assert.deepEqual(after.root, paging.root);
-          assert.deepEqual(after.inherited, paging.inherited);
+          if (harness === 'codex') {
+            const after = await codexHistory({
+              directory: project,
+              env: lastInput.env,
+              provider,
+              sessionId: input.nativeSessionId,
+              forkId: paging.forkId,
+            });
+            assert.deepEqual(after.root, paging.root);
+            assert.deepEqual(after.inherited, paging.inherited);
+            report({
+              probe: 'cold-restore-pages',
+              status: 'PASS',
+              beforeTurn: 3,
+              verifiedFiles: input.files.length,
+              rootPages: after.root.pages,
+              inheritedPages: after.inherited.pages,
+              rebuiltWithoutSQLite: true,
+            });
+          } else {
+            assert.equal(input.metadata.schemaVersion, 2);
+            assert.equal(input.metadata.binLinks.length, 7, 'Actual pinned npm bin links occurred');
+            for (const link of input.metadata.binLinks) {
+              assert.equal(await fs.readlink(join(project, link.path)), link.target);
+              const stat = await fs.lstat(join(project, link.path), { bigint: true });
+              assert.equal(stat.isSymbolicLink(), true);
+              assert.equal(String(stat.mtimeNs), link.mtimeNs);
+            }
+            for (const file of input.files.filter((file) => file.scope === 'project'))
+              assert.deepEqual(await fs.readFile(join(project, file.path)), file.content);
+            report({
+              probe: 'cold-restore-bin-links',
+              status: 'PASS',
+              beforeTurn: 3,
+              verifiedFiles: input.files.length,
+              exactLinks: input.metadata.binLinks.length,
+            });
+          }
           coldRestored = true;
-          report({
-            probe: 'cold-restore-pages',
-            status: 'PASS',
-            beforeTurn: 3,
-            verifiedFiles: input.files.length,
-            rootPages: after.root.pages,
-            inheritedPages: after.inherited.pages,
-            rebuiltWithoutSQLite: true,
-          });
           return restored;
         },
         snapshot: async (input) => {
@@ -711,9 +732,7 @@ try {
                   : { writePath: join(project, 'nested/fixture.txt') }
                 : undefined,
             expectedHistory:
-              harness === 'codex' && turns === 3
-                ? ['Fixture question 1?', 'Fixture question 2?']
-                : [],
+              coldRecovery && turns === 3 ? ['Fixture question 1?', 'Fixture question 2?'] : [],
           });
           const started = performance.now();
           lastInput = localProviderInvocation(harness, invocation, provider.url);
@@ -845,7 +864,7 @@ try {
         return result;
       },
       stop: async ({ execution, recoveryId }) => {
-        assert.equal(harness, 'codex');
+        assert.equal(coldRecovery, true);
         assert.ok(recoveryId);
         assert.equal((await fence.read(executionIdentity(execution))).state, 'FENCED');
         await runtime.settle();
@@ -900,7 +919,7 @@ try {
       assert.equal(turns, turn);
       assert.equal(
         setups,
-        harness === 'codex' && turn === 3 ? 5 : 3,
+        coldRecovery && turn === 3 ? 5 : 3,
         'Only cold recovery rebuilds the two pinned machine projections',
       );
       assert.equal(workspaceScans, turn * 2, 'Exactly baseline and publication workspace scans');
@@ -948,7 +967,7 @@ try {
         for (const directory of [project, home])
           for (const entry of await fs.readdir(directory))
             await fs.rm(join(directory, entry), { recursive: true, force: true });
-        if (harness === 'codex') {
+        if (coldRecovery) {
           await fs.rm(homeRoot, { recursive: true, force: true });
           runtime = createRuntime();
           assert.equal((await runtime.status(executionIdentity(f.row()))).recovered, true);
@@ -1013,7 +1032,7 @@ try {
     }
     phase = 'authority-guards';
     assert.ok(lostAck && lostAdmissionAck);
-    if (harness === 'codex') {
+    if (coldRecovery) {
       report({
         probe: 'cold-recovery-identity',
         coldRestored,

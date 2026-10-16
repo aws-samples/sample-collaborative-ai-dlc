@@ -76,7 +76,257 @@ const withContent = (file, content) => ({
   sha256: hash(content),
 });
 
+const binPath = '.opencode/node_modules/.bin/tool';
+const binTarget = '.opencode/node_modules/pkg/bin/tool.js';
+const writeBinLink = async (target, path = join(project, binPath)) => {
+  await fs.symlink(target, path);
+  // Linux's symlink mode is fixed at 0777; macOS applies the host umask.
+  if (process.platform === 'darwin') await fs.lchmod(path, 0o777);
+};
+const openCodeOptions = () =>
+  options({
+    harness: 'opencode',
+    run: async ({ operation }) =>
+      operation === 'opencode-import'
+        ? Buffer.from('Imported')
+        : Buffer.from(
+            JSON.stringify({
+              info: { id, directory: project },
+              messages: [
+                {
+                  info: { id: 'message', sessionID: id },
+                  parts: [
+                    {
+                      type: 'text',
+                      text: 'Fixture question?',
+                      sessionID: id,
+                      messageID: 'message',
+                    },
+                  ],
+                },
+              ],
+            }),
+          ),
+  });
+const generatedBin = async () => {
+  await write('project', binTarget, '#!/usr/bin/env node\n', 0o755);
+  await fs.mkdir(join(project, '.opencode/node_modules/.bin'), { mode: 0o755 });
+  await writeBinLink('../pkg/bin/tool.js');
+  return captureNativeSessionRecovery(openCodeOptions());
+};
+
 describe('private native recovery files', () => {
+  it('round-trips generated OpenCode bin links with independent exact target bytes and metadata', async () => {
+    const checkpoint = await generatedBin();
+    expect(checkpoint.metadata.schemaVersion).toBe(2);
+    expect(checkpoint.metadata.binLinks).toEqual([
+      {
+        scope: 'project',
+        path: binPath,
+        target: '../pkg/bin/tool.js',
+        mode: 0o777,
+        mtimeNs: String((await fs.lstat(join(project, binPath), { bigint: true })).mtimeNs),
+      },
+    ]);
+    expect(checkpoint.files.some((file) => file.path === binPath)).toBe(false);
+    const target = checkpoint.files.find((file) => file.path === binTarget);
+    await emptyRestoreRoots();
+    await restoreNativeSessionRecovery({ ...openCodeOptions(), ...checkpoint });
+    expect(await fs.readlink(join(project, binPath))).toBe('../pkg/bin/tool.js');
+    expect(await fs.readFile(join(project, binTarget))).toEqual(target.content);
+    const stat = await fs.lstat(join(project, binPath), { bigint: true });
+    expect(stat.isSymbolicLink()).toBe(true);
+    expect(String(stat.mtimeNs)).toBe(checkpoint.metadata.binLinks[0].mtimeNs);
+    expect(Number(stat.mode & 0o777n)).toBe(0o777);
+  });
+
+  it.each([
+    ['absolute', '/tmp/external'],
+    ['escape', '../../../outside'],
+    ['escape-and-return', '../../../.opencode/node_modules/pkg/bin/tool.js'],
+    ['dangling', '../missing.js'],
+    ['directory', '../pkg'],
+    ['missing-intermediate-directory', '../pkg/missing/../bin/tool.js'],
+    ['file-intermediate-directory', '../pkg/bin/tool.js/../tool.js'],
+    ['chain', './other'],
+    ['credential', '../pkg/.npmrc'],
+  ])('rejects generated bin target %s at capture', async (_name, target) => {
+    await generatedBin();
+    await fs.unlink(join(project, binPath));
+    await writeBinLink(target);
+    if (_name === 'chain')
+      await writeBinLink('../pkg/bin/tool.js', join(project, '.opencode/node_modules/.bin/other'));
+    if (_name === 'credential')
+      await write('project', '.opencode/node_modules/pkg/.npmrc', 'private');
+    await expect(captureNativeSessionRecovery(openCodeOptions())).rejects.toMatchObject({
+      code: expect.stringMatching(/^native_recovery_(symlink|bin_link_invalid)$/),
+    });
+  });
+
+  it.each(['parent-link', 'link-mutation', 'target-mutation', 'external-device'])(
+    'rejects generated bin concurrent/source condition %s',
+    async (kind) => {
+      await generatedBin();
+      let changed = false;
+      const io = { ...fs };
+      if (kind === 'parent-link') {
+        await fs.rename(join(project, '.opencode/node_modules/pkg'), join(root, 'outside-package'));
+        await fs.symlink(
+          join(root, 'outside-package'),
+          join(project, '.opencode/node_modules/pkg'),
+        );
+      } else if (kind === 'link-mutation') {
+        io.readlink = async (path, opts) => {
+          const result = await fs.readlink(path, opts);
+          if (path === join(project, binPath) && !changed) {
+            changed = true;
+            await fs.unlink(path);
+            await fs.symlink('../missing.js', path);
+          }
+          return result;
+        };
+      } else if (kind === 'target-mutation') {
+        io.open = async (path, ...args) => {
+          if (path === join(project, binTarget) && !changed) {
+            changed = true;
+            await fs.writeFile(path, 'changed target');
+          }
+          return fs.open(path, ...args);
+        };
+      } else {
+        io.lstat = async (path, opts) => {
+          const stat = await fs.lstat(path, opts);
+          if (path === join(project, binTarget)) stat.dev += 1n;
+          return stat;
+        };
+      }
+      await expect(
+        captureNativeSessionRecovery({ ...openCodeOptions(), io }),
+      ).rejects.toMatchObject({
+        code: expect.stringMatching(/^native_recovery_(symlink|changed|mount)$/),
+      });
+    },
+  );
+
+  // macOS link(2) follows the source symlink; Linux links the alias inode itself.
+  it.runIf(process.platform === 'linux')(
+    'rejects hard-linked bin aliases whose inode relationship is not represented',
+    async () => {
+      await generatedBin();
+      await fs.link(join(project, binPath), join(project, '.opencode/node_modules/.bin/other'));
+      expect(
+        (await fs.lstat(join(project, '.opencode/node_modules/.bin/other'))).isSymbolicLink(),
+      ).toBe(true);
+      await expect(captureNativeSessionRecovery(openCodeOptions())).rejects.toMatchObject({
+        code: 'native_recovery_symlink',
+      });
+    },
+  );
+
+  it.runIf(process.platform === 'linux')(
+    'rejects a same-device bind mount in the bin target ancestry',
+    async () => {
+      await generatedBin();
+      const io = {
+        ...fs,
+        readFile: async (path, ...args) =>
+          path === '/proc/self/mountinfo'
+            ? Buffer.from(`1 0 0:1 / ${project}/.opencode/node_modules/pkg rw - tmpfs tmpfs rw\n`)
+            : fs.readFile(path, ...args),
+      };
+      await expect(
+        captureNativeSessionRecovery({ ...openCodeOptions(), io }),
+      ).rejects.toMatchObject({ code: 'native_recovery_mount' });
+    },
+  );
+
+  it.each([
+    'missing-target',
+    'changed-bytes',
+    'alias-parent',
+    'missing-parent',
+    'old-version',
+    'extra-field',
+    'wrong-scope',
+    'entry-limit',
+    'byte-limit',
+  ])('rejects a bin recovery plan before writing: %s', async (kind) => {
+    const checkpoint = await generatedBin();
+    const extra = {};
+    if (kind === 'missing-target')
+      checkpoint.files = checkpoint.files.filter((file) => file.path !== binTarget);
+    if (kind === 'changed-bytes')
+      checkpoint.files.find((file) => file.path === binTarget).content[0] ^= 1;
+    if (kind === 'alias-parent')
+      checkpoint.metadata.directories.push({
+        scope: 'project',
+        path: `${binPath}/nested`,
+        mode: 0o700,
+        mtimeNs: '0',
+      });
+    if (kind === 'missing-parent')
+      checkpoint.metadata.directories = checkpoint.metadata.directories.filter(
+        (entry) => entry.path !== '.opencode/node_modules/pkg',
+      );
+    if (kind === 'old-version') checkpoint.metadata.schemaVersion = 1;
+    if (kind === 'extra-field') checkpoint.metadata.binLinks[0].follow = true;
+    if (kind === 'wrong-scope') checkpoint.metadata.binLinks[0].scope = 'home';
+    if (kind === 'entry-limit')
+      extra.limits = {
+        maxEntries: checkpoint.files.length + checkpoint.metadata.directories.length,
+      };
+    if (kind === 'byte-limit') extra.limits = { maxTotalBytes: checkpoint.totalBytes };
+    await emptyRestoreRoots();
+    await expect(
+      restoreNativeSessionRecovery({ ...openCodeOptions(), ...checkpoint, ...extra }),
+    ).rejects.toMatchObject({
+      code: expect.stringMatching(/^native_recovery_(manifest_invalid|bin_link_invalid)$/),
+    });
+    expect(await fs.readdir(project)).toEqual([]);
+    expect(await fs.readdir(home)).toEqual([]);
+  });
+
+  it.each(['parent-replaced', 'target-changed', 'link-changed'])(
+    'rejects bin restore mutation %s without following aliases for writes',
+    async (kind) => {
+      const checkpoint = await generatedBin();
+      await emptyRestoreRoots();
+      const outside = join(root, 'external-restore');
+      await fs.mkdir(outside);
+      let changed = false;
+      const io = {
+        ...fs,
+        mkdir: async (path, ...args) => {
+          const result = await fs.mkdir(path, ...args);
+          if (
+            kind === 'parent-replaced' &&
+            path === join(project, '.opencode/node_modules/pkg') &&
+            !changed
+          ) {
+            changed = true;
+            await fs.rmdir(path);
+            await fs.symlink(outside, path);
+          }
+          return result;
+        },
+        symlink: async (target, path) => {
+          await fs.symlink(target, path);
+          if (kind === 'target-changed') await fs.writeFile(join(project, binTarget), 'corrupt');
+          if (kind === 'link-changed') {
+            await fs.unlink(path);
+            await fs.symlink('../missing', path);
+          }
+        },
+      };
+      await expect(
+        restoreNativeSessionRecovery({ ...openCodeOptions(), ...checkpoint, io }),
+      ).rejects.toMatchObject({
+        code: expect.stringMatching(/^native_recovery_(changed|time_failed|restore_unverified)$/),
+      });
+      expect(await fs.readdir(outside)).toEqual([]);
+    },
+  );
+
   it('stamps the installed image CLI pin and refuses a different-version restore before writing', async () => {
     const dockerfile = await fs.readFile(new URL('../Dockerfile', import.meta.url), 'utf8');
     for (const [harness, arg] of Object.entries({

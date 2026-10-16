@@ -11,6 +11,10 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { canonicalNativePath } from './execution-files.js';
 import { nativeCredentialPath } from '../../shared/native-project-files.js';
+import {
+  nativeRecoveryBinLinks,
+  nativeRecoveryBinLinkTarget,
+} from '../../shared/native-recovery-bin-links.js';
 
 export const NATIVE_RECOVERY_FILE_LIMITS = Object.freeze({
   maxFiles: 100_000,
@@ -46,6 +50,17 @@ const plain = (value) => value !== null && typeof value === 'object' && !Array.i
 const nsValid = (value) =>
   typeof value === 'string' && UINT.test(value) && BigInt(value) <= 9_223_372_036_854_775_807n;
 const modeValid = (value) => Number.isInteger(value) && value >= 0 && value <= 0o777;
+const binPlan = (ctx, metadata, files) => {
+  try {
+    return nativeRecoveryBinLinks(metadata, files, {
+      entries: ctx.limits.maxEntries,
+      depth: ctx.limits.maxDepth,
+      totalBytes: ctx.limits.maxTotalBytes,
+    });
+  } catch {
+    fail('bin_link_invalid');
+  }
+};
 
 export class NativeSessionRecoveryError extends Error {
   constructor(code) {
@@ -480,6 +495,80 @@ const validateCodexHistoryBase = (ctx, sessions, id, meta) => {
   if (end !== base.end_byte_offset) fail('session_invalid');
 };
 
+const readRecoveryFile = async (ctx, path, stat) => {
+  const handle = await ctx.io.open(
+    path,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    if (!sameStat(stat, await handle.stat({ bigint: true }))) fail('changed');
+    const content = Buffer.alloc(Number(stat.size));
+    let offset = 0;
+    while (offset < content.length) {
+      abort(ctx.signal);
+      const { bytesRead } = await handle.read(
+        content,
+        offset,
+        Math.min(64 * 1024, content.length - offset),
+        offset,
+      );
+      if (!bytesRead) fail('changed');
+      offset += bytesRead;
+    }
+    if (!sameStat(stat, await handle.stat({ bigint: true }))) fail('changed');
+    return content;
+  } finally {
+    await handle.close();
+  }
+};
+
+const captureBinLink = async (ctx, absolute, attributes, metadata, stat) => {
+  if (stat.nlink !== 1n) fail('symlink');
+  const bytes = await ctx.io.readlink(absolute, { encoding: 'buffer' });
+  const target = bytes.toString('utf8');
+  if (!Buffer.from(target).equals(bytes)) fail('symlink');
+  const link = { ...attributes, target };
+  try {
+    nativeRecoveryBinLinkTarget(ctx.harness, link);
+  } catch {
+    fail('symlink');
+  }
+  credentialCheck(ctx, bytes);
+  metadata.schemaVersion = 2;
+  metadata.binLinks ??= [];
+  metadata.binLinks.push(link);
+};
+
+const checkBinMounts = async (ctx, plan) => {
+  if (!plan.length || process.platform !== 'linux') return;
+  // dev alone cannot detect a same-filesystem bind mount. This is a bounded,
+  // read-only namespace inventory, not a scan of unrelated files/processes.
+  const bytes = await ctx.io.readFile('/proc/self/mountinfo');
+  if (bytes.length > 1024 * 1024) fail('limit');
+  const paths = plan.flatMap(({ link, target }) => [
+    join(ctx.project, link.path),
+    join(ctx.project, target),
+  ]);
+  for (const line of bytes.toString('utf8').trim().split('\n')) {
+    const point = line
+      .split(' ')[4]
+      ?.replace(/\\([0-7]{3})/g, (_, code) => String.fromCharCode(parseInt(code, 8)));
+    if (!point) fail('mount');
+    if (
+      point !== ctx.project &&
+      inside(ctx.project, point) &&
+      paths.some((path) => inside(point, path))
+    )
+      fail('mount');
+  }
+};
+
+const verifyCapturedBinLinks = async (ctx, plan) => {
+  await checkBinMounts(ctx, plan);
+  for (const { link } of plan)
+    if ((await ctx.io.readlink(join(ctx.project, link.path))) !== link.target) fail('changed');
+};
+
 export const captureNativeSessionRecovery = async (input = {}) => {
   const ctx = context(input);
   const { io, project, home, limits, signal } = ctx;
@@ -545,7 +634,6 @@ export const captureNativeSessionRecovery = async (input = {}) => {
       if (scope === 'home') await homeAncestors(path);
       const absolute = join(ctx[scope], path);
       const stat = await io.lstat(absolute, { bigint: true });
-      if (stat.isSymbolicLink()) fail('symlink');
       if (stat.dev !== roots[scope].dev) fail('mount');
       if ((stat.mode & 0o7000n) !== 0n) fail('mode_invalid');
       observed.set(`${scope}:${path}`, { scope, path, stat });
@@ -556,7 +644,9 @@ export const captureNativeSessionRecovery = async (input = {}) => {
         mtimeNs: String(stat.mtimeNs),
       };
       if (!nsValid(attributes.mtimeNs)) fail('time_invalid');
-      if (stat.isDirectory()) {
+      if (stat.isSymbolicLink()) {
+        await captureBinLink(ctx, absolute, attributes, metadata, stat);
+      } else if (stat.isDirectory()) {
         if (
           scope === 'home' &&
           !homeDirectoryAllowed(ctx.harness, ctx.nativeSessionId, path, metadata)
@@ -578,34 +668,7 @@ export const captureNativeSessionRecovery = async (input = {}) => {
           stat.size > BigInt(limits.maxTotalBytes - totalBytes)
         )
           fail('limit');
-        const handle = await io.open(
-          absolute,
-          constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-        );
-        let content;
-        try {
-          if (!sameStat(stat, await handle.stat({ bigint: true }))) fail('changed');
-          content = Buffer.alloc(Number(stat.size));
-          let offset = 0;
-          while (offset < content.length) {
-            abort(signal);
-            const { bytesRead } = await handle.read(
-              content,
-              offset,
-              Math.min(64 * 1024, content.length - offset),
-              offset,
-            );
-            if (!bytesRead) fail('changed');
-            offset += bytesRead;
-          }
-          if (
-            BigInt(content.length) !== stat.size ||
-            !sameStat(stat, await handle.stat({ bigint: true }))
-          )
-            fail('changed');
-        } finally {
-          await handle.close();
-        }
+        const content = await readRecoveryFile(ctx, absolute, stat);
         credentialCheck(ctx, content, scope === 'project' ? path : '');
         files.push({ ...attributes, bytes: content.length, sha256: hash(content), content });
         totalBytes += content.length;
@@ -682,6 +745,8 @@ export const captureNativeSessionRecovery = async (input = {}) => {
     } else await walk('home', '.codex/sessions');
     if (totalBytes > limits.maxTotalBytes || files.length > limits.maxFiles) fail('limit');
     validateSession(ctx, files, metadata);
+    const binLinks = binPlan(ctx, metadata, files);
+    await checkBinMounts(ctx, binLinks);
     for (const group of links.values()) {
       if (group.nlink > BigInt(group.paths.length)) {
         // AI-DLC projects hard-link generated projection files to the pinned
@@ -699,6 +764,7 @@ export const captureNativeSessionRecovery = async (input = {}) => {
         metadata.hardlinks.push({ scope: group.scope, paths: group.paths });
     }
     for (const item of observed.values()) await unchanged(item.scope, item.path, item.stat);
+    await verifyCapturedBinLinks(ctx, binLinks);
     if (!sameNode(roots.home, await rootStat(home, io))) fail('changed');
     return {
       schemaVersion: 1,
@@ -725,7 +791,8 @@ const restoreTimes = async (roots, entries, signal) =>
       'for e in v["entries"]:',
       ' p=os.path.join(v["roots"][e["scope"]],e["path"])',
       ' s=os.lstat(p)',
-      ' if stat.S_ISLNK(s.st_mode): raise RuntimeError("link")',
+      ' if stat.S_ISLNK(s.st_mode) != ("target" in e): raise RuntimeError("link")',
+      ' if "target" in e and os.readlink(p)!=e["target"]: raise RuntimeError("target")',
       ' os.utime(p,ns=(int(e["mtimeNs"]),int(e["mtimeNs"])),follow_symlinks=False)',
     ].join('\n');
     const child = spawn('/usr/bin/python3', ['-I', '-c', code], {
@@ -750,6 +817,103 @@ const restoreTimes = async (roots, entries, signal) =>
     child.stdin.end(JSON.stringify({ roots, entries }));
   });
 
+// Version-2 aliases are created last. Every write parent remains a real,
+// same-filesystem directory whose identity we retain throughout the restore.
+const recoveryDirectories = (ctx, roots) => {
+  const known = new Map(Object.entries(roots).map(([scope, stat]) => [`${scope}:`, stat]));
+  return async (scope, path) => {
+    const parts = path ? path.split('/') : [];
+    for (let length = 0; length <= parts.length; length++) {
+      abort(ctx.signal);
+      const relative = parts.slice(0, length).join('/');
+      const key = `${scope}:${relative}`;
+      const absolute = join(ctx[scope], relative);
+      let stat;
+      try {
+        stat = await ctx.io.lstat(absolute, { bigint: true });
+      } catch (error) {
+        if (error.code !== 'ENOENT' || known.has(key)) fail('changed');
+        await ctx.io.mkdir(absolute, { mode: 0o700 });
+        stat = await ctx.io.lstat(absolute, { bigint: true });
+      }
+      if (
+        stat.isSymbolicLink() ||
+        !stat.isDirectory() ||
+        stat.dev !== roots[scope].dev ||
+        (await ctx.io.realpath(absolute)) !== absolute ||
+        (known.has(key) && !sameNode(known.get(key), stat))
+      )
+        fail('changed');
+      known.set(key, stat);
+    }
+  };
+};
+
+const restoreBinLinks = async (ctx, plan, fileMap, directories) => {
+  const observed = [];
+  await checkBinMounts(ctx, plan);
+  for (const { link, target } of plan) {
+    await directories('project', dirname(target));
+    const file = fileMap.get(`project:${target}`);
+    const path = join(ctx.project, target);
+    const stat = await ctx.io.lstat(path, { bigint: true });
+    if (!stat.isFile() || stat.size !== BigInt(file.bytes)) fail('restore_unverified');
+    if (hash(await readRecoveryFile(ctx, path, stat)) !== file.sha256) fail('restore_unverified');
+    await directories('project', dirname(link.path));
+    await ctx.io.symlink(link.target, join(ctx.project, link.path));
+    if (process.platform === 'darwin') await ctx.io.lchmod(join(ctx.project, link.path), link.mode);
+    observed.push({
+      link,
+      target,
+      targetStat: stat,
+      linkStat: await ctx.io.lstat(join(ctx.project, link.path), { bigint: true }),
+    });
+  }
+  return observed;
+};
+
+const restoreDirectoryModes = async (ctx, metadata, safeDirectory) => {
+  for (const directory of metadata.directories) {
+    if (!directory.path) continue;
+    if (safeDirectory) await safeDirectory(directory.scope, directory.path);
+    await ctx.io.chmod(join(ctx[directory.scope], directory.path), directory.mode);
+  }
+};
+
+const verifyRestoredEntries = async (ctx, entries, fileMap, plan, directories) => {
+  const aliases = new Map(plan.map(({ link }) => [scopePath(link), link]));
+  for (const entry of entries) {
+    if (directories)
+      await directories(
+        entry.scope,
+        entry.path ? (dirname(entry.path) === '.' ? '' : dirname(entry.path)) : '',
+      );
+    const path = join(ctx[entry.scope], entry.path);
+    const stat = await ctx.io.lstat(path, { bigint: true });
+    if (String(stat.mtimeNs) !== entry.mtimeNs || Number(stat.mode & 0o777n) !== entry.mode)
+      fail('restore_unverified');
+    if (aliases.has(scopePath(entry))) {
+      if (!stat.isSymbolicLink() || (await ctx.io.readlink(path)) !== entry.target)
+        fail('restore_unverified');
+    } else if (fileMap.has(scopePath(entry))) {
+      if (
+        !stat.isFile() ||
+        stat.size !== BigInt(entry.bytes) ||
+        hash(await readRecoveryFile(ctx, path, stat)) !== entry.sha256
+      )
+        fail('restore_unverified');
+    } else if (!stat.isDirectory() || stat.isSymbolicLink()) fail('restore_unverified');
+  }
+  for (const { link, target, linkStat, targetStat } of plan) {
+    if (
+      !sameNode(linkStat, await ctx.io.lstat(join(ctx.project, link.path), { bigint: true })) ||
+      !sameNode(targetStat, await ctx.io.lstat(join(ctx.project, target), { bigint: true }))
+    )
+      fail('changed');
+  }
+  await checkBinMounts(ctx, plan);
+};
+
 export const restoreNativeSessionRecovery = async (input = {}) => {
   const ctx = context(input);
   const { io, project, home, signal, limits } = ctx;
@@ -757,7 +921,7 @@ export const restoreNativeSessionRecovery = async (input = {}) => {
     const { metadata, files } = input;
     if (
       !plain(metadata) ||
-      metadata.schemaVersion !== 1 ||
+      ![1, 2].includes(metadata.schemaVersion) ||
       metadata.harness !== ctx.harness ||
       metadata.harnessVersion !== NATIVE_RECOVERY_HARNESS_VERSIONS[ctx.harness] ||
       metadata.nativeSessionId !== ctx.nativeSessionId ||
@@ -808,6 +972,8 @@ export const restoreNativeSessionRecovery = async (input = {}) => {
       if (total > limits.maxTotalBytes) fail('limit');
       credentialCheck(ctx, file.content, file.scope === 'project' ? file.path : '');
     }
+    const binLinks = binPlan(ctx, metadata, files);
+    const safeDirectory = binLinks.length ? recoveryDirectories(ctx, roots) : null;
     validateSession(ctx, files, metadata);
     const links = new Map();
     const fileMap = new Map(files.map((f) => [scopePath(f), f]));
@@ -849,10 +1015,12 @@ export const restoreNativeSessionRecovery = async (input = {}) => {
     // a full HOME traversal. They are freshly created as private directories.
     for (const directory of metadata.directories.toSorted((a, b) => a.path.length - b.path.length))
       if (directory.path)
-        await io.mkdir(join(ctx[directory.scope], directory.path), {
-          recursive: true,
-          mode: 0o700,
-        });
+        if (safeDirectory) await safeDirectory(directory.scope, directory.path);
+        else
+          await io.mkdir(join(ctx[directory.scope], directory.path), {
+            recursive: true,
+            mode: 0o700,
+          });
     const written = new Set();
     const orderedFiles = files.toSorted(
       (a, b) =>
@@ -862,7 +1030,9 @@ export const restoreNativeSessionRecovery = async (input = {}) => {
     for (const file of orderedFiles) {
       abort(signal);
       const target = join(ctx[file.scope], file.path);
-      await io.mkdir(dirname(target), { recursive: true, mode: 0o700 });
+      if (safeDirectory)
+        await safeDirectory(file.scope, dirname(file.path) === '.' ? '' : dirname(file.path));
+      else await io.mkdir(dirname(target), { recursive: true, mode: 0o700 });
       const first = links.get(scopePath(file));
       if (first && written.has(scopePath(first)) && first !== file) {
         await io.link(join(ctx[first.scope], first.path), target);
@@ -882,9 +1052,8 @@ export const restoreNativeSessionRecovery = async (input = {}) => {
       }
       written.add(scopePath(file));
     }
-    for (const directory of metadata.directories)
-      if (directory.path)
-        await io.chmod(join(ctx[directory.scope], directory.path), directory.mode);
+    await restoreDirectoryModes(ctx, metadata, safeDirectory);
+    const restoredLinks = await restoreBinLinks(ctx, binLinks, fileMap, safeDirectory);
     if (ctx.harness === 'opencode') {
       await ctx.run({
         ...ctx,
@@ -918,22 +1087,11 @@ export const restoreNativeSessionRecovery = async (input = {}) => {
       ctx.harness === 'opencode' ? files.filter((f) => f.scope !== 'home') : files;
     const entries = [
       ...restoredFiles,
+      ...binLinks.map(({ link }) => link),
       ...metadata.directories.toSorted((a, b) => b.path.length - a.path.length),
     ];
     await (input.restoreTimes ?? restoreTimes)({ project, home }, entries, signal);
-    for (const entry of entries) {
-      const path = join(ctx[entry.scope], entry.path);
-      const stat = await io.lstat(path, { bigint: true });
-      if (
-        stat.isSymbolicLink() ||
-        String(stat.mtimeNs) !== entry.mtimeNs ||
-        Number(stat.mode & 0o777n) !== entry.mode ||
-        (fileMap.has(scopePath(entry))
-          ? !stat.isFile() || hash(await io.readFile(path)) !== entry.sha256
-          : !stat.isDirectory())
-      )
-        fail('restore_unverified');
-    }
+    await verifyRestoredEntries(ctx, entries, fileMap, restoredLinks, safeDirectory);
     for (const group of metadata.hardlinks) {
       const first = await io.lstat(join(ctx[group.scope], group.paths[0]), { bigint: true });
       for (const path of group.paths.slice(1))

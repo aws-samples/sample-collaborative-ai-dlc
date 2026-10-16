@@ -89,6 +89,34 @@ const input = () => ({
     file('project', 'empty', '', { mtimeNs: '-1', mode: 0 }),
   ],
 });
+const binInput = () => {
+  const data = input();
+  data.harness = 'opencode';
+  data.filesystem = filesystem('opencode');
+  data.filesystem.schemaVersion = 2;
+  data.filesystem.harnessVersion = '1.19.0';
+  data.filesystem.binLinks = [
+    {
+      scope: 'project',
+      path: '.opencode/node_modules/.bin/tool',
+      target: '../pkg/bin.js',
+      mode: 0o777,
+      mtimeNs: '1790743033245123456',
+    },
+  ];
+  data.filesystem.directories.push(
+    ...[
+      '.opencode',
+      '.opencode/node_modules',
+      '.opencode/node_modules/.bin',
+      '.opencode/node_modules/pkg',
+    ].map((path) => ({ scope: 'project', path, mode: 0o755, mtimeNs: '1790743033245123456' })),
+  );
+  data.files.push(
+    file('project', '.opencode/node_modules/pkg/bin.js', 'pinned executable', { mode: 0o755 }),
+  );
+  return data;
+};
 const INVALID = { code: 'NATIVE_RECOVERY_INVALID' };
 const UNAVAILABLE = { code: 'NATIVE_RECOVERY_UNAVAILABLE' };
 const MISSING = { code: 'NATIVE_RECOVERY_MISSING' };
@@ -377,6 +405,222 @@ describe('private native recovery checkpoint', () => {
       loaded.files.filter((entry) => entry.path.startsWith('links/')).map((entry) => entry.content),
     ).toEqual([Buffer.from('shared'), Buffer.from('shared')]);
   });
+
+  it('binds version-2 OpenCode bin links and independent target bytes in one immutable manifest', async () => {
+    const { store, forge, calls } = setup();
+    const data = binInput();
+    const receipt = await store.publish(data);
+    const loaded = await store.readFiles(identity, receipt);
+    expect(loaded.manifest.schemaVersion).toBe(1);
+    expect(loaded.manifest.filesystem).toEqual(data.filesystem);
+    expect(loaded.files.find((entry) => entry.path.endsWith('/pkg/bin.js')).content).toEqual(
+      Buffer.from('pinned executable'),
+    );
+    const retargeted = binInput();
+    retargeted.filesystem.binLinks[0].target = '../pkg/./bin.js';
+    expect((await store.publish(retargeted)).id).not.toBe(receipt.id);
+    const corrupt = forge(receipt, (manifest) => {
+      manifest.files.find((entry) => entry.path.endsWith('/pkg/bin.js')).sha256 = '0'.repeat(64);
+    });
+    calls.length = 0;
+    await expect(store.readFiles(identity, corrupt)).rejects.toMatchObject(INVALID);
+    expect(fileGets(calls)).toHaveLength(0);
+  });
+
+  it.each([
+    [
+      'absolute',
+      (d) => {
+        d.filesystem.binLinks[0].target = '/tmp/outside';
+      },
+    ],
+    [
+      'escape',
+      (d) => {
+        d.filesystem.binLinks[0].target = '../../../outside';
+      },
+    ],
+    [
+      'dangling',
+      (d) => {
+        d.files = d.files.filter((f) => !f.path.endsWith('/pkg/bin.js'));
+      },
+    ],
+    [
+      'directory',
+      (d) => {
+        d.filesystem.binLinks[0].target = '../pkg';
+      },
+    ],
+    [
+      'missing-intermediate-directory',
+      (d) => {
+        d.filesystem.binLinks[0].target = '../pkg/missing/../bin.js';
+      },
+    ],
+    [
+      'file-intermediate-directory',
+      (d) => {
+        d.filesystem.binLinks[0].target = '../pkg/bin.js/../bin.js';
+      },
+    ],
+    [
+      'chain',
+      (d) => {
+        d.filesystem.binLinks.push({
+          ...d.filesystem.binLinks[0],
+          path: '.opencode/node_modules/.bin/other',
+        });
+        d.filesystem.binLinks[0].target = './other';
+      },
+    ],
+    [
+      'missing-parent',
+      (d) => {
+        d.filesystem.directories = d.filesystem.directories.filter(
+          (entry) => !entry.path.endsWith('/pkg'),
+        );
+      },
+    ],
+    [
+      'alias-parent',
+      (d) => {
+        d.filesystem.directories.push({
+          ...d.filesystem.directories[0],
+          path: '.opencode/node_modules/.bin/tool/subdirectory',
+        });
+      },
+    ],
+    [
+      'duplicate',
+      (d) => {
+        d.filesystem.binLinks.push({ ...d.filesystem.binLinks[0] });
+      },
+    ],
+    [
+      'file-collision',
+      (d) => {
+        d.files.push(file('project', '.opencode/node_modules/.bin/tool', 'alias'));
+      },
+    ],
+    [
+      'outside-bin',
+      (d) => {
+        d.filesystem.binLinks[0].path = '.opencode/node_modules/tool';
+      },
+    ],
+    [
+      'nested-bin',
+      (d) => {
+        d.filesystem.binLinks[0].path = '.opencode/node_modules/.bin/sub/tool';
+      },
+    ],
+    [
+      'scope',
+      (d) => {
+        d.filesystem.binLinks[0].scope = 'home';
+      },
+    ],
+    [
+      'other-harness',
+      (d) => {
+        d.harness = 'codex';
+        d.filesystem.harness = 'codex';
+        d.filesystem.format = 'codex-rollout-jsonl-v1';
+      },
+    ],
+    [
+      'old-version',
+      (d) => {
+        d.filesystem.schemaVersion = 1;
+      },
+    ],
+    [
+      'unknown-version',
+      (d) => {
+        d.filesystem.schemaVersion = 3;
+      },
+    ],
+    [
+      'empty',
+      (d) => {
+        d.filesystem.binLinks = [];
+      },
+    ],
+    [
+      'mode',
+      (d) => {
+        d.filesystem.binLinks[0].mode = 0o755;
+      },
+    ],
+    [
+      'extra-field',
+      (d) => {
+        d.filesystem.binLinks[0].follow = true;
+      },
+    ],
+    [
+      'target-byte-bound',
+      (d) => {
+        d.filesystem.binLinks[0].target = `../${'a'.repeat(2048)}`;
+      },
+    ],
+    [
+      'credential',
+      (d) => {
+        d.filesystem.binLinks[0].target = '../pkg/.npmrc';
+        d.files.push(file('project', '.opencode/node_modules/pkg/.npmrc', 'private'));
+      },
+    ],
+    [
+      'private-control',
+      (d) => {
+        d.filesystem.binLinks[0].target = '../pkg/.native-control/token';
+        d.files.push(
+          file('project', '.opencode/node_modules/pkg/.native-control/token', 'private'),
+        );
+      },
+    ],
+  ])('rejects invalid OpenCode bin metadata on publish and read: %s', async (_name, mutate) => {
+    const { store, calls, forge } = setup();
+    const valid = binInput();
+    const receipt = await store.publish(valid);
+    const invalid = binInput();
+    mutate(invalid);
+    calls.length = 0;
+    await expect(store.publish(invalid)).rejects.toMatchObject(INVALID);
+    expect(calls).toHaveLength(0);
+    const forged = forge(receipt, mutate);
+    await expect(store.readFiles(identity, forged)).rejects.toMatchObject(INVALID);
+    expect(fileGets(calls)).toHaveLength(0);
+  });
+
+  it('rejects modified bin target content without a matching immutable hash before upload', async () => {
+    const { store, calls } = setup();
+    const data = binInput();
+    data.files.find((entry) => entry.path.endsWith('/pkg/bin.js')).content[0] ^= 1;
+    await expect(store.publish(data)).rejects.toMatchObject(INVALID);
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each(['missing', 'corrupt'])(
+    'rejects %s immutable bin target objects during admission and restore reads',
+    async (kind) => {
+      const { store, memory } = setup();
+      const receipt = await store.publish(binInput());
+      const manifest = JSON.parse(memory.bytes(receipt));
+      const target = manifest.files.find((entry) => entry.path.endsWith('/pkg/bin.js'));
+      const key = `${target.object.key}:${target.object.versionId}`;
+      if (kind === 'missing') memory.versions.delete(key);
+      else memory.versions.get(key)[0] ^= 1;
+      await expect(store.read(identity, receipt, { verifyFiles: true })).rejects.toMatchObject(
+        kind === 'missing' ? MISSING : INVALID,
+      );
+      await expect(store.readFiles(identity, receipt)).rejects.toMatchObject(
+        kind === 'missing' ? MISSING : INVALID,
+      );
+    },
+  );
 
   it('preserves Claude adapter metadata while binding its format/session to the outer pins', async () => {
     const { store } = setup();
