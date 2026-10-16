@@ -47,7 +47,10 @@ multi-repository retries and rewinds past completed sections. New integrations
 always write the attribute; explicit empty, invalid or incomplete evidence never
 receives this legacy exemption. PR-per-unit integration still requires its
 per-repository PR records. Unpinned historical serial intents without unit work
-keep their success presentation without unit-completion diagnostics.
+keep their success presentation without unit-completion diagnostics. Cancelled
+executions and recorded aborts from the current run are classified as aborted
+before workflow-pin resolution, without implying that their work was integrated.
+Missing or truncated execution reads remain unverified.
 
 Required integration writes are not best-effort. A lost response is reconciled
 from persisted state; an unrecorded integration stops the lane before dependent

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   effectiveSkeleton,
   skeletonProblem,
@@ -211,6 +211,75 @@ describe('active-plan completion', () => {
         }),
       ).toMatchObject({ state: 'unknown', reason: 'unit_plan_missing' });
     }
+  });
+  it.each(['CANCELLED', 'recorded-abort'])(
+    'classifies unpinned %s work as aborted before loading workflow definitions',
+    async (kind) => {
+      const input = records();
+      input.meta.status = kind === 'CANCELLED' ? 'CANCELLED' : 'FAILED';
+      if (kind === 'recorded-abort') {
+        input.meta.failure = { code: 'section_aborted' };
+        input.humanTasks = [
+          { orchestratorRunId: 'run1', status: 'answered', answer: { decision: 'abort' } },
+        ];
+      }
+      const before = structuredClone(input);
+      const loadPlan = vi.fn(async () => {
+        throw new Error('workflow pin unavailable');
+      });
+      expect(await assessExecutionCompletion({ records: input, loadPlan })).toMatchObject({
+        state: 'aborted',
+        reason: 'execution_aborted',
+        integrated: 1,
+        total: 2,
+        unresolved: [expect.objectContaining({ slug: 'feature', state: 'BLOCKED' })],
+      });
+      expect(loadPlan).not.toHaveBeenCalled();
+      expect(input).toEqual(before);
+    },
+  );
+  it.each(['stale-run', 'missing-run', 'unrelated-failure', 'pending-answer'])(
+    'keeps legacy evidence unknown for a %s abort decision',
+    async (kind) => {
+      const input = records();
+      input.meta.status = 'FAILED';
+      input.meta.failure = {
+        code: kind === 'unrelated-failure' ? 'stage_failed' : 'section_aborted',
+      };
+      input.humanTasks = [
+        {
+          orchestratorRunId: kind === 'stale-run' ? 'prior-run' : 'run1',
+          status: kind === 'pending-answer' ? 'pending' : 'answered',
+          answer: 'abort',
+        },
+      ];
+      if (kind === 'missing-run') {
+        delete input.meta.orchestratorRunId;
+        delete input.humanTasks[0].orchestratorRunId;
+      }
+      expect(await assessExecutionCompletion({ records: input, loadPlan: vi.fn() })).toMatchObject({
+        state: 'unknown',
+        reason: 'legacy_workflow_unpinned',
+      });
+    },
+  );
+  it('retains missing/truncated read semantics before cancellation and handles no-unit cancellation', async () => {
+    const input = records();
+    input.meta.status = 'CANCELLED';
+    const loadPlan = vi.fn();
+    expect(
+      await assessExecutionCompletion({ records: { ...input, meta: null }, loadPlan }),
+    ).toMatchObject({ state: 'unknown', reason: 'execution_missing' });
+    expect(
+      await assessExecutionCompletion({ records: { ...input, truncated: true }, loadPlan }),
+    ).toMatchObject({ state: 'unknown', reason: 'completion_read_limit' });
+    expect(
+      await assessExecutionCompletion({
+        records: { ...input, unitPlan: null, units: [] },
+        loadPlan,
+      }),
+    ).toMatchObject({ state: 'aborted', total: 0, integrated: 0 });
+    expect(loadPlan).not.toHaveBeenCalled();
   });
   it('does not guess section mappings for historical slug-only rows', () => {
     const input = records();

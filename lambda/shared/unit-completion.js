@@ -327,6 +327,30 @@ export const assessExecutionCompletion = async ({ records, loadPlan }) => {
     records.meta.completionValidation?.runId === records.meta.orchestratorRunId
       ? records.meta.completionValidation?.expectedSections
       : null;
+  const aborted =
+    records.meta.status === 'CANCELLED' ||
+    (records.meta.failure?.code === 'section_aborted' &&
+      Boolean(records.meta.orchestratorRunId) &&
+      (records.humanTasks ?? []).some(
+        (gate) =>
+          gate.orchestratorRunId === records.meta.orchestratorRunId &&
+          ['answered', 'approved'].includes(gate.status) &&
+          (gate.answer?.decision ?? gate.answer?.choice ?? gate.answer) === 'abort',
+      ));
+  if (aborted) {
+    // Cancellation is an execution decision, not proof of completed work. It
+    // does not require resolving the historical workflow; preserve the unit
+    // evidence we do have without treating unfinished units as integrated.
+    const completion = unitCompletion(
+      records,
+      Array.isArray(capturedSections) ? capturedSections : undefined,
+    );
+    return {
+      ...(completion ?? unverifiedCompletion(null)),
+      state: 'aborted',
+      reason: 'execution_aborted',
+    };
+  }
   // Old workflow versions can still reference LATEST stage definitions. A
   // fresh resolution cannot prove the sections that old execution walked.
   if (
@@ -349,14 +373,5 @@ export const assessExecutionCompletion = async ({ records, loadPlan }) => {
     return unverifiedCompletion('pinned_plan_unverified');
   }
   const completion = unitCompletion(records, capturedSections ?? completionSections(resolved.plan));
-  const aborted =
-    records.meta.status === 'CANCELLED' ||
-    (records.meta.failure?.code === 'section_aborted' &&
-      (records.humanTasks ?? []).some(
-        (gate) =>
-          gate.orchestratorRunId === records.meta.orchestratorRunId &&
-          ['answered', 'approved'].includes(gate.status) &&
-          (gate.answer?.decision ?? gate.answer?.choice ?? gate.answer) === 'abort',
-      ));
-  return aborted ? { ...completion, state: 'aborted', reason: 'execution_aborted' } : completion;
+  return completion;
 };
