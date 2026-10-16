@@ -105,6 +105,9 @@ On the **New Intent** page, use the **Import from tracker** panel to browse open
 - The issue title becomes the intent title
 - The issue body and any comments are imported into the intent prompt (Jira's ADF body is converted to Markdown server-side; comments are appended in chronological order)
 - A polymorphic link back to the originating tracker resource is stored so the intent can reference it
+- Supported issue attachments are imported when the draft opens, with a result
+  for each file and a retry control. See [tracker attachment support and
+  limitations](creating-intents.md#import-from-tracker).
 
 On read-only v1 projects, issues that were already linked to a sprint keep their **Open sprint** link, scoped per binding so the same numeric ID across two trackers (`PROJ-1` vs `OTHER-1`) doesn't collide. New sprints can no longer be started from issues.
 

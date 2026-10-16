@@ -440,6 +440,45 @@ describe('jira-cloud — provider methods', () => {
   });
 
   describe('getIssue', () => {
+    it('imports native Jira files with the OAuth attachment API', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({
+            fields: {
+              project: { key: 'PROJ' },
+              attachment: [
+                { id: '100', filename: 'spec.docx', mimeType: 'application/octet-stream', size: 9 },
+              ],
+            },
+          }),
+        )
+        .mockResolvedValueOnce(
+          new Response('doc-bytes', { headers: { 'content-type': 'application/octet-stream' } }),
+        )
+        .mockResolvedValueOnce(new Response('', { headers: { 'x-amz-version-id': 'v1' } }));
+      const result = await jiraProvider.issueAttachments(ctx(), 'PROJ', 'PROJ-42', {
+        attachmentId: '100',
+        maxBytes: 100,
+        uploadUrl: 'https://artifacts.s3.amazonaws.com/signed',
+      });
+      expect(result).toMatchObject({ status: 'downloaded', filename: 'spec.docx', size: 9 });
+      expect(fetchMock.mock.calls[1][0]).toContain(
+        '/rest/api/3/attachment/content/100?redirect=false',
+      );
+      expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe(`Bearer ${ACCESS_TOKEN}`);
+      expect(fetchMock.mock.calls[2][1].headers).not.toHaveProperty('Authorization');
+    });
+
+    it('rejects attachments from a Jira issue outside the bound project', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okResponse({ fields: { project: { key: 'OTHER' }, attachment: [] } }),
+      );
+      await expect(jiraProvider.issueAttachments(ctx(), 'PROJ', 'OTHER-1')).rejects.toMatchObject({
+        status: 403,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
     it('returns the mapped issue', async () => {
       fetchMock.mockResolvedValueOnce(okResponse(issueFixture()));
       const issue = await jiraProvider.getIssue(ctx(), 'PROJ', 'PROJ-42');

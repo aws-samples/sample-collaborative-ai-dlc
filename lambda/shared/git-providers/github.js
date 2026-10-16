@@ -7,6 +7,7 @@
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import { ProviderError } from './errors.js';
+import { discoverLinkedAttachments, transferTrackerAttachment } from '../tracker-attachments.js';
 
 const logger = new Logger({ persistentKeys: { component: 'git-provider', module: 'github' } });
 
@@ -348,6 +349,56 @@ const listIssueComments = async (ctx, repoId, issueNumber) => {
     throw new ProviderError(res.status, data?.message || 'Failed to fetch issue comments');
   }
   return Array.isArray(data) ? data.map(mapIssueDiscussionComment) : [];
+};
+
+const issueAttachments = async (ctx, repoId, args) => {
+  if (!/^[1-9]\d*$/.test(String(args.number))) {
+    throw new ProviderError(400, 'Invalid issue number');
+  }
+  const issue = await getIssue(ctx, repoId, args.number);
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const comments = [];
+  let page = 1;
+  for (;;) {
+    const response = await ghFetch(
+      ctx,
+      `${API_BASE}/repos/${owner}/${repo}/issues/${args.number}/comments?per_page=100&page=${page}`,
+      { signal: AbortSignal.timeout(10_000) },
+    );
+    if (!response.ok)
+      throw new ProviderError(response.status, 'Could not read issue attachments in comments');
+    comments.push(...(await response.json()).map(mapIssueDiscussionComment));
+    if (!response.headers.get('link')?.includes('rel="next"')) break;
+    page += 1;
+  }
+  const attachments = discoverLinkedAttachments({
+    provider: id,
+    repository: repoId,
+    issue,
+    comments,
+  });
+  if (!args.attachmentId) return { attachments };
+  const attachment = attachments.find((item) => item.id === args.attachmentId);
+  if (!attachment)
+    return { status: 'failed', reason: 'The attachment is no longer referenced by the issue.' };
+  return transferTrackerAttachment({
+    attachment,
+    uploadUrl: args.uploadUrl,
+    maxBytes: args.maxBytes,
+    fetchImpl: ctx.fetchImpl || fetch,
+    request: (options) =>
+      (ctx.fetchImpl || fetch)(attachment.url, {
+        ...options,
+        ...(new URL(attachment.url).hostname === 'github.com'
+          ? { headers: { Authorization: `Bearer ${ctx.token}` } }
+          : {}),
+      }),
+    allowedRedirectHosts: [
+      'github.com',
+      'user-images.githubusercontent.com',
+      'private-user-images.githubusercontent.com',
+    ],
+  });
 };
 
 const addIssueComment = async (ctx, repoId, issueNumber, body) => {
@@ -956,6 +1007,7 @@ export {
   listIssues,
   getIssue,
   listIssueComments,
+  issueAttachments,
   addIssueComment,
   closeIssue,
   listPRComments,
@@ -995,6 +1047,7 @@ export default {
   listIssues,
   getIssue,
   listIssueComments,
+  issueAttachments,
   addIssueComment,
   closeIssue,
   listPRComments,

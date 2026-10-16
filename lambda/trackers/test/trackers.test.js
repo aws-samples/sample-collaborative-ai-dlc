@@ -335,6 +335,46 @@ describe('Authorization', () => {
   });
 });
 
+describe('internal issue attachment import', () => {
+  it('resolves the project binding and delegates without exposing its credentials', async () => {
+    const { projectId, bindingId } = await seedProjectAndBinding();
+    lambdaMock.on(InvokeCommand).resolves(sourceControlResponse({ attachments: [] }));
+    const result = await handler({
+      action: 'issue-attachments',
+      projectId,
+      bindingId,
+      userId: 'user-1',
+      resourceId: '42',
+    });
+    expect(result).toEqual({ attachments: [] });
+    const payload = JSON.parse(
+      Buffer.from(lambdaMock.commandCalls(InvokeCommand).at(-1).args[0].input.Payload).toString(),
+    );
+    expect(payload).toMatchObject({
+      action: 'operate',
+      projectId,
+      provider: 'github',
+      repo: 'acme/widgets',
+      operation: 'issue-attachments',
+      args: { number: '42' },
+    });
+  });
+
+  it('refuses an internal request for a project the user cannot access', async () => {
+    const { projectId, bindingId } = await seedProjectAndBinding();
+    const before = lambdaMock.commandCalls(InvokeCommand).length;
+    const result = await handler({
+      action: 'issue-attachments',
+      projectId,
+      bindingId,
+      userId: 'other-user',
+      resourceId: '42',
+    });
+    expect(result).toMatchObject({ status: 'failed', reason: expect.stringContaining('Access') });
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(before);
+  });
+});
+
 describe('GET /trackers (unified listing)', () => {
   it('returns the user’s github-issues row from git-connections', async () => {
     const res = await handler(baseEvent());
