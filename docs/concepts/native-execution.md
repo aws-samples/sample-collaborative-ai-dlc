@@ -3519,7 +3519,49 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       `/tmp/native-opencode-delay-regressions.log`. The first new unit-test draft
       accidentally mocked Python timestamp restoration; restricting its mock to
       the OpenCode binary corrected the fixture. Kiro investigation and fresh
-      fixture preparation remain in progress under this same item.
+      fixture preparation remain in progress under this same item. Repair commit:
+      `f2586a253346eee83c5906fd7d52c6e288182257`; normal hooks additionally passed
+      **621** affected tests (two Linux-only skips). Frozen/offline docs build passed.
+
+      **Kiro — exact supported-input boundary established (2026-10-16).**
+      The renewed probe uses the existing production initialization owner, the
+      real attested package, generated `aidlc` agent, offline doctor, production
+      ACP client/turn validator and Linux command owner. All 18 initialization
+      commands pass. With an empty HOME and no key, the actual 2.29.1 v2 process
+      reports not logged in and closes before acknowledging `initialize`.
+      With a synthetic `ksk_…` key, it attempts
+      `management.us-east-1.kiro.dev:443` before that acknowledgement. A loopback
+      proxy rejects every CONNECT before TLS; it neither forwards credentials
+      nor emulates Kiro authentication/inference. The probe stops at that
+      observed service boundary and the production owner reaps the CLI and its
+      descendants. The retained cases took **65 / 88 ms** after initialization,
+      without hitting the unchanged 15-second outer bound. Neither case creates
+      a session or sends a prompt. The selected row is **BLOCKED / exit 2**.
+
+      This supersedes the old unlocalized 15-second timeout as current evidence;
+      that historical result remains above. An initial diagnostic run with the
+      genuine agent still waited at `initialize`; its logs and a bounded denied
+      proxy trace showed regional managed-authentication attempts. The retained
+      regression stops at the first managed-authentication attempt instead of
+      waiting through that retry loop. These are installed startup/credential/
+      cancellation checks, **not** typed-question, tool or cold-recovery coverage.
+
+      Pinned `acp --help` exposes `--auth-method client` only for v3.
+      The official [v2 ACP documentation](https://kiro.dev/docs/cli/acp/),
+      [authentication documentation](https://kiro.dev/docs/getting-started/authentication/)
+      and [settings reference](https://kiro.dev/docs/reference/settings/) provide
+      no supported v2 local provider/authentication input. The
+      [official repository](https://github.com/kirodotdev/Kiro) is an issue tracker;
+      the engine source is closed, so no pinned implementation-source audit is
+      claimed. Current documentation contains v3 features that cannot qualify
+      this pinned v2 path. The smallest missing capability is a vendor-supported
+      offline authentication and deterministic inference input for **v2**.
+      Alternatively, credentialed managed-service qualification needs separate
+      authorization and remains live evidence, not an offline-suite substitute.
+      No internal mock/KAS/v1/v3 switch or authorization bypass was used.
+      **201** focused ACP/initialization tests and all **seven** host matrix
+      contracts passed separately. Evidence:
+      `/tmp/native-kiro-followup-{help,investigate,denied-proxy,installed,focused,host-matrix}.log`.
 
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration

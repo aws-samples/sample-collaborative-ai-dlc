@@ -125,7 +125,13 @@ if (options.image) {
     const statuses = [];
     for (const baseline of cli === 'claude' ? [true, false] : [false]) {
       console.log(
-        `Installed ${cli}: ${baseline ? 'four-turn terminal/cwd/subagent baseline' : 'production-composed journey and failures'}`,
+        `Installed ${cli}: ${
+          baseline
+            ? 'four-turn terminal/cwd/subagent baseline'
+            : cli === 'kiro'
+              ? 'real package initialization and v2 authentication boundary'
+              : 'production-composed journey and failures'
+        }`,
       );
       const name = `native-qualification-${randomUUID()}`;
       try {

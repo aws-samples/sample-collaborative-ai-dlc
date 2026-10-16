@@ -40,6 +40,7 @@ import {
   qualificationProvider,
   localProviderInvocation,
 } from './native-qualification-provider.mjs';
+import { qualifyKiro } from './native-qualification-kiro.mjs';
 
 const harness = process.argv[2];
 assert.ok(Object.hasOwn(NATIVE_RECOVERY_HARNESS_VERSIONS, harness), 'Select an installed CLI');
@@ -374,49 +375,8 @@ try {
     });
   }
   if (harness === 'kiro') {
-    // Do not use undocumented KIRO_MOCK_CHAT_RESPONSE/test-engine switches or
-    // substitute an ACP peer for the installed CLI's authenticated v2 provider.
     phase = 'kiro-provider';
-    const input = nativeExecutionInvocation({
-      harness,
-      model,
-      project: base,
-      prompt: 'Present fixture question.',
-    });
-    const result = await runNativeCommand({
-      ...input,
-      cwd: base,
-      env: {
-        HOME: versionHome,
-        KIRO_HOME: `${versionHome}/.kiro`,
-        XDG_DATA_HOME: `${versionHome}/.data`,
-        PATH: '/opt/kiro/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin',
-        KIRO_API_KEY: 'fixture-no-provider',
-        KIRO_NO_AUTO_UPDATE: '1',
-        KIRO_DISABLE_TELEMETRY: '1',
-      },
-      timeoutMs: 15_000,
-    });
-    assert.equal(result.cleanupComplete, true);
-    const frames = result.stdout.trim().split('\n').filter(Boolean).map(JSON.parse);
-    const terminal = frames.at(-1);
-    assert.ok(
-      result.timedOut || terminal?.ok === false,
-      'Inert authentication cannot complete a Kiro model turn',
-    );
-    report({
-      status: 'BLOCKED',
-      probe: 'installed-v2-provider',
-      exitCode: result.exitCode,
-      timedOut: result.timedOut,
-      protocolPhase: terminal?.protocolPhase ?? 'no-terminal-report',
-      protocolFailure: terminal?.protocolFailure,
-      transportFailure: terminal?.transportFailure,
-      rpcErrorCode: terminal?.rpcErrorCode,
-      cleanupComplete: true,
-      boundary:
-        'No supported deterministic local v2 provider configuration established; bounded inert-key ACP invocation produced no completed turn. Internal mock/KAS engine switches do not qualify native v2.',
-    });
+    report(await qualifyKiro({ base, pkg, report }));
     process.exitCode = 2;
   } else {
     provider = await qualificationProvider(harness);
