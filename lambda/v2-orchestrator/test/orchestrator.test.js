@@ -2097,6 +2097,9 @@ describe('PR per unit delivery', () => {
     );
     expect(invokes.map((payload) => payload.command)).toContain('reconcile-lane');
     expect(invokes.map((payload) => payload.command)).toContain('refresh-intent');
+    expect(unitStates.find((row) => row.state === 'MERGED').fields).toMatchObject({
+      integrationResults: [],
+    });
     expect(invokes).toContainEqual(
       expect.objectContaining({
         command: 'record-unit-pr',
@@ -2121,6 +2124,16 @@ describe('PR per unit delivery', () => {
     expect(deps.invokeRuntime.mock.calls.map(([, , target]) => target)).toEqual(
       expect.arrayContaining([MANAGED_RUNTIME_TARGET]),
     );
+  });
+
+  it('records the evidence attribute for an unchanged unit PR integration', async () => {
+    configure({ statusFor: async () => null });
+    deps.unitPrProvider.compare.mockResolvedValue({ status: 'identical' });
+    expect(await start()).toMatchObject({ ok: true });
+    expect(unitStates.find((row) => row.state === 'MERGED').fields).toMatchObject({
+      integrationResults: [],
+    });
+    expect(deps.unitPrProvider.createDraft).not.toHaveBeenCalled();
   });
 
   it('parks one callback for a long unchanged PR wait without growing durable operations', async () => {

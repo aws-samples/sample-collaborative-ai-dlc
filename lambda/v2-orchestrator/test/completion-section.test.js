@@ -37,6 +37,15 @@ const setup = async (fault) => {
     autonomyMode: 'autonomous',
   });
   await store.syncUnitRows({ executionId, units, sectionIndexes: [1] });
+  if (fault === 'legacy')
+    for (const { slug } of units)
+      await store.updateUnitState({
+        executionId,
+        sectionIndex: 1,
+        slug,
+        state: 'MERGED',
+        fields: { mergedAt: true },
+      });
   if (fault === 'contradictory')
     await store.updateUnitState({
       executionId,
@@ -56,10 +65,13 @@ const setup = async (fault) => {
     payload.command === 'merge-lane'
       ? {
           ok: true,
-          results: [
-            { repo: 'one', merged: true },
-            { repo: 'two', merged: true },
-          ],
+          results:
+            fault === 'empty-results'
+              ? []
+              : [
+                  { repo: 'one', merged: true },
+                  { repo: 'two', merged: true },
+                ],
         }
       : { ok: true },
   );
@@ -149,9 +161,15 @@ it('reconciles a lost integration response without rerunning stage or merge', as
   expect(world.invokeRuntime.mock.calls.filter(([p]) => p.command === 'merge-lane')).toHaveLength(
     2,
   );
-  expect((await store.listUnits(world.executionId)).every((row) => row.state === 'MERGED')).toBe(
-    true,
-  );
+  for (const row of await store.listUnits(world.executionId)) {
+    expect(row).toMatchObject({
+      state: 'MERGED',
+      integrationResults: [
+        { repo: 'one', merged: true },
+        { repo: 'two', merged: true },
+      ],
+    });
+  }
 });
 it('does not let contradictory persisted repository evidence unblock dependencies', async () => {
   const world = await setup('contradictory');
@@ -165,4 +183,24 @@ it('does not mark successor work failed when the integration owner is retired', 
   expect((await store.getExecution(world.executionId)).orchestratorRunId).toBe('successor');
   expect((await store.getUnit(world.executionId, 1, 'foundation')).state).toBe('MERGING');
   expect((await store.getUnit(world.executionId, 1, 'dependent')).state).toBe('PENDING');
+});
+
+it('persists explicit empty integration evidence instead of producing another legacy row', async () => {
+  const world = await setup('empty-results');
+  expect(await world.run()).toMatchObject({ ok: false });
+  expect(await store.getUnit(world.executionId, 1, 'foundation')).toMatchObject({
+    integrationResults: [],
+  });
+});
+
+it('hydrates pre-deploy multi-repo MERGED rows from the real store without rebuilding units', async () => {
+  const world = await setup('legacy');
+  expect(await world.run()).toBeNull();
+  expect(world.executeStage).not.toHaveBeenCalled();
+  expect(world.invokeRuntime).not.toHaveBeenCalled();
+  expect(
+    (await store.listUnits(world.executionId)).every(
+      (row) => row.state === 'MERGED' && !Object.hasOwn(row, 'integrationResults'),
+    ),
+  ).toBe(true);
 });

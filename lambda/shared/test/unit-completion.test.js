@@ -6,6 +6,7 @@ import {
   unitPlanIdentity,
   completionSections,
   finalizeUnitCompletion,
+  assessExecutionCompletion,
 } from '../unit-completion.js';
 
 const unitPlan = {
@@ -145,7 +146,7 @@ describe('active-plan completion', () => {
     const input = records();
     input.meta.repos = ['one', 'two'];
     input.units[1].state = 'MERGED';
-    expect(unitCompletion(input, [1]).state).toBe('unknown');
+    expect(unitCompletion(input, [1]).state).toBe('complete');
     for (const row of input.units)
       row.integrationResults = [
         { repo: 'one', merged: true },
@@ -166,6 +167,50 @@ describe('active-plan completion', () => {
     expect(unitCompletion(input, [1]).state).toBe('complete');
     input.unitPrs[3].state = 'PARTIALLY_MERGED';
     expect(unitCompletion(input, [1]).state).toBe('incomplete');
+  });
+  it.each([
+    [[], 'unknown'],
+    [[{ repo: 'one', merged: true }], 'unknown'],
+    [
+      [
+        { repo: 'one', merged: true },
+        { repo: 'two', merged: false },
+      ],
+      'incomplete',
+    ],
+    [null, 'unknown'],
+    [{}, 'unknown'],
+    ['invalid', 'unknown'],
+    [[null], 'unknown'],
+    [[{}], 'unknown'],
+  ])(
+    'does not treat explicit invalid or incomplete evidence %j as a pre-deploy row',
+    (evidence, state) => {
+      const input = records();
+      input.meta.repos = ['one', 'two'];
+      input.units[1].state = 'MERGED';
+      input.units[1].integrationResults = evidence;
+      expect(unitCompletion(input, [1])).toMatchObject({ state, integrated: 1 });
+    },
+  );
+  it('omits unit diagnostics only for legacy unpinned executions without unit work', async () => {
+    const meta = { status: 'SUCCEEDED', orchestratorRunId: 'old-run' };
+    const loadPlan = async () => ({ valid: true, plan: { stages: [{ parallelSection: 1 }] } });
+    expect(await assessExecutionCompletion({ records: { meta, units: [] }, loadPlan })).toBeNull();
+    expect(
+      await assessExecutionCompletion({ records: { ...records(), meta }, loadPlan }),
+    ).toMatchObject({ state: 'unknown', reason: 'legacy_workflow_unpinned' });
+    for (const pin of [
+      { methodologyPins: { STAGE: {} } },
+      { completionValidation: { runId: 'old-run', expectedSections: [1] } },
+    ]) {
+      expect(
+        await assessExecutionCompletion({
+          records: { meta: { ...meta, ...pin }, units: [] },
+          loadPlan,
+        }),
+      ).toMatchObject({ state: 'unknown', reason: 'unit_plan_missing' });
+    }
   });
   it('does not guess section mappings for historical slug-only rows', () => {
     const input = records();

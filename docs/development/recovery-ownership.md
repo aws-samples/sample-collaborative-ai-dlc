@@ -41,7 +41,13 @@ human omissions. Section fan-in and final success use the same evaluator against
 persisted process state. Missing rows, unfinished work and partial integrations
 cannot pass; missing provenance, read failures and ambiguous legacy omissions
 remain unverified. Serial workflows and sections excluded by approved workflow
-scope/composition remain valid.
+scope/composition remain valid. Pre-deploy `MERGED` rows without an
+`integrationResults` attribute retain their supported integrated meaning, including
+multi-repository retries and rewinds past completed sections. New integrations
+always write the attribute; explicit empty, invalid or incomplete evidence never
+receives this legacy exemption. PR-per-unit integration still requires its
+per-repository PR records. Unpinned historical serial intents without unit work
+keep their success presentation without unit-completion diagnostics.
 
 Required integration writes are not best-effort. A lost response is reconciled
 from persisted state; an unrecorded integration stops the lane before dependent

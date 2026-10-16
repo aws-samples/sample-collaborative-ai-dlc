@@ -137,15 +137,20 @@ const integrationProblem = (records, row) => {
     if (repos.some((repo) => !prs.some((pr) => pr.repository === repo))) {
       return 'repository_evidence_missing';
     }
-  } else if (Array.isArray(row.integrationResults)) {
+  } else if (Object.hasOwn(row, 'integrationResults')) {
+    // Only an absent attribute identifies a pre-deploy MERGED row. New writes
+    // always persist this attribute, including an empty result array.
+    if (
+      !Array.isArray(row.integrationResults) ||
+      row.integrationResults.some((r) => !r || typeof r.repo !== 'string' || !r.repo)
+    )
+      return 'repository_evidence_invalid';
     if (row.integrationResults.some((r) => r.merged !== true && r.merged !== 'up_to_date')) {
       return 'repository_integration_incomplete';
     }
     if (repos.some((repo) => !row.integrationResults.some((r) => r.repo === repo))) {
       return 'repository_evidence_missing';
     }
-  } else if (repos.length > 1) {
-    return 'repository_evidence_missing';
   }
   return null;
 };
@@ -200,6 +205,7 @@ export const unitCompletion = (records, sectionIndexes) => {
               : 'unit_row_missing'),
         unknown:
           problem === 'repository_evidence_missing' ||
+          problem === 'repository_evidence_invalid' ||
           legacy === 'unknown' ||
           Boolean(row && !row.state),
       };
@@ -327,8 +333,12 @@ export const assessExecutionCompletion = async ({ records, loadPlan }) => {
     !records.meta.methodologyRelease &&
     !records.meta.methodologyPins?.STAGE &&
     !Array.isArray(capturedSections)
-  )
+  ) {
+    // Legacy serial executions have no unit work to diagnose. This exception
+    // cannot hide a current receipt's expected sections or a pinned unit plan.
+    if (!records.unitPlan?.units?.length && !records.units?.length) return null;
     return unverifiedCompletion('legacy_workflow_unpinned');
+  }
   let resolved;
   try {
     resolved = await loadPlan(records.meta);

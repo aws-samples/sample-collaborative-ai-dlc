@@ -569,7 +569,7 @@ export const runParallelSection = async (segment, toolkit) => {
       );
     }
     if (initial.state === 'retired') return { ok: false, reason: 'retired', intentId };
-    // A historical aggregate label is insufficient to release dependencies.
+    // Validate recorded repository evidence before releasing dependencies.
     // Unfinished lanes may execute; uncertain or contradictory integration may not.
     if (initial.state === 'unknown' || initial.unresolved.some((unit) => unit.state === 'MERGED'))
       return fail('completion_unverified', completionMessage(initial));
@@ -891,7 +891,10 @@ export const runParallelSection = async (segment, toolkit) => {
           sectionIndex: segment.index,
           slug,
           state: 'MERGED',
-          fields: { mergedAt: true },
+          fields: {
+            mergedAt: true,
+            ...(completionPolicyVersion >= 2 ? { integrationResults: [] } : {}),
+          },
         });
       });
       return { slug, state: 'MERGED' };
@@ -1587,6 +1590,7 @@ export const runParallelSection = async (segment, toolkit) => {
               state: 'MERGED',
               fields: {
                 mergedAt: true,
+                ...(completionPolicyVersion >= 2 ? { integrationResults: [] } : {}),
                 integrationOwner: false,
                 blockedReason: null,
               },

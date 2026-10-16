@@ -1,3 +1,5 @@
+import { __durableHandler as runOrchestrator } from '../../v2-orchestrator/index.js';
+import { createProcessStore } from '../../shared/v2-process-store.js';
 import { unitPlanIdentity } from '../../shared/unit-completion.js';
 import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -6541,6 +6543,25 @@ describe('POST /rewind', () => {
 // ── WP4: the unit dimension on the API surface (docs/v2-parallel.md) ─────────
 
 describe('WP4 — unit lanes in the detail DTO', () => {
+  it('keeps an unpinned serial SUCCEEDED intent free of unit completion diagnostics', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'SUCCEEDED', methodologyRelease: null, methodologyPins: null });
+    const result = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toMatchObject({
+      intent: { status: 'SUCCEEDED' },
+      unitCompletion: null,
+      unitPlan: null,
+      units: [],
+    });
+  });
   it('surfaces unitPlan + units and lane attribution on stages/gates/events', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -6794,6 +6815,84 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     return { sub, projectId, intent, pk };
   };
 
+  it.each(['rewind', 'start'])(
+    'completes publication after %s without rebuilding pre-deploy multi-repo integrated units',
+    async (action) => {
+      const { sub, projectId, intent, pk } = await falseSuccess();
+      const repos = ['owner/repo', 'owner/second'];
+      setStatus(intent.id, { status: action === 'start' ? 'FAILED' : 'SUCCEEDED', repos });
+      const plan = procStore.get(keyOf(pk, 'UNITPLAN'));
+      plan.walkingSkeleton = 'foundation';
+      procStore.get(keyOf(pk, 'UNIT#S1#feature')).state = 'MERGED';
+      seedStageRow(intent.id, 'cg', 'feature', 'SUCCEEDED', 1);
+      const before = ['foundation', 'feature'].map((slug) =>
+        structuredClone(procStore.get(keyOf(pk, `UNIT#S1#${slug}`))),
+      );
+      expect(before.every((row) => !Object.hasOwn(row, 'integrationResults'))).toBe(true);
+      const result = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/${action}`,
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify(action === 'rewind' ? { fromStageId: 'bt' } : {}),
+        ...claims(sub),
+      });
+      expect(result.statusCode).toBe(202);
+      const event = JSON.parse(
+        Buffer.from(orchestratorInvokes().at(-1).args[0].input.Payload).toString(),
+      );
+      const doc = DynamoDBDocumentClient.from(
+        new (await import('@aws-sdk/client-dynamodb')).DynamoDBClient({}),
+      );
+      const store = createProcessStore({ ddb: doc, tableName: 'v2-proc-test' });
+      const runtime = vi.fn(async () => ({ ok: true, state: 'SUCCEEDED' }));
+      const openPr = vi.fn(async ({ repo }) => ({
+        number: 42,
+        url: `https://example.test/${repo}/pull/42`,
+      }));
+      const ctx = {
+        logger: { info() {}, error() {}, debug() {} },
+        step: async (_name, fn) => fn(),
+        createCallback: async (name) => {
+          if (name.startsWith('await-')) {
+            const humanTaskId = name.slice('await-'.length);
+            await store.answerHumanTask({
+              executionId: intent.id,
+              humanTaskId,
+              status: 'answered',
+              answer: { decision: 'approve' },
+              answeredBy: sub,
+            });
+            return [Promise.resolve({ answer: { decision: 'approve' } }), `cb-${name}`];
+          }
+          return [Promise.resolve({ ok: true, state: 'SUCCEEDED' }), `cb-${name}`];
+        },
+        runInChildContext: async (_name, fn) => fn(ctx),
+        promise: {
+          allSettled: async (_name, promises) => Promise.allSettled(promises),
+          race: async (_name, promises) => Promise.race(promises),
+        },
+      };
+      const completed = await runOrchestrator(event, ctx, {
+        store,
+        loadPlan: (args) => planSpy.actual({ ddb: doc, tableName: 'v2-blocks-test', ...args }),
+        invokeRuntime: runtime,
+        stopSession: async () => ({ stopped: true }),
+        broadcast: async () => {},
+        comparePrBranches: async () => ({ status: 'ahead' }),
+        openPr,
+      });
+      expect(completed, JSON.stringify(completed)).toMatchObject({ ok: true });
+      expect((await store.getExecution(intent.id)).status).toBe('SUCCEEDED');
+      expect(openPr).toHaveBeenCalledTimes(2);
+      expect(runtime.mock.calls.filter(([p]) => p.unitSlug || p.command === 'merge-lane')).toEqual(
+        [],
+      );
+      expect(
+        ['foundation', 'feature'].map((slug) => procStore.get(keyOf(pk, `UNIT#S1#${slug}`))),
+      ).toEqual(before);
+      doc.destroy();
+    },
+  );
   it.each(['ownership race', 'storage failure'])(
     'stops rewind after a retirement %s',
     async (failure) => {
