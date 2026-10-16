@@ -3700,7 +3700,11 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       **259 release/tooling tests** and the frozen/offline documentation build.
       The stronger binding-byte verification also passed against the freshly
       prepared inputs. No qualification containers remain. Evidence:
-      `/tmp/native-final-*.log`. **OpenCode and reproducible preparation are complete; this follow-up
+      `/tmp/native-final-*.log`. Preparation/runbook commit:
+      `5b60b6b7a760a861daa357cd620a5945c77dcfa2`; normal hooks passed format,
+      lint and secret scanning, with no related backend tests selected for
+      these script/doc paths. The explicit checks above supply that validation.
+      **OpenCode and reproducible preparation are complete; this follow-up
       remains open only for Kiro's vendor-supported deterministic v2 input.**
       Reader-before-writer deployment for the earlier link format, production
       kernel qualification, real providers, deployed storage/network and browser
@@ -4641,11 +4645,13 @@ complete local cloud/platform emulator are not part of the active task.
       checkpoint failure is corrected in `b72674c`; its genuine workflow and
       cold protected continuation now pass. The finite local implementation is
       complete with Kiro explicitly BLOCKED for supported deterministic v2 input.
-      The follow-up under [Stabilize and optimize native execution](#stabilize-and-optimize-native-execution)
+      The [local qualification follow-up](#native-local-qualification)
       now attributes and repairs OpenCode's local pre-request delay: a terminated
-      metadata command left a dependency lock for the next writer. Kiro's
-      renewed investigation and reproducible fixture preparation are tracked
-      there. Representative live stability and broader support remain open;
+      metadata command left a dependency lock for the next writer. Its fresh
+      fixture preparation and full offline validation command are available.
+      Kiro's actual v2 process requires managed authentication before ACP
+      initialization; supported deterministic input remains the local gap.
+      Representative live stability and broader support remain open;
       the failed historical run stays untouched.
 - [ ] **Capability and verification — support matrix and settings.** State which
       package/protocol, harness, model, source provider, and settings combinations
