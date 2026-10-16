@@ -439,7 +439,7 @@ The Dockerfile and `native/session-recovery-files.js` own these CLI pins.
 The table retains the 2026-10-14 contract snapshot; the newer pinned versions,
 paginated Codex dependency closure, OpenCode filesystem-2 bin-link representation,
 installed qualification and remaining Kiro boundary are recorded in the single
-[local qualification work item](#stabilize-and-optimize-native-execution) below.
+[local qualification runbook and work item](#native-local-qualification) below.
 `cli-models`, `tier-models`, `model-resolver` and the CLI auth drivers own syntax
 and resolution. No live provider/model catalog was fetched. Selection uses the
 project flat per-CLI map over the global map, then the legacy fallback row;
@@ -3445,6 +3445,8 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       cached image and makes no new production-image, provider or live claim.
       No push, deployment or historical-run mutation was performed.
 
+<a id="native-local-qualification"></a>
+
 - [ ] **Follow-up — reusable local validation, Kiro and OpenCode cold-start delay.**
       Authorized on 2026-10-16 after the independent three-CLI pass. Continue the
       existing qualification runner: diagnose OpenCode's reproducible roughly
@@ -3464,6 +3466,94 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       prerequisite or product decision stays explicitly open. Record all
       commands, results and remaining limits here. Deployment and real-provider
       qualification remain separate.
+
+      **Reusable local runbook.** From the repository root, use Node **24.21.0**
+      (npm **11.19.0**), the locked backend/frontend dependencies (`npm ci` and
+      `npm --prefix frontend ci` for a new checkout), Python 3 for the wiring
+      checks, and Docker with a Linux ARM64 runtime. The immutable image below
+      must already be cached: `docker image inspect "$NATIVE_IMAGE"` checks it.
+      Neither preparation nor validation pulls an image or substitutes a tag.
+      Tests mount the candidate checkout source alongside the image's real
+      installed binaries; this is not an unmodified candidate production image.
+
+      Prepare a new directory explicitly while public downloads are permitted:
+
+      ```bash
+      export PATH="$HOME/.nvm/versions/node/v24.21.0/bin:$PATH"
+      export NATIVE_IMAGE=746558295630.dkr.ecr.us-east-1.amazonaws.com/collaborative-ai-dlc-agentcore-dev@sha256:70c9fcd3595f2a785cc78d1ca339b3cd9bb6a488d332253512e373b21c895650
+      docker image inspect "$NATIVE_IMAGE" --format '{{.Os}}/{{.Architecture}}'
+      export NATIVE_FIXTURES="$(mktemp -d /tmp/native-qualification.XXXXXX)"
+      node scripts/native-qualification-package.mjs --prepare-fixtures "$NATIVE_FIXTURES"
+      node scripts/native-qualification-package.mjs --verify-fixtures "$NATIVE_FIXTURES"
+      ```
+
+      Preparation verifies exact SHA-256/size pins for AI-DLC **2.11.0** release
+      assets and provenance, all **32** frozen OpenCode **1.19.0** npm artifacts
+      by SHA-512, and the repository-locked Linux ARM64/glibc Rolldown binding
+      (**1.1.5**). It installs that optional test binding into the fixture
+      directory with scripts disabled, without changing repository dependencies.
+      Reuse also checks every unpacked binding file against its exact byte pin,
+      so a matching package version cannot conceal changed executable contents.
+      The public Sigstore/GitHub roots are a fixed verification fixture at
+      `scripts/test/fixtures/native-qualification-trusted-root.jsonl`
+      (SHA-256 `65ca537f6ed8a47fd0e560c421baa1f6c1efb8b25fc200d8c5c02c0e92eb2b9c`).
+      A fresh credential-free `gh attestation trusted-root` fetch reproduced
+      those exact bytes. The actual installer still verifies the release
+      signature, issuer, repository, workflow and ref offline. Preparation
+      refuses a nonempty destination; verification never fetches. Existing
+      prepared inputs can be reused after the verification command.
+
+      **Full local validation command** (current expected aggregate: BLOCKED/2
+      solely for Kiro's supported-input gap):
+
+      ```bash
+      npm run test:native-qualification -- --cli all \
+        --image "$NATIVE_IMAGE" --assets "$NATIVE_FIXTURES/assets" \
+        --opencode-cache "$NATIVE_FIXTURES/opencode-cache" \
+        --linux-bindings "$NATIVE_FIXTURES/linux-node-modules"
+      ```
+
+      This runs the host controller/adapter/UI/WebSocket journeys,
+      architecture/wiring checks, **404** Linux process/filesystem/manifest
+      regressions, then each selected installed row. Linux regressions use the
+      same offline/read-only container boundary and two workers. Ordinary host
+      checks remain credential-free and require no registry/model access.
+      All installed containers use `--pull never`, `--network none`,
+      read-only image/source/assets and disposable tmpfs.
+
+      For fast feedback, `npm run test:native-qualification` runs the host tier
+      and explicitly reports installed/Linux tiers NOT RUN. After changing an
+      adapter or fixture, run a focused installed row:
+
+      ```bash
+      npm run test:native-qualification -- --installed-only --cli opencode \
+        --image "$NATIVE_IMAGE" --assets "$NATIVE_FIXTURES/assets" \
+        --opencode-cache "$NATIVE_FIXTURES/opencode-cache"
+      ```
+
+      Change the selector to `claude`, `codex`, `kiro`, or
+      `claude,codex,opencode`; the latter requires all three real rows to pass.
+      Add `--linux-bindings "$NATIVE_FIXTURES/linux-node-modules"` to include the
+      Linux regressions in a focused run. Re-run the full command after combined
+      changes, plus the repository's applicable static/release/docs checks.
+      PASS/0 means all requested rows passed; FAIL/1 means a regression or
+      missing/invalid prerequisite, and takes precedence over BLOCKED/2.
+      BLOCKED/2 retains a supported-input boundary; it is never a four-CLI pass.
+      NOT RUN means a tier was explicitly omitted, not successfully qualified.
+      Missing images, binaries, release assets or dependency caches never fall
+      back to scripted success.
+
+      Reports contain numeric phase timings, setup/CLI/query/scan counts,
+      request/context sizes, first useful activity, captures and verified cold
+      restoration. Assertions enforce actual variants and unnecessary-work
+      counts, not wall-clock thresholds. These deterministic local samples do
+      not establish provider/model latency, deployed storage/network or cold
+      pulls, browser behavior, long reviewer workloads, or sustained malformed
+      OpenCode retry behavior. The finite protocol boundaries remain recorded
+      in the earlier bounded qualification item.
+      Containers are removed by the runner, including after client timeout.
+      When finished, remove only the directory created above:
+      `rm -rf -- "$NATIVE_FIXTURES"`.
 
       **OpenCode delay — repaired locally (2026-10-16).** The pinned 1.19.0
       `import --pure` starts detached global dependency installation during
@@ -3518,8 +3608,7 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       `/tmp/native-opencode-delay-fixed-{1,2}.log` and
       `/tmp/native-opencode-delay-regressions.log`. The first new unit-test draft
       accidentally mocked Python timestamp restoration; restricting its mock to
-      the OpenCode binary corrected the fixture. Kiro investigation and fresh
-      fixture preparation remain in progress under this same item. Repair commit:
+      the OpenCode binary corrected the fixture. Repair commit:
       `f2586a253346eee83c5906fd7d52c6e288182257`; normal hooks additionally passed
       **621** affected tests (two Linux-only skips). Frozen/offline docs build passed.
 
@@ -3562,6 +3651,61 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       **201** focused ACP/initialization tests and all **seven** host matrix
       contracts passed separately. Evidence:
       `/tmp/native-kiro-followup-{help,investigate,denied-proxy,installed,focused,host-matrix}.log`.
+      Probe commit: `dfc6cb7a4dbeaa60873abb94840c019b0128c747`. A repeat retained
+      the same boundary in **83 / 91 ms**, with BLOCKED/2 and complete cleanup.
+
+      **Fresh preparation and combined validation (2026-10-16).** The commands
+      above prepared `/tmp/native-qualification-fresh-20261016` from public
+      pinned artifacts and the checked-in public verification roots, preserving
+      the older package/cache directories. Offline verification passed. The
+      initial binding preparation failed with `EBADPLATFORM`: npm applies the
+      target OS/CPU/libc selection to optional packages, while the first draft
+      installed the tarball as a direct dependency. Using the repository's
+      existing optional-package semantics (`--save-optional`, Linux/ARM64/glibc)
+      fixed preparation without `--force`, scripts, dependency changes or
+      platform-guard bypass. The failed staging directory was removed; no
+      partial fixture was accepted. Evidence:
+      `/tmp/native-fresh-preparation{,-fixed}.log`.
+
+      Two complete runs then used those fresh inputs, host Node **24.21.0**
+      and the same immutable image (installed Node **24.19.0**):
+
+      | Actual installed row | Result | Retained coverage |
+      | --- | --- | --- |
+      | Claude 2.1.296 | PASS | Four-turn silent/projection baseline; three-turn genuine protected workflow, exact restore, cancellation and acknowledgement guards |
+      | Codex 0.162.1 | PASS | Two root/two inherited history pages, cold rebuild without SQLite, protected continuation, cancellation and acknowledgement guards |
+      | OpenCode 1.19.0 | PASS | Genuine dependencies/hooks/typed offers, 4,005 files/seven exact links, erased-state restoration, protected continuation, cancellation and acknowledgement guards |
+      | Kiro 2.29.1 v2 | BLOCKED | Genuine package initialization and installed missing-key/managed-auth boundary; no workflow/recovery pass |
+
+      `--cli all` exited **2 / BLOCKED**; changing only the selector to
+      `--cli claude,codex,opencode` exited **0 / PASS**. Both full commands
+      passed **1,278** backend tests (five Linux-only host skips), **307**
+      UI/service tests, one real localhost WebSocket case (32 unrelated cases
+      filtered), six architecture checks, 22 wiring checks, and **404** Linux
+      regressions with no skips. Architecture remains **392 production modules,
+      zero violations**. OpenCode's repeated cold primary requests arrived at
+      **2,342 / 2,874 ms** (turns **2,484 / 2,989 ms**), with zero stranded
+      locks and unchanged request/work counts. Capture samples were
+      **1,614 / 1,799 / 1,604 ms** and **1,914 / 1,838 / 1,742 ms**.
+      Each real workflow retained two immutable answers, both lost-ACK guards,
+      zero duplicate replay and complete owned-descendant cleanup. OpenCode
+      retained writer generation 2 and the original attempt/epoch.
+      Logs: `/tmp/native-fresh-{full,three}-validation.log`.
+
+      The preparation/matrix contracts additionally cover refused nonempty
+      destinations, missing/truncated assets, rejected integrity/byte bounds,
+      failed-download cleanup, preserved existing files, changed binding bytes,
+      and the Linux container boundary: **11 passed**. Final lint, format,
+      secretlint, dependency, SDK and architecture checks passed, as did all
+      **259 release/tooling tests** and the frozen/offline documentation build.
+      The stronger binding-byte verification also passed against the freshly
+      prepared inputs. No qualification containers remain. Evidence:
+      `/tmp/native-final-*.log`. **OpenCode and reproducible preparation are complete; this follow-up
+      remains open only for Kiro's vendor-supported deterministic v2 input.**
+      Reader-before-writer deployment for the earlier link format, production
+      kernel qualification, real providers, deployed storage/network and browser
+      behavior remain separate. No pin, gate, permission or historical run was
+      changed, and no image was pushed or deployed.
 
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration

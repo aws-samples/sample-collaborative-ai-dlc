@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 const CLIS = ['claude', 'codex', 'opencode', 'kiro'];
 const usage =
-  'Use [--image <immutable digest URI> --assets <attested release directory>] [--cli claude,codex,opencode,kiro|all] [--opencode-cache <prepared public npm cache>] [--installed-only]';
+  'Use [--image <immutable digest URI> --assets <attested release directory>] [--cli claude,codex,opencode,kiro|all] [--opencode-cache <prepared public npm cache>] [--linux-bindings <prepared Linux node_modules>] [--installed-only]';
 export function qualificationOptions(argv) {
   const args = [...argv];
   const options = {};
@@ -12,7 +12,7 @@ export function qualificationOptions(argv) {
     if (key === '--installed-only') options[key] = true;
     else {
       if (
-        !['--image', '--assets', '--cli', '--opencode-cache'].includes(key) ||
+        !['--image', '--assets', '--cli', '--opencode-cache', '--linux-bindings'].includes(key) ||
         !args.length ||
         args[0].startsWith('--')
       )
@@ -22,7 +22,10 @@ export function qualificationOptions(argv) {
   }
   if (
     Boolean(options['--image']) !== Boolean(options['--assets']) ||
-    ((options['--cli'] || options['--installed-only'] || options['--opencode-cache']) &&
+    ((options['--cli'] ||
+      options['--installed-only'] ||
+      options['--opencode-cache'] ||
+      options['--linux-bindings']) &&
       !options['--image'])
   )
     throw new Error('Selected installed tier requires both --image and --assets');
@@ -37,18 +40,11 @@ export function qualificationOptions(argv) {
     clis,
     installedOnly: options['--installed-only'] === true,
     opencodeCache: options['--opencode-cache'] ? resolve(options['--opencode-cache']) : null,
+    linuxBindings: options['--linux-bindings'] ? resolve(options['--linux-bindings']) : null,
   };
 }
 
-export function installedDockerArgs({
-  image,
-  assets,
-  root,
-  cli,
-  name,
-  baseline = false,
-  opencodeCache,
-}) {
+function offlineDockerArgs({ assets, root, name }) {
   return [
     'run',
     '--rm',
@@ -69,6 +65,20 @@ export function installedDockerArgs({
     `type=bind,src=${assets},dst=/assets,readonly`,
     '-e',
     'NATIVE_QUALIFICATION_PACKAGE=/assets',
+  ];
+}
+
+export function installedDockerArgs({
+  image,
+  assets,
+  root,
+  cli,
+  name,
+  baseline = false,
+  opencodeCache,
+}) {
+  return [
+    ...offlineDockerArgs({ assets, root, name }),
     ...(cli === 'opencode' && opencodeCache
       ? [
           '--mount',
@@ -84,6 +94,32 @@ export function installedDockerArgs({
       ? '/fixture/scripts/native-claude-recovery-smoke.mjs'
       : '/fixture/scripts/native-installed-qualification.mjs',
     ...(baseline ? [] : [cli]),
+  ];
+}
+
+export function linuxDockerArgs({ image, assets, root, name, linuxBindings }) {
+  return [
+    ...offlineDockerArgs({ assets, root, name }),
+    '--mount',
+    `type=bind,src=${linuxBindings},dst=/linux-node-modules,readonly`,
+    '-e',
+    'NODE_PATH=/linux-node-modules',
+    '--workdir',
+    '/fixture',
+    '--entrypoint',
+    'node',
+    image,
+    '/fixture/node_modules/vitest/vitest.mjs',
+    'run',
+    '--config',
+    'vitest.native-foundation.config.js',
+    '--configLoader',
+    'runner',
+    '--maxWorkers=2',
+    'lambda/agentcore/test/native-command-runner.test.js',
+    'lambda/agentcore/test/native-session-recovery-files.test.js',
+    'lambda/agentcore/test/native-opencode-recovery-command.test.js',
+    'lambda/shared/test/native-recovery-checkpoint.test.js',
   ];
 }
 

@@ -9,7 +9,9 @@ import {
   qualificationOptions,
   installedDockerArgs,
   installedStatus,
+  linuxDockerArgs,
 } from './native-qualification-options.mjs';
+import { verifyQualificationLinuxBindings } from './native-qualification-package.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const options = qualificationOptions(process.argv.slice(2));
@@ -119,6 +121,29 @@ if (!options.installedOnly) {
     'test_*.py',
   ]);
 }
+if (options.linuxBindings) {
+  await verifyQualificationLinuxBindings(options.linuxBindings);
+  const name = `native-qualification-linux-${randomUUID()}`;
+  console.log(
+    '\nNative qualification: Linux process/filesystem/manifest regressions (scripted CLI)',
+  );
+  let result;
+  try {
+    result = spawnSync('docker', linuxDockerArgs({ ...options, root, name }), {
+      cwd: root,
+      stdio: 'inherit',
+      timeout: 10 * 60_000,
+    });
+  } finally {
+    spawnSync('docker', ['rm', '--force', name], { stdio: 'ignore', timeout: 10_000 });
+  }
+  if (result.status !== 0) {
+    console.error('Linux regression tier: FAIL');
+    process.exit(1);
+  }
+  console.log('Linux regression tier: PASS');
+} else
+  console.log('Linux-only regression tier: NOT RUN (supply --linux-bindings with image/assets).');
 if (options.image) {
   const results = [];
   for (const cli of options.clis) {
