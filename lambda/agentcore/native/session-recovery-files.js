@@ -195,48 +195,61 @@ async function runRecoveryCommand({
     operation === 'opencode-export'
       ? ['export', nativeSessionId, '--pure']
       : ['import', path, '--pure'];
-  return await new Promise((resolvePromise, reject) => {
-    const child = spawn('/opt/opencode/bin/opencode', args, {
-      cwd: project,
-      env: {
-        HOME: home,
-        PATH: '/opt/opencode/bin:/usr/local/bin:/usr/bin:/bin',
-        XDG_DATA_HOME: join(home, '.data'),
-        XDG_CONFIG_HOME: join(home, '.config'),
-        XDG_CACHE_HOME: join(home, '.cache'),
-        OPENCODE_DISABLE_AUTOUPDATE: '1',
-        AWS_EC2_METADATA_DISABLED: 'true',
-        LANG: 'C.UTF-8',
-      },
-      stdio: ['ignore', 'pipe', 'ignore'],
-      shell: false,
-    });
-    const chunks = [];
-    let size = 0;
-    let stopped = false;
-    const stop = () => {
-      stopped = true;
-      child.kill('SIGKILL');
-    };
-    signal?.addEventListener('abort', stop, { once: true });
-    if (signal?.aborted) stop();
-    child.stdout.on('data', (chunk) => {
-      size += chunk.length;
-      if (size > limit) stop();
-      else chunks.push(chunk);
-    });
-    child.once('error', () => {
-      signal?.removeEventListener('abort', stop);
-      reject(new NativeSessionRecoveryError('native_recovery_adapter_failed'));
-    });
-    child.once('close', (code) => {
-      signal?.removeEventListener('abort', stop);
-      if (signal?.aborted) reject(new NativeSessionRecoveryError('native_recovery_cancelled'));
-      else if (stopped || code !== 0)
+  // OpenCode 1.19.0 starts detached dependency installation even with --pure.
+  // Its short-lived import/export can exit holding a 60-second advisory lock.
+  // These commands run only after the writer is quiescent. Give each command
+  // transient XDG state so it cannot strand a lock in the next writer's state.
+  // HOME, config, cache, project dependencies and the session database stay put.
+  const state = await fs.mkdtemp(join(home, '.native-recovery-state-'));
+  try {
+    return await new Promise((resolvePromise, reject) => {
+      const child = spawn('/opt/opencode/bin/opencode', args, {
+        cwd: project,
+        env: {
+          HOME: home,
+          PATH: '/opt/opencode/bin:/usr/local/bin:/usr/bin:/bin',
+          XDG_DATA_HOME: join(home, '.data'),
+          XDG_CONFIG_HOME: join(home, '.config'),
+          XDG_CACHE_HOME: join(home, '.cache'),
+          XDG_STATE_HOME: state,
+          OPENCODE_DISABLE_AUTOUPDATE: '1',
+          // Session serialization does not need the remote model catalog.
+          OPENCODE_DISABLE_MODELS_FETCH: 'true',
+          AWS_EC2_METADATA_DISABLED: 'true',
+          LANG: 'C.UTF-8',
+        },
+        stdio: ['ignore', 'pipe', 'ignore'],
+        shell: false,
+      });
+      const chunks = [];
+      let size = 0;
+      let stopped = false;
+      const stop = () => {
+        stopped = true;
+        child.kill('SIGKILL');
+      };
+      signal?.addEventListener('abort', stop, { once: true });
+      if (signal?.aborted) stop();
+      child.stdout.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > limit) stop();
+        else chunks.push(chunk);
+      });
+      child.once('error', () => {
+        signal?.removeEventListener('abort', stop);
         reject(new NativeSessionRecoveryError('native_recovery_adapter_failed'));
-      else resolvePromise(Buffer.concat(chunks));
+      });
+      child.once('close', (code) => {
+        signal?.removeEventListener('abort', stop);
+        if (signal?.aborted) reject(new NativeSessionRecoveryError('native_recovery_cancelled'));
+        else if (stopped || code !== 0)
+          reject(new NativeSessionRecoveryError('native_recovery_adapter_failed'));
+        else resolvePromise(Buffer.concat(chunks));
+      });
     });
-  });
+  } finally {
+    await fs.rm(state, { recursive: true, force: true });
+  }
 }
 
 const homeAllowed = (harness, id, path, metadata) => {

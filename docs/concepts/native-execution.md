@@ -3465,6 +3465,62 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       commands, results and remaining limits here. Deployment and real-provider
       qualification remain separate.
 
+      **OpenCode delay — repaired locally (2026-10-16).** The pinned 1.19.0
+      `import --pure` starts detached global dependency installation during
+      configuration bootstrap, then exits holding its advisory lock. `--pure`
+      suppresses external plugins; it does not suppress that installation.
+      A bounded trace observed the import PID absent while its dependency lock
+      was still fresh. The next workflow's plugin initialization waits for that
+      lock's fixed 60-second stale interval. The pinned public
+      [configuration owner](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/opencode/src/config/config.ts),
+      [dependency owner](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/core/src/npm.ts)
+      and [lock owner](https://github.com/anomalyco/opencode/blob/v1.19.0/packages/core/src/util/effect-flock.ts)
+      explain the observed 50,449 / 51,206 ms configuration-to-bootstrap gaps.
+      This is recovery-command startup overhead, before the deterministic
+      provider request, not model inference or a workflow hook sleep.
+
+      The existing recovery owner now gives each quiescent metadata command
+      a private transient `XDG_STATE_HOME`, removed on success, failure,
+      cancellation or output overflow. It never deletes the writer's locks.
+      HOME, project, config/cache locations, dependencies and the session database
+      remain unchanged. Import/export also disable unnecessary remote model
+      catalog refresh using the CLI's supported setting; workflow turns still
+      load the genuine package, dependencies, plugins, tools and permissions.
+      No session bytes, manifest formats, retained-image pins or human gates
+      change. This relies on the existing fenced/quiescent command boundary,
+      not a new coordination mechanism for concurrent writers.
+
+      On the same cached `70c9fcd…` image, attested 2.11.0 package and frozen
+      32-package cache, old-code cold primary requests arrived at **52,856 /
+      52,837 ms** (the parent's earlier sample was 54,808 ms). The initial
+      state-isolation correction reached **7,486 ms**; the final correction,
+      including catalog isolation, reached **3,092 ms**, with a 3,296 ms turn.
+      Final capture samples were **4,288 / 3,142 / 2,051 ms**. Host load varies;
+      these are samples, not timing gates or deployed latency evidence. Work
+      remained **3 / 2 / 1 primary queries**, one auxiliary title query, five
+      setup processes, three workflow CLI processes and six workspace scans.
+      Cold continuation retained two historical questions in its 115,311-byte
+      request (90,002 context bytes, 25,178 tool-definition bytes).
+
+      The installed regression now asserts **zero stranded workflow locks**
+      immediately after actual cold restore, before continuation, and removal
+      of transient command state. Mounting the original `0b39465` recovery
+      module fails that regression (exit 1); the corrected installed row passes
+      (exit 0), including 4,005 files/seven links, writer generation 2, unchanged
+      attempt/epoch, two immutable answers, both lost acknowledgements, zero
+      replay and descendant cleanup. Five command-owner tests cover the
+      abandoned-lock cause, import/export identity, error/overflow cleanup and
+      cancellation; the focused recovery/manifest/process run passed **399**
+      tests, with five Linux-only cases skipped on macOS. Lint, format,
+      secretlint, dependency/architecture checks and **255** release/tooling
+      tests passed. Logs: `/tmp/native-opencode-delay-{trace,locks}.log`,
+      `/tmp/native-opencode-delay-old-regression.log`,
+      `/tmp/native-opencode-delay-fixed-{1,2}.log` and
+      `/tmp/native-opencode-delay-regressions.log`. The first new unit-test draft
+      accidentally mocked Python timestamp restoration; restricting its mock to
+      the OpenCode binary corrected the fixture. Kiro investigation and fresh
+      fixture preparation remain in progress under this same item.
+
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
       took roughly 2–3 seconds. Use the existing phase observations and matching
@@ -4399,8 +4455,12 @@ complete local cloud/platform emulator are not part of the active task.
       checkpoint failure is corrected in `b72674c`; its genuine workflow and
       cold protected continuation now pass. The finite local implementation is
       complete with Kiro explicitly BLOCKED for supported deterministic v2 input.
-      Representative live stability, the measured local pre-request delay and
-      broader support remain open; the failed historical run stays untouched.
+      The follow-up under [Stabilize and optimize native execution](#stabilize-and-optimize-native-execution)
+      now attributes and repairs OpenCode's local pre-request delay: a terminated
+      metadata command left a dependency lock for the next writer. Kiro's
+      renewed investigation and reproducible fixture preparation are tracked
+      there. Representative live stability and broader support remain open;
+      the failed historical run stays untouched.
 - [ ] **Capability and verification — support matrix and settings.** State which
       package/protocol, harness, model, source provider, and settings combinations
       are supported. Qualify Claude Code, Codex, Kiro, and OpenCode before advertising

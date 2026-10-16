@@ -46,6 +46,7 @@ if (!options.installedOnly) {
     'lambda/agentcore/test/native-executor-output.test.js',
     'lambda/agentcore/test/native-pending-question.test.js',
     'lambda/agentcore/test/native-session-recovery-files.test.js',
+    'lambda/agentcore/test/native-opencode-recovery-command.test.js',
     'lambda/agentcore/test/native-kiro-acp-turn.test.js',
     'lambda/agentcore/test/native-kiro-acp-client.test.js',
     'lambda/agentcore/test/native-command-runner.test.js',

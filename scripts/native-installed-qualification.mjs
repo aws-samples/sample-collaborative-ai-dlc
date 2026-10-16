@@ -632,8 +632,26 @@ try {
           package: { ...pkg, packageId: f.configuration.packageId },
         }),
         restoreRecovery: async (input) => {
+          phase = 'cold-restore';
           assert.equal(coldRestored, false, 'Recovery retry must not restore twice');
           const restored = await restoreNativeSessionRecovery(input);
+          if (harness === 'opencode') {
+            const lockRoot = join(input.home, '.local/state/opencode/locks');
+            const locks = await fs.readdir(lockRoot).catch((error) => {
+              if (error.code === 'ENOENT') return [];
+              throw error;
+            });
+            const transientStates = (await fs.readdir(input.home)).filter((name) =>
+              name.startsWith('.native-recovery-state-'),
+            ).length;
+            report({
+              probe: 'recovery-locks',
+              workflowLocks: locks.length,
+              transientStateRemoved: transientStates === 0,
+            });
+            assert.equal(locks.length, 0, 'Metadata commands must not strand workflow locks');
+            assert.equal(transientStates, 0, 'Transient recovery command state removed');
+          }
           if (harness === 'codex') {
             const after = await codexHistory({
               directory: project,
