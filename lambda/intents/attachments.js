@@ -79,6 +79,39 @@ export const activePendingAttachments = (meta, now = Date.now()) =>
     (attachment) => Date.parse(attachment.expiresAt ?? '') > now,
   );
 
+export const attachmentCapacityError = (meta, incoming) => {
+  const existing = [...(meta.attachments || []), ...activePendingAttachments(meta)];
+  if (existing.length + incoming.length > MAX_ATTACHMENTS) {
+    return `Maximum ${MAX_ATTACHMENTS} attachments per intent`;
+  }
+  if (
+    [...existing, ...incoming].reduce((sum, file) => sum + Number(file.size || 0), 0) >
+    MAX_ATTACHMENT_TOTAL_BYTES
+  ) {
+    return 'Attachments cannot exceed 25 MB in total';
+  }
+  return null;
+};
+
+export const normalizeImportedAttachment = (raw) => {
+  let filename = raw.filename || '';
+  const extension = filename.includes('.') ? `.${filename.split('.').pop().toLowerCase()}` : '';
+  let mimeType = raw.mimeType;
+  if (
+    attachmentTypes.has(extension) &&
+    ['application/octet-stream', 'binary/octet-stream', 'application/zip'].includes(mimeType)
+  ) {
+    mimeType = attachmentTypes.get(extension);
+  }
+  if (!extension) {
+    const inferred = [...attachmentTypes].find(([, type]) => type === mimeType)?.[0];
+    // An HTML login/error page must not become an attachment when a provider
+    // protects an extensionless image URL with a browser session.
+    if (inferred && inferred !== '.html') filename += inferred;
+  }
+  return validateAttachmentDescriptor({ filename, mimeType, size: raw.size });
+};
+
 // Returns durable cleanup tombstones that need an object purge retry.
 export const pendingAttachmentDeletions = (meta) =>
   Array.isArray(meta.pendingAttachmentDeletions) ? meta.pendingAttachmentDeletions : [];

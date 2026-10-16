@@ -30,8 +30,30 @@ If the project has one or more trackers bound (GitHub Issues, GitLab Issues, Jir
 - The issue title becomes the intent title.
 - The issue body and all comments are imported into the prompt (Jira's rich-text body is converted to Markdown; comments are appended chronologically).
 - A source badge links back to the originating issue, and the link is stored on the intent.
+- After the draft opens, supported issue attachments are imported automatically.
+  **Files from the source issue** shows each file as imported, skipped, or failed,
+  with a reason. **Retry import** checks again without duplicating files already
+  imported. You can also start an import manually from an existing sourced draft.
 
 You can edit the imported prompt freely before starting.
+
+File imports use the same [formats and limits](#reference-attachments) as manual
+uploads. A file failure leaves the imported title, prompt, and comments intact.
+Each imported file retains the source issue, attachment URL, and, where the
+provider exposes it, the comment that referenced it. Stay on the draft while
+import runs; if you leave, use **Import attachments** when you return.
+
+| Tracker       | Attachment support                                                                                                                                                                                                                                                       |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| GitHub Issues | Uploaded files and images referenced in the description or comments, including older repository `/files/` URLs. Private attachments must be accessible with the project's connected credential; some uploads require a browser session and are reported as inaccessible. |
+| GitLab Issues | Project Markdown uploads (`/uploads/<secret>/<filename>`) in the description or comments, downloaded through the project's authenticated uploads API.                                                                                                                    |
+| Jira Cloud    | Native issue attachments, including files embedded in the description or comments, using the importing user's Jira connection. Jira does not identify the originating comment in its attachment list.                                                                    |
+
+Links to arbitrary external storage are not downloaded. Links to supported file
+formats outside GitHub's and GitLab's upload locations are shown as skipped;
+Jira import uses its native attachment list. Legacy Office files (`.doc`, `.xls`) and
+OpenDocument files remain unsupported. The importer copies original files; it
+does not convert them.
 
 ### AI-DLC version
 

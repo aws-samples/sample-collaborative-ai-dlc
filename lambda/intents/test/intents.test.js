@@ -641,6 +641,57 @@ const createIntent = async (
   return res;
 };
 
+describe('tracker attachment import API', () => {
+  const request = (sub, projectId, intentId, overrides = {}) =>
+    handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intentId}/attachments/import`,
+      pathParameters: { projectId, intentId },
+      ...claims(sub),
+      ...overrides,
+    });
+
+  it('uses stored issue provenance and does not accept a client-supplied download URL', async () => {
+    vi.stubEnv('TRACKERS_FUNCTION', 'trackers-test');
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { id } = JSON.parse((await createIntent(sub, projectId)).body);
+    const meta = procStore.get(keyOf(`EXEC#${id}`, 'META'));
+    meta.source = { bindingId: 'stored-binding', resourceId: '42', provider: 'github-issues' };
+    lambdaMock.on(InvokeCommand, { FunctionName: 'trackers-test' }).resolves({
+      Payload: Buffer.from(JSON.stringify({ attachments: [] })),
+    });
+    const result = await request(sub, projectId, id, {
+      body: JSON.stringify({ bindingId: 'other-binding', url: 'https://example.com/private.pdf' }),
+    });
+    expect(result.statusCode).toBe(200);
+    const calls = lambdaMock
+      .commandCalls(InvokeCommand)
+      .filter((call) => call.args[0].input.FunctionName === 'trackers-test');
+    expect(JSON.parse(Buffer.from(calls.at(-1).args[0].input.Payload).toString())).toEqual({
+      action: 'issue-attachments',
+      projectId,
+      userId: sub,
+      bindingId: 'stored-binding',
+      resourceId: '42',
+    });
+  });
+
+  it('rejects non-members, foreign intents, and non-drafts before contacting a tracker', async () => {
+    vi.stubEnv('TRACKERS_FUNCTION', 'trackers-test');
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const otherProjectId = await seedV2Project(sub);
+    const { id } = JSON.parse((await createIntent(sub, projectId)).body);
+    const before = lambdaMock.commandCalls(InvokeCommand).length;
+    expect((await request('not-a-member', projectId, id)).statusCode).toBe(403);
+    expect((await request(sub, otherProjectId, id)).statusCode).toBe(404);
+    procStore.get(keyOf(`EXEC#${id}`, 'META')).status = 'RUNNING';
+    expect((await request(sub, projectId, id)).statusCode).toBe(409);
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(before);
+  });
+});
+
 describe('POST /projects/{id}/intents/{intentId}/attachments/upload', () => {
   const documentTypes = [
     ['pdf', 'application/pdf'],

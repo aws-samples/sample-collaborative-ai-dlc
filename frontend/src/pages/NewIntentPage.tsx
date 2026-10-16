@@ -274,7 +274,13 @@ export default function NewIntentPage() {
         }
       }
       navigate(`/space/${projectId}/intent/${intent.id}/compose`, {
-        state: releaseSelectionFallback ? { releaseSelectionFallback: true } : null,
+        state:
+          source || releaseSelectionFallback
+            ? {
+                ...(source ? { importTrackerAttachments: true } : {}),
+                ...(releaseSelectionFallback ? { releaseSelectionFallback: true } : {}),
+              }
+            : null,
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create intent');

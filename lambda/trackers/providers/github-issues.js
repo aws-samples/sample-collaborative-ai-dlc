@@ -37,6 +37,8 @@ export const provider = {
   listIssues,
   getIssue,
   getIssueDiscussion,
+  issueAttachments: (ctx, repository, resourceId, options) =>
+    invoke(ctx, repository, 'issue-attachments', { ...options, number: resourceId }),
   addIssueComment,
   closeIssue,
 };

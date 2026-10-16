@@ -147,15 +147,18 @@ import {
 } from './native-export.js';
 import {
   ATTACHMENT_UPLOAD_TTL_SECONDS,
-  MAX_ATTACHMENTS,
-  MAX_ATTACHMENT_TOTAL_BYTES,
   activePendingAttachments,
+  attachmentCapacityError,
   attachmentCommittedKey,
   attachmentStagingKey,
   createAttachmentCleanupService,
   pendingAttachmentDeletions,
   validateAttachmentDescriptor,
 } from './attachments.js';
+import {
+  createTrackerAttachmentImporter,
+  createTrackerUploadSigner,
+} from './tracker-attachment-import.js';
 import {
   GATE_CHOICES,
   LOOP_BACK_OPTION,
@@ -300,6 +303,7 @@ const ingestAttachmentUpload = async (event) => {
       s3VersionId: copy.VersionId,
       uploadedBy: allocation.uploadedBy ?? null,
       uploadedAt: new Date().toISOString(),
+      ...(allocation.source ? { source: allocation.source } : {}),
     };
     try {
       await store.updateExecution({
@@ -341,6 +345,26 @@ const ingestAttachmentUpload = async (event) => {
   }
 };
 const composeReportPrefix = (intentId) => `compose-reports/${intentId}/`;
+const signTrackerUpload = createTrackerUploadSigner();
+const trackerAttachmentImporter = createTrackerAttachmentImporter({
+  store,
+  s3,
+  bucket: ARTIFACTS_BUCKET(),
+  ingest: ingestAttachmentUpload,
+  uploadUrl: (key) => signTrackerUpload(ARTIFACTS_BUCKET(), key),
+  invokeTracker: async (input) => {
+    if (!process.env.TRACKERS_FUNCTION) throw new Error('Tracker import is not configured');
+    const result = await lambdaClient.send(
+      new InvokeCommand({
+        FunctionName: process.env.TRACKERS_FUNCTION,
+        InvocationType: 'RequestResponse',
+        Payload: Buffer.from(JSON.stringify(input)),
+      }),
+    );
+    if (result.FunctionError) throw new Error('Tracker import failed');
+    return parseLambdaPayload(result.Payload);
+  },
+});
 // Session ids (main, compose, lane) come from shared/runtime-session-ids.js.
 // Composer one-shots run in a THROWAWAY session keyed by the compose id — see
 // the compose dispatch below for the field incident this avoids.
@@ -3486,6 +3510,30 @@ export const handler = async (event, context) => {
       return response(200, { uploadUrl, key, expiresIn: 300 });
     }
 
+    if (intentId && ['GET', 'POST'].includes(httpMethod) && path?.endsWith('/attachments/import')) {
+      const meta = await store.getExecution(intentId);
+      if (!meta || meta.projectId !== projectId)
+        return response(404, { error: 'Intent not found' });
+      if (meta.status !== 'DRAFT')
+        return response(409, { error: 'Attachments can only be changed while DRAFT' });
+      if (!meta.source) return response(400, { error: 'This intent has no tracker source' });
+      if (!ARTIFACTS_BUCKET() || !process.env.TRACKERS_FUNCTION) {
+        return response(503, { error: 'Tracker attachment import is not configured' });
+      }
+      if (httpMethod === 'GET') {
+        return response(200, await trackerAttachmentImporter.list(meta, sub));
+      }
+      const data = body ? JSON.parse(body) : {};
+      if (
+        typeof data.attachmentId !== 'string' ||
+        !data.attachmentId ||
+        data.attachmentId.length > 128
+      ) {
+        return response(400, { error: 'An attachment ID is required' });
+      }
+      return response(200, await trackerAttachmentImporter.importOne(meta, sub, data.attachmentId));
+    }
+
     if (intentId && httpMethod === 'POST' && path?.endsWith('/attachments/upload')) {
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId)
@@ -3499,20 +3547,14 @@ export const handler = async (event, context) => {
       const current = Array.isArray(meta.attachments) ? meta.attachments : [];
       const pending = activePendingAttachments(meta);
       if (!descriptors.length) return response(400, { error: 'Provide at least one attachment' });
-      if (current.length + pending.length + descriptors.length > MAX_ATTACHMENTS) {
-        return response(400, { error: `Maximum ${MAX_ATTACHMENTS} attachments per intent` });
-      }
       const validated = descriptors.map(validateAttachmentDescriptor);
       const invalid = validated.find((entry) => entry.error);
       if (invalid) return response(400, { error: invalid.error });
-      const incomingBytes = validated.reduce((sum, entry) => sum + entry.value.size, 0);
-      const existingBytes = [...current, ...pending].reduce(
-        (sum, attachment) => sum + Number(attachment.size ?? 0),
-        0,
+      const capacityError = attachmentCapacityError(
+        meta,
+        validated.map((entry) => entry.value),
       );
-      if (existingBytes + incomingBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
-        return response(400, { error: 'Attachments cannot exceed 25 MB in total' });
-      }
+      if (capacityError) return response(400, { error: capacityError });
       const expiresAt = new Date(Date.now() + ATTACHMENT_UPLOAD_TTL_SECONDS * 1000).toISOString();
       const allocated = validated.map(({ value }) => {
         const attachmentId = randomUUID();
