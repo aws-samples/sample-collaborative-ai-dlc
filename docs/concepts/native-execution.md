@@ -3711,6 +3711,28 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       behavior remain separate. No pin, gate, permission or historical run was
       changed, and no image was pushed or deployed.
 
+      **Parent review and fresh-input verification (2026-10-16):** reviewed
+      `0b39465..27543fe`, including recovery-command isolation, the real Kiro
+      authentication probe, preparation integrity checks and the Linux runner.
+      No blocking issue found in these changes. Independently prepared
+      `/tmp/native-parent-fixtures-27543fe` using the documented helper and
+      verified it offline, without reusing the older release/cache directories.
+      The documented full command then passed **1,278 backend**, **307 UI/service**,
+      **404 Linux** tests, the WebSocket case and architecture/wiring checks.
+      Separate focused checks passed **363 recovery tests** (two Linux-only
+      host skips) and all **11 preparation/matrix contracts**.
+      Actual installed rows were Claude/Codex/OpenCode **PASS**, Kiro **BLOCKED**;
+      aggregate exit **2**. OpenCode's cold primary request arrived at
+      **2,491 ms** (turn **2,594 ms**), versus the parent's earlier **54,808 ms**,
+      with no stranded locks, all 4,005 files/seven links restored, unchanged
+      attempt/epoch, two protected answers and zero duplicate replay.
+      Kiro's 18 genuine initialization commands passed; missing/inert-key
+      probes stopped before session creation in **144 / 158 ms**, with complete
+      cleanup. Logs: `/tmp/native-parent-preparation-27543fe.log` and
+      `/tmp/native-parent-full-27543fe.log`. No qualification containers remain.
+      This independently validates the reusable local workflow and the local
+      delay correction; Kiro workflow/recovery and deployed qualification stay open.
+
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
       took roughly 2–3 seconds. Use the existing phase observations and matching
