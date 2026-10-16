@@ -343,19 +343,6 @@ variable "cors_allowed_origins" {
   default     = "*"
 }
 
-variable "cloudfront_origin_secret" {
-  description = "Shared secret that CloudFront injects as the X-Origin-Verify header. When non-empty, a REST API resource policy is attached that denies every request whose X-Origin-Verify header does not equal this value, so the API Gateway invoke URL is only reachable via the CloudFront distribution."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-variable "enable_cloudfront_origin_policy" {
-  description = "Whether to attach a CloudFront origin-verify resource policy to the API Gateway. Separate from the secret so the value is known at plan time."
-  type        = bool
-  default     = false
-}
-
 variable "api_gateway_account_id" {
   description = "An attribute of the aws_api_gateway_account resource (its cloudwatch_role_arn). The value is unused — it is interpolated into the stage description to create an implicit dependency so the REST API stage waits for account-level CloudWatch logging to be configured."
   type        = string

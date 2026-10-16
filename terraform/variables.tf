@@ -130,7 +130,7 @@ variable "docker_build_args" {
 # ---------------------------------------------------------------------------
 
 variable "enable_waf" {
-  description = "Create AWS WAF web ACLs for CloudFront and the regional API Gateway/Cognito resources"
+  description = "Create AWS WAF web ACLs for CloudFront, API Gateway, and Cognito; require the CloudFront origin secret on REST API requests"
   type        = bool
   default     = false
 }

@@ -302,9 +302,10 @@ module "waf" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  enabled      = var.enable_waf
-  project_name = var.project_name
-  environment  = var.environment
+  enabled                  = var.enable_waf
+  project_name             = var.project_name
+  environment              = var.environment
+  cloudfront_origin_secret = module.frontend.cloudfront_origin_secret
 }
 
 # Auth (Cognito)
@@ -626,8 +627,6 @@ module "api" {
   lambda_security_group_ids                = [module.lambda.lambda_security_group_id]
   neptune_endpoint                         = module.neptune.cluster_endpoint
   cors_allowed_origins                     = local.cors_allowed_origins
-  cloudfront_origin_secret                 = module.frontend.cloudfront_origin_secret
-  enable_cloudfront_origin_policy          = false
   # Pass a non-deprecated attribute (the account's CloudWatch role ARN, not the
   # deprecated `.id`). The value itself is unused — the api module interpolates it
   # into the stage description to create an implicit dependency so the stage waits

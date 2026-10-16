@@ -79,6 +79,67 @@ resource "aws_wafv2_web_acl" "regional" {
     allow {}
   }
 
+  # All application REST routes are under /api, including after the stage
+  # prefix. Cognito login/token paths do not contain /api. Decode the path
+  # before matching so encoded API paths also require the origin secret.
+  # A matching secret still passes through managed rules and authentication.
+  rule {
+    name     = "RequireCloudFrontOrigin"
+    priority = 0
+
+    action {
+      block {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          byte_match_statement {
+            search_string         = "/api"
+            positional_constraint = "CONTAINS"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "URL_DECODE"
+            }
+          }
+        }
+
+        statement {
+          not_statement {
+            statement {
+              byte_match_statement {
+                search_string         = var.cloudfront_origin_secret
+                positional_constraint = "EXACTLY"
+
+                field_to_match {
+                  single_header {
+                    name = "x-origin-verify"
+                  }
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name}-${var.environment}-api-origin"
+      sampled_requests_enabled   = false
+    }
+  }
+
   dynamic "rule" {
     for_each = local.managed_rule_groups
 
