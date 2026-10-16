@@ -10,8 +10,12 @@ const build = vi.fn();
 const retry = vi.fn();
 const acceptFindings = vi.fn();
 const recommend = vi.fn();
+const capabilities = vi.fn();
 
 vi.mock('@/services/environments', () => ({
+  environmentsService: {
+    capabilities: (...args: unknown[]) => capabilities(...args),
+  },
   toolsService: {
     list: (...args: unknown[]) => list(...args),
     create: (...args: unknown[]) => create(...args),
@@ -91,6 +95,7 @@ describe('ToolsRegistry', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    capabilities.mockResolvedValue({ instancesCompute: false, amd64CoreImage: false });
     list.mockResolvedValue([]);
     create.mockImplementation(async (input: { name: string }) => ({
       toolId: input.name === '.NET SDK' ? 'dotnet-sdk' : 'rust-toolchain',
@@ -655,5 +660,78 @@ describe('ToolsRegistry', () => {
       await screen.findByText('Publish and recommend Java JDK before building this version.'),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Build' })).toBeDisabled();
+  });
+
+  describe('x86_64 builds', () => {
+    const x86Version = {
+      ...publishedVersion,
+      versionId: 'tv-go-1-x86',
+      definition: {
+        ...publishedVersion.definition,
+        architecture: 'x86_64' as const,
+        source: { type: 'https' as const, url: 'https://go.dev/dl/go1.24.6.linux-amd64.tar.gz' },
+      },
+    };
+
+    it('hides x86_64 authoring when the deployment has no amd64 core', async () => {
+      list.mockResolvedValue([goTool]);
+      render(<ToolsRegistry />);
+      await screen.findByRole('button', { name: 'Make recommended' });
+      expect(screen.queryByRole('button', { name: 'Add x86_64 build' })).not.toBeInTheDocument();
+    });
+
+    it('prefills an x86_64 build of the selected version with a fresh download', async () => {
+      const user = userEvent.setup();
+      capabilities.mockResolvedValue({ instancesCompute: true, amd64CoreImage: true });
+      list.mockResolvedValue([goTool]);
+      createVersion.mockResolvedValue({ tool: goTool, version: x86Version });
+      build.mockResolvedValue({});
+
+      render(<ToolsRegistry />);
+      await user.click(await screen.findByRole('button', { name: 'Add x86_64 build' }));
+
+      expect(screen.getByLabelText('Linux x86_64 download URL')).toHaveValue('');
+      await user.type(
+        screen.getByLabelText('Linux x86_64 download URL'),
+        'https://go.dev/dl/go1.24.6.linux-amd64.tar.gz',
+      );
+      await user.click(screen.getByRole('button', { name: /build/i, hidden: false }));
+
+      expect(createVersion).toHaveBeenCalledWith(
+        'go',
+        expect.objectContaining({
+          version: '1.24.6',
+          architecture: 'x86_64',
+          source: expect.objectContaining({
+            url: 'https://go.dev/dl/go1.24.6.linux-amd64.tar.gz',
+          }),
+        }),
+      );
+    });
+
+    it('recommends per architecture without touching the arm64 recommendation', async () => {
+      const user = userEvent.setup();
+      capabilities.mockResolvedValue({ instancesCompute: true, amd64CoreImage: true });
+      const tool = {
+        ...goTool,
+        recommendedVersionId: 'tv-go-1',
+        recommendedX86_64VersionId: null,
+        versions: [x86Version, publishedVersion],
+      };
+      list.mockResolvedValue([tool]);
+      recommend.mockResolvedValue({ tool });
+
+      render(<ToolsRegistry />);
+      // The x86_64 build is not the arm64 recommendation, so it can be made
+      // the x86_64 recommendation (not "replaced").
+      await user.click(await screen.findByRole('button', { name: 'Make recommended' }));
+      expect(
+        within(screen.getByRole('alertdialog')).getByText(/x86_64 default/),
+      ).toBeInTheDocument();
+      await user.click(
+        within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Make recommended' }),
+      );
+      expect(recommend).toHaveBeenCalledWith('go', 'tv-go-1-x86');
+    });
   });
 });
