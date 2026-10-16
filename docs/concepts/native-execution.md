@@ -3423,6 +3423,28 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       broader support-matrix items remain open; original failed runs and incident
       uncertainty are unchanged.
 
+      **Parent review and independent verification (2026-10-16):** reviewed
+      `6c4ae11..85be193`, including the shared link plan, filesystem capture and
+      restore, immutable storage/admission consumers, image identity checks and
+      Docker packaging. No blocking issue found in this bounded change.
+      Independently passed **358 recovery/manifest tests** on Node 24.21.0
+      (the two Linux-only filesystem cases explicitly skipped on macOS) and
+      **seven host matrix contract tests**. Inspected the implementation session's
+      final Linux, host, release, static and docs results recorded above.
+      Independently reran the documented installed-only `claude,codex,opencode`
+      command at `85be193`: all three rows **PASS**, exit **0**. OpenCode restored
+      **4,005 files and seven exact links** into writer generation 2 with unchanged
+      attempt/epoch, two immutable answers, lost runtime/admission acknowledgements
+      and zero duplicate replay; cancellation observed the tool descendant gone.
+      Captures took **1,559 / 1,528 / 1,519 ms**, and the first primary request
+      after cold restore arrived at **54,808 ms**, independently reproducing the
+      unresolved delay. Evidence: `/tmp/native-parent-installed-85be193.log`;
+      no qualification containers remain. Kiro was not rerun by the parent;
+      its reviewed BLOCKED result and the reader-before-writer deployment
+      requirement remain unchanged. This uses candidate source mounted over the
+      cached image and makes no new production-image, provider or live claim.
+      No push, deployment or historical-run mutation was performed.
+
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
       took roughly 2–3 seconds. Use the existing phase observations and matching
