@@ -5200,7 +5200,13 @@ export const handler = async (event, context) => {
         if (!records.meta || records.meta.projectId !== projectId) {
           return response(404, { error: 'Intent not found' });
         }
-        return response(200, buildIntentAudit({ records }));
+        return response(200, {
+          ...buildIntentAudit({ records }),
+          completion: await assessExecutionCompletion({
+            records,
+            loadPlan: intentMethodology.loadPlan,
+          }),
+        });
       }
 
       // GET /projects/{projectId}/intents/{intentId}/outputs — the agent

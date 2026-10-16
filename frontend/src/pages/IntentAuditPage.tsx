@@ -8,7 +8,7 @@
 // from IntentContext, the audit DTO fetched lazily with a tiny module cache.
 
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { useIntent } from '@/contexts/IntentContext';
 import { intentsService, type IntentAudit } from '@/services/intents';
 import { useProjectCache } from '@/hooks/useProjectsCache';
@@ -50,7 +50,7 @@ export default function IntentAuditPage() {
   const navigate = useNavigate();
   const { project } = useProjectCache(projectId);
 
-  const key = `${projectId}#${intentId}`;
+  const key = `${projectId}#${intentId}#${detail?.intent.status ?? ''}#${detail?.intent.completedAt ?? ''}`;
   const [audit, setAudit] = useState<IntentAudit | null>(() => auditCache.get(key) ?? null);
   const [loading, setLoading] = useState(() => !auditCache.get(key));
   const [error, setError] = useState<string | null>(null);
@@ -58,12 +58,13 @@ export default function IntentAuditPage() {
   useEffect(() => {
     if (!projectId || !intentId) return;
     let cancelled = false;
-    const k = `${projectId}#${intentId}`;
+    const k = key;
     const hit = auditCache.get(k);
     if (hit) {
       setAudit(hit);
       setLoading(false);
     } else {
+      setAudit(null);
       setLoading(true);
     }
     setError(null);
@@ -83,7 +84,7 @@ export default function IntentAuditPage() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, intentId]);
+  }, [projectId, intentId, key]);
 
   if ((contextLoading || loading) && !audit) {
     return (
@@ -138,6 +139,44 @@ export default function IntentAuditPage() {
             </Badge>
           </div>
         </div>
+
+        {audit.completion &&
+          ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(detail?.intent.status ?? '') && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">Completion consistency</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 text-xs">
+                <p>
+                  {audit.completion.state === 'unknown' ? 'Unverified' : audit.completion.state}:{' '}
+                  {audit.completion.integrated} of {audit.completion.total} units verified
+                  integrated, {audit.completion.skipped} explicitly omitted.
+                </p>
+                {audit.completion.reason && (
+                  <p className="text-muted-foreground">
+                    {audit.completion.reason.replaceAll('_', ' ')}
+                  </p>
+                )}
+                {audit.completion.unresolved.slice(0, 50).map((unit) => (
+                  <p key={`${unit.sectionIndex}:${unit.slug}`}>
+                    Section {unit.sectionIndex} · {unit.slug}: {unit.state}
+                    {unit.reason ? ` — ${unit.reason.replaceAll('_', ' ')}` : ''}
+                  </p>
+                ))}
+                {audit.completion.unresolved.length > 50 && (
+                  <p>More unresolved units are available in the audit response.</p>
+                )}
+                <Link
+                  className="text-primary underline"
+                  to={`/space/${projectId}/intent/${intentId}`}
+                >
+                  {audit.completion.state === 'incomplete'
+                    ? 'Review integrated work and remaining scope'
+                    : 'Return to the intent and review recorded decisions'}
+                </Link>
+              </CardContent>
+            </Card>
+          )}
 
         {audit.environment && (
           <Card>

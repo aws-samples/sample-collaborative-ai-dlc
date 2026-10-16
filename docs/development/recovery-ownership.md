@@ -71,3 +71,76 @@ answers and events remain historical. Preserve runtime and methodology pins.
 
 Deploy the runtime, orchestrator, intents API and frontend from the same release.
 No automatic production audit, status migration or runtime repinning is performed.
+
+## Run a bounded read-only completion audit
+
+`scripts/audit-completion.mjs` is an operator-run, read-only diagnostic. It emits
+JSON Lines with intent/execution/run IDs, state, reasons, unit counts and bounded
+summary metrics. No scheduled infrastructure, account scan, automatic recovery,
+provider calls or model calls are installed.
+
+Try the sanitized fixture first; it needs no AWS credentials and deliberately
+exits 2 with one incomplete execution:
+
+```bash
+node scripts/audit-completion.mjs \
+  --fixture scripts/test/fixtures/completion-audit-example.json \
+  --project example \
+  --from 2026-10-01T00:00:00.000Z --to 2026-10-02T00:00:00.000Z
+```
+
+After explicitly choosing a project, interval and read-only AWS profile:
+
+```bash
+node scripts/audit-completion.mjs \
+  --profile platform-read --region eu-central-1 \
+  --table YOUR_V2_PROCESS_TABLE --blocks-table YOUR_BLOCKS_TABLE \
+  --artifacts-bucket YOUR_ARTIFACTS_BUCKET \
+  --project YOUR_PROJECT_ID --status SUCCEEDED \
+  --from 2026-10-01T00:00:00.000Z --to 2026-10-02T00:00:00.000Z \
+  --limit 100 --page-size 25 --max-pages 10 \
+  --record-limit 2000 --max-requests 5000 \
+  --checkpoint /tmp/completion-audit-checkpoint.json \
+  >> /tmp/completion-audit.jsonl
+```
+
+The time interval is **execution start time**, inclusive `from`, exclusive `to`,
+in normalized ISO UTC format. GSI1 supports project/status/start-time discovery;
+each discovered META is verified on the base table. Use separate invocations
+for SUCCEEDED, FAILED or CANCELLED. No cross-project discovery is available.
+The default status is SUCCEEDED.
+
+Limits apply per invocation: at most 1,000 executions, 100 pages of at most 100
+items, 10,000 completion records per execution, and 10,000 application AWS read
+requests. Defaults are 100 executions, 10 pages of 25, 2,000 records and 5,000
+requests. SDK retries are limited to two attempts per request. Runtime
+finalization uses the 2,000-record limit and reports unverified if exceeded.
+This bounds reads, not a wall-clock deadline. The process table and blocks table
+need targeted GetItem/Query permissions (and index Query); pinned methodology
+bundles need GetObject on the artifacts bucket. The command rejects writes and
+scans even if its credentials are more privileged.
+
+Exit codes: **0** means the batch finished with only complete/partial/aborted
+results, **2** means incomplete work, unverified evidence or a command failure,
+and **3** means a clean batch still has more pages. Inspect the summary's
+`finished` and `discoveryUnverified` fields even on exit 2. Rerun the exact command
+with the checkpoint until `finished: true`; changing scope or limits requires a
+fresh checkpoint. Standard output can be appended as above; `--output FILE`
+instead replaces that file with the current batch. Checkpoints are written only
+after output, so interruption can repeat findings but cannot advance past
+unwritten output. Deduplicate monitoring by execution/run IDs when ingesting
+repeated batches. A completed checkpoint contains `null`; using it again starts
+a fresh audit. Delete a checkpoint to deliberately rescan the chosen interval.
+
+Legacy workflow snapshots that reference mutable stage definitions without
+captured methodology pins or a policy-2 section receipt are also unverified:
+resolving today's definitions cannot prove their historical section list.
+
+An unavailable plan, read failure, exhausted budget, concurrent recovery or
+ambiguous legacy data is **unknown**, never clean or definitely corrupt.
+The audit observes current terminal execution records; it does not reconstruct
+every retired durable run. The GSI can lag, so repeat the same bounded interval
+after it has settled. Review each finding in the intent audit UI. Finished incomplete intents do not
+have automatic preservation recovery: an ordinary rewind reruns affected work,
+or a new intent can implement the remaining scope. No production audit or recovery
+is required as part of installing this detection capability.

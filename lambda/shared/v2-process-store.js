@@ -2183,6 +2183,55 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     return items;
   };
 
+  const listCompletionAuditPage = async ({
+    projectId,
+    status = 'SUCCEEDED',
+    from,
+    to,
+    limit = 50,
+    cursor,
+  }) => {
+    if (
+      !projectId ||
+      !['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(status) ||
+      !Number.isFinite(Date.parse(from)) ||
+      !Number.isFinite(Date.parse(to)) ||
+      from >= to ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 100
+    ) {
+      throw new Error(
+        'Completion audit requires project, terminal status, ISO time bounds and limit 1..100',
+      );
+    }
+    const prefix = `STATUS#${status}#STARTED#`;
+    const lower = `${prefix}${from}#`;
+    const upper = `${prefix}${to}#`;
+    if (
+      cursor &&
+      (cursor.GSI1PK !== projectPk(projectId) ||
+        typeof cursor.GSI1SK !== 'string' ||
+        cursor.GSI1SK < lower ||
+        cursor.GSI1SK >= upper)
+    ) {
+      throw new Error('Completion audit cursor is outside its project/status/time scope');
+    }
+    const page = await ddb.send(
+      new QueryCommand({
+        TableName: table(),
+        IndexName: 'GSI1',
+        KeyConditionExpression: 'GSI1PK = :pk AND GSI1SK BETWEEN :from AND :to',
+        ExpressionAttributeValues: { ':pk': projectPk(projectId), ':from': lower, ':to': upper },
+        ProjectionExpression: 'executionId, intentId, projectId, startedAt',
+        Limit: limit,
+        ...(cursor ? { ExclusiveStartKey: cursor } : {}),
+        ScanIndexForward: true,
+      }),
+    );
+    return { items: page.Items ?? [], cursor: page.LastEvaluatedKey ?? null };
+  };
+
   // Completion does not need outputs, model prompts, metrics or graph state.
   // Bound every read, including a single unusually large execution. A limit is
   // explicitly unverified; callers must never treat the prefix as a clean run.
@@ -3466,6 +3515,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     getOutputs,
     listProjectExecutions,
     getCompletionRecords,
+    listCompletionAuditPage,
     listActiveExecutions,
     listStaleActiveExecutions,
     patchExecutionConfig,
