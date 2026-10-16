@@ -72,9 +72,7 @@ vi.mock('../services/gitProvider', async (importOriginal) => {
       getStatus: vi.fn().mockResolvedValue({ configured: true }),
       listRepos: vi.fn().mockResolvedValue([]),
     },
-    codecommitStatus: vi
-      .fn()
-      .mockResolvedValue({ provider: 'codecommit', configured: true, region: 'eu-west-1' }),
+    codecommitStatus: vi.fn().mockResolvedValue({ configured: true, region: 'eu-west-1' }),
   };
 });
 vi.mock('../services/sourceControl', async (importOriginal) => {

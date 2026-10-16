@@ -74,7 +74,14 @@ describe('codecommit platform connection reader', () => {
 
   it('fails closed: an SSM error throws, it never reports not configured', async () => {
     const boom = Object.assign(new Error('throttled'), { name: 'ThrottlingException' });
-    await expect(getCodeCommitConnection(ssmThrowing(boom))).rejects.toBe(boom);
+    const error = await getCodeCommitConnection(ssmThrowing(boom)).catch((e) => e);
+    // Stable code for the 5xx path, safe message (the SDK text can name ARNs).
+    expect(error).toMatchObject({
+      code: 'CODECOMMIT_CONNECTION_UNAVAILABLE',
+      message: 'CodeCommit connection is unavailable',
+      cause: boom,
+    });
+    expect(error.message).not.toContain('arn:');
   });
 
   it('fails closed: a corrupt parameter throws', async () => {

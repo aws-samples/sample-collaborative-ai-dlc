@@ -68,6 +68,34 @@ describe('CodeCommitSourceControlCard', () => {
     expect(screen.getByRole('button', { name: 'Test & save' })).toBeInTheDocument();
   });
 
+  it('first setup: the permissions policy is filled from the typed role ARN before any save', async () => {
+    getConfig.mockResolvedValue(
+      baseConfig({
+        permissionsPolicy: {
+          Statement: [
+            {
+              Sid: 'UseTaggedRepositories',
+              Resource: 'arn:aws:codecommit:<region>:<account-id>:*',
+            },
+          ],
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<CodeCommitSourceControlCard />);
+
+    const policy = await screen.findByTestId('codecommit-permissions-policy');
+    expect(policy).toHaveTextContent('<account-id>');
+    await user.type(screen.getByLabelText('Role ARN'), ROLE);
+    expect(screen.getByTestId('codecommit-permissions-policy')).toHaveTextContent(
+      'arn:aws:codecommit:<region>:123456789012:*',
+    );
+    expect(screen.getByTestId('codecommit-permissions-policy')).not.toHaveTextContent(
+      '<account-id>',
+    );
+    expect(updateConfig).not.toHaveBeenCalled();
+  });
+
   it('Test & save sends role + region and shows the configured summary on success', async () => {
     getConfig.mockResolvedValue(baseConfig());
     updateConfig.mockResolvedValue(baseConfig({ roleArn: ROLE, region: 'us-east-1' }));

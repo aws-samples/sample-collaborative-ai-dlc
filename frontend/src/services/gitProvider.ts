@@ -238,7 +238,6 @@ export const getGitProviderService = (provider: GitProvider): GitProviderService
 // =============================================================================
 
 export interface CodeCommitStatus {
-  provider: 'codecommit';
   configured: boolean;
   region: string | null;
 }

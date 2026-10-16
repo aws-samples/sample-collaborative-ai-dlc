@@ -33,7 +33,17 @@ const EMPTY = Object.freeze({ roleArn: null, region: null });
 export const getCodeCommitConnection = async (ssm) => {
   const name = paramName();
   if (!name) throw new Error('CODECOMMIT_CONNECTION_PARAM env var is required');
-  const result = await ssm.send(new GetParameterCommand({ Name: name }));
+  let result;
+  try {
+    result = await ssm.send(new GetParameterCommand({ Name: name }));
+  } catch (cause) {
+    // Safe message and a stable code: the SDK message can name the execution
+    // role and the parameter ARN, which non-admins must not see.
+    throw Object.assign(new Error('CodeCommit connection is unavailable'), {
+      code: 'CODECOMMIT_CONNECTION_UNAVAILABLE',
+      cause,
+    });
+  }
   let parsed;
   try {
     parsed = JSON.parse(result.Parameter?.Value || '{}');
