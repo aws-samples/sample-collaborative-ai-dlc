@@ -3445,6 +3445,26 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       cached image and makes no new production-image, provider or live claim.
       No push, deployment or historical-run mutation was performed.
 
+- [ ] **Follow-up — reusable local validation, Kiro and OpenCode cold-start delay.**
+      Authorized on 2026-10-16 after the independent three-CLI pass. Continue the
+      existing qualification runner: diagnose OpenCode's reproducible roughly
+      55-second pre-request delay after cold restore, implement the supported
+      correction and retain a meaningful regression with comparable before/after
+      evidence. Reopen Kiro's supported deterministic local v2 provider
+      investigation; the previous bounded probe is evidence, not the end of this
+      follow-up. Exercise the actual installed CLI and production recovery/
+      authority path without relabeling protocol mocks as installed qualification.
+      Make future validation reproducible from documented prerequisites and
+      pinned fixture preparation, including release provenance, the OpenCode
+      dependency cache, one full command, focused CLI selection, failure/blocked
+      exit codes and timing output. Do not depend on undocumented manual setup or
+      existing `/tmp` contents. Preserve exact recovery, permissions and human
+      gates. Done when fresh local inputs reproduce the supported matrix and
+      OpenCode's delay has an evidenced resolution; any unavoidable Kiro
+      prerequisite or product decision stays explicitly open. Record all
+      commands, results and remaining limits here. Deployment and real-provider
+      qualification remain separate.
+
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
       took roughly 2–3 seconds. Use the existing phase observations and matching
