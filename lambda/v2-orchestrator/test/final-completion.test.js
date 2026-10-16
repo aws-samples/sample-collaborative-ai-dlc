@@ -53,7 +53,7 @@ const setup = () => {
   };
   const ctx = {
     step: async (name, fn) =>
-      name.startsWith('section-completion-v2-') || name.startsWith('load-completion-v2-')
+      name.startsWith('section-completion-v1-') || name.startsWith('load-completion-v1-')
         ? { state: 'complete', unresolved: [] }
         : fn(),
     logger: { info() {}, error() {} },

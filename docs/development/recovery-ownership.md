@@ -34,7 +34,7 @@ they do not undo provider requests or Git operations already in flight.
 
 ## Completion boundaries
 
-New histories capture completion policy 2 in the existing `load-meta` result.
+New histories capture completion policy 1 in the existing `load-meta` result.
 The shared unit-completion evaluator validates the pinned, resolved workflow's
 expected sections, current-plan units, repository integration evidence and scoped
 human omissions. Section fan-in and final success use the same evaluator against
@@ -54,8 +54,9 @@ from persisted state; an unrecorded integration stops the lane before dependent
 work can proceed. Final status and its completion receipt commit together under
 run, status, META revision and unit-plan conditions. Initial publication rechecks
 completion before opening a PR. These checks never rerun models or repair rows.
-Old marker-absent and completion-policy-1 histories retain their saved operation
-sequence and terminal step. Saved historical successes are never rewritten.
+Marker-absent histories (policy 0) retain their saved operation sequence and
+terminal step. The intermediate completion implementation was not released and
+has no separate replay path. Saved historical successes are never rewritten.
 
 A terminal success with unfinished or unverified work is shown honestly in the
 intent detail. Accepted omissions remain partial delivery, not execution defects.

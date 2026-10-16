@@ -1,4 +1,3 @@
-import { loadMetaV1, finishSucceededV1 } from './fixtures/completion-v1-boundary.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { withDurableExecution } from '@aws/durable-execution-sdk-js';
 import {
@@ -8,7 +7,10 @@ import {
 import { __durableHandler } from './fixtures/completion-handler.js';
 import { awaitEngineGate } from '../section.js';
 import { awaitEngineGate as previousEngineGate } from './fixtures/engine-gate-before-recovery.js';
-import { loadMetaBeforeCompletion } from './fixtures/load-meta-before-completion.js';
+import {
+  loadMetaBeforeCompletion,
+  finishSucceededBeforeCompletion,
+} from './fixtures/load-meta-before-completion.js';
 
 // ---------------------------------------------------------------------------
 // REAL replay coverage for the orchestrator's async stage flow (WP1).
@@ -295,7 +297,7 @@ const completeStage = async (runner, opName, result) => {
 
 describe('orchestrator on the real durable runner (replay semantics)', () => {
   it.each(['before', 'after'])(
-    'replays a frozen v1 checkpoint %s terminal success',
+    'replays a frozen marker-absent checkpoint %s terminal success',
     async (boundary) => {
       const world = makeWorld({ stages: [{ stageId: 'a' }] });
       let upgraded = false;
@@ -310,17 +312,17 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
               ? async (name, fn, options) => {
                   names.push(name);
                   if (name === 'open-pr' && boundary === 'after') {
-                    const [pause] = await target.createCallback('test-after-v1-success');
+                    const [pause] = await target.createCallback('test-after-legacy-success');
                     await pause;
                   }
                   const result = await target.step(
                     name,
                     !upgraded && name === 'load-meta'
-                      ? () => loadMetaV1(world.deps.store, event.executionId)
+                      ? () => loadMetaBeforeCompletion(world.deps.store, event.executionId)
                       : !upgraded && name === 'finish-succeeded'
                         ? () => {
                             finishCalls++;
-                            return finishSucceededV1({
+                            return finishSucceededBeforeCompletion({
                               store: world.deps.store,
                               executionId: event.executionId,
                               projectId: loadedMeta.projectId,
@@ -352,14 +354,14 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
       await stage.sendCallbackSuccess(JSON.stringify({ ok: true, state: 'SUCCEEDED' }));
       if (boundary === 'after') {
         const pause = await runner
-          .getOperation('test-after-v1-success')
+          .getOperation('test-after-legacy-success')
           .waitForData(WaitingOperationStatus.STARTED);
         upgraded = true;
         await pause.sendCallbackSuccess(JSON.stringify({ ok: true }));
       }
       const result = await completion;
       expect(result.getResult()).toMatchObject({ ok: true });
-      expect(names).not.toContain('finish-completion-v2');
+      expect(names).not.toContain('finish-completion-v1');
       expect(world.statusWrites.filter((status) => status === 'SUCCEEDED')).toHaveLength(1);
       expect(finishCalls).toBe(boundary === 'after' ? 1 : 0);
       expect(world.statusWrites).not.toContain('FAILED');

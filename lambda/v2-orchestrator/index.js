@@ -430,7 +430,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     });
     // Version behavior in the existing first checkpoint. Old histories have no
     // marker and retain their operation sequence; repair creates a new history.
-    return loaded ? { ...loaded, completionPolicyVersion: 2 } : null;
+    return loaded ? { ...loaded, completionPolicyVersion: 1 } : null;
   });
   if (!meta) return { ok: false, reason: 'execution_not_found' };
   const runtimeTarget = resolveRuntimeTarget(meta, RUNTIME_ARN());
@@ -2410,10 +2410,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // under a new runId while this one was still unwinding) exits quietly. The
     // verdict is the step result so a durable replay sees it too.
     let ownedFinish;
-    if (meta.completionPolicyVersion >= 2) {
+    if (meta.completionPolicyVersion >= 1) {
       let completion;
       try {
-        completion = await ctx.step('finish-completion-v2', () =>
+        completion = await ctx.step('finish-completion-v1', () =>
           finalizeUnitCompletion({
             store,
             executionId,
@@ -2496,7 +2496,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         if (!['complete', 'partial'].includes(completion.state))
           throw new Error(completionMessage(completion));
       };
-      if (meta.completionPolicyVersion >= 2) {
+      if (meta.completionPolicyVersion >= 1) {
         try {
           await verifyCompletion();
         } catch {
@@ -2511,7 +2511,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       }
       return openIntentPrs({
         openPr:
-          meta.completionPolicyVersion >= 2
+          meta.completionPolicyVersion >= 1
             ? async (input) => {
                 await verifyCompletion();
                 return openPr(input);

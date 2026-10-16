@@ -273,7 +273,7 @@ export const finalizeUnitCompletion = async ({
     ...completion,
     unresolved: completion.unresolved.slice(0, 50),
     unresolvedCount: completion.unresolved.length,
-    version: 2,
+    version: 1,
     runId,
     expectedSections: sections,
     unitPlanIdentity: unitPlanIdentity(records.unitPlan),

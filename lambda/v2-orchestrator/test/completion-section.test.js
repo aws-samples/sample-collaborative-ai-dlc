@@ -114,7 +114,7 @@ const setup = async (fault) => {
     ctx,
     store: guarded,
     runId,
-    completionPolicyVersion: 2,
+    completionPolicyVersion: 1,
     ids: { executionId, intentId: executionId, projectId: 'project' },
     intentBranch: 'intent',
     cloneBase: { repos: ['one', 'two'] },
