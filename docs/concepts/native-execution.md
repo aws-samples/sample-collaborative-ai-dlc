@@ -2866,6 +2866,8 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       S3/EFS body, provider credential, remote run or historical intent was read
       or changed.
 
+      Initial matrix at `a8c7732` (preserved failure evidence; dependent results below):
+
       | Actual installed CLI | Passing installed evidence | Remaining selected status/boundary |
       | --- | --- | --- |
       | Claude 2.1.296 | Preserved four-turn attested AI-DLC 2.11.0 baseline: 12 genuine typed choices, Agent/cwd metadata, multiple parent queries with an actually emitted empty silent terminal result, multiple text blocks, memory-markup projection, captures and exact restore. Separate production-composed three-turn journey admits two protected immutable answers, survives lost runtime and admission acknowledgements, rejects duplicate/competing answers, restores before turn 3 and leaves the last question unanswered. Failed/truncated provider streams are rejected. | **FAIL cancellation:** the real tool descendant remains live in state `S` after cancellation and an additional 760 ms observation, while `runNativeCommand` reports `cleanupComplete: true`. |
@@ -3110,6 +3112,12 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       fixture costs, not provider/deployed performance evidence.
       Committed as `62f6718fcc739b6f8ea17f618517b2275d0ead43`; the normal
       commit hook passed all 563 affected tests.
+      The first combined rerun subsequently caught the architecture gate:
+      `validateSession` complexity 35 exceeded its unchanged baseline 23.
+      It stopped before the installed tier. Codex rollout parsing, dependency
+      identity and inherited-prefix verification now have small local helpers
+      in the same recovery owner; the gate passes for all 391 modules and all
+      84 focused recovery cases still pass. No threshold or policy was relaxed.
 
       **Dependent correction — OpenCode offline workflow inputs (2026-10-16):**
       pinned public `anomalyco/opencode` tag `v1.19.0`,
@@ -3186,6 +3194,10 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       **BLOCKED** for the missing supported deterministic v2 provider capability;
       the existing production ACP tests and bounded installed inert-auth probe
       remain meaningful, separate coverage.
+      Offline cache/fixture work is committed as `0774c06`; seven host matrix
+      contract cases and all 255 release/tooling tests pass. Full lint, format,
+      secretlint and dependency checks pass with existing warnings. Frozen,
+      offline docs dependency verification and the normal docs build pass.
 
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
@@ -4116,8 +4128,11 @@ complete local cloud/platform emulator are not part of the active task.
       tests, the local WebSocket scenario, architecture/wiring checks and four
       actual installed-Claude turns with exact restore. This does not close the
       historical cause or live stability. The local all-harness task above now
-      records the 2026-10-16 installed matrix, two OpenCode corrections and explicit
-      cancellation/recovery/provider gaps; the failed run stays untouched.
+      records the preserved initial failures and the subsequent owned-descendant
+      cleanup and paginated Codex recovery fixes. OpenCode now reaches the genuine
+      workflow with pinned offline dependencies, but its generated bin symlinks
+      still fail the checkpoint policy; Kiro lacks a supported local v2 provider
+      input. Those boundaries stay open; the failed historical run stays untouched.
 - [ ] **Capability and verification — support matrix and settings.** State which
       package/protocol, harness, model, source provider, and settings combinations
       are supported. Qualify Claude Code, Codex, Kiro, and OpenCode before advertising

@@ -372,56 +372,66 @@ const validateSession = (ctx, files, metadata) => {
     return;
   }
   if (ctx.harness === 'claude') return validateClaudeSession(ctx, entries, metadata);
+  return validateCodexSessions(ctx, entries);
+};
+
+const codexParent = (meta) =>
+  meta.parent_thread_id ??
+  meta.source?.subagent?.thread_spawn?.parent_thread_id ??
+  meta.forked_from_id;
+
+const codexRollout = (ctx, entry) => {
+  const rows = jsonl(entry.content);
+  const first = rows[0];
+  const meta = first.payload;
+  if (
+    first.type !== 'session_meta' ||
+    !ID.test(meta?.id ?? '') ||
+    !entry.path.endsWith(`-${meta.id}.jsonl`) ||
+    meta.cwd !== ctx.project
+  )
+    fail('session_identity');
+  // Pinned 0.162.1 pages are SQLite projections of ordinal JSONL, not
+  // separate durable page files. Fork history_base points to an immutable
+  // prefix of an ancestor rollout. Unknown prefix formats remain closed.
+  if (
+    ![undefined, 'legacy', 'paginated'].includes(meta.history_mode) ||
+    meta.history_prefix != null ||
+    (meta.history_base != null && meta.history_mode !== 'paginated')
+  )
+    fail('session_layout_unsupported');
+  if (meta.history_mode === 'paginated') {
+    const start = meta.history_base?.end_ordinal_exclusive ?? 0;
+    if (
+      !Number.isSafeInteger(start) ||
+      start < 0 ||
+      rows.some((row, i) => !Number.isSafeInteger(row.ordinal) || row.ordinal !== start + i)
+    )
+      fail('session_invalid');
+    const inheritedEnd = meta.subagent_history_start_ordinal;
+    if (
+      inheritedEnd !== undefined &&
+      (!Number.isSafeInteger(inheritedEnd) ||
+        inheritedEnd < start ||
+        inheritedEnd > rows.at(-1).ordinal + 1)
+    )
+      fail('session_incomplete');
+  }
+  return { meta, rows, content: entry.content };
+};
+
+const validateCodexSessions = (ctx, entries) => {
   const sessions = new Map();
   for (const entry of entries) {
-    const rows = jsonl(entry.content);
-    const first = rows[0];
-    const meta = first.payload;
-    if (
-      first.type !== 'session_meta' ||
-      !ID.test(meta?.id ?? '') ||
-      !entry.path.endsWith(`-${meta.id}.jsonl`) ||
-      meta.cwd !== ctx.project ||
-      sessions.has(meta.id)
-    )
-      fail('session_identity');
-    // Pinned 0.162.1 pages are SQLite projections of ordinal JSONL, not
-    // separate durable page files. Fork history_base points to an immutable
-    // prefix of an ancestor rollout. Unknown prefix formats remain closed.
-    if (
-      ![undefined, 'legacy', 'paginated'].includes(meta.history_mode) ||
-      meta.history_prefix != null ||
-      (meta.history_base != null && meta.history_mode !== 'paginated')
-    )
-      fail('session_layout_unsupported');
-    if (meta.history_mode === 'paginated') {
-      const start = meta.history_base?.end_ordinal_exclusive ?? 0;
-      if (
-        !Number.isSafeInteger(start) ||
-        start < 0 ||
-        rows.some((row, i) => !Number.isSafeInteger(row.ordinal) || row.ordinal !== start + i)
-      )
-        fail('session_invalid');
-      const inheritedEnd = meta.subagent_history_start_ordinal;
-      if (
-        inheritedEnd !== undefined &&
-        (!Number.isSafeInteger(inheritedEnd) ||
-          inheritedEnd < start ||
-          inheritedEnd > rows.at(-1).ordinal + 1)
-      )
-        fail('session_incomplete');
-    }
-    sessions.set(meta.id, { meta, rows, content: entry.content });
+    const rollout = codexRollout(ctx, entry);
+    if (sessions.has(rollout.meta.id)) fail('session_identity');
+    sessions.set(rollout.meta.id, rollout);
   }
   if (!sessions.has(ctx.nativeSessionId)) fail('session_missing');
-  const parentOf = (meta) =>
-    meta.parent_thread_id ??
-    meta.source?.subagent?.thread_spawn?.parent_thread_id ??
-    meta.forked_from_id;
   const owned = new Set([ctx.nativeSessionId]);
   for (let i = 0; i < sessions.size; i++)
     for (const [id, { meta }] of sessions) {
-      if (owned.has(parentOf(meta))) owned.add(id);
+      if (owned.has(codexParent(meta))) owned.add(id);
     }
   if (owned.size !== sessions.size) fail('session_unrelated');
   for (const [id, { meta }] of sessions) {
@@ -434,37 +444,40 @@ const validateSession = (ctx, files, metadata) => {
       ? (sessions.get(spawnedParent)?.meta.session_id ?? ctx.nativeSessionId)
       : id;
     if (meta.session_id !== expectedSession) fail('session_identity');
-    const base = meta.history_base;
-    if (base == null) continue;
-    if (
-      !plain(base) ||
-      !ID.test(base.thread_id ?? '') ||
-      !Number.isSafeInteger(base.end_ordinal_exclusive) ||
-      base.end_ordinal_exclusive < 1 ||
-      !Number.isSafeInteger(base.end_byte_offset) ||
-      base.end_byte_offset < 1
-    )
-      fail('session_invalid');
-    const source = sessions.get(base.thread_id);
-    if (!source) fail('session_missing');
-    // A reference cannot import a sibling/unrelated session or make a cycle.
-    let parent = parentOf(meta);
-    const seen = new Set([id]);
-    while (parent !== base.thread_id) {
-      if (!parent || seen.has(parent) || seen.size >= ctx.limits.maxDepth)
-        fail('session_unrelated');
-      seen.add(parent);
-      parent = parentOf(sessions.get(parent)?.meta ?? {});
-    }
-    if (seen.has(parent) || source.meta.history_mode !== 'paginated') fail('session_invalid');
-    const index = base.end_ordinal_exclusive - source.rows[0].ordinal - 1;
-    if (index < 1 || index >= source.rows.length || base.end_byte_offset > source.content.length)
-      fail('session_incomplete');
-    // Both coordinates must identify the same complete immutable JSONL prefix.
-    let end = 0;
-    for (let i = 0; i <= index; i++) end = source.content.indexOf(10, end) + 1;
-    if (end !== base.end_byte_offset) fail('session_invalid');
+    validateCodexHistoryBase(ctx, sessions, id, meta);
   }
+};
+
+const validateCodexHistoryBase = (ctx, sessions, id, meta) => {
+  const base = meta.history_base;
+  if (base == null) return;
+  if (
+    !plain(base) ||
+    !ID.test(base.thread_id ?? '') ||
+    !Number.isSafeInteger(base.end_ordinal_exclusive) ||
+    base.end_ordinal_exclusive < 1 ||
+    !Number.isSafeInteger(base.end_byte_offset) ||
+    base.end_byte_offset < 1
+  )
+    fail('session_invalid');
+  const source = sessions.get(base.thread_id);
+  if (!source) fail('session_missing');
+  // A reference cannot import a sibling/unrelated session or make a cycle.
+  let parent = codexParent(meta);
+  const seen = new Set([id]);
+  while (parent !== base.thread_id) {
+    if (!parent || seen.has(parent) || seen.size >= ctx.limits.maxDepth) fail('session_unrelated');
+    seen.add(parent);
+    parent = codexParent(sessions.get(parent)?.meta ?? {});
+  }
+  if (seen.has(parent) || source.meta.history_mode !== 'paginated') fail('session_invalid');
+  const index = base.end_ordinal_exclusive - source.rows[0].ordinal - 1;
+  if (index < 1 || index >= source.rows.length || base.end_byte_offset > source.content.length)
+    fail('session_incomplete');
+  // Both coordinates must identify the same complete immutable JSONL prefix.
+  let end = 0;
+  for (let i = 0; i <= index; i++) end = source.content.indexOf(10, end) + 1;
+  if (end !== base.end_byte_offset) fail('session_invalid');
 };
 
 export const captureNativeSessionRecovery = async (input = {}) => {
