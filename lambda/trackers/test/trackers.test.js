@@ -966,7 +966,10 @@ describe('Jira Cloud — /trackers/callback/jira-cloud', () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ success: true });
     expect(ssmMock).toHaveReceivedCommand(PutParameterCommand);
-    expect(ddbMock).toHaveReceivedCommand(PutCommand);
+    expect(ddbMock).toHaveReceivedCommandWith(PutCommand, {
+      TableName: TRACKER_TABLE,
+      Item: expect.objectContaining({ oauthClientId: JIRA_CLIENT_ID }),
+    });
   });
 
   it('returns pendingChoice and writes nothing for >1 site', async () => {
@@ -1074,7 +1077,33 @@ describe('Jira Cloud — POST /trackers/connections/jira-cloud/cloud', () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ success: true });
     expect(ssmMock).toHaveReceivedCommand(PutParameterCommand);
-    expect(ddbMock).toHaveReceivedCommand(PutCommand);
+    expect(ddbMock).toHaveReceivedCommandWith(PutCommand, {
+      TableName: TRACKER_TABLE,
+      Item: expect.objectContaining({ oauthClientId: JIRA_CLIENT_ID }),
+    });
+  });
+
+  it('rejects a ticket issued to a previous client even when its secret is unchanged', async () => {
+    const choice = await captureMultiResourceTicket();
+    fetchMock.mockClear();
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({
+        client_id: 'replacement-client',
+        client_secret: JIRA_CLIENT_SECRET,
+      }),
+    });
+    const res = await handler({
+      httpMethod: 'POST',
+      path: '/trackers/connections/jira-cloud/cloud',
+      pathParameters: { provider: 'jira-cloud', instance: 'cloud' },
+      headers: { origin: 'https://example.com' },
+      body: JSON.stringify({ ticket: choice.ticket, cloudId: JIRA_CLOUD_ID }),
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+    expect(ddbMock).not.toHaveReceivedCommand(PutCommand);
   });
 
   it('rejects a ticket whose userId does not match the caller', async () => {
@@ -1217,6 +1246,7 @@ describe('Jira Cloud — GET /trackers/external-projects/jira-cloud/cloud', () =
           cloudId: JIRA_CLOUD_ID,
           baseUrl: `https://api.atlassian.com/ex/jira/${JIRA_CLOUD_ID}`,
           siteHost: JIRA_SITE_HOST,
+          oauthClientId: JIRA_CLIENT_ID,
           expiresAt: NOW.getTime() + 3600 * 1000,
         },
       });
@@ -1258,6 +1288,7 @@ describe('Jira Cloud — GET /trackers/external-projects/jira-cloud/cloud', () =
       ...claims(),
     });
     expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toMatchObject({ reconnect: true });
   });
 });
 
