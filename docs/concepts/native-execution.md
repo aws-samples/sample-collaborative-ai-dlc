@@ -3199,6 +3199,66 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       secretlint and dependency checks pass with existing warnings. Frozen,
       offline docs dependency verification and the normal docs build pass.
 
+      **Final dependent-work verification at `bfba05c` (2026-10-16):**
+      the full command below exits **1**, correctly preserving the OpenCode FAIL.
+      Claude and Codex do not inherit another CLI's failure classification.
+
+      | Pinned installed row | Latest result | Evidence and remaining boundary |
+      | --- | --- | --- |
+      | Claude 2.1.296 | **PASS** | Four-turn genuine silent/background/multi-block/projection baseline preserved. Three composed workflow turns, 12 genuine typed choices, two immutable protected answers, lost runtime/admission acknowledgements, zero duplicate replay, exact restoration of 343 files before turn 3. Real cancellation observes the tool descendant gone despite its separate group. |
+      | Codex 0.162.1 | **PASS** | Three bare and three composed turns; default paginated history plus a real fork, two actual nonempty pages each, missing-parent/ordinal rejection, erased local state and verified 402-file cold restore before protected continuation. SQLite rebuild/page hashes, prior context, writer generation 2 with unchanged attempt/epoch, one restore with new/duplicate recovery receipts, two immutable answers and zero replay all pass. Cancellation passes. |
+      | OpenCode 1.19.0 | **FAIL** | Real cancellation, failed/truncated streams and the three-turn bare-session tool/cwd/export/import/restore path pass. Real workflow dependencies, hooks and engine/write tools run with unchanged permissions, but checkpoint capture rejects the seven generated bin links. No protected workflow continuation/recovery is claimed. The constrained checkpoint compatibility decision above is still required. |
+      | Kiro 2.29.1 | **BLOCKED** | The bounded real v2 inert-auth invocation times out after 15 seconds with no terminal report and complete owner cleanup. A supported deterministic local v2 provider input is still missing; production ACP tests pass separately. |
+
+      ```bash
+      PATH=/Users/jwthewes/.nvm/versions/node/v24.21.0/bin:$PATH \
+        npm run test:native-qualification -- \
+        --cli all \
+        --image 746558295630.dkr.ecr.us-east-1.amazonaws.com/collaborative-ai-dlc-agentcore-dev@sha256:70c9fcd3595f2a785cc78d1ca339b3cd9bb6a488d332253512e373b21c895650 \
+        --assets /tmp/native-qualification-aidlc-2.11.0 \
+        --opencode-cache /tmp/native-opencode-cache-1.19.0
+      ```
+
+      Add `--installed-only` to rerun just the installed rows. Select
+      `--cli claude,codex` for the two fully passing rows. Omitting installed
+      inputs retains the explicit NOT RUN tier; no missing prerequisite becomes
+      scripted success. The final all-row log is
+      `/tmp/native-dependent-final.log` (ephemeral local test output, not another
+      tracker/report). Earlier parent and old-code failure evidence is preserved
+      above.
+
+      Host qualification: **1,220 backend passed**, three Linux-only cases skipped
+      on macOS; **307 UI/service passed**; **one actual localhost WebSocket case
+      passed**, with 32 unrelated cases deliberately filtered; **six architecture
+      regressions and 22 wiring checks passed**, 391 production modules with zero
+      violations. The separate cached Linux run passes all **39 command-runner
+      cases**. All **255 release/tooling tests** and seven host matrix contracts
+      pass. Final combined-source lint, formatting, secretlint, dependency and
+      SDK checks pass, retaining the existing warnings. Frozen/offline docs build
+      passes. The cache-only commit hook found no affected Vitest files; its
+      installed and release tests provide the evidence. The validator follow-up
+      `bfba05cce8e0f8b7c50a118ee45625a7f24be01f` passed all 563 affected hook
+      tests without relaxing the architecture limit. No full backend/frontend
+      rerun, new image build, Node 22 or live/deployed qualification is claimed.
+
+      Same-run local samples: Claude setup installation/pin/configuration/
+      verification took **1,514 / 392 / 182 / 13 ms**. Its turns took
+      **1,840 / 1,595 / 1,061 ms**, exactly **2 / 2 / 1** primary requests,
+      three setup commands total and six workspace scans. Captures took
+      **144 / 197 / 146 ms**; exact restore/verification took **678 ms**.
+      Codex turns took **6,907 / 6,835 / 5,920 ms**, exactly **2 / 2 / 1**
+      primary requests, with **141 / 161 / 142 ms** actual capture times.
+      Its second capture phase additionally includes the separately reported
+      approximately five-second fixture page/fork inspection; cold inspection
+      adds another such process without provider calls. OpenCode cache
+      integrity verification/copy took **360 ms**; its first genuine workflow
+      turn took **4,427 ms**, three primary requests plus one title request.
+      Assertions enforce request/process/scan work, not wall-clock thresholds.
+      These deterministic loopback/tmpfs samples establish neither provider
+      quality/latency nor storage/network, cold-start or deployed-browser
+      performance. Both the local task and representative runtime-stability
+      acceptance remain open.
+
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
       took roughly 2–3 seconds. Use the existing phase observations and matching
