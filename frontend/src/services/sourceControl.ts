@@ -111,8 +111,6 @@ export type SourceControlProviderSelection = Partial<
     {
       authType: SourceControlAuthType;
       confirmDelegation?: boolean;
-      // codecommit-role only. The external id is resolved server-side.
-      roleArn?: string;
       committerName?: string;
       committerEmail?: string;
     }
