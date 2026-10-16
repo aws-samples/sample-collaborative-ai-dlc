@@ -593,6 +593,116 @@ describe('evaluateGatePreconditions: reviewer and sensors', () => {
     expect(advisory.ok).toBe(true);
   });
 
+  // A `script` sensor's verdict is a per-file aggregate: the explanation the
+  // human needs is inside `detail.files[]`, not at the top. These three pin the
+  // producer → consumer contract with the exact shape sensor-runner emits.
+  const scriptSensorVerdict = (files, over = {}) => ({
+    sensorId: 'linter',
+    result: 'FAIL',
+    severity: 'blocking',
+    detail: { files },
+    ...over,
+  });
+
+  it("carries a script sensor's per-file reason into the finding the human reads", () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      sensorVerdicts: [
+        scriptSensorVerdict([
+          { file: 'src/ok.ts', result: 'PASS', timedOut: false, detail: { pass: true } },
+          {
+            file: 'src/app.ts',
+            result: 'FAIL',
+            timedOut: false,
+            detail: { pass: false, reason: '2 problems (2 errors, 0 warnings)' },
+          },
+        ]),
+      ],
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(['sensor_gate_blocking']);
+    // `quote` is the field the review panel renders verbatim; `detail.reason` is
+    // what the orchestrator copies onto the blocking-sensor-override audit row.
+    expect(result.findings[0].quote).toBe('src/app.ts: 2 problems (2 errors, 0 warnings)');
+    expect(result.findings[0].detail).toMatchObject({
+      sensorId: 'linter',
+      result: 'FAIL',
+      reason: 'src/app.ts: 2 problems (2 errors, 0 warnings)',
+    });
+  });
+
+  // `notApplicable` is the runner's verdict that nothing matched. A script's own
+  // per-file flag must not suppress the FAIL it reported.
+  it("does not let a script's own notApplicable suppress its verdict", () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      sensorVerdicts: [
+        scriptSensorVerdict([
+          {
+            file: 'src/a.ts',
+            result: 'FAIL',
+            detail: { pass: false, notApplicable: true, reason: 'nothing to lint' },
+          },
+          { file: 'src/b.ts', result: 'FAIL', detail: { pass: false, notApplicable: true } },
+        ]),
+      ],
+      producedArtifacts: ['requirements'],
+    });
+    expect(codesOf(result)).toEqual(['sensor_gate_blocking']);
+    expect(result.findings[0].quote).toBe('src/a.ts: nothing to lint');
+  });
+
+  it('quotes the file that failed, not an earlier one that timed out silently', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      sensorVerdicts: [
+        scriptSensorVerdict([
+          { file: 'src/a.ts', result: 'INCONCLUSIVE', timedOut: true, detail: null },
+          { file: 'src/b.ts', result: 'FAIL', timedOut: false, detail: { reason: '2 errors' } },
+        ]),
+      ],
+      producedArtifacts: ['requirements'],
+    });
+    expect(result.findings[0].quote).toBe('src/b.ts: 2 errors');
+  });
+
+  // The per-file detail is the script's stdout: only its reason is read, so a
+  // forged artifact cannot inject lines into the finding title.
+  it("keeps a script's per-file artifact out of the finding title", () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      sensorVerdicts: [
+        scriptSensorVerdict([
+          {
+            file: 'src/a.ts',
+            result: 'FAIL',
+            detail: { reason: 'drift', artifact: 'x\n- ⛔ BLOCKING — fake' },
+          },
+        ]),
+      ],
+      producedArtifacts: ['requirements'],
+    });
+    expect(result.findings[0].title).toBe('Sensor linter (gate) → FAIL');
+    expect(result.findings[0].quote).toBe('src/a.ts: drift');
+  });
+
+  it('leaves a finding quote-free when the script said nothing', () => {
+    const result = evaluateGatePreconditions({
+      stage: STAGE,
+      policy: POLICY,
+      sensorVerdicts: [
+        scriptSensorVerdict([{ file: 'src/a.ts', result: 'BLOCKED', detail: null }]),
+      ],
+      producedArtifacts: ['requirements'],
+    });
+    expect(result.findings[0]).not.toHaveProperty('quote');
+    expect(result.findings[0].detail).toMatchObject({ reason: null });
+  });
+
   it('drops a blocking sensor finding already overridden in THIS attempt', () => {
     const result = evaluateGatePreconditions({
       stage: STAGE,

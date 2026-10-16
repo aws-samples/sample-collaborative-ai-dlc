@@ -169,7 +169,7 @@ export function StageDetail({ row }: { row: IntentStageRow }) {
   // "missing" is visible without hovering.
   const sensorFlags = latestSensorRuns(sensors)
     .filter(sensorNeedsAttention)
-    .map((r) => ({ run: r, explain: summarizeSensorDetail(r.detail) }));
+    .map((r) => ({ run: r, explain: summarizeSensorDetail(r.detail, r.result) }));
   const artifacts = instanceId ? (artifactsByStage.get(instanceId) ?? []) : [];
   const stageGates = instanceId ? gates.filter((g) => g.stageInstanceId === instanceId) : [];
   const hasOutput = !!instanceId && !!outputBuffers.get(instanceId)?.trim();
