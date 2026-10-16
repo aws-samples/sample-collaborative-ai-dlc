@@ -64,12 +64,28 @@ function PolicyBlock({ label, json, testId }: { label: string; json: string; tes
   );
 }
 
-function SetupGuide({ config }: { config: CodeCommitAdminConfig }) {
+// Fill the policy placeholders from what the admin typed, so the first setup
+// can copy a usable policy before anything is saved.
+const accountFromRoleArn = (roleArn: string) =>
+  IAM_ROLE_ARN_PATTERN.test(roleArn.trim()) ? roleArn.trim().split(':')[4] : null;
+
+function SetupGuide({
+  config,
+  region,
+  roleArn,
+}: {
+  config: CodeCommitAdminConfig;
+  region: string;
+  roleArn: string;
+}) {
   const trustJson = useMemo(() => toJson(config.trustPolicy), [config.trustPolicy]);
-  const permissionsJson = useMemo(
-    () => toJson(config.permissionsPolicy),
-    [config.permissionsPolicy],
-  );
+  const permissionsJson = useMemo(() => {
+    let json = toJson(config.permissionsPolicy);
+    const account = accountFromRoleArn(roleArn);
+    if (region) json = json.replaceAll('<region>', region);
+    if (account) json = json.replaceAll('<account-id>', account);
+    return json;
+  }, [config.permissionsPolicy, region, roleArn]);
   return (
     <ol className="list-decimal space-y-3.5 pl-5 text-xs text-muted-foreground">
       <li>
@@ -88,7 +104,7 @@ function SetupGuide({ config }: { config: CodeCommitAdminConfig }) {
         {permissionsJson && (
           <div className="mt-2">
             <PolicyBlock
-              label="Permissions policy (region and account filled in)"
+              label="Permissions policy (filled in from the region and role ARN above)"
               json={permissionsJson}
               testId="codecommit-permissions-policy"
             />
@@ -219,7 +235,7 @@ export function CodeCommitSourceControlCard() {
           </div>
           {guideOpen && (
             <div className="rounded-md border bg-muted/40 p-3.5">
-              <SetupGuide config={config} />
+              <SetupGuide config={config} region={region} roleArn={roleArn} />
             </div>
           )}
           <p className="text-xs text-muted-foreground">
@@ -300,7 +316,7 @@ export function CodeCommitSourceControlCard() {
             </button>
             {guideOpen && config && (
               <div className="px-3 pb-3.5">
-                <SetupGuide config={config} />
+                <SetupGuide config={config} region={region} roleArn={roleArn} />
               </div>
             )}
           </div>

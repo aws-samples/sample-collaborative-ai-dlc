@@ -547,6 +547,9 @@ export const handler = async (event, context) => {
             createdBy: prior?.createdBy,
           });
         } catch (error) {
+          // A platform fault (SSM read) is not a repository verdict: let the
+          // outer handler return its safe 5xx instead of a 409.
+          if (error.code === 'CODECOMMIT_CONNECTION_UNAVAILABLE') throw error;
           failures.push({
             provider: repo.provider,
             repo: repo.repo,
