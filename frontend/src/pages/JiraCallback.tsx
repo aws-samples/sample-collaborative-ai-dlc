@@ -35,7 +35,6 @@ export default function JiraCallback() {
       .then((data) => {
         if (data.success) {
           setStatus('success');
-          setTimeout(() => navigate(-1), 1200);
           return;
         }
         if (data.pendingChoice) {
@@ -53,13 +52,24 @@ export default function JiraCallback() {
       });
   }, [searchParams, navigate, meta.callbackPath, meta.displayName]);
 
+  useEffect(() => {
+    if (status !== 'success') return;
+    const timer = setTimeout(() => {
+      const returnTo = sessionStorage.getItem('oauth_return_to');
+      sessionStorage.removeItem('oauth_return_to');
+      // Jira connections originate in space settings. Avoid returning through
+      // browser history, which may lead back to Atlassian's consent screen.
+      navigate(returnTo?.startsWith('/space/') ? returnTo : '/dashboard', { replace: true });
+    }, 1200);
+    return () => clearTimeout(timer);
+  }, [status, navigate]);
+
   const handleConfirm = async () => {
     if (!choice || !chosenCloudId) return;
     setStatus('finalizing');
     try {
       await trackersService.finalizeJiraConnection(choice.ticket, chosenCloudId);
       setStatus('success');
-      setTimeout(() => navigate(-1), 1200);
     } catch (err) {
       setStatus('error');
       setError(err instanceof Error ? err.message : 'Failed to finalize');

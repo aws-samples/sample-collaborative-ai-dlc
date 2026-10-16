@@ -86,7 +86,12 @@ export const refreshAccessToken = async ({ clientId, clientSecret, refreshToken 
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
-    const err = new ProviderError(401, 'Jira token refresh failed', { reconnect: true });
+    // Only an invalid grant needs user authorization. An upstream outage or
+    // invalid app secret must not send the browser through an OAuth loop.
+    const reconnect = data.error === 'invalid_grant';
+    const err = new ProviderError(reconnect ? 401 : r.status, 'Jira token refresh failed', {
+      reconnect,
+    });
     err.code = 'REFRESH_FAILED';
     throw err;
   }
@@ -123,7 +128,8 @@ export const listAccessibleResources = async (accessToken) => {
 
 // Persist the connection row + SSM token. Used by both the single-resource
 // and the multi-resource finalize paths in the trackers handler.
-export const persistConnection = async ({ ddb, ssm, userId, resource, tokens }) => {
+export const persistConnection = async ({ ddb, ssm, userId, clientId, resource, tokens }) => {
+  if (!clientId) throw new Error('Jira OAuth client ID is required');
   const parameterName = `/${requireEnv('JIRA_TOKEN_SSM_PREFIX')}/${userId}`;
   if (!JIRA_TOKEN_PARAM_PATTERN.test(parameterName)) {
     throw new Error('Invalid SSM parameter name format');
@@ -152,6 +158,7 @@ export const persistConnection = async ({ ddb, ssm, userId, resource, tokens }) 
       Item: {
         userId,
         providerInstance: PROVIDER_INSTANCE,
+        oauthClientId: clientId,
         parameterName,
         cloudId: resource.cloudId,
         baseUrl: `https://api.atlassian.com/ex/jira/${resource.cloudId}`,
@@ -174,10 +181,11 @@ const getConnectionRow = async (ddb, userId) => {
     new GetCommand({
       TableName: requireEnv('TRACKER_CONNECTIONS_TABLE'),
       Key: { userId, providerInstance: PROVIDER_INSTANCE },
+      ConsistentRead: true,
     }),
   );
   if (!Item) {
-    const err = new Error('Jira Cloud not connected');
+    const err = new ProviderError(400, 'Jira Cloud not connected', { reconnect: true });
     err.code = 'NOT_CONNECTED';
     throw err;
   }
@@ -231,34 +239,40 @@ const getOAuthCredentials = async (secrets) => {
   return { clientId: parsed.client_id, clientSecret: parsed.client_secret };
 };
 
+const requireCurrentOAuthClient = (row, clientId, requireRecordedClientId = false) => {
+  // Only project discovery requires legacy connections to authorize once.
+  // Existing issue/comment operations can keep using and refreshing their grant.
+  if (row.oauthClientId !== clientId && (row.oauthClientId || requireRecordedClientId)) {
+    throw new ProviderError(401, 'Jira account authorization required for this OAuth app', {
+      reconnect: true,
+    });
+  }
+};
+
 // Returns { accessToken, baseUrl, siteHost, row, parameterName, ddb, ssm }.
 // Refreshes proactively if the cached access token is within the safety
 // margin of expiry. Reactive refresh-on-401 happens inside `jiraFetch`.
-const buildContext = async ({ ddb, ssm, secrets, userId }) => {
+const buildContext = async ({ ddb, ssm, secrets, userId, requireRecordedClientId = false }) => {
   const row = await getConnectionRow(ddb, userId);
+  const creds = await getOAuthCredentials(secrets);
+  requireCurrentOAuthClient(row, creds.clientId, requireRecordedClientId);
   const tokens = await readTokens(ssm, row.parameterName);
   let accessToken = tokens.accessToken;
 
   if (!tokens.expiresAt || Date.now() >= tokens.expiresAt - REFRESH_SAFETY_MARGIN_MS) {
-    try {
-      const creds = await getOAuthCredentials(secrets);
-      const fresh = await refreshAccessToken({
-        clientId: creds.clientId,
-        clientSecret: creds.clientSecret,
-        refreshToken: tokens.refreshToken,
-      });
-      const expiresAt = Date.now() + fresh.expiresIn * 1000;
-      await writeTokens(ssm, row.parameterName, {
-        accessToken: fresh.accessToken,
-        refreshToken: fresh.refreshToken,
-        expiresAt,
-      });
-      await updateRowExpiresAt(ddb, row, expiresAt);
-      accessToken = fresh.accessToken;
-    } catch (err) {
-      if (err.code === 'REFRESH_FAILED') throw err;
-      throw err;
-    }
+    const fresh = await refreshAccessToken({
+      clientId: creds.clientId,
+      clientSecret: creds.clientSecret,
+      refreshToken: tokens.refreshToken,
+    });
+    const expiresAt = Date.now() + fresh.expiresIn * 1000;
+    await writeTokens(ssm, row.parameterName, {
+      accessToken: fresh.accessToken,
+      refreshToken: fresh.refreshToken,
+      expiresAt,
+    });
+    await updateRowExpiresAt(ddb, row, expiresAt);
+    accessToken = fresh.accessToken;
   }
 
   return {
@@ -297,19 +311,14 @@ const jiraFetch = async (ctx, path, init = {}) => {
   // Reactive refresh-and-retry once. If the proactive refresh in
   // buildContext already happened, this still covers the rare case where
   // Atlassian invalidates a token mid-flight (revoked at server).
-  let creds;
-  let refreshed;
-  try {
-    creds = await getOAuthCredentials(ctx.secrets);
-    const tokens = await readTokens(ctx.ssm, ctx.row.parameterName);
-    refreshed = await refreshAccessToken({
-      clientId: creds.clientId,
-      clientSecret: creds.clientSecret,
-      refreshToken: tokens.refreshToken,
-    });
-  } catch {
-    throw new ProviderError(401, 'Jira authentication expired', { reconnect: true });
-  }
+  const creds = await getOAuthCredentials(ctx.secrets);
+  requireCurrentOAuthClient(ctx.row, creds.clientId);
+  const tokens = await readTokens(ctx.ssm, ctx.row.parameterName);
+  const refreshed = await refreshAccessToken({
+    clientId: creds.clientId,
+    clientSecret: creds.clientSecret,
+    refreshToken: tokens.refreshToken,
+  });
   const expiresAt = Date.now() + refreshed.expiresIn * 1000;
   await writeTokens(ctx.ssm, ctx.row.parameterName, {
     accessToken: refreshed.accessToken,
@@ -542,7 +551,7 @@ const fetchProjectPage = async (ctx, startAt) => {
 // response ended. Sequential requests also keep any 401 token refresh single
 // (Atlassian rotates refresh tokens, so parallel refreshes would race).
 const listExternalProjects = async ({ ddb, ssm, secrets, userId }) => {
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const ctx = await buildContext({ ddb, ssm, secrets, userId, requireRecordedClientId: true });
   const projects = [];
   const seen = new Set();
   let startAt = 0;
