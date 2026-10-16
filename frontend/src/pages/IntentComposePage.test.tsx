@@ -3,7 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { act } from 'react';
-import { Link, MemoryRouter, Routes, Route } from 'react-router';
+import { Link, MemoryRouter, Routes, Route, useLocation } from 'react-router';
 
 beforeEach(() => {
   window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
@@ -39,6 +39,8 @@ const listComposes = vi.fn();
 const composeReportUpload = vi.fn();
 const attachments = vi.fn();
 const attachmentUploadUrls = vi.fn();
+const trackerAttachments = vi.fn();
+const importTrackerAttachment = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
@@ -49,6 +51,8 @@ vi.mock('@/services/intents', () => ({
     composeReportUpload: (...a: unknown[]) => composeReportUpload(...a),
     attachments: (...a: unknown[]) => attachments(...a),
     attachmentUploadUrls: (...a: unknown[]) => attachmentUploadUrls(...a),
+    trackerAttachments: (...a: unknown[]) => trackerAttachments(...a),
+    importTrackerAttachment: (...a: unknown[]) => importTrackerAttachment(...a),
   },
 }));
 
@@ -146,9 +150,9 @@ const draftIntent = (over: Record<string, unknown> = {}) => ({
   artifacts: [],
 });
 
-const renderPage = (controls?: ReactNode) =>
+const renderPage = (controls?: ReactNode, state?: Record<string, unknown>) =>
   render(
-    <MemoryRouter initialEntries={['/space/p1/intent/i1/compose']}>
+    <MemoryRouter initialEntries={[{ pathname: '/space/p1/intent/i1/compose', state }]}>
       {controls}
       <Routes>
         <Route path="/space/:projectId/intent/:intentId/compose" element={<IntentComposePage />} />
@@ -262,6 +266,45 @@ describe('IntentComposePage', () => {
     validateGrid.mockReset();
     useProjectCache.mockReset();
     useProjectCache.mockReturnValue({ project: baseProject(), loading: false });
+  });
+
+  it('consumes automatic import state so reloading does not restore removed files', async () => {
+    const source = { bindingId: 'b1', resourceId: '42', provider: 'github-issues' };
+    get.mockResolvedValue(draftIntent({ source, attachments: [] }));
+    trackerAttachments.mockReset().mockResolvedValue({
+      attachments: [
+        {
+          id: 'asset-1',
+          filename: 'spec.pdf',
+          url: 'https://github.com/user-attachments/files/1/spec.pdf',
+        },
+      ],
+    });
+    importTrackerAttachment.mockReset().mockResolvedValue({
+      status: 'imported',
+      attachment: { attachmentId: 'a1', filename: 'spec.pdf' },
+    });
+    const NavigationState = () => (
+      <output data-testid="navigation-state">{JSON.stringify(useLocation().state)}</output>
+    );
+    const first = renderPage(<NavigationState />, {
+      importTrackerAttachments: true,
+      releaseSelectionFallback: true,
+    });
+    await screen.findByText('spec.pdf: imported');
+    await waitFor(() => {
+      expect(JSON.parse(screen.getByTestId('navigation-state').textContent || '{}')).toEqual({
+        releaseSelectionFallback: true,
+      });
+    });
+    const savedState = JSON.parse(screen.getByTestId('navigation-state').textContent || '{}');
+    first.unmount();
+    // The backend now has no attachment (the user removed it). Simulate a
+    // reload using the history entry actually left by the first render.
+    renderPage(<NavigationState />, savedState);
+    await screen.findByRole('button', { name: 'Import attachments' });
+    expect(trackerAttachments).toHaveBeenCalledTimes(1);
+    expect(importTrackerAttachment).toHaveBeenCalledTimes(1);
   });
 
   it('uploads PDF, DOCX, and XLSX originals to reach the 50-file limit', async () => {

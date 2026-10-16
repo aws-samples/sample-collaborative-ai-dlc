@@ -3,6 +3,7 @@ import { GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
 import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { adfToMarkdown } from './adf-to-markdown.js';
 import { ProviderError } from './errors.js';
+import { transferTrackerAttachment } from '../../shared/tracker-attachments.js';
 
 export { ProviderError };
 
@@ -917,6 +918,47 @@ const addIssueComment = async (connection, projectKey, resourceId, body) => {
   return mapCommentToTrackerComment(data);
 };
 
+const issueAttachments = async (dependencies, projectKey, resourceId, options = {}) => {
+  const ctx = await buildContext(dependencies);
+  const response = await jiraFetch(
+    ctx,
+    `/rest/api/3/issue/${encodeURIComponent(resourceId)}?fields=attachment,project`,
+    { signal: AbortSignal.timeout(10_000) },
+  );
+  if (!response.ok)
+    throw new ProviderError(response.status, 'Could not read Jira issue attachments');
+  const issue = await response.json();
+  await requireIssueScope(ctx, projectKey, resourceId, issue);
+  // Jira's attachment field includes files embedded in the description and
+  // comments as well as files added through the issue's Attachments control.
+  const attachments = (issue.fields?.attachment || []).map((file) => ({
+    id: String(file.id),
+    filename: file.filename,
+    mimeType: file.mimeType,
+    size: file.size,
+    url: `https://${ctx.siteHost}/secure/attachment/${encodeURIComponent(file.id)}/${encodeURIComponent(file.filename)}`,
+    commentId: null,
+  }));
+  if (!options.attachmentId) return { attachments };
+  const attachment = attachments.find((file) => file.id === options.attachmentId);
+  if (!attachment) return { status: 'failed', reason: 'The attachment is no longer on the issue.' };
+  if (attachment.size > options.maxBytes) {
+    return { status: 'skipped', reason: 'The attachment exceeds the 5 MB per-file limit.' };
+  }
+  return transferTrackerAttachment({
+    attachment,
+    uploadUrl: options.uploadUrl,
+    maxBytes: options.maxBytes,
+    request: (init) =>
+      jiraFetch(
+        ctx,
+        `/rest/api/3/attachment/content/${encodeURIComponent(attachment.id)}?redirect=false`,
+        { ...init, headers: { Accept: '*/*' } },
+      ),
+    allowedRedirectHosts: ['api.media.atlassian.com', 'api.atlassian.com'],
+  });
+};
+
 const withConnectionErrors =
   (operation) =>
   async (connection, ...args) => {
@@ -934,5 +976,6 @@ export const provider = {
   listIssues: withConnectionErrors(listIssues),
   getIssue: withConnectionErrors(getIssue),
   getIssueDiscussion: withConnectionErrors(getIssueDiscussion),
+  issueAttachments: withConnectionErrors(issueAttachments),
   addIssueComment: withConnectionErrors(addIssueComment),
 };
