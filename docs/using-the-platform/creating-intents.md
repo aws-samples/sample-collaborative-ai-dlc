@@ -29,11 +29,15 @@ If the project has one or more trackers bound (GitHub Issues, GitLab Issues, Jir
 
 - The issue title becomes the intent title.
 - The issue body and all comments are imported into the prompt (Jira's rich-text body is converted to Markdown; comments are appended chronologically).
+- Jira attachment references are replaced with their corresponding filenames in
+  the original text position when they can be resolved. Unresolved references
+  keep a placeholder.
 - A source badge links back to the originating issue, and the link is stored on the intent.
 - After the draft opens, supported issue attachments are imported automatically.
-  **Files from the source issue** shows each file as imported, skipped, or failed,
-  with a reason. **Retry import** checks again without duplicating files already
-  imported. You can also start an import manually from an existing sourced draft.
+  Imported files appear in the attachment list. **Files from the source issue**
+  shows pending, skipped, or failed files and disappears when every file has
+  imported successfully, including after reopening the draft. **Retry import**
+  checks again and imports only files missing from the draft.
 
 You can edit the imported prompt freely before starting.
 
@@ -41,7 +45,9 @@ File imports use the same [formats and limits](#reference-attachments) as manual
 uploads. A file failure leaves the imported title, prompt, and comments intact.
 Each imported file retains the source issue, attachment URL, and, where the
 provider exposes it, the comment that referenced it. Stay on the draft while
-import runs; if you leave, use **Import attachments** when you return.
+import runs; if you leave, the remaining files are shown when you return and can
+be retried manually. Previous error messages are not stored; missing files show
+as **not imported** until retried.
 
 | Tracker       | Attachment support                                                                                                                                                                                                                                                       |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

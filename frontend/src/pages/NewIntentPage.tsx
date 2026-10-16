@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { intentsService, type CreateIntentInput, type Intent } from '@/services/intents';
@@ -60,6 +60,13 @@ export default function NewIntentPage() {
     issue: TrackerIssue;
   } | null>(null);
   const [importing, setImporting] = useState(false);
+  const importRequest = useRef(0);
+  useEffect(
+    () => () => {
+      importRequest.current += 1;
+    },
+    [projectId],
+  );
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -193,26 +200,36 @@ export default function NewIntentPage() {
   const handleSelectIssue = useCallback(
     async (issue: TrackerIssue, binding: TrackerBinding) => {
       if (!projectId) return;
+      const request = ++importRequest.current;
       setSource({ binding, issue });
       setTitle(issue.title);
       setImporting(true);
       setError(null);
       try {
-        let comments: Awaited<ReturnType<typeof trackersService.listComments>> = [];
-        try {
-          comments = await trackersService.listComments(projectId, binding.id, issue.resourceId);
-        } catch {
-          // Comments are a best-effort enrichment — fall back to the body alone.
+        const [fullIssue, comments] = await Promise.all([
+          // Resolve Jira media filenames for the selected issue, rather than
+          // fetching attachment metadata for every row in the issue picker.
+          binding.provider === 'jira-cloud'
+            ? trackersService.getIssue(projectId, binding.id, issue.resourceId).catch(() => issue)
+            : Promise.resolve(issue),
+          // Comments remain a best-effort enrichment.
+          trackersService.listComments(projectId, binding.id, issue.resourceId).catch(() => []),
+        ]);
+        if (request === importRequest.current) {
+          setPrompt(buildSprintDescription(fullIssue, comments));
         }
-        setPrompt(buildSprintDescription(issue, comments));
       } finally {
-        setImporting(false);
+        if (request === importRequest.current) setImporting(false);
       }
     },
     [projectId],
   );
 
-  const clearSource = () => setSource(null);
+  const clearSource = () => {
+    importRequest.current += 1;
+    setImporting(false);
+    setSource(null);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
