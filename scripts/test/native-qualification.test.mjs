@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -9,6 +9,10 @@ import {
   installedDockerArgs,
   installedStatus,
 } from '../native-qualification-options.mjs';
+import {
+  prepareQualificationOpenCodeCache,
+  verifyQualificationOpenCodeDependencies,
+} from '../native-qualification-package.mjs';
 
 const image = `cached/native@sha256:${'a'.repeat(64)}`;
 test('legacy invocation retains Claude; explicit selection has no missing-input fallback', () => {
@@ -25,11 +29,77 @@ test('legacy invocation retains Claude; explicit selection has no missing-input 
     ['--assets', '/tmp/assets'],
     ['--cli', 'codex'],
     ['--installed-only'],
+    ['--opencode-cache', '/tmp/cache'],
     ['--image', 'latest', '--assets', '/tmp/assets'],
     ['--image', image, '--assets', '/tmp/assets', '--cli', 'codex,codex'],
     ['--image', image, '--assets', '/tmp/assets', '--cli', 'unknown'],
   ])
     assert.throws(() => qualificationOptions(args));
+});
+test('public dependency cache is read-only and only enters the selected OpenCode container', () => {
+  const options = qualificationOptions([
+    '--image',
+    image,
+    '--assets',
+    '/tmp/assets',
+    '--opencode-cache',
+    '/tmp/cache',
+  ]);
+  for (const cli of ['claude', 'codex', 'opencode', 'kiro']) {
+    const args = installedDockerArgs({ ...options, root: '/checkout', cli });
+    assert.equal(
+      args.includes('type=bind,src=/tmp/cache,dst=/opencode-cache,readonly'),
+      cli === 'opencode',
+    );
+    assert.equal(
+      args.includes('NATIVE_QUALIFICATION_OPENCODE_CACHE=/opencode-cache'),
+      cli === 'opencode',
+    );
+  }
+});
+test('missing OpenCode cache cannot silently qualify a package-free workflow', async () => {
+  await assert.rejects(prepareQualificationOpenCodeCache('/unused'), {
+    code: 'native_qualification_opencode_cache_required',
+  });
+});
+test('actual installer dependency closure rejects missing, extra or retargeted locked artifacts', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'native-opencode-lock-'));
+  try {
+    const expected = JSON.parse(
+      await readFile(
+        new URL('./fixtures/native-opencode-package-lock.json', import.meta.url),
+        'utf8',
+      ),
+    );
+    const project = join(directory, 'project');
+    const config = join(directory, 'config');
+    for (const path of [join(project, '.opencode'), join(config, 'opencode')]) {
+      await mkdir(path, { recursive: true });
+      await writeFile(join(path, 'package-lock.json'), JSON.stringify(expected));
+    }
+    assert.equal(await verifyQualificationOpenCodeDependencies(project, config), 32);
+    for (const change of [
+      (lock) => {
+        delete lock.packages['node_modules/zod'];
+      },
+      (lock) => {
+        lock.packages['node_modules/zod'].integrity = `sha512-${'a'.repeat(88)}`;
+      },
+      (lock) => {
+        lock.packages['node_modules/zod'].version = '0.0.0';
+      },
+      (lock) => {
+        lock.packages['node_modules/unrequested'] = { version: '1.0.0' };
+      },
+    ]) {
+      const altered = structuredClone(expected);
+      change(altered);
+      await writeFile(join(config, 'opencode/package-lock.json'), JSON.stringify(altered));
+      await assert.rejects(verifyQualificationOpenCodeDependencies(project, config));
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 test('installed Docker execution is immutable, isolated, read-only and credential-free', () => {
   const args = installedDockerArgs({

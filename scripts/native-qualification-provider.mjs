@@ -87,8 +87,8 @@ function sendCodexResponse(res, text, command, id) {
   res.end();
 }
 
-function sendOpenCodeResponse(res, request, text, command, id) {
-  const delta = command
+function sendOpenCodeResponse(res, request, text, tool, id) {
+  const delta = tool
     ? {
         tool_calls: [
           {
@@ -96,8 +96,8 @@ function sendOpenCodeResponse(res, request, text, command, id) {
             id: `call_${id}`,
             type: 'function',
             function: {
-              name: 'bash',
-              arguments: JSON.stringify({ command, description: 'Run offline fixture step' }),
+              name: tool.name,
+              arguments: JSON.stringify(tool.input),
             },
           },
         ],
@@ -118,7 +118,7 @@ function sendOpenCodeResponse(res, request, text, command, id) {
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   for (const choice of [
     { index: 0, delta, finish_reason: null },
-    { index: 0, delta: {}, finish_reason: command ? 'tool_calls' : 'stop' },
+    { index: 0, delta: {}, finish_reason: tool ? 'tool_calls' : 'stop' },
   ])
     res.write(
       `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', choices: [choice], usage })}\n\n`,
@@ -134,6 +134,9 @@ export async function qualificationProvider(harness) {
   let command;
   let expectedAnswer;
   let expectedHistory = [];
+  let openCodeWorkflow;
+  let writeSent = false;
+  let engineAsk;
   let mode = 'normal';
   let failure;
   let samples = [];
@@ -204,7 +207,44 @@ export async function qualificationProvider(harness) {
           id,
         );
       else if (harness === 'codex') sendCodexResponse(res, text, nextCommand, id);
-      else sendOpenCodeResponse(res, request, text, nextCommand, id);
+      else {
+        let tool = nextCommand
+          ? {
+              name: 'bash',
+              input: { command: nextCommand, description: 'Run offline fixture step' },
+            }
+          : null;
+        if (primary && openCodeWorkflow && !tool && !writeSent) {
+          let content = 'fixture cwd witness';
+          if (openCodeWorkflow.questionPath) {
+            const result = request.messages.findLast((message) => message.role === 'tool');
+            const output =
+              typeof result?.content === 'string'
+                ? result.content
+                : result?.content?.map((part) => part.text ?? '').join('');
+            assert.ok(output, 'Actual engine tool result is required');
+            // OpenCode may append bash metadata after the engine JSON.
+            engineAsk = JSON.parse(output.slice(output.indexOf('{'), output.lastIndexOf('}') + 1));
+            assert.equal(engineAsk.ask_type, 'compose-offer');
+            assert.ok(engineAsk.scope_commands.length > 0, 'Real workflow supplied typed choices');
+            content = JSON.stringify({ version: 3, ask: engineAsk });
+          }
+          assert.ok(
+            tools.some((entry) => entry.function?.name === 'write'),
+            'Installed write tool',
+          );
+          tool = {
+            name: 'write',
+            input: {
+              filePath: openCodeWorkflow.questionPath ?? openCodeWorkflow.writePath,
+              content,
+            },
+          };
+          toolSent = true;
+          writeSent = true;
+        }
+        sendOpenCodeResponse(res, request, text, tool, id);
+      }
     } catch (error) {
       failure ??= error;
       res.writeHead(400).end('{}');
@@ -214,18 +254,28 @@ export async function qualificationProvider(harness) {
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     begin(input) {
-      ({ turn, command, expectedAnswer, expectedHistory = [], mode = 'normal' } = input);
+      ({
+        turn,
+        command,
+        expectedAnswer,
+        expectedHistory = [],
+        openCodeWorkflow,
+        mode = 'normal',
+      } = input);
       started = performance.now();
       toolSent = false;
       incompleteSent = false;
+      writeSent = false;
       samples = [];
     },
+    engineAsk: () => engineAsk,
     result() {
       if (failure) throw failure;
       return {
         requests: samples,
         toolSent,
         incompleteSent,
+        writeSent,
         historyWitnesses: expectedHistory.length,
       };
     },

@@ -31,7 +31,11 @@ import { executionIdentity } from '../lambda/native-runtime-control/execution-ru
 import { executionFixture } from '../lambda/native-runtime-control/test/execution-fixtures.js';
 import { memoryNativeObjects } from '../lambda/native-runtime-control/test/memory-objects.js';
 import { ACTOR } from '../lambda/native-runtime-control/test/fixtures.js';
-import { prepareQualificationPackage } from './native-qualification-package.mjs';
+import {
+  prepareQualificationPackage,
+  prepareQualificationOpenCodeCache,
+  verifyQualificationOpenCodeDependencies,
+} from './native-qualification-package.mjs';
 import {
   qualificationProvider,
   localProviderInvocation,
@@ -45,6 +49,7 @@ const homeRoot = join(base, 'homes');
 const project = join(root, 'project');
 const report = (value) => console.log(JSON.stringify({ harness, ...value }));
 let historyProbes = 0;
+let dependencyEnv = {};
 const binary = {
   claude: '/usr/local/bin/claude',
   codex: '/usr/local/bin/codex',
@@ -122,6 +127,7 @@ async function protocolJourney(provider, directory, home) {
   let nativeSessionId;
   let restored = false;
   const env = {
+    ...dependencyEnv,
     HOME: home,
     CODEX_HOME: join(home, '.codex'),
     XDG_DATA_HOME: join(home, '.data'),
@@ -355,6 +361,18 @@ try {
   phase = 'package-assets';
   await fs.mkdir(root, { mode: 0o700 });
   const pkg = await prepareQualificationPackage(root, process.env.NATIVE_QUALIFICATION_PACKAGE);
+  if (harness === 'opencode') {
+    const started = performance.now();
+    dependencyEnv = await prepareQualificationOpenCodeCache(
+      root,
+      process.env.NATIVE_QUALIFICATION_OPENCODE_CACHE,
+    );
+    report({
+      probe: 'opencode-cache',
+      elapsedMs: Math.round(performance.now() - started),
+      verifiedArtifacts: 32,
+    });
+  }
   if (harness === 'kiro') {
     // Do not use undocumented KIRO_MOCK_CHAT_RESPONSE/test-engine switches or
     // substitute an ACP peer for the installed CLI's authenticated v2 provider.
@@ -407,6 +425,7 @@ try {
     await fs.mkdir(failureProject);
     await fs.mkdir(join(failureHome, '.codex'), { recursive: true });
     const failureEnv = {
+      ...dependencyEnv,
       HOME: failureHome,
       CODEX_HOME: join(failureHome, '.codex'),
       CLAUDE_CONFIG_DIR: join(failureHome, '.claude'),
@@ -663,7 +682,7 @@ try {
         commandRunner: async (input) => {
           const invocation = {
             ...input,
-            env: { ...input.env, PATH: `${pkg.tools}:${input.env.PATH}` },
+            env: { ...input.env, ...dependencyEnv, PATH: `${pkg.tools}:${input.env.PATH}` },
           };
           if (input.timeoutMs !== null) {
             setups++;
@@ -673,14 +692,24 @@ try {
           phase = `workflow-turn-${turns}`;
           const command =
             turns === 1
-              ? 'aidlc engine orchestrate next "Build a bounded qualification fixture" > .native-control/engine-ask.json && node -e \'const fs=require("fs");const ask=JSON.parse(fs.readFileSync(".native-control/engine-ask.json"));fs.writeFileSync(".native-control/pending-question.json",JSON.stringify({version:3,ask}))\''
+              ? harness === 'opencode'
+                ? 'aidlc engine orchestrate next "Build a bounded qualification fixture"'
+                : 'aidlc engine orchestrate next "Build a bounded qualification fixture" > .native-control/engine-ask.json && node -e \'const fs=require("fs");const ask=JSON.parse(fs.readFileSync(".native-control/engine-ask.json"));fs.writeFileSync(".native-control/pending-question.json",JSON.stringify({version:3,ask}))\''
               : turns === 2
-                ? 'mkdir -p nested && cd nested && pwd'
+                ? harness === 'opencode'
+                  ? null
+                  : 'mkdir -p nested && cd nested && pwd'
                 : null;
           provider.begin({
             turn: turns,
             command,
             expectedAnswer: latestAnswer?.text,
+            openCodeWorkflow:
+              harness === 'opencode' && turns <= 2
+                ? turns === 1
+                  ? { questionPath: join(project, '.native-control/pending-question.json') }
+                  : { writePath: join(project, 'nested/fixture.txt') }
+                : undefined,
             expectedHistory:
               harness === 'codex' && turns === 3
                 ? ['Fixture question 1?', 'Fixture question 2?']
@@ -702,10 +731,72 @@ try {
             });
           }
           assert.equal(result.exitCode, 0, `Installed turn ${turns} exited unsuccessfully`);
+          if (harness === 'opencode') {
+            const packages = await verifyQualificationOpenCodeDependencies(
+              project,
+              lastInput.env.XDG_CONFIG_HOME,
+            );
+            report({
+              probe: 'opencode-dependencies',
+              status: 'PASS',
+              lockedPackages: packages,
+              installedBy: 'pinned CLI Arborist',
+              offline: true,
+            });
+            const toolFrames = result.stdout
+              .trim()
+              .split('\n')
+              .map(JSON.parse)
+              .filter((frame) => frame.type === 'tool_use');
+            report({
+              probe: 'opencode-tool-outcomes',
+              tools: toolFrames.map((frame) => ({
+                status: frame.part?.state?.status,
+                exit: frame.part?.state?.metadata?.exit,
+                commandUnavailable: /command not found|aidlc: not found/.test(
+                  frame.part?.state?.output ?? '',
+                ),
+                permissionRejected: /permission|denied/i.test(frame.part?.state?.error ?? ''),
+              })),
+            });
+            assert.ok(
+              toolFrames.every((frame) => frame.part?.state?.status === 'completed'),
+              'Actual workflow tools must complete without a permission rejection',
+            );
+            if (turns === 1) {
+              const pending = JSON.parse(
+                await fs.readFile(join(project, '.native-control/pending-question.json'), 'utf8'),
+              );
+              assert.deepEqual(
+                pending.ask,
+                provider.engineAsk(),
+                'Published offer came from the real engine',
+              );
+            } else if (turns === 2) {
+              assert.equal(
+                await fs.readFile(join(project, 'nested/fixture.txt'), 'utf8'),
+                'fixture cwd witness',
+              );
+            }
+            const links = [];
+            for (const path of await fs.readdir(join(project, '.opencode/node_modules/.bin'))) {
+              const link = join(project, '.opencode/node_modules/.bin', path);
+              if ((await fs.lstat(link)).isSymbolicLink())
+                links.push({
+                  path: `.opencode/node_modules/.bin/${path}`,
+                  target: await fs.readlink(link),
+                });
+            }
+            report({ probe: 'opencode-dependency-links', links });
+          }
           const observations = provider.result();
           assert.equal(observations.toolSent, turns <= 2, 'Required actual tool variant occurred');
           const primary = observations.requests.filter((sample) => sample.primary);
-          assert.equal(primary.length, turns <= 2 ? 2 : 1, 'No repeated primary queries');
+          assert.equal(
+            primary.length,
+            harness === 'opencode' && turns === 1 ? 3 : turns <= 2 ? 2 : 1,
+            'No repeated primary queries',
+          );
           report({
             probe: 'turn',
             turn: turns,
@@ -830,9 +921,12 @@ try {
         workspaceScans,
       });
       if (turn === 1) {
-        const ask = JSON.parse(
-          await fs.readFile(join(project, '.native-control/engine-ask.json'), 'utf8'),
-        );
+        const ask =
+          harness === 'opencode'
+            ? provider.engineAsk()
+            : JSON.parse(
+                await fs.readFile(join(project, '.native-control/engine-ask.json'), 'utf8'),
+              );
         assert.equal(ask.ask_type, 'compose-offer');
         assert.deepEqual(
           question.pendingInput.questions[0].options.map((o) => o.label),

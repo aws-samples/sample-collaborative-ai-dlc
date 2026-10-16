@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 
 const CLIS = ['claude', 'codex', 'opencode', 'kiro'];
 const usage =
-  'Use [--image <immutable digest URI> --assets <attested release directory>] [--cli claude,codex,opencode,kiro|all] [--installed-only]';
+  'Use [--image <immutable digest URI> --assets <attested release directory>] [--cli claude,codex,opencode,kiro|all] [--opencode-cache <prepared public npm cache>] [--installed-only]';
 export function qualificationOptions(argv) {
   const args = [...argv];
   const options = {};
@@ -12,7 +12,7 @@ export function qualificationOptions(argv) {
     if (key === '--installed-only') options[key] = true;
     else {
       if (
-        !['--image', '--assets', '--cli'].includes(key) ||
+        !['--image', '--assets', '--cli', '--opencode-cache'].includes(key) ||
         !args.length ||
         args[0].startsWith('--')
       )
@@ -22,7 +22,8 @@ export function qualificationOptions(argv) {
   }
   if (
     Boolean(options['--image']) !== Boolean(options['--assets']) ||
-    ((options['--cli'] || options['--installed-only']) && !options['--image'])
+    ((options['--cli'] || options['--installed-only'] || options['--opencode-cache']) &&
+      !options['--image'])
   )
     throw new Error('Selected installed tier requires both --image and --assets');
   if (options['--image'] && !/^[^\s]+@sha256:[a-f0-9]{64}$/.test(options['--image']))
@@ -35,10 +36,19 @@ export function qualificationOptions(argv) {
     assets: options['--assets'] ? resolve(options['--assets']) : null,
     clis,
     installedOnly: options['--installed-only'] === true,
+    opencodeCache: options['--opencode-cache'] ? resolve(options['--opencode-cache']) : null,
   };
 }
 
-export function installedDockerArgs({ image, assets, root, cli, name, baseline = false }) {
+export function installedDockerArgs({
+  image,
+  assets,
+  root,
+  cli,
+  name,
+  baseline = false,
+  opencodeCache,
+}) {
   return [
     'run',
     '--rm',
@@ -59,6 +69,14 @@ export function installedDockerArgs({ image, assets, root, cli, name, baseline =
     `type=bind,src=${assets},dst=/assets,readonly`,
     '-e',
     'NATIVE_QUALIFICATION_PACKAGE=/assets',
+    ...(cli === 'opencode' && opencodeCache
+      ? [
+          '--mount',
+          `type=bind,src=${opencodeCache},dst=/opencode-cache,readonly`,
+          '-e',
+          'NATIVE_QUALIFICATION_OPENCODE_CACHE=/opencode-cache',
+        ]
+      : []),
     '--entrypoint',
     'node',
     image,

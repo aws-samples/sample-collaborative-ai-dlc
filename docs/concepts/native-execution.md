@@ -436,6 +436,10 @@ No workflow identity or trust policy was changed to broaden the matrix.
 | OpenCode **1.17.20**        | Bedrock bearer key; `amazon-bedrock/<model>` selection; `run --format json --auto`, explicit `--model` and `--session`. Auto-update is disabled.                                                                                                                                                                 | `opencode-export-json-v1`: `export/import --pure` to preserve one session. Revert, parent/subtask, snapshot/patch and task/todo dependencies are explicitly unsupported. |
 
 The Dockerfile and `native/session-recovery-files.js` own these CLI pins.
+The table retains the 2026-10-14 contract snapshot; the newer pinned versions,
+paginated Codex dependency closure, installed qualification and remaining
+OpenCode/Kiro boundaries are recorded in the single
+[local qualification work item](#stabilize-and-optimize-native-execution) below.
 `cli-models`, `tier-models`, `model-resolver` and the CLI auth drivers own syntax
 and resolution. No live provider/model catalog was fetched. Selection uses the
 project flat per-CLI map over the global map, then the legacy fallback row;
@@ -3104,6 +3108,84 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       setup commands (initial three, two machine-projection rebuild commands),
       three workflow CLI launches and six workspace scans. These are bounded
       fixture costs, not provider/deployed performance evidence.
+      Committed as `62f6718fcc739b6f8ea17f618517b2275d0ead43`; the normal
+      commit hook passed all 563 affected tests.
+
+      **Dependent correction — OpenCode offline workflow inputs (2026-10-16):**
+      pinned public `anomalyco/opencode` tag `v1.19.0`,
+      `packages/opencode/src/config/config.ts` and `packages/core/src/npm.ts`
+      identify the startup wait: configuration schedules npm Arborist reification
+      of `@opencode-ai/plugin@1.19.0`, and plugin loading awaits that dependency
+      installation. It uses `binLinks: true` and `ignoreScripts: true`.
+      The earlier zero-request 60-second failure was missing public npm inputs,
+      not provider latency. The fixture now supplies a disposable npm cache
+      containing the exact 32-package closure (including optional platform
+      artifacts). Every tarball's declared SHA-512 integrity is verified.
+      The actual pinned CLI still creates both project/global package manifests,
+      installs dependencies and loads the genuine generated workflow plugins.
+      Its resulting lockfiles must exactly match the fixture's versions and
+      integrities; missing, extra or retargeted artifacts fail. Nothing disables
+      initialization, hooks, bin links or permissions. Dependency resolution
+      drift fails explicitly rather than changing the frozen fixture silently.
+
+      Prepare only public pinned npm assets into disposable local storage:
+
+      ```bash
+      PATH=/Users/jwthewes/.nvm/versions/node/v24.21.0/bin:$PATH \
+        node scripts/native-qualification-package.mjs \
+        --prepare-opencode-cache /tmp/native-opencode-cache-1.19.0
+      ```
+
+      Preparation uses an empty HOME/npm configuration and no credentials or
+      lifecycle scripts. This is an explicit public-registry fetch step, never
+      an ordinary test dependency. Append
+      `--opencode-cache /tmp/native-opencode-cache-1.19.0` to the installed
+      qualification command. Only OpenCode receives that read-only cache mount;
+      it copies inputs into disposable tmpfs and runs npm offline. Docker remains
+      `--pull never --network none --read-only`. Missing cache is a selected
+      FAIL, not a package-free fallback. The existing attested AI-DLC directory
+      and cached image are unchanged.
+
+      **Observed fixture correction:** the first cached run reached the provider
+      but the generated AI-DLC plugin correctly rejected the fixture's compound
+      shell command. Its shipped permission rule allows one direct
+      `aidlc engine ...` invocation. The OpenCode wire fixture now requests that
+      direct invocation, reads the actual engine result, then uses the declared
+      write tool to materialize the pending typed offer. It never manufactures
+      universal scope choices or alters permissions. Both actual tools now
+      report completed, the engine exits zero, and the written offer exactly
+      matches the engine's `compose-offer`. The first workflow CLI turn takes
+      4,326 ms in this sample, with three primary requests (engine, write,
+      presentation) plus one title request. First primary activity is at
+      2,635 ms; primary request sizes are 109,886–114,787 bytes. These requests
+      are necessary fixture operations, not a changed production query policy.
+
+      **Remaining concrete FAIL — OpenCode checkpoint bin links:** real npm
+      installation creates seven relative `.opencode/node_modules/.bin` links
+      to package executables (`download-msgpackr-prebuilds`, three
+      `node-gyp-build-optional-packages` commands, `node-which`, `uuid`, `yaml`).
+      Current private checkpoint v1 rejects every symlink, so capture fails
+      `native_recovery_symlink` before the offer is admitted. Neither removing
+      those files, disabling bin links nor reporting a package-free workflow
+      would establish exact recovery. A compatibility decision is pending:
+      extend runtime/shared validation only for relative OpenCode `.bin` links
+      whose targets are captured regular files inside that dependency tree,
+      retaining rejection of escaping, dangling, chained and directory links.
+      This requires both checkpoint readers to agree; it is not merely a fixture
+      change. No symlink acceptance was implemented while that decision was
+      pending. The local task and runtime-stability acceptance remain open.
+
+      **Bounded Kiro check:** installed 2.29.1 public `chat --help` exposes model
+      selection and explicit v2/v3 engine selection, but no local provider/base
+      URL option. The official model-selection, configuration and settings
+      references inspected on 2026-10-16 describe Kiro-managed model routing;
+      no supported deterministic v2 endpoint/input configuration was found.
+      Current documentation includes V3 behavior and is not evidence that a V3
+      option works in the pinned v2 ACP adapter. No internal mock-response/KAS
+      flags, alternate engine, credentials or paid calls were used. Kiro remains
+      **BLOCKED** for the missing supported deterministic v2 provider capability;
+      the existing production ACP tests and bounded installed inert-auth probe
+      remain meaningful, separate coverage.
 
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
