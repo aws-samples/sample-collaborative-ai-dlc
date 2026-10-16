@@ -65,6 +65,15 @@ import {
 } from '../shared/stage-loopback.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
+import {
+  activePlanUnits,
+  skeletonProblem,
+  finalizeUnitCompletion,
+  completionSections,
+  unitCompletion,
+  completionMessage,
+  unitPlanIdentity,
+} from '../shared/unit-completion.js';
 import { sdkTarget, stopSession as stopSharedSession } from '../shared/runtime-session.js';
 import {
   awaitEngineGate,
@@ -391,9 +400,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     return { ok: false, reason: 'not_a_start' };
   }
 
-  const meta = await ctx.step('load-meta', () =>
-    store.getExecution(executionId, { consistentRead: true }),
-  );
+  const meta = await ctx.step('load-meta', async () => {
+    const loaded = await store.getExecution(executionId, {
+      consistentRead: true,
+    });
+    // Version behavior in the existing first checkpoint. Old histories have no
+    // marker and retain their operation sequence; repair creates a new history.
+    return loaded ? { ...loaded, completionPolicyVersion: 1 } : null;
+  });
   if (!meta) return { ok: false, reason: 'execution_not_found' };
   const runtimeTarget = resolveRuntimeTarget(meta, RUNTIME_ARN());
   const stopIntentSession = (sessionId) => stopSession(sessionId, runtimeTarget);
@@ -1114,6 +1128,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       publishCheckpoint,
       ids: { projectId, intentId, executionId },
       runId: null, // stamped below once minted
+      completionPolicyVersion: meta.completionPolicyVersion ?? 0,
       intentBranch: meta.branch,
       cloneBase: {
         repos: meta.repos ?? [],
@@ -1510,7 +1525,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                       sectionIndex: fanoutSection.index,
                       unitPlan: unitPlanForGate,
                       sectionStages: fanoutSection.stages,
-                      skeleton: defaultSkeletonFor(unitPlanForGate),
+                      skeleton: defaultSkeletonFor(unitPlanForGate, {
+                        legacy: !meta.completionPolicyVersion,
+                      }),
                     }),
                   ]
                 : []),
@@ -1883,12 +1900,26 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   });
                   const effective = {
                     walkingSkeleton:
-                      overrides.walkingSkeleton ?? defaultSkeletonFor(unitPlanForGate),
+                      overrides.walkingSkeleton ??
+                      defaultSkeletonFor(unitPlanForGate, {
+                        legacy: !meta.completionPolicyVersion,
+                      }),
                     skipMatrix: overrides.skipMatrix ?? unitPlanForGate.skipMatrix ?? {},
                   };
+                  const problem = skeletonProblem(
+                    unitPlanForGate,
+                    effective.walkingSkeleton,
+                    fanoutSection.stages,
+                  );
+                  if (meta.completionPolicyVersion && problem) return { ...effective, problem };
                   try {
-                    await store.updateUnitPlanDecisions({ executionId, ...effective });
-                  } catch {
+                    await store.updateUnitPlanDecisions({
+                      executionId,
+                      ...effective,
+                      ...(meta.completionPolicyVersion ? { ifOrchestratorRunId: runId } : {}),
+                    });
+                  } catch (error) {
+                    if (meta.completionPolicyVersion) throw error;
                     /* promotion defaults stand when the patch write is lost */
                   }
                   if (overrides.rejected.length) {
@@ -1906,6 +1937,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                   return effective;
                 },
               );
+              if (decisions.problem)
+                return await fail('invalid_walking_skeleton', decisions.problem);
               await emitEvent(
                 ctx,
                 `fanout-approved-${stage.stageId}-${round}`,
@@ -2078,24 +2111,64 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // Terminal success — CAS on the ownership token: a retired run (relaunched
     // under a new runId while this one was still unwinding) exits quietly. The
     // verdict is the step result so a durable replay sees it too.
-    const ownedFinish = await ctx.step('finish-succeeded', async () => {
+    let ownedFinish;
+    if (meta.completionPolicyVersion >= 1) {
+      let completion;
       try {
-        await store.updateExecution({
-          executionId,
-          projectId,
-          status: 'SUCCEEDED',
-          startedAt: meta.startedAt,
-          completedAt: nowIso(),
-          failureReason: null,
-          failure: null,
-          ...(runId ? { ifOrchestratorRunId: runId } : {}),
-        });
-        return true;
-      } catch (e) {
-        if (e?.name === 'ConditionalCheckFailedException') return false;
-        throw e;
+        completion = await ctx.step('finish-completion-v1', () =>
+          finalizeUnitCompletion({
+            store,
+            executionId,
+            runId,
+            plan: planResult.plan,
+            expectedUnitPlanIdentity: sectionToolkit.completionUnitPlan
+              ? unitPlanIdentity(sectionToolkit.completionUnitPlan)
+              : null,
+          }),
+        );
+      } catch {
+        return fail(
+          'completion_unverified',
+          'Completion state could not be read or committed. Work is preserved; review diagnostics before retrying.',
+          null,
+          { fromStatus: 'RUNNING' },
+        );
       }
-    });
+      if (completion.state === 'retired') return { ok: false, reason: 'retired', intentId };
+      if (!['complete', 'partial'].includes(completion.state)) {
+        await emitEvent(
+          ctx,
+          'completion-failed-event-v2',
+          'v2.execution.failed',
+          completion.message,
+        );
+        return {
+          ok: false,
+          reason:
+            completion.state === 'unknown' ? 'completion_unverified' : 'completion_inconsistent',
+          intentId,
+        };
+      }
+      ownedFinish = true;
+    } else
+      ownedFinish = await ctx.step('finish-succeeded', async () => {
+        try {
+          await store.updateExecution({
+            executionId,
+            projectId,
+            status: 'SUCCEEDED',
+            startedAt: meta.startedAt,
+            completedAt: nowIso(),
+            failureReason: null,
+            failure: null,
+            ...(runId ? { ifOrchestratorRunId: runId } : {}),
+          });
+          return true;
+        } catch (e) {
+          if (e?.name === 'ConditionalCheckFailedException') return false;
+          throw e;
+        }
+      });
     if (!ownedFinish) {
       logger.info('retired run skipped terminal success write');
       return { ok: false, reason: 'retired', intentId };
@@ -2107,9 +2180,45 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // intent branch onto the base branch, via the source-control service (the
     // v1 unmerged-branch guard lives inside createPullRequest). PR problems
     // never un-succeed the run — every outcome is a loud timeline event. A
-    const prResults = await ctx.step('open-pr', async () =>
-      openIntentPrs({
-        openPr,
+    const prResults = await ctx.step('open-pr', async () => {
+      const verifyCompletion = async () => {
+        const records = await store.getCompletionRecords(executionId);
+        const receipt = records.meta?.completionValidation;
+        if (
+          records.meta?.orchestratorRunId !== runId ||
+          records.meta?.status !== 'SUCCEEDED' ||
+          receipt?.runId !== runId ||
+          !['complete', 'partial'].includes(receipt?.state) ||
+          receipt?.unitPlanIdentity !== unitPlanIdentity(records.unitPlan)
+        )
+          throw new Error(
+            'Execution ownership, plan or completion decision changed before publication',
+          );
+        const completion = unitCompletion(records, completionSections(planResult.plan));
+        if (!['complete', 'partial'].includes(completion.state))
+          throw new Error(completionMessage(completion));
+      };
+      if (meta.completionPolicyVersion >= 1) {
+        try {
+          await verifyCompletion();
+        } catch {
+          return [
+            {
+              eventType: 'v2.pr.failed',
+              summary:
+                'Final publication withheld: completion evidence is incomplete or unavailable. Work is preserved; review completion diagnostics.',
+            },
+          ];
+        }
+      }
+      return openIntentPrs({
+        openPr:
+          meta.completionPolicyVersion >= 1
+            ? async (input) => {
+                await verifyCompletion();
+                return openPr(input);
+              }
+            : openPr,
         comparePrBranches,
         store,
         meta,
@@ -2117,8 +2226,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         runId,
         applicationUrl,
         log: (m) => logger.info(m),
-      }),
-    );
+      });
+    });
     for (let i = 0; i < prResults.length; i++) {
       const r = prResults[i];
       await emitEvent(ctx, `pr-event-${i}`, r.eventType, r.summary);
@@ -2590,15 +2699,17 @@ const openIntentPrs = async ({
   // rows, or a pre-WP3 run, just omits the section).
   let unitLines = [];
   try {
-    const units = (await store.listUnits?.(executionId)) ?? [];
+    const allUnits = (await store.listUnits?.(executionId)) ?? [];
+    const unitPlan = await store.getUnitPlan?.(executionId);
+    const units = unitPlan ? activePlanUnits(unitPlan, allUnits) : allUnits;
     const unmerged = units.filter((u) => u.state && u.state !== 'MERGED');
     if (units.length) {
       unitLines = [
         '',
-        `Units: ${units.length} total, ${units.length - unmerged.length} merged.`,
+        `Units: ${units.length} total, ${units.length - unmerged.length} integrated into the intent branch.`,
         ...unmerged.map(
           (u) =>
-            `- ⚠️ unit \`${u.slug}\` NOT merged (${u.state}${u.failureReason ? `: ${u.failureReason}` : ''}) — its branch is preserved`,
+            `- ⚠️ unit \`${u.slug}\` NOT integrated (${u.state}${u.failureReason ? `: ${u.failureReason}` : ''}) — its branch is preserved`,
         ),
       ];
     }

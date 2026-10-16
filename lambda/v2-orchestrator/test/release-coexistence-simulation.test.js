@@ -19,7 +19,7 @@ import {
   methodologyReleasePinFromManifest,
 } from '../../shared/release-resolver.js';
 import { loadExecutionPlan } from '../../shared/v2-workflow-plan.js';
-import { __durableHandler } from '../index.js';
+import { __durableHandler } from './fixtures/completion-handler.js';
 
 vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
 

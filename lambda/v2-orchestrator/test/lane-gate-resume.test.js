@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { __durableHandler } from '../index.js';
+import { __durableHandler } from './fixtures/completion-handler.js';
 
 const makeCtx = () => {
   const stageCallbacks = new Map();

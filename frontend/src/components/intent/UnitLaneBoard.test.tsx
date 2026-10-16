@@ -95,7 +95,7 @@ describe('UnitLaneBoardView', () => {
     // (>=1) rather than uniqueness; state labels are unique per fixture.
     expect(screen.getAllByText('auth').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('reporting')).toBeInTheDocument();
-    expect(screen.getByText('Merged')).toBeInTheDocument();
+    expect(screen.getByText('Integrated')).toBeInTheDocument();
     expect(screen.getByText('Building')).toBeInTheDocument();
     expect(screen.getByText('Blocked')).toBeInTheDocument();
     expect(screen.getByText('Pending')).toBeInTheDocument();
@@ -115,7 +115,7 @@ describe('UnitLaneBoardView', () => {
 
   it('summarizes only the states that are present', () => {
     renderView();
-    expect(screen.getByText('1 merged')).toBeInTheDocument();
+    expect(screen.getByText('1 integrated')).toBeInTheDocument();
     expect(screen.getByText('1 building')).toBeInTheDocument();
     expect(screen.getByText('1 blocked')).toBeInTheDocument();
     expect(screen.getByText('1 pending')).toBeInTheDocument();
@@ -137,7 +137,7 @@ describe('UnitLaneBoardView', () => {
     expect(screen.queryByText(/failed/)).not.toBeInTheDocument();
     expect(screen.queryByText('legacy')).not.toBeInTheDocument();
     // real units still counted
-    expect(screen.getByText('1 merged')).toBeInTheDocument();
+    expect(screen.getByText('1 integrated')).toBeInTheDocument();
   });
 
   it('renders the live stream only when a running stage instance is provided', () => {

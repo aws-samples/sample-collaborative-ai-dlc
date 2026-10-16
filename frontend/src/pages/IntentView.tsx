@@ -342,6 +342,8 @@ export default function IntentView() {
   }
 
   const intent = detail.intent;
+  const completion = detail.unitCompletion;
+  const terminalCompletion = intent.status === 'SUCCEEDED' ? completion?.state : null;
   const laneWaits = deriveLaneWaits(detail.stages, gates);
   const recoveryWaits = Object.values(laneWaits).filter((wait) => wait.kind === 'recovery');
   const needsLaneRepair =
@@ -417,7 +419,13 @@ export default function IntentView() {
           </h1>
           {TERMINAL_STATUSES.has(intent.status) && (
             <Badge variant="outline" className="text-[10px] shrink-0">
-              {intent.status}
+              {terminalCompletion === 'incomplete'
+                ? 'Incomplete work'
+                : terminalCompletion === 'unknown'
+                  ? 'Completion unverified'
+                  : terminalCompletion === 'partial'
+                    ? 'Partial delivery'
+                    : intent.status}
             </Badge>
           )}
           <MethodologyReleaseBadge release={intent.methodologyRelease ?? null} />
@@ -576,6 +584,33 @@ export default function IntentView() {
           >
             <X className="h-4 w-4" />
           </Button>
+        </div>
+      )}
+
+      {terminalCompletion && terminalCompletion !== 'complete' && (
+        <div className="rounded border border-agent-error/30 px-3 py-3 text-sm" role="status">
+          <p>
+            {terminalCompletion === 'partial'
+              ? 'Partial delivery was explicitly accepted. Integrated work and the recorded omissions are preserved.'
+              : terminalCompletion === 'unknown'
+                ? 'Completion could not be verified. Review the recorded work and available evidence before publishing.'
+                : 'The recorded success has unfinished current-plan work. Review the remaining units before publishing.'}
+          </p>
+          <p>
+            {completion?.integrated} of {completion?.total} units verified integrated;{' '}
+            {completion?.skipped} explicitly omitted.
+          </p>
+          {completion?.unresolved.slice(0, 12).map((unit) => (
+            <p key={`${unit.sectionIndex}/${unit.slug}`}>
+              Section {unit.sectionIndex}/{unit.slug}: {unit.reason ?? unit.state}
+            </p>
+          ))}
+          {terminalCompletion !== 'partial' && (
+            <p>
+              Automatic continuation of finished incomplete intents is not supported. Ordinary
+              rewind reruns the affected work.
+            </p>
+          )}
         </div>
       )}
 

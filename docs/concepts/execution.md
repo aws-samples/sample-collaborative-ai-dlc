@@ -69,6 +69,24 @@ Git is deterministic and owned by the engine — **the agent never runs git and 
 
 For PR-per-unit delivery, DynamoDB is scheduling truth. A unit is complete only after every changed repository confirms the exact ready head is on the intent branch. A partial multi-repository merge preserves merged work, blocks dependents, and enters halt-and-ask.
 
+The lane board calls this outcome **Integrated**. Its stored identifier remains
+`MERGED`; it does not mean that the final intent-to-base PR has merged. Counts
+use the active unit plan; retained rows from earlier plans remain history.
+
+A walking skeleton must be a dependency-free unit in the current DAG. A missing
+choice receives a dependency-free default before approval. Re-promotion retains
+valid captured choices. If the regenerated DAG renames that unit or gives it
+dependencies, promotion records the change and offers a new dependency-free
+default at the normal fan-out approval. Original answers remain in history.
+Execution still rejects invalid choices in an already approved plan. A workflow with `skeleton: off`
+still runs all units, without the solo-first ceremony.
+
+Shared stages and successful completion require every active-plan lane to be
+integrated or explicitly omitted by a recorded human skip. Blocked-only work
+still enters halt-and-ask. Retry preserves integration; skip also omits the
+unintegrated dependent closure; abort fails the run. Partial delivery is presented
+separately from complete delivery.
+
 Provider comments never launch agents by themselves. A project member selects comments in the intent's review drawer; the API refetches those comments with fresh credentials, rejects bot/system comments, and queues a bounded, audited feedback batch. The lane revisits its last successful stage, runs its normal sensors, commits and pushes the revision, and posts a summary without resolving provider threads.
 
 ## Human gates, park and resume

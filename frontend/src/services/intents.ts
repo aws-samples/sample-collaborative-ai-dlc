@@ -797,6 +797,20 @@ export interface IntentDetail {
   /** Composer sessions (scope/grid proposals + authoritative validation). */
   composes?: ComposeSession[];
   unitPlan?: IntentUnitPlan | null;
+  unitCompletion?: {
+    state: 'complete' | 'partial' | 'incomplete' | 'unknown' | 'aborted';
+    reason?: string | null;
+    total: number;
+    integrated: number;
+    skipped: number;
+    unresolved: {
+      sectionIndex: number;
+      slug: string;
+      state: UnitState | 'UNKNOWN' | 'MISSING';
+      reason?: string;
+    }[];
+    legacyPartial: boolean;
+  } | null;
   units?: IntentUnit[];
   unitPrs?: IntentUnitPr[];
   feedbackBatches?: IntentFeedbackBatch[];
