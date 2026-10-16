@@ -1137,6 +1137,9 @@ resource "aws_iam_role_policy" "source_control" {
         Action = ["ssm:GetParameter"]
         Resource = compact([
           var.github_app_config_param_arn,
+          # The platform CodeCommit connection, read at bind time to resolve
+          # the shared roleArn (the externalId comes from the env var).
+          var.codecommit_connection_param_arn,
         ])
       },
       {
@@ -1206,6 +1209,8 @@ module "source_control_lambda" {
     GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
     GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
     BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
+    CODECOMMIT_EXTERNAL_ID             = var.codecommit_external_id
+    CODECOMMIT_CONNECTION_PARAM        = var.codecommit_connection_param_name
     ENVIRONMENT                        = var.environment
     CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
   }
@@ -1342,19 +1347,22 @@ module "credential_broker_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
-    AWS_SDK_UA_APP_ID                   = var.aws_sdk_ua_app_id
-    POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
-    POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
-    POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
-    V2_PROCESS_TABLE                    = var.v2_executions_table_name
-    SOURCE_CONTROL_BINDINGS_TABLE       = var.source_control_bindings_table_name
-    GIT_CONNECTIONS_TABLE               = var.git_connections_table_name
-    GIT_PROVIDER_CONNECTIONS_TABLE      = var.git_provider_connections_table_name
-    GITHUB_APP_CONFIG_PARAM             = var.github_app_config_param_name
-    GITHUB_APP_PRIVATE_KEY_SECRET_NAME  = var.github_app_private_key_secret_name
-    GITLAB_OAUTH_SECRET_NAME            = var.gitlab_oauth_secret_name
-    GITLAB_REDIRECT_URI                 = var.gitlab_redirect_uri
-    BITBUCKET_OAUTH_SECRET_NAME         = var.bitbucket_oauth_secret_name
+    AWS_SDK_UA_APP_ID                  = var.aws_sdk_ua_app_id
+    POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
+    POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
+    POWERTOOLS_LOGGER_LOG_EVENT        = tostring(var.powertools_log_event)
+    V2_PROCESS_TABLE                   = var.v2_executions_table_name
+    SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
+    GIT_CONNECTIONS_TABLE              = var.git_connections_table_name
+    GIT_PROVIDER_CONNECTIONS_TABLE     = var.git_provider_connections_table_name
+    GITHUB_APP_CONFIG_PARAM            = var.github_app_config_param_name
+    GITHUB_APP_PRIVATE_KEY_SECRET_NAME = var.github_app_private_key_secret_name
+    GITLAB_OAUTH_SECRET_NAME           = var.gitlab_oauth_secret_name
+    GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
+    BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
+    # Recognises a platform binding (binding.externalId === this) so a refused
+    # platform role does not invalidate it (#531 C5). No SSM read needed here.
+    CODECOMMIT_EXTERNAL_ID              = var.codecommit_external_id
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
   }
@@ -2154,11 +2162,13 @@ resource "aws_iam_role_policy" "codecommit_connector" {
         }
       },
       {
-        # The caller's CodeCommit connection (platform-issued external ID),
-        # get-or-create only.
+        # The platform CodeCommit connection ({roleArn, region}). The admin
+        # route reads it to render the card and writes it on "Test & save";
+        # the repo list and status read it. Resource-scoped to this one
+        # parameter (least privilege).
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
-        Resource = [var.git_provider_connections_table_arn]
+        Action   = ["ssm:GetParameter", "ssm:PutParameter"]
+        Resource = [var.codecommit_connection_param_arn]
       },
     ]
   })
@@ -2212,7 +2222,8 @@ module "codecommit_lambda" {
     POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
     CODECOMMIT_PLATFORM_PRINCIPALS = local.codecommit_platform_principals
-    GIT_PROVIDER_CONNECTIONS_TABLE = var.git_provider_connections_table_name
+    CODECOMMIT_EXTERNAL_ID         = var.codecommit_external_id
+    CODECOMMIT_CONNECTION_PARAM    = var.codecommit_connection_param_name
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
   }
