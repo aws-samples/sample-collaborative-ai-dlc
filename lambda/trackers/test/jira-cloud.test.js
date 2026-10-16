@@ -440,6 +440,137 @@ describe('jira-cloud — provider methods', () => {
   });
 
   describe('getIssue', () => {
+    it('resolves each media filename by identity rather than attachment order', async () => {
+      const description = {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              { type: 'text', text: 'Read ' },
+              { type: 'mediaInline', attrs: { id: 'media-brief', type: 'file' } },
+              { type: 'text', text: ' first.' },
+            ],
+          },
+          { type: 'mediaSingle', content: [{ type: 'media', attrs: { id: 'media-results' } }] },
+          { type: 'mediaSingle', content: [{ type: 'media', attrs: { id: 'media-search' } }] },
+        ],
+      };
+      const cancel = vi.fn().mockResolvedValue(undefined);
+      fetchMock.mockResolvedValueOnce(
+        okResponse(
+          issueFixture({
+            fields: {
+              description,
+              attachment: [
+                { id: '101', filename: 'search.png' },
+                { id: '102', filename: 'brief.pdf' },
+                { id: '103', filename: 'results.png' },
+              ],
+            },
+          }),
+        ),
+      );
+      for (const mediaId of ['media-search', 'media-brief', 'media-results']) {
+        fetchMock.mockResolvedValueOnce({
+          ...errResponse(
+            303,
+            {},
+            { location: `https://api.media.atlassian.com/file/${mediaId}/binary?token=temporary` },
+          ),
+          body: { cancel },
+        });
+      }
+      const issue = await jiraProvider.getIssue(ctx(), 'PROJ', 'PROJ-42');
+      expect(issue.body).toBe('Read brief.pdf first.\n\nresults.png\n\nsearch.png');
+      expect(cancel).toHaveBeenCalledTimes(3);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      for (const [url, options] of fetchMock.mock.calls.slice(1)) {
+        expect(url).toMatch(
+          /^https:\/\/api\.atlassian\.com\/ex\/jira\/cloud-uuid-1\/rest\/api\/3\/attachment\/content\/10[123]\?redirect=true$/,
+        );
+        expect(options).toMatchObject({ redirect: 'manual', headers: { Range: 'bytes=0-0' } });
+      }
+    });
+
+    it.each([
+      [303, 'https://api.media.atlassian.com/file/prefix-media-brief/binary'],
+      [303, 'https://api.media.atlassian.com/file/other/binary?name=media-brief'],
+      [303, undefined],
+      [200, undefined],
+      [403, undefined],
+    ])(
+      'keeps an unresolved placeholder for a %s response without an exact ID match',
+      async (status, location) => {
+        const cancel = vi.fn().mockResolvedValue(undefined);
+        fetchMock
+          .mockResolvedValueOnce(
+            okResponse(
+              issueFixture({
+                fields: {
+                  description: {
+                    type: 'doc',
+                    content: [
+                      {
+                        type: 'paragraph',
+                        content: [{ type: 'text', text: 'Keep this description.' }],
+                      },
+                      {
+                        type: 'mediaSingle',
+                        content: [{ type: 'media', attrs: { id: 'media-brief' } }],
+                      },
+                    ],
+                  },
+                  attachment: [{ id: '101', filename: 'unverified.pdf' }],
+                },
+              }),
+            ),
+          )
+          .mockResolvedValueOnce({
+            ...errResponse(status, {}, location ? { location } : {}),
+            body: { cancel },
+          });
+        const issue = await jiraProvider.getIssue(ctx(), 'PROJ', 'PROJ-42');
+        expect(issue.body).toBe('Keep this description.\n\n> _Unsupported Jira block: media_');
+        expect(cancel).toHaveBeenCalledOnce();
+      },
+    );
+
+    it('does not assign an ambiguous filename to a media ID', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse(
+            issueFixture({
+              fields: {
+                description: {
+                  type: 'doc',
+                  content: [
+                    {
+                      type: 'paragraph',
+                      content: [{ type: 'mediaInline', attrs: { id: 'shared-media' } }],
+                    },
+                  ],
+                },
+                attachment: [
+                  { id: '101', filename: 'one.pdf' },
+                  { id: '102', filename: 'two.pdf' },
+                ],
+              },
+            }),
+          ),
+        )
+        .mockResolvedValue(
+          errResponse(
+            303,
+            {},
+            { location: 'https://api.media.atlassian.com/file/shared-media/binary' },
+          ),
+        );
+      expect((await jiraProvider.getIssue(ctx(), 'PROJ', 'PROJ-42')).body).toBe(
+        '> _Unsupported Jira block: mediaInline_',
+      );
+    });
+
     it('imports native Jira files with the OAuth attachment API', async () => {
       fetchMock
         .mockResolvedValueOnce(
@@ -495,6 +626,45 @@ describe('jira-cloud — provider methods', () => {
   });
 
   describe('getIssueDiscussion', () => {
+    it('resolves filenames inside comments without replacing their surrounding text', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({
+            comments: [
+              {
+                id: '1001',
+                body: {
+                  type: 'doc',
+                  content: [
+                    {
+                      type: 'paragraph',
+                      content: [
+                        { type: 'text', text: 'Use ' },
+                        { type: 'mediaInline', attrs: { id: 'comment-media' } },
+                        { type: 'text', text: ' as the reference.' },
+                      ],
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(
+          okResponse({ fields: { attachment: [{ id: '101', filename: 'reference.pdf' }] } }),
+        )
+        .mockResolvedValueOnce(
+          errResponse(
+            303,
+            {},
+            { location: 'https://api.media.atlassian.com/file/comment-media/binary' },
+          ),
+        );
+      const comments = await jiraProvider.getIssueDiscussion(ctx(), 'PROJ', 'PROJ-42');
+      expect(comments[0].body).toBe('Use reference.pdf as the reference.');
+      expect(fetchMock.mock.calls[1][0]).toContain('/issue/PROJ-42?fields=attachment');
+    });
+
     it('maps comments and converts ADF body to markdown', async () => {
       fetchMock.mockResolvedValueOnce(
         okResponse({

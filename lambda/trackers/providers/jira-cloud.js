@@ -4,6 +4,7 @@ import { GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import { adfToMarkdown } from './adf-to-markdown.js';
 import { ProviderError } from './errors.js';
 import { transferTrackerAttachment } from '../../shared/tracker-attachments.js';
+import { mapWithConcurrency } from '../../shared/concurrency.js';
 
 export { ProviderError };
 
@@ -334,12 +335,72 @@ const jiraFetch = async (ctx, path, init = {}) => {
 // Mappers
 // ---------------------------------------------------------------------------
 
+const resolveMediaFilenames = async (ctx, resourceId, documents, attachments) => {
+  const mediaIds = new Set();
+  const visit = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if ((node.type === 'media' || node.type === 'mediaInline') && node.attrs?.id) {
+      mediaIds.add(node.attrs.id);
+    }
+    if (Array.isArray(node.content)) node.content.forEach(visit);
+  };
+  documents.forEach(visit);
+  const filenames = new Map();
+  if (!mediaIds.size) return filenames;
+
+  // Jira attachment IDs differ from ADF Media Services IDs. Inspect the
+  // documented content redirect without following it or downloading the file.
+  // Only an exact media ID in the returned path establishes a match; a missing
+  // or ambiguous mapping leaves the renderer's placeholder intact.
+  const signal = AbortSignal.timeout(10_000);
+  try {
+    if (!attachments) {
+      const response = await jiraFetch(
+        ctx,
+        `/rest/api/3/issue/${encodeURIComponent(resourceId)}?fields=attachment`,
+        { signal },
+      );
+      if (!response.ok) return filenames;
+      attachments = (await response.json()).fields?.attachment;
+    }
+    await mapWithConcurrency(Array.isArray(attachments) ? attachments : [], 4, async (file) => {
+      if (signal.aborted || !file.id || typeof file.filename !== 'string') return;
+      let response;
+      try {
+        response = await jiraFetch(
+          ctx,
+          `/rest/api/3/attachment/content/${encodeURIComponent(file.id)}?redirect=true`,
+          { redirect: 'manual', signal, headers: { Accept: '*/*', Range: 'bytes=0-0' } },
+        );
+        if (response.status !== 303) return;
+        const location = response.headers.get('location');
+        if (!location) return;
+        const segments = new URL(location, ctx.baseUrl).pathname.split('/').map(decodeURIComponent);
+        for (const id of mediaIds) {
+          if (!segments.includes(id)) continue;
+          filenames.set(
+            id,
+            filenames.has(id) && filenames.get(id) !== file.filename ? null : file.filename,
+          );
+        }
+      } catch {
+        // Filename enrichment must not prevent importing the issue's text.
+      } finally {
+        await response?.body?.cancel().catch(() => {});
+      }
+    });
+  } catch {
+    // Attachment metadata may be unavailable while the issue remains readable.
+  }
+  return filenames;
+};
+
 const stateFromStatus = (fields) => {
   const cat = fields?.status?.statusCategory?.key;
   return cat === 'done' ? 'closed' : 'open';
 };
 
-const mapIssueToTrackerIssue = (i, siteHost) => {
+const mapIssueToTrackerIssue = (i, siteHost, mediaFilenames) => {
   const fields = i.fields || {};
   const reporter = fields.reporter || {};
   const url = `https://${siteHost}/browse/${i.key}`;
@@ -355,7 +416,7 @@ const mapIssueToTrackerIssue = (i, siteHost) => {
     entityType: issueType.name || null,
     entityIconUrl: issueType.iconUrl || null,
     title: fields.summary || '',
-    body: fields.description ? adfToMarkdown(fields.description) : null,
+    body: fields.description ? adfToMarkdown(fields.description, mediaFilenames) : null,
     state: stateFromStatus(fields),
     labels: Array.isArray(fields.labels) ? fields.labels.map((name) => ({ name })) : [],
     author: {
@@ -367,13 +428,13 @@ const mapIssueToTrackerIssue = (i, siteHost) => {
   };
 };
 
-const mapCommentToTrackerComment = (c) => ({
+const mapCommentToTrackerComment = (c, mediaFilenames) => ({
   id: String(c.id),
   author: {
     handle: c.author?.displayName || c.author?.accountId || '',
     avatarUrl: c.author?.avatarUrls?.['48x48'] || '',
   },
-  body: c.body ? adfToMarkdown(c.body) : '',
+  body: c.body ? adfToMarkdown(c.body, mediaFilenames) : '',
   createdAt: c.created || '',
   updatedAt: c.updated || '',
 });
@@ -556,7 +617,13 @@ const getIssue = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId) =
   if (!r.ok) {
     throw new ProviderError(r.status, data.errorMessages?.[0] || 'Failed to fetch Jira issue');
   }
-  return mapIssueToTrackerIssue(data, ctx.siteHost);
+  const mediaFilenames = await resolveMediaFilenames(
+    ctx,
+    resourceId,
+    [data.fields?.description],
+    data.fields?.attachment || [],
+  );
+  return mapIssueToTrackerIssue(data, ctx.siteHost, mediaFilenames);
 };
 
 const getIssueDiscussion = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId) => {
@@ -572,7 +639,12 @@ const getIssueDiscussion = async ({ ddb, ssm, secrets, userId }, projectKey, res
     throw new ProviderError(r.status, data.errorMessages?.[0] || 'Failed to fetch Jira comments');
   }
   const comments = Array.isArray(data.comments) ? data.comments : [];
-  return comments.map(mapCommentToTrackerComment);
+  const mediaFilenames = await resolveMediaFilenames(
+    ctx,
+    resourceId,
+    comments.map((c) => c.body),
+  );
+  return comments.map((comment) => mapCommentToTrackerComment(comment, mediaFilenames));
 };
 
 const addIssueComment = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId, body) => {
