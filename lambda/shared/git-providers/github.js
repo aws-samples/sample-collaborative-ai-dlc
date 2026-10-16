@@ -324,9 +324,13 @@ const listIssues = async (ctx, repoId, options = {}) => {
   };
 };
 
-const getIssue = async (ctx, repoId, issueNumber) => {
+const getIssue = async (ctx, repoId, issueNumber, { includeRenderedBody = false } = {}) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  const res = await ghFetch(ctx, `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}`);
+  const res = await ghFetch(
+    ctx,
+    `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}`,
+    includeRenderedBody ? { headers: { Accept: 'application/vnd.github.full+json' } } : {},
+  );
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data?.pull_request) {
     throw new ProviderError(
@@ -334,7 +338,10 @@ const getIssue = async (ctx, repoId, issueNumber) => {
       data?.message || (data?.pull_request ? 'Not found' : 'Failed to fetch issue'),
     );
   }
-  return mapIssue(data);
+  return {
+    ...mapIssue(data),
+    ...(includeRenderedBody ? { bodyHtml: data.body_html || '' } : {}),
+  };
 };
 
 const listIssueComments = async (ctx, repoId, issueNumber) => {
@@ -351,11 +358,45 @@ const listIssueComments = async (ctx, repoId, issueNumber) => {
   return Array.isArray(data) ? data.map(mapIssueDiscussionComment) : [];
 };
 
+// App installation tokens can read a private issue but receive 404 for its raw
+// github.com/user-attachments image URL. The full issue/comment representation
+// contains a short-lived signed image URL; match its asset UUID, never its order.
+const renderedImageUrl = (attachment, documents) => {
+  const source = new URL(attachment.url);
+  if (source.hostname !== 'github.com' || !source.pathname.includes('/assets/')) return null;
+  const assetId = source.pathname.split('/').pop();
+  if (!/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(assetId)) return null;
+  for (const document of documents) {
+    for (const match of (document.bodyHtml || '').matchAll(/<img\b[^>]*?\bsrc="([^"]+)"/gi)) {
+      try {
+        const url = new URL(match[1].replaceAll('&amp;', '&'));
+        const renderedId = url.pathname.match(
+          /-([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\.[a-z0-9]+$/i,
+        )?.[1];
+        if (
+          url.protocol === 'https:' &&
+          url.hostname === 'private-user-images.githubusercontent.com' &&
+          !url.username &&
+          !url.password &&
+          !url.port &&
+          renderedId?.toLowerCase() === assetId.toLowerCase()
+        ) {
+          return url.href;
+        }
+      } catch {
+        // Ignore malformed references without preventing other file imports.
+      }
+    }
+  }
+  return null;
+};
+
 const issueAttachments = async (ctx, repoId, args) => {
   if (!/^[1-9]\d*$/.test(String(args.number))) {
     throw new ProviderError(400, 'Invalid issue number');
   }
-  const issue = await getIssue(ctx, repoId, args.number);
+  const includeRenderedBody = Boolean(args.attachmentId);
+  const issue = await getIssue(ctx, repoId, args.number, { includeRenderedBody });
   const { owner, repo } = splitOwnerRepo(repoId);
   const comments = [];
   let page = 1;
@@ -363,11 +404,19 @@ const issueAttachments = async (ctx, repoId, args) => {
     const response = await ghFetch(
       ctx,
       `${API_BASE}/repos/${owner}/${repo}/issues/${args.number}/comments?per_page=100&page=${page}`,
-      { signal: AbortSignal.timeout(10_000) },
+      {
+        signal: AbortSignal.timeout(10_000),
+        ...(includeRenderedBody ? { headers: { Accept: 'application/vnd.github.full+json' } } : {}),
+      },
     );
     if (!response.ok)
       throw new ProviderError(response.status, 'Could not read issue attachments in comments');
-    comments.push(...(await response.json()).map(mapIssueDiscussionComment));
+    comments.push(
+      ...(await response.json()).map((comment) => ({
+        ...mapIssueDiscussionComment(comment),
+        ...(includeRenderedBody ? { bodyHtml: comment.body_html || '' } : {}),
+      })),
+    );
     if (!response.headers.get('link')?.includes('rel="next"')) break;
     page += 1;
   }
@@ -381,15 +430,16 @@ const issueAttachments = async (ctx, repoId, args) => {
   const attachment = attachments.find((item) => item.id === args.attachmentId);
   if (!attachment)
     return { status: 'failed', reason: 'The attachment is no longer referenced by the issue.' };
+  const downloadUrl = renderedImageUrl(attachment, [issue, ...comments]) || attachment.url;
   return transferTrackerAttachment({
     attachment,
     uploadUrl: args.uploadUrl,
     maxBytes: args.maxBytes,
     fetchImpl: ctx.fetchImpl || fetch,
     request: (options) =>
-      (ctx.fetchImpl || fetch)(attachment.url, {
+      (ctx.fetchImpl || fetch)(downloadUrl, {
         ...options,
-        ...(new URL(attachment.url).hostname === 'github.com'
+        ...(new URL(downloadUrl).hostname === 'github.com'
           ? { headers: { Authorization: `Bearer ${ctx.token}` } }
           : {}),
       }),
@@ -397,6 +447,8 @@ const issueAttachments = async (ctx, repoId, args) => {
       'github.com',
       'user-images.githubusercontent.com',
       'private-user-images.githubusercontent.com',
+      // Observed redirect target for an authenticated github.com/user-attachments asset.
+      'github-production-user-asset-6210df.s3.amazonaws.com',
     ],
   });
 };
