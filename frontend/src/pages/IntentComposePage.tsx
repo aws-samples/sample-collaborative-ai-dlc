@@ -60,6 +60,9 @@ const ATTACHMENT_TYPES: Record<string, string> = {
   md: 'text/markdown',
   csv: 'text/csv',
   html: 'text/html',
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   png: 'image/png',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
@@ -206,8 +209,8 @@ function IntentComposePageContent() {
     if (!projectId || !intentId || !draftReady || !files?.length) return;
     setAttachmentError(null);
     const selected = [...files];
-    if (attachments.length + selected.length > 5) {
-      setAttachmentError('Attach up to five files.');
+    if (attachments.length + selected.length > 50) {
+      setAttachmentError('Attach up to 50 files.');
       return;
     }
     const invalid = selected.find(
@@ -666,7 +669,7 @@ function IntentComposePageContent() {
                 type="file"
                 className="hidden"
                 data-testid="attachment-picker"
-                accept=".txt,.md,.csv,.html,.png,.jpg,.jpeg,.webp,.svg"
+                accept=".txt,.md,.csv,.html,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.svg"
                 multiple
                 disabled={!draftReady || starting || uploadProgress !== null}
                 onChange={(event) => handleAttachmentPick(event.target.files)}
@@ -676,7 +679,7 @@ function IntentComposePageContent() {
                 variant="outline"
                 size="sm"
                 disabled={
-                  !draftReady || starting || uploadProgress !== null || attachments.length >= 5
+                  !draftReady || starting || uploadProgress !== null || attachments.length >= 50
                 }
                 onClick={() => attachmentInput.current?.click()}
               >
@@ -684,6 +687,10 @@ function IntentComposePageContent() {
                 Attach files
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              PDF, DOCX, XLSX, text, Markdown, CSV, HTML, or images (PNG, JPEG, WebP, SVG). Up to 50
+              files, 5 MB each, 25 MB total.
+            </p>
             {uploadProgress !== null && (
               <div
                 className="h-1.5 overflow-hidden rounded bg-muted"

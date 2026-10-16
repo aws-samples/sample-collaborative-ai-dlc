@@ -38,6 +38,7 @@ const compose = vi.fn();
 const listComposes = vi.fn();
 const composeReportUpload = vi.fn();
 const attachments = vi.fn();
+const attachmentUploadUrls = vi.fn();
 vi.mock('@/services/intents', () => ({
   intentsService: {
     get: (...a: unknown[]) => get(...a),
@@ -47,6 +48,7 @@ vi.mock('@/services/intents', () => ({
     listComposes: (...a: unknown[]) => listComposes(...a),
     composeReportUpload: (...a: unknown[]) => composeReportUpload(...a),
     attachments: (...a: unknown[]) => attachments(...a),
+    attachmentUploadUrls: (...a: unknown[]) => attachmentUploadUrls(...a),
   },
 }));
 
@@ -168,6 +170,7 @@ describe('IntentComposePage', () => {
     listComposes.mockReset().mockResolvedValue({ composes: [] });
     composeReportUpload.mockReset();
     attachments.mockReset().mockResolvedValue({ attachments: [], attachmentRevision: 0 });
+    attachmentUploadUrls.mockReset();
     getProjectCapabilities.mockReset().mockResolvedValue({
       available: ['kiro', 'claude'],
       runtimeClis: [
@@ -249,6 +252,112 @@ describe('IntentComposePage', () => {
     validateGrid.mockReset();
     useProjectCache.mockReset();
     useProjectCache.mockReturnValue({ project: baseProject(), loading: false });
+  });
+
+  it('uploads PDF, DOCX, and XLSX originals to reach the 50-file limit', async () => {
+    const existing = Array.from({ length: 47 }, (_, index) => ({
+      attachmentId: `existing-${index}`,
+      filename: `notes-${index}.md`,
+      mimeType: 'text/markdown',
+      size: 1,
+    }));
+    get.mockResolvedValue(draftIntent({ attachments: existing }));
+    const documents = [
+      { filename: 'spec.PDF', mimeType: 'application/pdf' },
+      {
+        filename: 'brief.docx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      },
+      {
+        filename: 'budget.xlsx',
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      },
+    ];
+    // Browsers may omit the MIME type; the filename determines the upload descriptor.
+    const files = documents.map(
+      ({ filename }) => new File([new Uint8Array([0, 128, 255])], filename),
+    );
+    const uploads = documents.map((document, index) => ({
+      attachmentId: `a${index}`,
+      url: `https://uploads.example.com/${index}`,
+      fields: { key: `staging/${index}`, 'Content-Type': document.mimeType },
+    }));
+    attachmentUploadUrls.mockResolvedValue({ uploads });
+    attachments.mockResolvedValue({
+      attachments: [
+        ...existing,
+        ...documents.map((document, index) => ({
+          ...document,
+          attachmentId: uploads[index].attachmentId,
+          size: files[index].size,
+        })),
+      ],
+      attachmentRevision: 1,
+    });
+    const open = vi.spyOn(XMLHttpRequest.prototype, 'open').mockImplementation(() => {});
+    const status = vi.spyOn(XMLHttpRequest.prototype, 'status', 'get').mockReturnValue(204);
+    const send = vi.spyOn(XMLHttpRequest.prototype, 'send').mockImplementation(function (
+      this: XMLHttpRequest,
+    ) {
+      this.dispatchEvent(new ProgressEvent('load'));
+    });
+    try {
+      const user = userEvent.setup();
+      renderPage();
+      await user.upload(await screen.findByTestId('attachment-picker'), files);
+
+      await waitFor(() => expect(screen.getByTestId('attachment-list').children).toHaveLength(50));
+      expect(attachmentUploadUrls).toHaveBeenCalledWith(
+        'p1',
+        'i1',
+        documents.map((document, index) => ({ ...document, size: files[index].size })),
+      );
+      for (const [index, file] of files.entries()) {
+        expect(open).toHaveBeenNthCalledWith(index + 1, 'POST', uploads[index].url);
+        const form = send.mock.calls[index][0] as FormData;
+        expect(form.get('file')).toBe(file);
+        expect(form.get('Content-Type')).toBe(documents[index].mimeType);
+        expect(screen.getByText(file.name)).toBeInTheDocument();
+      }
+      expect(screen.queryByTestId('attachment-progress')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Attach files' })).toBeDisabled();
+    } finally {
+      open.mockRestore();
+      status.mockRestore();
+      send.mockRestore();
+    }
+  });
+
+  it.each([
+    {
+      name: 'an oversized PDF',
+      files: [new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'large.pdf')],
+      error: 'large.pdf is unsupported or larger than 5 MB.',
+    },
+    {
+      name: 'more than 50 documents',
+      files: Array.from({ length: 51 }, (_, index) => new File(['pdf'], `${index}.pdf`)),
+      error: 'Attach up to 50 files.',
+    },
+    {
+      name: 'documents exceeding 25 MB combined',
+      files: Array.from(
+        { length: 6 },
+        (_, index) => new File([new Uint8Array(5 * 1024 * 1024)], `${index}.pdf`),
+      ),
+      error: 'Attachments cannot exceed 25 MB in total.',
+    },
+    {
+      name: 'a macro-enabled document',
+      files: [new File(['docm'], 'macros.docm')],
+      error: 'macros.docm is unsupported or larger than 5 MB.',
+    },
+  ])('rejects $name before requesting uploads', async ({ files, error }) => {
+    const user = userEvent.setup({ applyAccept: false });
+    renderPage();
+    await user.upload(await screen.findByTestId('attachment-picker'), files);
+    expect(await screen.findByText(error)).toBeInTheDocument();
+    expect(attachmentUploadUrls).not.toHaveBeenCalled();
   });
 
   it('renders the exact stage/gate counts from the preview summary', async () => {

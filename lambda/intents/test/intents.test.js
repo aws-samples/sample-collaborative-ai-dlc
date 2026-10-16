@@ -638,6 +638,89 @@ const createIntent = async (
   return res;
 };
 
+describe('POST /projects/{id}/intents/{intentId}/attachments/upload', () => {
+  const documentTypes = [
+    ['pdf', 'application/pdf'],
+    ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ];
+  const documents = (sizes) =>
+    sizes.map((size, index) => {
+      const [extension, mimeType] = documentTypes[index % documentTypes.length];
+      return { filename: `reference-${index}.${extension}`, mimeType, size };
+    });
+  const upload = (sub, projectId, intentId, attachments) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/attachments/upload`,
+      pathParameters: { projectId, intentId },
+      body: JSON.stringify({ attachments }),
+      ...claims(sub),
+    });
+
+  it('accepts 50 documents totaling exactly 25 MiB and counts pending uploads against the cap', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { id: intentId } = JSON.parse((await createIntent(sub, projectId)).body);
+    const descriptors = documents(Array(50).fill(512 * 1024));
+    const result = await upload(sub, projectId, intentId, descriptors);
+    expect(result.statusCode).toBe(200);
+    const { uploads } = JSON.parse(result.body);
+    expect(uploads).toHaveLength(50);
+    for (const [index, descriptor] of descriptors.entries()) {
+      expect(uploads[index]).toMatchObject({
+        ...descriptor,
+        fields: { 'Content-Type': descriptor.mimeType },
+      });
+    }
+    const meta = procStore.get(keyOf(`EXEC#${intentId}`, 'META'));
+    expect(meta.pendingAttachmentUploads).toHaveLength(50);
+
+    const overflow = await upload(sub, projectId, intentId, documents([1]));
+    expect(overflow.statusCode).toBe(400);
+    expect(JSON.parse(overflow.body).error).toBe('Maximum 50 attachments per intent');
+  });
+
+  it.each([
+    {
+      name: '51 new files',
+      committed: [],
+      pending: [],
+      incoming: Array(51).fill(1),
+      error: 'Maximum 50 attachments per intent',
+    },
+    {
+      name: 'six 5 MiB documents',
+      committed: [],
+      pending: [],
+      incoming: Array(6).fill(5 * 1024 * 1024),
+      error: 'Attachments cannot exceed 25 MB in total',
+    },
+    {
+      name: 'one byte over the total including committed and pending files',
+      committed: Array(4).fill(5 * 1024 * 1024),
+      pending: [5 * 1024 * 1024],
+      incoming: [1],
+      error: 'Attachments cannot exceed 25 MB in total',
+    },
+  ])('rejects $name', async ({ committed, pending, incoming, error }) => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const { id: intentId } = JSON.parse((await createIntent(sub, projectId)).body);
+    const meta = procStore.get(keyOf(`EXEC#${intentId}`, 'META'));
+    meta.attachments = documents(committed);
+    meta.pendingAttachmentUploads = documents(pending).map((document) => ({
+      ...document,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }));
+
+    const result = await upload(sub, projectId, intentId, documents(incoming));
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body).error).toBe(error);
+    expect(meta.pendingAttachmentUploads).toHaveLength(pending.length);
+  });
+});
+
 describe('S3 attachment ingestion', () => {
   it('retries a conflicting attachment revision, deleting the losing copied version', async () => {
     const intentId = `intent-${randomUUID()}`;
