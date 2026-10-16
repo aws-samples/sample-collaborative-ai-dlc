@@ -437,8 +437,8 @@ No workflow identity or trust policy was changed to broaden the matrix.
 
 The Dockerfile and `native/session-recovery-files.js` own these CLI pins.
 The table retains the 2026-10-14 contract snapshot; the newer pinned versions,
-paginated Codex dependency closure, installed qualification and remaining
-OpenCode/Kiro boundaries are recorded in the single
+paginated Codex dependency closure, OpenCode filesystem-2 bin-link representation,
+installed qualification and remaining Kiro boundary are recorded in the single
 [local qualification work item](#stabilize-and-optimize-native-execution) below.
 `cli-models`, `tier-models`, `model-resolver` and the CLI auth drivers own syntax
 and resolution. No live provider/model catalog was fetched. Selection uses the
@@ -2801,7 +2801,7 @@ Claude terminal-projection corrections are implemented locally. Local checks do
 not close the remaining live stability or latency work. Keep each simplification
 independently reviewable; preserve the existing authority and checkpoint owners.
 
-- [ ] **Verification — local installed-CLI journeys for all supported harnesses.**
+- [x] **Verification — local installed-CLI journeys for all supported harnesses.**
       **Current implementation task, authorized 2026-10-16.** Extend
       `npm run test:native-qualification` to select the native image by immutable
       digest and exercise Claude, Codex, OpenCode and Kiro. Reuse production
@@ -2820,8 +2820,13 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       another test framework. Provider calls and deployment remain separate
       qualification. Claude's four-turn installed baseline is already passing;
       the existing **support matrix and settings** item owns broader live support.
+      **Finite implementation completed at `b72674c` (2026-10-16):** Claude,
+      Codex and OpenCode pass; Kiro has the explicit supported-input BLOCKED
+      boundary required by this task's acceptance. This is not green all-four or
+      live acceptance. The latest reproducible command, matrix and commit
+      evidence are at the end of this item; earlier failures below are preserved.
 
-      **Implemented locally, acceptance still open (2026-10-16):**
+      **Historical initial implementation, acceptance open at `a8c7732` (2026-10-16):**
       `86852aa2820097fb6f7e8e317c1d3c1ac3df6117` adds the installed matrix;
       `721673f0b3c3cc4ca90f64b8862f470a3ada9052` fixes two reproduced OpenCode
       compatibility defects. `bb35a1f2bd5ce480133c0f729fc4dac0c8a813f3` makes
@@ -3265,6 +3270,8 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       filesystem reach, hooks or human permissions are changed. The preceding
       pending-decision/FAIL records describe the prior revision and remain as
       historical evidence.
+      The existing Docker `COPY shared/ /opt/shared/` includes the new validator;
+      no runtime dependency, CLI pin or container service was added.
 
       The actual pinned npm installer produces these seven direct entries in
       `.opencode/node_modules/.bin`; the fixture asserts that all seven really
@@ -3359,7 +3366,62 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       command bound; the pre-request wait is not attributed to a specific cause
       and is not provider latency evidence. Keep that observation visible in this
       existing optimization tracker rather than changing timeouts or claiming
-      deployed performance. Full matrix/static results and commit evidence follow.
+      deployed performance.
+
+      **Final bin-link qualification and delivery (2026-10-16):**
+      implementation/regressions are committed as
+      `b72674c3975397ca232983ef6159a4d031baa30c`. Normal commit hooks passed
+      **1,155 affected tests**, with the two Linux filesystem cases explicitly
+      skipped on macOS. The complete all-row run reports **BLOCKED / exit 2**,
+      solely for Kiro. A final `claude,codex,opencode` selection with the
+      conservative hard-linked-alias guard reports **PASS / exit 0**:
+
+      | Actual installed row | Final status | Qualification |
+      | --- | --- | --- |
+      | Claude 2.1.296 | **PASS** | Original four-turn background/silent/projection baseline, cancellation, composed protected answers and exact restore remain passing. |
+      | Codex 0.162.1 | **PASS** | Default paginated root/fork pages, cold restore, protected continuation, cancellation and duplicate/uncertain-ack guards remain passing. |
+      | OpenCode 1.19.0 | **PASS** | Genuine AI-DLC 2.11.0 initialization/dependencies/hooks/permissions; typed offer, protected answers, cancellation, seven exact aliases and 4,005 files, erased-local-state cold restore, same-session continuation and zero duplicate replay. |
+      | Kiro 2.29.1 | **BLOCKED** | Existing bounded inert-auth v2 probe; no supported deterministic local v2 provider input. Production ACP coverage remains separate. No further Kiro reverse-engineering was performed. |
+
+      ```bash
+      PATH=/Users/jwthewes/.nvm/versions/node/v24.21.0/bin:$PATH \
+        npm run test:native-qualification -- --installed-only \
+        --cli claude,codex,opencode \
+        --image 746558295630.dkr.ecr.us-east-1.amazonaws.com/collaborative-ai-dlc-agentcore-dev@sha256:70c9fcd3595f2a785cc78d1ca339b3cd9bb6a488d332253512e373b21c895650 \
+        --assets /tmp/native-qualification-aidlc-2.11.0 \
+        --opencode-cache /tmp/native-opencode-cache-1.19.0
+      ```
+
+      Use `--cli all` for the explicit four-row **BLOCKED** result. Omit
+      `--installed-only` to include host qualification; omit all installed
+      arguments for credential-free host checks with the explicit NOT RUN tier.
+      Final host qualification passes **1,273 backend tests**, with five
+      Linux-only cases skipped (three process-owner, two recovery filesystem);
+      **307 UI/service**, **one real localhost WebSocket case** (32 unrelated
+      cases filtered), **six architecture and 22 wiring checks** also pass.
+      Architecture checks cover **392 production modules, zero violations**.
+      All **360 focused Linux recovery/manifest tests**, **255 release/tooling
+      tests**, seven host matrix contracts, lint, formatting, secretlint,
+      dependency checks and frozen/offline docs build pass. The extra final
+      Linux alias-inode assertion also passes independently. No assertions,
+      timeouts or complexity budgets were relaxed to obtain these results.
+
+      In the final OpenCode repeat, captures took **1,610 / 1,578 / 1,541 ms**;
+      workflow primary request counts remained **3 / 2 / 1**, plus the single
+      initial title request. Cold continuation's first primary request again
+      arrived around **54.6 s**. That reproducible pre-request delay remains
+      unattributed and visible as local overhead, not a provider/live performance
+      claim. Only candidate modules were mounted over the cached image; an
+      unmodified new production image, production kernel/runtime, IAM/EFS,
+      real providers and deployed browsers remain unqualified.
+
+      Ephemeral reproduction logs: `/tmp/native-opencode-bin-old-installed.log`
+      (old capture failure), `/tmp/native-bin-final-qualification.log` (all rows,
+      BLOCKED), `/tmp/native-bin-three-final.log` (final three rows, PASS) and
+      `/tmp/native-bin-host-complete.log` (final host checks). These are test
+      outputs, not additional trackers. The existing runtime-stability and
+      broader support-matrix items remain open; original failed runs and incident
+      uncertainty are unchanged.
 
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
@@ -4291,10 +4353,12 @@ complete local cloud/platform emulator are not part of the active task.
       actual installed-Claude turns with exact restore. This does not close the
       historical cause or live stability. The local all-harness task above now
       records the preserved initial failures and the subsequent owned-descendant
-      cleanup and paginated Codex recovery fixes. OpenCode now reaches the genuine
-      workflow with pinned offline dependencies, but its generated bin symlinks
-      still fail the checkpoint policy; Kiro lacks a supported local v2 provider
-      input. Those boundaries stay open; the failed historical run stays untouched.
+      cleanup and paginated Codex recovery fixes. OpenCode's former bin-link
+      checkpoint failure is corrected in `b72674c`; its genuine workflow and
+      cold protected continuation now pass. The finite local implementation is
+      complete with Kiro explicitly BLOCKED for supported deterministic v2 input.
+      Representative live stability, the measured local pre-request delay and
+      broader support remain open; the failed historical run stays untouched.
 - [ ] **Capability and verification — support matrix and settings.** State which
       package/protocol, harness, model, source provider, and settings combinations
       are supported. Qualify Claude Code, Codex, Kiro, and OpenCode before advertising
