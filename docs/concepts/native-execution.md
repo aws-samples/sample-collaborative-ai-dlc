@@ -2982,6 +2982,55 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       error on a subsequent request, and asserts that the primary truncation
       really occurred. None of these earlier failures is recorded as a pass.
 
+      **Dependent correction — process ownership (2026-10-16):** the parent's
+      independent `a8c7732` run reproduced Claude's sleeping tool descendant after
+      `cleanupComplete:true`. The original group-only implementation also fails
+      both new Linux regressions (normal parent exit and timeout with a detached
+      tool); the unrelated fixture process remains alive. This is supported tool
+      behavior, not an unsupported/hostile-program reclassification.
+
+      The Linux command runner now starts one short-lived Python command owner,
+      using the image's existing Python installation, `PR_SET_CHILD_SUBREAPER`
+      and pidfds. The owner starts the actual command with the unchanged explicit
+      argv/environment and private status pipe closed in that command. It kills
+      only its direct children, adopts their remaining descendants and reaps all
+      children before emitting a cleanup receipt. Only this thread reaps those
+      children, so an enumerated child cannot have its PID reused before pidfd
+      acquisition. There is no UID-wide/process-table scan, group-escape guess,
+      external supervisor service or container-teardown success claim. Missing
+      kernel support fails before command launch; missing receipt/owner death
+      remains incomplete cleanup and poisons the runtime. The existing 750 ms
+      deadline, output limits, stdin, observer backpressure and sanitized spawn
+      errors remain enforced. This is ordinary trusted-tool ownership, not
+      arbitrary hostile-code containment. macOS retains its earlier group-only
+      developer behavior; it is not Linux runtime cleanup qualification.
+
+      With candidate owner source mounted on the same cached `70c9fcd…` image:
+      all **39 Linux command-runner tests pass**, including owner-loss rejection;
+      the old runner fails **2/2** detached-tool regressions. Linux Vitest first
+      lacked the macOS checkout's optional Linux binding; the lockfile's exact
+      `@rolldown/binding-linux-arm64-gnu@1.1.5` artifact was fetched into disposable
+      `/tmp/native-linux-test-binding`, SHA-512 verified, and supplied by read-only
+      mount plus `NODE_PATH` (no dependency/pin change). The first Linux run found
+      one outdated three-stdio-descriptor assertion; it now also checks the Linux
+      owner's private pipe. Actual installed Claude, Codex and OpenCode
+      cancellation all pass with `descendantGone:true`. Claude's four-turn
+      silent/projection baseline and composed protected-answer/restore journey
+      pass; OpenCode's normal tool then bare-session capture/import/continuation
+      passes. Codex's workflow capture and OpenCode's workflow startup still
+      **FAIL** at this stage, preserving the matrix's exit 1.
+
+      Cost: one owner process per command, no extra CLI/model query, a 10 ms
+      wait/reap poll while active and 5 ms during bounded cleanup. The fixture
+      now reports owner process counts separately from requested setup/CLI
+      commands. These deterministic local samples do not establish provider,
+      cold-start, storage/network or deployed-browser performance.
+      The combined host qualification passes 1,213 backend tests (three Linux
+      ownership tests explicitly skipped on macOS), 307 UI/service tests, the
+      real localhost WebSocket case, six architecture and 22 wiring checks;
+      391 production modules have zero architecture violations. Lint, formatting,
+      secretlint and dependency checks pass with the existing warnings.
+
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration
       took roughly 2–3 seconds. Use the existing phase observations and matching

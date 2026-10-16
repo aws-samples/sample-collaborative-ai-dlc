@@ -185,6 +185,6 @@ ENV HOME=/home/node \
 # AgentCore Runtime contract: listen on 8080. /ping is the health surface.
 EXPOSE 8080
 
-# PID 1 must reap orphaned descendants so exited CLI process groups disappear.
-# The native command runner still requires complete process-group cleanup.
+# PID 1 also reaps orphans from non-native commands. Native commands use their
+# own Linux subreaper and require an all-children-reaped cleanup receipt.
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/agentcore/http-server.js"]

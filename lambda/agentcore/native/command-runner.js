@@ -1,11 +1,15 @@
 // Execute a trusted, pinned command with caller-supplied argv and environment.
 // Captured output is private evidence: this module never logs or tees it.
-// Process groups contain ordinary descendants, not children that deliberately
-// escape their group. This is not a sandbox for hostile executable code.
+// Linux uses a per-command subreaper for ordinary tools that change groups.
+// This is not a sandbox for hostile executable code.
 import { spawn } from 'node:child_process';
 import { constants as osConstants } from 'node:os';
 import { isAbsolute } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { fileURLToPath } from 'node:url';
+
+const linuxOwner = process.platform === 'linux';
+const ownerPath = fileURLToPath(new URL('./command-owner.py', import.meta.url));
 
 export const NATIVE_COMMAND_LIMITS = Object.freeze({
   timeoutMs: 120_000,
@@ -134,7 +138,8 @@ const captureFor = (limit) => {
  * IO_ERROR, SPAWN_FAILED, or an allowlisted OS error code above.
  *
  * A pre-aborted signal prevents spawning and returns exitCode/signal null.
- * cleanupComplete requires close AND disappearance of the POSIX process group.
+ * On Linux cleanupComplete requires close AND the owner's all-children-reaped
+ * receipt. Other POSIX hosts retain group cleanup (not runtime qualification).
  * If false, the caller must halt all subsequent commands. Even normal command
  * exit triggers cleanup of any remaining ordinary descendants.
  * timeoutMs:null explicitly disables the command deadline. outputLimitAction:
@@ -168,6 +173,13 @@ export const runNativeCommand = async (options) => {
     let poll;
     let pressure = null;
     let drainingPressure = null;
+    let ownerStatus = '';
+    let ownerReceipt = false;
+    const onOwnerStatus = (chunk) => {
+      if (ownerStatus !== null)
+        ownerStatus =
+          ownerStatus.length + chunk.length > 256 ? null : ownerStatus + chunk.toString('ascii');
+    };
 
     const groupGone = () => {
       if (pid === undefined) return true; // spawn failed before obtaining a PID
@@ -195,6 +207,10 @@ export const runNativeCommand = async (options) => {
       child?.stdin?.removeListener('error', onStdinError);
       child?.stdin?.on('error', noop);
       child?.stdin?.destroy();
+      child?.stdio?.[3]?.removeListener('data', onOwnerStatus);
+      child?.stdio?.[3]?.removeListener('error', onStreamError);
+      child?.stdio?.[3]?.on('error', noop);
+      child?.stdio?.[3]?.destroy();
       for (const [stream, onData] of [
         [child?.stdout, onStdout],
         [child?.stderr, onStderr],
@@ -210,7 +226,7 @@ export const runNativeCommand = async (options) => {
 
     const checkCleanup = () => {
       if (finished) return;
-      if (closed && groupGone()) {
+      if (closed && (linuxOwner ? ownerReceipt || pid === undefined : groupGone())) {
         finish(true);
       } else if (poll === undefined) {
         poll = setTimeout(() => {
@@ -239,7 +255,17 @@ export const runNativeCommand = async (options) => {
       pressure = null;
       child?.stdout?.resume();
       clearTimeout(timeout);
-      cleanupTimeout = setTimeout(() => finish(false), NATIVE_COMMAND_LIMITS.cleanupMs);
+      cleanupTimeout = setTimeout(() => {
+        // The child handle cannot signal a reused PID after its exit event.
+        if (linuxOwner && !exited) child?.kill('SIGKILL');
+        finish(false);
+      }, NATIVE_COMMAND_LIMITS.cleanupMs);
+      if (linuxOwner && pid !== undefined) {
+        // Keep the owner alive to adopt/reap descendants, including setsid tools.
+        if (!exited) child.kill('SIGTERM');
+        checkCleanup();
+        return;
+      }
       let groupSignalled = false;
       if (pid !== undefined) {
         try {
@@ -321,19 +347,57 @@ export const runNativeCommand = async (options) => {
     };
     const onClose = (code, signal) => {
       recordExit(code, signal);
+      if (linuxOwner && pid !== undefined) {
+        try {
+          const receipt = JSON.parse(ownerStatus);
+          if (
+            receipt.cleanupComplete !== true ||
+            !(
+              receipt.exitCode === null ||
+              (Number.isInteger(receipt.exitCode) &&
+                receipt.exitCode >= 0 &&
+                receipt.exitCode <= 255)
+            ) ||
+            !(receipt.signal === null || Object.hasOwn(osConstants.signals, receipt.signal)) ||
+            !(
+              receipt.spawnError === null ||
+              SPAWN_CODES.has(receipt.spawnError) ||
+              receipt.spawnError === 'SPAWN_FAILED'
+            )
+          )
+            throw new Error('Invalid command owner receipt');
+          Object.assign(result, {
+            exitCode: receipt.exitCode,
+            signal: receipt.signal,
+            spawnError: result.spawnError ?? receipt.spawnError,
+          });
+          ownerReceipt = true;
+        } catch {
+          result.spawnError ??= 'IO_ERROR';
+        }
+      }
       closed = true;
       cleanup();
       checkCleanup();
     };
 
     try {
-      child = spawn(input.command, input.args, {
-        cwd: input.cwd,
-        env: input.env,
-        shell: false,
-        detached: true,
-        stdio: [input.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
-      });
+      child = spawn(
+        linuxOwner ? '/usr/bin/python3' : input.command,
+        linuxOwner ? ['-I', '-S', ownerPath, input.command, ...input.args] : input.args,
+        {
+          cwd: input.cwd,
+          env: input.env,
+          shell: false,
+          detached: true,
+          stdio: [
+            input.stdin === undefined ? 'ignore' : 'pipe',
+            'pipe',
+            'pipe',
+            ...(linuxOwner ? ['pipe'] : []),
+          ],
+        },
+      );
       // Only signal the group ID obtained from this real spawn result.
       if (Number.isSafeInteger(child.pid) && child.pid > 1) pid = child.pid;
     } catch (error) {
@@ -348,6 +412,8 @@ export const runNativeCommand = async (options) => {
     child.stderr.on('error', onStreamError);
     child.stdout.on('data', onStdout);
     child.stderr.on('data', onStderr);
+    child.stdio?.[3]?.on('data', onOwnerStatus);
+    child.stdio?.[3]?.on('error', onStreamError);
     child.stdin?.on('error', onStdinError);
     child.stdin?.end(input.stdin);
     input.signal?.addEventListener('abort', abort, { once: true });

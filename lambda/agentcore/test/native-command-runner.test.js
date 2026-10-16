@@ -63,12 +63,15 @@ switch (mode) {
     process.stdout.write('ready');
     setInterval(() => {}, 1000);
     break;
+  case 'kill-owner':
+    process.kill(process.ppid, 'SIGKILL');
+    break;
   case 'descendant': {
     const pidFile = args[0];
     const child = spawn(process.execPath, [
       '-e',
       "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);",
-    ], { env: {}, stdio: 'ignore' });
+    ], { env: {}, stdio: 'ignore', detached: args[2] === 'detached' });
     writeFileSync(pidFile, String(child.pid));
     child.unref();
     if (args[1] !== 'exit') setInterval(() => {}, 1000);
@@ -207,7 +210,7 @@ describe.skipIf(process.platform === 'win32')('bounded native command runner', (
     expect(spawn.mock.calls[0][2]).toMatchObject({
       shell: false,
       detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', ...(process.platform === 'linux' ? ['pipe'] : [])],
     });
   });
 
@@ -383,6 +386,40 @@ describe.skipIf(process.platform === 'win32')('bounded native command runner', (
     });
     expect(noProcess(descendant)).toBe(true);
   });
+
+  it.skipIf(process.platform !== 'linux').each(['timeout', 'exit'])(
+    'reaps a tool in another session after parent %s without touching an unrelated process',
+    async (ending) => {
+      const unrelated = realSpawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        env: {},
+        stdio: 'ignore',
+        detached: true,
+      });
+      const pidFile = join(root, 'detached-tool.pid');
+      let descendant;
+      try {
+        const result = await run('descendant', [pidFile, ending, 'detached']);
+        descendant = Number(await fs.readFile(pidFile, 'utf8'));
+        expect(result.cleanupComplete).toBe(true);
+        expect(noProcess(descendant)).toBe(true);
+        expect(noProcess(unrelated.pid)).toBe(false);
+      } finally {
+        // This fixture is run only in the disposable Linux container. Old-code
+        // failure must not leave its intentionally detached test child running.
+        if (descendant && !noProcess(descendant)) process.kill(descendant, 'SIGKILL');
+        unrelated.kill('SIGKILL');
+        await new Promise((resolve) => unrelated.once('close', resolve));
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'linux')(
+    'withholds cleanup after loss of the command owner',
+    async () => {
+      const result = await run('kill-owner');
+      expect(result).toMatchObject({ cleanupComplete: false, spawnError: 'IO_ERROR' });
+    },
+  );
 
   it('sanitizes asynchronous spawn failures without exposing paths or messages', async () => {
     const result = await run('echo', [], { command: join(root, 'private-missing-executable') });

@@ -327,6 +327,21 @@ try {
             await delay(100);
           }
         }
+        const topology = [];
+        for (
+          let ancestor = pid;
+          ancestor > 1 && ancestor !== process.pid && topology.length < 16;
+        ) {
+          const stat = await fs.readFile(`/proc/${ancestor}/stat`, 'utf8');
+          const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+          topology.push({
+            pid: ancestor,
+            ppid: Number(fields[1]),
+            group: Number(fields[2]),
+            session: Number(fields[3]),
+          });
+          ancestor = Number(fields[1]);
+        }
         controller.abort();
         const stopped = await pending;
         assert.ok(pid > 1, 'Installed tool actually launched a descendant');
@@ -352,6 +367,7 @@ try {
           descendantGone,
           descendantState,
           runnerCleanupComplete: stopped.cleanupComplete,
+          topology,
           diagnostic,
         });
       } else {
@@ -592,6 +608,7 @@ try {
         timings: result.timings,
         setupProcesses: setups,
         cliProcesses: turns,
+        commandOwnerProcesses: setups + turns,
         workspaceScans,
       });
       if (turn === 1) {
