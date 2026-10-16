@@ -71,6 +71,7 @@ Platform-wide code-host configuration:
 
 - **GitHub** — GitHub OAuth app status and GitHub App identity/private-key configuration are shown simultaneously. Projects choose OAuth or App independently; there is no global mode or installation ID. See [Git integration → Project-bound authentication](git-integration.md#project-bound-authentication).
 - **GitLab** — the GitLab OAuth app credentials.
+- **AWS CodeCommit** — one shared connection for the whole deployment: the IAM role ARN and region every space uses. The card shows the platform principals, the deployment external ID, and the trust and permissions policies to hand to the AWS admin who owns the repositories; paste the role ARN and region and click **Test & save** to verify the trust and store the connection. Spaces then pick CodeCommit repositories from the usual list, with no ARN or IAM to supply. There is no per-user external ID. See [Git integration → CodeCommit](git-integration.md#codecommit) and [Setup → CodeCommit](../getting-started/setup.md#codecommit-code-host).
 - **Default PR strategy** — **Intent PR** opens only the final intent-to-base review; **PR per unit** also opens draft unit-to-intent reviews and integrates them in dependency order. Projects may inherit or override this default. The default is **Intent PR**.
 
 ## Trackers
