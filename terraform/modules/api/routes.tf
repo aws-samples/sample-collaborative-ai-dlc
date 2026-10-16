@@ -1348,6 +1348,12 @@ resource "aws_api_gateway_resource" "intent_repair" {
   path_part   = "repair"
 }
 
+resource "aws_api_gateway_resource" "intent_delivery" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.intent.id
+  path_part   = "delivery"
+}
+
 # Composer sessions (Adaptive Workflows): start a compose (front/report),
 # presign the report upload, and list this intent's sessions.
 resource "aws_api_gateway_resource" "intent_compose" {
@@ -1541,6 +1547,7 @@ locals {
     cancel_post            = { resource = aws_api_gateway_resource.intent_cancel.id, method = "POST" }
     rewind_post            = { resource = aws_api_gateway_resource.intent_rewind.id, method = "POST" }
     resume_post            = { resource = aws_api_gateway_resource.intent_resume.id, method = "POST" }
+    delivery_post          = { resource = aws_api_gateway_resource.intent_delivery.id, method = "POST" }
     repair_post            = { resource = aws_api_gateway_resource.intent_repair.id, method = "POST" }
     compose_post           = { resource = aws_api_gateway_resource.intent_compose.id, method = "POST" }
     compose_upload         = { resource = aws_api_gateway_resource.intent_compose_report_upload.id, method = "POST" }
@@ -1678,6 +1685,12 @@ module "cors_intent_repair" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.intent_repair.id
+}
+
+module "cors_intent_delivery" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.intent_delivery.id
 }
 
 module "cors_intent_compose" {

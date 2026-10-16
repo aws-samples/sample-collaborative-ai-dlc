@@ -642,9 +642,28 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
 const findPullRequest = async (
   ctx,
   repoId,
-  { sourceBranch, targetBranch = null, state = 'opened' },
+  { sourceBranch, targetBranch = null, state = 'opened', strict = false },
 ) => {
   const project = encodeProject(repoId);
+  if (strict) {
+    for (let page = 1; page <= 10; page++) {
+      const res = await glFetch(
+        ctx,
+        `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(sourceBranch)}&state=${state}&per_page=100&page=${page}`,
+      );
+      if (!res.ok) throw new ProviderError(res.status, 'Merge-request lookup failed');
+      const rows = await res.json();
+      if (!Array.isArray(rows)) throw new ProviderError(502, 'Invalid merge-request lookup');
+      const match = rows.find(
+        (mr) =>
+          mr.source_branch === sourceBranch &&
+          (targetBranch === null || mr.target_branch === targetBranch),
+      );
+      if (match) return match;
+      if (rows.length < 100) return null;
+    }
+    throw new ProviderError(409, 'Merge-request lookup truncated');
+  }
   const res = await glFetch(
     ctx,
     `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(
@@ -669,7 +688,7 @@ const findPullRequest = async (
 const createPullRequest = async (
   ctx,
   repoId,
-  { branch, baseBranch, title, body, draft = false },
+  { branch, baseBranch, title, body, draft = false, allowRetarget = true },
 ) => {
   const project = encodeProject(repoId);
 
@@ -768,7 +787,7 @@ const createPullRequest = async (
       // it is a reasonable merge target.
       if (text.includes('target branch')) {
         const defaultBranch = await getDefaultBranch(ctx, repoId);
-        if (defaultBranch && defaultBranch !== resolvedBase) {
+        if (allowRetarget && defaultBranch && defaultBranch !== resolvedBase) {
           res = await postMr(defaultBranch);
           if (res.ok) {
             await cleanupConstructionTaskBranches(ctx, repoId, branch);
@@ -816,6 +835,18 @@ const createPullRequest = async (
 // `from` lacks; an empty list means identical-or-behind — either way there is
 // nothing to merge, which is all the caller needs to know.
 // Returns { status: 'ahead'|'identical'|'missing_head'|'missing_base'|'unknown', aheadBy?, base }.
+const getBranchHead = async (ctx, repoId, branch) => {
+  const res = await glFetch(
+    ctx,
+    `${API_BASE}/projects/${encodeProject(repoId)}/repository/branches/${encodeURIComponent(branch)}`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) throw new ProviderError(res.status, 'Branch lookup failed');
+  const data = await res.json();
+  if (!data.commit?.id) throw new ProviderError(502, 'Invalid branch response');
+  return data.commit.id;
+};
+
 const compareBranches = async (ctx, repoId, { base, head }) => {
   const project = encodeProject(repoId);
   const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
@@ -1006,6 +1037,7 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
   createPullRequest,
   compareBranches,
@@ -1045,6 +1077,7 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
   createPullRequest,
   compareBranches,

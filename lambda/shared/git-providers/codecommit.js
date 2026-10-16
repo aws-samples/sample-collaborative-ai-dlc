@@ -477,13 +477,15 @@ const prStatusFilter = (state) => {
 const findPullRequest = async (
   ctx,
   repoId,
-  { sourceBranch, targetBranch = null, state = 'open' },
+  { sourceBranch, targetBranch = null, state = 'open', strict = false },
 ) => {
   const { repositoryName } = parseRepo(repoId);
   // Without the session identity the filter would match nothing and a lookup
   // would silently miss the platform's own pull request: fail instead.
-  const authorArn = ctx?.token?.assumedRoleArn;
-  if (!authorArn) {
+  // Final-delivery reconciliation must also find work created before a
+  // project's credential binding changed. The API's author filter is optional.
+  const authorArn = strict ? undefined : ctx?.token?.assumedRoleArn;
+  if (!strict && !authorArn) {
     throw new ProviderError(500, 'CodeCommit pull-request lookup needs the session identity', {
       action: 'ListPullRequests',
     });
@@ -579,6 +581,18 @@ const INCOMPARABLE_EXCEPTIONS = new Set([
   'MaximumItemsToCompareExceededException',
   'MaximumFileContentToLoadExceededException',
 ]);
+
+const getBranchHead = async (ctx, repoId, branch) => {
+  const { repositoryName } = parseRepo(repoId);
+  const res = await callOr(
+    clientFor(ctx, repoId),
+    new GetBranchCommand({ repositoryName, branchName: shortRef(branch) }),
+    'GetBranch',
+    404,
+    null,
+  );
+  return res?.branch?.commitId ?? null;
+};
 
 const compareBranches = async (ctx, repoId, { base, head }) => {
   const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
@@ -769,7 +783,7 @@ const draftFields = (pr) => {
 const createPullRequest = async (
   ctx,
   repoId,
-  { branch, baseBranch, title, body, draft = false, attemptKey = '' },
+  { branch, baseBranch, title, body, draft = false, attemptKey = '', allowRetarget = true },
 ) => {
   const { arn, region, repositoryName } = parseRepo(repoId);
   const coordinates = { region, repositoryName };
@@ -813,6 +827,7 @@ const createPullRequest = async (
     };
   }
   if (comparison.status === 'missing_base') {
+    if (!allowRetarget) return { failed: true, reason: 'missing_base' };
     const defaultBranch = await getDefaultBranch(ctx, repoId);
     if (!defaultBranch || defaultBranch === resolvedBase) {
       return {
@@ -858,6 +873,7 @@ const createPullRequest = async (
       throw new ProviderError(502, 'CodeCommit CreatePullRequest returned no pull request');
     }
     if (pr.pullRequestStatus !== 'CLOSED') break;
+    if (!allowRetarget) throw new ProviderError(409, 'The previous pull request is closed');
     key = `${attemptKey ?? ''}\nreplaces:${pr.pullRequestId}`;
   }
   if (pr.pullRequestStatus === 'CLOSED') {
@@ -1227,6 +1243,7 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
   createPullRequest,
   compareBranches,
@@ -1267,6 +1284,7 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
   createPullRequest,
   compareBranches,

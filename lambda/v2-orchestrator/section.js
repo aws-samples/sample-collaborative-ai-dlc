@@ -61,7 +61,7 @@ import {
   completionMessage,
 } from '../shared/unit-completion.js';
 import { stageIsNoopForUnit } from '../shared/unit-kind-pruning.js';
-import { buildIntentAttribution } from './pr-attribution.js';
+import { buildIntentAttribution } from '../shared/pr-attribution.js';
 import { bindGateCallback, unparkGate } from './gate-callback.js';
 import { assertPrStrategySupported } from '../shared/pr-strategy.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';

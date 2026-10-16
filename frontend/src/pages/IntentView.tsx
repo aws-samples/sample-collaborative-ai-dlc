@@ -8,6 +8,7 @@ import {
 import { useIntent } from '@/contexts/IntentContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProjectCache } from '@/hooks/useProjectsCache';
+import { DeliveryStatus } from '@/components/intent/DeliveryStatus';
 import { RecomposePanel } from '@/components/intent/RecomposePanel';
 import { IntentConfigurationDialog } from '@/components/intent/IntentConfigurationDialog';
 import { DiscussButton } from '@/components/discussion/DiscussButton';
@@ -612,6 +613,17 @@ export default function IntentView() {
             </p>
           )}
         </div>
+      )}
+
+      {intent.status === 'SUCCEEDED' && (
+        <DeliveryStatus
+          key={intentId}
+          projectId={projectId}
+          intentId={intentId}
+          delivery={detail.delivery}
+          canRetry={canRepair}
+          reload={reload}
+        />
       )}
 
       {needsLaneRepair && (

@@ -72,7 +72,7 @@ The external ID is what stops another user (or another tenant) from using your r
 
 Repository identity is the **ARN** (region and account are part of it), so CodeCommit repositories appear as `name (region)` and link to the regional console. Commits made by the engine carry the committer configured on the binding (CodeCommit has no user-identity API to discover one).
 
-What CodeCommit cannot do, declared by the provider so the engine never attempts it: no draft pull requests, no reopening a closed pull request (closed is terminal — a new one is opened instead), no issues tracker, no CI check statuses (approval rules are read instead). Because **PR per unit** relies on draft pull requests to keep each unit review unmergeable while its lane reconciles or revises it, that strategy (and its feedback revisions) is not available for a space with CodeCommit repositories: intent creation is refused with `PR_STRATEGY_UNSUPPORTED`; choose one PR per intent for such a space instead. Pull request state is picked up by the same one-minute reconciler as every other provider; no webhook is needed.
+What CodeCommit cannot do, declared by the provider so the engine never attempts it: no draft pull requests, no reopening a closed pull request (closed is terminal — a new execution can open a replacement; final delivery retry refuses closed work), no issues tracker, no CI check statuses (approval rules are read instead). Because **PR per unit** relies on draft pull requests to keep each unit review unmergeable while its lane reconciles or revises it, that strategy (and its feedback revisions) is not available for a space with CodeCommit repositories: intent creation is refused with `PR_STRATEGY_UNSUPPORTED`; choose one PR per intent for such a space instead. Pull request state is picked up by the same one-minute reconciler as every other provider; no webhook is needed.
 
 ## Branches
 
@@ -154,3 +154,88 @@ The platform supports two delivery strategies:
 In the intent view, each unit card shows repository-specific review state and links. Project members can open **Address feedback**, select up to 20 current human-authored comments, and queue a targeted revision. The backend refetches selected comments by provider ID, records their versions, and ignores provider comments unless a member explicitly selects them. The agent does not automatically resolve discussion threads.
 
 If a unit PR closes without merging, or only part of a multi-repository unit merges, the run enters halt-and-ask with retry, skip, and abort outcomes. Already merged work is preserved.
+
+## Check and retry final delivery
+
+Stage completion and final publication are separate outcomes. A completed intent
+can still need attention when its code host rejects or cannot confirm a PR/MR.
+The intent page shows **Final delivery** with each repository's branch, target,
+result and reason. Published PR links also remain available in Code when the
+graph projection was unavailable. **No changes to publish** is a verified
+no-diff outcome; missing records and failed reads are not treated as success.
+
+A project owner or admin can choose **Check delivery**. This is read-only: it
+checks the pinned workflow's completion, the captured branches and existing PRs.
+Review the repository results, then choose **Retry delivery**. This publishes
+only unfinished repositories from their existing intent branches. It does not
+run a model, repeat stages or gates, regenerate code, integrate units again, or
+merge the final PR. Deliberately accepted partial work remains partial.
+
+An uncertain previous create request is reconciled with the code host before
+another request is made. Successfully published repositories are preserved.
+A closed or merged existing PR, a changed intent branch or a missing branch is
+shown with an actionable refusal; retry does not recreate closed work or choose
+a different target. Restore a missing captured branch, fix repository access,
+or review a separate execution/recovery plan as the displayed reason directs.
+PR-per-unit workflows keep their existing unit review process; this action
+covers their final intent-to-base publication only.
+
+Older completed runs initially show **Delivery not yet verified**. Checking them
+does not rewrite their history. **Save delivery assessment** records a reconciled
+or refused result when no publication is needed. Missing ownership or unfinished
+workflow/unit records require execution recovery first.
+
+Only one delivery attempt owns an intent at a time. The page refreshes while it
+is publishing. If an attempt stops responding, its lease expires after 20
+minutes; check delivery again to reconcile before retrying. Rewind, relaunch and
+other recovery actions wait for publication ownership to end.
+
+## Final publication recovery
+
+`DELIVERY#<orchestratorRunId>` stores final intent-to-base publication separately
+from `META.status`. Repository entries preserve captured provider, branch, target,
+head SHA and remote PR identity. Current attempt metadata is mutable; prior-run
+delivery rows, unit PR rows, events and human decisions are retained. Publication
+success means the PR was created or reconciled, not that it was merged. Graph
+projection failure does not erase the durable remote identity.
+
+`POST .../intents/{intentId}/delivery` requires project owner/admin membership and
+entity scope. `{"preview":true}` resolves the original methodology/plan, checks
+expected sections including missing rows, and reads provider state. A subsequent
+`{"previewToken":"..."}` must match the refreshed preview. Unknown legacy runs
+are never automatically migrated. Accepted omission receipts and section-scoped
+legacy halt decisions are honored; unfinished work requires ordinary execution recovery or a new intent.
+
+The process store claims publication with one transaction over META, the checked
+UNITPLAN snapshot and the run's delivery row. It compares the current success
+status, run, META timestamp and delivery revision; only an expired or absent lease can be claimed. Progress
+and result writes require the same run, attempt and revision. Status/run changes
+in `updateExecution` refuse an active delivery lease, preventing rewind or a new
+run from racing publication. A provider mutation requires at least 150 seconds
+of lease remaining. The 20-minute lease exceeds the orchestrator invocation's
+900-second maximum plus the source-control Lambda's 120-second maximum. Preserve
+that bound if either timeout changes. An uncertain launch keeps the lease since
+the invocation might already be accepted; a later check recovers abandonment.
+
+Retry invokes a separate durable `retry-delivery` history through the configured
+orchestrator target. It only uses the shared publication logic and the existing
+source-control service. It never invokes AgentCore, stages, Git integration or
+models. A failed or incomplete provider lookup blocks creation. Strict lookup
+includes closed PRs; a changed source SHA, missing branch, retargeted PR or closed
+work requires review instead of implicit replacement. External repository edits
+remain outside DynamoDB ownership; branch identity is rechecked immediately
+before creation. No provider merge-state polling is added.
+
+Deploy source-control first (strict lookup and branch preconditions), then the
+orchestrator and intents API with the delivery route, then the frontend. Install
+all parts from the same release before offering retry. New orchestrator histories
+capture `deliveryPolicyVersion: 1` in the existing `load-meta` step. Frozen
+pre-change results retain the previous `open-pr` sequence, including #534's
+completion marker. Changing an alias does not upgrade their durable checkpoints.
+The new API can assess a completed old history without changing its execution
+pins; publication retry creates its own history on the configured fixed target.
+This release requires no status migration, production recovery or model E2E as
+part of deployment. The existing tracker handoff is scheduled after complete publication, including
+a successful retry; graph projection retains its owner. Publication recovery
+exposes durable PR links directly. Existing historical tracker rows are not
+rewritten.

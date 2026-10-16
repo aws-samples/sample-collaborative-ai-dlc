@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { __durableHandler } from '../index.js';
+import { loadMetaBeforeDelivery } from './fixtures/load-meta-before-delivery.js';
 import { unitPlanIdentity } from '../../shared/unit-completion.js';
 
 const setup = () => {
@@ -52,10 +53,14 @@ const setup = () => {
     openPr: vi.fn(async () => ({ number: 1, url: 'https://example.test/pr/1' })),
   };
   const ctx = {
+    // A-started histories retain their initial publication path after B deploys.
+    // Modern publication is exercised with the real store in final-delivery.test.js.
     step: async (name, fn) =>
-      name.startsWith('section-completion-v1-') || name.startsWith('load-completion-v1-')
-        ? { state: 'complete', unresolved: [] }
-        : fn(),
+      name === 'load-meta'
+        ? loadMetaBeforeDelivery(store, meta.executionId)
+        : name.startsWith('section-completion-v1-') || name.startsWith('load-completion-v1-')
+          ? { state: 'complete', unresolved: [] }
+          : fn(),
     logger: { info() {}, error() {} },
   };
   return {

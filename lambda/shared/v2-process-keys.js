@@ -1485,3 +1485,9 @@ export default {
   buildTrackerSyncRow,
   buildReceiptRow,
 };
+
+// One publication record per run; prior run outcomes remain readable.
+export const deliveryKey = (executionId, runId) => ({
+  pk: executionPk(executionId),
+  sk: `DELIVERY#${runId}`,
+});

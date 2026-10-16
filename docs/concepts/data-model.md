@@ -311,25 +311,26 @@ graph LR
 
 ### Record types
 
-| Sort-key pattern                     | Record            | Purpose                                                                                         |
-| ------------------------------------ | ----------------- | ----------------------------------------------------------------------------------------------- |
-| `META`                               | Execution         | Captured intent and workflow configuration, overall status, timestamps, and repository context. |
-| `STAGE#<stageInstanceId>`            | Stage             | State and attempts for one concrete stage invocation, including a unit-specific stage.          |
-| `EVENT#<timestamp>#<eventId>`        | Event             | Ordered execution timeline and audit event.                                                     |
-| `HUMAN#<humanTaskId>`                | Human task        | A suspended human gate, its callback, answer, and resolution state.                             |
-| `OUTPUT#<sequence>`                  | Output            | Ordered agent-output chunk; the zero-padded sequence preserves emission order.                  |
-| `METRIC#<timestamp>#<metricId>`      | Metric            | Token, cost, duration, or other collected execution metric.                                     |
-| `SENSOR#<timestamp>#<sensorRunId>`   | Sensor run        | Deterministic post-stage validation result.                                                     |
-| `READ#<timestamp>#<readId>`          | Graph read        | Audit record of context read from the knowledge graph.                                          |
-| `STEER#<timestamp>#<steerId>`        | Steering          | Pending or consumed human course correction, ordered by creation time.                          |
-| `UNITPLAN`                           | Unit plan         | Current scheduling snapshot for the construction unit DAG.                                      |
-| `UNIT#<laneId>`                      | Unit              | Scheduling state for one construction lane, including dependencies, branch, and session.        |
-| `UNITPR#<laneId>#<repository>`       | Unit pull request | Pull-request lifecycle for one unit and repository.                                             |
-| `FEEDBACK#<laneId>#<batchId>`        | Feedback batch    | A queued or completed batch of review feedback for a unit.                                      |
-| `FEEDBACKCOMMENT#<laneId>#<comment>` | Feedback comment  | Stable per-comment state within unit feedback processing.                                       |
-| `QEDIT#<editId>`                     | Quorum edit       | Post-hoc artifact edit plan, approval callback, and apply outcome.                              |
-| `COMPOSE#<composeId>`                | Compose request   | Adaptive-workflow proposal and its validation result.                                           |
-| `TRACKERSYNC`                        | Tracker sync      | Current external-tracker synchronization state and next check.                                  |
+| Sort-key pattern                     | Record            | Purpose                                                                                          |
+| ------------------------------------ | ----------------- | ------------------------------------------------------------------------------------------------ |
+| `META`                               | Execution         | Captured intent and workflow configuration, overall status, timestamps, and repository context.  |
+| `STAGE#<stageInstanceId>`            | Stage             | State and attempts for one concrete stage invocation, including a unit-specific stage.           |
+| `EVENT#<timestamp>#<eventId>`        | Event             | Ordered execution timeline and audit event.                                                      |
+| `HUMAN#<humanTaskId>`                | Human task        | A suspended human gate, its callback, answer, and resolution state.                              |
+| `OUTPUT#<sequence>`                  | Output            | Ordered agent-output chunk; the zero-padded sequence preserves emission order.                   |
+| `METRIC#<timestamp>#<metricId>`      | Metric            | Token, cost, duration, or other collected execution metric.                                      |
+| `SENSOR#<timestamp>#<sensorRunId>`   | Sensor run        | Deterministic post-stage validation result.                                                      |
+| `READ#<timestamp>#<readId>`          | Graph read        | Audit record of context read from the knowledge graph.                                           |
+| `STEER#<timestamp>#<steerId>`        | Steering          | Pending or consumed human course correction, ordered by creation time.                           |
+| `UNITPLAN`                           | Unit plan         | Current scheduling snapshot for the construction unit DAG.                                       |
+| `UNIT#<laneId>`                      | Unit              | Scheduling state for one construction lane, including dependencies, branch, and session.         |
+| `UNITPR#<laneId>#<repository>`       | Unit pull request | Pull-request lifecycle for one unit and repository.                                              |
+| `FEEDBACK#<laneId>#<batchId>`        | Feedback batch    | A queued or completed batch of review feedback for a unit.                                       |
+| `FEEDBACKCOMMENT#<laneId>#<comment>` | Feedback comment  | Stable per-comment state within unit feedback processing.                                        |
+| `QEDIT#<editId>`                     | Quorum edit       | Post-hoc artifact edit plan, approval callback, and apply outcome.                               |
+| `COMPOSE#<composeId>`                | Compose request   | Adaptive-workflow proposal and its validation result.                                            |
+| `DELIVERY#<runId>`                   | Final delivery    | Per-repository publication results, captured branch identity, and fenced retry attempt metadata. |
+| `TRACKERSYNC`                        | Tracker sync      | Current external-tracker synchronization state and next check.                                   |
 
 `UNITPLAN` and `UNIT#…` rows are the scheduling source of truth. Their
 `UnitOfWork` representation in Neptune is a traceability and UI projection; the

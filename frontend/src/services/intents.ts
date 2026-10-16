@@ -792,6 +792,7 @@ export interface IntentDetail {
   sensorRuns: IntentSensorRun[];
   artifacts: IntentArtifact[];
   pullRequests?: IntentPullRequest[];
+  delivery?: IntentDelivery;
   /** Quorum-supported artifact edit sessions (post-hoc document editing). */
   quorumEdits?: QuorumEdit[];
   /** Composer sessions (scope/grid proposals + authoritative validation). */
@@ -814,6 +815,29 @@ export interface IntentDetail {
   units?: IntentUnit[];
   unitPrs?: IntentUnitPr[];
   feedbackBatches?: IntentFeedbackBatch[];
+}
+
+export interface IntentDelivery {
+  status: 'unknown' | 'pending' | 'in_progress' | 'succeeded' | 'failed' | 'partial' | 'no_change';
+  message?: string | null;
+  leaseUntil?: string;
+  repositories: {
+    repoId: string;
+    provider: string;
+    branch: string;
+    baseBranch: string | null;
+    status: string;
+    reason?: string;
+    retryable?: boolean;
+    pr?: { prUrl: string; prNumber: string | number; branch: string; baseBranch: string | null };
+  }[];
+}
+export interface DeliveryPreview {
+  delivery: IntentDelivery;
+  previewToken: string;
+  historical: boolean;
+  retryable: boolean;
+  canRecord: boolean;
 }
 
 export interface IntentRepairResult {
@@ -1200,6 +1224,14 @@ export const intentsService = {
       `/projects/${projectId}/intents/${intentId}/rewind`,
       input,
     ),
+  previewDelivery: (projectId: string, intentId: string) =>
+    api.post<DeliveryPreview>(`/projects/${projectId}/intents/${intentId}/delivery`, {
+      preview: true,
+    }),
+  retryDelivery: (projectId: string, intentId: string, previewToken: string) =>
+    api.post<{ delivery: IntentDelivery }>(`/projects/${projectId}/intents/${intentId}/delivery`, {
+      previewToken,
+    }),
   repair: (projectId: string, intentId: string) =>
     api.post<IntentRepairResult>(`/projects/${projectId}/intents/${intentId}/repair`, {}),
   // Re-attempt the durable callback for an already-recorded gate answer

@@ -39,7 +39,6 @@ import {
   executionCredentialBinding,
 } from '../shared/agent-credential-service.js';
 import { commandDefinition } from '../shared/agent-command-registry.js';
-import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { eventTypeOf } from '../shared/v2-process-keys.js';
 import { loadExecutionPlan } from '../shared/v2-workflow-plan.js';
@@ -66,7 +65,6 @@ import {
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import {
-  activePlanUnits,
   skeletonProblem,
   finalizeUnitCompletion,
   completionSections,
@@ -84,7 +82,9 @@ import {
   fanoutGateAddendum,
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
-import { buildIntentAttribution } from './pr-attribution.js';
+import { openIntentPrs } from '../shared/intent-pr.js';
+import { publishFinalDelivery } from '../shared/final-delivery.js';
+import { createIntentMethodologyLoader } from '../shared/intent-methodology.js';
 import { bindGateCallback, ownsAnsweredGate, unparkGate } from './gate-callback.js';
 import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
 import { intentSessionIdFor } from '../shared/runtime-session-ids.js';
@@ -222,9 +222,6 @@ const defaultSourceControlOperation = async ({
   return body.result;
 };
 
-const repoProvider = (meta, repoId) =>
-  sharedRepoProvider(repoId, meta.gitProvider, meta.repoProviders);
-
 // Map a timeline event type to the live broadcast payload the UI routes on
 // (useIntentEvents → refetch on agent.workspace / agent.execution). The
 // orchestrator is NOT VPC-attached and reaches the connections table over the
@@ -255,6 +252,17 @@ const livePayloadFor = (type, summary) => {
 // cross the source-control service boundary; credentials never enter this process.
 const defaultDeps = () => ({
   store: defaultStore,
+  publishDelivery: (args) =>
+    publishFinalDelivery({
+      ...args,
+      operation: defaultSourceControlOperation,
+      loadPlan: createIntentMethodologyLoader({
+        ddb,
+        s3,
+        tableName: BLOCKS_TABLE,
+        bucket: ARTIFACTS_BUCKET,
+      }).loadPlan,
+    }),
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
   invokeRuntime: defaultInvokeRuntime,
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
@@ -369,6 +377,22 @@ const defaultDeps = () => ({
   },
 });
 
+// The existing tracker handoff consumes the complete set of published PRs.
+// Publication retry does not add another tracker/provider polling loop.
+const publishTrackerDelivery = (store, meta, pullRequests) =>
+  store.putTrackerSync({
+    executionId: meta.executionId,
+    projectId: meta.projectId,
+    intentId: meta.intentId ?? meta.executionId,
+    source: meta.source,
+    pullRequests,
+    intentTitle: meta.title ?? null,
+    workflowId: meta.workflowId,
+    workflowVersion: meta.workflowVersion,
+    scope: meta.scope,
+    branch: meta.branch ?? null,
+  });
+
 const handler = async (event, ctx, deps = defaultDeps()) => {
   const {
     store,
@@ -393,6 +417,50 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   if (event.action === 'quorum-edit') {
     return runQuorumEdit(event, ctx, deps);
   }
+  if (event.action === 'retry-delivery') {
+    const retryMeta = await ctx.step('delivery-load', () =>
+      store.getExecution(executionId, { consistentRead: true }),
+    );
+    if (
+      !retryMeta ||
+      retryMeta.projectId !== event.projectId ||
+      retryMeta.orchestratorRunId !== event.runId
+    )
+      return { ok: false, reason: 'retired' };
+    const results = await ctx.step('delivery-publish', () =>
+      deps.publishDelivery({
+        store,
+        meta: retryMeta,
+        applicationUrl,
+        claimed: { attemptId: event.attemptId },
+      }),
+    );
+    const publishedPrs = results.map((result) => result.pr).filter(Boolean);
+    if (
+      publishedPrs.length &&
+      !results.some((result) => result.eventType === 'v2.pr.failed') &&
+      retryMeta.source?.bindingId &&
+      retryMeta.source?.resourceId
+    ) {
+      await ctx.step('delivery-tracker', async () => {
+        try {
+          await publishTrackerDelivery(store, retryMeta, publishedPrs);
+        } catch {
+          await store.appendEvent({
+            executionId,
+            type: 'v2.tracker.failed',
+            summary: 'Tracker synchronization could not be scheduled after delivery retry',
+          });
+        }
+      });
+    }
+    await ctx.step('delivery-notify', async () => {
+      for (const result of results)
+        await store.appendEvent({ executionId, type: result.eventType, summary: result.summary });
+      await broadcast(intentId, { action: 'agent.pr', summary: 'Delivery status updated' });
+    });
+    return { ok: true };
+  }
   if (event.action !== 'start') {
     // Resume is handled out-of-band via SendDurableExecutionCallbackSuccess
     // against the suspended callback — there is no separate resume invocation.
@@ -406,7 +474,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     });
     // Version behavior in the existing first checkpoint. Old histories have no
     // marker and retain their operation sequence; repair creates a new history.
-    return loaded ? { ...loaded, completionPolicyVersion: 1 } : null;
+    return loaded ? { ...loaded, completionPolicyVersion: 1, deliveryPolicyVersion: 1 } : null;
   });
   if (!meta) return { ok: false, reason: 'execution_not_found' };
   const runtimeTarget = resolveRuntimeTarget(meta, RUNTIME_ARN());
@@ -2181,6 +2249,25 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // v1 unmerged-branch guard lives inside createPullRequest). PR problems
     // never un-succeed the run — every outcome is a loud timeline event. A
     const prResults = await ctx.step('open-pr', async () => {
+      if (meta.deliveryPolicyVersion) {
+        try {
+          return await deps.publishDelivery({
+            store,
+            meta: { ...meta, orchestratorRunId: runId },
+            applicationUrl,
+          });
+        } catch {
+          // Store/provider uncertainty is delivery uncertainty, never a stage failure.
+          return [
+            {
+              eventType: 'v2.pr.failed',
+              summary:
+                'Delivery could not be verified. Check delivery to reconcile provider state before retrying.',
+            },
+          ];
+        }
+      }
+
       const verifyCompletion = async () => {
         const records = await store.getCompletionRecords(executionId);
         const receipt = records.meta?.completionValidation;
@@ -2237,21 +2324,15 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // un-succeeds a run whose PR already exists on the remote.
     const openedPrs = prResults.map((r) => r.pr).filter(Boolean);
     if (openedPrs.length > 0) {
-      if (meta.source?.bindingId && meta.source?.resourceId) {
+      if (
+        meta.source?.bindingId &&
+        meta.source?.resourceId &&
+        (!meta.deliveryPolicyVersion ||
+          !prResults.some((result) => result.eventType === 'v2.pr.failed'))
+      ) {
         const published = await ctx.step('publish-tracker-sync', async () => {
           try {
-            await store.putTrackerSync({
-              executionId,
-              projectId,
-              intentId,
-              source: meta.source,
-              pullRequests: openedPrs,
-              intentTitle: meta.title ?? null,
-              workflowId,
-              workflowVersion,
-              scope,
-              branch: meta.branch ?? null,
-            });
+            await publishTrackerDelivery(store, meta, openedPrs);
             return true;
           } catch (error) {
             logger.error('tracker sync publication failed', error);
@@ -2642,258 +2723,6 @@ const validationPrompt = ({
         ]
       : []),
   ].join('\n');
-};
-
-// ── WP6: open the fan-in PR(s) (intent-pr strategy) ─────────────────────────
-// One PR per repo from the intent branch onto the base branch. Provider outcomes
-// (opened / already-open / no-changes / guard-conflict / error) become timeline
-// events the caller records. The PR body links back to the intent and carries
-// an HONEST unit summary: lanes that were skipped after failure are named, so
-// the reviewer knows what the increment does NOT contain (the human explicitly
-// chose to continue without them — the fan-in gate is the decision record, the
-// PR body is its mirror).
-const openIntentPrs = async ({
-  openPr,
-  comparePrBranches = null,
-  store,
-  meta,
-  executionId,
-  runId = null,
-  applicationUrl,
-  log,
-}) => {
-  const repos = meta.repos ?? [];
-  const branch = meta.branch;
-  const strategy = meta.prStrategy ?? 'intent-pr';
-  // Per-repo base-branch override wins; the legacy single string is the
-  // project-wide fallback; a repo absent from both falls through to null so
-  // the provider resolves that repo's ACTUAL default branch (never 'main').
-  const baseFor = (repoId) => meta.baseBranches?.[repoId] ?? meta.baseBranch ?? null;
-  if (repos.length === 0) {
-    return [
-      { eventType: 'v2.pr.skipped', summary: 'No repositories on this intent — no PR to open' },
-    ];
-  }
-  // Deterministic lost-work signal (2026-07 incident): did the engine record
-  // repo work during this run? v2.git.pushed names repos whose commits reached
-  // the remote; v2.git.push_failed names repos whose work did NOT become
-  // durable. An artifact-only run has neither — for those, a commit-less
-  // branch is genuinely "no changes". Best-effort: an unreadable timeline
-  // just means the signal is silent (never blocks the PR).
-  let gitEvents = [];
-  try {
-    gitEvents = ((await store.listEvents?.(executionId)) ?? []).filter(
-      (e) => e.eventType === 'v2.git.pushed' || e.eventType === 'v2.git.push_failed',
-    );
-  } catch {
-    /* signal is best-effort */
-  }
-  const repoGitActivity = (repoId) => ({
-    pushed: gitEvents.some((e) => e.eventType === 'v2.git.pushed' && e.summary?.includes(repoId)),
-    pushFailed: gitEvents.some(
-      (e) => e.eventType === 'v2.git.push_failed' && e.summary?.includes(repoId),
-    ),
-  });
-
-  // Unit transparency for the PR body (best-effort — a store without unit
-  // rows, or a pre-WP3 run, just omits the section).
-  let unitLines = [];
-  try {
-    const allUnits = (await store.listUnits?.(executionId)) ?? [];
-    const unitPlan = await store.getUnitPlan?.(executionId);
-    const units = unitPlan ? activePlanUnits(unitPlan, allUnits) : allUnits;
-    const unmerged = units.filter((u) => u.state && u.state !== 'MERGED');
-    if (units.length) {
-      unitLines = [
-        '',
-        `Units: ${units.length} total, ${units.length - unmerged.length} integrated into the intent branch.`,
-        ...unmerged.map(
-          (u) =>
-            `- ⚠️ unit \`${u.slug}\` NOT integrated (${u.state}${u.failureReason ? `: ${u.failureReason}` : ''}) — its branch is preserved`,
-        ),
-      ];
-    }
-  } catch {
-    /* transparency section is best-effort */
-  }
-
-  const title = meta.title || `AI-DLC: ${branch}`;
-  const aidlcAttribution = buildIntentAttribution({
-    applicationUrl,
-    projectId: meta.projectId,
-    intentId: meta.intentId ?? executionId,
-  });
-  const trackerRepository = (() => {
-    try {
-      const pathname = decodeURIComponent(new URL(meta.source?.resourceUrl).pathname);
-      if (meta.source?.provider === 'github-issues') {
-        const parts = pathname.split('/').filter(Boolean);
-        return parts.length >= 4 && parts[2] === 'issues' ? parts.slice(0, 2).join('/') : null;
-      }
-      if (meta.source?.provider === 'gitlab-issues') {
-        const marker = '/-/issues/';
-        const markerIndex = pathname.indexOf(marker);
-        return markerIndex > 0 ? pathname.slice(1, markerIndex) : null;
-      }
-    } catch {
-      // A missing or malformed source URL only omits the PR tracker reference.
-    }
-    return null;
-  })();
-  const trackerReferenceFor = (provider, repoId) => {
-    const resourceId = String(meta.source?.resourceId || '').trim();
-    if (!resourceId) return null;
-    const matchingTracker =
-      (meta.source?.provider === 'github-issues' && provider === 'github') ||
-      (meta.source?.provider === 'gitlab-issues' && provider === 'gitlab');
-    if (matchingTracker && trackerRepository) {
-      const issueRef =
-        trackerRepository.toLowerCase() === repoId.toLowerCase()
-          ? `#${resourceId}`
-          : `${trackerRepository}#${resourceId}`;
-      return `Closes ${issueRef}`;
-    }
-    if (meta.source?.provider === 'jira-cloud') {
-      return meta.source.resourceUrl
-        ? `Related task: [${resourceId}](${meta.source.resourceUrl})`
-        : `Related task: ${resourceId}`;
-    }
-    return meta.source?.resourceUrl
-      ? `Related issue: [#${resourceId}](${meta.source.resourceUrl})`
-      : null;
-  };
-
-  const results = [];
-  for (const repo of repos) {
-    const repoId = typeof repo === 'string' ? repo : repo.url;
-    const provider = repoProvider(meta, repoId);
-    try {
-      const trackerReference = trackerReferenceFor(provider, repoId);
-      const body = [
-        `Automated ${provider === 'gitlab' ? 'MR' : 'PR'} created by ${aidlcAttribution} (strategy: ${strategy})`,
-        ...unitLines,
-        ...(trackerReference ? ['', trackerReference] : []),
-      ].join('\n');
-      const activity = repoGitActivity(repoId);
-      // Pre-check: does the intent branch exist remotely with commits ahead of
-      // base? 'unknown' (comparison unavailable) falls through to the PR call
-      // — the pre-check adds safety, never a new way to block a good PR.
-      const cmp = comparePrBranches
-        ? await comparePrBranches({
-            projectId: meta.projectId,
-            gitProvider: provider,
-            repoId,
-            base: baseFor(repoId),
-            head: branch,
-          }).catch((e) => ({ status: 'unknown', detail: e?.message }))
-        : { status: 'unknown' };
-      if (cmp.status === 'missing_head') {
-        results.push({
-          eventType: 'v2.pr.failed',
-          summary: `PR for ${repoId} not possible: intent branch "${branch}" does not exist on the remote — the engine never pushed it${
-            activity.pushFailed
-              ? ' (git push failures were recorded during the run; the work may still sit on the session workspace)'
-              : ''
-          }`,
-        });
-        continue;
-      }
-      if (cmp.status === 'identical' || cmp.status === 'behind') {
-        // No commits to merge. Benign ONLY for a run that never had repo work;
-        // a run that recorded engine git activity but ends commit-less has
-        // LOST WORK and must fail loudly (the 2026-07 incident: two ENOSPC'd
-        // commits, a clean-looking branch, and a quiet "no changes" skip).
-        if (activity.pushed || activity.pushFailed) {
-          results.push({
-            eventType: 'v2.pr.failed',
-            summary: `PR for ${repoId} not possible: "${branch}" has no commits ahead of ${cmp.base ?? 'the base branch'} although the run recorded ${
-              activity.pushFailed ? 'engine push FAILURES' : 'engine pushes'
-            } — likely lost work; check the run's v2.git events and the session workspace`,
-          });
-          continue;
-        }
-        results.push({
-          eventType: 'v2.pr.skipped',
-          summary: `No PR for ${repoId}: no changes between ${branch} and ${cmp.base ?? 'the base branch'} (no repo work was recorded this run)`,
-        });
-        continue;
-      }
-      const res = await openPr({
-        projectId: meta.projectId,
-        gitProvider: provider,
-        repoId,
-        branch,
-        baseBranch: baseFor(repoId),
-        title,
-        body,
-        // One creation attempt per orchestrator run. The execution id alone
-        // is the intent id, identical across a rewind or repair relaunch, so
-        // it would replay a PR a reviewer closed in the meantime (CodeCommit
-        // cannot reopen it). A durable replay of this step keeps its run id
-        // and therefore its key.
-        attemptKey: runId ? `${executionId}:${runId}` : executionId,
-      });
-      if (res?.prUrl) {
-        results.push({
-          eventType: 'v2.pr.opened',
-          summary: `${res.existing ? 'PR already open' : 'PR opened'} for ${repoId}: ${res.prUrl}`,
-          // Structured data for record-pr (the graph write happens in the
-          // VPC-attached runtime; the orchestrator has no Neptune access).
-          pr: {
-            repoId,
-            provider,
-            prUrl: res.prUrl,
-            prNumber: res.prNumber ?? null,
-            branch,
-            // The provider retargets to the repo's real default branch when the
-            // requested base was invalid — record the ACTUAL merge target.
-            baseBranch: res.retargetedBase ?? baseFor(repoId),
-          },
-        });
-      } else if (res?.skipped) {
-        // The provider's own "no changes" verdict (compare was unavailable).
-        // Same lost-work override as above: recorded git activity means this
-        // skip is NOT benign.
-        if (activity.pushed || activity.pushFailed) {
-          results.push({
-            eventType: 'v2.pr.failed',
-            summary: `PR for ${repoId} reported "${res.reason ?? 'no changes'}" although the run recorded ${
-              activity.pushFailed ? 'engine push FAILURES' : 'engine pushes'
-            } — likely lost work; check the run's v2.git events and the session workspace`,
-          });
-        } else {
-          results.push({
-            eventType: 'v2.pr.skipped',
-            summary: `No PR for ${repoId}: ${res.reason ?? 'no changes between the branches'}`,
-          });
-        }
-      } else if (res?.failed) {
-        results.push({
-          eventType: 'v2.pr.failed',
-          summary: `PR for ${repoId} failed (${res.reason ?? 'error'}): ${res.error ?? 'no detail'}`,
-        });
-      } else if (res?.conflict) {
-        results.push({
-          eventType: 'v2.pr.failed',
-          summary: `PR blocked for ${repoId}: ${res.error ?? 'unmerged branches'}${
-            res.unmergedBranches?.length ? ` (${res.unmergedBranches.join(', ')})` : ''
-          }`,
-        });
-      } else {
-        results.push({
-          eventType: 'v2.pr.failed',
-          summary: `PR for ${repoId} returned an unexpected result: ${JSON.stringify(res).slice(0, 300)}`,
-        });
-      }
-    } catch (e) {
-      log?.(`PR open failed for ${repoId}: ${e?.message}`);
-      results.push({
-        eventType: 'v2.pr.failed',
-        summary: `PR open failed for ${repoId}: ${e?.message ?? String(e)}`,
-      });
-    }
-  }
-  return results;
 };
 
 export const lambdaHandler = withDurableExecution(handler);

@@ -312,7 +312,8 @@ describe('stage attempt ownership transactions', () => {
       orchestratorRunId: 'run1',
     });
     expect(tx.TransactItems[1].Update).toMatchObject({
-      ConditionExpression: 'orchestratorRunId = :ifOrid',
+      ConditionExpression:
+        '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
       ExpressionAttributeValues: { ':ifOrid': 'run1', ':ph': 'eg-1', ':status': 'WAITING' },
     });
     expect(
@@ -1956,7 +1957,9 @@ describe('steering store methods', () => {
       ifOrchestratorRunId: 'run-1',
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
-    expect(input.ConditionExpression).toBe('orchestratorRunId = :ifOrid');
+    expect(input.ConditionExpression).toBe(
+      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND orchestratorRunId = :ifOrid',
+    );
     expect(input.ExpressionAttributeValues[':ifOrid']).toBe('run-1');
   });
 
@@ -1973,7 +1976,7 @@ describe('steering store methods', () => {
     });
     const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
     expect(input.ConditionExpression).toBe(
-      '#status = :fromStatus AND orchestratorRunId = :ifOrid AND pendingHumanTaskId = :ifPendingHumanTaskId',
+      '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow) AND #status = :fromStatus AND orchestratorRunId = :ifOrid AND pendingHumanTaskId = :ifPendingHumanTaskId',
     );
     expect(input.ExpressionAttributeValues).toMatchObject({
       ':fromStatus': 'WAITING',

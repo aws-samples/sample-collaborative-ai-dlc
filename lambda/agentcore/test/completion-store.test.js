@@ -182,3 +182,26 @@ it('reconciles a committed final transaction whose response was lost', async () 
   ).toMatchObject({ state: 'complete' });
   expect((await store.getExecution(executionId)).status).toBe('SUCCEEDED');
 });
+
+it('does not overwrite a competing success and active publication lease at final commit', async () => {
+  const executionId = await setup();
+  const racingStore = {
+    ...store,
+    updateExecution: async (input) => {
+      const completed = await store.updateExecution({ executionId, status: 'SUCCEEDED' });
+      await store.claimDelivery({
+        meta: completed,
+        delivery: { repositories: [] },
+        attemptId: 'publisher',
+      });
+      return store.updateExecution(input);
+    },
+  };
+  expect(
+    await finalizeUnitCompletion({ store: racingStore, executionId, runId: 'run', plan }),
+  ).toEqual({ state: 'retired' });
+  const current = await store.getExecution(executionId);
+  expect(current.status).toBe('SUCCEEDED');
+  expect(current.deliveryAttemptId).toBe('publisher');
+  expect(current.completionValidation).toBeUndefined();
+});

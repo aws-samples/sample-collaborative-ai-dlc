@@ -22,6 +22,7 @@ import {
 import { LOOP_BACK_LIMIT } from './stage-loopback.js';
 import {
   META,
+  deliveryKey,
   executionMetaKey,
   workflowCheckpointKey,
   stageKey,
@@ -372,6 +373,122 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       }),
     );
     return Item ?? null;
+  };
+
+  // Delivery owns publication only. Its lease outlives a 900s orchestrator
+  // invocation plus a 120s source-control call; a crashed attempt is recoverable.
+  const getDelivery = async (executionId, runId) => {
+    const { Item } = await ddb.send(
+      new GetCommand({
+        TableName: table(),
+        Key: deliveryKey(executionId, runId),
+        ConsistentRead: true,
+      }),
+    );
+    return Item ?? null;
+  };
+  const deliveryPlanCheck = (executionId, plan) =>
+    plan === undefined
+      ? []
+      : [
+          {
+            ConditionCheck: {
+              TableName: table(),
+              Key: unitPlanKey(executionId),
+              ...snapshotCondition(plan, [
+                'units',
+                'sourceArtifactId',
+                'producedByStageInstanceId',
+                'promotedAt',
+              ]),
+            },
+          },
+        ];
+  const claimDelivery = async ({ meta, delivery, attemptId, ifUnitPlan }) => {
+    const ts = now();
+    const leaseUntil = new Date(Date.parse(ts) + 20 * 60_000).toISOString();
+    const item = {
+      ...delivery,
+      ...deliveryKey(meta.executionId, meta.orchestratorRunId),
+      type: 'FinalDelivery',
+      executionId: meta.executionId,
+      orchestratorRunId: meta.orchestratorRunId,
+      attemptId,
+      leaseUntil,
+      updatedAt: ts,
+      status: 'in_progress',
+      revision: (delivery.revision ?? 0) + 1,
+    };
+    await transact([
+      {
+        Update: {
+          TableName: table(),
+          Key: executionMetaKey(meta.executionId),
+          UpdateExpression: 'SET deliveryAttemptId = :attempt, deliveryLeaseUntil = :until',
+          ConditionExpression:
+            '#status = :succeeded AND orchestratorRunId = :run AND updatedAt = :updated AND (attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :now)',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':succeeded': 'SUCCEEDED',
+            ':run': meta.orchestratorRunId,
+            ':updated': meta.updatedAt,
+            ':attempt': attemptId,
+            ':until': leaseUntil,
+            ':now': ts,
+          },
+        },
+      },
+      {
+        Put: {
+          TableName: table(),
+          Item: item,
+          ConditionExpression:
+            delivery.revision == null ? 'attribute_not_exists(pk)' : 'revision = :revision',
+          ...(delivery.revision == null
+            ? {}
+            : { ExpressionAttributeValues: { ':revision': delivery.revision } }),
+        },
+      },
+      ...deliveryPlanCheck(meta.executionId, ifUnitPlan),
+    ]);
+    return item;
+  };
+  const saveDelivery = async ({ delivery, finished = false, ifUnitPlan }) => {
+    const ts = now();
+    const item = { ...delivery, updatedAt: ts };
+    await transact([
+      {
+        Update: {
+          TableName: table(),
+          Key: executionMetaKey(delivery.executionId),
+          UpdateExpression: finished
+            ? 'REMOVE deliveryAttemptId, deliveryLeaseUntil'
+            : 'SET deliveryAttemptId = :attempt',
+          ConditionExpression:
+            '#status = :succeeded AND orchestratorRunId = :run AND deliveryAttemptId = :attempt AND deliveryLeaseUntil > :now',
+          ExpressionAttributeNames: { '#status': 'status' },
+          ExpressionAttributeValues: {
+            ':succeeded': 'SUCCEEDED',
+            ':run': delivery.orchestratorRunId,
+            ':attempt': delivery.attemptId,
+            ':now': finished ? ts : new Date(Date.parse(ts) + 150_000).toISOString(),
+          },
+        },
+      },
+      {
+        Put: {
+          TableName: table(),
+          Item: item,
+          ConditionExpression: 'attemptId = :attempt AND revision = :revision',
+          ExpressionAttributeValues: {
+            ':attempt': delivery.attemptId,
+            ':revision': delivery.revision,
+          },
+        },
+      },
+      ...deliveryPlanCheck(delivery.executionId, ifUnitPlan),
+    ]);
+    return item;
   };
 
   // Publish the latest checkpoint only while the originating orchestrator still
@@ -771,6 +888,12 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     };
     if (Object.keys(names).length) params.ExpressionAttributeNames = names;
     const conditions = [];
+    if (status !== undefined || orchestratorRunId !== undefined) {
+      conditions.push(
+        '(attribute_not_exists(deliveryLeaseUntil) OR deliveryLeaseUntil <= :deliveryNow)',
+      );
+      values[':deliveryNow'] = ts;
+    }
     if (fromStatus) {
       conditions.push('#status = :fromStatus');
       params.ExpressionAttributeNames = { ...params.ExpressionAttributeNames, '#status': 'status' };
@@ -3357,6 +3480,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       feedbackBatches: records.filter((r) => r.sk.startsWith('FEEDBACK#')),
       quorumEdits: records.filter((r) => r.sk.startsWith('QEDIT#')),
       composes: records.filter((r) => r.sk.startsWith('COMPOSE#')),
+      deliveries: records.filter((r) => r.sk.startsWith('DELIVERY#')),
       trackerSync: records.find((r) => r.sk === 'TRACKERSYNC') ?? null,
     };
   };
@@ -3425,6 +3549,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   return {
     createExecution,
     getExecution,
+    getDelivery,
+    claimDelivery,
+    saveDelivery,
     putWorkflowCheckpoint,
     getWorkflowCheckpoint,
     deleteWorkflowCheckpoint,

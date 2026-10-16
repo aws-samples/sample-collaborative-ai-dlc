@@ -35,6 +35,7 @@ import {
   isEnvironmentResolutionError,
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
+import { previewDelivery, deliveryView, currentDelivery } from '../shared/final-delivery.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import {
   unitCompletion,
@@ -1790,6 +1791,19 @@ export const handler = async (event, context) => {
 
     const auth = await authorize(g, projectId, sub, response);
     if (auth.res) return auth.res;
+    if (
+      intentId &&
+      (httpMethod === 'DELETE' ||
+        (httpMethod === 'POST' && /\/(rewind|recompose|cancel|repair)$/.test(path ?? '')))
+    ) {
+      const current = await store.getExecution(intentId, { consistentRead: true });
+      if (current?.projectId === projectId && Date.parse(current.deliveryLeaseUntil) > Date.now()) {
+        return response(409, {
+          error: 'Delivery is in progress. Wait for it to finish before changing this execution.',
+          code: 'delivery_in_progress',
+        });
+      }
+    }
 
     // Authenticated unit-review selection. Provider comments are data only:
     // no webhook/comment can launch an agent. GET refreshes selectable
@@ -4133,6 +4147,86 @@ export const handler = async (event, context) => {
       }
     }
 
+    // Publication recovery is independent of stage recovery and always scoped
+    // to the current run. Preview performs reads only, including old executions.
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/delivery')) {
+      if (auth.role !== 'owner' && auth.role !== 'admin')
+        return response(403, { error: 'Only project owners and admins can retry delivery' });
+      const records = await store.getExecutionRecords(intentId, {
+        includeOutputs: false,
+        consistentRead: true,
+      });
+      const meta = records.meta;
+      if (!meta || meta.projectId !== projectId)
+        return response(404, { error: 'Intent not found' });
+      const input = body ? JSON.parse(body) : {};
+      try {
+        const resolved = await intentMethodology.loadPlan(meta);
+        if (!resolved.valid || !resolved.plan)
+          return response(409, { error: 'The pinned workflow cannot be verified for delivery' });
+        const preview = await previewDelivery({
+          meta,
+          records,
+          plan: resolved.plan,
+          operation: sourceControlOperation,
+        });
+        if (input.preview)
+          return response(200, { ...preview, delivery: deliveryView(meta, preview.delivery) });
+        if (!input.previewToken || input.previewToken !== preview.previewToken)
+          return response(409, {
+            error: 'Delivery state changed. Check delivery again before retrying.',
+            code: 'delivery_preview_changed',
+          });
+        const claimed = await store.claimDelivery({
+          meta,
+          delivery: { ...preview.delivery, requestedBy: sub },
+          attemptId: randomUUID(),
+          ifUnitPlan: records.unitPlan,
+        });
+        try {
+          await lambdaClient.send(
+            new InvokeCommand({
+              FunctionName: ORCHESTRATOR_FN(),
+              InvocationType: 'Event',
+              DurableExecutionName: `delivery-${randomBytes(16).toString('hex')}`,
+              Payload: Buffer.from(
+                JSON.stringify({
+                  action: 'retry-delivery',
+                  projectId,
+                  intentId,
+                  executionId: intentId,
+                  runId: meta.orchestratorRunId,
+                  attemptId: claimed.attemptId,
+                }),
+              ),
+            }),
+          );
+        } catch {
+          // An invocation timeout can mean accepted. Keep the bounded lease:
+          // immediately releasing it could overlap an already running publisher.
+          return response(202, {
+            delivery: deliveryView(meta, claimed),
+            message:
+              'Delivery launch is uncertain. Refresh status; the attempt lease expires automatically.',
+          });
+        }
+        return response(202, { delivery: deliveryView(meta, claimed) });
+      } catch (error) {
+        if (
+          error.statusCode === 409 ||
+          ['ConditionalCheckFailedException', 'TransactionCanceledException'].includes(error.name)
+        )
+          return response(409, {
+            error:
+              error.statusCode === 409
+                ? error.message
+                : 'Delivery or execution changed. Refresh before retrying.',
+            code: error.code ?? 'delivery_changed',
+          });
+        throw error;
+      }
+    }
+
     // POST /projects/{projectId}/intents/{intentId}/repair
     // Recover a parallel section whose stage callbacks became orphaned. This is
     // intentionally narrower than rewind: merged units remain merged, pending
@@ -5326,6 +5420,7 @@ export const handler = async (event, context) => {
         // attribute per-unit stage instances. Both null/empty pre-promotion.
         unitCompletion: completion,
         unitPlan: mapUnitPlan(records.unitPlan),
+        delivery: deliveryView(records.meta, currentDelivery(records)),
         units: (records.units ?? []).map(mapUnit),
         unitPrs: (records.unitPrs ?? []).map(mapUnitPr),
         feedbackBatches: (records.feedbackBatches ?? []).map(mapFeedbackBatch),

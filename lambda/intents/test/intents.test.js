@@ -1,3 +1,4 @@
+import { loadMetaBeforeDelivery } from '../../v2-orchestrator/test/fixtures/load-meta-before-delivery.js';
 import { __durableHandler as runOrchestrator } from '../../v2-orchestrator/index.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
 import { unitPlanIdentity } from '../../shared/unit-completion.js';
@@ -6597,7 +6598,9 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       }));
       const ctx = {
         logger: { info() {}, error() {}, debug() {} },
-        step: async (_name, fn) => fn(),
+        // This inherited regression also covers an A-started history after B deploys.
+        step: async (name, fn) =>
+          name === 'load-meta' ? loadMetaBeforeDelivery(store, intent.id) : fn(),
         createCallback: async (name) => {
           if (name.startsWith('await-')) {
             const humanTaskId = name.slice('await-'.length);

@@ -482,11 +482,16 @@ export function IntentProvider({
   // (CREATED during init-ws, RUNNING, WAITING) we also poll on a slow interval
   // to guarantee init-ws progress and FAILED transitions reach the UI.
   const pollStatus = detail?.intent.status;
+  const deliveryPending = detail?.delivery?.status === 'in_progress';
   useEffect(() => {
-    if (!pollStatus || !['CREATED', 'RUNNING', 'WAITING'].includes(pollStatus)) return;
+    if (
+      !deliveryPending &&
+      (!pollStatus || !['CREATED', 'RUNNING', 'WAITING'].includes(pollStatus))
+    )
+      return;
     const id = setInterval(load, 8000);
     return () => clearInterval(id);
-  }, [pollStatus, load]);
+  }, [pollStatus, deliveryPending, load]);
 
   // Refetch debouncing (docs/v2-parallel.md WP7): every lifecycle event used
   // to trigger an immediate full-DTO refetch — N parallel lanes multiply
