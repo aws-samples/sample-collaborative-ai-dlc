@@ -236,7 +236,7 @@ describe('codeCommitPermissionsPolicy', () => {
     );
     const block = /<!-- codecommit-permissions-policy[^>]*-->\s*```json\n([\s\S]*?)\n```/.exec(doc);
     expect(block).not.toBeNull();
-    expect(JSON.parse(block[1])).toEqual(codeCommitPermissionsPolicy());
+    expect(JSON.parse(block[1])).toEqual(codeCommitTagPermissionsPolicy());
   });
 });
 
