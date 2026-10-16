@@ -580,13 +580,13 @@ This uses the same code path. Do not use `NotResource`: it would open every repo
   "Action": ["codecommit:TagResource", "codecommit:UntagResource", "codecommit:CreateRepository"],
   "Resource": "*",
   "Condition": {
-    "ForAnyValue:StringEquals": { "aws:TagKeys": ["aidlc"] },
+    "ForAnyValue:StringEqualsIgnoreCase": { "aws:TagKeys": ["aidlc"] },
     "ArnNotLike": { "aws:PrincipalArn": "arn:aws:iam::<account-id>:role/<repo-admin-role>" }
   }
 }
 ```
 
-`aws:TagKeys` covers all three actions, including a tag set at creation. (An equivalent form uses a second statement with `"Null": { "aws:RequestTag/aidlc": "false" }` on `CreateRepository` and `TagResource`.)
+`aws:TagKeys` covers all three actions, including a tag set at creation. Keep `StringEqualsIgnoreCase`: the allow matches the tag key without case (`aws:ResourceTag/AIDLC` is the same key for IAM), so a case-sensitive deny would let `AIDLC=true` through. (An equivalent form uses a second statement with `"Null": { "aws:RequestTag/aidlc": "false" }` on `CreateRepository` and `TagResource`.)
 
 **The platform admin** then goes to **Admin → Source Control → AWS CodeCommit**, pastes the role ARN and region, and clicks **Test & save**. The platform assumes the role with the deployment external ID, makes one `ListRepositories` call to prove the trust, and stores the connection. A trust failure returns a hint and stores nothing. From then on every space picks CodeCommit repositories from the usual list, with no ARN, region or IAM to supply. The deployment region does not need to match the repositories' region: the git host and API endpoint are derived from each repository's ARN.
 
