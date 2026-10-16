@@ -549,6 +549,23 @@ describe('G1 native initialization filesystem evidence', () => {
     expect((await (await fixture('codex', '2.9.1-preview.20260918.1')).inspect()).ok).toBe(true);
   });
 
+  it('accepts AI-DLC 2.11 OpenCode json-entries contributions but still requires entry hashes', async () => {
+    const f = await fixture('opencode', '2.11.0');
+    const entry = JSON.stringify({ path: ['skills', 'paths'], item: '.aidlc/skills' });
+    await mutateJson(join(f.data, 'aidlc-manifest.json'), (manifest) => {
+      manifest.rootContributions['opencode.json'] = {
+        policy: 'json-entries',
+        entries: { [entry]: digest('.aidlc/skills') },
+        created: true,
+      };
+    });
+    expect((await f.inspect()).ok).toBe(true);
+    await mutateJson(join(f.data, 'aidlc-manifest.json'), (manifest) => {
+      manifest.rootContributions['opencode.json'].entries[entry] = 'not-a-digest';
+    });
+    await expectFailed(f, 'configuration-manifest');
+  });
+
   it('reports all missing independent evidence instead of stopping at one file', async () => {
     const f = await fixture();
     await rm(join(f.projectDirectory, '.aidlc-version'));

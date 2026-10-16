@@ -657,6 +657,58 @@ describe('harness session selection', () => {
     });
   });
 
+  it.each(['key-order', 'changed-text', 'message-order', 'part-order'])(
+    'verifies the parsed OpenCode import while preserving message/part order: %s',
+    async (variant) => {
+      const value = {
+        info: { id, directory: project },
+        messages: ['one', 'two'].map((message) => ({
+          info: { id: message, sessionID: id },
+          parts: [
+            { sessionID: id, messageID: message, type: 'text', text: 'retained' },
+            { sessionID: id, messageID: message, type: 'text', text: 'second part' },
+          ],
+        })),
+      };
+      const data = Buffer.from(JSON.stringify(value));
+      // The actual installed 1.19 export/import reorders object properties.
+      const after = structuredClone(value);
+      after.messages = after.messages.map(({ info, parts }) => ({
+        parts: parts.map(({ text, type, messageID, sessionID }) => ({
+          text,
+          type,
+          messageID,
+          sessionID,
+        })),
+        info,
+      }));
+      if (variant === 'changed-text') after.messages[0].parts[0].text = 'changed';
+      if (variant === 'message-order') after.messages.reverse();
+      if (variant === 'part-order') after.messages[0].parts.reverse();
+      let imported = false;
+      const run = async ({ operation }) => {
+        if (operation === 'opencode-import') {
+          imported = true;
+          return Buffer.from('Imported');
+        }
+        return imported ? Buffer.from(JSON.stringify(after)) : data;
+      };
+      const checkpoint = await captureNativeSessionRecovery(options({ harness: 'opencode', run }));
+      await emptyRestoreRoots();
+      const restored = restoreNativeSessionRecovery({
+        ...options({ harness: 'opencode', run }),
+        ...checkpoint,
+      });
+      if (variant === 'key-order')
+        await expect(restored).resolves.toMatchObject({ restored: true });
+      else
+        await expect(restored).rejects.toMatchObject({
+          code: 'native_recovery_restore_unverified',
+        });
+      expect(checkpoint.files[0].content).toEqual(data); // Immutable checkpoint bytes never rewritten.
+    },
+  );
+
   it.each([
     { type: 'snapshot', snapshot: 'requires-git-snapshot-store' },
     { type: 'tool', tool: 'task' },

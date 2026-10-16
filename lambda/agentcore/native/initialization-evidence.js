@@ -339,7 +339,9 @@ const validContributions = (value) =>
       return matches(contribution.hash, /^sha256:[a-f0-9]{64}$/);
     }
     return (
-      ['json-map', 'json-array'].includes(contribution.policy) &&
+      // AI-DLC 2.11 records merged OpenCode root settings as json-entries.
+      // Like the older map/array policies, each owned entry has a digest.
+      ['json-map', 'json-array', 'json-entries'].includes(contribution.policy) &&
       record(contribution.entries) &&
       Object.values(contribution.entries).every((hash) => matches(hash, /^sha256:[a-f0-9]{64}$/))
     );

@@ -8,6 +8,7 @@ import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { canonicalNativePath } from './execution-files.js';
 import { nativeCredentialPath } from '../../shared/native-project-files.js';
 
@@ -825,7 +826,9 @@ export const restoreNativeSessionRecovery = async (input = {}) => {
       if (
         actual?.info?.id !== ctx.nativeSessionId ||
         actual.info.directory !== project ||
-        JSON.stringify(actual.messages) !== JSON.stringify(expected.messages)
+        // OpenCode's real import/export reorders JSON object properties.
+        // Values and array order must remain exact; checkpoint bytes stay immutable.
+        !isDeepStrictEqual(actual.messages, expected.messages)
       )
         fail('restore_unverified');
       await io.rm(join(home, OPENCODE_EXPORT));
