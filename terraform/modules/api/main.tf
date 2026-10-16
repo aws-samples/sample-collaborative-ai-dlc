@@ -191,8 +191,9 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.bitbucket_repos_get,
     aws_api_gateway_integration.bitbucket_status_get,
     aws_api_gateway_integration.codecommit_status_get,
-    aws_api_gateway_integration.codecommit_connect_info_get,
-    aws_api_gateway_integration.codecommit_repos_post,
+    aws_api_gateway_integration.codecommit_admin_config_get,
+    aws_api_gateway_integration.codecommit_admin_config_put,
+    aws_api_gateway_integration.codecommit_repos_get,
     aws_api_gateway_integration.bitbucket_disconnect_delete,
     aws_api_gateway_integration.bitbucket_repos_branches_get,
     aws_api_gateway_integration.bitbucket_repos_tree_get,
@@ -229,7 +230,7 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_bitbucket_repos,
     module.cors_bitbucket_status,
     module.cors_codecommit_status,
-    module.cors_codecommit_connect_info,
+    module.cors_codecommit_admin_config,
     module.cors_codecommit_repos,
     module.cors_bitbucket_disconnect,
     module.cors_bitbucket_repos_branches,
@@ -538,9 +539,14 @@ resource "aws_api_gateway_deployment" "main" {
       # redeploy or the live stage 403s their preflight.
       aws_api_gateway_resource.codecommit.id,
       aws_api_gateway_resource.codecommit_status.id,
-      aws_api_gateway_resource.codecommit_connect_info.id,
+      aws_api_gateway_resource.codecommit_admin.id,
+      aws_api_gateway_resource.codecommit_admin_config.id,
+      aws_api_gateway_method.codecommit_admin_config_get.id,
+      aws_api_gateway_method.codecommit_admin_config_put.id,
+      aws_api_gateway_integration.codecommit_admin_config_get.id,
+      aws_api_gateway_integration.codecommit_admin_config_put.id,
       aws_api_gateway_resource.codecommit_repos.id,
-      aws_api_gateway_method.codecommit_repos_post.http_method,
+      aws_api_gateway_method.codecommit_repos_get.http_method,
     ]))
   }
 }
