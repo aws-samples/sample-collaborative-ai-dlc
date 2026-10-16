@@ -8,8 +8,8 @@ import {
 import { ApiError } from '../services/api';
 import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 
-// Only providers with a personal OAuth connection. CodeCommit is connected
-// through an IAM role (see CodeCommitConnectForm), so it can never reach here.
+// Only providers with a personal OAuth connection. CodeCommit uses the one
+// platform connection set by an admin, so it can never reach here.
 export interface GitConnectButtonProps {
   provider: OAuthGitProvider;
   connected: boolean;

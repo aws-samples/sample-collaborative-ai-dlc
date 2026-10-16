@@ -1,54 +1,82 @@
 import { api } from './api';
-import type { GitRepo } from './gitProvider';
 
-// CodeCommit connect flow (the `codecommit-role` auth type). No OAuth: the
-// tenant creates an IAM role in the repository account and trusts the platform
-// with the caller's external id. The backend mints that id once per user and
-// resolves it from the user's connection on every call; the UI only displays it
-// and never sends it back. Everything the UI needs to walk a user through the
-// handshake comes from three routes on the codecommit Lambda.
+// CodeCommit is one platform connection, owned by a platform admin: a single
+// IAM role in the repository account that trusts the platform principals with
+// the deployment's external ID. Space creators never see IAM — they pick a
+// provider and repositories like every other provider (the repo list comes
+// from the generic path in services/gitProvider.ts).
+//
+// This module owns the admin-only configuration routes (platform-admin gated
+// on the backend). The external ID is minted once per deployment and only ever
+// displayed; the UI never sends it back.
 
-export interface CodeCommitConnectInfo {
-  externalId: string;
+export interface CodeCommitAdminConfig {
+  // Platform execution-role ARNs the tenant role must trust. Admin-only: never
+  // returned to a non-admin (the status route carries no principals).
   principals: string[];
-  trustPolicy: Record<string, unknown>;
-  // The role's permissions policy, with a placeholder repository ARN.
-  permissionsPolicy: Record<string, unknown>;
-  // Regions the connect flow offers; the backend refuses any other.
-  regions: string[];
-}
-
-export interface CodeCommitRoleConnection {
-  roleArn: string;
-  // Display only: the caller's own external id, rendered in the trust policy.
+  // The deployment's external ID ("aidlc:<uuid>"), rendered into the trust
+  // policy. Display only.
   externalId: string;
+  // The trust policy to paste on the role, with the external ID filled in.
+  trustPolicy: Record<string, unknown>;
+  // The permissions policy, with region and account filled in (tag variant;
+  // the setup guide also shows the explicit-ARN alternative).
+  permissionsPolicy: Record<string, unknown>;
+  // The saved connection, or null when nothing is configured yet.
+  roleArn: string | null;
+  region: string | null;
+}
+
+export interface CodeCommitAdminConfigUpdate {
+  roleArn: string;
   region: string;
 }
 
-export interface CodeCommitRepo extends GitRepo {
-  arn: string;
-  accountId: string;
-  region: string;
-}
+// CodeCommit regions the platform can reach (same list as the backend's
+// CODECOMMIT_REGIONS; the backend stays the authority and rejects any other on
+// save). China/GovCloud are other partitions the platform roles cannot assume
+// into, so they are not offered.
+export const CODECOMMIT_REGIONS = [
+  'us-east-1',
+  'us-east-2',
+  'us-west-1',
+  'us-west-2',
+  'ca-central-1',
+  'sa-east-1',
+  'eu-west-1',
+  'eu-west-2',
+  'eu-west-3',
+  'eu-central-1',
+  'eu-north-1',
+  'eu-south-1',
+  'il-central-1',
+  'me-south-1',
+  'me-central-1',
+  'af-south-1',
+  'ap-east-1',
+  'ap-south-1',
+  'ap-south-2',
+  'ap-northeast-1',
+  'ap-northeast-2',
+  'ap-northeast-3',
+  'ap-southeast-1',
+  'ap-southeast-2',
+  'ap-southeast-3',
+] as const;
 
-export interface CodeCommitRepoList {
-  accountId: string;
-  region: string;
-  repositories: CodeCommitRepo[];
-}
-
-export const CODECOMMIT_EXTERNAL_ID_PATTERN = /^aidlc:[0-9a-f-]{36}$/;
 export const IAM_ROLE_ARN_PATTERN =
   /^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/;
 
-export const codecommitService = {
-  // The caller's external id (stable across calls) and the trust policy to
-  // paste on the tenant role.
-  connectInfo: () => api.get<CodeCommitConnectInfo>('/codecommit/connect-info'),
+export const codecommitAdminService = {
+  // Current connection + the policies and principals the admin needs. 403 for a
+  // non-admin (the backend gates it; this route is only reached from the
+  // admin-only Platform Admin page).
+  getConfig: () => api.get<CodeCommitAdminConfig>('/codecommit/admin/config'),
 
-  // Proves the handshake (trust policy + the caller's external id) and lists
-  // what the role can see in the region. A 424 means the trust policy is not in
-  // place yet. The external id is resolved server-side, never sent.
-  listRepos: ({ roleArn, region }: Pick<CodeCommitRoleConnection, 'roleArn' | 'region'>) =>
-    api.post<CodeCommitRepoList>('/codecommit/repos', { roleArn, region }),
+  // Test the role and region, then save. The backend assumes the role with the
+  // platform external ID and runs one ListRepositories before writing. On a
+  // trust failure it returns 424 and writes nothing; the fresh config is
+  // returned on success.
+  updateConfig: (update: CodeCommitAdminConfigUpdate) =>
+    api.put<CodeCommitAdminConfig>('/codecommit/admin/config', update),
 };
