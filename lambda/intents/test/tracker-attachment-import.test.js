@@ -86,6 +86,45 @@ describe('tracker import through intent attachments', () => {
     expect(meta.attachments).toHaveLength(1);
   });
 
+  it('lists only missing files using persisted source identity, not filenames', async () => {
+    await importer.importOne(meta, 'user-1', 'asset-1');
+    meta.attachments.push(
+      { filename: 'design.pdf' },
+      { source: { ...meta.source, bindingId: 'another-binding', attachmentId: 'asset-2' } },
+      { source: { ...meta.source, resourceId: 'another-issue', attachmentId: 'asset-3' } },
+    );
+    const remaining = [
+      { id: 'asset-2', filename: 'design.pdf' },
+      { id: 'asset-3', filename: 'other.pdf' },
+      { id: 'asset-4', filename: 'external.pdf', skipReason: 'External file link' },
+    ];
+    invokeTracker.mockResolvedValue({
+      attachments: [{ id: 'asset-1', filename: 'renamed.pdf' }, ...remaining],
+    });
+
+    expect(await importer.list(structuredClone(meta), 'user-1')).toEqual({
+      attachments: remaining,
+    });
+  });
+
+  it('returns no candidates after all files are imported, but offers removed files again', async () => {
+    await importer.importOne(meta, 'user-1', 'asset-1');
+    const candidate = { id: 'asset-1', filename: 'design.pdf' };
+    invokeTracker.mockResolvedValue({ attachments: [candidate] });
+    expect(await importer.list(meta, 'user-1')).toEqual({ attachments: [] });
+    meta.attachments = [];
+    expect(await importer.list(meta, 'user-1')).toEqual({ attachments: [candidate] });
+  });
+
+  it('keeps candidates for drafts without stored attachments and preserves discovery failures', async () => {
+    delete meta.attachments;
+    const candidate = { id: 'asset-1', filename: 'design.pdf' };
+    invokeTracker.mockResolvedValueOnce({ attachments: [candidate] });
+    expect(await importer.list(meta, 'user-1')).toEqual({ attachments: [candidate] });
+    invokeTracker.mockResolvedValueOnce({ reason: 'Tracker disconnected' });
+    expect(await importer.list(meta, 'user-1')).toEqual({ reason: 'Tracker disconnected' });
+  });
+
   it('uses a new object key when a previously removed file is imported again', async () => {
     const first = await importer.importOne(meta, 'user-1', 'asset-1');
     meta.pendingAttachmentDeletions = [first.attachment];

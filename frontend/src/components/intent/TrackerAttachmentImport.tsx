@@ -31,7 +31,7 @@ export function TrackerAttachmentImport({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const running = useRef(false);
-  const autoStarted = useRef(false);
+  const initialized = useRef(false);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -40,66 +40,80 @@ export function TrackerAttachmentImport({
     };
   }, []);
 
-  const run = useCallback(async () => {
-    if (running.current) return;
-    running.current = true;
-    setBusy(true);
-    onBusyChange(true);
-    setMessage(null);
-    setResults([]);
-    try {
-      const discovery = await intentsService.trackerAttachments(projectId, intentId);
-      if (!mounted.current) return;
-      if (!discovery.attachments) {
-        setMessage(discovery.reason || 'Could not discover issue attachments.');
-        return;
-      }
-      const candidates = discovery.attachments;
-      if (!candidates.length) setMessage('No issue attachments found.');
-      setResults(candidates.map((file) => ({ ...file, status: 'pending' })));
-      for (const file of candidates) {
-        if (!mounted.current) break;
-        setResults((current) =>
-          current.map((row) => (row.id === file.id ? { ...file, status: 'importing' } : row)),
-        );
-        let result: TrackerAttachmentImportResult;
-        try {
-          result = file.skipReason
-            ? { status: 'skipped', reason: file.skipReason }
-            : await intentsService.importTrackerAttachment(projectId, intentId, file.id);
-        } catch (error) {
-          result = {
-            status: 'failed',
-            reason:
-              error instanceof Error
-                ? error.message
-                : 'Import failed. Retry to check whether the file arrived.',
-          };
+  const run = useCallback(
+    async (importFiles = true) => {
+      if (running.current) return;
+      running.current = true;
+      setBusy(importFiles);
+      if (importFiles) onBusyChange(true);
+      setMessage(null);
+      setResults([]);
+      try {
+        const discovery = await intentsService.trackerAttachments(projectId, intentId);
+        if (!mounted.current) return;
+        if (!discovery.attachments) {
+          setMessage(discovery.reason || 'Could not discover issue attachments.');
+          return;
         }
-        if (!mounted.current) break;
-        setResults((current) =>
-          current.map((row) => (row.id === file.id ? { ...file, ...result } : row)),
+        const candidates = discovery.attachments;
+        setResults(
+          candidates.map((file) =>
+            file.skipReason
+              ? { ...file, status: 'skipped', reason: file.skipReason }
+              : { ...file, status: 'pending' },
+          ),
         );
-        if (result.status === 'imported') onImported();
+        if (!importFiles) return;
+        for (const file of candidates) {
+          if (!mounted.current) break;
+          setResults((current) =>
+            current.map((row) => (row.id === file.id ? { ...file, status: 'importing' } : row)),
+          );
+          let result: TrackerAttachmentImportResult;
+          try {
+            result = file.skipReason
+              ? { status: 'skipped', reason: file.skipReason }
+              : await intentsService.importTrackerAttachment(projectId, intentId, file.id);
+          } catch (error) {
+            result = {
+              status: 'failed',
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : 'Import failed. Retry to check whether the file arrived.',
+            };
+          }
+          if (!mounted.current) break;
+          setResults((current) =>
+            current.map((row) => (row.id === file.id ? { ...file, ...result } : row)),
+          );
+          if (result.status === 'imported') onImported();
+        }
+      } catch (error) {
+        if (mounted.current)
+          setMessage(
+            error instanceof Error ? error.message : 'Could not import issue attachments.',
+          );
+      } finally {
+        running.current = false;
+        if (mounted.current) {
+          setBusy(false);
+          if (importFiles) onBusyChange(false);
+        }
       }
-    } catch (error) {
-      if (mounted.current)
-        setMessage(error instanceof Error ? error.message : 'Could not import issue attachments.');
-    } finally {
-      running.current = false;
-      if (mounted.current) {
-        setBusy(false);
-        onBusyChange(false);
-      }
-    }
-  }, [projectId, intentId, onBusyChange, onImported]);
+    },
+    [projectId, intentId, onBusyChange, onImported],
+  );
 
   useEffect(() => {
-    if (!autoImport || autoStarted.current || disabled) return;
-    autoStarted.current = true;
-    onAutoImportStarted();
-    void run();
+    if (initialized.current || disabled) return;
+    initialized.current = true;
+    if (autoImport) onAutoImportStarted();
+    void run(autoImport);
   }, [autoImport, disabled, onAutoImportStarted, run]);
+
+  const unresolvedResults = results.filter((file) => file.status !== 'imported');
+  if (!busy && !message && unresolvedResults.length === 0) return null;
 
   return (
     <div className="space-y-2 rounded-md border p-3" aria-label="Tracker attachment import">
@@ -121,11 +135,11 @@ export function TrackerAttachmentImport({
           {message}
         </p>
       )}
-      {results.length > 0 && (
+      {unresolvedResults.length > 0 && (
         <ul className="space-y-1 text-xs" aria-live="polite">
-          {results.map((file) => (
+          {unresolvedResults.map((file) => (
             <li key={file.id}>
-              {file.status === 'imported' ? file.attachment.filename : file.filename}: {file.status}
+              {file.filename}: {file.status === 'pending' ? 'not imported' : file.status}
               {'reason' in file && file.reason ? ` — ${file.reason}` : ''}
             </li>
           ))}

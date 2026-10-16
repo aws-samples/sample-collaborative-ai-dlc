@@ -280,9 +280,15 @@ describe('IntentComposePage', () => {
         },
       ],
     });
-    importTrackerAttachment.mockReset().mockResolvedValue({
-      status: 'imported',
-      attachment: { attachmentId: 'a1', filename: 'spec.pdf' },
+    const attachment = {
+      attachmentId: 'a1',
+      filename: 'spec.pdf',
+      size: 10,
+      source: { ...source, attachmentId: 'asset-1' },
+    };
+    importTrackerAttachment.mockReset().mockImplementation(async () => {
+      attachments.mockResolvedValue({ attachments: [attachment], attachmentRevision: 1 });
+      return { status: 'imported', attachment };
     });
     const NavigationState = () => (
       <output data-testid="navigation-state">{JSON.stringify(useLocation().state)}</output>
@@ -291,7 +297,11 @@ describe('IntentComposePage', () => {
       importTrackerAttachments: true,
       releaseSelectionFallback: true,
     });
-    await screen.findByText('spec.pdf: imported');
+    await screen.findByText('spec.pdf');
+    expect(screen.getByTestId('attachment-list')).toHaveTextContent('spec.pdf');
+    expect(screen.getByTestId('attachment-list')).toHaveTextContent('From source issue');
+    expect(screen.queryByLabelText('Tracker attachment import')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry import' })).not.toBeInTheDocument();
     await waitFor(() => {
       expect(JSON.parse(screen.getByTestId('navigation-state').textContent || '{}')).toEqual({
         releaseSelectionFallback: true,
@@ -301,9 +311,10 @@ describe('IntentComposePage', () => {
     first.unmount();
     // The backend now has no attachment (the user removed it). Simulate a
     // reload using the history entry actually left by the first render.
+    attachments.mockResolvedValue({ attachments: [], attachmentRevision: 2 });
     renderPage(<NavigationState />, savedState);
-    await screen.findByRole('button', { name: 'Import attachments' });
-    expect(trackerAttachments).toHaveBeenCalledTimes(1);
+    await screen.findByText('spec.pdf: not imported');
+    expect(trackerAttachments).toHaveBeenCalledTimes(2);
     expect(importTrackerAttachment).toHaveBeenCalledTimes(1);
   });
 

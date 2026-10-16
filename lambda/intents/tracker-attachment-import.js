@@ -42,16 +42,26 @@ export const createTrackerAttachmentImporter = ({
       userId,
       ...options,
     });
-  const list = (meta, userId) => request(meta, userId);
+  const matchesSource = (meta, file, id) =>
+    file.source?.attachmentId === id &&
+    file.source.bindingId === meta.source.bindingId &&
+    file.source.resourceId === meta.source.resourceId;
+  const list = async (meta, userId) => {
+    const discovery = await request(meta, userId);
+    if (!discovery.attachments) return discovery;
+    return {
+      ...discovery,
+      attachments: discovery.attachments.filter(
+        (candidate) => !meta.attachments?.some((file) => matchesSource(meta, file, candidate.id)),
+      ),
+    };
+  };
 
   const importOne = async (meta, userId, id) => {
     const intentId = meta.executionId;
-    const matchesSource = (file) =>
-      file.source?.attachmentId === id &&
-      file.source.bindingId === meta.source.bindingId &&
-      file.source.resourceId === meta.source.resourceId;
+    const isImportedFile = (file) => matchesSource(meta, file, id);
     const attachmentId = randomUUID();
-    const existing = meta.attachments?.find(matchesSource);
+    const existing = meta.attachments?.find(isImportedFile);
     if (existing) return { status: 'imported', attachment: existing };
     // This temporary prefix is covered by staging's existing expiration rule
     // and intentionally does not match the upload-event promotion key pattern.
@@ -76,12 +86,12 @@ export const createTrackerAttachmentImporter = ({
       };
       for (let attempt = 0; attempt < 4; attempt += 1) {
         meta = await store.getExecution(intentId);
-        const committed = meta?.attachments?.find(matchesSource);
+        const committed = meta?.attachments?.find(isImportedFile);
         if (committed) return { status: 'imported', attachment: committed };
         if (meta?.status !== 'DRAFT')
           return { status: 'failed', reason: 'The intent is no longer a draft.' };
         const pending = activePendingAttachments(meta);
-        if (pending.some(matchesSource)) {
+        if (pending.some(isImportedFile)) {
           return {
             status: 'failed',
             reason: 'This attachment is already being imported. Refresh and retry.',
