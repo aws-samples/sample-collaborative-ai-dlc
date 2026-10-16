@@ -50,6 +50,7 @@ import {
   clearChannel,
   getChannels,
   getRelease,
+  isAccessDenied,
   isReleaseRegistryError,
   isSelectableRecord,
   listRegistrableProfiles,
@@ -841,6 +842,8 @@ const releasePlanInputs = async ({
     s3,
     bucket: artifactsBucket(),
     methodologyRelease,
+    ddb,
+    tableName: blocksTable(),
   });
   const resolvedLibrary = await resolveMethodologyLibrary({
     closure,
@@ -1246,6 +1249,17 @@ const decodePathParam = (raw) => {
 };
 
 const registryError = (res, error) => {
+  // A release manifest S3 refused to return. This function has no s3:ListBucket,
+  // so S3 answers a read of a manifest that was never published with 403 rather
+  // than 404: the request cannot tell "not published" from "not allowed", so it
+  // says which manifest and both causes instead of failing as a 500.
+  if (isAccessDenied(error)) {
+    return res(502, {
+      error:
+        'The release manifest could not be read: S3 denied the read. Without s3:ListBucket, S3 answers this way for a manifest that has not been published yet; publish the release, or check that this function may read aidlc-releases/.',
+      code: 'release_manifest_unreadable',
+    });
+  }
   if (!isReleaseRegistryError(error)) throw error;
   const status =
     error.code === 'release_not_found'

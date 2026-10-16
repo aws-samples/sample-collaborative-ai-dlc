@@ -70,6 +70,29 @@ const RUNTIME_HANDLERS = Object.freeze(
 // invariant check below reads as the rule it enforces.
 const UNHANDLED = Object.freeze({ handling: 'unsupported', handler: null });
 
+// A `{{INVOKE}} engine <family>` gap is not an authored frontmatter value and
+// never reaches `plan.capabilities`: it is prompt text, and the seam that answers
+// it is the engine-command annex the stage and compose prompts append
+// (agentcore/prompts/invoke-dialect-annex.md). The annex is a CLOSED list, so a
+// family it names BY NAME has a defined platform answer — for a state-mutating
+// family, recording a recommendation for the human instead of performing the
+// action — and must not block promotion where the annex reaches the prompt (the
+// gap carries `annexed` only then). A family the annex does not name gets
+// only its catch-all ("say it is unavailable, never improvise"), which keeps the
+// authored step unperformed and unrecorded, so it keeps blocking promotion.
+//
+// This is deliberately NOT the same axis as the fidelity report, which keeps
+// classifying these families `unsupported`: that is the admin-facing statement
+// "the platform does not reproduce these semantics", not "this build has no
+// handler". `release_capability_unhandled` means the latter.
+const ANNEX_HANDLED_ENGINE_COMMANDS = Object.freeze(
+  new Set(['engine graph ars', 'engine orchestrate', 'engine recompose', 'engine state']),
+);
+
+const ENGINE_COMMAND_GAP_FIELD = '{{INVOKE}}';
+const isEngineCommandGap = (gap) =>
+  gap?.blockType === 'BODY' && gap?.field === ENGINE_COMMAND_GAP_FIELD;
+
 // The version-agnostic marker for the stages Plan Approval governs — see
 // `planApprovalApplies`.
 const PLAN_APPROVAL_ARTIFACT = 'code-generation-plan';
@@ -600,8 +623,12 @@ const unhonouredValues = ({
   fidelityGaps = [],
   registry = AIDLC_CAPABILITIES,
   handlers = RUNTIME_HANDLERS,
+  annexedEngineCommands = ANNEX_HANDLED_ENGINE_COMMANDS,
 } = {}) =>
   fidelityGaps.filter((gap) => {
+    if (isEngineCommandGap(gap)) {
+      return !(gap.annexed === true && annexedEngineCommands.has(gap.value));
+    }
     const entry = registry.find(
       (candidate) => candidate.blockType === gap.blockType && candidate.field === gap.field,
     );
@@ -639,6 +666,7 @@ const planApprovalApplies = ({ stage, capabilities = {} } = {}) => {
 
 export {
   AIDLC_CAPABILITIES,
+  ANNEX_HANDLED_ENGINE_COMMANDS,
   FIELD_FIDELITY,
   FRONTMATTER_ENUMS,
   LOOP_BACK_RESULTS_ARTIFACT,
@@ -659,6 +687,7 @@ export {
 
 export default {
   AIDLC_CAPABILITIES,
+  ANNEX_HANDLED_ENGINE_COMMANDS,
   FIELD_FIDELITY,
   FRONTMATTER_ENUMS,
   LOOP_BACK_RESULTS_ARTIFACT,

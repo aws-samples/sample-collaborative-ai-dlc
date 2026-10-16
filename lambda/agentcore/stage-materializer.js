@@ -66,6 +66,29 @@ const invokeAnnexPath = path.join(
 );
 export const INVOKE_DIALECT_ANNEX = readFileSync(invokeAnnexPath, 'utf8').trimEnd();
 
+// Every answer in the annex names an AUTHOR tool as the channel that replaces
+// the engine command — `emit_stage_note` for a recommendation, `send_output` for
+// the closing summary. A read-only persona session (the reviewer's MCP role,
+// which may only `submit_review`) has neither, so handing it the annex verbatim
+// would instruct it to call a tool it was never registered for. The rows stay
+// VERBATIM — a release's annexed command is answered by the same text in every
+// session, which is what makes the guard's annex claim checkable — and this
+// preamble redirects only the recording channel to the one that role has.
+const READ_ONLY_RECORDING_PREAMBLE = [
+  '> **You are a read-only session.** Every answer below that says to record',
+  '> something with `emit_stage_note`, or to end with a `send_output` summary,',
+  '> names a tool you do not have. Put that content in your `submit_review`',
+  '> findings instead, naming the command and what could not be performed. Every',
+  '> refusal below — never run the engine, never claim you ran it, never invent a',
+  '> value it would have produced — applies to you unchanged.',
+].join('\n');
+
+// The dialect annex for ONE prompt, in the form the session receiving it can
+// actually perform. `readOnly` is the caller's MCP role, not a release property:
+// the answers are the same, the channel that carries them is not.
+export const invokeDialectAnnex = ({ readOnly = false } = {}) =>
+  readOnly ? `${READ_ONLY_RECORDING_PREAMBLE}\n\n${INVOKE_DIALECT_ANNEX}` : INVOKE_DIALECT_ANNEX;
+
 // Upstream bodies carry a literal `{{HARNESS_DIR}}` token (substituted only at
 // upstream's own dist build, which we bypass by fetching core/ raw). We neutralize
 // it at the PROMPT layer — the seeded block body stays verbatim — so the agent
@@ -339,12 +362,14 @@ export const buildStagePrompt = ({
     );
   }
   sections.push('', OUTPUT_CONTRACT);
-  // The dialect annex is gated on the two parts that actually INSTRUCT the agent
-  // to run engine commands: the stage body and the conductor doctrine. Personas,
-  // knowledge, and compiled context are neutralized above but only ever MENTION
-  // the token, so gating on them would append a large annex for an incidental
-  // reference.
-  if (hasInvokeToken(stageBody, conductor)) {
+  // The dialect annex is gated on the parts a release authors to INSTRUCT the
+  // agent: the stage body, the conductor doctrine, the persona and the reference
+  // knowledge. `shared/annex-reach.js` keeps that set and the promotion guard's
+  // one definition, so the guard never counts a command answered in a session
+  // this prompt leaves without the answer. The compiled context is runtime data
+  // the platform assembles, not authored release content, so it is neutralized
+  // above but never gated on.
+  if (hasInvokeToken(stageBody, conductor, agentPersona, knowledge)) {
     sections.push('', INVOKE_DIALECT_ANNEX);
   }
   return sections.join('\n');

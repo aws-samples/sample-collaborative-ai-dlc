@@ -4,6 +4,8 @@
 // catalog without the new fields must produce byte-identical output.
 
 import { describe, expect, it, vi } from 'vitest';
+import { ANNEX_HANDLED_ENGINE_COMMANDS } from '../../shared/aidlc-capabilities.js';
+import { INVOKE_FAMILY_FIDELITY } from '../../shared/aidlc-compatibility.js';
 import { createSensorRunner } from '../sensor-runner.js';
 import {
   INVOKE_DIALECT_ANNEX,
@@ -66,17 +68,37 @@ describe('{{INVOKE}} dialect', () => {
     expect(prompt).not.toContain('{{INVOKE}}');
   });
 
-  it('does not append the annex for incidental mentions in other prompt parts', () => {
-    for (const part of ['agentPersona', 'knowledge', 'compiledContext']) {
+  // A release authors the persona and the reference knowledge to INSTRUCT the
+  // agent just as it authors the stage body: the promotion guard counts an
+  // engine command found in one of those bodies as answered, so the prompt that
+  // renders it has to carry the answer. The compose prompt already gates on the
+  // composer persona and its knowledge (commands/compose-plan-start.js); a stage
+  // prompt renders the same kinds of body and gates on them the same way.
+  it('appends the annex when the persona or the reference knowledge instructs', () => {
+    for (const part of ['agentPersona', 'knowledge']) {
       const prompt = buildStagePrompt({
         stage: STAGE,
         stageBody: 'plain',
-        [part]: 'Historically this ran {{INVOKE}} engine gen scope-table.',
+        [part]: 'Obtain the branch with `{{INVOKE}} engine worktree info --slug current`.',
       });
-      expect(prompt).not.toContain(INVOKE_DIALECT_ANNEX);
-      expect(prompt).not.toContain('{{INVOKE}}');
-      expect(prompt).toContain('<runtime-managed-engine>');
+      expect(prompt, part).toContain(INVOKE_DIALECT_ANNEX);
+      expect(prompt, part).not.toContain('{{INVOKE}}');
+      expect(prompt, part).toContain('<runtime-managed-engine> engine worktree info');
     }
+  });
+
+  // The compiled context is runtime data the platform assembles, never authored
+  // release content, so it is not evidence the guard reads and gating on it
+  // would append the annex for an incidental quote.
+  it('does not append the annex for an incidental mention in the compiled context', () => {
+    const prompt = buildStagePrompt({
+      stage: STAGE,
+      stageBody: 'plain',
+      compiledContext: 'Historically this ran {{INVOKE}} engine gen scope-table.',
+    });
+    expect(prompt).not.toContain(INVOKE_DIALECT_ANNEX);
+    expect(prompt).not.toContain('{{INVOKE}}');
+    expect(prompt).toContain('<runtime-managed-engine>');
   });
 
   it('never tells the agent a missing prerequisite is satisfied', () => {
@@ -119,6 +141,51 @@ describe('{{INVOKE}} dialect', () => {
     expect(INVOKE_DIALECT_ANNEX).toContain('record_learning_rule');
     expect(INVOKE_DIALECT_ANNEX).toContain('emit_stage_note');
     expect(INVOKE_DIALECT_ANNEX).toContain('send_output');
+  });
+
+  // The promotion guard stops refusing a release for the families this annex
+  // answers, so the two must not drift: a family dropped from the annex list
+  // must stop being honoured, and a newly honoured family must be answered here.
+  it('answers by name every engine-command family the promotion guard honours', () => {
+    expect([...ANNEX_HANDLED_ENGINE_COMMANDS]).toContain('engine graph ars');
+    for (const command of ANNEX_HANDLED_ENGINE_COMMANDS) {
+      expect(INVOKE_DIALECT_ANNEX).toContain(`${command} `);
+    }
+  });
+
+  // The composer persona of 2.8.2 and 2.9.0 runs `workspace detect`; the compose
+  // prompt carries the platform's workspace signals instead.
+  it('answers workspace detect from the workspace signals the compose prompt carries', () => {
+    const row = INVOKE_DIALECT_ANNEX.split('\n').find((line) =>
+      line.startsWith('- `engine workspace detect'),
+    );
+    expect(row).toContain('Workspace signals');
+  });
+
+  // Only a for_each stage runs in a per-unit lane; every other stage, such as
+  // the pipeline and deployment stages whose agent invokes `worktree`, runs on
+  // the intent branch.
+  it('says which branch the working tree is on, in a lane and outside one', () => {
+    const row = INVOKE_DIALECT_ANNEX.split('\n').find((line) =>
+      line.startsWith('- `engine worktree create`'),
+    );
+    expect(row).toContain('In a per-unit lane your working tree is that unit');
+    expect(row).toContain('otherwise it is the intent branch itself');
+  });
+
+  // A family classified `approximated` is no gap at all, so the annex is the only
+  // place the agent learns what the platform does instead.
+  it('answers by name every engine-command family classified approximated', () => {
+    const approximated = INVOKE_FAMILY_FIDELITY.filter(
+      (entry) => entry.handling === 'approximated',
+    ).map((entry) => entry.family);
+
+    expect(approximated).toEqual(
+      expect.arrayContaining(['gen', 'workspace', 'worktree', 'graph validate-grid']),
+    );
+    for (const family of approximated) {
+      expect(INVOKE_DIALECT_ANNEX, family).toContain(`engine ${family}`);
+    }
   });
 });
 

@@ -397,7 +397,7 @@ describe('release promotion evidence', () => {
         bodies: ['{{INVOKE}} engine state set'],
       }),
     ).toEqual([
-      { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine state' },
+      { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine state set' },
       { blockType: 'STAGE', field: 'mode', value: 'agent-team' },
     ]);
   });
@@ -429,6 +429,144 @@ describe('release promotion evidence', () => {
         expected.length === 0 && report.certificationGaps.length === 0,
       );
     }
+  });
+});
+
+describe('a release whose stage bodies invoke engine commands', () => {
+  // Verbatim `{{INVOKE}}` lines from the published 2.9.0 closure's prompts, one
+  // per command family they author. The compatibility fixtures omit bodies, so
+  // no profile test ever puts a BODY gap through the promotion guard; these
+  // lines are what a real import actually carries.
+  const BODIES = [
+    'Create: `{{INVOKE}} engine worktree create --slug <bolt-slug> --base main`.',
+    '`{{INVOKE}} engine worktree merge --slug <bolt-slug> --target main --strategy squash`',
+    '```\n{{INVOKE}} engine worktree info --slug <kebab-slug>\n```',
+    'Invoke `{{INVOKE}} engine worktree` from the main repo checkout.',
+    '{{INVOKE}} engine graph ars --iae <s> --csu <s> --ve <s> --r <s> --ua <s>',
+    '{{INVOKE}} engine graph validate-grid --proposal <path> --project-type greenfield',
+    '{{INVOKE}} engine orchestrate report --stage code-generation --result approved',
+    '{{INVOKE}} engine recompose --add user-stories',
+    '{{INVOKE}} engine state practices-promote --id <id>',
+  ];
+
+  const gapsFromBodies = () => fidelityGapsFromCatalog({ catalog: { blocks: {} }, bodies: BODIES });
+
+  // `worktree` and `graph validate-grid` are performed by the platform in its own
+  // way (approximated), so they are no gap. `graph ars` has no platform
+  // equivalent: like the state-mutating commands it stays listed for the admin,
+  // and the annex answers it.
+  it('records the families it invokes that the platform does not perform, so the admin listing can show them', () => {
+    expect(gapsFromBodies().map((gap) => [gap.value, gap.annexed])).toEqual([
+      ['engine graph ars', true],
+      ['engine orchestrate', true],
+      ['engine recompose', true],
+      ['engine state', true],
+    ]);
+  });
+
+  it('holds no promotion for a family the platform performs or the annex answers', () => {
+    expect(unhonouredValues({ fidelityGaps: gapsFromBodies() })).toEqual([]);
+  });
+
+  it('keeps refusing a worktree or graph subcommand the platform does not perform', () => {
+    const fidelityGaps = fidelityGapsFromCatalog({
+      catalog: { blocks: {} },
+      bodies: ['{{INVOKE}} engine worktree remove --slug x', '{{INVOKE}} engine graph compile'],
+    });
+
+    expect(unhonouredValues({ fidelityGaps }).map((gap) => gap.value)).toEqual([
+      'engine graph compile',
+      'engine worktree remove',
+    ]);
+  });
+
+  it('promotes a release whose engine commands the annex all answer', () => {
+    const fidelityGaps = fidelityGapsFromCatalog({
+      catalog: { blocks: {} },
+      bodies: [
+        '{{INVOKE}} engine orchestrate report --stage code-generation --result approved',
+        '{{INVOKE}} engine recompose --add user-stories',
+        '{{INVOKE}} engine state set-construction-iteration unit-major',
+      ],
+    });
+
+    expect(fidelityGaps).toHaveLength(3);
+    expect(unhonouredValues({ fidelityGaps })).toEqual([]);
+  });
+
+  // The engine CLI has more `orchestrate` and `state` subcommands than the annex
+  // answers. One the annex does not name gets only its catch-all, so a release
+  // that invokes it must not be honoured under the family the answered ones share.
+  it('refuses an orchestrate or state subcommand the annex does not answer', () => {
+    const fidelityGaps = fidelityGapsFromCatalog({
+      catalog: { blocks: {} },
+      bodies: [
+        '{{INVOKE}} engine orchestrate report --stage code-generation --result approved',
+        '{{INVOKE}} engine orchestrate next --json',
+        '{{INVOKE}} engine state practices-event --type override',
+        '{{INVOKE}} engine state approve --stage code-generation',
+      ],
+    });
+
+    expect(unhonouredValues({ fidelityGaps }).map((gap) => gap.value)).toEqual([
+      'engine orchestrate next',
+      'engine state approve',
+    ]);
+  });
+
+  // A command no family pattern matches is named by its own text, which can equal
+  // the name an answered family is listed under. Only a command the annex answers
+  // may be honoured, whatever the gap is called.
+  it('refuses a bare, flag-only or unknown command named like an answered family', () => {
+    const fidelityGaps = fidelityGapsFromCatalog({
+      catalog: { blocks: {} },
+      bodies: [
+        '{{INVOKE}} engine state practices-event --type override',
+        '{{INVOKE}} engine state',
+        '{{INVOKE}} engine orchestrate --next',
+        '{{INVOKE}} engine recompose --remove user-stories',
+        '{{INVOKE}} engine state rollback --stage code-generation',
+      ],
+    });
+
+    expect(unhonouredValues({ fidelityGaps }).map((gap) => gap.value)).toEqual([
+      'engine orchestrate --next',
+      'engine recompose --remove',
+      'engine state',
+      'engine state rollback',
+    ]);
+  });
+
+  // The annex answers `gen scope-table`, `gen stage-table` and three `workspace`
+  // subcommands by name; any other subcommand of those families gets only its
+  // catch-all.
+  it('refuses a gen or workspace subcommand the annex does not answer', () => {
+    const fidelityGaps = fidelityGapsFromCatalog({
+      catalog: { blocks: {} },
+      bodies: [
+        '{{INVOKE}} engine gen scope-table',
+        '{{INVOKE}} engine gen stage-table',
+        '{{INVOKE}} engine gen runners',
+        '{{INVOKE}} engine workspace detect --json',
+        '{{INVOKE}} engine workspace codekb --repo x',
+        '{{INVOKE}} engine workspace codekb-scope-diff --mint',
+        '{{INVOKE}} engine workspace reset',
+      ],
+    });
+
+    expect(unhonouredValues({ fidelityGaps }).map((gap) => gap.value)).toEqual([
+      'engine gen runners',
+      'engine workspace reset',
+    ]);
+  });
+
+  it('refuses an engine-command gap that does not carry the annexed mark', () => {
+    const gap = { kind: 'engine-command', blockType: 'BODY', field: '{{INVOKE}}' };
+
+    expect(unhonouredValues({ fidelityGaps: [{ ...gap, value: 'engine state' }] })).toHaveLength(1);
+    expect(
+      unhonouredValues({ fidelityGaps: [{ ...gap, value: 'engine state', annexed: true }] }),
+    ).toEqual([]);
   });
 });
 

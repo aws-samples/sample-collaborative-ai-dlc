@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { dispatchPersona, composePersonaPrompt } from '../persona-dispatch.js';
+import { INVOKE_DIALECT_ANNEX } from '../stage-materializer.js';
+import { __test as runStageInternals } from '../commands/run-stage.js';
 
 // A child mock that resolves 'close' with exit code 0 and records whatever was
 // piped to stdin — every driver here (claude/kiro/opencode) delivers its prompt
@@ -370,5 +372,86 @@ describe('dispatchPersona — the trusted scope of a dispatched persona', () => 
       },
     });
     expect(scopes[0]).toMatchObject({ canAsk: false });
+  });
+});
+
+// A secondary session receives the same authored bodies as the lead: the
+// reviewer brief and every ensemble persona brief render a persona and the
+// reference knowledge (commands/run-stage.js buildReviewerPrompt,
+// loadMethodologyKnowledge). The promotion guard may only call an engine command
+// answered if EVERY prompt rendering that body carries the answer, so this tail
+// is the secondary-session half of that claim.
+describe('composePersonaPrompt — the dialect annex in a secondary session', () => {
+  const INSTRUCTING = 'Obtain the branch with `{{INVOKE}} engine worktree info --slug current`.';
+
+  it('answers an engine command the persona or the knowledge instructs', () => {
+    for (const part of ['persona', 'knowledge']) {
+      for (const role of ['support', 'link', 'integrator']) {
+        const prompt = composePersonaPrompt({
+          brief: 'b',
+          persona: 'p',
+          knowledge: 'k',
+          role,
+          [part]: INSTRUCTING,
+        });
+
+        expect(prompt, `${role}/${part}`).toContain(INVOKE_DIALECT_ANNEX);
+        expect(prompt, `${role}/${part}`).not.toContain('{{INVOKE}}');
+        // An author role HAS the tools the annex names, so it gets the annex
+        // verbatim; the read-only redirection would be wrong for it.
+        expect(prompt, `${role}/${part}`).not.toContain('**You are a read-only session.**');
+      }
+    }
+  });
+
+  // Every answer in the annex names an author tool (`emit_stage_note`,
+  // `send_output`). The reviewer's MCP role may only `submit_review`, so the
+  // rows stay verbatim and a preamble redirects the recording channel; handing
+  // it the annex unchanged would instruct a tool it was never registered for.
+  it('redirects the recording channel for the read-only reviewer role', () => {
+    const prompt = composePersonaPrompt({
+      brief: 'b',
+      persona: 'p',
+      knowledge: INSTRUCTING,
+      role: 'reviewer',
+    });
+
+    expect(prompt).toContain(INVOKE_DIALECT_ANNEX);
+    expect(prompt).toContain('**You are a read-only session.**');
+    expect(prompt).toContain('`submit_review`');
+  });
+
+  it('leaves a brief whose bodies instruct nothing unchanged', () => {
+    for (const role of ['reviewer', 'support']) {
+      const prompt = composePersonaPrompt({
+        brief: 'b',
+        persona: 'You are the designer.',
+        knowledge: 'Prefer composition over inheritance.',
+        role,
+      });
+
+      expect(prompt, role).not.toContain(INVOKE_DIALECT_ANNEX);
+      expect(prompt, role).not.toContain('read-only session');
+    }
+  });
+
+  it('answers it in the real reviewer prompt the runtime builds', () => {
+    const prompt = runStageInternals.buildReviewerPrompt({
+      stage: {
+        stageId: 'functional-design',
+        phase: 'inception',
+        outputArtifacts: [{ artifact: 'business-logic-model' }],
+        inputArtifacts: [{ artifact: 'requirements' }],
+        reviewer: { artifact: 'business-logic-model' },
+      },
+      reviewerAgent: 'aidlc-architecture-reviewer-agent',
+      reviewerPersona: 'You are the independent reviewer.',
+      knowledge: INSTRUCTING,
+      round: 1,
+    });
+
+    expect(prompt).toContain(INVOKE_DIALECT_ANNEX);
+    expect(prompt).toContain('**You are a read-only session.**');
+    expect(prompt).not.toContain('{{INVOKE}}');
   });
 });

@@ -27,12 +27,13 @@ import {
 import { buildExecutionPlan } from '../../shared/v2-execution-plan.js';
 import {
   buildGroundingPack,
+  COMPOSER_AGENT_ID,
   parseComposeProposal,
   PROPOSAL_CONTRACT,
 } from '../../shared/compose-match.js';
 import { resolveCliSelection } from './discussion-assist-start.js';
-import { neutralizeHarnessDir } from '../stage-materializer.js';
 import { closeGraphSource } from '../mcp/graph-writer.js';
+import { hasInvokeToken, INVOKE_DIALECT_ANNEX, neutralizeTokens } from '../stage-materializer.js';
 
 const logger = new Logger({
   persistentKeys: { component: 'agentcore', module: 'compose-plan-start' },
@@ -40,7 +41,6 @@ const logger = new Logger({
 
 const CONTEXT_LIMIT = 48 * 1024;
 const MAX_REPORT_EXCERPT = 24 * 1024;
-const COMPOSER_AGENT_ID = 'aidlc-composer-agent';
 
 const jobKey = (p) => `${p.intentId}:${p.composeId}`;
 
@@ -123,6 +123,22 @@ const MODE_TASKS = {
   ].join('\n'),
 };
 
+// The composer persona and its knowledge are upstream methodology text and can
+// be large (the 2.6.18+ persona alone is ~46-48 KB); everything after them is
+// what the platform needs the model to act on. When the whole prompt fits, it is
+// joined in order. When it does not, the persona and knowledge are cut to the
+// space the rest leaves, so the task, the intent, the grounding and the output
+// contract reach the model. The mode task and the output contract are never cut.
+//
+// From 2.8.2 the persona invokes the upstream engine as `{{INVOKE}} engine …`,
+// and it addresses the local harness through `{{HARNESS_DIR}}`. Neither exists
+// here, so both tokens are neutralized and the engine-command annex that says
+// what to do instead is carried, as in a stage prompt. The execution-environment
+// note below rides in the uncut tail for the same reason.
+// Ends a cut persona, so the model knows the methodology text above is partial.
+export const COMPOSER_PERSONA_TRUNCATED =
+  '[Composer persona and knowledge truncated here to fit the prompt budget.]';
+
 // The upstream composer persona is written for the local AI-DLC harness: it
 // runs `detect`/`validate-grid`, writes proposal files, and must STOP when those
 // tools are missing. None of them exist in this one-shot, so without this note
@@ -150,28 +166,40 @@ const buildComposePrompt = ({
   reportExcerpt,
   progressContext,
 }) => {
-  const parts = [];
-  const push = (t) => {
-    if (t && parts.join('\n').length < CONTEXT_LIMIT) parts.push(String(t));
-  };
-  push(
-    neutralizeHarnessDir(persona || '') ||
-      'You are the AI-DLC composer agent: you propose workflow projections; you never route, advance, gate, or write workflow state.',
-  );
-  push(neutralizeHarnessDir(knowledge || ''));
-  push(PLATFORM_ENVIRONMENT);
-  push(MODE_TASKS[mode]);
-  push(`Intent:\n${intentPrompt || '(none provided)'}`);
-  if (instructions) push(`Requester instructions:\n${instructions}`);
-  if (repoSignals)
-    push(
-      `Workspace signals (advisory — runtime detection is authoritative):\n${JSON.stringify(repoSignals, null, 2)}`,
-    );
-  if (reportExcerpt) push(`Report excerpt:\n${String(reportExcerpt).slice(0, MAX_REPORT_EXCERPT)}`);
-  if (progressContext) push(`Live stage progress:\n${progressContext}`);
-  push(grounding);
-  push(PROPOSAL_CONTRACT);
-  return parts.join('\n\n').slice(0, CONTEXT_LIMIT);
+  const head = [
+    neutralizeTokens(
+      persona ||
+        'You are the AI-DLC composer agent: you propose workflow projections; you never route, advance, gate, or write workflow state.',
+    ),
+    knowledge ? neutralizeTokens(knowledge) : null,
+  ].filter(Boolean);
+  const tail = [
+    hasInvokeToken(persona, knowledge) ? INVOKE_DIALECT_ANNEX : null,
+    PLATFORM_ENVIRONMENT,
+    MODE_TASKS[mode],
+    `Intent:\n${intentPrompt || '(none provided)'}`,
+    instructions ? `Requester instructions:\n${instructions}` : null,
+    repoSignals
+      ? `Workspace signals (advisory — runtime detection is authoritative):\n${JSON.stringify(repoSignals, null, 2)}`
+      : null,
+    reportExcerpt ? `Report excerpt:\n${String(reportExcerpt).slice(0, MAX_REPORT_EXCERPT)}` : null,
+    progressContext ? `Live stage progress:\n${progressContext}` : null,
+    grounding,
+  ]
+    .filter(Boolean)
+    .map(String);
+  const whole = [...head, ...tail, PROPOSAL_CONTRACT].join('\n\n');
+  if (whole.length <= CONTEXT_LIMIT) return whole;
+  // The output contract is appended whole after the cut. If the rest still does
+  // not fit once the persona and knowledge are gone, its end (the grounding) is
+  // cut too; the mode task comes first in it, so it stays.
+  const budget = CONTEXT_LIMIT - PROPOSAL_CONTRACT.length - 2;
+  const rest = tail.join('\n\n');
+  const room = Math.max(0, budget - rest.length - COMPOSER_PERSONA_TRUNCATED.length - 3);
+  const body = [`${head.join('\n\n').slice(0, room)}\n${COMPOSER_PERSONA_TRUNCATED}`, rest]
+    .join('\n\n')
+    .slice(0, budget);
+  return `${body}\n\n${PROPOSAL_CONTRACT}`;
 };
 
 export const createComposePlanStart = ({

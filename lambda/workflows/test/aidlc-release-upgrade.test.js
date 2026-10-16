@@ -229,6 +229,28 @@ describe('PATCH /aidlc-releases/{releaseId} {importerRevision}', () => {
     });
   });
 
+  it('502s when S3 denies the read of the target revision manifest', async () => {
+    const revision = await currentRevision();
+    const key = releaseManifestKey({ sha: SHA, importerRevision: 2 });
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (input.Key === key) {
+        const error = new Error('Access Denied');
+        error.name = 'AccessDenied';
+        error.$metadata = { httpStatusCode: 403 };
+        throw error;
+      }
+      if (!objects.has(input.Key)) throw Object.assign(new Error('missing'), { name: 'NoSuchKey' });
+      return { Body: { transformToString: async () => objects.get(input.Key) } };
+    });
+
+    const res = await patchRelease({ expectedRevision: revision, importerRevision: 2 });
+
+    expect({ status: res.status, code: res.body.code }).toEqual({
+      status: 502,
+      code: 'release_manifest_unreadable',
+    });
+  });
+
   it('409s a manifest at the target revision that fails verification', async () => {
     const key = releaseManifestKey({ sha: SHA, importerRevision: 2 });
     objects.set(key, JSON.stringify({ ...currentBundle.manifest, closureDigest: 'a'.repeat(64) }));

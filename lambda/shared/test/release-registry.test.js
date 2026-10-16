@@ -6,7 +6,7 @@
 // first-class case — two admins racing must not silently clobber one another.
 
 import { readFileSync } from 'node:fs';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
@@ -25,6 +25,15 @@ import {
 } from '../aidlc-release.js';
 import { AIDLC_COMPATIBILITY_PROFILES } from '../aidlc-compatibility-profiles.js';
 import {
+  __test as releaseResolverTest,
+  loadReleaseClosure,
+  resolveMethodologyLibrary,
+} from '../release-resolver.js';
+import { loadExecutionPlan, loadWorkflowScopes } from '../v2-workflow-plan.js';
+import { buildExecutionPlan } from '../v2-execution-plan.js';
+import { INVOKE_DIALECT_ANNEX, buildStagePrompt } from '../../agentcore/stage-materializer.js';
+import { composePersonaPrompt } from '../../agentcore/persona-dispatch.js';
+import {
   __test,
   RELEASE_CHANNELS,
   SUPPORT_STATES,
@@ -32,6 +41,7 @@ import {
   getChannel,
   getChannels,
   getRelease,
+  isAccessDenied,
   listRegistrableProfiles,
   listReleases,
   registerCustomRelease,
@@ -57,6 +67,12 @@ const UNPRODUCIBLE_GAP = Object.freeze({
   field: 'mode',
   value: 'agent-team',
 });
+
+const {
+  FIDELITY_EVIDENCE_REVISION,
+  RELEASE_LIST_EVIDENCE_BUDGET,
+  RELEASE_LIST_EVIDENCE_BUDGET_MS,
+} = __test;
 
 const s3Mock = mockClient(S3Client);
 const ddbMock = mockClient(DynamoDBDocumentClient);
@@ -884,9 +900,9 @@ describe('padded version ordering', () => {
   });
 });
 
-// Custom fork records (issue #482 follow-up). The property under test: a fork is
-// recorded as evidence only, and NO sequence of registry calls can make it
-// offerable to a new intent.
+// Custom fork records. The property under test: a fork is recorded as evidence
+// only, and the one way to make it offerable is the explicit admin promotion,
+// through the same fidelity guard an official release passes.
 describe('registerCustomRelease', () => {
   const FORK_SHA = '0123456789abcdef0123456789abcdef01234567';
   const FORK_REPOSITORY = 'acme/aidlc-fork';
@@ -1002,28 +1018,64 @@ describe('registerCustomRelease', () => {
     });
   });
 
-  it('cannot be promoted to selectable or certified', async () => {
+  it('is made runnable only by an explicit promotion through the fidelity guard', async () => {
     const { release } = await registerFork();
+    expect(release).toMatchObject({ runnable: false, unhonouredValues: [] });
 
-    for (const supportState of ['selectable', 'certified']) {
-      await expect(
-        updateRelease({
-          ...registryArgs(),
-          releaseId: FORK_RELEASE_ID,
-          expectedRevision: release.revision,
-          patch: { supportState },
-        }),
-      ).rejects.toMatchObject({ code: 'release_not_selectable' });
-    }
-    // The support states that do not widen selection remain patchable.
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: FORK_RELEASE_ID,
+      expectedRevision: release.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+    const visible = await updateRelease({
+      ...registryArgs(),
+      releaseId: FORK_RELEASE_ID,
+      expectedRevision: promoted.revision,
+      patch: { visible: true },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'selectable', runnable: true, custom: true });
+    expect(visible.visible).toBe(true);
     await expect(
-      updateRelease({
+      resolveSelectableRelease({ ...registryArgs(), releaseId: FORK_RELEASE_ID }),
+    ).resolves.toMatchObject({ releaseId: FORK_RELEASE_ID, custom: true, runnable: true });
+    await expect(
+      setChannel({
         ...registryArgs(),
+        channel: 'candidate',
         releaseId: FORK_RELEASE_ID,
-        expectedRevision: release.revision,
-        patch: { supportState: 'existing-only', visible: true },
+        actor: 'admin-1',
       }),
-    ).resolves.toMatchObject({ supportState: 'existing-only', runnable: false, custom: true });
+    ).resolves.toMatchObject({ releaseId: FORK_RELEASE_ID });
+  });
+
+  it('pins a promoted fork to its own custom closure', async () => {
+    await registerFork();
+    await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: FORK_RELEASE_ID,
+      expectedRevision: 1,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+    const pin = releasePinFromRecord(
+      await getRelease({ ...registryArgs(), releaseId: FORK_RELEASE_ID }),
+    );
+
+    expect(pin).toMatchObject({
+      releaseId: FORK_RELEASE_ID,
+      custom: true,
+      sourceRepository: FORK_REPOSITORY,
+      manifestKey: expect.stringContaining(`/custom/${FORK_REPOSITORY}/`),
+    });
   });
 
   it('cannot hold a channel pointer, even when visible', async () => {
@@ -1400,6 +1452,305 @@ describe('listRegistrableProfiles tolerates a masked 403', () => {
       name: 'AccessDenied',
     });
   });
+
+  it('takes only an S3 AccessDenied for a masked read, not another 403', () => {
+    expect(isAccessDenied(accessDenied())).toBe(true);
+    expect(isAccessDenied({ Code: 'AccessDenied' })).toBe(true);
+    expect(
+      isAccessDenied({ name: 'AccessDeniedException', $metadata: { httpStatusCode: 403 } }),
+    ).toBe(false);
+    expect(isAccessDenied({ name: 'Forbidden', $metadata: { httpStatusCode: 403 } })).toBe(false);
+  });
+});
+
+// A customer's own fork that keeps 2.9.0's foundations but not its content: a
+// new scope, a new blocking sensor with its script, and a new stage that runs in
+// that scope. Promotion asks the same question as for an official release:
+// does this build have a handler for everything the fork authors?
+describe('a custom fork of 2.9.0 with its own stages, scopes and sensors', () => {
+  const FORK_SHA = 'fedcba9876543210fedcba9876543210fedcba98';
+  const FORK_REPOSITORY = 'acme/aidlc-own';
+  // `invokeLines: false` leaves out the engine commands the real 2.9.0 bodies carry.
+  const forkFiles = ({ invokeLines = true } = {}) => {
+    const files = filesWithInvokeLines(CANDIDATE_PROFILE, invokeLines ? CANDIDATE_PROFILE : null);
+    const lines = (...parts) => `${parts.join('\n')}\n`;
+    files.set(
+      'core/scopes/acme-hotfix.md',
+      lines(
+        '---',
+        'name: hotfix',
+        'depth: Minimal',
+        'keywords: []',
+        'description: Ship one urgent fix behind a security review',
+        'skeleton: off',
+        'runner: true',
+        'change_control: relaxed',
+        '---',
+        'Hotfix scope.',
+      ),
+    );
+    files.set(
+      'core/sensors/acme-secrets.md',
+      lines(
+        '---',
+        'id: secrets',
+        'kind: deterministic',
+        'command: {{INVOKE}} engine sensor-secrets',
+        'default_severity: blocking',
+        'description: Refuses committed credentials',
+        'category: security',
+        'matches: "**/*.{ts,js}"',
+        'input_schema:',
+        '  file_path: string',
+        'output_schema:',
+        '  pass: boolean',
+        'timeout_seconds: 30',
+        '---',
+        'Secrets sensor.',
+      ),
+    );
+    files.set('core/tools/aidlc-sensor-secrets.ts', 'export const secrets = true;\n');
+    files.set(
+      'core/aidlc-common/stages/construction/acme-security-review.md',
+      lines(
+        '---',
+        'slug: acme-security-review',
+        'name: Security Review',
+        'phase: construction',
+        'execution: ALWAYS',
+        'condition: Always',
+        'lead_agent: aidlc-devsecops-agent',
+        'support_agents: []',
+        'mode: inline',
+        'produces:',
+        '  - security-review',
+        'consumes: []',
+        'sensors:',
+        '  - secrets',
+        'scopes:',
+        '  - hotfix',
+        '  - feature',
+        'inputs: the working tree',
+        'outputs: security-review.md',
+        '---',
+        'Review the change for security issues.',
+      ),
+    );
+    return files;
+  };
+  const publishFork = async (files) => {
+    const profile = customProfile({
+      repository: FORK_REPOSITORY,
+      sha: FORK_SHA,
+      baseProfileId: CANDIDATE_PROFILE,
+    });
+    const bundle = buildReleaseBundle({ profile, files });
+    await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+    const { release } = await registerCustomRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      repository: FORK_REPOSITORY,
+      sha: FORK_SHA,
+      baseProfileId: CANDIDATE_PROFILE,
+      actor: 'admin-1',
+    });
+    return release;
+  };
+  const promoteFork = (release) =>
+    updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: release.releaseId,
+      expectedRevision: release.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+  it("is promoted and its pinned plan runs the fork's own stage and sensor", async () => {
+    const registered = await publishFork(forkFiles());
+    const promoted = await promoteFork(registered);
+    await updateRelease({
+      ...registryArgs(),
+      releaseId: registered.releaseId,
+      expectedRevision: promoted.revision,
+      patch: { visible: true },
+      actor: 'admin-1',
+    });
+    const selected = await resolveSelectableRelease({
+      ...registryArgs(),
+      releaseId: registered.releaseId,
+    });
+
+    const resolved = await expectPinnedPlansResolve(selected);
+    const { plan } = buildExecutionPlan({
+      workflow: resolved.workflow,
+      scope: 'hotfix',
+      library: resolved.library,
+    });
+
+    expect(registered).toMatchObject({ runnable: false, unhonouredValues: [] });
+    expect(promoted).toMatchObject({ supportState: 'selectable', runnable: true });
+    const review = plan.stages.find((stage) => stage.stageId === 'acme-security-review');
+    expect(review.sensors.map((sensor) => sensor.sensorId)).toEqual(['secrets']);
+  });
+
+  // Production reaches a closure through the plan and scope loaders, which must
+  // hand the resolver the registry: without it every fork pin is refused.
+  it('resolves its pin through the plan and scope loaders intents and the orchestrator use', async () => {
+    const registered = await publishFork(forkFiles());
+    await promoteFork(registered);
+    const methodologyRelease = releasePinFromRecord(
+      await getRelease({ ...registryArgs(), releaseId: registered.releaseId }),
+    );
+    const { catalog } = await loadReleaseClosure({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      methodologyRelease,
+      cache: new Map(),
+    });
+    const args = {
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      methodologyRelease,
+      workflowId: catalog.workflow.id,
+      workflowVersion: catalog.workflow.workflowVersion,
+    };
+
+    releaseResolverTest.releaseClosureCache.clear();
+    expect(await loadWorkflowScopes(args)).toContain('hotfix');
+    releaseResolverTest.releaseClosureCache.clear();
+    const { valid, errors } = await loadExecutionPlan({ ...args, scope: 'hotfix' });
+    expect({ valid, errors }).toEqual({ valid: true, errors: [] });
+  });
+
+  it('stays import-only, and the admin sees why, when it authors behavior this build cannot honour', async () => {
+    const files = forkFiles();
+    const path = 'core/aidlc-common/stages/construction/acme-security-review.md';
+    files.set(path, files.get(path).replace('mode: inline', 'mode: agent-team'));
+    const registered = await publishFork(files);
+    const gap = { blockType: 'STAGE', field: 'mode', value: 'agent-team' };
+
+    expect(registered.unhonouredValues).toEqual([gap]);
+    await expect(promoteFork(registered)).rejects.toMatchObject({
+      code: 'release_capability_unhandled',
+      details: { gaps: [gap] },
+    });
+    expect(await getRelease({ ...registryArgs(), releaseId: registered.releaseId })).toMatchObject({
+      runnable: false,
+      supportState: 'structurally-valid',
+    });
+  });
+
+  // The annex is appended to a prompt only when a part the release authors to
+  // INSTRUCT carries the token — the stage body, the conductor, a persona or the
+  // reference knowledge — and this fork's carry none. A rule body is rendered
+  // into the stage's steering doc but is not a part any builder gates on, so an
+  // engine command invoked there reaches a session with no answer.
+  it('refuses an answered engine command that only a body no prompt annexes invokes', async () => {
+    const files = forkFiles({ invokeLines: false });
+    const rule = 'core/memory/org.md';
+    expect(files.has(rule)).toBe(true);
+    files.set(
+      rule,
+      `${files.get(rule)}\nRecord it: {{INVOKE}} engine state practices-event --type override\n`,
+    );
+    const registered = await publishFork(files);
+    const gap = { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine state' };
+
+    expect(registered.unhonouredValues).toEqual([gap]);
+    await expect(promoteFork(registered)).rejects.toMatchObject({
+      code: 'release_capability_unhandled',
+      details: { gaps: [gap] },
+    });
+  });
+
+  // Bodies are content-addressed, so a stage and a rule authored with the SAME
+  // text share one object. Coverage belongs to each consuming block: the rule's
+  // session still receives the command, so the verdict must be the one the
+  // distinct-body case gets. Deduplication is a storage detail and may not
+  // decide compatibility.
+  it.each([
+    ['share one body', false],
+    ['carry their own', true],
+  ])('refuses it when the stage and the rule %s', async (_label, distinct) => {
+    const files = forkFiles({ invokeLines: false });
+    const stage = 'core/aidlc-common/stages/construction/acme-security-review.md';
+    const rule = 'core/memory/org.md';
+    const command = 'Record it: {{INVOKE}} engine state practices-event --type override.';
+    files.set(stage, `${files.get(stage)}\n${command}\n`);
+    files.set(rule, `${command}${distinct ? ' Org layer.' : ''}\n`);
+    const registered = await publishFork(files);
+    const gap = { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine state' };
+
+    expect(registered.unhonouredValues).toEqual([gap]);
+    await expect(promoteFork(registered)).rejects.toMatchObject({
+      code: 'release_capability_unhandled',
+      details: { gaps: [gap] },
+    });
+  });
+
+  // An APPROXIMATED family is no gap only where the annex that names the
+  // platform's substitute arrives: the agent learns from it that the platform
+  // owns the worktree and that the branch is readable from git. Invoked from a
+  // body no builder annexes, the session has the authored step and no
+  // substitute, so membership in the approximated list cannot clear it.
+  it('refuses an approximated command whose answer does not reach its prompt', async () => {
+    const files = forkFiles({ invokeLines: false });
+    const rule = 'core/memory/org.md';
+    files.set(
+      rule,
+      `${files.get(rule)}\nObtain the branch: {{INVOKE}} engine worktree info --slug current\n`,
+    );
+    const registered = await publishFork(files);
+    const gap = { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine worktree' };
+
+    expect(registered.unhonouredValues).toEqual([gap]);
+    await expect(promoteFork(registered)).rejects.toMatchObject({
+      code: 'release_capability_unhandled',
+      details: { gaps: [gap] },
+    });
+  });
+
+  it.each([
+    'core/aidlc-common/stages/construction/acme-security-review.md',
+    'core/agents/aidlc-devsecops-agent.md',
+    'core/knowledge/aidlc-shared/state-template.md',
+  ])('honours an approximated command invoked from %s', async (path) => {
+    const files = forkFiles({ invokeLines: false });
+    expect(files.has(path), path).toBe(true);
+    files.set(
+      path,
+      `${files.get(path)}\nObtain the branch: {{INVOKE}} engine worktree info --slug current\n`,
+    );
+    const registered = await publishFork(files);
+
+    expect(registered.fidelityGaps.filter((gap) => gap.blockType === 'BODY')).toEqual([]);
+    expect(registered.unhonouredValues).toEqual([]);
+    await expect(promoteFork(registered)).resolves.toMatchObject({ runnable: true });
+  });
+
+  it('honours the same command in a stage body, and graph ars in the composer persona', async () => {
+    const files = forkFiles({ invokeLines: false });
+    const stage = 'core/aidlc-common/stages/construction/acme-security-review.md';
+    const composer = 'core/agents/aidlc-composer-agent.md';
+    expect(files.has(composer)).toBe(true);
+    files.set(
+      stage,
+      `${files.get(stage)}\nRecord it: {{INVOKE}} engine state practices-event --type override\n`,
+    );
+    files.set(composer, `${files.get(composer)}\n{{INVOKE}} engine graph ars --iae <s>\n`);
+    const registered = await publishFork(files);
+
+    expect(registered.fidelityGaps.filter((gap) => gap.blockType === 'BODY')).toEqual([
+      { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine graph ars', annexed: true },
+      { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine state', annexed: true },
+    ]);
+    await expect(promoteFork(registered)).resolves.toMatchObject({ runnable: true });
+  });
 });
 
 describe('registration asserts manifest identity', () => {
@@ -1644,6 +1995,251 @@ describe('a cancelled transaction reports the channel guard over the revision ch
   });
 });
 
+// Acceptance: a deployment of this build, starting from an empty registry, can
+// promote and run 2.8.2 and 2.9.0. The compatibility fixtures omit every body,
+// so each is rebuilt with every `{{INVOKE}} engine` line its real release
+// carries, verbatim, in every file (prompts, skills, templates, the engine's
+// hooks, protocols and tools).
+const INVOKE_LINES = JSON.parse(
+  readFileSync(new URL('./fixtures/aidlc-release-invoke-lines.json', import.meta.url), 'utf8'),
+);
+
+const filesWithInvokeLines = (profileId, linesFrom = profileId) => {
+  const files = filesFromCompatibilityFixture({
+    profileId,
+    fixture: JSON.parse(
+      readFileSync(
+        new URL(`./fixtures/aidlc-compatibility/${profileId}.json`, import.meta.url),
+        'utf8',
+      ),
+    ),
+  });
+  for (const [path, lines] of Object.entries(INVOKE_LINES[linesFrom]?.files ?? {})) {
+    expect(files.has(path), path).toBe(true);
+    files.set(path, `${files.get(path)}\n${lines.join('\n')}\n`);
+  }
+  return files;
+};
+
+// The plan of every scope the release offers resolves from the pinned closure.
+const expectPinnedPlansResolve = async (release) => {
+  const closure = await loadReleaseClosure({
+    s3,
+    bucket: BUCKET,
+    methodologyRelease: releasePinFromRecord(release),
+    ...registryArgs(),
+    cache: new Map(),
+  });
+  const resolved = await resolveMethodologyLibrary({
+    closure,
+    ddb: ddbMock,
+    tableName: TABLE,
+    workflowId: closure.catalog.workflow.id,
+    workflowVersion: closure.catalog.workflow.workflowVersion,
+  });
+  const scopes = Object.keys(resolved.library.scopesById);
+  expect(scopes.length).toBeGreaterThan(0);
+  for (const scope of scopes) {
+    const { valid, errors } = buildExecutionPlan({
+      workflow: resolved.workflow,
+      scope,
+      library: resolved.library,
+    });
+    expect({ scope, valid, errors }).toEqual({ scope, valid: true, errors: [] });
+  }
+  return resolved;
+};
+
+describe.each(['v2.8.2', 'v2.9.0'])('a deployment promoting the real %s', (profileId) => {
+  const bundle = buildReleaseBundle({ profileId, files: filesWithInvokeLines(profileId) });
+  const { releaseId } = bundle.manifest;
+  const engineCommand = (value) => ({
+    blockType: 'BODY',
+    field: '{{INVOKE}}',
+    value,
+    annexed: true,
+  });
+
+  beforeEach(async () => {
+    installFakes();
+    await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+  });
+
+  it('registers it with only the engine commands its prompts invoke, and none unhonoured', async () => {
+    const { release } = await registerRelease(registerArgs(profileId));
+
+    expect(release.fidelityGaps.filter((gap) => gap.blockType === 'BODY')).toEqual(
+      ['engine graph ars', 'engine orchestrate', 'engine recompose', 'engine state'].map(
+        engineCommand,
+      ),
+    );
+    expect(release.unhonouredValues).toEqual([]);
+  });
+
+  it('promotes it to selectable, offers it, and resolves every pinned plan', async () => {
+    await registerRelease(registerArgs(profileId));
+    const stated = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId,
+      expectedRevision: 1,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+    await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId,
+      expectedRevision: stated.revision,
+      patch: { visible: true },
+      actor: 'admin-1',
+    });
+
+    const selected = await resolveSelectableRelease({ ...registryArgs(), releaseId });
+
+    expect(selected).toMatchObject({ supportState: 'selectable', visible: true, runnable: true });
+    await expectPinnedPlansResolve(selected);
+  });
+});
+
+// The guard's verdict is only honest if the prompt the session actually gets
+// carries the annex, so the two shapes an upstream release really uses are
+// walked end to end: registration, promotion, plan resolution, and the prompt
+// that receives the body. 2.9.0 with its own `{{INVOKE}}` lines left out, so the
+// only engine command in the closure is the one each case authors.
+describe('a 2.9.0 whose developer persona carries the engine command', () => {
+  const STAGE_PATH = 'core/aidlc-common/stages/construction/code-generation.md';
+  const PERSONA_PATH = 'core/agents/aidlc-developer-agent.md';
+  // The receiving stage: `aidlc-developer-agent` leads it, its own body carries
+  // no token, and it runs in the `feature` scope. The annex can therefore only
+  // arrive through the persona.
+  const RECEIVING_STAGE = 'reverse-engineering';
+  const SCOPE = 'feature';
+
+  // Bodies are content-addressed, so two blocks given the same body text are ONE
+  // object. Replacing the body rather than appending to it is what makes the
+  // stage and the persona share it.
+  const withBody = (content, body) =>
+    `${content.slice(0, content.indexOf('\n---\n') + 5)}${body}\n`;
+
+  const publishPromoteAndResolve = async (files) => {
+    installFakes();
+    const bundle = buildReleaseBundle({ profileId: CANDIDATE_PROFILE, files });
+    await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+    const { release } = await registerRelease(registerArgs(CANDIDATE_PROFILE));
+    const stated = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: CANDIDATE_RELEASE_ID,
+      expectedRevision: release.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+    await updateRelease({
+      ...registryArgs(),
+      releaseId: CANDIDATE_RELEASE_ID,
+      expectedRevision: stated.revision,
+      patch: { visible: true },
+      actor: 'admin-1',
+    });
+    const selected = await resolveSelectableRelease({
+      ...registryArgs(),
+      releaseId: CANDIDATE_RELEASE_ID,
+    });
+    return {
+      bundle,
+      registered: release,
+      promoted: stated,
+      resolved: await expectPinnedPlansResolve(selected),
+    };
+  };
+
+  // The bytes the runtime renders for a block: its body is a content-addressed
+  // object, read from the closure through `loadBlockBody`.
+  const bodyOf = (block) => {
+    const key = block?.bodyRef?.s3Key;
+    expect(objects.has(key), key).toBe(true);
+    return objects.get(key);
+  };
+
+  const receivingStage = (resolved) => {
+    const { plan } = buildExecutionPlan({
+      workflow: resolved.workflow,
+      scope: SCOPE,
+      library: resolved.library,
+    });
+    const stage = plan.stages.find((entry) => entry.stageId === RECEIVING_STAGE);
+    expect(stage, RECEIVING_STAGE).toBeDefined();
+    const stageBody = bodyOf(resolved.library.stagesById[stage.stageId]);
+    const persona = bodyOf(resolved.library.agentsById[stage.agentRef]);
+    expect(stage.agentRef).toBe('aidlc-developer-agent');
+    expect(stageBody).not.toContain('{{INVOKE}}');
+    return { stage, stageBody, persona };
+  };
+
+  const bodyKeysOf = (bundle, blockIds) => {
+    const byId = new Map(
+      Object.values(bundle.catalog.blocks)
+        .flat()
+        .map((block) => [block.blockId, block.bodyRef?.s3Key]),
+    );
+    return blockIds.map((blockId) => {
+      expect(byId.has(blockId), blockId).toBe(true);
+      return byId.get(blockId);
+    });
+  };
+
+  it('promotes a body the code-generation stage and that persona share, and annexes the prompt that receives it', async () => {
+    const files = filesWithInvokeLines(CANDIDATE_PROFILE, null);
+    const body = 'Record it: {{INVOKE}} engine state practices-event --type override';
+    for (const path of [STAGE_PATH, PERSONA_PATH]) {
+      expect(files.has(path), path).toBe(true);
+      files.set(path, withBody(files.get(path), body));
+    }
+
+    const { bundle, registered, promoted, resolved } = await publishPromoteAndResolve(files);
+    const { stage, stageBody, persona } = receivingStage(resolved);
+
+    expect(new Set(bodyKeysOf(bundle, ['code-generation', 'aidlc-developer-agent'])).size).toBe(1);
+    expect(registered.fidelityGaps.filter((gap) => gap.blockType === 'BODY')).toEqual([
+      { blockType: 'BODY', field: '{{INVOKE}}', value: 'engine state', annexed: true },
+    ]);
+    expect(registered.unhonouredValues).toEqual([]);
+    expect(promoted).toMatchObject({ supportState: 'selectable', runnable: true });
+    expect(persona).toContain('{{INVOKE}} engine state practices-event');
+    expect(buildStagePrompt({ stage, stageBody, agentPersona: persona })).toContain(
+      INVOKE_DIALECT_ANNEX,
+    );
+  });
+
+  it('promotes an approximated command that persona invokes, and annexes its prompt and reviewer brief', async () => {
+    const files = filesWithInvokeLines(CANDIDATE_PROFILE, null);
+    expect(files.has(PERSONA_PATH)).toBe(true);
+    files.set(
+      PERSONA_PATH,
+      `${files.get(PERSONA_PATH)}\nObtain the branch: {{INVOKE}} engine worktree info --slug current\n`,
+    );
+
+    const { registered, promoted, resolved } = await publishPromoteAndResolve(files);
+    const { stage, stageBody, persona } = receivingStage(resolved);
+
+    expect(registered.fidelityGaps.filter((gap) => gap.blockType === 'BODY')).toEqual([]);
+    expect(registered.unhonouredValues).toEqual([]);
+    expect(promoted).toMatchObject({ supportState: 'selectable', runnable: true });
+    expect(buildStagePrompt({ stage, stageBody, agentPersona: persona })).toContain(
+      INVOKE_DIALECT_ANNEX,
+    );
+    // The same persona is rendered into the reviewer brief of that stage, which
+    // is a session the guard counted as answered too.
+    expect(
+      composePersonaPrompt({ brief: 'Review it.', persona, knowledge: '', role: 'reviewer' }),
+    ).toContain(INVOKE_DIALECT_ANNEX);
+  });
+});
+
 describe('promotion of a record registered before protocol evidence existed', () => {
   // A record imported by an earlier build stored only its frontmatter gaps; the
   // build-and-test loop-back is a protocol the closure ships, not an authored
@@ -1678,7 +2274,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
 
     expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
     expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
-      fidelityEvidenceRevision: 2,
+      fidelityEvidenceRevision: 4,
     });
   });
 
@@ -1686,7 +2282,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
     await registerRelease(registerArgs(CANDIDATE_PROFILE));
 
     expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
-      fidelityEvidenceRevision: 2,
+      fidelityEvidenceRevision: 4,
     });
   });
 
@@ -1712,6 +2308,36 @@ describe('promotion of a record registered before protocol evidence existed', ()
       }),
     ).resolves.toMatchObject({ releaseId: CANDIDATE_RELEASE_ID });
     expect(promoted.supportState).toBe('certified');
+  });
+});
+
+describe('promotion of a record whose evidence read the engine sources', () => {
+  // An earlier build stored, at evidence revision 2, the engine commands the
+  // engine CLI's own sources quote. The closure's prompts author none of them, so
+  // trusting that list would keep refusing the release for behavior it never
+  // asks an agent for.
+  it('re-evaluates the closure instead of trusting that list', async () => {
+    await registerRelease(registerArgs(CANDIDATE_PROFILE));
+    const key = keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META');
+    const row = {
+      ...rows.get(key),
+      fidelityGaps: [{ blockType: 'BODY', field: '{{INVOKE}}', value: 'engine swarm prepare' }],
+      fidelityEvidenceRevision: 2,
+    };
+    rows.set(key, row);
+
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: CANDIDATE_RELEASE_ID,
+      expectedRevision: row.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
+    expect(rows.get(key).fidelityGaps).not.toContainEqual(row.fidelityGaps[0]);
   });
 });
 
@@ -1760,18 +2386,89 @@ describe('admin listing of a record registered before protocol evidence existed'
     expect(rows.get(key).fidelityGaps).not.toContainEqual(UNPRODUCIBLE_GAP);
   });
 
-  it('verifies one closure at a time however many records are stale', async () => {
+  // One closure's worth of reads: its manifest, its catalog, and its objects.
+  const perClosureReads = () =>
+    Math.max(baselineBundle.manifest.objects.length, candidateBundle.manifest.objects.length) + 2;
+
+  it('verifies at most the budgeted record however many are stale, and says so', async () => {
     makeLegacy(BASELINE_RELEASE_ID);
     makeLegacy(CANDIDATE_RELEASE_ID);
-    const perClosure = baselineBundle.manifest.objects.length + 2;
     const reads = trackedReads();
 
-    await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+    const releases = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
 
-    expect(reads.reads).toBeGreaterThan(perClosure);
+    // A deploy that bumps the evidence revision makes EVERY row stale at once.
+    // The listing may not pay for all of them: it recomputes up to the budget
+    // and reports the rest with the evidence it has, marked stale.
+    expect(releases.filter((release) => release.fidelityEvidenceStale === false).length).toBe(
+      RELEASE_LIST_EVIDENCE_BUDGET,
+    );
+    expect(releases.filter((release) => release.fidelityEvidenceStale === true).length).toBe(
+      releases.length - RELEASE_LIST_EVIDENCE_BUDGET,
+    );
+    expect(reads.reads).toBeLessThanOrEqual(perClosureReads() * RELEASE_LIST_EVIDENCE_BUDGET);
     // Two closures verified in parallel would peak at both evidence pools at
     // once; one closure at a time cannot exceed a single pool.
     expect(reads.peakInFlight).toBeLessThanOrEqual(4);
+  });
+
+  it('reports the stored evidence for a row it did not recompute', async () => {
+    makeLegacy(BASELINE_RELEASE_ID);
+    makeLegacy(CANDIDATE_RELEASE_ID);
+
+    const releases = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+
+    const deferred = releases.find((release) => release.fidelityEvidenceStale === true);
+    expect(deferred.fidelityGaps).toContainEqual(UNPRODUCIBLE_GAP);
+    // The row is left untouched, so the next listing can still recompute it.
+    expect(rows.get(keyOf(`AIDLC_RELEASE#${deferred.releaseId}`, 'META'))).not.toHaveProperty(
+      'fidelityEvidenceRevision',
+    );
+  });
+
+  it('works the backlog down one budget at a time across listings', async () => {
+    makeLegacy(BASELINE_RELEASE_ID);
+    makeLegacy(CANDIDATE_RELEASE_ID);
+
+    await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+    const releases = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+
+    expect(releases.every((release) => release.fidelityEvidenceStale === false)).toBe(true);
+    for (const release of releases)
+      expect(release.fidelityGaps).not.toContainEqual(UNPRODUCIBLE_GAP);
+  });
+
+  it('leaves a page of current records untouched and reads no closure', async () => {
+    const reads = trackedReads();
+
+    const releases = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+
+    expect(releases.length).toBe(2);
+    expect(releases.every((release) => release.fidelityEvidenceStale === false)).toBe(true);
+    expect(reads.reads).toBe(0);
+  });
+
+  it('still recomputes before a promotion decides on a row the listing deferred', async () => {
+    makeLegacy(BASELINE_RELEASE_ID);
+    makeLegacy(CANDIDATE_RELEASE_ID);
+    const listed = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+    const deferred = listed.find((release) => release.fidelityEvidenceStale === true);
+    const deferredKey = keyOf(`AIDLC_RELEASE#${deferred.releaseId}`, 'META');
+    expect(rows.get(deferredKey).fidelityGaps).toContainEqual(UNPRODUCIBLE_GAP);
+
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: deferred.releaseId,
+      expectedRevision: deferred.revision,
+      patch: { supportState: 'selectable' },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
+    expect(promoted.fidelityEvidenceStale).toBe(false);
+    expect(rows.get(deferredKey).fidelityGaps).not.toContainEqual(UNPRODUCIBLE_GAP);
   });
 
   it('caches the recomputed evidence so the next listing reads no closure', async () => {
@@ -1784,7 +2481,7 @@ describe('admin listing of a record registered before protocol evidence existed'
     const second = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
 
     const listed = first.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
-    expect(cached.fidelityEvidenceRevision).toBe(2);
+    expect(cached.fidelityEvidenceRevision).toBe(4);
     expect(cached.fidelityGaps).toEqual(listed.fidelityGaps);
     expect(cached.fidelityGaps).not.toEqual(legacy.fidelityGaps);
     // Evidence is derived from an immutable closure, never a decision, so the
@@ -1821,5 +2518,129 @@ describe('admin listing of a record registered before protocol evidence existed'
     expect(listed.unhonouredValues).toEqual([]);
     expect(listed.fidelityGaps).not.toContainEqual(UNPRODUCIBLE_GAP);
     expect(rows.get(key)).toEqual(stale);
+  });
+});
+
+// A stale row whose closure cannot be read is not a hypothetical: an object
+// lifecycle rule, a half-finished publish or a bucket policy change produces
+// one, and no later listing can ever verify it. The page order is deterministic
+// (`releaseGsi1Sk`), so such a row holds its place in front of the others on
+// every call. If a failed verification spent the per-call budget, the rows
+// behind it would stay at their stored evidence for good — the backlog would
+// never converge. Only a verification that produced evidence may spend the
+// budget, and the wall clock is what bounds a page of failures.
+describe('admin listing with a stale row whose closure cannot be verified', () => {
+  // Five registered releases, the page size the defect was reported on.
+  // `current-stable` is 2.3.3, so it sorts FIRST and is the row every other row
+  // sits behind.
+  const PAGE_PROFILES = ['current-stable', 'v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'];
+  const BROKEN_PROFILE = 'current-stable';
+  const MIGRATING_PROFILES = PAGE_PROFILES.filter((profileId) => profileId !== BROKEN_PROFILE);
+  const bundles = new Map(PAGE_PROFILES.map((profileId) => [profileId, bundleFor(profileId)]));
+
+  const rowKeyOf = (profileId) =>
+    keyOf(`AIDLC_RELEASE#${AIDLC_COMPATIBILITY_PROFILES[profileId].releaseId}`, 'META');
+
+  // The shape a revision bump leaves behind: a stored gap list, no evidence
+  // revision. The list holds a value no fixture authors, so a row still holding
+  // it was never recomputed.
+  const makeStale = (profileId) => {
+    const key = rowKeyOf(profileId);
+    const row = { ...rows.get(key), fidelityGaps: [UNPRODUCIBLE_GAP] };
+    delete row.fidelityEvidenceRevision;
+    rows.set(key, row);
+  };
+
+  const breakClosure = (profileId) => {
+    const key = bundles.get(profileId).manifest.catalog.key;
+    expect(objects.has(key), key).toBe(true);
+    objects.delete(key);
+  };
+
+  const migrated = () =>
+    PAGE_PROFILES.filter(
+      (profileId) =>
+        rows.get(rowKeyOf(profileId)).fidelityEvidenceRevision === FIDELITY_EVIDENCE_REVISION,
+    );
+
+  const list = () => listReleases({ ...registryArgs(), s3, bucket: BUCKET });
+
+  beforeEach(async () => {
+    installFakes();
+    for (const bundle of bundles.values())
+      await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+    for (const profileId of PAGE_PROFILES) await registerRelease(registerArgs(profileId));
+    for (const profileId of PAGE_PROFILES) makeStale(profileId);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('migrates every other stale row across calls, one budget at a time', async () => {
+    breakClosure(BROKEN_PROFILE);
+
+    // One VERIFIED row per call, in page order: the failure in front of them
+    // costs its own reads but no budget.
+    for (const [index, profileId] of MIGRATING_PROFILES.entries()) {
+      await list();
+      expect(migrated(), `after ${index + 1} listing(s)`).toEqual(
+        MIGRATING_PROFILES.slice(0, index + 1),
+      );
+      expect(rows.get(rowKeyOf(profileId)).fidelityGaps).not.toContainEqual(UNPRODUCIBLE_GAP);
+    }
+
+    // The broken row is reported, left untouched and re-attempted, never cached.
+    const releases = await list();
+    const broken = releases.find(
+      (release) => release.releaseId === AIDLC_COMPATIBILITY_PROFILES[BROKEN_PROFILE].releaseId,
+    );
+    expect(broken.fidelityGaps).toBeNull();
+    expect(rows.get(rowKeyOf(BROKEN_PROFILE))).not.toHaveProperty('fidelityEvidenceRevision');
+    expect(rows.get(rowKeyOf(BROKEN_PROFILE)).fidelityGaps).toContainEqual(UNPRODUCIBLE_GAP);
+  });
+
+  it('stops starting verifications once the wall-clock budget is spent', async () => {
+    for (const profileId of PAGE_PROFILES) breakClosure(profileId);
+    // The budget is a wall clock, so the clock is stubbed rather than waited
+    // out: a test that really spent it would be a six-second test. One failing
+    // verification is charged more than half the budget, so the third must not
+    // be started however many rows are left.
+    const step = Math.ceil(RELEASE_LIST_EVIDENCE_BUDGET_MS / 2) + 1;
+    let clock = 0;
+    let attempts = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (!objects.has(input.Key)) throw noSuchKey();
+      if (input.Key.endsWith('manifest.json')) {
+        attempts += 1;
+        clock += step;
+      }
+      return { Body: { transformToString: async () => objects.get(input.Key) } };
+    });
+
+    const releases = await list();
+
+    expect(attempts).toBe(2);
+    expect(migrated()).toEqual([]);
+    // Everything the clock stopped is answered with the evidence it has.
+    expect(releases.filter((release) => release.fidelityEvidenceStale === true).length).toBe(
+      PAGE_PROFILES.length - attempts,
+    );
+  });
+
+  it('spends the budget, not the clock, when every closure can be verified', async () => {
+    const step = RELEASE_LIST_EVIDENCE_BUDGET_MS;
+    let clock = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (!objects.has(input.Key)) throw noSuchKey();
+      if (input.Key.endsWith('manifest.json')) clock += step;
+      return { Body: { transformToString: async () => objects.get(input.Key) } };
+    });
+
+    await list();
+
+    expect(migrated().length).toBe(RELEASE_LIST_EVIDENCE_BUDGET);
   });
 });

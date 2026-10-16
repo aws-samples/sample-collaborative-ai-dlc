@@ -77,6 +77,10 @@ const buildGroundingPack = ({ scopes = [], summaries = {}, grids = {}, stages = 
   return lines.join('\n');
 };
 
+// The library agent whose persona, and the knowledge filed under it, the compose
+// prompt renders.
+const COMPOSER_AGENT_ID = 'aidlc-composer-agent';
+
 // The output contract the composer must satisfy — rendered into the prompt
 // verbatim so parseComposeProposal and the instructions can never drift.
 const PROPOSAL_CONTRACT = [
@@ -158,6 +162,7 @@ const parseComposeProposal = (rawText) => {
 };
 
 export {
+  COMPOSER_AGENT_ID,
   keywordHit,
   matchScopeByKeywords,
   buildGroundingPack,
@@ -165,6 +170,7 @@ export {
   PROPOSAL_CONTRACT,
 };
 export default {
+  COMPOSER_AGENT_ID,
   keywordHit,
   matchScopeByKeywords,
   buildGroundingPack,

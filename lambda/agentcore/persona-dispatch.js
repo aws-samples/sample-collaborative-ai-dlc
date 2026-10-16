@@ -23,7 +23,7 @@ import { getDriver } from './cli/drivers.js';
 import { runChild } from './cli/spawn.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './cli/opencode-store.js';
 import { resolveStageModel } from './model-resolver.js';
-import { neutralizeTokens } from './stage-materializer.js';
+import { hasInvokeToken, invokeDialectAnnex, neutralizeTokens } from './stage-materializer.js';
 
 // Package-manager caches use container-local /tmp; the working tree stays on the
 // session mount so cache growth cannot consume space needed for durable changes.
@@ -48,6 +48,15 @@ const roleLabel = (role) => role.charAt(0).toUpperCase() + role.slice(1);
 // (run-stage.js) renders this EXACT tail for the reviewer today — kept here,
 // shared, so it is byte-identical and every future persona role renders it
 // the same way instead of re-deriving it.
+//
+// It is also where the {{INVOKE}} dialect annex reaches a SECONDARY session. A
+// release instructs the agent from bodies every session receives — a persona and
+// the knowledge of its agent are rendered into the lead prompt, the reviewer
+// brief and every ensemble persona brief (`loadMethodologyKnowledge`,
+// commands/run-stage.js) — so a prompt built here that carries an engine command
+// must carry its answer too, or the promotion guard would have marked that
+// command answered in a session that never saw the answer
+// (`shared/annex-reach.js`). The annex's form follows this role's MCP surface.
 export const composePersonaPrompt = ({ brief, persona, knowledge, role }) =>
   [
     brief,
@@ -55,6 +64,9 @@ export const composePersonaPrompt = ({ brief, persona, knowledge, role }) =>
     `## ${roleLabel(role)} role`,
     neutralizeTokens(persona) || `(no ${role} persona supplied)`,
     knowledge ? `\n## Reference knowledge\n${neutralizeTokens(knowledge)}` : '',
+    ...(hasInvokeToken(persona, knowledge)
+      ? ['', invokeDialectAnnex({ readOnly: mcpRoleFor(role) === 'reviewer' })]
+      : []),
   ].join('\n');
 
 // Spawn one persona's headless CLI session and run it to completion.

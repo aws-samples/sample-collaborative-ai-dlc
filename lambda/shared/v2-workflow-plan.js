@@ -267,7 +267,7 @@ const loadReleaseExecutionPlan = async ({
 }) => {
   let resolved;
   try {
-    const closure = await loadReleaseClosure({ s3, bucket, methodologyRelease });
+    const closure = await loadReleaseClosure({ s3, bucket, methodologyRelease, ddb, tableName });
     resolved = await resolveMethodologyLibrary({
       closure,
       ddb,
@@ -453,7 +453,7 @@ const loadWorkflowScopes = async ({
 }) => {
   if (methodologyRelease) {
     try {
-      const closure = await loadReleaseClosure({ s3, bucket, methodologyRelease });
+      const closure = await loadReleaseClosure({ s3, bucket, methodologyRelease, ddb, tableName });
       const { workflow } = await resolveReleaseWorkflow({
         closure,
         ddb,
