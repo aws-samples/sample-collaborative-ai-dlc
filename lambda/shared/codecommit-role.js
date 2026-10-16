@@ -8,13 +8,12 @@
 // effective permission is the intersection of the tenant role's policy and the
 // session policy, so a generous tenant role is still clamped per call.
 //
-// The external ID is minted once per user (codecommit-connection.js) and copied
-// onto each binding at verification. This is the standard confused-deputy guard:
-// a repository owner's trust policy admits only the external ID they were shown
-// while connecting, the platform resolves that ID from the caller's own
-// connection (never from a request), and at runtime presents only the one
-// stored on the binding it is serving, so a third party cannot list or bind
-// that role ARN from their own project.
+// The external ID is a single per-deployment value (issue #531): minted once by
+// Terraform (random_uuid), injected as CODECOMMIT_EXTERNAL_ID, and copied onto
+// each binding at verification. This is the standard confused-deputy guard: the
+// repository account's trust policy admits only that external ID, the platform
+// presents the same value for every assume, and a space creator never supplies
+// an external ID or a role ARN — a platform admin configures the one role.
 import { randomUUID } from 'node:crypto';
 import { AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
@@ -22,12 +21,10 @@ import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
 const SESSION_DURATION_SECONDS = 900; // STS minimum; ample for one git op or API burst.
 const ROLE_ARN = /^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/;
 
-// External ID handed to the tenant for their role trust policy. Minted once per
-// user (not derived from the project: the trust policy must exist before the
-// project does, since repository discovery already needs the role) and stored
-// on the binding like a GitHub App installation id. The confused-deputy
-// guarantee is that the platform only ever presents an external id it resolved
-// itself, never one supplied at request time.
+// External ID format for the tenant role trust policy: `aidlc:<uuid>`. The live
+// value is per-deployment (CODECOMMIT_EXTERNAL_ID, minted by Terraform). This
+// validator still guards every assume and trust-policy render; the generator is
+// kept for format tests and parity with the GitHub App installation-id shape.
 const EXTERNAL_ID_PREFIX = 'aidlc:';
 const EXTERNAL_ID = /^aidlc:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -85,10 +82,11 @@ const WRITE_API_ACTIONS = [
 // Session policy for one repository. `access`:
 //   'read'     — git pull + read API
 //   'write'    — read + git push + PR/merge/branch API
-//   'discover' — ListRepositories only (Resource must be "*" per the
-//                permissions reference); used once, when the tenant picks a
-//                repository to bind. ARNs are built from the names, so no
-//                per-repository read is needed to list.
+//   'discover' — ListRepositories + GetRepository (Resource must be "*" per the
+//                permissions reference): the list route reads each repository
+//                to drop the ones the role cannot access, since
+//                ListRepositories is not filtered by access. ARNs are built
+//                from the names, so no other per-repository read is needed.
 export const codeCommitSessionPolicy = ({ repoArn, access = 'write' }) => {
   if (access === 'discover') {
     return {
@@ -97,7 +95,7 @@ export const codeCommitSessionPolicy = ({ repoArn, access = 'write' }) => {
         {
           Sid: 'DiscoverRepositories',
           Effect: 'Allow',
-          Action: ['codecommit:ListRepositories'],
+          Action: ['codecommit:ListRepositories', 'codecommit:GetRepository'],
           Resource: '*',
         },
       ],
@@ -152,6 +150,41 @@ export const codeCommitPermissionsPolicy = ({
       Effect: 'Allow',
       Action: REPOSITORY_ACTIONS,
       Resource: repositoryArns.length === 1 ? repositoryArns[0] : repositoryArns,
+    },
+  ],
+});
+
+// The tag variant of the permissions policy, shown in the Platform Admin card
+// (issue #531). A space may use any repository in the account tagged
+// `aidlc=true`: sharing a repository is a tag, not a policy edit. `region` and
+// `accountId` fill the repository ARN scope; before a connection is saved they
+// are the same placeholders the explicit variant uses. The partition is
+// derived from the region so the aws-cn / aws-us-gov forms render correctly.
+const partitionForRegion = (region) => {
+  if (String(region).startsWith('cn-')) return 'aws-cn';
+  if (String(region).startsWith('us-gov-')) return 'aws-us-gov';
+  return 'aws';
+};
+
+export const codeCommitTagPermissionsPolicy = ({
+  region = '<region>',
+  accountId = '<account-id>',
+  tagKey = 'aidlc',
+} = {}) => ({
+  Version: '2012-10-17',
+  Statement: [
+    {
+      Sid: 'ListRepositoriesInAccount',
+      Effect: 'Allow',
+      Action: 'codecommit:ListRepositories',
+      Resource: '*',
+    },
+    {
+      Sid: 'UseTaggedRepositories',
+      Effect: 'Allow',
+      Action: REPOSITORY_ACTIONS,
+      Resource: `arn:${partitionForRegion(region)}:codecommit:${region}:${accountId}:*`,
+      Condition: { StringEquals: { [`aws:ResourceTag/${tagKey}`]: 'true' } },
     },
   ],
 });
@@ -264,4 +297,5 @@ export default {
   assumeCodeCommitRole,
   codeCommitTrustPolicy,
   codeCommitPermissionsPolicy,
+  codeCommitTagPermissionsPolicy,
 };
