@@ -3030,6 +3030,80 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       real localhost WebSocket case, six architecture and 22 wiring checks;
       391 production modules have zero architecture violations. Lint, formatting,
       secretlint and dependency checks pass with the existing warnings.
+      Committed as `6c3beeb027a488a3fe7ecec63a04dfa823c4a1dc`; the normal
+      commit hook passed 494 affected tests (three Linux-only tests skipped).
+      Release/tooling checks also passed all 252 tests.
+
+      **Dependent correction — default Codex paginated recovery (2026-10-16):**
+      pinned upstream tag `rust-v0.162.1` resolves to public source commit
+      `092d3acd6bec3e3a14bdc7e7a2810ab628ab759d`. Its
+      `rollout/src/ordinal.rs`, `thread-store/src/local/rollout_lineage.rs`,
+      `thread_history_materialization.rs` and `model_context.rs` establish that
+      pages are derived SQLite projections of ordinal JSONL. A fork's
+      `history_base` identifies an ancestor rollout plus an exclusive ordinal
+      and exact byte boundary. SQLite is rebuilt by the installed public
+      `thread/resume` operation; no SQLite/credential store is added to recovery.
+      A user fork has its own root `session_id`; a spawned subagent shares its
+      parent's root session. The installed fixture demonstrated that distinction
+      before the validator was corrected.
+
+      The existing JSONL checkpoint owner now validates contiguous safe ordinals,
+      root/fork/subagent identity, complete inherited prefixes, ancestor ownership,
+      and agreement of both prefix coordinates with the exact parent bytes.
+      Missing parents, missing ordinals, wrong-session/sibling references,
+      partial inherited context and mismatched byte offsets reject recovery.
+      Existing legacy reads, immutable file bytes, path/credential exclusions,
+      traversal bounds, manifest verification and writer fencing remain.
+      Unknown `history_prefix` formats, compressed/archive stores and reverted
+      filename/thread aliases remain outside this adapter's prior supported
+      layout; the change does not silently accept those dependencies.
+
+      The installed Codex fixture now creates a real public-API fork, reads two
+      nonempty pages of root history and two inherited pages with genuine
+      continuation cursors, erases local state, restores exact rollout bytes and
+      compares complete page hashes after the installed CLI rebuilds SQLite.
+      Removing a parent or an ordinal from an actual installed capture (with
+      recalculated test file hash) is rejected before any restore write.
+      Those corruption injections exercise production recovery; the pages,
+      fork and continuation use the actual installed CLI. Pagination/fork
+      inspection asserts zero provider requests and has a finite request budget.
+
+      The composed journey uses the existing production recovery controller:
+      erase project contents and HOME, discard executor memory, retain the
+      protected answer, fence/stop the predecessor, restore the committed
+      checkpoint into writer generation 2, then continue. Both inspected pages
+      and prior question text must reach the resumed installed path.
+      The new fixture initially used `package/`, which normal preparation accepts
+      but cold recovery correctly rejects; public attested fixture assets now
+      live under the required `packages/2.11.0` directory. An initial fixture
+      assertion also confused transport requests with restores: the controller
+      sends `native-recover` again after its first `recovering` acknowledgement.
+      The fixture now asserts the actual `[new, duplicate]` receipts for the same
+      generation/episode/checkpoint and exactly one filesystem restore. No
+      production admission, timeout or retry rule was weakened. Focused executor,
+      recovery and admission checks pass all 333 tests, including 84 recovery-file
+      cases; lint, formatting, secretlint and dependency checks pass.
+      **Installed result: Codex PASS.** The same image/assets with the original
+      `6c3beeb` recovery module mounted read-only still exits 1 at
+      `native_recovery_session_layout_unsupported` (both the forked bare-session
+      case and real workflow capture). Corrected code passes three bare-session
+      turns and the complete three-turn workflow, two immutable answers, actual
+      lost runtime/admission acknowledgements, two continuation commands, one
+      cold restore and the duplicate recovery receipt. Attempt/epoch stay
+      unchanged; writer generation advances from 1 to 2. The checkpoint restores
+      402 files, including both rollouts. The earlier failed results remain above.
+
+      Sample workflow turns took 6,917 / 6,747 / 5,841 ms, with exactly 2 / 2 / 1
+      provider requests, first requests at 653 / 614 / 469 ms, and request sizes
+      161,867–164,097 bytes. Ordinary captures took 147 and 142 ms. The original
+      second-turn measurement of 5,277 ms included a fixture-only fork/page
+      inspection; the runner now reports inspection and actual capture timing
+      separately. Each public app-server inspection costs another installed CLI
+      process (about five seconds here), with zero provider requests. The
+      composed cold scenario intentionally runs two such inspections plus five
+      setup commands (initial three, two machine-projection rebuild commands),
+      three workflow CLI launches and six workspace scans. These are bounded
+      fixture costs, not provider/deployed performance evidence.
 
 - [ ] **Issue — slow first installation.** Historical deployed installation took
       190–210 seconds while the cached local fixture's installation/configuration

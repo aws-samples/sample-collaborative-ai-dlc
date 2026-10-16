@@ -45,9 +45,23 @@ const rollout = async (sessionId = id, extra = {}) =>
     'home',
     `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${sessionId}.jsonl`,
     `${JSON.stringify({
+      ...(extra.history_mode === 'paginated'
+        ? { ordinal: extra.history_base?.end_ordinal_exclusive ?? 0 }
+        : {}),
       type: 'session_meta',
-      payload: { id: sessionId, cwd: project, ...extra },
-    })}\n${JSON.stringify({ type: 'response_item', payload: { text: 'retained context' } })}\n`,
+      payload: {
+        id: sessionId,
+        cwd: project,
+        ...(extra.history_mode === 'paginated' ? { session_id: sessionId } : {}),
+        ...extra,
+      },
+    })}\n${JSON.stringify({
+      ...(extra.history_mode === 'paginated'
+        ? { ordinal: (extra.history_base?.end_ordinal_exclusive ?? 0) + 1 }
+        : {}),
+      type: 'response_item',
+      payload: { text: 'retained context' },
+    })}\n`,
   );
 const emptyRestoreRoots = async () => {
   await fs.rename(project, join(root, 'original-project'));
@@ -360,7 +374,7 @@ describe('harness session selection', () => {
   });
 
   it.each([
-    { history_mode: 'paginated' },
+    { history_mode: 'future' },
     { history_prefix: { path: 'other-rollout' } },
     {
       history_mode: 'legacy',
@@ -374,6 +388,84 @@ describe('harness session selection', () => {
     await rollout(id, metadata);
     await expect(captureNativeSessionRecovery(options())).rejects.toMatchObject({
       code: 'native_recovery_session_layout_unsupported',
+    });
+  });
+
+  it('cold-restores paginated rollout ancestry with exact ordinal/byte prefixes and no SQLite state', async () => {
+    const parent = await rollout(id, { history_mode: 'paginated', session_id: id });
+    const child = await rollout(childId, {
+      history_mode: 'paginated',
+      session_id: childId,
+      forked_from_id: id,
+      history_base: {
+        thread_id: id,
+        end_ordinal_exclusive: 2,
+        end_byte_offset: (await fs.stat(parent)).size,
+      },
+    });
+    await rollout('grandchild', {
+      history_mode: 'paginated',
+      session_id: 'grandchild',
+      forked_from_id: childId,
+      history_base: {
+        thread_id: childId,
+        end_ordinal_exclusive: 4,
+        end_byte_offset: (await fs.stat(child)).size,
+      },
+    });
+    const checkpoint = await captureNativeSessionRecovery(options());
+    expect(checkpoint.files).toHaveLength(3);
+    await emptyRestoreRoots();
+    await restoreNativeSessionRecovery({ ...options(), ...checkpoint });
+    for (const file of checkpoint.files)
+      expect(await fs.readFile(join(home, file.path))).toEqual(file.content);
+  });
+
+  it.each([
+    'missing-parent',
+    'wrong-byte',
+    'missing-ordinal',
+    'wrong-session',
+    'sibling-prefix',
+    'partial-inheritance',
+  ])('rejects incomplete or mismatched paginated recovery: %s', async (kind) => {
+    const parent = await rollout(id, { history_mode: 'paginated', session_id: id });
+    const extra = {
+      history_mode: 'paginated',
+      session_id: childId,
+      forked_from_id: id,
+      history_base: {
+        thread_id: id,
+        end_ordinal_exclusive: 2,
+        end_byte_offset: (await fs.stat(parent)).size,
+      },
+    };
+    if (kind === 'missing-parent') extra.history_base.thread_id = 'missing';
+    if (kind === 'wrong-byte') extra.history_base.end_byte_offset--;
+    if (kind === 'wrong-session') extra.session_id = 'unrelated';
+    if (kind === 'partial-inheritance') extra.subagent_history_start_ordinal = 100;
+    if (kind === 'sibling-prefix') {
+      const sibling = await rollout('sibling', { history_mode: 'paginated', forked_from_id: id });
+      extra.history_base = {
+        thread_id: 'sibling',
+        end_ordinal_exclusive: 2,
+        end_byte_offset: (await fs.stat(sibling)).size,
+      };
+    }
+    const child = await rollout(childId, extra);
+    if (kind === 'missing-ordinal') {
+      const bytes = (await fs.readFile(child, 'utf8')).replace('"ordinal":3', '"ordinal":4');
+      await fs.writeFile(child, bytes);
+    }
+    await expect(captureNativeSessionRecovery(options())).rejects.toMatchObject({
+      code: {
+        'missing-parent': 'native_recovery_session_missing',
+        'wrong-byte': 'native_recovery_session_invalid',
+        'missing-ordinal': 'native_recovery_session_invalid',
+        'wrong-session': 'native_recovery_session_identity',
+        'sibling-prefix': 'native_recovery_session_unrelated',
+        'partial-inheritance': 'native_recovery_session_incomplete',
+      }[kind],
     });
   });
 

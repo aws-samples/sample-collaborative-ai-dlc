@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -44,6 +44,7 @@ const root = join(base, 'runtime');
 const homeRoot = join(base, 'homes');
 const project = join(root, 'project');
 const report = (value) => console.log(JSON.stringify({ harness, ...value }));
+let historyProbes = 0;
 const binary = {
   claude: '/usr/local/bin/claude',
   codex: '/usr/local/bin/codex',
@@ -56,6 +57,66 @@ const model = {
   opencode: 'fixture/test',
   kiro: null,
 }[harness];
+
+async function codexHistory({ directory, env, provider, sessionId, forkId, createFork }) {
+  historyProbes++;
+  const started = performance.now();
+  const providerRequests = provider.result().requests.length;
+  const result = await runNativeCommand({
+    command: process.execPath,
+    args: [join(import.meta.dirname, 'native-qualification-codex.mjs')],
+    cwd: directory,
+    env,
+    stdin: JSON.stringify({ project: directory, url: provider.url, sessionId, forkId, createFork }),
+    timeoutMs: 30_000,
+  });
+  assert.equal(result.cleanupComplete, true);
+  const evidence = result.stdout ? JSON.parse(result.stdout) : {};
+  if (result.exitCode !== 0 || evidence.error)
+    throw Object.assign(new Error('Installed Codex pagination/fork helper'), {
+      code: evidence.error ?? 'native_qualification_codex_paging_failed',
+      operator: evidence.check ?? 'no-report',
+    });
+  assert.equal(
+    provider.result().requests.length,
+    providerRequests,
+    'Pagination/fork makes no provider call',
+  );
+  report({
+    probe: 'codex-history-inspection',
+    operation: createFork ? 'fork-and-page' : 'resume-and-page',
+    elapsedMs: Math.round(performance.now() - started),
+    rpcRequests: evidence.requests,
+    providerRequests: 0,
+  });
+  return evidence;
+}
+
+async function codexLayout(home, directory) {
+  const sessionRoot = join(home, '.codex/sessions');
+  const layout = [];
+  for (const path of await fs.readdir(sessionRoot, { recursive: true })) {
+    if (!path.endsWith('.jsonl')) continue;
+    const rows = (await fs.readFile(join(sessionRoot, path), 'utf8'))
+      .trim()
+      .split('\n')
+      .map(JSON.parse);
+    const meta = rows[0].payload;
+    layout.push({
+      id: meta.id,
+      sessionId: meta.session_id,
+      parent: meta.parent_thread_id ?? meta.forked_from_id,
+      historyMode: meta.history_mode,
+      historyBase: meta.history_base,
+      filenameMatches: path.endsWith(`-${meta.id}.jsonl`),
+      cwdMatches: meta.cwd === directory,
+      firstOrdinal: rows[0].ordinal,
+      lastOrdinal: rows.at(-1).ordinal,
+      records: rows.length,
+    });
+  }
+  report({ probe: 'codex-layout', layout });
+}
 
 async function protocolJourney(provider, directory, home) {
   let nativeSessionId;
@@ -76,6 +137,10 @@ async function protocolJourney(provider, directory, home) {
       turn,
       command: turn === 2 ? 'mkdir -p nested && cd nested && pwd' : null,
       expectedAnswer: turn > 1 ? `Fixture answer ${turn - 1}.` : null,
+      expectedHistory:
+        harness === 'codex' && turn === 3
+          ? ['Fixture question 1?', 'Fixture question 2?', 'Fixture answer 1.']
+          : [],
     });
     const output = createNativeTurnOutput({ harness, nativeSessionId });
     const input = localProviderInvocation(
@@ -119,30 +184,75 @@ async function protocolJourney(provider, directory, home) {
       ...observations,
     });
     if (turn !== 2) continue;
-    let checkpoint;
-    try {
-      checkpoint = await captureNativeSessionRecovery({
-        project: directory,
-        home,
-        harness,
-        nativeSessionId,
-      });
-    } catch (error) {
-      if (harness !== 'codex' || error.code !== 'native_recovery_session_layout_unsupported')
-        throw error;
-      report({
-        probe: 'installed-session-restore',
-        status: 'UNSUPPORTED',
-        code: error.code,
-        boundary:
-          'Installed Codex default paginated history is deliberately rejected by the production recovery validator.',
-      });
-      continue;
-    }
+    const paging =
+      harness === 'codex'
+        ? await codexHistory({
+            directory,
+            env,
+            provider,
+            sessionId: nativeSessionId,
+            createFork: true,
+          })
+        : null;
+    if (paging) await codexLayout(home, directory);
+    const checkpoint = await captureNativeSessionRecovery({
+      project: directory,
+      home,
+      harness,
+      nativeSessionId,
+    });
     const restoreStarted = performance.now();
     for (const target of [directory, home])
       for (const entry of await fs.readdir(target))
         await fs.rm(join(target, entry), { recursive: true, force: true });
+    if (paging) {
+      const rootRollout = checkpoint.files.find(
+        (file) => file.scope === 'home' && file.path.endsWith(`-${nativeSessionId}.jsonl`),
+      );
+      assert.ok(rootRollout);
+      await assert.rejects(
+        restoreNativeSessionRecovery({
+          project: directory,
+          home,
+          harness,
+          nativeSessionId,
+          ...checkpoint,
+          files: checkpoint.files.filter((file) => file !== rootRollout),
+        }),
+        { code: 'native_recovery_session_missing' },
+      );
+      const rows = rootRollout.content.toString('utf8').trim().split('\n').map(JSON.parse);
+      rows.splice(1, 1); // A missing ordinal inside the actual installed history.
+      const content = Buffer.from(`${rows.map((value) => JSON.stringify(value)).join('\n')}\n`);
+      await assert.rejects(
+        restoreNativeSessionRecovery({
+          project: directory,
+          home,
+          harness,
+          nativeSessionId,
+          ...checkpoint,
+          files: checkpoint.files.map((file) =>
+            file === rootRollout
+              ? {
+                  ...file,
+                  content,
+                  bytes: content.length,
+                  sha256: createHash('sha256').update(content).digest('hex'),
+                }
+              : file,
+          ),
+        }),
+        { code: 'native_recovery_session_invalid' },
+      );
+      assert.deepEqual(await fs.readdir(home), [], 'Rejected history writes nothing');
+      report({
+        probe: 'codex-history-corruption',
+        status: 'PASS',
+        missingParentRejected: true,
+        missingOrdinalRejected: true,
+        tier: 'production recovery with mutated installed capture',
+      });
+    }
     try {
       await restoreNativeSessionRecovery({
         project: directory,
@@ -172,6 +282,32 @@ async function protocolJourney(provider, directory, home) {
         });
       }
       throw error;
+    }
+    if (paging) {
+      const restoredPaging = await codexHistory({
+        directory,
+        env,
+        provider,
+        sessionId: nativeSessionId,
+        forkId: paging.forkId,
+      });
+      assert.deepEqual(
+        restoredPaging.root,
+        paging.root,
+        'Exact root pages after rebuilding SQLite',
+      );
+      assert.deepEqual(
+        restoredPaging.inherited,
+        paging.inherited,
+        'Exact inherited pages after rebuilding SQLite',
+      );
+      report({
+        probe: 'codex-history-pages',
+        status: 'PASS',
+        rootPages: paging.root.pages,
+        inheritedPages: paging.inherited.pages,
+        rebuiltWithoutSQLite: true,
+      });
     }
     restored = true;
     report({
@@ -342,6 +478,10 @@ try {
           });
           ancestor = Number(fields[1]);
         }
+        assert.ok(
+          new Set(topology.map((item) => item.group)).size > 1,
+          'The installed tool actually runs outside its launcher process group',
+        );
         controller.abort();
         const stopped = await pending;
         assert.ok(pid > 1, 'Installed tool actually launched a descendant');
@@ -394,7 +534,12 @@ try {
         await protocolJourney(provider, join(base, 'session-project'), join(base, 'session-home'));
       } catch (error) {
         protocolFailed = true;
-        report({ probe: 'installed-session', status: 'FAIL', code: error.code ?? error.name });
+        report({
+          probe: 'installed-session',
+          status: 'FAIL',
+          code: error.code ?? error.name,
+          check: error.operator,
+        });
       }
     }
     phase = 'composed-journey';
@@ -428,6 +573,7 @@ try {
       NATIVE_RUNTIME_ACCOUNT_ID: storage.accountId,
     };
     let turns = 0;
+    const priorHistoryProbes = historyProbes;
     let setups = 0;
     let workspaceScans = 0;
     let captured;
@@ -435,6 +581,9 @@ try {
     let latestAnswer;
     let lostAck = false;
     let lostAdmissionAck = false;
+    let paging;
+    let coldRestored = false;
+    const recoveryAcks = [];
     const controls = [];
     const observedStore = {
       ...f.store,
@@ -447,83 +596,128 @@ try {
         return result;
       },
     };
-    runtime = createNativeExecutor({
-      env,
-      root,
-      homeRoot,
-      ...createNativeExecutionPorts({ env, s3: storage.s3 }),
-      inspectMount: async () => ({}), // No EFS claim; real tmpfs filesystem below.
-      prepare: async () => ({
-        package: { ...pkg, packageId: f.configuration.packageId },
-        repositoryCommit: 'c'.repeat(40),
-        authEnv: { AWS_BEARER_TOKEN_BEDROCK: 'fixture-model-token' },
-      }),
-      snapshot: async (input) => {
-        workspaceScans++;
-        return snapshotNativeExecutionFiles(input);
-      },
-      captureRecovery: async (input) => {
-        phase = 'checkpoint-capture';
-        const started = performance.now();
-        captured = await captureNativeSessionRecovery(input);
-        report({
-          probe: 'capture',
-          turn: turns,
-          elapsedMs: Math.round(performance.now() - started),
-          files: captured.files.length,
-          bytes: captured.files.reduce((n, file) => n + file.bytes, 0),
-        });
-        return captured;
-      },
-      commandRunner: async (input) => {
-        const invocation = {
-          ...input,
-          env: { ...input.env, PATH: `${pkg.tools}:${input.env.PATH}` },
-        };
-        if (input.timeoutMs !== null) {
-          setups++;
-          return runNativeCommand(invocation);
-        }
-        turns++;
-        phase = `workflow-turn-${turns}`;
-        const command =
-          turns === 1
-            ? 'aidlc engine orchestrate next "Build a bounded qualification fixture" > .native-control/engine-ask.json && node -e \'const fs=require("fs");const ask=JSON.parse(fs.readFileSync(".native-control/engine-ask.json"));fs.writeFileSync(".native-control/pending-question.json",JSON.stringify({version:3,ask}))\''
-            : turns === 2
-              ? 'mkdir -p nested && cd nested && pwd'
-              : null;
-        provider.begin({ turn: turns, command, expectedAnswer: latestAnswer?.text });
-        const started = performance.now();
-        lastInput = localProviderInvocation(harness, invocation, provider.url);
-        const result = await runNativeCommand({ ...lastInput, timeoutMs: 60_000 });
-        assert.equal(result.cleanupComplete, true, 'Installed process descendants reaped');
-        if (result.exitCode !== 0) {
-          report({
-            probe: 'command-failure',
-            turn: turns,
-            exitCode: result.exitCode,
-            timedOut: result.timedOut,
-            requests: provider.result().requests,
-            stdoutBytes: Buffer.byteLength(result.stdout),
-            stderrBytes: Buffer.byteLength(result.stderr),
+    const createRuntime = () =>
+      createNativeExecutor({
+        env,
+        root,
+        homeRoot,
+        ...createNativeExecutionPorts({ env, s3: storage.s3 }),
+        inspectMount: async () => ({}), // No EFS claim; real tmpfs filesystem below.
+        prepare: async () => ({
+          package: { ...pkg, packageId: f.configuration.packageId },
+          repositoryCommit: 'c'.repeat(40),
+          authEnv: { AWS_BEARER_TOKEN_BEDROCK: 'fixture-model-token' },
+        }),
+        prepareRecovery: async () => ({
+          package: { ...pkg, packageId: f.configuration.packageId },
+        }),
+        restoreRecovery: async (input) => {
+          assert.equal(coldRestored, false, 'Recovery retry must not restore twice');
+          const restored = await restoreNativeSessionRecovery(input);
+          const after = await codexHistory({
+            directory: project,
+            env: lastInput.env,
+            provider,
+            sessionId: input.nativeSessionId,
+            forkId: paging.forkId,
           });
-        }
-        assert.equal(result.exitCode, 0, `Installed turn ${turns} exited unsuccessfully`);
-        const observations = provider.result();
-        assert.equal(observations.toolSent, turns <= 2, 'Required actual tool variant occurred');
-        const primary = observations.requests.filter((sample) => sample.primary);
-        assert.equal(primary.length, turns <= 2 ? 2 : 1, 'No repeated primary queries');
-        report({
-          probe: 'turn',
-          turn: turns,
-          elapsedMs: Math.round(performance.now() - started),
-          ...observations,
-          exitCode: result.exitCode,
-          cleanupComplete: result.cleanupComplete,
-        });
-        return result;
-      },
-    });
+          assert.deepEqual(after.root, paging.root);
+          assert.deepEqual(after.inherited, paging.inherited);
+          coldRestored = true;
+          report({
+            probe: 'cold-restore-pages',
+            status: 'PASS',
+            beforeTurn: 3,
+            verifiedFiles: input.files.length,
+            rootPages: after.root.pages,
+            inheritedPages: after.inherited.pages,
+            rebuiltWithoutSQLite: true,
+          });
+          return restored;
+        },
+        snapshot: async (input) => {
+          workspaceScans++;
+          return snapshotNativeExecutionFiles(input);
+        },
+        captureRecovery: async (input) => {
+          phase = 'checkpoint-capture';
+          if (harness === 'codex' && turns === 2 && !paging)
+            paging = await codexHistory({
+              directory: project,
+              env: lastInput.env,
+              provider,
+              sessionId: input.nativeSessionId,
+              createFork: true,
+            });
+          const started = performance.now();
+          captured = await captureNativeSessionRecovery(input);
+          report({
+            probe: 'capture',
+            turn: turns,
+            elapsedMs: Math.round(performance.now() - started),
+            files: captured.files.length,
+            bytes: captured.files.reduce((n, file) => n + file.bytes, 0),
+          });
+          return captured;
+        },
+        commandRunner: async (input) => {
+          const invocation = {
+            ...input,
+            env: { ...input.env, PATH: `${pkg.tools}:${input.env.PATH}` },
+          };
+          if (input.timeoutMs !== null) {
+            setups++;
+            return runNativeCommand(invocation);
+          }
+          turns++;
+          phase = `workflow-turn-${turns}`;
+          const command =
+            turns === 1
+              ? 'aidlc engine orchestrate next "Build a bounded qualification fixture" > .native-control/engine-ask.json && node -e \'const fs=require("fs");const ask=JSON.parse(fs.readFileSync(".native-control/engine-ask.json"));fs.writeFileSync(".native-control/pending-question.json",JSON.stringify({version:3,ask}))\''
+              : turns === 2
+                ? 'mkdir -p nested && cd nested && pwd'
+                : null;
+          provider.begin({
+            turn: turns,
+            command,
+            expectedAnswer: latestAnswer?.text,
+            expectedHistory:
+              harness === 'codex' && turns === 3
+                ? ['Fixture question 1?', 'Fixture question 2?']
+                : [],
+          });
+          const started = performance.now();
+          lastInput = localProviderInvocation(harness, invocation, provider.url);
+          const result = await runNativeCommand({ ...lastInput, timeoutMs: 60_000 });
+          assert.equal(result.cleanupComplete, true, 'Installed process descendants reaped');
+          if (result.exitCode !== 0) {
+            report({
+              probe: 'command-failure',
+              turn: turns,
+              exitCode: result.exitCode,
+              timedOut: result.timedOut,
+              requests: provider.result().requests,
+              stdoutBytes: Buffer.byteLength(result.stdout),
+              stderrBytes: Buffer.byteLength(result.stderr),
+            });
+          }
+          assert.equal(result.exitCode, 0, `Installed turn ${turns} exited unsuccessfully`);
+          const observations = provider.result();
+          assert.equal(observations.toolSent, turns <= 2, 'Required actual tool variant occurred');
+          const primary = observations.requests.filter((sample) => sample.primary);
+          assert.equal(primary.length, turns <= 2 ? 2 : 1, 'No repeated primary queries');
+          report({
+            probe: 'turn',
+            turn: turns,
+            elapsedMs: Math.round(performance.now() - started),
+            ...observations,
+            exitCode: result.exitCode,
+            cleanupComplete: result.cleanupComplete,
+          });
+          return result;
+        },
+      });
+    runtime = createRuntime();
     const supervisor = createNativeExecutionSupervisor({
       store: observedStore,
       preparationStore: f.preparationStore,
@@ -543,15 +737,31 @@ try {
           'native-start': 'start',
           'native-continue': 'continue',
           'native-status': 'status',
+          'native-recover': 'recover',
         }[payload.command];
         const result = await runtime[method](payload);
+        if (payload.command === 'native-recover')
+          recoveryAcks.push({
+            writerGeneration: payload.writerGeneration,
+            recoveryId: payload.recoveryId,
+            checkpointId: payload.checkpoint.id,
+            duplicate: result.duplicate === true,
+          });
         if (payload.command === 'native-continue' && !lostAck) {
           lostAck = true;
           throw new Error('fixture runtime acknowledgement lost');
         }
         return result;
       },
-      stop: async () => ({ confirmed: false }),
+      stop: async ({ execution, recoveryId }) => {
+        assert.equal(harness, 'codex');
+        assert.ok(recoveryId);
+        assert.equal((await fence.read(executionIdentity(execution))).state, 'FENCED');
+        await runtime.settle();
+        await fs.rm(homeRoot, { recursive: true, force: true });
+        runtime = createRuntime();
+        return { confirmed: true, runtimeSessionId: execution.runtimeSessionId };
+      },
       publications,
       interactions,
       checkpoints,
@@ -576,14 +786,17 @@ try {
           f.tick();
         }
         const result = await runtime.settle();
-        if (result?.status === 'failed') {
+        if (['failed', 'stopped_needs_review'].includes(result?.status)) {
           report({
             probe: 'runtime-failure',
             code: result.code,
             outputDiagnostic: result.outputDiagnostic,
             initializationChecks: result.initializationChecks,
+            recoveryFailureCode: result.recoveryFailureCode,
           });
-          throw Object.assign(new Error(result.code), { code: result.code });
+          throw Object.assign(new Error(result.code), {
+            code: result.recoveryFailureCode ?? result.code,
+          });
         }
         if (f.row().status === 'AWAITING_USER') return result;
         assert.notEqual(f.row().status, 'FAILED');
@@ -594,7 +807,11 @@ try {
     for (let turn = 1; turn <= 3; turn++) {
       const result = await settle();
       assert.equal(turns, turn);
-      assert.equal(setups, 3, 'Continuation does not reinstall package');
+      assert.equal(
+        setups,
+        harness === 'codex' && turn === 3 ? 5 : 3,
+        'Only cold recovery rebuilds the two pinned machine projections',
+      );
       assert.equal(workspaceScans, turn * 2, 'Exactly baseline and publication workspace scans');
       assert.equal(f.row().recoveryCheckpoint.sequence, turn);
       const question = await api.interaction(f.prepared, async () => {});
@@ -608,7 +825,8 @@ try {
         timings: result.timings,
         setupProcesses: setups,
         cliProcesses: turns,
-        commandOwnerProcesses: setups + turns,
+        historyInspectionProcesses: historyProbes - priorHistoryProbes,
+        commandOwnerProcesses: setups + turns + historyProbes - priorHistoryProbes,
         workspaceScans,
       });
       if (turn === 1) {
@@ -636,26 +854,32 @@ try {
         for (const directory of [project, home])
           for (const entry of await fs.readdir(directory))
             await fs.rm(join(directory, entry), { recursive: true, force: true });
-        await restoreNativeSessionRecovery({
-          project,
-          home,
-          harness,
-          nativeSessionId: f.row().publication.nativeSessionId,
-          ...captured,
-        });
-        for (const file of captured.files) {
-          if (harness === 'opencode' && file.scope === 'home') continue; // Real import/export verifies this below.
-          assert.deepEqual(
-            await fs.readFile(join(file.scope === 'home' ? home : project, file.path)),
-            file.content,
-          );
+        if (harness === 'codex') {
+          await fs.rm(homeRoot, { recursive: true, force: true });
+          runtime = createRuntime();
+          assert.equal((await runtime.status(executionIdentity(f.row()))).recovered, true);
+        } else {
+          await restoreNativeSessionRecovery({
+            project,
+            home,
+            harness,
+            nativeSessionId: f.row().publication.nativeSessionId,
+            ...captured,
+          });
+          for (const file of captured.files) {
+            if (harness === 'opencode' && file.scope === 'home') continue; // Real import/export verifies this below.
+            assert.deepEqual(
+              await fs.readFile(join(file.scope === 'home' ? home : project, file.path)),
+              file.content,
+            );
+          }
+          report({
+            probe: 'exact-restore',
+            beforeTurn: 3,
+            elapsedMs: Math.round(performance.now() - started),
+            verifiedFiles: captured.files.length,
+          });
         }
-        report({
-          probe: 'exact-restore',
-          beforeTurn: 3,
-          elapsedMs: Math.round(performance.now() - started),
-          verifiedFiles: captured.files.length,
-        });
       }
       if (turn === 3) break;
       const selection = question.pendingInput ? { answers: [{ selectedOptions: [1] }] } : null;
@@ -693,7 +917,28 @@ try {
         );
       previousQuestion = question;
     }
+    phase = 'authority-guards';
     assert.ok(lostAck && lostAdmissionAck);
+    if (harness === 'codex') {
+      report({
+        probe: 'cold-recovery-identity',
+        coldRestored,
+        writerGeneration: f.row().writerGeneration,
+        sameAttempt: f.row().attemptId === row.attemptId,
+        sameEpoch: f.row().epoch === row.epoch,
+        recoveryRequests: controls.filter((c) => c === 'native-recover').length,
+        continuationRequests: controls.filter((c) => c === 'native-continue').length,
+      });
+      assert.equal(coldRestored, true);
+      assert.equal(f.row().writerGeneration, 2);
+      assert.equal(f.row().attemptId, row.attemptId);
+      assert.equal(f.row().epoch, row.epoch);
+      assert.deepEqual(
+        recoveryAcks.map((ack) => ack.duplicate),
+        [false, true],
+      );
+      assert.deepEqual(recoveryAcks[1], { ...recoveryAcks[0], duplicate: true });
+    }
     assert.equal(controls.filter((c) => c === 'native-continue').length, 2);
     await api.respond(f.prepared, ACTOR, latestAnswer, async () => {});
     await supervisor(f.identity);
@@ -705,6 +950,8 @@ try {
       lostAdmissionAck: true,
       duplicateReplayCount: 0,
       retainedQuestionUnanswered: true,
+      writerGeneration: f.row().writerGeneration,
+      coldRestored,
     });
 
     report({

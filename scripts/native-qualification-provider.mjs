@@ -133,6 +133,7 @@ export async function qualificationProvider(harness) {
   let incompleteSent = false;
   let command;
   let expectedAnswer;
+  let expectedHistory = [];
   let mode = 'normal';
   let failure;
   let samples = [];
@@ -170,6 +171,9 @@ export async function qualificationProvider(harness) {
       });
       if (primary && expectedAnswer)
         assert.ok(raw.includes(expectedAnswer), 'Protected answer delivered');
+      if (primary)
+        for (const text of expectedHistory)
+          assert.ok(raw.includes(text), 'Restored history reaches the installed provider request');
       if (mode === 'hang') return;
       if (mode === 'failed' || (mode === 'incomplete' && primary && incompleteSent)) {
         res.writeHead(400, { 'content-type': 'application/json' }).end(
@@ -210,7 +214,7 @@ export async function qualificationProvider(harness) {
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     begin(input) {
-      ({ turn, command, expectedAnswer, mode = 'normal' } = input);
+      ({ turn, command, expectedAnswer, expectedHistory = [], mode = 'normal' } = input);
       started = performance.now();
       toolSent = false;
       incompleteSent = false;
@@ -218,7 +222,12 @@ export async function qualificationProvider(harness) {
     },
     result() {
       if (failure) throw failure;
-      return { requests: samples, toolSent, incompleteSent };
+      return {
+        requests: samples,
+        toolSent,
+        incompleteSent,
+        historyWitnesses: expectedHistory.length,
+      };
     },
     async close() {
       server.closeAllConnections();

@@ -14,9 +14,9 @@ export async function prepareQualificationPackage(root, assets) {
     'version.json': '5711b7af08fc8c293576fdde9252b6b9fe13a7041f7db5f0dd33f6b56223c1e9',
     'checksums.txt': 'c49098da9ce425afbc5c5beeaae395aa8480c6f887107b0b455cc1143cac2ac9',
   };
-  const directory = `${root}/package`;
+  const directory = `${root}/packages/2.11.0`;
   const tools = `${root}/tools`;
-  await fs.mkdir(directory, { mode: 0o700 });
+  await fs.mkdir(directory, { mode: 0o700, recursive: true });
   await fs.mkdir(tools);
   for (const [name, hash] of Object.entries(pins)) {
     const bytes = await fs.readFile(`${assets}/${name}`);
