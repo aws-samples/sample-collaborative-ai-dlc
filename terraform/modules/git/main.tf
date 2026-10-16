@@ -58,6 +58,33 @@ resource "aws_ssm_parameter" "github_app_config" {
   tags = var.tags
 }
 
+# One CodeCommit external ID per deployment. The app never writes it: it is a
+# stable, deployment-scoped secret that the tenant names in the trust policy of
+# their repository access role. Rendered into the codecommit/source-control/
+# credential-broker Lambda env as "aidlc:<uuid>" (CODECOMMIT_EXTERNAL_ID), and
+# matched against each binding to recognise a platform binding at runtime (#531
+# C5). Rotation is out of scope (#531): the value is created once and kept.
+resource "random_uuid" "codecommit_external_id" {}
+
+# Platform CodeCommit connection, set by a platform admin from the Admin page's
+# "Source Control > CodeCommit" card (PUT /codecommit/admin/config). Same
+# pattern as github_app_config above: a single String parameter, created empty
+# and never overwritten by Terraform (ignore_changes = [value]). It holds the
+# repository access role ARN and region shared by every space:
+# {"roleArn": "...", "region": "..."}. Last writer wins; the reader is new and
+# fails closed (a failed SSM read is a 5xx, never "not configured") (#531).
+resource "aws_ssm_parameter" "codecommit_connection" {
+  name  = "/${var.project_name}/${var.environment}/codecommit-connection"
+  type  = "String"
+  value = "{}"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
 # Legacy DynamoDB table for user git connections, keyed by userId ALONE.
 # Superseded by git_provider_connections (composite key userId+provider) so a
 # user can connect more than one git provider at once. Kept in place — NOT
