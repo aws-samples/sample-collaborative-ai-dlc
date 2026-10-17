@@ -36,6 +36,7 @@ const baseConfig = (overrides: Record<string, unknown> = {}) => ({
       { Sid: 'ListRepositoriesInAccount', Action: 'codecommit:ListRepositories', Resource: '*' },
     ],
   },
+  regions: ['us-east-1', 'eu-west-1'],
   roleArn: null,
   region: null,
   ...overrides,
@@ -117,6 +118,36 @@ describe('CodeCommitSourceControlCard', () => {
     expect(screen.getByText(ROLE)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Change' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Role ARN')).not.toBeInTheDocument();
+  });
+
+  it('change: the policy follows the new role ARN and region, not the saved ones', async () => {
+    getConfig.mockResolvedValue(
+      baseConfig({
+        roleArn: ROLE,
+        region: 'us-east-1',
+        permissionsPolicy: {
+          Statement: [
+            {
+              Sid: 'UseTaggedRepositories',
+              Resource: 'arn:aws:codecommit:<region>:<account-id>:*',
+            },
+          ],
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<CodeCommitSourceControlCard />);
+
+    await user.click(await screen.findByRole('button', { name: 'Change' }));
+    await user.clear(screen.getByLabelText('Role ARN'));
+    await user.type(screen.getByLabelText('Role ARN'), 'arn:aws:iam::210987654321:role/new-role');
+    await user.click(screen.getByLabelText('Repository region'));
+    await user.click(await screen.findByRole('option', { name: 'eu-west-1' }));
+    await user.click(screen.getByRole('button', { name: /Setup guide/ }));
+
+    expect(screen.getByTestId('codecommit-permissions-policy')).toHaveTextContent(
+      'arn:aws:codecommit:eu-west-1:210987654321:*',
+    );
   });
 
   it('trust error (424): shows "Nothing was saved" with the hint and ties it to the field', async () => {

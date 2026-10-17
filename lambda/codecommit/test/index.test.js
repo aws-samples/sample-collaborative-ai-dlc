@@ -149,9 +149,12 @@ describe('codecommit handler', () => {
     const [statement] = res.body.trustPolicy.Statement;
     expect(statement.Principal.AWS).toEqual(PRINCIPALS);
     expect(statement.Condition.StringEquals['sts:ExternalId']).toBe(EXTERNAL_ID);
-    // Permissions policy is the tag variant with region/account filled in.
+    // Permissions policy is the tag variant with placeholders: the admin card
+    // fills them from the values being typed, so a change never shows the old
+    // scope. The region list is the backend's, served to the card.
     const tagged = res.body.permissionsPolicy.Statement[1];
-    expect(tagged.Resource).toBe('arn:aws:codecommit:eu-west-1:123456789012:*');
+    expect(tagged.Resource).toBe('arn:aws:codecommit:<region>:<account-id>:*');
+    expect(res.body.regions).toContain('eu-west-1');
     expect(tagged.Condition).toEqual({ StringEquals: { 'aws:ResourceTag/aidlc': 'true' } });
   });
 

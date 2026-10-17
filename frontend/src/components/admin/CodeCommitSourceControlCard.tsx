@@ -26,7 +26,6 @@ import { SaveStatusButton, type SaveResult } from '@/components/settings/SaveSta
 import { ApiError } from '@/services/api';
 import {
   codecommitAdminService,
-  CODECOMMIT_REGIONS,
   IAM_ROLE_ARN_PATTERN,
   type CodeCommitAdminConfig,
 } from '@/services/codecommit';
@@ -268,7 +267,7 @@ export function CodeCommitSourceControlCard() {
                   <SelectValue placeholder="Select a region" />
                 </SelectTrigger>
                 <SelectContent>
-                  {CODECOMMIT_REGIONS.map((r) => (
+                  {(config?.regions ?? []).map((r) => (
                     <SelectItem key={r} value={r}>
                       {r}
                     </SelectItem>

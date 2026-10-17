@@ -11,7 +11,6 @@ import {
   codeCommitTrustPolicy,
   isCodeCommitExternalId,
   isCodeCommitRoleArn,
-  newCodeCommitExternalId,
   roleAccountId,
 } from '../codecommit-role.js';
 
@@ -46,11 +45,9 @@ const okCredentials = {
 };
 
 describe('external ids', () => {
-  it('mints prefixed uuids that validate, and rejects anything else', () => {
-    const id = newCodeCommitExternalId();
-    expect(id.startsWith('aidlc:')).toBe(true);
+  it('accepts prefixed uuids and rejects anything else', () => {
+    const id = 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e';
     expect(isCodeCommitExternalId(id)).toBe(true);
-    expect(newCodeCommitExternalId()).not.toBe(id);
     for (const bad of ['', null, 'aidlc:', 'aidlc:project-1', 'AIDLC:' + id.slice(6), id + 'x']) {
       expect(isCodeCommitExternalId(bad)).toBe(false);
     }
@@ -257,16 +254,5 @@ describe('codeCommitTagPermissionsPolicy', () => {
   it('renders placeholders before a connection fills the region/account', () => {
     const policy = codeCommitTagPermissionsPolicy();
     expect(policy.Statement[1].Resource).toBe('arn:aws:codecommit:<region>:<account-id>:*');
-  });
-
-  it('derives the partition from the region for the gov/cn forms', () => {
-    expect(
-      codeCommitTagPermissionsPolicy({ region: 'us-gov-west-1', accountId: '123456789012' })
-        .Statement[1].Resource,
-    ).toBe('arn:aws-us-gov:codecommit:us-gov-west-1:123456789012:*');
-    expect(
-      codeCommitTagPermissionsPolicy({ region: 'cn-north-1', accountId: '123456789012' })
-        .Statement[1].Resource,
-    ).toBe('arn:aws-cn:codecommit:cn-north-1:123456789012:*');
   });
 });

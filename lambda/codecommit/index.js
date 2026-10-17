@@ -44,6 +44,7 @@ import {
   writeCodeCommitConnection,
 } from '../shared/codecommit-platform-config.js';
 import {
+  CODECOMMIT_REGIONS,
   isCodeCommitRegion,
   isSupportedCodeCommitRegion,
 } from '../shared/git-providers/codecommit-credential.js';
@@ -88,15 +89,14 @@ const LIST_PROBE_CONCURRENCY = 5;
 const adminConfig = (connection) => {
   const principals = platformPrincipals();
   const externalId = platformExternalId();
-  const accountId = connection.roleArn ? roleAccountId(connection.roleArn) : undefined;
   return {
     principals,
     externalId,
     trustPolicy: codeCommitTrustPolicy({ principals, externalId }),
-    permissionsPolicy: codeCommitTagPermissionsPolicy({
-      ...(connection.region ? { region: connection.region } : {}),
-      ...(accountId ? { accountId } : {}),
-    }),
+    // Placeholders: the admin card fills <region> and <account-id> from the
+    // values being typed, so a changed connection never shows the old scope.
+    permissionsPolicy: codeCommitTagPermissionsPolicy(),
+    regions: CODECOMMIT_REGIONS,
     roleArn: connection.roleArn,
     region: connection.region,
   };

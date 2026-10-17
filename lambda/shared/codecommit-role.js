@@ -14,7 +14,6 @@
 // repository account's trust policy admits only that external ID, the platform
 // presents the same value for every assume, and a space creator never supplies
 // an external ID or a role ARN — a platform admin configures the one role.
-import { randomUUID } from 'node:crypto';
 import { AssumeRoleCommand } from '@aws-sdk/client-sts';
 import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
 
@@ -23,12 +22,8 @@ const ROLE_ARN = /^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role\/[\w+=,.@/-]{1,5
 
 // External ID format for the tenant role trust policy: `aidlc:<uuid>`. The live
 // value is per-deployment (CODECOMMIT_EXTERNAL_ID, minted by Terraform). This
-// validator still guards every assume and trust-policy render; the generator is
-// kept for format tests and parity with the GitHub App installation-id shape.
-const EXTERNAL_ID_PREFIX = 'aidlc:';
+// validator guards every assume and trust-policy render.
 const EXTERNAL_ID = /^aidlc:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-export const newCodeCommitExternalId = () => `${EXTERNAL_ID_PREFIX}${randomUUID()}`;
 
 export const isCodeCommitExternalId = (value) => EXTERNAL_ID.test(String(value ?? '').trim());
 
@@ -158,14 +153,8 @@ export const codeCommitPermissionsPolicy = ({
 // (issue #531). A space may use any repository in the account tagged
 // `aidlc=true`: sharing a repository is a tag, not a policy edit. `region` and
 // `accountId` fill the repository ARN scope; before a connection is saved they
-// are the same placeholders the explicit variant uses. The partition is
-// derived from the region so the aws-cn / aws-us-gov forms render correctly.
-const partitionForRegion = (region) => {
-  if (String(region).startsWith('cn-')) return 'aws-cn';
-  if (String(region).startsWith('us-gov-')) return 'aws-us-gov';
-  return 'aws';
-};
-
+// are the same placeholders the explicit variant uses. Only commercial-partition
+// regions can be saved (isSupportedCodeCommitRegion), so the partition is `aws`.
 export const codeCommitTagPermissionsPolicy = ({
   region = '<region>',
   accountId = '<account-id>',
@@ -183,7 +172,7 @@ export const codeCommitTagPermissionsPolicy = ({
       Sid: 'UseTaggedRepositories',
       Effect: 'Allow',
       Action: REPOSITORY_ACTIONS,
-      Resource: `arn:${partitionForRegion(region)}:codecommit:${region}:${accountId}:*`,
+      Resource: `arn:aws:codecommit:${region}:${accountId}:*`,
       Condition: { StringEquals: { [`aws:ResourceTag/${tagKey}`]: 'true' } },
     },
   ],
@@ -289,7 +278,6 @@ export const codeCommitTrustPolicy = ({ principals, externalId }) => {
 export { READ_API_ACTIONS, WRITE_API_ACTIONS, SESSION_DURATION_SECONDS };
 
 export default {
-  newCodeCommitExternalId,
   isCodeCommitExternalId,
   isCodeCommitRoleArn,
   roleAccountId,

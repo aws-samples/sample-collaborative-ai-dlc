@@ -257,12 +257,12 @@ describe('source-control bindings', () => {
       expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(1);
     });
 
-    // Issue #531, C5: a refused PLATFORM binding (its external ID is the
+    // Issue #531: a refused PLATFORM binding (its external ID is the
     // per-deployment CODECOMMIT_EXTERNAL_ID) is the admin's broken trust, not
     // the space owner's — it invalidates nothing and recovers once the admin
     // fixes the trust. Legacy per-user bindings (another external ID) keep the
     // credentialRef fan-out.
-    describe('platform vs legacy on a refused role (#531 C5)', () => {
+    describe('platform vs legacy on a refused role (#531)', () => {
       let savedEnv;
       beforeEach(() => {
         savedEnv = process.env.CODECOMMIT_EXTERNAL_ID;

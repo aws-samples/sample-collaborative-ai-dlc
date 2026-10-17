@@ -343,10 +343,11 @@ const loggableErrorCode = (error, fallback = 'UNKNOWN') => {
 //   - a provider denial scoped to one operation (a CodeCommit pull-request API
 //     the role does not grant) invalidates nothing: repository access may be
 //     intact, and the operation itself already failed;
-//   - STS refusing the tenant role (trust policy or external id changed, role
-//     deleted) invalidates every binding on that role and external ID: they
-//     share the credential, so none of them can work any more. Bindings of
-//     another user on the same role carry another external ID and are kept;
+//   - STS refusing a legacy per-user role (trust policy or external id
+//     changed, role deleted) invalidates every binding on that role and
+//     external ID: they share the credential, so none of them can work any
+//     more. A refused platform role invalidates nothing: the admin fixes the
+//     trust and every space recovers (invalidateBindingsForError, #531);
 //   - a transient STS failure or a session policy the platform built wrongly
 //     invalidates nothing: neither is the tenant's doing, and a retry (or a
 //     platform fix) recovers without a rebind.
@@ -390,9 +391,9 @@ const sanitizeBinding = (binding, { privileged = false } = {}) => {
       out.installationAccount = binding.installationAccount || null;
     }
     if (binding.authType === 'codecommit-role') {
-      // Role ARN, account and region identify the tenant's role. The external
-      // ID stays server-side: re-verification resolves it from the stored
-      // binding, so no caller (not even a co-admin) needs to read it.
+      // Role ARN, account and region identify the role the binding uses. The
+      // external ID stays server-side: runtime reads it from the stored binding
+      // and a rebind takes the platform one, so no caller needs to read it.
       out.roleArn = binding.roleArn || null;
       out.roleAccountId = binding.roleAccountId || null;
       out.region = binding.region || null;

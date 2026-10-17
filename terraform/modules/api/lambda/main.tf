@@ -1361,7 +1361,7 @@ module "credential_broker_lambda" {
     GITLAB_REDIRECT_URI                = var.gitlab_redirect_uri
     BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
     # Recognises a platform binding (binding.externalId === this) so a refused
-    # platform role does not invalidate it (#531 C5). No SSM read needed here.
+    # platform role does not invalidate it (#531). No SSM read needed here.
     CODECOMMIT_EXTERNAL_ID              = var.codecommit_external_id
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
