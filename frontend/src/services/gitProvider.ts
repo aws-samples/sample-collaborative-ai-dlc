@@ -228,28 +228,37 @@ export const getGitProviderService = (provider: GitProvider): GitProviderService
 };
 
 // =============================================================================
-// CodeCommit — no personal connection. The status route reports whether the
-// deployment can build a trust policy (platform principals present); a
-// "connection" is a role the tenant creates, handled by services/codecommit.ts.
-// The auth/disconnect members exist to satisfy the shared interface and reject
+// CodeCommit — no personal connection. One platform connection, set by a
+// platform admin (services/codecommit.ts). The status route reports only
+// whether that connection exists and its region; it never carries platform
+// principals or the external ID (those are admin-only). The repo list goes
+// through the generic listRepos path, like GitLab and Bitbucket. The
+// auth/disconnect members exist to satisfy the shared interface and reject
 // deliberately: the UI never renders a Connect button for this provider.
 // =============================================================================
 
 export interface CodeCommitStatus {
-  provider: 'codecommit';
   configured: boolean;
-  principals: string[];
+  region: string | null;
 }
+
+// Raw CodeCommit connection status (configured + region) for callers that need
+// the region, e.g. the create-space step-3 summary. The generic
+// GitProviderService.getStatus below maps this to the provider-agnostic shape.
+export const codecommitStatus = () => api.get<CodeCommitStatus>('/codecommit/status');
 
 export const codecommitStatusService: GitProviderService = {
   getAuthUrl: () => Promise.reject(new Error('CodeCommit has no OAuth connection')),
   getStatus: async () => {
-    const status = await api.get<CodeCommitStatus>('/codecommit/status');
-    // "connected" here means "this deployment can connect CodeCommit at all";
-    // the per-role handshake happens in the connect form.
+    const status = await codecommitStatus();
+    // "connected" here means "this deployment has a CodeCommit connection"; the
+    // platform admin owns it, space creators just pick repositories.
     return { connected: status.configured, provider: 'codecommit' };
   },
-  listRepos: () => Promise.reject(new Error('CodeCommit repositories are listed per role')),
+  // Lists the repositories the platform role can read in the configured region,
+  // as a bare GitRepo[] like the other providers — GitRepoSelect uses its
+  // generic path. The backend filters to readable repositories.
+  listRepos: () => api.get<GitRepo[]>('/codecommit/repos'),
   disconnect: () => Promise.resolve(),
 };
 

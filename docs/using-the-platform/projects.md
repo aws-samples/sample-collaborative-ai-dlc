@@ -11,7 +11,7 @@ A project is the workspace where intents run. It represents a product, service, 
 
 ## Creating a project
 
-From the dashboard, choose **Create new Project**. Enter a name, pick the code host (**GitHub** or **GitLab**), connect your account if prompted, and select the repository. You can optionally enable the provider's issue tracker in the same step. See [Git and Tracker Integration](git-integration.md) for details on connections and auth modes.
+From the dashboard, choose **Create new Project**. Enter a name, pick the code host (**GitHub**, **GitLab**, **Bitbucket** or **AWS CodeCommit**), connect your account if prompted, and select the repository. CodeCommit needs no connection step: once a platform admin has set the CodeCommit connection, you pick repositories from the usual list; if it is not configured yet, you can still select it, but a note asks you to contact a platform admin and **Next** stays disabled. You can optionally enable the provider's issue tracker in the same step. See [Git and Tracker Integration](git-integration.md) for details on connections and auth modes.
 
 ## Roles and permissions
 
@@ -82,7 +82,7 @@ for publication, selection, and snapshot behavior.
 
 ### Source Control
 
-- **Repositories** — add or remove the repositories that agents check out. Multi-repository projects are supported; at intent creation you can pick a base branch per repository.
+- **Repositories** — add or remove the repositories that agents check out. Multi-repository projects are supported; at intent creation you can pick a base branch per repository. For CodeCommit, repositories come from the shared platform connection; a space created before the connection existed (or before a connection change) keeps working on its original role and moves to the current connection the next time an owner runs **Rebind and verify**.
 - **PR strategy** — select whether the project inherits the platform delivery default or explicitly uses Intent PR / PR per unit.
 
 ### Trackers

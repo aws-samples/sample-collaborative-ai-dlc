@@ -9,18 +9,14 @@ import {
 
 // Where the repo list comes from: 'oauth' (default) lists the caller's own
 // repos via their personal connection; 'github-app' lists repos across the
-// platform App's installations — no personal connection needed;
-// 'codecommit-role' takes the list the CodeCommit connect form already
-// fetched while proving the role (no second round-trip, no personal
-// connection), passed in through `repos`.
-type RepoSource = 'oauth' | 'github-app' | 'codecommit-role';
+// platform App's installations — no personal connection needed. Every other
+// provider, CodeCommit included, uses the default per-provider listRepos path.
+type RepoSource = 'oauth' | 'github-app';
 
 interface BaseProps {
   provider: GitProvider;
   exclude?: string[];
   repoSource?: RepoSource;
-  // Pre-fetched list for repoSource 'codecommit-role'.
-  repos?: GitRepo[];
 }
 
 interface SingleProps extends BaseProps {
@@ -41,18 +37,12 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
   const { provider } = props;
   const repoSource = props.repoSource ?? 'oauth';
 
-  // The pre-fetched path derives its list from props; only the fetching paths
-  // own state, so no effect ever mirrors a prop into state.
-  const provided = repoSource === 'codecommit-role' ? props.repos : undefined;
-  const [fetched, setFetched] = useState<GitRepo[]>([]);
+  const [repos, setRepos] = useState<GitRepo[]>([]);
   const [fetching, setFetching] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const repos = provided ?? fetched;
-  const loading = provided ? false : fetching;
 
   useEffect(() => {
-    if (repoSource === 'codecommit-role') return;
     const listRepos =
       repoSource === 'github-app'
         ? githubAppService.listRepos
@@ -60,7 +50,7 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
     setFetching(true);
     setError(null);
     listRepos()
-      .then(setFetched)
+      .then(setRepos)
       .catch((e) => setError(e.message))
       .finally(() => setFetching(false));
   }, [provider, repoSource]);
@@ -78,8 +68,18 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
     );
   }, [repos, excludeSet, search, provider]);
 
-  if (loading) return <div className="text-sm text-gray-500">Loading repositories...</div>;
+  if (fetching) return <div className="text-sm text-gray-500">Loading repositories...</div>;
   if (error) return <div className="text-sm text-red-600">{error}</div>;
+
+  // CodeCommit has no self-service way to widen access from here; when the role
+  // sees nothing, point the user at their AWS admin (works for the tag and the
+  // explicit-ARN list alike).
+  const emptyHint =
+    provider === 'codecommit' ? (
+      <p className="px-3 pb-4 text-center text-xs text-gray-500">
+        Ask your AWS admin to grant the platform role access to the repositories you need.
+      </p>
+    ) : null;
 
   if (props.multiple) {
     const selected = new Set(props.value);
@@ -106,8 +106,9 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
         />
         <div className="max-h-60 overflow-y-auto border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
           {filtered.length === 0 ? (
-            <div className="px-3 py-4 text-sm text-gray-500 text-center">
+            <div className="px-3 py-4 text-center text-sm text-gray-500">
               {repos.length === 0 ? 'No repositories available' : 'No matching repositories'}
+              {repos.length === 0 && emptyHint}
             </div>
           ) : (
             filtered.map((repo) => (
