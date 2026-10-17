@@ -19,9 +19,11 @@ export interface CodeCommitAdminConfig {
   externalId: string;
   // The trust policy to paste on the role, with the external ID filled in.
   trustPolicy: Record<string, unknown>;
-  // The permissions policy, with region and account filled in (tag variant;
-  // the setup guide also shows the explicit-ARN alternative).
+  // The permissions policy (tag variant) with <region> and <account-id>
+  // placeholders; the admin card fills them from the values being typed.
   permissionsPolicy: Record<string, unknown>;
+  // Regions the platform can reach (the backend's list, so they cannot drift).
+  regions: string[];
   // The saved connection, or null when nothing is configured yet.
   roleArn: string | null;
   region: string | null;
@@ -31,38 +33,6 @@ export interface CodeCommitAdminConfigUpdate {
   roleArn: string;
   region: string;
 }
-
-// CodeCommit regions the platform can reach (same list as the backend's
-// CODECOMMIT_REGIONS; the backend stays the authority and rejects any other on
-// save). China/GovCloud are other partitions the platform roles cannot assume
-// into, so they are not offered.
-export const CODECOMMIT_REGIONS = [
-  'us-east-1',
-  'us-east-2',
-  'us-west-1',
-  'us-west-2',
-  'ca-central-1',
-  'sa-east-1',
-  'eu-west-1',
-  'eu-west-2',
-  'eu-west-3',
-  'eu-central-1',
-  'eu-north-1',
-  'eu-south-1',
-  'il-central-1',
-  'me-south-1',
-  'me-central-1',
-  'af-south-1',
-  'ap-east-1',
-  'ap-south-1',
-  'ap-south-2',
-  'ap-northeast-1',
-  'ap-northeast-2',
-  'ap-northeast-3',
-  'ap-southeast-1',
-  'ap-southeast-2',
-  'ap-southeast-3',
-] as const;
 
 export const IAM_ROLE_ARN_PATTERN =
   /^arn:(aws|aws-cn|aws-us-gov):iam::\d{12}:role\/[\w+=,.@/-]{1,512}$/;

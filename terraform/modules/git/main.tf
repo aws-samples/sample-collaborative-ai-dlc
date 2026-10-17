@@ -59,11 +59,12 @@ resource "aws_ssm_parameter" "github_app_config" {
 }
 
 # One CodeCommit external ID per deployment. The app never writes it: it is a
-# stable, deployment-scoped secret that the tenant names in the trust policy of
-# their repository access role. Rendered into the codecommit/source-control/
-# credential-broker Lambda env as "aidlc:<uuid>" (CODECOMMIT_EXTERNAL_ID), and
-# matched against each binding to recognise a platform binding at runtime (#531
-# C5). Rotation is out of scope (#531): the value is created once and kept.
+# stable, deployment-scoped identifier (not a secret: the admin card shows it)
+# that the tenant names in the trust policy of their repository access role.
+# Rendered into the codecommit/source-control/credential-broker Lambda env as
+# "aidlc:<uuid>" (CODECOMMIT_EXTERNAL_ID), and matched against each binding to
+# recognise a platform binding at runtime (#531). Rotation is out of scope: the
+# value is created once and kept.
 resource "random_uuid" "codecommit_external_id" {}
 
 # Platform CodeCommit connection, set by a platform admin from the Admin page's

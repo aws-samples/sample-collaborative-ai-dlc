@@ -273,7 +273,7 @@ describe('resolveBindingCredential GitLab 401 retry support', () => {
   });
 });
 
-describe('verifyCodeCommitRoleBinding (platform connection, #531 C4)', () => {
+describe('verifyCodeCommitRoleBinding (platform connection, #531)', () => {
   const ROLE = 'arn:aws:iam::123456789012:role/aidlc-codecommit-access';
   const OTHER_ROLE = 'arn:aws:iam::210987654321:role/someone-elses-role';
   const EXTERNAL_ID = 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e';
@@ -363,7 +363,7 @@ describe('verifyCodeCommitRoleBinding (platform connection, #531 C4)', () => {
 
   it('resolveBindingCredential keeps assuming the role recorded on the binding, not the one the connection now names', async () => {
     // A binding verified under role A keeps A even after the admin saves role B
-    // (C5): the runtime resolver reads the binding, never the connection.
+    // The runtime resolver reads the binding, never the connection.
     const ROLE_B = 'arn:aws:iam::555555555555:role/new-platform-role';
     const sts = stsOk();
     getProvider.mockImplementation(() => ({
