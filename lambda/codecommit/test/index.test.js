@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { CodeCommitClient } from '@aws-sdk/client-codecommit';
 
 import { createCodeCommitHandler } from '../index.js';
 import { ProviderError } from '../../shared/git-providers/errors.js';
@@ -325,21 +326,29 @@ describe('codecommit handler', () => {
   it('repos probes at most 1000 repositories, like the GitHub App picker cap', async () => {
     const ssm = fakeSsm(JSON.stringify({ roleArn: ROLE, region: 'eu-west-1' }));
     let probed = 0;
-    const clients = new Set();
+    let listClient;
+    const probeClients = new Set();
     const provider = {
-      listRepos: async () => Array.from({ length: 1200 }, (_v, i) => repo(`svc-${i}`)),
+      listRepos: async (ctx) => {
+        listClient = ctx.client;
+        return Array.from({ length: 1200 }, (_v, i) => repo(`svc-${i}`));
+      },
       getRepositoryAccess: async (ctx) => {
         probed += 1;
-        clients.add(ctx.client);
+        probeClients.add(ctx.client);
         return { canRead: true };
       },
     };
     const res = parse(await handler_repos({ stsClient: stsOk(), ssmClient: ssm, provider }));
     expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(1000);
     expect(probed).toBe(1000);
-    // Every probe shares the one client built for the listing.
-    expect(clients.size).toBe(1);
+    // The first 1000 in listing order are kept, the rest are not checked.
+    expect(res.body).toHaveLength(1000);
+    expect(res.body[0].name).toBe('svc-0');
+    expect(res.body[999].name).toBe('svc-999');
+    // One real client, built for the listing and shared by every probe.
+    expect(listClient).toBeInstanceOf(CodeCommitClient);
+    expect([...probeClients]).toEqual([listClient]);
   });
 
   it('repos is an empty array when no connection is configured', async () => {
