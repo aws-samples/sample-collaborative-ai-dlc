@@ -23,6 +23,7 @@
 // Project-scoped operations (branches, tree, contents, pull requests) go
 // through /projects/{id}/source-control with the binding credential like every
 // other provider; nothing here handles them.
+import { CodeCommitClient } from '@aws-sdk/client-codecommit';
 import { STSClient } from '@aws-sdk/client-sts';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { Logger } from '@aws-lambda-powertools/logger';
@@ -77,10 +78,13 @@ const ROLE_CODES = new Set([
   'BINDING_INVALID',
 ]);
 
-// GetRepository probes during the list run with this much parallelism — one
-// small constant, so the probe stays well under the 30 s Lambda timeout
-// without opening one SDK client per repository at once.
-const LIST_PROBE_CONCURRENCY = 5;
+// GetRepository probes during the list run: one shared SDK client, this much
+// parallelism, and at most this many repositories probed. The cap mirrors the
+// GitHub App picker (10 pages of 100, truncated silently,
+// git-providers/github.js listInstallationRepos), so a very large account
+// stays under the API timeout like the other providers.
+const LIST_PROBE_CONCURRENCY = 10;
+const LIST_PROBE_MAX = 1000;
 
 // The admin config payload. `roleArn`/`region` are null until an admin saves a
 // connection. The permissions policy is the tag variant shown in the card
@@ -226,8 +230,11 @@ export const createCodeCommitHandler = ({
           token: credentials,
           region: connection.region,
           accountId: roleAccountId(connection.roleArn),
+          // One client for the listing and every probe (all in the connection
+          // region), instead of one per repository.
+          client: new CodeCommitClient({ region: connection.region, credentials }),
         };
-        const listed = await codecommit.listRepos(ctx);
+        const listed = (await codecommit.listRepos(ctx)).slice(0, LIST_PROBE_MAX);
         // ListRepositories is not filtered by access, so each repository is
         // probed with GetRepository under the discover session. A repository is
         // hidden only on 403/404; a throttle or 5xx fails the whole request so
