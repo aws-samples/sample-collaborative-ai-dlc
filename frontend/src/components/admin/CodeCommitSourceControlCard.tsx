@@ -191,7 +191,7 @@ export function CodeCommitSourceControlCard() {
       const hint = body?.hint;
       const message =
         body?.error || (error instanceof Error ? error.message : 'Failed to save configuration');
-      setTrustError(hint ? `${message} ${hint}` : message);
+      setTrustError(hint ? `${message.replace(/\.?$/, '.')} ${hint}` : message);
       setSaveResult('error');
     } finally {
       setSaving(false);
