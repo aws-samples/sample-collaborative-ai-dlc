@@ -1,0 +1,20 @@
+{
+  "name": "engine-data",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "vitest run --project=engine-data",
+    "build": "esbuild index.js --bundle --platform=node --target=node24 --format=esm --external:@aws-sdk/* --banner:js=\"import{createRequire}from'node:module';const require=createRequire(import.meta.url);\" --outfile=.build/index.mjs",
+    "lint": "oxlint .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "@aws-lambda-powertools/logger": "^2.35.0",
+    "@aws-sdk/client-dynamodb": "^3.1106.0",
+    "@aws-sdk/client-kms": "^3.1106.0",
+    "@aws-sdk/lib-dynamodb": "^3.1106.0",
+    "zod": "^3.23.0"
+  }
+}

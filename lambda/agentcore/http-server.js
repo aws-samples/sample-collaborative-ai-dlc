@@ -79,7 +79,8 @@ import { commandDefinition } from './command-registry.js';
 import { installProcessGroupShutdown } from './cli/spawn.js';
 import { createCredentialSession } from './credential-session.js';
 import { accountCredentialInvocation } from './invocation-accounting.js';
-import { runWithGatewayGrant } from './mcp/gateway-context.js';
+import { currentGatewayGrant, runWithGatewayGrant } from './mcp/gateway-context.js';
+import { createRemoteProcessStore, misconfiguredProcessStore } from './engine-data-client.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -129,9 +130,13 @@ export const dispatchInvocation = async ({
   busy?.enter();
   let credentialSession = null;
   try {
+    // Credential preparation reads the execution's META, so it runs under the
+    // invocation's grant like the handler does.
     const context =
       prepareInvocation && definition.agentAuth
-        ? await prepareInvocation(payload, definition.agentAuth)
+        ? await runWithGatewayGrant(payload.gatewayGrant ?? null, () =>
+            prepareInvocation(payload, definition.agentAuth),
+          )
         : {};
     const handlerPayload = { ...payload };
     delete handlerPayload.agentCredentialGrant;
@@ -226,6 +231,24 @@ export const createServer = ({
   });
 };
 
+// With engine-data enabled the engine's process state goes through the
+// engine-data Lambda under each invocation's grant. That is only coherent when
+// the built-in MCP also runs remotely; otherwise the store fails closed.
+export const processStoreFor = ({
+  env = process.env,
+  ddb,
+  createLocal = createProcessStore,
+  createRemote = createRemoteProcessStore,
+  misconfigured = misconfiguredProcessStore,
+} = {}) => {
+  if (!env.ENGINE_DATA_FUNCTION) return createLocal({ ddb, tableName: env.V2_PROCESS_TABLE });
+  if (!env.AIDLC_MCP_GATEWAY_URL) {
+    logger.error('engine data is enabled without the MCP Gateway; process store disabled');
+    return misconfigured('Engine data requires the MCP Gateway');
+  }
+  return createRemote({ grant: currentGatewayGrant });
+};
+
 // Container entry: wire the real commands + clients, then listen on 8080.
 const main = async () => {
   const {
@@ -266,7 +289,7 @@ const main = async () => {
 
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
-  const store = createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE });
+  const store = processStoreFor({ env: process.env, ddb });
   const installedClis = await discoverInstalledClis();
   const invocationContext = async (payload, authMode) => {
     const auth = await resolveInvocationAgentAuth({
