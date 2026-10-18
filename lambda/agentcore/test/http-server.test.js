@@ -35,10 +35,15 @@ describe('dispatchInvocation', () => {
   });
 
   it('keeps routing and authentication metadata in one command registry', () => {
-    expect(COMMANDS['init-ws']).toEqual({ handler: 'initWs', agentAuth: false });
+    expect(COMMANDS['init-ws']).toEqual({
+      handler: 'initWs',
+      agentAuth: false,
+      grantScope: 'execution',
+    });
     expect(COMMANDS['run-stage']).toEqual({
       handler: 'runStage',
       agentAuth: AGENT_AUTH_MODES.EXECUTION,
+      grantScope: 'stage',
     });
     expect(COMMANDS['compose-plan-start'].agentAuth).toBe(AGENT_AUTH_MODES.COMPOSE);
     expect(COMMANDS['discussion-assist-start'].agentAuth).toBe(AGENT_AUTH_MODES.DISCUSSION);
@@ -138,6 +143,34 @@ describe('dispatchInvocation', () => {
     expect(result.body.payloadKeys).not.toContain('gatewayGrant');
     expect(seen).toBe('gw-grant');
     expect(currentGatewayGrant()).toBeNull();
+  });
+
+  it('relays an execution grant to engine-only commands and their background work', async () => {
+    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
+    const prepareInvocation = vi.fn();
+    let background;
+    const handlerFor = (name) =>
+      vi.fn(async (payload) => {
+        // A detached job started inside the invocation keeps the grant.
+        background = new Promise((resolve) => setTimeout(() => resolve(currentGatewayGrant()), 1));
+        return { ok: true, name, seen: currentGatewayGrant(), payloadKeys: Object.keys(payload) };
+      });
+    for (const [command, handler] of [
+      ['init-ws', 'initWs'],
+      ['record-pr', 'recordPr'],
+      ['quorum-edit-apply-start', 'quorumEditApplyStart'],
+    ]) {
+      const result = await dispatchInvocation({
+        payload: { command, intentId: 'i1', gatewayGrant: `grant-${command}` },
+        handlers: { [handler]: handlerFor(handler) },
+        prepareInvocation: command === 'init-ws' ? prepareInvocation : vi.fn(async () => ({})),
+      });
+      expect(result.body).toMatchObject({ ok: true, seen: `grant-${command}` });
+      expect(result.body.payloadKeys).not.toContain('gatewayGrant');
+      await expect(background).resolves.toBe(`grant-${command}`);
+      expect(currentGatewayGrant()).toBeNull();
+    }
+    expect(prepareInvocation).not.toHaveBeenCalled();
   });
 
   it('routes promote-units (WP3 unit DAG promotion)', async () => {

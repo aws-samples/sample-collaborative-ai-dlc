@@ -15,13 +15,16 @@
 // a local P-256 key through the same seam.
 import { createHash, createPublicKey, randomUUID, verify as cryptoVerify } from 'node:crypto';
 import { canonicalJson } from './workflow-checkpoint.js';
+import { GRANT_SCOPES, commandDefinition } from './agent-command-registry.js';
 
 export const GATEWAY_GRANT_ISSUER = 'aidlc-control-plane';
 export const GATEWAY_GRANT_AUDIENCE = 'aidlc-gateway';
 // Bounded by the AgentCore runtime's 8h maximum session lifetime. Revocation is
 // per call (the verifier re-checks execution/stage state), not expiry.
 export const GATEWAY_GRANT_MAX_TTL_SECONDS = 8 * 60 * 60;
-export const GATEWAY_GRANT_MODES = Object.freeze(['stage', 'discussion', 'conflict']);
+// `execution` authorizes engine data access for one execution and no stage; it
+// is never accepted by the MCP tools Lambda.
+export const GATEWAY_GRANT_MODES = Object.freeze(['stage', 'discussion', 'conflict', 'execution']);
 // Discussion assists have no execution/stage row to re-check per call, so their
 // grant must expire on its own, quickly.
 export const DISCUSSION_GRANT_TTL_SECONDS = 300;
@@ -78,7 +81,14 @@ export const normalizeGatewayScope = (input = {}) => {
   if (mode !== 'stage' && (scope.stageId || scope.stageCallbackId || scope.orchestratorRunId)) {
     throw invalid();
   }
-  if (mode === 'discussion' && (scope.unitSlug || scope.sectionIndex !== null)) throw invalid();
+  // Discussion and execution grants span the whole intent/execution, so a lane
+  // selector would only suggest a narrowing no verifier enforces.
+  if (
+    (mode === 'discussion' || mode === 'execution') &&
+    (scope.unitSlug || scope.sectionIndex !== null)
+  ) {
+    throw invalid();
+  }
   return scope;
 };
 
@@ -111,16 +121,17 @@ export const derToJose = (der) => {
   return Buffer.concat([readInt(), readInt()]);
 };
 
-// Runtime commands that start the built-in MCP, and the grant scope each needs.
+// The grant scope a runtime command needs, from its registry `grantScope`.
 // Identity comes from the caller's authoritative record; only the lane/stage
 // selectors the control plane itself put in the command are read from it.
+// Discussion grants are issued by the discussions Lambda, so they map to null
+// here like commands that need no grant.
 export const gatewayScopeForCommand = (
   payload,
   { projectId, intentId, executionId, policy = null },
 ) => {
-  switch (payload?.command) {
-    case 'run-stage':
-    case 'run-stage-start':
+  switch (commandDefinition(payload?.command)?.grantScope) {
+    case GRANT_SCOPES.STAGE:
       return {
         mode: 'stage',
         projectId,
@@ -133,7 +144,7 @@ export const gatewayScopeForCommand = (
         stageCallbackId: payload.stageCallbackId,
         orchestratorRunId: payload.orchestratorRunId,
       };
-    case 'resolve-conflict':
+    case GRANT_SCOPES.CONFLICT:
       return {
         mode: 'conflict',
         projectId,
@@ -142,6 +153,8 @@ export const gatewayScopeForCommand = (
         unitSlug: payload.unitSlug,
         sectionIndex: payload.sectionIndex,
       };
+    case GRANT_SCOPES.EXECUTION:
+      return { mode: 'execution', projectId, intentId, executionId };
     default:
       return null;
   }
