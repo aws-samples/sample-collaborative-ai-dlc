@@ -433,3 +433,9 @@ variable "notification_event_source" {
     error_message = "notification_event_source must be 1-256 characters of A-Z, a-z, 0-9, ., _ and -, and must not start with aws."
   }
 }
+
+variable "enable_engine_data" {
+  description = "Route the AgentCore engine's process-state calls through the grant-verifying engine-data Lambda. Requires enable_mcp_gateway."
+  type        = bool
+  default     = false
+}
