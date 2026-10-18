@@ -3122,7 +3122,7 @@ module "intents_lambda" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
@@ -3162,7 +3162,7 @@ module "intents_lambda" {
     V2_ORCHESTRATOR_FUNCTION          = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
-  }
+  }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
@@ -3530,10 +3530,12 @@ resource "aws_lambda_permission" "yjs_cleanup" {
 # Lambdas that start MCP-launching runtime commands sign the grant; nothing
 # else in the platform can.
 resource "aws_iam_role_policy" "gateway_grant_signers" {
-  for_each = var.enable_mcp_gateway ? {
+  for_each = merge(var.enable_mcp_gateway ? {
     v2_orchestrator = aws_iam_role.v2_orchestrator.id
     discussions     = aws_iam_role.discussions.id
-  } : {}
+    } : {}, var.enable_engine_data ? {
+    intents = aws_iam_role.intents.id
+  } : {})
 
   name = "sign-gateway-grants"
   role = each.value

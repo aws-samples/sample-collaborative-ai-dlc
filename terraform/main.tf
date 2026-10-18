@@ -540,6 +540,7 @@ module "lambda" {
   yjs_documents_table_arn                  = module.dynamodb.yjs_documents_table_arn
   agentcore_runtime_arn                    = module.agentcore.runtime_arn
   enable_mcp_gateway                       = var.enable_mcp_gateway
+  enable_engine_data                       = var.enable_engine_data
   gateway_grant_key_arn                    = module.agentcore.gateway_grant_key_arn
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   environment_registry_table_arn           = module.dynamodb.environment_registry_table_arn
@@ -772,6 +773,7 @@ module "agentcore" {
   kms_key_arn         = var.kms_key_arn
   deletion_protection = var.deletion_protection
   enable_mcp_gateway  = var.enable_mcp_gateway
+  enable_engine_data  = var.enable_engine_data
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.

@@ -369,3 +369,9 @@ variable "enable_mcp_gateway" {
   type        = bool
   default     = false
 }
+
+variable "enable_engine_data" {
+  description = "Route the AgentCore engine's process-state calls through the grant-verifying engine-data Lambda. Requires enable_mcp_gateway."
+  type        = bool
+  default     = false
+}

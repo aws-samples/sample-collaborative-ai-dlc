@@ -781,11 +781,13 @@ locals {
     }, local.mcp_gateway_enabled ? {
     AIDLC_MCP_GATEWAY_URL    = aws_bedrockagentcore_gateway.mcp[0].gateway_url
     AIDLC_MCP_GATEWAY_TARGET = aws_bedrockagentcore_gateway_target.aidlc[0].name
+    } : {}, local.engine_data_enabled ? {
+    ENGINE_DATA_FUNCTION = module.engine_data_lambda[0].lambda_function_name
   } : {})
 }
 
 resource "awscc_bedrockagentcore_runtime" "stage_executor" {
-  depends_on = [aws_iam_role_policy.agentcore, aws_iam_role_policy.agentcore_invoke_mcp_gateway]
+  depends_on = [aws_iam_role_policy.agentcore, aws_iam_role_policy.agentcore_invoke_mcp_gateway, aws_iam_role_policy.agentcore_invoke_engine_data]
 
   agent_runtime_name = replace("${var.project_name}_agentcore_${var.environment}", "-", "_")
   role_arn           = aws_iam_role.agentcore.arn
