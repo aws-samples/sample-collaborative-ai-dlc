@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createBusyTracker, dispatchInvocation, createServer } from '../http-server.js';
+import {
+  createBusyTracker,
+  dispatchInvocation,
+  createServer,
+  processStoreFor,
+} from '../http-server.js';
 import { createRecordLearningHandler } from '../http-server.js';
 import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
 
@@ -171,6 +176,21 @@ describe('dispatchInvocation', () => {
       expect(currentGatewayGrant()).toBeNull();
     }
     expect(prepareInvocation).not.toHaveBeenCalled();
+  });
+
+  it('prepares credentials under the invocation grant', async () => {
+    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
+    let seenByPrepare = null;
+    await dispatchInvocation({
+      payload: { command: 'run-stage', executionId: 'e1', gatewayGrant: 'gw-grant' },
+      handlers: { runStage: vi.fn(async () => ({ ok: true })) },
+      prepareInvocation: vi.fn(async () => {
+        seenByPrepare = currentGatewayGrant();
+        return {};
+      }),
+    });
+    expect(seenByPrepare).toBe('gw-grant');
+    expect(currentGatewayGrant()).toBeNull();
   });
 
   it('routes promote-units (WP3 unit DAG promotion)', async () => {
@@ -452,5 +472,36 @@ describe('createServer (http)', () => {
     const res = await fetch(`http://127.0.0.1:${port}/nope`);
     expect(res.status).toBe(404);
     server.close();
+  });
+});
+
+describe('processStoreFor', () => {
+  const local = { kind: 'local' };
+  const deps = {
+    ddb: 'ddb',
+    createLocal: vi.fn(() => local),
+    createRemote: vi.fn(() => ({ kind: 'remote' })),
+    misconfigured: vi.fn(() => ({ kind: 'misconfigured' })),
+  };
+
+  it('keeps the local store when engine-data is off', () => {
+    expect(processStoreFor({ ...deps, env: { V2_PROCESS_TABLE: 't' } })).toBe(local);
+    expect(deps.createLocal).toHaveBeenCalledWith({ ddb: 'ddb', tableName: 't' });
+  });
+
+  it('routes the store to engine-data under the current grant', async () => {
+    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
+    const store = processStoreFor({
+      ...deps,
+      env: { ENGINE_DATA_FUNCTION: 'fn', AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp' },
+    });
+    expect(store).toEqual({ kind: 'remote' });
+    expect(deps.createRemote).toHaveBeenCalledWith({ grant: currentGatewayGrant });
+  });
+
+  it('fails closed when engine-data is on but the MCP still runs locally', () => {
+    expect(processStoreFor({ ...deps, env: { ENGINE_DATA_FUNCTION: 'fn' } })).toEqual({
+      kind: 'misconfigured',
+    });
   });
 });
