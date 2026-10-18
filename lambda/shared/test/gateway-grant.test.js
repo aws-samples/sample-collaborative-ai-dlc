@@ -279,6 +279,102 @@ describe('gateway grant', () => {
     });
     expect(claims.policyDigest).toBe(digest);
     expect(claims).toMatchObject({ stageCallbackId: 'cb-1', orchestratorRunId: 'run-1' });
-    expect(gatewayScopeForCommand({ command: 'init-ws' }, scope)).toBeNull();
+    expect(gatewayScopeForCommand({ command: 'init-lane' }, scope)).toBeNull();
+  });
+
+  it('scopes a conflict resolution to its execution and lane, without a stage', () => {
+    expect(
+      gatewayScopeForCommand(
+        { command: 'resolve-conflict', unitSlug: 'api', sectionIndex: 2, stageId: 'ignored' },
+        { projectId: 'p', intentId: 'i', executionId: 'e', policy: { learnings: 'off' } },
+      ),
+    ).toEqual({
+      mode: 'conflict',
+      projectId: 'p',
+      intentId: 'i',
+      executionId: 'e',
+      unitSlug: 'api',
+      sectionIndex: 2,
+    });
+  });
+
+  it('scopes engine data commands to their execution only', async () => {
+    const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
+    for (const command of [
+      'init-ws',
+      'promote-units',
+      'create-workflow-checkpoint',
+      'record-pr',
+      'record-learning',
+      'record-unit-pr',
+      'derive-artifacts',
+      'compose-plan-start',
+      'quorum-edit-plan-start',
+      'quorum-edit-apply-start',
+      'repair-structure',
+    ]) {
+      // Lane and stage selectors in the payload never narrow or widen the grant.
+      expect(
+        gatewayScopeForCommand(
+          { command, stageId: 's', unitSlug: 'api', sectionIndex: 1, stageCallbackId: 'cb' },
+          { ...identity, policy: { learnings: 'off' } },
+        ),
+      ).toEqual({ mode: 'execution', ...identity });
+    }
+    const claims = await verifyGatewayGrant(
+      await issueGatewayGrant(gatewayScopeForCommand({ command: 'init-ws' }, identity), signer),
+      { publicKeyFor: resolver(), now: () => NOW },
+    );
+    expect(claims).toMatchObject({
+      mode: 'execution',
+      ...identity,
+      stageId: null,
+      unitSlug: null,
+      sectionIndex: null,
+      stageCallbackId: null,
+      orchestratorRunId: null,
+    });
+  });
+
+  it('rejects execution grants without an execution or with stage or lane selectors', async () => {
+    const execution = { mode: 'execution', projectId: 'p', intentId: 'i', executionId: 'e' };
+    for (const scope of [
+      { ...execution, executionId: null },
+      { ...execution, stageId: 's' },
+      { ...execution, stageCallbackId: 'cb' },
+      { ...execution, orchestratorRunId: 'run' },
+      { ...execution, unitSlug: 'api' },
+      { ...execution, sectionIndex: 0 },
+    ]) {
+      await expect(issueGatewayGrant(scope, signer)).rejects.toThrow('Gateway grant is invalid');
+    }
+    const token = await issueGatewayGrant(execution, signer);
+    await expect(
+      verifyGatewayGrant(
+        tamper(token, (p) => ({ ...p, stageId: 's' })),
+        { publicKeyFor: resolver(), now: () => NOW },
+      ),
+    ).rejects.toThrow('Gateway grant is invalid');
+  });
+
+  it('issues no grant for commands without one, discussions, or unknown commands', () => {
+    const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
+    for (const command of [
+      'init-lane',
+      'merge-lane',
+      'reconcile-lane',
+      'refresh-intent',
+      'inspect',
+      'capabilities',
+      'managed-runtime-check',
+      'verify-mcp',
+      'verify-connection',
+      'discussion-assist-start',
+      'nope',
+      'toString',
+    ]) {
+      expect(gatewayScopeForCommand({ command }, identity)).toBeNull();
+    }
+    expect(gatewayScopeForCommand(null, identity)).toBeNull();
   });
 });
