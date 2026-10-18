@@ -31,6 +31,8 @@ import {
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { requirePlatformAdmin } from '../shared/authz.js';
+import { gatewayScopeForCommand } from '../shared/gateway-grant.js';
+import { gatewayGrantIssuerFromEnv } from '../shared/gateway-grant-issuer.js';
 import {
   isEnvironmentResolutionError,
   resolveEnvironmentSnapshot,
@@ -236,6 +238,20 @@ const ATTACHMENT_PROMOTION_CAS_ATTEMPTS = 4;
 const issueInvocationAgentCredentialGrant = async (request) =>
   (await prepareAgentInvocation({ ...request, legacyExecution: true }, { ssm }))
     .agentCredentialGrant;
+
+// Null unless the deployment enabled the MCP Gateway (GATEWAY_GRANT_KEY_ID).
+const gatewayGrantIssuer = gatewayGrantIssuerFromEnv();
+
+// The signed grant a runtime command's registry scope declares, as payload
+// fields. Identity is the caller's verified intent (these commands run on the
+// intent's own execution). Empty without an issuer or for a command that needs
+// no grant, so the payload stays unchanged when the Gateway is off.
+const gatewayGrantFields = async (command, { projectId, intentId }) => {
+  const scope = gatewayGrantIssuer
+    ? gatewayScopeForCommand({ command }, { projectId, intentId, executionId: intentId })
+    : null;
+  return scope ? { gatewayGrant: await gatewayGrantIssuer(scope) } : {};
+};
 
 // Finalizes a browser upload after S3 emits Object Created: verify it against
 // its DynamoDB reservation, copy the exact object version from staging to the
@@ -2544,6 +2560,7 @@ const handleArtifactContentUpdate = async ({
               ...(records.meta.cliModels ? { cliModels: records.meta.cliModels } : {}),
               ...(records.meta.tierModels ? { tierModels: records.meta.tierModels } : {}),
               ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
+              ...(await gatewayGrantFields('derive-artifacts', { projectId, intentId })),
             }),
           ),
         }),
@@ -3949,6 +3966,7 @@ const handleComposeIntent = async ({ event, body, projectId, intentId, sub, resp
             ...(meta.methodologyRelease && meta.methodologyPins
               ? { methodologyPins: meta.methodologyPins }
               : {}),
+            ...(await gatewayGrantFields('compose-plan-start', { projectId, intentId })),
           }),
         ),
       }),
@@ -4433,6 +4451,7 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
           JSON.stringify({
             ...payload,
             ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
+            ...(await gatewayGrantFields(payload.command, { projectId, intentId })),
           }),
         ),
       }),

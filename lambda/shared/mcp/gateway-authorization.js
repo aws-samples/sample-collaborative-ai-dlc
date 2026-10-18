@@ -3,7 +3,8 @@
 // dependencies, deny-by-default:
 //   1. the Gateway already authenticated the caller (SigV4, InvokeGateway);
 //   2. the control-plane grant is verified (signature, audience, expiry, kid)
-//      and its mode is one the built-in MCP serves;
+//      and its mode is one the built-in MCP serves (never an engine-data
+//      `execution` grant);
 //   3. the runtime's session context must stay inside the grant, including the
 //      signed release-policy digest;
 //   4. for a tool call, the target must be known and the tool in the role's
@@ -12,7 +13,7 @@
 //      consistent reads and must still be ACTIVE (per-call revocation).
 // These reads are preflight only: the process store's transactional ownership
 // guards stay authoritative for every write.
-import { GATEWAY_GRANT_MODES } from '../gateway-grant.js';
+import { MCP_GRANT_MODES } from '../gateway-grant.js';
 import { toolsForRole } from './server.js';
 import { validateStartupContext } from './startup-context.js';
 import {
@@ -114,7 +115,7 @@ export const createGatewayAuthorizer = ({
         error?.code === 'GATEWAY_GRANT_EXPIRED' ? 'grant_expired' : 'grant_invalid',
       );
     }
-    if (!GATEWAY_GRANT_MODES.includes(grant.mode)) {
+    if (!MCP_GRANT_MODES.includes(grant?.mode)) {
       throw new GatewayAccessDenied('mode_not_allowed', gatewayAuditScope({ grant }));
     }
     let context;

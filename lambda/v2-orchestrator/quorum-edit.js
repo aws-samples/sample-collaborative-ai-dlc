@@ -26,6 +26,7 @@
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import { commandDefinition } from '../shared/agent-command-registry.js';
+import { gatewayScopeForCommand } from '../shared/gateway-grant.js';
 import { quorumEditSessionIdFor } from '../shared/runtime-session-ids.js';
 
 const nowIso = () => new Date().toISOString();
@@ -72,7 +73,20 @@ export const runQuorumEdit = async (event, ctx, deps) => {
   const credentialBinding =
     meta.credentialBinding ??
     (credentialProvider ? { provider: credentialProvider, source: 'platform' } : null);
-  const invokeIntentRuntime = async (payload, session = sessionId) => {
+  // Same grant issuing as the stage loop's invokeIntentRuntime (index.js):
+  // project and intent come from the META row loaded for this execution.
+  const invokeIntentRuntime = async (rawPayload, session = sessionId) => {
+    const gatewayScope =
+      typeof deps.issueGatewayGrant === 'function'
+        ? gatewayScopeForCommand(rawPayload, {
+            projectId,
+            intentId: meta.intentId,
+            executionId,
+          })
+        : null;
+    const payload = gatewayScope
+      ? { ...rawPayload, gatewayGrant: await deps.issueGatewayGrant(gatewayScope) }
+      : rawPayload;
     const authMode = commandDefinition(payload.command)?.agentAuth;
     let invocationPayload = payload;
     if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {

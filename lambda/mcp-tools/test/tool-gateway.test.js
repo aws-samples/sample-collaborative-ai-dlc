@@ -250,6 +250,21 @@ describe('MCP tools gateway target', () => {
       'context_invalid',
     ],
     [
+      'an engine-data execution grant',
+      () =>
+        withPayload(contextHeaders(stage, authorSession), (p) => ({
+          ...p,
+          granted: {
+            ...p.granted,
+            mode: 'execution',
+            stageId: null,
+            stageCallbackId: null,
+            orchestratorRunId: null,
+          },
+        })),
+      'context_invalid',
+    ],
+    [
       'a forged persona role',
       () =>
         withPayload(contextHeaders(stage, authorSession), (p) => ({
