@@ -18,8 +18,13 @@ export const BASE_AGENT_CREDENTIAL_ERROR_CODES = Object.freeze([
   'AGENT_AUTH_CHANGE_IN_PROGRESS',
 ]);
 const BROKER_FAILED = 'AGENT_CREDENTIAL_BROKER_FAILED';
-// index.js serves source control for every action it does not route here.
-const RESERVED_ACTIONS = Object.freeze([RESOLVE_AGENT_CREDENTIALS, 'source-control']);
+const RESERVED_ACTIONS = Object.freeze([
+  RESOLVE_AGENT_CREDENTIALS,
+  'source-control',
+  'heartbeat-invocation',
+  'finish-invocation',
+  'resolve-mcp-secrets',
+]);
 const PROVIDER_KEYS = Object.freeze([
   'id',
   'adapters',

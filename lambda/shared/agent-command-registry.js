@@ -49,7 +49,7 @@ export const COMMANDS = Object.freeze({
   'init-lane': command('initLane', GRANT_SCOPES.EXECUTION),
   'merge-lane': command('mergeLane', GRANT_SCOPES.EXECUTION),
   'reconcile-lane': command('reconcileLane', GRANT_SCOPES.EXECUTION),
-  'refresh-intent': command('refreshIntent', GRANT_SCOPES.NONE),
+  'refresh-intent': command('refreshIntent', GRANT_SCOPES.EXECUTION),
   'resolve-conflict': command('resolveConflict', GRANT_SCOPES.CONFLICT, AGENT_AUTH_MODES.EXECUTION),
   'discussion-assist-start': command(
     'discussionAssistStart',
