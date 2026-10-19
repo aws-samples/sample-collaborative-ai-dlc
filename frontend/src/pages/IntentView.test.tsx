@@ -2380,3 +2380,46 @@ describe('IntentView — resume after a failed gate callback', () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe('terminal completion diagnostics without terminal recovery', () => {
+  it.each(['incomplete', 'unknown', 'partial'] as const)(
+    'shows %s evidence without offering preservation recovery',
+    async (state) => {
+      get.mockResolvedValue({
+        ...baseDetail({ status: 'SUCCEEDED' }),
+        unitCompletion: {
+          state,
+          total: 2,
+          integrated: 1,
+          skipped: state === 'partial' ? 1 : 0,
+          unresolved:
+            state === 'partial'
+              ? []
+              : [
+                  {
+                    sectionIndex: 1,
+                    slug: 'remaining',
+                    state: 'BLOCKED',
+                    reason: 'unit_unfinished',
+                  },
+                ],
+          legacyPartial: false,
+        },
+      });
+      renderAt();
+      expect(
+        await screen.findByText(
+          state === 'incomplete'
+            ? 'Incomplete work'
+            : state === 'unknown'
+              ? 'Completion unverified'
+              : 'Partial delivery',
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: /Preview recovery|Confirm and continue/ }),
+      ).not.toBeInTheDocument();
+      expect(repair).not.toHaveBeenCalled();
+    },
+  );
+});
