@@ -279,7 +279,12 @@ describe('gateway grant', () => {
     });
     expect(claims.policyDigest).toBe(digest);
     expect(claims).toMatchObject({ stageCallbackId: 'cb-1', orchestratorRunId: 'run-1' });
-    expect(gatewayScopeForCommand({ command: 'refresh-intent' }, scope)).toBeNull();
+    expect(gatewayScopeForCommand({ command: 'refresh-intent' }, scope)).toEqual({
+      mode: 'execution',
+      projectId: 'p',
+      intentId: 'i',
+      executionId: 'e',
+    });
   });
 
   it('scopes a conflict resolution to its execution and lane, without a stage', () => {
@@ -312,6 +317,7 @@ describe('gateway grant', () => {
       'quorum-edit-plan-start',
       'quorum-edit-apply-start',
       'repair-structure',
+      'refresh-intent',
     ]) {
       // Lane and stage selectors in the payload never narrow or widen the grant.
       expect(
@@ -360,7 +366,6 @@ describe('gateway grant', () => {
   it('issues no grant for commands without one, discussions, or unknown commands', () => {
     const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
     for (const command of [
-      'refresh-intent',
       'capabilities',
       'managed-runtime-check',
       'verify-mcp',
