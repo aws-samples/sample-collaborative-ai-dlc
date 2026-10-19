@@ -47,3 +47,65 @@ export const ENGINE_DATA_STORE_METHODS = Object.freeze([
 export const ENGINE_DATA_DENIED_ERROR = 'EngineDataAccessDenied';
 
 export const engineDataOp = (method) => `${ENGINE_DATA_OP_PREFIX}${method}`;
+
+// The engine's Neptune access, one semantic operation per call. Each request is
+// `{ op: 'graph.<name>', args: [selector, input], grant }`: the selector names
+// the scope the runtime believes it acts in (checked against the grant, never
+// trusted), the input is that operation's own strict shape. No Gremlin,
+// bytecode, callbacks or vertex ids cross the wire.
+export const ENGINE_DATA_GRAPH_PREFIX = 'graph.';
+
+// Writer-shaped operations: the graph-writer methods the engine calls, with
+// the narrower inputs engine-data accepts (see engine-data/graph-schemas.js).
+export const ENGINE_DATA_GRAPH_WRITER_OPS = Object.freeze([
+  'getIntentGraph',
+  'lookupArtifacts',
+  'getArtifactToc',
+  'getItems',
+  'getCoverage',
+  'getTeamKnowledge',
+  'getLearningRules',
+  'updateArtifact',
+  'recordPullRequest',
+  'recordUnitPullRequest',
+  'recordLearningRule',
+  'linkSteeringInfluences',
+  'mirrorUnitDag',
+  'ingestCodeFiles',
+  'mirrorArtifactDerivations',
+  'resolveDerivedItemEdges',
+  'applyArtifactEnrichment',
+  'supersedeDerivationsForArtifacts',
+  'recordContributionGap',
+]);
+
+// Named operations for the raw graph helpers the engine runs outside the writer.
+export const ENGINE_DATA_GRAPH_NAMED_OPS = Object.freeze([
+  'ensureIntent',
+  'inspect',
+  'readProjectCliConfig',
+  'readDiscussionContext',
+  'completeDiscussionAssist',
+  'getArtifactForEdit',
+  'fetchDownstreamClosure',
+  'applyArtifactEdit',
+  'verifyArtifact',
+  'markArtifactsStale',
+  'archiveArtifactsForStages',
+  'snapshotCurrentArtifactHeads',
+  'readCurrentArtifactHeadHashes',
+]);
+
+export const ENGINE_DATA_GRAPH_OPS = Object.freeze([
+  ...ENGINE_DATA_GRAPH_WRITER_OPS,
+  ...ENGINE_DATA_GRAPH_NAMED_OPS,
+]);
+
+// The only graph operations a discussion grant may call.
+export const ENGINE_DATA_GRAPH_DISCUSSION_OPS = Object.freeze([
+  'readProjectCliConfig',
+  'readDiscussionContext',
+  'completeDiscussionAssist',
+]);
+
+export const engineDataGraphOp = (name) => `${ENGINE_DATA_GRAPH_PREFIX}${name}`;
