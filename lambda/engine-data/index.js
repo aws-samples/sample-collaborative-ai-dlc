@@ -3,16 +3,21 @@ import { KMSClient, GetPublicKeyCommand } from '@aws-sdk/client-kms';
 import { ddb, openGraph, s3 } from './clients.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { kmsPublicKeyResolver, verifyGatewayGrant } from '../shared/gateway-grant.js';
+import { ApiGatewayManagementApiClient } from '@aws-sdk/client-apigatewaymanagementapi';
 import {
+  ENGINE_DATA_BLOB_PREFIX,
   ENGINE_DATA_CATALOG_PREFIX,
   ENGINE_DATA_GRAPH_PREFIX,
   ENGINE_DATA_OP_PREFIX,
+  ENGINE_DATA_REALTIME_PREFIX,
 } from '../shared/engine-data-ops.js';
 import { createGraphManager } from '../shared/mcp/graph-manager.js';
 import { closeGraphSource } from '../shared/mcp/graph-writer.js';
 import { createStoreGateway } from './store-gateway.js';
 import { createGraphGateway } from './graph-gateway.js';
 import { createCatalogGateway } from './catalog-gateway.js';
+import { createBlobGateway } from './blob-gateway.js';
+import { createRealtimeGateway } from './realtime-gateway.js';
 import { createNamespaceDispatch } from './gateway-common.js';
 
 const logger = new Logger({ persistentKeys: { component: 'engine-data' } });
@@ -52,11 +57,34 @@ const catalogHandler = createCatalogGateway({
   audit,
 });
 
+const blobHandler = createBlobGateway({
+  verifyGrant,
+  createStore,
+  s3,
+  bucket: process.env.ARTIFACTS_BUCKET,
+  audit,
+});
+
+const websocketEndpoint = process.env.WEBSOCKET_ENDPOINT;
+const realtimeHandler = createRealtimeGateway({
+  verifyGrant,
+  createStore,
+  withGraph: graph.withGraph,
+  ddb,
+  api: websocketEndpoint
+    ? new ApiGatewayManagementApiClient({ endpoint: websocketEndpoint })
+    : null,
+  connectionsTable: process.env.CONNECTIONS_TABLE,
+  audit,
+});
+
 export const handler = createNamespaceDispatch(
   {
     [ENGINE_DATA_OP_PREFIX]: storeHandler,
     [ENGINE_DATA_GRAPH_PREFIX]: graphHandler,
     [ENGINE_DATA_CATALOG_PREFIX]: catalogHandler,
+    [ENGINE_DATA_BLOB_PREFIX]: blobHandler,
+    [ENGINE_DATA_REALTIME_PREFIX]: realtimeHandler,
   },
   { audit },
 );

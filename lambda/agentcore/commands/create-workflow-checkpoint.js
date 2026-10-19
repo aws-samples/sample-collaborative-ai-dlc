@@ -1,4 +1,4 @@
-import { pinCustomRuleVersions } from '../../shared/custom-rule-versions.js';
+import { pinCustomRuleVersions as pinWithS3 } from '../../shared/custom-rule-versions.js';
 import { buildWorkflowCheckpoint } from '../../shared/workflow-checkpoint.js';
 import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 
@@ -20,6 +20,9 @@ const createWorkflowCheckpoint = async (payload, deps) => {
     bucket,
     clock = () => new Date().toISOString(),
     snapshotArtifacts = snapshotCurrentArtifactHeads,
+    // The semantic pin operation (engine-data's blob.pinCustomRuleVersions in
+    // remote mode); flag off it HEADs with the injected S3 client.
+    pinCustomRuleVersions = ({ rules }) => pinWithS3({ s3, bucket, rules }),
   } = deps;
   const openEngineGraph = engineGraphOpener(deps);
   if (!intentId || !executionId || !orchestratorRunId) {
@@ -34,11 +37,7 @@ const createWorkflowCheckpoint = async (payload, deps) => {
     }
     graph = await openEngineGraph({ projectId, intentId, executionId });
     const artifactRefs = await snapshotArtifacts({ graph, intentId });
-    const customRuleRefs = await pinCustomRuleVersions({
-      s3,
-      bucket,
-      rules: records.meta.customRules ?? [],
-    });
+    const customRuleRefs = await pinCustomRuleVersions({ rules: records.meta.customRules ?? [] });
     const checkpoint = buildWorkflowCheckpoint({
       executionId,
       createdAt: clock(),
