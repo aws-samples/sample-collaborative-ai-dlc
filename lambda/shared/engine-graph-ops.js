@@ -262,6 +262,12 @@ const discussionMessageAt = (g, { intentId, discussionId, messageId }) =>
     .has('discussion_id', discussionId)
     .has('intent_id', intentId);
 
+// Whether a discussion message belongs to the intent, read without trusting
+// the ids a live event embeds.
+export const discussionMessageInIntent = async (g, { intentId, discussionId, messageId }) =>
+  Boolean(await fetchDiscussion(g, intentId, discussionId)) &&
+  (await discussionMessageAt(g, { intentId, discussionId, messageId }).hasNext());
+
 // `scope` is the trusted scope engine-data rebuilt from the grant (or the
 // runtime's own scope in local mode): { projectId, intentId, executionId,
 // stageInstanceId?, stageId?, sectionIndex?, unitSlug? }.

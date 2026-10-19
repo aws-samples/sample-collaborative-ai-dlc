@@ -88,6 +88,7 @@ import { resolveInvocationSandbox, withSandbox } from './sandbox/launcher.js';
 import { readSandboxSettings } from '../shared/sandbox-settings.js';
 import { validateSandboxConfig } from '../shared/sandbox-config.js';
 import {
+  blobAccessFor,
   createRemoteGraphAccess,
   createRemoteProcessStore,
   directGraphTripwire,
@@ -95,6 +96,7 @@ import {
   misconfiguredProcessStore,
 } from './engine-data-client.js';
 import { localEngineGraph } from './engine-graph.js';
+import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -304,6 +306,17 @@ export const graphAccessFor = ({
   };
 };
 
+// The checkpoint's custom-rule pinning as a semantic operation. With engine
+// data enabled engine-data pins the rules the execution META lists, under the
+// invocation's grant; the runtime S3 client is not used.
+export const customRulePinsFor = ({ env = process.env, s3, blobs } = {}) => {
+  if (!env.ENGINE_DATA_FUNCTION) {
+    return ({ rules }) => pinCustomRuleVersions({ s3, bucket: env.ARTIFACTS_BUCKET, rules });
+  }
+  const access = blobs ?? blobAccessFor({ env });
+  return async ({ rules }) => (rules.length ? access.pinCustomRuleVersions() : []);
+};
+
 // Container entry: wire the real commands + clients, then listen on 8080.
 const main = async () => {
   const {
@@ -354,6 +367,7 @@ const main = async () => {
     logger.error('engine data is enabled without the MCP Gateway; catalog access disabled');
   }
   const catalog = catalogAccessFor({ env: process.env });
+  const customRulePins = customRulePinsFor({ env: process.env, s3 });
   const installedClis = await discoverInstalledClis();
   const invocationContext = async (payload, authMode) => {
     const auth = await resolveInvocationAgentAuth({
@@ -447,8 +461,7 @@ const main = async () => {
       createWorkflowCheckpoint(p, {
         store,
         ...graphDeps,
-        s3,
-        bucket: process.env.ARTIFACTS_BUCKET,
+        pinCustomRuleVersions: customRulePins,
       }),
     // Fan-in PR record: write the opened PR(s) into the graph (the orchestrator
     // has no Neptune access, so it forwards the structured PR data here).

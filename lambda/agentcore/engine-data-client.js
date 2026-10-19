@@ -11,13 +11,18 @@
 // store.
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import {
+  ENGINE_DATA_BLOB_OPS,
   ENGINE_DATA_CATALOG_OPS,
   ENGINE_DATA_GRAPH_OPS,
+  ENGINE_DATA_REALTIME_OPS,
   ENGINE_DATA_STORE_METHODS,
+  engineDataBlobOp,
   engineDataCatalogOp,
   engineDataGraphOp,
   engineDataOp,
+  engineDataRealtimeOp,
 } from '../shared/engine-data-ops.js';
+import { currentGatewayGrant } from './mcp/gateway-context.js';
 
 export class EngineDataError extends Error {
   constructor(message, { name = 'EngineDataError', code = null } = {}) {
@@ -239,6 +244,59 @@ export const misconfiguredCatalog = (reason) => {
   };
   return Object.fromEntries(ENGINE_DATA_CATALOG_OPS.map((name) => [name, fail]));
 };
+
+const misconfiguredOps = (names, reason) => {
+  const fail = async () => {
+    throw new EngineDataError(reason, { code: 'ENGINE_DATA_MISCONFIGURED' });
+  };
+  return Object.fromEntries(names.map((name) => [name, fail]));
+};
+
+// The project's custom rules and the intent's attachments, read by engine-data
+// from what the execution META lists. Callers name a rule by filename and an
+// attachment by id; keys, bucket and versions stay server-side.
+export const createRemoteBlobs = ({ invoke = defaultInvoke, grant }) => {
+  if (typeof grant !== 'function') throw new Error('createRemoteBlobs requires a grant source');
+  const call = (name, input) =>
+    remoteCall({ invoke, grant, op: engineDataBlobOp(name), args: [input] });
+  return {
+    readCustomRules: ({ filenames } = {}) =>
+      call('readCustomRules', filenames ? { filenames } : {}),
+    pinCustomRuleVersions: () => call('pinCustomRuleVersions', {}),
+    readAttachmentChunk: ({ attachmentId, offset }) =>
+      call('readAttachmentChunk', { attachmentId, offset }),
+  };
+};
+
+// A broadcast is not replayed after an ambiguous failure (recipients may have
+// received it already), so it uses the no-retry transport like graph writes.
+export const createRemoteRealtime = ({ invoke = defaultGraphInvoke, grant }) => {
+  if (typeof grant !== 'function') throw new Error('createRemoteRealtime requires a grant source');
+  return {
+    broadcastIntent: (payload) =>
+      remoteCall({
+        invoke,
+        grant,
+        op: engineDataRealtimeOp('broadcastIntent'),
+        args: [{ payload }],
+      }),
+  };
+};
+
+// Engine-data mode only: the remote facade under the invocation's grant, or,
+// without the MCP Gateway, one that fails closed. Never a direct client.
+const remoteAccessFor = (env, createRemote, names) =>
+  env.AIDLC_MCP_GATEWAY_URL
+    ? createRemote({ grant: currentGatewayGrant })
+    : misconfiguredOps(names, 'Engine data requires the MCP Gateway');
+
+export const blobAccessFor = ({ env = process.env, createRemote = createRemoteBlobs } = {}) =>
+  remoteAccessFor(env, createRemote, ENGINE_DATA_BLOB_OPS);
+
+export const realtimeAccessFor = ({
+  env = process.env,
+  createRemote = createRemoteRealtime,
+} = {}) => remoteAccessFor(env, createRemote, ENGINE_DATA_REALTIME_OPS);
 
 // Stands in for the runtime's S3/DynamoDB clients wherever the catalog would
 // otherwise read them directly while engine data is enabled.
