@@ -279,7 +279,7 @@ describe('gateway grant', () => {
     });
     expect(claims.policyDigest).toBe(digest);
     expect(claims).toMatchObject({ stageCallbackId: 'cb-1', orchestratorRunId: 'run-1' });
-    expect(gatewayScopeForCommand({ command: 'init-lane' }, scope)).toBeNull();
+    expect(gatewayScopeForCommand({ command: 'refresh-intent' }, scope)).toBeNull();
   });
 
   it('scopes a conflict resolution to its execution and lane, without a stage', () => {
@@ -360,11 +360,7 @@ describe('gateway grant', () => {
   it('issues no grant for commands without one, discussions, or unknown commands', () => {
     const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
     for (const command of [
-      'init-lane',
-      'merge-lane',
-      'reconcile-lane',
       'refresh-intent',
-      'inspect',
       'capabilities',
       'managed-runtime-check',
       'verify-mcp',
@@ -376,5 +372,15 @@ describe('gateway grant', () => {
       expect(gatewayScopeForCommand({ command }, identity)).toBeNull();
     }
     expect(gatewayScopeForCommand(null, identity)).toBeNull();
+  });
+
+  it('issues an execution grant for inspect and the lane commands', () => {
+    const identity = { projectId: 'p', intentId: 'i', executionId: 'e' };
+    for (const command of ['inspect', 'init-lane', 'merge-lane', 'reconcile-lane']) {
+      expect(gatewayScopeForCommand({ command, unitSlug: 'api' }, identity)).toEqual({
+        mode: 'execution',
+        ...identity,
+      });
+    }
   });
 });

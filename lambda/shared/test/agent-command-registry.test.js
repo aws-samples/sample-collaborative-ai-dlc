@@ -31,6 +31,26 @@ describe('agent command registry', () => {
         'quorum-edit-plan-start',
         'quorum-edit-apply-start',
         'repair-structure',
+        'inspect',
+        'init-lane',
+        'merge-lane',
+        'reconcile-lane',
+      ].toSorted(),
+    );
+  });
+
+  it('keeps commands that touch no execution data grant-free', () => {
+    const none = Object.entries(COMMANDS)
+      .filter(([, definition]) => definition.grantScope === GRANT_SCOPES.NONE)
+      .map(([name]) => name)
+      .toSorted();
+    expect(none).toEqual(
+      [
+        'refresh-intent',
+        'capabilities',
+        'managed-runtime-check',
+        'verify-mcp',
+        'verify-connection',
       ].toSorted(),
     );
   });
