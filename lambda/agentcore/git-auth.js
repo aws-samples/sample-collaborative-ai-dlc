@@ -2,6 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { invokeCredentialBroker } from './clients.js';
+import { currentGatewayGrant } from './mcp/gateway-context.js';
 
 const ASKPASS_BODY = `#!/bin/sh
 case "$1" in
@@ -19,7 +20,10 @@ const request = async (
       code: 'INVALID_CREDENTIAL_CONTEXT',
     });
   }
-  return broker({ executionId, projectId, provider, repository, requiredAccess });
+  const authority = process.env.ENGINE_DATA_FUNCTION
+    ? { action: 'source-control', gatewayGrant: currentGatewayGrant() }
+    : {};
+  return broker({ executionId, projectId, provider, repository, requiredAccess, ...authority });
 };
 
 export const resolveGitCommitter = async (context, { broker = invokeCredentialBroker } = {}) => {

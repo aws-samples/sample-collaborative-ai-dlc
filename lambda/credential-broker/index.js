@@ -19,6 +19,12 @@ import {
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
 import { repoUrl, repoProvider } from '../shared/repo-provider.js';
 import { Logger } from '@aws-lambda-powertools/logger';
+import {
+  assertGatewayExecution,
+  authorizeGitGateway,
+  brokerEnforcementEnabled,
+  verifyBrokerGatewayGrant,
+} from './gateway-authority.js';
 
 const logger = new Logger({ persistentKeys: { component: 'credential-broker' } });
 
@@ -29,6 +35,13 @@ const sts = new STSClient({});
 
 const CREDENTIAL_ACTIVE_EXECUTION_STATUSES = new Set(['CREATED', 'RUNNING']);
 const RESOLVE_AGENT_CREDENTIALS = 'resolve-agent-credentials';
+const AUTHORITY_ERROR_CODES = new Set([
+  'INVALID_ACTION',
+  'GATEWAY_GRANT_INVALID',
+  'GATEWAY_GRANT_EXPIRED',
+  'GATEWAY_GRANT_NOT_CONFIGURED',
+  'GATEWAY_GRANT_SCOPE_MISMATCH',
+]);
 
 const executionIncludesRepository = (meta, provider, repository) => {
   if (!meta || !provider || !repository) return false;
@@ -50,8 +63,15 @@ const executionIncludesRepository = (meta, provider, repository) => {
 };
 
 const authorizeCredentialRequest = async (
-  { executionId, projectId, provider, repository, requiredAccess = 'write' },
-  { ddbClient = ddb, ssmClient = ssm, secretsClient = secrets, stsClient = sts } = {},
+  { executionId, projectId, provider, repository, requiredAccess = 'write', gatewayGrant },
+  {
+    ddbClient = ddb,
+    ssmClient = ssm,
+    secretsClient = secrets,
+    stsClient = sts,
+    env = process.env,
+    verifyGrant = verifyBrokerGatewayGrant,
+  } = {},
 ) => {
   if (!executionId || !projectId || !provider || !repository) {
     throw Object.assign(
@@ -66,13 +86,17 @@ const authorizeCredentialRequest = async (
       code: 'INVALID_REQUEST',
     });
   }
+  const grant = brokerEnforcementEnabled(env)
+    ? await authorizeGitGateway({ executionId, projectId, gatewayGrant }, verifyGrant)
+    : null;
   const { Item: execution } = await ddbClient.send(
     new GetCommand({
-      TableName: process.env.V2_PROCESS_TABLE,
+      TableName: env.V2_PROCESS_TABLE,
       Key: executionMetaKey(executionId),
       ConsistentRead: true,
     }),
   );
+  if (grant) assertGatewayExecution(grant, execution);
   if (!execution || execution.projectId !== projectId) {
     throw Object.assign(new Error('Execution was not found for this project'), {
       code: 'EXECUTION_NOT_FOUND',
@@ -125,13 +149,17 @@ const authorizeCredentialRequest = async (
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
-  const action = event?.action || 'source-control';
+  // Only omission keeps the legacy request shape; malformed explicit actions deny.
+  const action = Object.hasOwn(event ?? {}, 'action') ? event.action : 'source-control';
   try {
     if (isAgentCredentialAction(action)) {
       return {
         ok: true,
         ...(await authorizeAgentCredentialRequest(event || {})),
       };
+    }
+    if (action !== 'source-control') {
+      throw Object.assign(new Error('Broker action is not supported'), { code: 'INVALID_ACTION' });
     }
     const credential = await authorizeCredentialRequest(event || {});
     if (event?.requiredAccess === 'identity') {
@@ -148,16 +176,14 @@ export const handler = async (event, context) => {
   } catch (error) {
     // Both code helpers return only allowlisted constants — never provider-
     // derived error text, which can carry credential material.
-    const code = isAgentCredentialAction(action)
-      ? loggableAgentCredentialErrorCode(error)
-      : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
+    const code = AUTHORITY_ERROR_CODES.has(error?.code)
+      ? error.code
+      : isAgentCredentialAction(action)
+        ? loggableAgentCredentialErrorCode(error)
+        : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
     logger.error('request denied', {
       code,
-      action,
-      executionId: event?.executionId || null,
-      projectId: event?.projectId || null,
-      provider: event?.provider || null,
-      repository: event?.repository || null,
+      action: isAgentCredentialAction(action) || action === 'source-control' ? action : 'unknown',
     });
     return { ok: false, code };
   }
