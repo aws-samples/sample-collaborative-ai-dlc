@@ -339,7 +339,21 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
 
   // Agent-selected IDs are local to their owning intent or project. Apply the
   // same ownership key to lookup, creation, property updates, and edge endpoints.
-  const INTENT_SCOPED_LABELS = new Set([ARTIFACT_LABEL, SECTION_LABEL]);
+  // Every intent-owned label is listed, not only the agent-addressable ones: an
+  // id built from another intent's prefix must never resolve, be restamped, or
+  // become an edge endpoint here.
+  const INTENT_SCOPED_LABELS = new Set([
+    ARTIFACT_LABEL,
+    SECTION_LABEL,
+    QUESTION_LABEL,
+    STEERING_LABEL,
+    UNIT_OF_WORK_LABEL,
+    CODE_FILE_LABEL,
+    PULL_REQUEST_LABEL,
+    UNIT_PULL_REQUEST_LABEL,
+    'ArtifactItem',
+    ...DERIVED_ITEM_LABELS,
+  ]);
   const PROJECT_SCOPED_LABELS = new Set([TEAM_KNOWLEDGE_LABEL, LEARNING_RULE_LABEL]);
   const ownership = (label) => {
     if (INTENT_SCOPED_LABELS.has(label)) return ['intent_id', scope.intentId];
@@ -498,12 +512,13 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .has(INTENT_LABEL, 'id', scope.intentId)
       .out(ANCHOR_EDGE)
       .hasLabel(ARTIFACT_LABEL)
+      .has('intent_id', scope.intentId)
       .has('created_by_stage_instance_id', sid)
       .id()
       .toList();
     let linked = 0;
     for (const steerId of steerIds) {
-      const steeringVertexIds = await g.V().has(STEERING_LABEL, 'id', steerId).id().toList();
+      const steeringVertexIds = await vAt(STEERING_LABEL, steerId).id().toList();
       if (!steeringVertexIds.length) continue;
       for (const artifactVertexId of artifactVertexIds) {
         await ensureVertexEdge({
@@ -937,6 +952,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .has(INTENT_LABEL, 'id', scope.intentId)
       .out(ANCHOR_EDGE)
       .hasLabel(ARTIFACT_LABEL)
+      .has('intent_id', scope.intentId)
       .has('artifact_type', artifactType)
       .valueMap(true)
       .toList();
@@ -953,6 +969,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .has(INTENT_LABEL, 'id', scope.intentId)
       .out(ANCHOR_EDGE)
       .hasLabel(ARTIFACT_LABEL)
+      .has('intent_id', scope.intentId)
       .valueMap(true)
       .toList();
     const allRows = list.map(flattenValueMap);
@@ -969,7 +986,11 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     let q = g.V(head.vertexId);
     const step = direction === 'in' ? 'in_' : direction === 'out' ? 'out' : 'both';
     q = edge ? q[step](edge) : q[step]();
-    const list = await q.hasLabel(ARTIFACT_LABEL).valueMap(true).toList();
+    const list = await q
+      .hasLabel(ARTIFACT_LABEL)
+      .has('intent_id', scope.intentId)
+      .valueMap(true)
+      .toList();
     const rows = selectCurrentArtifactHeads(list.map(flattenValueMap), scope.intentId);
     return includeContent ? rows : rows.map(compactArtifact);
   };
@@ -981,7 +1002,12 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
   // support varies).
   const searchGraph = async ({ query, artifactType = null, limit = 25 }) => {
     if (typeof query !== 'string' || !query) throw new GraphWriteError('search query is required');
-    let q = g.V().has(INTENT_LABEL, 'id', scope.intentId).out(ANCHOR_EDGE).hasLabel(ARTIFACT_LABEL);
+    let q = g
+      .V()
+      .has(INTENT_LABEL, 'id', scope.intentId)
+      .out(ANCHOR_EDGE)
+      .hasLabel(ARTIFACT_LABEL)
+      .has('intent_id', scope.intentId);
     if (artifactType) q = q.has('artifact_type', artifactType);
     const all = await q.valueMap(true).toList();
     const needle = query.toLowerCase();
@@ -1191,7 +1217,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         // A re-promoted unit is current again (rewind rehabilitation).
         superseded_at: '',
       };
-      let q = g.V().has(UNIT_OF_WORK_LABEL, 'id', id);
+      let q = vAt(UNIT_OF_WORK_LABEL, id);
       for (const [k, v] of Object.entries(props)) q = q.property(cardinality.single, k, v);
       await q.next();
       await ensureEdge({
@@ -1234,17 +1260,14 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       .has(INTENT_LABEL, 'id', scope.intentId)
       .out(ANCHOR_EDGE)
       .hasLabel(UNIT_OF_WORK_LABEL)
+      .has('intent_id', scope.intentId)
       .values('id')
       .toList();
     const currentIds = new Set(slugs.map(unitId));
     let superseded = 0;
     for (const id of existingIds) {
       if (currentIds.has(id)) continue;
-      await g
-        .V()
-        .has(UNIT_OF_WORK_LABEL, 'id', id)
-        .property(cardinality.single, 'superseded_at', now())
-        .next();
+      await vAt(UNIT_OF_WORK_LABEL, id).property(cardinality.single, 'superseded_at', now()).next();
       superseded += 1;
     }
     return { mirrored: units.length, superseded };
@@ -1314,7 +1337,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         commitRef,
         filePath: file.filePath,
       });
-      const existed = await g.V().has(CODE_FILE_LABEL, 'id', id).hasNext();
+      const existed = await vAt(CODE_FILE_LABEL, id).hasNext();
       await upsertVertex(CODE_FILE_LABEL, id);
       const props = {
         id,
@@ -1334,7 +1357,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         superseded_at: '',
         ...(!existed ? { created_at: now() } : {}),
       };
-      let q = g.V().has(CODE_FILE_LABEL, 'id', id);
+      let q = vAt(CODE_FILE_LABEL, id);
       for (const [key, value] of Object.entries(props)) {
         q = q.property(cardinality.single, key, value);
       }
@@ -1361,9 +1384,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       ).map(flattenValueMap);
       for (const prior of priorRevisions) {
         if (prior.id === id || !isCurrentRow(prior)) continue;
-        await g
-          .V()
-          .has(CODE_FILE_LABEL, 'id', prior.id)
+        await vAt(CODE_FILE_LABEL, prior.id)
           .property(cardinality.single, 'superseded_at', now())
           .next();
       }
@@ -1463,7 +1484,10 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       await upsertDerivedVertex({
         label,
         id,
+        // Extracted domain fields first: the provenance stamp and derivation
+        // bookkeeping always win over a same-named field in the document.
         props: {
+          ...sanitizeProps(item.props),
           ...stamp(),
           artifact_id: artifactId,
           artifact_type: extraction.artifactType ?? artifact?.artifact_type ?? '',
@@ -1472,7 +1496,6 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
           order: item.order,
           content_hash: extraction.contentHash ?? '',
           superseded_at: '',
-          ...item.props,
         },
       });
       await ensureEdge({
@@ -1497,6 +1520,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         .has(INTENT_LABEL, 'id', scope.intentId)
         .out(ANCHOR_EDGE)
         .hasLabel(ARTIFACT_LABEL)
+        .has('intent_id', scope.intentId)
         .has('artifact_type', citedType)
         .values('id')
         .toList();
@@ -1514,9 +1538,14 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
 
     const oldSectionIds = await vAt(ARTIFACT_LABEL, artifactId)
       .out('HAS_SECTION')
+      .has('intent_id', scope.intentId)
       .values('id')
       .toList();
-    const oldItemIds = await vAt(ARTIFACT_LABEL, artifactId).out('HAS_ITEM').values('id').toList();
+    const oldItemIds = await vAt(ARTIFACT_LABEL, artifactId)
+      .out('HAS_ITEM')
+      .has('intent_id', scope.intentId)
+      .values('id')
+      .toList();
     const currentSections = new Set(currentSectionIds);
     const currentItems = new Set(currentItemIds);
     let superseded = 0;
@@ -1580,7 +1609,11 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     let superseded = 0;
     for (const artifactId of artifactIds) {
       for (const edge of ['HAS_SECTION', 'HAS_ITEM']) {
-        const rows = await vAt(ARTIFACT_LABEL, artifactId).out(edge).valueMap(true).toList();
+        const rows = await vAt(ARTIFACT_LABEL, artifactId)
+          .out(edge)
+          .has('intent_id', scope.intentId)
+          .valueMap(true)
+          .toList();
         for (const row of rows.map(flattenValueMap)) {
           if (!isCurrentRow(row)) continue;
           await vDerivedById(row.id).property(cardinality.single, 'superseded_at', now()).next();
@@ -1596,6 +1629,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     const rows = await vAt(ARTIFACT_LABEL, id)
       .out('HAS_SECTION')
       .hasLabel(SECTION_LABEL)
+      .has('intent_id', scope.intentId)
       .valueMap(true)
       .toList();
     return rows
@@ -1607,7 +1641,10 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
 
   const getSection = async ({ artifactId, heading = null, slug = null }) => {
     assertId(artifactId);
-    let q = vAt(ARTIFACT_LABEL, artifactId).out('HAS_SECTION').hasLabel(SECTION_LABEL);
+    let q = vAt(ARTIFACT_LABEL, artifactId)
+      .out('HAS_SECTION')
+      .hasLabel(SECTION_LABEL)
+      .has('intent_id', scope.intentId);
     if (slug) q = q.has('slug', slug);
     if (heading) q = q.has('heading', heading);
     // Client-side currency filter (see isCurrentRow) — a heading/slug lookup
@@ -1623,9 +1660,14 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     const currentArtifactIds = new Set(
       (await getIntentGraph({ includeContent: false })).map((a) => a.id),
     );
-    let q = g.V().has(INTENT_LABEL, 'id', scope.intentId).out(ANCHOR_EDGE).hasLabel(ARTIFACT_LABEL);
+    let q = g
+      .V()
+      .has(INTENT_LABEL, 'id', scope.intentId)
+      .out(ANCHOR_EDGE)
+      .hasLabel(ARTIFACT_LABEL)
+      .has('intent_id', scope.intentId);
     if (artifactType) q = q.has('artifact_type', artifactType);
-    q = q.out('HAS_ITEM');
+    q = q.out('HAS_ITEM').has('intent_id', scope.intentId);
     if (itemType) q = q.hasLabel(itemType);
     const rows = await q.valueMap(true).toList();
     return rows
@@ -1785,6 +1827,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
         .has(INTENT_LABEL, 'id', scope.intentId)
         .out(ANCHOR_EDGE)
         .hasLabel(UNIT_OF_WORK_LABEL)
+        .has('intent_id', scope.intentId)
         .valueMap(true)
         .toList()
     )
@@ -1839,9 +1882,7 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     const sweep = async ({ label, id, planned }) => {
       // Drop-then-recreate keeps the sweep idempotent AND removes edges whose
       // ref disappeared. Managed labels only (see above).
-      await g
-        .V()
-        .has(label, 'id', id)
+      await vAt(label, id)
         .outE(...managed[label])
         .drop()
         .next();

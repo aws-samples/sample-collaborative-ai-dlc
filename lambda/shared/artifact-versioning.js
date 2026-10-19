@@ -148,6 +148,8 @@ export const readIntentArtifactEntries = async (g, intentId) => {
     .has('Intent', 'id', intentId)
     .out('CONTAINS')
     .hasLabel('Artifact')
+    // A CONTAINS edge alone is not ownership: only the intent's own rows count.
+    .has('intent_id', intentId)
     .project('vertexId', 'props')
     .by(T.id)
     .by(__.valueMap(true))
@@ -534,6 +536,7 @@ export const archiveArtifactsForStages = async ({
       await g
         .V(row.vertexId)
         .out('HAS_SECTION', 'HAS_ITEM')
+        .has('intent_id', intentId)
         .property(cardinality.single, 'superseded_at', archivedAt)
         .toList();
     }
