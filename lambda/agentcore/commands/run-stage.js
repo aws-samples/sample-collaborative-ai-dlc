@@ -54,7 +54,6 @@ import {
   MAX_PERSONA_SESSION_MS,
   STAGE_BUDGET_MS,
   stageDeadline,
-  contributionArtifactId,
   ensembleGapFindings,
   renderLeadTopologyBrief,
   resolveEnsembleTopology as defaultResolveEnsembleTopology,
@@ -96,7 +95,7 @@ import {
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
 import { resolveStageModel } from '../model-resolver.js';
-import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { CHECKPOINTS, answerFreeText, chosenLabel } from '../mcp/process-bridge.js';
 import { LOOP_BACK_OPTION, parseChoice } from '../../shared/gate-answer.js';
 import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
@@ -111,10 +110,6 @@ import {
   sensorGateFindings,
 } from '../../shared/gate-preconditions.js';
 import { resolveSensorVerdict } from '../../shared/sensor-verdict.js';
-import {
-  archiveArtifactsForStages as defaultArchiveArtifactsForStages,
-  readCurrentArtifactHeadHashes as defaultReadArtifactHeadHashes,
-} from '../../shared/artifact-versioning.js';
 import { compileContextPack as defaultCompileContextPack } from '../context-compiler.js';
 import { createCliOutputSink, stripTerminalControls } from '../output-normalizer.js';
 import {
@@ -312,24 +307,35 @@ const loadMethodologyKnowledge = async ({
 // for the whole project. Both accrue across the project's intents. Best-effort:
 // a graph that is unreachable or empty just yields nothing — never a stage
 // failure (the methodology tier + library rules still steer the stage).
-const readProjectMemory = async ({ agentRef, projectId, intentId, executionId, openGraph }) => {
+const readProjectMemory = async ({
+  agentRef,
+  projectId,
+  intentId,
+  executionId,
+  openEngineGraph,
+}) => {
   const empty = { teamKnowledge: [], learningRules: [] };
-  if (!openGraph || !projectId) return empty;
-  let g = null;
+  if (!openEngineGraph || !projectId) return empty;
+  let writer = null;
   try {
-    g = await openGraph();
-    const writer = createGraphWriter({ g, scope: { projectId, intentId, executionId } });
+    writer = await openEngineGraph({ projectId, intentId, executionId });
     const [teamKnowledge, learningRules] = await Promise.all([
       writer.getTeamKnowledge({ agentRef }).catch(() => []),
-      writer.getLearningRules().catch(() => []),
+      writer.getLearningRules({}).catch(() => []),
     ]);
     return { teamKnowledge, learningRules };
   } catch {
     return empty;
   } finally {
-    await closeGraphSource(g);
+    await closeEngineGraph(writer);
   }
 };
+
+// The engine's graph-backed defaults for the loop-back archive and the
+// head-hash reads; tests replace them at the same seam.
+const defaultArchiveArtifactsForStages = ({ graph, stageInstanceIds, restartId, reason, actor }) =>
+  graph.archiveArtifactsForStages({ stageInstanceIds, restartId, reason, actor });
+const defaultReadArtifactHeadHashes = ({ graph }) => graph.readCurrentArtifactHeadHashes({});
 
 // Merge the project's accrued learning rules into the workflow + library so the
 // EXISTING rule resolver interleaves them — no new precedence logic. Each row
@@ -684,7 +690,7 @@ const runStageSensors = async ({
   executionId,
   projectId,
   intentId,
-  openGraph,
+  openEngineGraph,
   loadBlockScript,
   workspaceDir,
   changedFileProvenance = unknownChangedFileProvenance('not_provided'),
@@ -698,11 +704,9 @@ const runStageSensors = async ({
   loadScriptClosure = null,
 }) => {
   let graph = null;
-  let gConn = null;
-  if (openGraph) {
+  if (openEngineGraph) {
     try {
-      gConn = await openGraph();
-      graph = createGraphWriter({ g: gConn, scope: { projectId, intentId, executionId } });
+      graph = await openEngineGraph({ projectId, intentId, executionId });
     } catch {
       graph = null;
     }
@@ -728,7 +732,7 @@ const runStageSensors = async ({
       loadScriptClosure,
     });
   } finally {
-    await closeGraphSource(gConn);
+    await closeEngineGraph(graph);
   }
 };
 
@@ -1818,6 +1822,7 @@ const runStageAttempt = async (
     processUptimeMs = () => process.uptime() * 1000,
   } = deps;
   let store = processStore;
+  const openEngineGraph = engineGraphOpener({ openEngineGraph: deps.openEngineGraph, openGraph });
 
   const now = () => clock();
   const stageStartedAtMs = nowMs();
@@ -2002,7 +2007,7 @@ const runStageAttempt = async (
     projectId,
     intentId,
     executionId,
-    openGraph,
+    openEngineGraph,
   });
   const { workflow, library } = mergeLearningRules({
     workflow: loaded.workflow,
@@ -2440,7 +2445,7 @@ const runStageAttempt = async (
     if (isLoopBackAnswer(resumeGate, stageId)) {
       const loopBackId = resumeGate.humanTaskId;
       if (row?.loopBackArchiveId !== loopBackId) {
-        if (!openGraph) {
+        if (!openEngineGraph) {
           return fail(
             stageInstanceId,
             'loopback_archive_failed',
@@ -2449,9 +2454,9 @@ const runStageAttempt = async (
         }
         let gArchive = null;
         try {
-          gArchive = await openGraph();
+          gArchive = await openEngineGraph({ projectId, intentId, executionId });
           await archiveArtifactsForStages({
-            g: gArchive,
+            graph: gArchive,
             intentId,
             stageInstanceIds: [
               ...new Set([stageInstanceId, resumeGate.stageInstanceId].filter(Boolean)),
@@ -2464,7 +2469,7 @@ const runStageAttempt = async (
           logger.error('loop-back artifact archive failed', { error, stageInstanceId });
           return fail(stageInstanceId, 'loopback_archive_failed', error?.message ?? String(error));
         } finally {
-          await closeGraphSource(gArchive).catch(() => {});
+          await closeEngineGraph(gArchive).catch(() => {});
         }
         // Stamped only after the archive completed, so a crash mid-archive retries
         // the whole archive rather than skipping it.
@@ -2701,20 +2706,20 @@ const runStageAttempt = async (
       `scope declares change_control "${stage.policy.changeControl}", which this platform does not interpret`,
     );
   }
-  if (stage.policy?.changeControl && openGraph) {
+  if (stage.policy?.changeControl && openEngineGraph) {
     const ccRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
     const ccAttempt = Number(ccRow?.attempt ?? priorStageRow?.attempt ?? 0);
     let heads = [];
     let gCc = null;
     let artifactHistoryReadFailed = false;
     try {
-      gCc = await openGraph();
-      heads = await readArtifactHeadHashes({ g: gCc, intentId });
+      gCc = await openEngineGraph({ projectId, intentId, executionId });
+      heads = await readArtifactHeadHashes({ graph: gCc, intentId });
     } catch {
       artifactHistoryReadFailed = true;
       heads = [];
     } finally {
-      await closeGraphSource(gCc);
+      await closeEngineGraph(gCc);
     }
     // An unreadable approval history is not "nothing changed": like an
     // unreadable artifact history it is treated as unknown, which strict mode
@@ -3401,20 +3406,16 @@ const runStageAttempt = async (
     // so agents do not have to ask the human what the run is about.
     const intentMeta = await store.getExecution(executionId).catch(() => null);
     let compiledContext = '';
-    if (openGraph) {
-      let gContext;
+    if (openEngineGraph) {
+      let contextGraph;
       try {
-        gContext = await openGraph();
-        const contextGraph = createGraphWriter({
-          g: gContext,
-          scope: { projectId, intentId, executionId, stageInstanceId },
-        });
+        contextGraph = await openEngineGraph({ projectId, intentId, executionId, stageInstanceId });
         const pack = await compileContextPack({ graph: contextGraph, stage, unit });
         compiledContext = pack.markdown ?? '';
       } catch (e) {
         compiledContext = `## Compiled graph context\n\n- Context compiler unavailable: ${e.message}`;
       } finally {
-        await closeGraphSource(gContext);
+        await closeEngineGraph(contextGraph);
       }
     }
 
@@ -4010,31 +4011,27 @@ const runStageAttempt = async (
       // satisfy, and neither does a session that exited 0 writing nothing). With
       // no graph we can observe nothing, which honestly reads as "no evidence"
       // and reaches the human as an advisory finding, never as a failure.
-      // `systemWriter` marks this as the PLATFORM's writer: the only one allowed
-      // to record a gap stub for another persona's contribution.
+      // The gap stub is the PLATFORM's write (the only one allowed to record a
+      // contribution for another persona); the graph operation fixes its id,
+      // type and content and attributes it to this stage.
       const withGraph = async (operation, fallback) => {
-        if (!openGraph) return fallback;
-        let g = null;
+        if (!openEngineGraph) return fallback;
+        let writer = null;
         try {
-          g = await openGraph();
-          return await operation(
-            createGraphWriter({
-              g,
-              scope: {
-                projectId,
-                intentId,
-                executionId,
-                stageInstanceId,
-                unitSlug,
-                sectionIndex,
-                systemWriter: true,
-              },
-            }),
-          );
+          writer = await openEngineGraph({
+            projectId,
+            intentId,
+            executionId,
+            stageInstanceId,
+            stageId,
+            unitSlug,
+            sectionIndex,
+          });
+          return await operation(writer);
         } catch {
           return fallback;
         } finally {
-          await closeGraphSource(g);
+          await closeEngineGraph(writer);
         }
       };
       // The module is written never to throw (every internal surprise degrades to a
@@ -4112,17 +4109,7 @@ const runStageAttempt = async (
               return rows;
             }, []),
           writeGapStub: ({ agentRef, reason }) =>
-            withGraph(
-              (writer) =>
-                writer.createArtifact({
-                  artifactType: 'contribution',
-                  id: contributionArtifactId({ stageId, agentRef }),
-                  title: `Contribution gap: ${agentRef}`,
-                  content: `**Collaborator:** ${agentRef}\n\n## Contribution\n\nNone recorded — ${reason}.\n\n## Positions\n\n(none)\n`,
-                  props: { collaborator: agentRef, status: 'gap', positions: '' },
-                }),
-              null,
-            ),
+            withGraph((writer) => writer.recordContributionGap({ agentRef, reason }), null),
           pendingGate: () =>
             pendingGate({ store, executionId, stageInstanceId, unitSlug, sectionIndex }),
           store,
@@ -4707,7 +4694,7 @@ const runStageAttempt = async (
       executionId,
       projectId,
       intentId,
-      openGraph,
+      openEngineGraph,
       loadBlockScript: loadScript,
       loadScriptClosure,
       workspaceDir,
@@ -4967,7 +4954,7 @@ const runStageAttempt = async (
         executionId,
         projectId,
         intentId,
-        openGraph,
+        openEngineGraph,
         loadBlockScript: loadScript,
         loadScriptClosure,
         workspaceDir,
@@ -5055,7 +5042,7 @@ const runStageAttempt = async (
   try {
     if (completedGitError) throw completedGitError;
     const projected = await ingestStageCodeTraceability({
-      openGraph,
+      openEngineGraph,
       scope: {
         projectId,
         intentId,
@@ -5124,14 +5111,10 @@ const runStageAttempt = async (
   // Steering provenance: link the corrections this stage consumed to the
   // artifacts it produced (Steering --INFLUENCES--> Artifact), mirroring the
   // answered-question linking. Best-effort — provenance never fails a stage.
-  if (consumedSteering.length && openGraph) {
-    let gLink = null;
+  if (consumedSteering.length && openEngineGraph) {
+    let writer = null;
     try {
-      gLink = await openGraph();
-      const writer = createGraphWriter({
-        g: gLink,
-        scope: { projectId, intentId, executionId, stageInstanceId },
-      });
+      writer = await openEngineGraph({ projectId, intentId, executionId, stageInstanceId });
       await writer.linkSteeringInfluences({
         steerIds: consumedSteering.map((r) => r.steerId),
         stageInstanceId,
@@ -5139,7 +5122,7 @@ const runStageAttempt = async (
     } catch {
       /* provenance linking is best-effort */
     } finally {
-      await closeGraphSource(gLink);
+      await closeEngineGraph(writer);
     }
   }
   await store.appendEvent({
@@ -5176,16 +5159,16 @@ const runStageAttempt = async (
   // exists to catch. An unreachable graph is reported on its own field instead.
   let producedHeads = null;
   let producedHeadsUnavailable = false;
-  if (stage.policy && openGraph) {
+  if (stage.policy && openEngineGraph) {
     let gHeads = null;
     try {
-      gHeads = await openGraph();
-      producedHeads = await readArtifactHeadHashes({ g: gHeads, intentId });
+      gHeads = await openEngineGraph({ projectId, intentId, executionId });
+      producedHeads = await readArtifactHeadHashes({ graph: gHeads, intentId });
     } catch {
       producedHeads = null;
       producedHeadsUnavailable = true;
     } finally {
-      await closeGraphSource(gHeads);
+      await closeEngineGraph(gHeads);
     }
   }
   return {

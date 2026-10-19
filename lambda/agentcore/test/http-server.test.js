@@ -4,6 +4,7 @@ import {
   dispatchInvocation,
   createServer,
   processStoreFor,
+  graphAccessFor,
 } from '../http-server.js';
 import { createRecordLearningHandler } from '../http-server.js';
 import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
@@ -503,5 +504,37 @@ describe('processStoreFor', () => {
     expect(processStoreFor({ ...deps, env: { ENGINE_DATA_FUNCTION: 'fn' } })).toEqual({
       kind: 'misconfigured',
     });
+  });
+});
+
+describe('graphAccessFor', () => {
+  const openGraph = vi.fn(async () => ({}));
+  const REMOTE_ENV = { ENGINE_DATA_FUNCTION: 'fn', AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp' };
+
+  it('keeps the direct graph and runs the engine operations locally when engine-data is off', () => {
+    const local = vi.fn();
+    const access = graphAccessFor({ env: {}, openGraph, createLocal: () => local });
+    expect(access).toEqual({ engineData: false, openGraph, openEngineGraph: local });
+  });
+
+  it('routes engine graph operations to engine-data and trips any direct graph open', async () => {
+    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
+    const remote = vi.fn();
+    const createRemote = vi.fn(() => remote);
+    const access = graphAccessFor({ env: REMOTE_ENV, openGraph, createRemote });
+    expect(access.engineData).toBe(true);
+    expect(access.openEngineGraph).toBe(remote);
+    expect(createRemote).toHaveBeenCalledWith({ grant: currentGatewayGrant });
+    await expect(access.openGraph()).rejects.toMatchObject({ code: 'ENGINE_DATA_GRAPH_DIRECT' });
+    expect(openGraph).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without the MCP Gateway instead of falling back to the direct graph', async () => {
+    const access = graphAccessFor({ env: { ENGINE_DATA_FUNCTION: 'fn' }, openGraph });
+    await expect(access.openEngineGraph({ intentId: 'i1' })).rejects.toMatchObject({
+      code: 'ENGINE_DATA_MISCONFIGURED',
+    });
+    await expect(access.openGraph()).rejects.toMatchObject({ code: 'ENGINE_DATA_GRAPH_DIRECT' });
+    expect(openGraph).not.toHaveBeenCalled();
   });
 });

@@ -22,7 +22,7 @@
 //   { ok: false, reason: 'record_failed', detail }    — infra error
 
 import { createHash } from 'node:crypto';
-import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 
 const LEARNING_LAYER = 'project-learnings';
 const MAX_TITLE = 80;
@@ -59,12 +59,8 @@ export const recordLearning = async (payload, deps) => {
     recordedBy = null,
     recordedByName = null,
   } = payload ?? {};
-  const {
-    store,
-    openGraph,
-    broadcast = async () => {},
-    createWriter = createGraphWriter,
-  } = deps ?? {};
+  const { store, broadcast = async () => {} } = deps ?? {};
+  const openEngineGraph = engineGraphOpener(deps);
 
   const content = String(learnings ?? '')
     .trim()
@@ -74,13 +70,9 @@ export const recordLearning = async (payload, deps) => {
   }
 
   const id = learningId({ stageId, stageInstanceId, content });
-  let g;
+  let graph;
   try {
-    g = await openGraph();
-    const graph = createWriter({
-      g,
-      scope: { projectId, intentId, executionId, stageInstanceId },
-    });
+    graph = await openEngineGraph({ projectId, intentId, executionId, stageInstanceId });
     const written = await graph.recordLearningRule({
       id,
       title: learningTitle(content),
@@ -135,7 +127,7 @@ export const recordLearning = async (payload, deps) => {
       .catch(() => {});
     return { ok: false, reason: 'record_failed', detail: e.message };
   } finally {
-    await closeGraphSource(g);
+    await closeEngineGraph(graph);
   }
 };
 

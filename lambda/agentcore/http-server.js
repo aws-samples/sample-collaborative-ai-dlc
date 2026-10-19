@@ -80,7 +80,14 @@ import { installProcessGroupShutdown } from './cli/spawn.js';
 import { createCredentialSession } from './credential-session.js';
 import { accountCredentialInvocation } from './invocation-accounting.js';
 import { currentGatewayGrant, runWithGatewayGrant } from './mcp/gateway-context.js';
-import { createRemoteProcessStore, misconfiguredProcessStore } from './engine-data-client.js';
+import {
+  createRemoteGraphAccess,
+  createRemoteProcessStore,
+  directGraphTripwire,
+  misconfiguredGraphAccess,
+  misconfiguredProcessStore,
+} from './engine-data-client.js';
+import { localEngineGraph } from './engine-graph.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore' } });
 
@@ -101,9 +108,9 @@ export const createBusyTracker = () => {
 };
 
 export const createRecordLearningHandler =
-  ({ recordLearning, store, openGraph, broadcast }) =>
+  ({ recordLearning, store, openGraph, openEngineGraph, broadcast }) =>
   (payload) =>
-    recordLearning(payload, { store, openGraph, broadcast });
+    recordLearning(payload, { store, openGraph, openEngineGraph, broadcast });
 
 // Dispatch one parsed invocation to the right command handler. PURE of HTTP —
 // returns { statusCode, body }. `handlers` = { initWs, runStage }; `busy` is the
@@ -249,12 +256,42 @@ export const processStoreFor = ({
   return createRemote({ grant: currentGatewayGrant });
 };
 
+// The engine's Neptune access, chosen once with the process store. With engine
+// data enabled every engine graph operation goes to engine-data under the
+// invocation's grant and the direct opener handed to commands is a tripwire, so
+// a path that still opens its own connection fails rather than using the
+// runtime role. `engineData` lets commands refuse work no grant can authorize.
+export const graphAccessFor = ({
+  env = process.env,
+  openGraph,
+  createLocal = localEngineGraph,
+  createRemote = createRemoteGraphAccess,
+} = {}) => {
+  if (!env.ENGINE_DATA_FUNCTION) {
+    return { engineData: false, openGraph, openEngineGraph: createLocal({ openGraph }) };
+  }
+  const tripwire = directGraphTripwire();
+  if (!env.AIDLC_MCP_GATEWAY_URL) {
+    logger.error('engine data is enabled without the MCP Gateway; graph access disabled');
+    return {
+      engineData: true,
+      openGraph: tripwire,
+      openEngineGraph: misconfiguredGraphAccess('Engine data requires the MCP Gateway'),
+    };
+  }
+  return {
+    engineData: true,
+    openGraph: tripwire,
+    openEngineGraph: createRemote({ grant: currentGatewayGrant }),
+  };
+};
+
 // Container entry: wire the real commands + clients, then listen on 8080.
 const main = async () => {
   const {
     ddb,
     s3,
-    openGraph,
+    openGraph: openDirectGraph,
     broadcastToIntent,
     sendStageCallbackSuccess,
     sendStageCallbackHeartbeat,
@@ -290,6 +327,11 @@ const main = async () => {
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
   const store = processStoreFor({ env: process.env, ddb });
+  const { engineData, openGraph, openEngineGraph } = graphAccessFor({
+    env: process.env,
+    openGraph: openDirectGraph,
+  });
+  const graphDeps = { openGraph, openEngineGraph };
   const installedClis = await discoverInstalledClis();
   const invocationContext = async (payload, authMode) => {
     const auth = await resolveInvocationAgentAuth({
@@ -335,7 +377,7 @@ const main = async () => {
   const broadcast = (payload) => broadcastToIntent(payload?.intentId, payload);
 
   const handlers = {
-    initWs: (p) => initWs(p, { store, openGraph, checkoutRepos, workspaceDir, broadcast }),
+    initWs: (p) => initWs(p, { store, ...graphDeps, checkoutRepos, workspaceDir, broadcast }),
     runStage: (p, context) =>
       runStage(
         { ...p, workspaceDir },
@@ -348,7 +390,7 @@ const main = async () => {
           materializeStage,
           renderRulesDoc,
           mcpEntry,
-          openGraph,
+          ...graphDeps,
           availableClis: context.availableClis,
           credentialBindings: context.credentialBindings,
           missingCredentialBindings: context.missingCredentialBindings,
@@ -356,7 +398,7 @@ const main = async () => {
           env: context.env,
         },
       ),
-    inspect: (p) => inspect(p, { openGraph }),
+    inspect: (p) => inspect(p, { ...graphDeps, engineData }),
     capabilities: (p, context) =>
       capabilities(p, {
         env: context.env,
@@ -370,11 +412,11 @@ const main = async () => {
     // WP3: freeze the approved unit DAG into UNITPLAN/UNIT rows + the graph
     // mirror. Dispatched by the orchestrator after the producing stage
     // succeeds (docs/v2-parallel.md).
-    promoteUnits: (p) => promoteUnits(p, { store, openGraph, broadcast }),
+    promoteUnits: (p) => promoteUnits(p, { store, ...graphDeps, broadcast }),
     deriveArtifacts: (p, context) =>
       deriveArtifacts(p, {
         store,
-        openGraph,
+        ...graphDeps,
         broadcast,
         availableClis: context.availableClis,
         env: context.env,
@@ -382,17 +424,22 @@ const main = async () => {
     createWorkflowCheckpoint: (p) =>
       createWorkflowCheckpoint(p, {
         store,
-        openGraph,
+        ...graphDeps,
         s3,
         bucket: process.env.ARTIFACTS_BUCKET,
       }),
     // Fan-in PR record: write the opened PR(s) into the graph (the orchestrator
     // has no Neptune access, so it forwards the structured PR data here).
-    recordPr: (p) => recordPr(p, { store, openGraph, broadcast }),
+    recordPr: (p) => recordPr(p, { store, ...graphDeps, broadcast }),
     // Learnings ritual: the human's gate answer becomes a durable
     // project learning here, because the orchestrator has no Neptune access.
-    recordLearning: createRecordLearningHandler({ recordLearning, store, openGraph, broadcast }),
-    recordUnitPr: (p) => recordUnitPr(p, { store, openGraph, broadcast }),
+    recordLearning: createRecordLearningHandler({
+      recordLearning,
+      store,
+      ...graphDeps,
+      broadcast,
+    }),
+    recordUnitPr: (p) => recordUnitPr(p, { store, ...graphDeps, broadcast }),
     // WP5 unit lanes: engine-owned lane git (docs/v2-parallel.md A3). init-lane
     // runs in the lane's own session; merge-lane in the intent session.
     initLane: (p) => initLane({ ...p, workspaceDir }, { store, broadcast }),
@@ -429,7 +476,7 @@ const main = async () => {
   const discussionJobs = new Map();
   handlers.discussionAssistStart = (p, context) =>
     createDiscussionAssistStart({
-      openGraph,
+      ...graphDeps,
       store,
       broadcast,
       availableClis: context.availableClis,
@@ -444,7 +491,7 @@ const main = async () => {
   const composeJobs = new Map();
   handlers.composePlanStart = (p, context) =>
     createComposePlanStart({
-      openGraph,
+      ...graphDeps,
       store,
       broadcast,
       availableClis: context.availableClis,
@@ -458,7 +505,7 @@ const main = async () => {
   const quorumPlanJobs = new Map();
   handlers.quorumEditPlanStart = (p, context) =>
     createQuorumEditPlanStart({
-      openGraph,
+      ...graphDeps,
       store,
       broadcast,
       availableClis: context.availableClis,
@@ -471,7 +518,7 @@ const main = async () => {
   const quorumApplyJobs = new Map();
   handlers.quorumEditApplyStart = (p, context) =>
     createQuorumEditApplyStart({
-      openGraph,
+      ...graphDeps,
       store,
       broadcast,
       availableClis: context.availableClis,
@@ -485,7 +532,7 @@ const main = async () => {
   // Ops remediation: reconstruct lost structured blocks (see command header).
   handlers.repairStructure = (p, context) =>
     repairStructure(p, {
-      openGraph,
+      ...graphDeps,
       store,
       broadcast,
       availableClis: context.availableClis,

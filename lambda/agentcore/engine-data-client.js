@@ -10,7 +10,12 @@
 // and transaction-conflict handling in the engine behave as with the local
 // store.
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
-import { ENGINE_DATA_STORE_METHODS, engineDataOp } from '../shared/engine-data-ops.js';
+import {
+  ENGINE_DATA_GRAPH_OPS,
+  ENGINE_DATA_STORE_METHODS,
+  engineDataGraphOp,
+  engineDataOp,
+} from '../shared/engine-data-ops.js';
 
 export class EngineDataError extends Error {
   constructor(message, { name = 'EngineDataError', code = null } = {}) {
@@ -29,10 +34,17 @@ const rehydrate = ({ name, code, message, conflict }) => {
   return error;
 };
 
-let lambdaClient;
-const defaultInvoke = async (event, env = process.env) => {
-  lambdaClient ??= new LambdaClient({});
-  const response = await lambdaClient.send(
+const lambdaClients = new Map();
+const lambdaClient = (maxAttempts) => {
+  const key = maxAttempts ?? 'default';
+  if (!lambdaClients.has(key)) {
+    lambdaClients.set(key, new LambdaClient(maxAttempts ? { maxAttempts } : {}));
+  }
+  return lambdaClients.get(key);
+};
+
+const invokeWith = async (client, event, env) => {
+  const response = await client.send(
     new InvokeCommand({
       FunctionName: env.ENGINE_DATA_FUNCTION,
       InvocationType: 'RequestResponse',
@@ -55,28 +67,128 @@ const defaultInvoke = async (event, env = process.env) => {
   return body;
 };
 
+const defaultInvoke = (event, env = process.env) => invokeWith(lambdaClient(), event, env);
+// A graph mutation is not safe to replay after an ambiguous failure, so graph
+// calls never retry at the transport.
+const defaultGraphInvoke = (event, env = process.env) => invokeWith(lambdaClient(1), event, env);
+
+const remoteCall = async ({ invoke, grant, op, args }) => {
+  const token = grant();
+  if (!token) {
+    throw new EngineDataError('No engine data grant for this invocation', {
+      code: 'ENGINE_DATA_GRANT_MISSING',
+    });
+  }
+  const body = await invoke({ op, args, grant: token });
+  if (!body || typeof body !== 'object' || !(body.ok === true || body.error)) {
+    throw new EngineDataError('Engine data returned an unreadable response', {
+      code: 'ENGINE_DATA_BAD_RESPONSE',
+    });
+  }
+  if (body.error) throw rehydrate(body.error);
+  return body.result;
+};
+
 export const createRemoteProcessStore = ({ invoke = defaultInvoke, grant }) => {
   if (typeof grant !== 'function')
     throw new Error('createRemoteProcessStore requires a grant source');
   const call =
     (method) =>
-    async (...args) => {
-      const token = grant();
-      if (!token) {
-        throw new EngineDataError('No engine data grant for this invocation', {
-          code: 'ENGINE_DATA_GRANT_MISSING',
-        });
-      }
-      const body = await invoke({ op: engineDataOp(method), args, grant: token });
-      if (!body || typeof body !== 'object' || !(body.ok === true || body.error)) {
-        throw new EngineDataError('Engine data returned an unreadable response', {
-          code: 'ENGINE_DATA_BAD_RESPONSE',
-        });
-      }
-      if (body.error) throw rehydrate(body.error);
-      return body.result;
-    };
+    (...args) =>
+      remoteCall({ invoke, grant, op: engineDataOp(method), args });
   return Object.fromEntries(ENGINE_DATA_STORE_METHODS.map((method) => [method, call(method)]));
+};
+
+const present = (value) => value !== undefined && value !== null && value !== '';
+
+// The scope the runtime believes it acts in. engine-data checks every id
+// against the grant and resolves the stage itself; a lane is only named
+// together with the stage that carries it.
+export const graphSelector = (scope = {}) => {
+  const selector = {};
+  for (const key of ['projectId', 'intentId', 'executionId', 'stageInstanceId']) {
+    if (present(scope[key])) selector[key] = scope[key];
+  }
+  if (selector.stageInstanceId) {
+    if (Number.isInteger(scope.sectionIndex)) selector.sectionIndex = scope.sectionIndex;
+    if (present(scope.unitSlug)) selector.unitSlug = scope.unitSlug;
+  }
+  return selector;
+};
+
+const pick = (source, keys) => {
+  const out = {};
+  for (const key of keys) if (source?.[key] !== undefined) out[key] = source[key];
+  return out;
+};
+
+// engine-data refuses unknown input keys, and some engine call sites hand the
+// writer richer records than the operation accepts (forwarded PR payloads,
+// parsed unit rows, traceability batches). These name the accepted fields.
+const GRAPH_INPUTS = Object.freeze({
+  recordPullRequest: (pr) => pick(pr, ['repoId', 'prUrl', 'prNumber', 'branch', 'baseBranch']),
+  recordUnitPullRequest: (pr) =>
+    pick(pr, [
+      'sectionIndex',
+      'unitSlug',
+      'repoId',
+      'provider',
+      'prUrl',
+      'prNumber',
+      'sourceBranch',
+      'targetBranch',
+      'headSha',
+      'state',
+    ]),
+  recordLearningRule: (rule) => pick(rule, ['id', 'title', 'content', 'layer', 'pairing', 'props']),
+  mirrorUnitDag: ({ units = [], sourceArtifactId } = {}) => ({
+    units: units.map((unit) => ({
+      slug: unit.slug ?? unit.name,
+      dependsOn: unit.dependsOn ?? unit.depends_on ?? [],
+    })),
+    ...(sourceArtifactId !== undefined ? { sourceArtifactId } : {}),
+  }),
+  ingestCodeFiles: (batch) => ({
+    ...pick(batch, ['repository', 'commitRef', 'stageInstanceId', 'unitSlug']),
+    files: (batch?.files ?? []).map((file) =>
+      pick(file, ['filePath', 'fileKind', 'traceabilitySource', 'summary', 'evidenceIds']),
+    ),
+  }),
+});
+
+// The engine's graph access through engine-data: `openEngineGraph(scope)`
+// returns one method per allowed graph operation plus a no-op `close`, the
+// same shape the local adapter returns.
+export const createRemoteGraphAccess = ({ invoke = defaultGraphInvoke, grant }) => {
+  if (typeof grant !== 'function')
+    throw new Error('createRemoteGraphAccess requires a grant source');
+  return async (scope = {}) => {
+    const selector = graphSelector(scope);
+    const call = (name) => (input) =>
+      remoteCall({
+        invoke,
+        grant,
+        op: engineDataGraphOp(name),
+        args: [selector, GRAPH_INPUTS[name] ? GRAPH_INPUTS[name](input) : (input ?? {})],
+      });
+    return {
+      ...Object.fromEntries(ENGINE_DATA_GRAPH_OPS.map((name) => [name, call(name)])),
+      close: async () => {},
+    };
+  };
+};
+
+export const misconfiguredGraphAccess = (reason) => async () => {
+  throw new EngineDataError(reason, { code: 'ENGINE_DATA_MISCONFIGURED' });
+};
+
+// Handed to engine code in place of the direct Neptune opener when engine data
+// is enabled, so a path that still opens its own connection fails loudly
+// instead of quietly using the runtime role.
+export const directGraphTripwire = () => async () => {
+  throw new EngineDataError('Direct graph access is disabled when engine data is enabled', {
+    code: 'ENGINE_DATA_GRAPH_DIRECT',
+  });
 };
 
 // A deployment that routes the store to engine-data but still runs the

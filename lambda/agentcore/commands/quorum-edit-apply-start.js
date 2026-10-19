@@ -21,13 +21,7 @@ import { runCredentialJob } from '../credential-session.js';
 //   5. complete the durable callback with the outcome.
 
 import { Logger } from '@aws-lambda-powertools/logger';
-import { closeGraphSource } from '../mcp/graph-writer.js';
-import {
-  applyArtifactEdit,
-  verifyArtifact,
-  markArtifactsStale,
-  fetchDownstreamClosure,
-} from '../../shared/artifact-edit.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { runOneShotPrompt } from '../cli/one-shot.js';
 import { quorumCliModels } from '../model-resolver.js';
 import {
@@ -38,6 +32,10 @@ import {
   checkRewriteStructure,
   structurePreservationRules,
   fetchArtifactForEdit,
+  fetchClosureForEdit,
+  applyQuorumEdit,
+  markClosureStale,
+  verifyUnaffected,
   makeProgressEmitter,
 } from './quorum-edit-shared.js';
 
@@ -107,6 +105,7 @@ export const buildDownstreamRewritePrompt = ({
 
 export const createQuorumEditApplyStart = ({
   openGraph,
+  openEngineGraph,
   store,
   broadcast = async () => {},
   availableClis = [],
@@ -115,10 +114,10 @@ export const createQuorumEditApplyStart = ({
   // Graph collaborators — injectable so the suite exercises the job without a
   // gremlin server (same seam style as derive-artifacts' createWriter).
   fetchArtifact = fetchArtifactForEdit,
-  fetchClosure = fetchDownstreamClosure,
-  applyEdit = applyArtifactEdit,
-  verify = verifyArtifact,
-  markStale = markArtifactsStale,
+  fetchClosure = fetchClosureForEdit,
+  applyEdit = applyQuorumEdit,
+  verify = verifyUnaffected,
+  markStale = markClosureStale,
   sendCallbackSuccess,
   sendCallbackHeartbeat = async () => {},
   env = process.env,
@@ -159,7 +158,7 @@ export const createQuorumEditApplyStart = ({
 
     const job = runCredentialJob(async () => {
       let heartbeatTimer = null;
-      let g;
+      let graph;
       let result;
       try {
         heartbeatTimer = setInterval(() => {
@@ -230,11 +229,15 @@ export const createQuorumEditApplyStart = ({
         };
 
         try {
-          g = await openGraph();
+          graph = await engineGraphOpener({ openEngineGraph, openGraph })({
+            projectId,
+            intentId,
+            executionId,
+          });
           const edit = await store?.getQuorumEdit?.(executionId, editId);
           const planItems = edit?.plan?.items ?? [];
           const approvedSet = new Set(approvedArtifactIds);
-          const target = await fetchArtifact(g, intentId, artifactId);
+          const target = await fetchArtifact(graph, intentId, artifactId);
 
           if (!target) {
             result = { ok: false, reason: 'artifact_not_found' };
@@ -260,16 +263,7 @@ export const createQuorumEditApplyStart = ({
               };
             } else {
               const targetContent = targetRewrite.content;
-              await applyEdit({
-                g,
-                intentId,
-                artifactId,
-                content: targetContent,
-                editedBy: 'quorum',
-                editedByName: 'Quorum',
-                origin: 'quorum',
-                editRef: `qedit:${editId}`,
-              });
+              await applyEdit({ graph, intentId, artifactId, editId, content: targetContent });
               await store
                 ?.appendEvent?.({
                   executionId,
@@ -282,12 +276,13 @@ export const createQuorumEditApplyStart = ({
 
               // 2. Drift truth first: the WHOLE closure is stale until the
               // plan rehabilitates each member (update/verify below).
-              const closure = await fetchClosure({ g, intentId, artifactId });
+              const closure = await fetchClosure({ graph, intentId, artifactId });
               await markStale({
-                g,
+                graph,
                 intentId,
+                sourceArtifactId: artifactId,
                 artifactIds: closure.map((d) => d.id),
-                reason: `edit:${artifactId}:${editId}`,
+                editId,
               });
 
               // 3. Approved plan items. Only sanitized plan items can be
@@ -299,7 +294,7 @@ export const createQuorumEditApplyStart = ({
               const updatedTarget = { ...target, content: targetContent };
               for (const item of planItems) {
                 if (!approvedSet.has(item.artifactId)) continue;
-                const row = await fetchArtifact(g, intentId, item.artifactId);
+                const row = await fetchArtifact(graph, intentId, item.artifactId);
                 if (!row) {
                   failed.push({ artifactId: item.artifactId, reason: 'artifact_not_found' });
                   continue;
@@ -333,14 +328,11 @@ export const createQuorumEditApplyStart = ({
                   }
                   const content = rewrite.content;
                   await applyEdit({
-                    g,
+                    graph,
                     intentId,
                     artifactId: item.artifactId,
+                    editId,
                     content,
-                    editedBy: 'quorum',
-                    editedByName: 'Quorum',
-                    origin: 'quorum',
-                    editRef: `qedit:${editId}`,
                   });
                   await store
                     ?.appendEvent?.({
@@ -355,11 +347,9 @@ export const createQuorumEditApplyStart = ({
                   // verify-unaffected: reviewed, still valid — clear the marker
                   // and keep Quorum's rationale as the note.
                   await verify({
-                    g,
+                    graph,
                     intentId,
                     artifactId: item.artifactId,
-                    verifiedBy: 'quorum',
-                    verifiedByName: 'Quorum',
                     note: item.rationale ?? '',
                   });
                   verified.push(item.artifactId);
@@ -419,7 +409,7 @@ export const createQuorumEditApplyStart = ({
         return result;
       } finally {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
-        await closeGraphSource(g);
+        await closeEngineGraph(graph);
         activeJobs.delete(key);
         busy?.leave();
       }

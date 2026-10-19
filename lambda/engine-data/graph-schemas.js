@@ -31,6 +31,9 @@ export const CONTENT_MAX = 1024 * 1024;
 const LIST_MAX = 500;
 // Traceability coverage carries at most this many evidence ids per file.
 const EVIDENCE_IDS_MAX = 1000;
+// The runtime summarizes a file as "Implements <id>, <id>, …" over all of its
+// evidence ids, so the summary is bounded by them rather than by TEXT_MAX.
+const CODE_FILE_SUMMARY_MAX = 'Implements '.length + EVIDENCE_IDS_MAX * (ID_MAX + 2);
 
 const id = z.string().min(1).max(ID_MAX);
 const text = (max = TEXT_MAX) => z.string().max(max);
@@ -175,7 +178,7 @@ export const GRAPH_OPS = Object.freeze({
               .enum(['implementation', 'test', 'configuration', 'documentation'])
               .optional(),
             traceabilitySource: z.enum(['git', 'aidlc-traceability']).optional(),
-            summary: text().optional(),
+            summary: text(CODE_FILE_SUMMARY_MAX).optional(),
             evidenceIds: z.array(id).max(EVIDENCE_IDS_MAX).optional(),
           }),
         )

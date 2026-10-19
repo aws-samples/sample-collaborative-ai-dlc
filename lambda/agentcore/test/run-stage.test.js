@@ -7863,6 +7863,58 @@ describe('runStage — produced-head observation', () => {
     expect(res).not.toHaveProperty('producedHeads');
   });
 
+  it('with engine data on, reads through the engine graph and never opens Neptune directly', async () => {
+    const head = { artifactType: 'requirements-analysis', logicalKey: 'k1', snapshotHash: 'h' };
+    const called = [];
+    const results = { readCurrentArtifactHeadHashes: [head] };
+    const openEngineGraph = vi.fn(
+      async () =>
+        new Proxy(
+          { close: async () => {} },
+          {
+            // Not thenable: the opener's result is awaited.
+            get: (target, name) =>
+              name === 'then'
+                ? undefined
+                : (target[name] ??
+                  (async () => {
+                    called.push(name);
+                    return results[name] ?? [];
+                  })),
+          },
+        ),
+    );
+    const openGraph = vi.fn(async () => {
+      throw Object.assign(new Error('direct graph'), { code: 'ENGINE_DATA_GRAPH_DIRECT' });
+    });
+    const res = await runStage(
+      baseArgs,
+      baseDeps({
+        spawnFn: okSpawn,
+        loadLibrary: async () => ({ workflow: workflow(), library: releaseLibrary() }),
+        openGraph,
+        openEngineGraph,
+      }),
+    );
+
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED', producedHeads: [head] });
+    expect(openGraph).not.toHaveBeenCalled();
+    expect(called).toEqual(
+      expect.arrayContaining([
+        'getTeamKnowledge',
+        'getLearningRules',
+        'getItems',
+        'readCurrentArtifactHeadHashes',
+      ]),
+    );
+    for (const [scope] of openEngineGraph.mock.calls) {
+      expect(scope).toMatchObject({
+        intentId: baseArgs.intentId,
+        executionId: baseArgs.executionId,
+      });
+    }
+  });
+
   it('carries the heads it did read', async () => {
     const head = {
       artifactType: 'requirements-analysis',

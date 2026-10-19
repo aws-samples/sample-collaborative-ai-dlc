@@ -10,7 +10,7 @@
 // enrichment failure is recorded and skipped, deterministic derivation and the
 // stage flow are never blocked by it.
 
-import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
 import { machineCliModels } from '../model-resolver.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
@@ -104,16 +104,14 @@ export const deriveArtifacts = async (payload, deps) => {
     unitSlug = null,
   } = payload ?? {};
   const {
-    openGraph,
     store,
     broadcast = async () => {},
-    clock,
-    createWriter = createGraphWriter,
     availableClis = [],
     oneShot = runOneShotPrompt,
     env = process.env,
   } = deps;
   if (!intentId || !executionId) return { ok: false, reason: 'missing_identity' };
+  const openEngineGraph = engineGraphOpener(deps);
 
   const publish = (p) => broadcast({ executionId, intentId, projectId, ...p }).catch(() => {});
   const event = (type, summary) =>
@@ -121,14 +119,9 @@ export const deriveArtifacts = async (payload, deps) => {
       ?.appendEvent?.({ executionId, type, stageInstanceId, actor: 'agentcore', summary })
       .catch(() => {});
 
-  let g;
+  let graph;
   try {
-    g = await openGraph();
-    const graph = createWriter({
-      g,
-      scope: { projectId, intentId, executionId, stageInstanceId },
-      ...(clock ? { clock } : {}),
-    });
+    graph = await openEngineGraph({ projectId, intentId, executionId, stageInstanceId });
 
     const rows = await graph.getIntentGraph({ includeContent: true, includeSuperseded: true });
     const all = currentArtifacts(rows);
@@ -139,7 +132,7 @@ export const deriveArtifacts = async (payload, deps) => {
     // deterministic projection.
     const supersededArtifactIds = rows.filter((r) => r.superseded_at).map((r) => r.id);
     let swept = 0;
-    if (supersededArtifactIds.length && graph.supersedeDerivationsForArtifacts) {
+    if (supersededArtifactIds.length) {
       try {
         const sweep = await graph.supersedeDerivationsForArtifacts({
           artifactIds: supersededArtifactIds,
@@ -186,7 +179,12 @@ export const deriveArtifacts = async (payload, deps) => {
         errors.push({ artifactId: artifact.id, error: extraction.error });
         continue;
       }
-      const mirrored = await graph.mirrorArtifactDerivations({ artifact, extraction });
+      // The graph re-reads and re-extracts the artifact itself and refuses a
+      // projection of content that changed since this read.
+      const mirrored = await graph.mirrorArtifactDerivations({
+        artifactId: artifact.id,
+        sourceHash: extraction.contentHash,
+      });
       artifacts.push(mirrored.artifactId);
       sections += mirrored.sections;
       items += mirrored.items;
@@ -234,12 +232,10 @@ export const deriveArtifacts = async (payload, deps) => {
     // mirrors. Best-effort: edge materialization is a projection of props that
     // remain readable either way (getCoverage joins them in memory).
     let itemEdges = 0;
-    if (graph.resolveDerivedItemEdges) {
-      try {
-        itemEdges = (await graph.resolveDerivedItemEdges()).edges ?? 0;
-      } catch {
-        /* traceability edges are a projection, never a blocker */
-      }
+    try {
+      itemEdges = (await graph.resolveDerivedItemEdges({})).edges ?? 0;
+    } catch {
+      /* traceability edges are a projection, never a blocker */
     }
 
     if (enrichmentSkips.length) {
@@ -279,6 +275,6 @@ export const deriveArtifacts = async (payload, deps) => {
     await event('v2.derive.failed', e.message);
     return { ok: false, reason: 'derive_failed', detail: e.message };
   } finally {
-    await closeGraphSource(g);
+    await closeEngineGraph(graph);
   }
 };

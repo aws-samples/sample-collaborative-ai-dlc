@@ -1622,8 +1622,8 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
       'run-stage-start': 'gw:stage',
       'derive-artifacts': 'gw:execution',
       'promote-units': 'gw:execution',
-      'init-lane': null,
-      'merge-lane': null,
+      'init-lane': 'gw:execution',
+      'merge-lane': 'gw:execution',
     });
     expect(checkpointInvokes.every((p) => p.gatewayGrant === 'gw:execution')).toBe(true);
     for (const [scope] of deps.issueGatewayGrant.mock.calls) {

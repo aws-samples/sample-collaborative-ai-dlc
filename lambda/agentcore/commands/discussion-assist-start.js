@@ -7,33 +7,19 @@ import { runCredentialJob } from '../credential-session.js';
 // message vertex, and broadcasts `discussion.message` on the intent channel.
 
 import { Logger } from '@aws-lambda-powertools/logger';
-import gremlin from 'gremlin';
 import { runOneShotPrompt } from '../cli/one-shot.js';
-import { closeGraphSource } from '../mcp/graph-writer.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { selectCli } from '../cli/drivers.js';
 import { materializeCliContext } from '../stage-materializer.js';
-import { parseCliModels } from '../../shared/cli-models.js';
-import { parseTierModels } from '../../shared/tier-models.js';
 import { quorumCliModels } from '../model-resolver.js';
-import {
-  artifactAliases,
-  artifactLogicalKeyFromRow,
-  readIntentArtifactEntries,
-  selectCanonicalArtifact,
-  selectCurrentArtifactHeads,
-} from '../../shared/artifact-versioning.js';
 
 const logger = new Logger({
   persistentKeys: { component: 'agentcore', module: 'discussion-assist-start' },
 });
 
-const { cardinality } = gremlin.process;
-const __ = gremlin.process.statics;
-
 const CONTEXT_LIMIT = 32 * 1024;
 const MAX_ARTIFACT_CONTENT = 12 * 1024;
 const MAX_MESSAGE_CONTENT = 2000;
-const MAX_RECENT_MESSAGES = 40;
 const quorumWorkspaceFor = (intentId, discussionId) =>
   `/tmp/quorum/${String(intentId).replace(/[^A-Za-z0-9._-]/g, '_')}/${String(discussionId).replace(
     /[^A-Za-z0-9._-]/g,
@@ -51,51 +37,6 @@ const COMMAND_INSTRUCTIONS = {
 
 const jobKey = (p) => `${p.intentId}:${p.discussionId}:${p.requestId}`;
 
-const getVal = (v, key) => {
-  const raw = v instanceof Map ? v.get(key) : v?.[key];
-  if (Array.isArray(raw)) return raw[0] ?? '';
-  return raw ?? '';
-};
-
-const valueMapToObject = (v) => {
-  const out = {};
-  if (!v) return out;
-  const entries = v instanceof Map ? v.entries() : Object.entries(v);
-  for (const [key, raw] of entries) out[key] = Array.isArray(raw) ? (raw[0] ?? '') : raw;
-  return out;
-};
-
-const parseJsonArray = (raw) => {
-  try {
-    const parsed = JSON.parse(raw || '[]');
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-};
-
-const mapMessage = (v) => ({
-  id: getVal(v, 'id'),
-  requestId: getVal(v, 'request_id') || undefined,
-  content: getVal(v, 'content'),
-  authorId: getVal(v, 'author_id'),
-  authorName: getVal(v, 'author_name'),
-  authorType: getVal(v, 'author_type') || 'user',
-  command: getVal(v, 'command') || undefined,
-  requestedBy: getVal(v, 'requested_by') || undefined,
-  requestedByName: getVal(v, 'requested_by_name') || undefined,
-  assistStatus: getVal(v, 'assist_status') || undefined,
-  mentions: parseJsonArray(getVal(v, 'mentions')),
-  redacted: getVal(v, 'redacted') === 'true' || getVal(v, 'redacted') === true,
-  createdAt: getVal(v, 'created_at'),
-  updatedAt: getVal(v, 'updated_at'),
-  discussionId: getVal(v, 'discussion_id'),
-  sprintId: getVal(v, 'sprint_id') || getVal(v, 'intent_id'),
-});
-
-const byCreated = (a, b) =>
-  a.createdAt.localeCompare(b.createdAt) || String(a.id).localeCompare(String(b.id));
-
 const appendBounded = (parts, text, limit = CONTEXT_LIMIT) => {
   if (!text) return;
   const current = parts.join('\n').length;
@@ -104,30 +45,13 @@ const appendBounded = (parts, text, limit = CONTEXT_LIMIT) => {
   parts.push(String(text).slice(0, remaining));
 };
 
-const fetchProjectConfig = async (g, projectId) => {
-  const r = await g
-    .V()
-    .has('Project', 'id', projectId)
-    .valueMap('agent_cli', 'cli_models', 'tier_models')
-    .next();
-  if (r.done) return { agentCli: null, cliModels: null, tierModels: null };
-  const cliModels = parseCliModels(getVal(r.value, 'cli_models') || '{}');
-  const tierModels = parseTierModels(getVal(r.value, 'tier_models') || '{}');
-  return {
-    agentCli: getVal(r.value, 'agent_cli') || null,
-    cliModels: Object.keys(cliModels).length ? cliModels : null,
-    tierModels: Object.keys(tierModels).length ? tierModels : null,
-  };
-};
-
 // The CLI + model selection for a Quorum one-shot: the intent META snapshot
 // when the discussion belongs to a run, else the live project config. The
 // returned cliModels is the QUORUM-effective map (quorum row > flat selection
 // > fallback row) — Quorum surfaces have no agent persona, hence no tier.
 const resolveCliSelection = async ({
   store,
-  g,
-  projectId,
+  graph,
   intentId,
   requestedCli: payloadRequestedCli = null,
 }) => {
@@ -141,7 +65,7 @@ const resolveCliSelection = async ({
       }),
     };
   }
-  const project = await fetchProjectConfig(g, projectId).catch(() => ({
+  const project = await (async () => graph.readProjectCliConfig({}))().catch(() => ({
     agentCli: null,
     cliModels: null,
     tierModels: null,
@@ -152,83 +76,6 @@ const resolveCliSelection = async ({
       cliModels: project.cliModels,
       tierModels: project.tierModels,
     }),
-  };
-};
-
-const fetchDiscussion = async (g, intentId, discussionId) => {
-  const r = await g
-    .V()
-    .has('Discussion', 'id', discussionId)
-    .has('intent_id', intentId)
-    .valueMap()
-    .next();
-  return r.done ? null : valueMapToObject(r.value);
-};
-
-const fetchThreadMessages = async (g, discussionId, pendingMessageId) => {
-  const rows = await g
-    .V()
-    .has('Discussion', 'id', discussionId)
-    .out('HAS_MESSAGE')
-    .hasLabel('DiscussionMessage')
-    .valueMap()
-    .toList();
-  return rows
-    .map(mapMessage)
-    .filter((m) => m.id !== pendingMessageId)
-    .toSorted(byCreated);
-};
-
-const fetchArtifactAnchor = async (g, intentId, artifactId) => {
-  const rows = await readIntentArtifactEntries(g, intentId);
-  const logicalKeys = new Set(
-    rows
-      .filter((row) => row.id === artifactId || artifactAliases(row).includes(artifactId))
-      .map((row) => artifactLogicalKeyFromRow(row, intentId)),
-  );
-  return selectCanonicalArtifact(
-    rows.filter((row) => logicalKeys.has(artifactLogicalKeyFromRow(row, intentId))),
-  );
-};
-
-const fetchQuestionAnchor = async (g, intentId, questionId) => {
-  const r = await g
-    .V()
-    .has('Intent', 'id', intentId)
-    .out('CONTAINS')
-    .hasLabel('Question')
-    .has('id', questionId)
-    .valueMap()
-    .next();
-  return r.done ? null : valueMapToObject(r.value);
-};
-
-const fetchIntentMap = async (g, intentId) => {
-  const artifacts = selectCurrentArtifactHeads(
-    await readIntentArtifactEntries(g, intentId),
-    intentId,
-  ).toSorted((a, b) =>
-    String(a.updated_at ?? a.created_at ?? '').localeCompare(
-      String(b.updated_at ?? b.created_at ?? ''),
-    ),
-  );
-  const questions = await g
-    .V()
-    .has('Intent', 'id', intentId)
-    .out('CONTAINS')
-    .hasLabel('Question')
-    .valueMap('id', 'title', 'status', 'answer', 'state')
-    .toList();
-  return {
-    artifacts: artifacts.slice(-25).map((artifact) => ({
-      id: artifact.id,
-      artifact_type: artifact.artifact_type,
-      title: artifact.title,
-      status: artifact.status,
-      gist: artifact.gist ?? artifact.summary_gist,
-      claims: artifact.claims ?? artifact.summary_claims,
-    })),
-    questions: questions.map(valueMapToObject).slice(-15),
   };
 };
 
@@ -260,7 +107,7 @@ const formatMessages = ({ selected, recent }) => {
 };
 
 const buildPrompt = async ({
-  g,
+  graph,
   store,
   intentId,
   discussionId,
@@ -270,23 +117,13 @@ const buildPrompt = async ({
   selectedMessageIds = [],
   requestedByName,
 }) => {
-  const discussion = await fetchDiscussion(g, intentId, discussionId);
-  if (!discussion) throw new Error('Discussion not found');
-  const messages = await fetchThreadMessages(g, discussionId, messageId);
-  const selectedSet = new Set(selectedMessageIds);
-  const selected = messages.filter((m) => selectedSet.has(m.id));
-  const selectedIds = new Set(selected.map((m) => m.id));
-  const recent = messages.filter((m) => !selectedIds.has(m.id)).slice(-MAX_RECENT_MESSAGES);
-
-  let anchor = null;
-  if (discussion.entity_type === 'artifact') {
-    anchor = await fetchArtifactAnchor(g, intentId, discussion.entity_id);
-  } else if (discussion.entity_type === 'question') {
-    anchor = await fetchQuestionAnchor(g, intentId, discussion.entity_id);
-  } else {
-    anchor = { id: intentId, entityType: 'intent', title: discussion.entity_title || '' };
-  }
-  const intentMap = await fetchIntentMap(g, intentId);
+  // The thread, anchor and intent map come back already bounded, without the
+  // pending assist message, and only for messages of this discussion.
+  const { discussion, selected, recent, anchor, intentMap } = await graph.readDiscussionContext({
+    discussionId,
+    messageId,
+    selectedMessageIds,
+  });
   const records = await store
     ?.getExecutionRecords?.(intentId, { includeOutputs: false })
     .catch(() => null);
@@ -326,29 +163,9 @@ const buildPrompt = async ({
   return parts.join('\n\n').slice(0, CONTEXT_LIMIT);
 };
 
-const updateAssistMessage = async ({ g, intentId, discussionId, messageId, content, status }) => {
-  const updatedAt = new Date().toISOString();
-  await g
-    .V()
-    .has('DiscussionMessage', 'id', messageId)
-    .has('discussion_id', discussionId)
-    .has('intent_id', intentId)
-    .property(cardinality.single, 'content', content)
-    .property(cardinality.single, 'assist_status', status)
-    .property(cardinality.single, 'updated_at', updatedAt)
-    .next();
-  const r = await g
-    .V()
-    .has('DiscussionMessage', 'id', messageId)
-    .has('discussion_id', discussionId)
-    .has('intent_id', intentId)
-    .valueMap()
-    .next();
-  return r.done ? null : mapMessage(r.value);
-};
-
 export const createDiscussionAssistStart = ({
   openGraph,
+  openEngineGraph,
   store,
   broadcast = async () => {},
   availableClis = [],
@@ -386,18 +203,20 @@ export const createDiscussionAssistStart = ({
     busy?.enter();
 
     const job = runCredentialJob(async () => {
-      let g;
+      let graph;
+      const complete = (content, status) =>
+        graph.completeDiscussionAssist({ discussionId, messageId, requestId, content, status });
       try {
-        g = await openGraph();
+        graph = await engineGraphOpener({ openEngineGraph, openGraph })({ projectId, intentId });
         const { requestedCli, cliModels } = await resolveCliSelection({
           store,
-          g,
+          graph,
           projectId,
           intentId,
           requestedCli: payload.requestedCli ?? null,
         });
         const prompt = await buildPrompt({
-          g,
+          graph,
           store,
           intentId,
           discussionId,
@@ -439,14 +258,7 @@ export const createDiscussionAssistStart = ({
         });
         let message;
         if (out.ok) {
-          message = await updateAssistMessage({
-            g,
-            intentId,
-            discussionId,
-            messageId,
-            content: out.text,
-            status: 'completed',
-          });
+          message = await complete(out.text, 'completed');
           if (out.metrics) {
             await store
               ?.recordMetric?.({
@@ -466,14 +278,10 @@ export const createDiscussionAssistStart = ({
             })
             .catch(() => {});
         } else {
-          message = await updateAssistMessage({
-            g,
-            intentId,
-            discussionId,
-            messageId,
-            content: `Quorum could not ${assistCommand} this discussion. Retry when the assistant is available.`,
-            status: 'failed',
-          });
+          message = await complete(
+            `Quorum could not ${assistCommand} this discussion. Retry when the assistant is available.`,
+            'failed',
+          );
           await store
             ?.appendEvent?.({
               executionId: intentId,
@@ -494,16 +302,12 @@ export const createDiscussionAssistStart = ({
         }
       } catch (err) {
         log(`job failed (${key}):`, err?.message ?? err);
-        if (g) {
+        if (graph) {
           try {
-            const message = await updateAssistMessage({
-              g,
-              intentId,
-              discussionId,
-              messageId,
-              content: `Quorum could not ${assistCommand} this discussion. Retry when the assistant is available.`,
-              status: 'failed',
-            });
+            const message = await complete(
+              `Quorum could not ${assistCommand} this discussion. Retry when the assistant is available.`,
+              'failed',
+            );
             await broadcast({
               action: 'discussion.message',
               intentId,
@@ -516,7 +320,7 @@ export const createDiscussionAssistStart = ({
           }
         }
       } finally {
-        await closeGraphSource(g);
+        await closeEngineGraph(graph);
         activeJobs.delete(key);
         busy?.leave();
       }
