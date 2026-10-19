@@ -2,10 +2,11 @@
 # Engine process state behind engine-data (opt-in: enable_engine_data)
 #
 # runtime engine -> lambda:InvokeFunction (grant from the invocation)
-#   -> engine-data Lambda (verifies the grant, allowlisted store method,
-#      argument schema, execution belongs to the grant) -> process table
+#   -> engine-data Lambda (verifies the grant, allowlisted store or graph
+#      operation, argument schema, ids owned by the grant) -> process table,
+#      Neptune
 #
-# This slice moves the engine's process-store calls only. The runtime role
+# The engine's process-store and graph calls go through it. The runtime role
 # keeps its own permissions until every engine data path goes through a
 # grant-checked Lambda; removing them is the last step of the series.
 # ---------------------------------------------------------------------------
@@ -42,11 +43,11 @@ resource "aws_iam_role" "engine_data" {
   tags = var.tags
 }
 
-resource "aws_iam_role_policy_attachment" "engine_data_logs" {
+resource "aws_iam_role_policy_attachment" "engine_data_vpc" {
   count = local.engine_data_enabled ? 1 : 0
 
   role       = aws_iam_role.engine_data[0].name
-  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 # What the allowlisted store methods send (transactions are authorized per
@@ -65,6 +66,14 @@ resource "aws_iam_role_policy" "engine_data" {
         Effect   = "Allow"
         Action   = ["kms:GetPublicKey"]
         Resource = aws_kms_key.gateway_grant[0].arn
+      },
+      {
+        Sid    = "NeptuneGraph"
+        Effect = "Allow"
+        Action = ["neptune-db:ReadDataViaQuery", "neptune-db:WriteDataViaQuery", "neptune-db:DeleteDataViaQuery", "neptune-db:connect"]
+        Resource = [
+          "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*",
+        ]
       },
       {
         Sid    = "ProcessTable"
@@ -89,7 +98,7 @@ module "engine_data_lambda" {
   description   = "Grant-verified process-state access for the AgentCore engine"
   handler       = "index.handler"
   runtime       = "nodejs24.x"
-  timeout       = 30
+  timeout       = 120
   memory_size   = 512
 
   source_path = [
@@ -106,11 +115,18 @@ module "engine_data_lambda" {
   create_role = false
   lambda_role = aws_iam_role.engine_data[0].arn
 
+  # Neptune is VPC-only. The tools Lambda's security group already allows the
+  # same egress (Neptune port inside the VPC, HTTPS for AWS APIs), and the
+  # Gateway is a precondition of engine-data, so it is reused.
+  vpc_subnet_ids         = aws_subnet.agentcore[*].id
+  vpc_security_group_ids = [aws_security_group.mcp_tools[0].id]
+
   environment_variables = {
     AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
     V2_PROCESS_TABLE        = aws_dynamodb_table.v2_executions.name
+    NEPTUNE_ENDPOINT        = var.neptune_endpoint
     GATEWAY_GRANT_KEY_IDS   = aws_kms_key.gateway_grant[0].arn
   }
 
@@ -118,7 +134,7 @@ module "engine_data_lambda" {
 
   depends_on = [
     terraform_data.engine_data_requires_gateway,
-    aws_iam_role_policy_attachment.engine_data_logs,
+    aws_iam_role_policy_attachment.engine_data_vpc,
   ]
 
   tags = var.tags

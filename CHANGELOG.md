@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Opt-in AgentCore Gateway path for the built-in MCP (`enable_mcp_gateway`, off by default). The four agent CLIs keep the same `aidlc` server and tool names; a runtime proxy forwards calls to an `AWS_IAM` Gateway whose Lambda target verifies a KMS-signed, control-plane grant and the current execution and stage state on every call before running the existing tool handlers. Requires VPC networking. The runtime role keeps its existing permissions in this release.
-- Opt-in engine-data Lambda for the AgentCore engine's process state (`enable_engine_data`, off by default, requires `enable_mcp_gateway`). Engine commands receive an execution-scoped grant and their process-store calls are verified per call against it. The runtime role is unchanged in this release.
+- Opt-in engine-data Lambda for the AgentCore engine's process state (`enable_engine_data`, off by default, requires `enable_mcp_gateway`). Engine commands receive an execution-scoped grant and their process-store and graph calls are verified per call against it. The runtime role is unchanged in this release.
 
 ## [2.2.0] - 2026-09-29
 
