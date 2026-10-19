@@ -5,6 +5,9 @@ import { ENGINE_DATA_DENIED_ERROR } from '../shared/engine-data-ops.js';
 
 const PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
+// Below the 6 MB synchronous Invoke response limit, with room for the envelope.
+export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+
 export const ENGINE_GRANT_MODES = new Set(['execution', 'stage', 'conflict']);
 
 export class EngineDataAccessDenied extends Error {
@@ -62,3 +65,17 @@ export const denialResponse = (error) => ({
     conflict: false,
   },
 });
+
+// Routes a request to the gateway that owns its op namespace. An op outside
+// every namespace is denied here; it is never handed to a default gateway.
+export const createNamespaceDispatch = (gateways, { audit = () => {} } = {}) => {
+  const prefixes = Object.keys(gateways);
+  return async (event) => {
+    const op = typeof event?.op === 'string' ? event.op : '';
+    const prefix = prefixes.find((candidate) => op.startsWith(candidate));
+    if (prefix) return gateways[prefix](event);
+    const denial = new EngineDataAccessDenied('op_not_allowed');
+    audit({ op: op || null, decision: 'deny', reason: denial.reason });
+    return denialResponse(denial);
+  };
+};

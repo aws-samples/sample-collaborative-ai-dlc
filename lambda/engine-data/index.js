@@ -1,13 +1,19 @@
 import { Logger } from '@aws-lambda-powertools/logger';
 import { KMSClient, GetPublicKeyCommand } from '@aws-sdk/client-kms';
-import { ddb, openGraph } from './clients.js';
+import { ddb, openGraph, s3 } from './clients.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { kmsPublicKeyResolver, verifyGatewayGrant } from '../shared/gateway-grant.js';
-import { ENGINE_DATA_GRAPH_PREFIX } from '../shared/engine-data-ops.js';
+import {
+  ENGINE_DATA_CATALOG_PREFIX,
+  ENGINE_DATA_GRAPH_PREFIX,
+  ENGINE_DATA_OP_PREFIX,
+} from '../shared/engine-data-ops.js';
 import { createGraphManager } from '../shared/mcp/graph-manager.js';
 import { closeGraphSource } from '../shared/mcp/graph-writer.js';
 import { createStoreGateway } from './store-gateway.js';
 import { createGraphGateway } from './graph-gateway.js';
+import { createCatalogGateway } from './catalog-gateway.js';
+import { createNamespaceDispatch } from './gateway-common.js';
 
 const logger = new Logger({ persistentKeys: { component: 'engine-data' } });
 
@@ -37,7 +43,20 @@ const graphHandler = createGraphGateway({
   audit,
 });
 
-export const handler = (event) =>
-  typeof event?.op === 'string' && event.op.startsWith(ENGINE_DATA_GRAPH_PREFIX)
-    ? graphHandler(event)
-    : storeHandler(event);
+const catalogHandler = createCatalogGateway({
+  verifyGrant,
+  s3,
+  ddb,
+  bucket: process.env.ARTIFACTS_BUCKET,
+  blocksTable: process.env.BLOCKS_TABLE,
+  audit,
+});
+
+export const handler = createNamespaceDispatch(
+  {
+    [ENGINE_DATA_OP_PREFIX]: storeHandler,
+    [ENGINE_DATA_GRAPH_PREFIX]: graphHandler,
+    [ENGINE_DATA_CATALOG_PREFIX]: catalogHandler,
+  },
+  { audit },
+);

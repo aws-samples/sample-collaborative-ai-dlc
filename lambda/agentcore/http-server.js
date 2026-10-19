@@ -317,8 +317,7 @@ const main = async () => {
   const { capabilities } = await import('./commands/capabilities.js');
   const { managedRuntimeCheck } = await import('./commands/managed-runtime-check.js');
   const { verifyMcp } = await import('./commands/verify-mcp.js');
-  const { loadLibrary, loadBlockBody, loadBlockScript, loadConductor } =
-    await import('./block-loader.js');
+  const { catalogAccessFor } = await import('./block-loader.js');
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
   const { discoverInstalledClis } = await import('./cli/discover.js');
@@ -332,6 +331,10 @@ const main = async () => {
     openGraph: openDirectGraph,
   });
   const graphDeps = { openGraph, openEngineGraph };
+  if (engineData && !process.env.AIDLC_MCP_GATEWAY_URL) {
+    logger.error('engine data is enabled without the MCP Gateway; catalog access disabled');
+  }
+  const catalog = catalogAccessFor({ env: process.env });
   const installedClis = await discoverInstalledClis();
   const invocationContext = async (payload, authMode) => {
     const auth = await resolveInvocationAgentAuth({
@@ -383,10 +386,10 @@ const main = async () => {
         { ...p, workspaceDir },
         {
           store,
-          loadLibrary,
-          loadBlockBody,
-          loadBlockScript,
-          loadConductor,
+          loadLibrary: catalog.loadLibrary,
+          loadBlockBody: catalog.loadBlockBody,
+          loadBlockScript: catalog.loadBlockScript,
+          loadConductor: catalog.loadConductor,
           materializeStage,
           renderRulesDoc,
           mcpEntry,
@@ -493,6 +496,10 @@ const main = async () => {
     createComposePlanStart({
       ...graphDeps,
       store,
+      loadLibraryFn: catalog.loadLibrary,
+      loadBlockBodyFn: catalog.loadBlockBody,
+      listMergedBlocksFn: catalog.listMergedBlocks,
+      listReleaseBlocksFn: catalog.listReleaseBlocks,
       broadcast,
       availableClis: context.availableClis,
       env: context.env,

@@ -30,6 +30,7 @@ import { GRAPH_OPS, GRAPH_SELECTOR } from './graph-schemas.js';
 import {
   ENGINE_GRANT_MODES,
   EngineDataAccessDenied,
+  MAX_RESPONSE_BYTES,
   denialResponse,
   deny,
   grantAudit,
@@ -41,8 +42,6 @@ import {
 
 const ALLOWED_OPS = new Set(ENGINE_DATA_GRAPH_OPS);
 const DISCUSSION_OPS = new Set(ENGINE_DATA_GRAPH_DISCUSSION_OPS);
-// Below the 6 MB synchronous Invoke response limit, with room for the envelope.
-export const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 const supplied = (value) => value !== undefined && value !== null;
 
