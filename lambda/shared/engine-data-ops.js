@@ -109,3 +109,21 @@ export const ENGINE_DATA_GRAPH_DISCUSSION_OPS = Object.freeze([
 ]);
 
 export const engineDataGraphOp = (name) => `${ENGINE_DATA_GRAPH_PREFIX}${name}`;
+
+// The methodology catalog the engine reads: global, read-only SYSTEM/default
+// blocks and official release closures. Each request is
+// `{ op: 'catalog.<name>', args: [input], grant }`; no S3 key, bucket, table or
+// tenant outside the catalog grammar crosses the wire.
+export const ENGINE_DATA_CATALOG_PREFIX = 'catalog.';
+
+export const ENGINE_DATA_CATALOG_OPS = Object.freeze([
+  'loadLibrary',
+  'listMergedBlocks',
+  'listReleaseBlocks',
+  'loadBlockBody',
+  'loadBlockScript',
+  'loadConductor',
+  'loadScriptClosure',
+]);
+
+export const engineDataCatalogOp = (name) => `${ENGINE_DATA_CATALOG_PREFIX}${name}`;

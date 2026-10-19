@@ -11,8 +11,10 @@
 // store.
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import {
+  ENGINE_DATA_CATALOG_OPS,
   ENGINE_DATA_GRAPH_OPS,
   ENGINE_DATA_STORE_METHODS,
+  engineDataCatalogOp,
   engineDataGraphOp,
   engineDataOp,
 } from '../shared/engine-data-ops.js';
@@ -181,6 +183,72 @@ export const createRemoteGraphAccess = ({ invoke = defaultGraphInvoke, grant }) 
 export const misconfiguredGraphAccess = (reason) => async () => {
   throw new EngineDataError(reason, { code: 'ENGINE_DATA_MISCONFIGURED' });
 };
+
+const blockRef = (ref) =>
+  ref?.s3Key
+    ? { s3Key: ref.s3Key, ...(typeof ref.sha256 === 'string' ? { sha256: ref.sha256 } : {}) }
+    : null;
+
+// Only the fields the catalog op reads leave the runtime: the tenant and the
+// one ref, never the whole block row.
+const blockObjectInput = (block, refField, methodologyRelease) => ({
+  ...(typeof block?.tenantId === 'string' ? { tenantId: block.tenantId } : {}),
+  ref: blockRef(block?.[refField]),
+  methodologyRelease: methodologyRelease ?? null,
+});
+
+// The block-loader API served by engine-data: same functions, same arguments,
+// same results as the local loader.
+export const createRemoteCatalog = ({ invoke = defaultInvoke, grant }) => {
+  if (typeof grant !== 'function') throw new Error('createRemoteCatalog requires a grant source');
+  const call = (name, input) =>
+    remoteCall({ invoke, grant, op: engineDataCatalogOp(name), args: [input] });
+  return {
+    loadLibrary: ({
+      workflowId,
+      workflowVersion,
+      methodologyPins = null,
+      aidlcRepoRef = null,
+      methodologyRelease = null,
+    }) =>
+      call('loadLibrary', {
+        workflowId,
+        // The local loader reads the version through Number() too.
+        workflowVersion: Number(workflowVersion),
+        methodologyPins,
+        aidlcRepoRef,
+        methodologyRelease,
+      }),
+    listMergedBlocks: (type) => call('listMergedBlocks', { type }),
+    listReleaseBlocks: (type, methodologyRelease, methodologyPins = null) =>
+      call('listReleaseBlocks', { type, methodologyRelease, methodologyPins }),
+    loadBlockBody: (block, { methodologyRelease = null } = {}) =>
+      call('loadBlockBody', blockObjectInput(block, 'bodyRef', methodologyRelease)),
+    loadBlockScript: (block, { methodologyRelease = null } = {}) =>
+      call('loadBlockScript', blockObjectInput(block, 'scriptRef', methodologyRelease)),
+    loadConductor: (ref, { methodologyRelease = null } = {}) =>
+      call('loadConductor', { ref: ref || null, methodologyRelease }),
+    loadScriptClosure: ({ sensorId, entryContent, methodologyRelease }) =>
+      call('loadScriptClosure', { sensorId, entryContent, methodologyRelease }),
+  };
+};
+
+export const misconfiguredCatalog = (reason) => {
+  const fail = async () => {
+    throw new EngineDataError(reason, { code: 'ENGINE_DATA_MISCONFIGURED' });
+  };
+  return Object.fromEntries(ENGINE_DATA_CATALOG_OPS.map((name) => [name, fail]));
+};
+
+// Stands in for the runtime's S3/DynamoDB clients wherever the catalog would
+// otherwise read them directly while engine data is enabled.
+export const directClientTripwire = (service) => ({
+  send: async () => {
+    throw new EngineDataError(`Direct ${service} access is disabled when engine data is enabled`, {
+      code: 'ENGINE_DATA_DIRECT_ACCESS',
+    });
+  },
+});
 
 // Handed to engine code in place of the direct Neptune opener when engine data
 // is enabled, so a path that still opens its own connection fails loudly
