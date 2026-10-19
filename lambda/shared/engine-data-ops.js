@@ -127,3 +127,30 @@ export const ENGINE_DATA_CATALOG_OPS = Object.freeze([
 ]);
 
 export const engineDataCatalogOp = (name) => `${ENGINE_DATA_CATALOG_PREFIX}${name}`;
+
+// Execution-owned objects: the project's custom rules and the intent's
+// committed attachments. Each request is `{ op: 'blob.<name>', args: [input],
+// grant }`; the object descriptors come from the execution META engine-data
+// reads itself, so no key, bucket or object version crosses the wire.
+export const ENGINE_DATA_BLOB_PREFIX = 'blob.';
+
+export const ENGINE_DATA_BLOB_OPS = Object.freeze([
+  'readCustomRules',
+  'pinCustomRuleVersions',
+  'readAttachmentChunk',
+]);
+
+export const engineDataBlobOp = (name) => `${ENGINE_DATA_BLOB_PREFIX}${name}`;
+
+// Attachment bytes cross the wire in chunks of this size: a 5 MiB attachment
+// does not fit one synchronous Invoke response once base64-encoded.
+export const ENGINE_DATA_ATTACHMENT_CHUNK_BYTES = 1024 * 1024;
+
+// Live events on the granted intent's realtime channel. Each request is
+// `{ op: 'realtime.broadcastIntent', args: [{ payload }], grant }`; the channel,
+// connection table and websocket endpoint are engine-data's own.
+export const ENGINE_DATA_REALTIME_PREFIX = 'realtime.';
+
+export const ENGINE_DATA_REALTIME_OPS = Object.freeze(['broadcastIntent']);
+
+export const engineDataRealtimeOp = (name) => `${ENGINE_DATA_REALTIME_PREFIX}${name}`;

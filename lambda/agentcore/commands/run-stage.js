@@ -3421,7 +3421,11 @@ const runStageAttempt = async (
 
     // Custom agent rules: fetch bodies from S3, then the materializer writes
     // them into the selected CLI's native rules dir (the CLI auto-loads them).
-    const customRuleDocs = await fetchCustomRules({ customRules, env }).catch(() => []);
+    const customRuleDocs = await fetchCustomRules({ customRules, env }).catch((error) => {
+      // An engine-data denial or failed call is not an empty rule set.
+      if (env.ENGINE_DATA_FUNCTION) throw error;
+      return [];
+    });
 
     const materialized = await materializeStage({
       workspaceDir,
