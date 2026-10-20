@@ -23,11 +23,12 @@ const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'i
 
 // The repo's provider default branch (populated even for an empty repo). Used
 // to root an empty repo on the right base. null on any provider error.
-const providerDefaultBranch = async ({ projectId, repo, gitProvider }) => {
+const providerDefaultBranch = async ({ projectId, executionId, repo, gitProvider }) => {
   try {
     return (
       (await invokeSourceControlOperation({
         projectId,
+        executionId,
         provider: gitProvider,
         repo,
         operation: 'default-branch',
@@ -160,7 +161,12 @@ export const initWs = async (
       const base =
         baseBranches?.[r.repo] ??
         baseBranch ??
-        (await resolveDefaultBranch({ projectId, repo: r.repo, gitProvider: provider })) ??
+        (await resolveDefaultBranch({
+          projectId,
+          executionId,
+          repo: r.repo,
+          gitProvider: provider,
+        })) ??
         'main';
       const committer = await resolveGitCommitter({
         executionId,

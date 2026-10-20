@@ -25,6 +25,7 @@ import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { ENGINE_DATA_DENIED_ERROR } from '../shared/engine-data-ops.js';
 import { realtimeAccessFor } from './engine-data-client.js';
+import { currentGatewayGrant } from './mcp/gateway-context.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'clients' } });
 
@@ -68,8 +69,11 @@ export const invokeCredentialBroker = async (request) => {
   return result;
 };
 
+// With engine-data enabled, SOURCE_CONTROL_FUNCTION is the grant-only
+// `:runtime` alias, which authorizes against the execution the grant names.
 export const invokeSourceControlOperation = async ({
   projectId,
+  executionId,
   provider,
   repo,
   operation,
@@ -88,6 +92,9 @@ export const invokeSourceControlOperation = async ({
       Payload: Buffer.from(
         JSON.stringify({
           action: 'operate',
+          ...(process.env.ENGINE_DATA_FUNCTION
+            ? { gatewayGrant: currentGatewayGrant(), executionId }
+            : {}),
           projectId,
           provider,
           repo,

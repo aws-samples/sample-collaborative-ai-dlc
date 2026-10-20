@@ -224,6 +224,12 @@ variable "runtime_compatibility_version" {
   type        = string
 }
 
+variable "enable_engine_data" {
+  description = "Whether the engine's data access (process state, graph, catalog, blobs, realtime) goes through engine-data, with credentials/secrets through the broker and review operations through the source-control runtime alias; the intents Lambda then signs execution grants and verify-mcp a broker verification grant (static, for plan-time counts)"
+  type        = bool
+  default     = false
+}
+
 
 
 

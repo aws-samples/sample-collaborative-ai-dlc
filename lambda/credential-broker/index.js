@@ -17,13 +17,12 @@ import { STSClient } from '@aws-sdk/client-sts';
 import { executionMetaKey } from '../shared/v2-process-keys.js';
 import {
   ACTIVE,
-  canonicalRepo,
   getBinding,
   invalidateBindingsForError,
   loggableErrorCode,
 } from '../shared/source-control-bindings.js';
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
-import { repoUrl, repoProvider } from '../shared/repo-provider.js';
+import { executionIncludesRepository } from '../shared/execution-repository-authority.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 import {
   assertGatewayExecution,
@@ -48,25 +47,6 @@ const AUTHORITY_ERROR_CODES = new Set([
   'GATEWAY_GRANT_NOT_CONFIGURED',
   'GATEWAY_GRANT_SCOPE_MISMATCH',
 ]);
-
-const executionIncludesRepository = (meta, provider, repository) => {
-  if (!meta || !provider || !repository) return false;
-  let requested;
-  try {
-    requested = canonicalRepo(provider, repository);
-  } catch {
-    return false;
-  }
-  return (meta.repos ?? []).some((repo) => {
-    const expectedProvider = repoProvider(repo, meta?.gitProvider, meta?.repoProviders);
-    if (expectedProvider !== provider) return false;
-    try {
-      return canonicalRepo(provider, repoUrl(repo)) === requested;
-    } catch {
-      return false;
-    }
-  });
-};
 
 const authorizeCredentialRequest = async (
   { executionId, projectId, provider, repository, requiredAccess = 'write', gatewayGrant },

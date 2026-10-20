@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- With `enable_engine_data` on, the credential broker binds Git credentials to the engine's execution grant, records agent invocations and resolves custom MCP secrets for stages and verify-mcp, and provider review operations go to a grant-only `runtime` alias of the source-control Lambda. The runtime role is unchanged in this release; a later release removes its direct data permissions and its access to the unqualified source-control function.
+
 ## [2.3.1] - 2026-11-13
 
 Hotfix that keeps AgentCore microVM runtimes on platform V1 ([#758](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/758)) and passes domain and SSO settings to release deployments ([#769](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/769)).

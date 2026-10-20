@@ -141,6 +141,27 @@ describe('broker source-control security matrix', () => {
     },
   );
 
+  it('denies a stage grant of a run the execution replaced and serves the current run', async () => {
+    const gatewayGrant = await token({
+      mode: 'stage',
+      stageId: 's',
+      stageCallbackId: 'cb-1',
+      orchestratorRunId: 'run-old',
+    });
+    await expect(
+      authorizeCredentialRequest(
+        { ...request, gatewayGrant },
+        harness({ execution: { orchestratorRunId: 'run-old' } }),
+      ),
+    ).resolves.toBeDefined();
+    const deps = harness({ execution: { orchestratorRunId: 'retired-1' } });
+    await expect(
+      authorizeCredentialRequest({ ...request, gatewayGrant }, deps),
+    ).rejects.toMatchObject({ code: 'GATEWAY_GRANT_RETIRED' });
+    expect(deps.ddbClient.send).toHaveBeenCalledTimes(1);
+    expect(deps.ssmClient.send).not.toHaveBeenCalled();
+  });
+
   it.each([
     [{ execution: { status: 'SUCCEEDED' } }, 'EXECUTION_NOT_ACTIVE'],
     [{ execution: { repos: ['acme/other'] } }, 'REPOSITORY_NOT_ON_EXECUTION'],
