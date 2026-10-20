@@ -149,6 +149,7 @@ export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
 export const verifyReviewTargets = async ({
   targets = [],
   projectId,
+  executionId,
   gitProvider,
   repoProviders = null,
   operate = invokeSourceControlOperation,
@@ -158,6 +159,7 @@ export const verifyReviewTargets = async ({
     const provider = target.provider || repoProviders?.[target.repoId] || gitProvider || 'github';
     let status = await operate({
       projectId,
+      executionId,
       provider,
       repo: target.repoId,
       operation: 'pr-status',
@@ -168,6 +170,7 @@ export const verifyReviewTargets = async ({
     if (status?.state === 'open' && !status.draft) {
       status = await operate({
         projectId,
+        executionId,
         provider,
         repo: target.repoId,
         operation: 'set-pr-draft',
@@ -4215,6 +4218,7 @@ const runStageAttempt = async (
       reviewTargetCheck = await recheckReviewTargets({
         targets: reviewFeedbackTargets,
         projectId,
+        executionId,
         gitProvider,
         repoProviders,
       });
