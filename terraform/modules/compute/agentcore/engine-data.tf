@@ -7,7 +7,8 @@
 #      Neptune
 #
 # The engine's process-store, graph, catalog, owned-blob and realtime calls go
-# through it. The runtime role keeps its own permissions until the final strip.
+# through it; provider review operations go to the source-control `runtime`
+# alias. The runtime role keeps its own permissions until the final strip.
 # ---------------------------------------------------------------------------
 
 locals {
@@ -47,6 +48,9 @@ locals {
       Resource = "${var.websocket_execution_arn}/*/POST/@connections/*"
     }] : [],
   )
+
+  # The grant-only source-control entry point the runtime calls in this mode.
+  source_control_runtime_alias_arn = "${local.source_control_function_arn}:runtime"
 }
 
 resource "terraform_data" "engine_data_requires_gateway" {
@@ -199,9 +203,12 @@ resource "aws_iam_role_policy" "agentcore_invoke_engine_data" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["lambda:InvokeFunction"]
-      Resource = module.engine_data_lambda[0].lambda_function_arn
+      Effect = "Allow"
+      Action = ["lambda:InvokeFunction"]
+      Resource = [
+        module.engine_data_lambda[0].lambda_function_arn,
+        local.source_control_runtime_alias_arn,
+      ]
     }]
   })
 }
