@@ -462,6 +462,100 @@ describe('broker accounting begin authority', () => {
   });
 });
 
+describe('broker accounting rollout modes', () => {
+  const enforced = { ...env, RUNTIME_GRANTS_ENFORCED: 'true' };
+  const accountingWrites = (h) =>
+    h.ddbClient.send.mock.calls.some(([c]) => c instanceof TransactWriteCommand);
+
+  it('serves the legacy request shape in transition without accounting and logs it', async () => {
+    const h = harness();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    const { action, grant } = await h.request();
+    const result = await h.resolve({ action, grant });
+    expect(result).not.toHaveProperty('accounting');
+    expect(result.credentials).toHaveLength(1);
+    expect(h.verifyGrant).not.toHaveBeenCalled();
+    expect(accountingWrites(h)).toBe(false);
+    expect(warn).toHaveBeenCalledWith('legacy runtime request', {
+      code: 'LEGACY_RUNTIME_REQUEST',
+      action: 'resolve-agent-credentials',
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(grant);
+  });
+
+  it('verifies new-shape requests in transition exactly as in enforcement', async () => {
+    const h = harness();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    expect((await h.resolve(await h.request())).accounting.ticket).toBeTypeOf('string');
+    expect(h.verifyGrant).toHaveBeenCalledTimes(1);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['nonce only', ['invocationNonce']],
+    ['command only', ['command']],
+    ['gateway grant only', ['gatewayGrant']],
+    ['command and nonce without the required gateway grant', ['command', 'invocationNonce']],
+    ['command and gateway grant without a nonce', ['command', 'gatewayGrant']],
+  ])('denies a transition request mixing legacy and %s', async (_, fields) => {
+    const h = harness();
+    const event = await h.request();
+    const mixed = Object.fromEntries(
+      Object.entries(event).filter(([key]) => ['action', 'grant', ...fields].includes(key)),
+    );
+    await expect(h.resolve(mixed)).rejects.toHaveProperty('code');
+    expect(h.ssmClient.send).not.toHaveBeenCalled();
+    expect(accountingWrites(h)).toBe(false);
+  });
+
+  it.each(['bad', 'expired', 'foreign'])(
+    'denies a %s gateway grant in transition, never downgrading it',
+    async (kind) => {
+      const h = harness();
+      const event = await h.request();
+      if (kind === 'bad') event.gatewayGrant += 'tampered';
+      if (kind === 'foreign')
+        event.gatewayGrant = (await h.request({ projectId: 'foreign' })).gatewayGrant;
+      if (kind === 'expired') {
+        h.advance(400_000);
+        event.grant = (await h.request()).grant;
+      }
+      await expect(h.resolve(event)).rejects.toMatchObject({
+        code: kind === 'foreign' ? 'GATEWAY_GRANT_SCOPE_MISMATCH' : expect.any(String),
+      });
+      expect(h.ssmClient.send).not.toHaveBeenCalled();
+      expect(accountingWrites(h)).toBe(false);
+    },
+  );
+
+  it('denies the legacy request shape once runtime grants are enforced', async () => {
+    const h = harness();
+    const { action, grant } = await h.request();
+    await expect(h.resolve({ action, grant }, { env: enforced })).rejects.toMatchObject({
+      code: 'INVOCATION_ACCOUNTING_INVALID',
+    });
+    expect(h.ssmClient.send).not.toHaveBeenCalled();
+    expect(accountingWrites(h)).toBe(false);
+  });
+
+  it('ignores the enforcement flag without engine data', async () => {
+    const h = harness();
+    const { grant } = await h.request();
+    const result = await h.resolve(
+      { grant },
+      { env: { ...enforced, ENGINE_DATA_ENABLED: 'false' } },
+    );
+    expect(result).not.toHaveProperty('accounting');
+    expect(accountingWrites(h)).toBe(false);
+  });
+
+  it('keeps accounting actions available in transition', async () => {
+    const h = harness();
+    const { accounting } = await h.resolve(await h.request());
+    await expect(h.act('finish-invocation', accounting.ticket)).resolves.toEqual({ ok: true });
+  });
+});
+
 describe('accounting tickets and completion', () => {
   it('heartbeats after dispatch expiry, atomically finishes references once, and cannot reopen', async () => {
     const h = harness();

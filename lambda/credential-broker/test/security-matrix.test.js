@@ -222,6 +222,141 @@ describe('broker source-control security matrix', () => {
   });
 });
 
+describe('broker source-control rollout modes', () => {
+  const { action: _action, ...legacyRequest } = request;
+  const enforced = { ...env, RUNTIME_GRANTS_ENFORCED: 'true' };
+
+  it.each(['identity', 'read', 'write'])(
+    'serves the legacy %s request shape in transition through the legacy checks',
+    async (requiredAccess) => {
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      const deps = { ...harness(), verifyGrant: vi.fn() };
+      await expect(
+        authorizeCredentialRequest({ ...legacyRequest, requiredAccess }, deps),
+      ).resolves.toBeDefined();
+      expect(deps.verifyGrant).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith('legacy runtime request', {
+        code: 'LEGACY_RUNTIME_REQUEST',
+        action: 'source-control',
+      });
+    },
+  );
+
+  it.each([
+    [{ execution: { status: 'SUCCEEDED' } }, 'EXECUTION_NOT_ACTIVE'],
+    [{ execution: { projectId: 'foreign' } }, 'EXECUTION_NOT_FOUND'],
+    [{ execution: { repos: ['acme/other'] } }, 'REPOSITORY_NOT_ON_EXECUTION'],
+    [{ binding: { status: 'invalid' } }, 'SOURCE_CONTROL_NOT_READY'],
+  ])('keeps legacy denial checks for transition legacy requests %j', async (options, code) => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    await expect(authorizeCredentialRequest(legacyRequest, harness(options))).rejects.toMatchObject(
+      { code },
+    );
+  });
+
+  it.each(['forged', 'expired', 'foreign'])(
+    'denies a present %s grant in transition, never downgrading it',
+    async (kind) => {
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+      const gatewayGrant =
+        kind === 'forged'
+          ? await token(
+              {},
+              { sign: async (message) => sign('sha256', message, foreignKeys.privateKey) },
+            )
+          : kind === 'expired'
+            ? await token({}, { now: () => now() - 300_000, ttlSeconds: 300 })
+            : await token({ projectId: 'foreign' });
+      for (const shape of [request, legacyRequest]) {
+        const deps = harness();
+        await expect(
+          authorizeCredentialRequest({ ...shape, gatewayGrant }, deps),
+        ).rejects.toMatchObject({
+          code: {
+            forged: 'GATEWAY_GRANT_INVALID',
+            expired: 'GATEWAY_GRANT_EXPIRED',
+            foreign: 'GATEWAY_GRANT_SCOPE_MISMATCH',
+          }[kind],
+        });
+        expect(deps.ddbClient.send).not.toHaveBeenCalled();
+      }
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['an explicit action without a grant', { action: 'source-control' }],
+    ['an empty grant field', { gatewayGrant: undefined }],
+    ['a nonce without a grant', { invocationNonce: '00000000-0000-4000-8000-000000000000' }],
+    ['a command without a grant', { command: 'run-stage' }],
+    ['a verification grant', { verificationGrant: 'token' }],
+  ])('denies a transition request carrying %s', async (_, fields) => {
+    const deps = harness();
+    await expect(
+      authorizeCredentialRequest({ ...legacyRequest, ...fields }, deps),
+    ).rejects.toMatchObject({ code: 'GATEWAY_GRANT_INVALID' });
+    expect(deps.ddbClient.send).not.toHaveBeenCalled();
+  });
+
+  it('denies the legacy request shape once runtime grants are enforced', async () => {
+    const deps = { ...harness(), env: enforced };
+    await expect(authorizeCredentialRequest(legacyRequest, deps)).rejects.toMatchObject({
+      code: 'GATEWAY_GRANT_INVALID',
+    });
+    expect(deps.ddbClient.send).not.toHaveBeenCalled();
+  });
+
+  it('accepts a valid grant once runtime grants are enforced', async () => {
+    await expect(
+      authorizeCredentialRequest(
+        { ...request, gatewayGrant: await token() },
+        { ...harness(), env: enforced },
+      ),
+    ).resolves.toEqual({ committer: { name: 'App', email: 'app@example.test' } });
+  });
+
+  it('ignores the enforcement flag without engine data', async () => {
+    const deps = {
+      ...harness(),
+      env: { ...enforced, ENGINE_DATA_ENABLED: 'false' },
+      verifyGrant: vi.fn(),
+    };
+    await expect(authorizeCredentialRequest(legacyRequest, deps)).resolves.toHaveProperty(
+      'committer',
+    );
+    expect(deps.verifyGrant).not.toHaveBeenCalled();
+  });
+
+  it('serves the legacy shape at the handler only in transition', async () => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    const ddb = mockClient(DynamoDBDocumentClient);
+    ddb.on(GetCommand).callsFake(({ Key }) => ({
+      Item: Key.pk
+        ? {
+            projectId: 'p',
+            intentId: 'i',
+            status: 'RUNNING',
+            repos: ['acme/api'],
+            gitProvider: 'github',
+          }
+        : { status: 'active', actorName: 'App', actorEmail: 'app@example.test', capabilities: {} },
+    }));
+    try {
+      vi.stubEnv('ENGINE_DATA_ENABLED', 'true');
+      vi.stubEnv('V2_PROCESS_TABLE', 'process');
+      expect(await handler(legacyRequest)).toEqual({
+        ok: true,
+        committer: { name: 'App', email: 'app@example.test' },
+      });
+      vi.stubEnv('RUNTIME_GRANTS_ENFORCED', 'true');
+      expect(await handler(legacyRequest)).toEqual({ ok: false, code: 'GATEWAY_GRANT_INVALID' });
+    } finally {
+      ddb.restore();
+    }
+  });
+});
+
 describe('broker dispatch security matrix', () => {
   it('preserves Gateway-denial codes and never logs supplied token or repository values', async () => {
     vi.stubEnv('ENGINE_DATA_ENABLED', 'true');
