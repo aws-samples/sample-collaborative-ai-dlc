@@ -110,6 +110,8 @@ describe('invocation activity evidence', () => {
       (row) => row.projectId === 'atomic-p',
     );
     expect(invocation.state).toBe('ACTIVE');
+    // The begin-time expiry stays; a failed completion does not shorten it.
+    expect(invocation.agentAuthTtl).toEqual(expect.any(Number));
     for (const { Put } of inventoryReferenceWrites(tableName, invocation)) {
       const { Item } = await ddb.send(
         new GetCommand({
@@ -118,7 +120,7 @@ describe('invocation activity evidence', () => {
           ConsistentRead: true,
         }),
       );
-      expect(Item.agentAuthTtl).toBeUndefined();
+      expect(Item.agentAuthTtl).toBe(invocation.agentAuthTtl);
     }
     completing = false;
     await finish();

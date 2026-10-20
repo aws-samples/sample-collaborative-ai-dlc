@@ -8,6 +8,10 @@ import {
 import { normalizeCredentialLease } from '../shared/agent-credential-lease.js';
 import { AGENT_BROKER_PROVIDERS } from './agent-broker-providers.js';
 import { composeLease, signRenewal, verifyRenewal } from './agent-credential-renewal.js';
+import {
+  INVOCATION_ACCOUNTING_AUDIENCE,
+  signInvocationAccountingTicket,
+} from '../shared/invocation-accounting-ticket.js';
 
 export const RESOLVE_AGENT_CREDENTIALS = 'resolve-agent-credentials';
 export const BASE_AGENT_CREDENTIAL_ERROR_CODES = Object.freeze([
@@ -74,7 +78,7 @@ const defineBrokerProvider = (provider) => {
     if (
       typeof renewal.audience !== 'string' ||
       !renewal.audience.trim() ||
-      renewal.audience === AGENT_CREDENTIAL_GRANT_AUDIENCE
+      [AGENT_CREDENTIAL_GRANT_AUDIENCE, INVOCATION_ACCOUNTING_AUDIENCE].includes(renewal.audience)
     )
       throw invalid('requires a renewal audience distinct from the grant audience');
     if (
@@ -280,6 +284,9 @@ export const createAgentProviderContext = async (
   return {
     claims,
     verification,
+    renewing: Boolean(renewing),
+    signAccountingTicket: (ticketClaims) =>
+      signInvocationAccountingTicket(ticketClaims, key, { now }),
     adapters,
     // The signed binding stands in for the connection row: no repository read, and the
     // 'verify' lease carries no renewal and ends with the grant.
