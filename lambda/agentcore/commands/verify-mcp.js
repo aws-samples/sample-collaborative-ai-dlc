@@ -27,6 +27,7 @@ import {
   RESERVED_MCP_ENV_KEYS,
 } from '../mcp-secret-resolver.js';
 import { mcpSecretPaths } from '../mcp-secret-paths.js';
+import { resolveVerificationMcpSecrets } from '../mcp-secret-broker.js';
 
 const { validateMcpServers, toMcpServerMap, extractSecretRefs } = mcpValidatorPkg;
 
@@ -173,28 +174,44 @@ export const verifyMcp = async (payload, deps = {}) => {
   const overrides = projectId ? { project: unsaved } : { global: unsaved };
 
   let secretEnv = {};
-  try {
-    ({ secretEnv } = await resolveMcpSecrets({
-      survivingGlobal,
-      survivingProject,
-      globalPath,
-      projectPath,
-      overrides,
-    }));
-  } catch {
-    // A collision, reserved-name, or unresolved ref threw. Fall back to per-server
-    // reporting: resolve whatever we can (best-effort, no throw) so servers WITHOUT
-    // an offending ref still probe. Collisions/reserved/missing are reported per
-    // server below — never masked by the merge.
-    secretEnv = await resolveBestEffort({
-      survivingGlobal,
-      survivingProject,
-      globalPath,
-      projectPath,
-      overrides,
-      resolveMcpSecrets,
-    });
-  }
+  let brokerResults = null;
+  const remote = Boolean(process.env.ENGINE_DATA_FUNCTION);
+  if (remote) {
+    if (globalRefSet.size || projectRefSet.size) {
+      try {
+        ({ secretEnv, results: brokerResults } = await resolveVerificationMcpSecrets({
+          projectId,
+          mcpServersByTier: { global, project },
+          verificationGrant: payload?.verificationGrant,
+          unsavedSecrets: payload?.unsavedSecrets,
+        }));
+      } catch {
+        return { error: 'MCP secret broker resolution failed' };
+      }
+    }
+  } else
+    try {
+      ({ secretEnv } = await resolveMcpSecrets({
+        survivingGlobal,
+        survivingProject,
+        globalPath,
+        projectPath,
+        overrides,
+      }));
+    } catch {
+      // A collision, reserved-name, or unresolved ref threw. Fall back to per-server
+      // reporting: resolve whatever we can (best-effort, no throw) so servers WITHOUT
+      // an offending ref still probe. Collisions/reserved/missing are reported per
+      // server below — never masked by the merge.
+      secretEnv = await resolveBestEffort({
+        survivingGlobal,
+        survivingProject,
+        globalPath,
+        projectPath,
+        overrides,
+        resolveMcpSecrets,
+      });
+    }
 
   // Build the merged survivor map (same as the runtime) and probe each entry.
   const survivorMap = {
@@ -207,6 +224,7 @@ export const verifyMcp = async (payload, deps = {}) => {
   const names = Object.keys(survivorMap);
   const entries = await Promise.all(
     names.map(async (name) => {
+      if (brokerResults?.[name]?.ok === false) return [name, brokerResults[name]];
       const refs = refsByServer[name] ?? [];
       // Reserved-name guard (same hard boundary the resolver enforces): a ref may
       // not shadow a runtime env key (auth / AWS creds / cache). Report it as a
@@ -244,6 +262,17 @@ export const verifyMcp = async (payload, deps = {}) => {
         ];
       }
       const expanded = expandServerSecrets(survivorMap[name], secretEnv);
+      if (remote) {
+        try {
+          const result = await probeServer(expanded, { timeoutMs });
+          return [
+            name,
+            result?.ok === true ? result : { ok: false, error: 'MCP server probe failed' },
+          ];
+        } catch {
+          return [name, { ok: false, error: 'MCP server probe failed' }];
+        }
+      }
       return [name, await probeServer(expanded, { timeoutMs })];
     }),
   );
