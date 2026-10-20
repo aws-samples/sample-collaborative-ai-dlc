@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Logger } from '@aws-lambda-powertools/logger';
+import { mockClient } from 'aws-sdk-client-mock';
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import { SSMClient } from '@aws-sdk/client-ssm';
+import { runWithGatewayGrant } from '../mcp/gateway-context.js';
+import { authorizeMcpSecretRequest } from '../../credential-broker/mcp-secrets.js';
 import { EventEmitter } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
@@ -1174,6 +1179,85 @@ describe('runStage — MCP secret resolution + child-env injection', () => {
     global: {},
     project: { tool: { command: 'npx', env: { API: '${MYSERVER_KEY}' } } },
   };
+
+  it.each([true, false])(
+    'uses the broker in enabled mode, success=%s, never local SSM or fallback',
+    async (success) => {
+      const lambda = mockClient(LambdaClient);
+      const ssm = mockClient(SSMClient);
+      const local = vi.fn(() => {
+        throw new Error('local resolver tripwire');
+      });
+      const { cap, spawnFn } = capturingSpawn();
+      vi.stubEnv('ENGINE_DATA_FUNCTION', 'engine-data');
+      vi.stubEnv('CREDENTIAL_BROKER_FUNCTION', 'credential-broker');
+      ssm.onAnyCommand().rejects(new Error('direct SSM tripwire'));
+      const deps = baseDeps({ spawnFn, resolveMcpSecrets: local, loadConductor: async () => '' });
+      const secretRead = vi.fn(async ({ input }) => {
+        expect(input).toEqual({
+          Name: '/app/dev/projects/p1/mcp-secrets/MYSERVER_KEY',
+          WithDecryption: true,
+        });
+        return { Parameter: { Value: 'broker-secret' } };
+      });
+      lambda.on(InvokeCommand).callsFake(async (input) => {
+        expect(input.FunctionName).toBe('credential-broker');
+        expect(JSON.parse(Buffer.from(input.Payload))).toEqual({
+          action: 'resolve-mcp-secrets',
+          gatewayGrant: 'stage-grant',
+          projectId: 'p1',
+          mcpServersByTier: serversByTier,
+        });
+        const request = JSON.parse(Buffer.from(input.Payload));
+        const result = success
+          ? await authorizeMcpSecretRequest(request, {
+              env: {
+                ENGINE_DATA_ENABLED: 'true',
+                V2_PROCESS_TABLE: 'process',
+                AGENT_SETTINGS_SSM_PREFIX: '/app/dev',
+              },
+              verifyGrant: async () => ({
+                mode: 'stage',
+                projectId: baseArgs.projectId,
+                intentId: baseArgs.intentId,
+                executionId: baseArgs.executionId,
+                stageId: baseArgs.stageId,
+              }),
+              ddbClient: {
+                send: async ({ input: read }) => {
+                  expect(read.ConsistentRead).toBe(true);
+                  expect(read.Key.pk).toBe('EXEC#e1');
+                  if (read.Key.sk === 'META')
+                    return { Item: { ...baseArgs, mcpServersByTier: serversByTier } };
+                  const stage = deps.store.calls.find(([op]) => op === 'putStage')[1];
+                  expect(read.Key.sk).toBe(`STAGE#${stage.stageInstanceId}`);
+                  return { Item: stage };
+                },
+              },
+              ssmClient: { send: secretRead },
+            })
+          : { ok: false, code: 'MCP_SECRET_MISSING' };
+        return { Payload: Buffer.from(JSON.stringify(result)) };
+      });
+      try {
+        const result = await runWithGatewayGrant('stage-grant', () =>
+          runStage({ ...baseArgs, mcpServersByTier: serversByTier }, deps),
+        );
+        expect(result).toMatchObject(
+          success ? { ok: true, state: 'SUCCEEDED' } : { ok: false, reason: 'mcp_secret_error' },
+        );
+        expect(cap.env?.MYSERVER_KEY ?? null).toBe(success ? 'broker-secret' : null);
+        expect(local).not.toHaveBeenCalled();
+        expect(ssm.calls()).toHaveLength(0);
+        expect(lambda.calls()).toHaveLength(1);
+        expect(secretRead).toHaveBeenCalledTimes(success ? 1 : 0);
+      } finally {
+        lambda.restore();
+        ssm.restore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it('injects the resolved secretEnv into the child spawn env', async () => {
     const { cap, spawnFn } = capturingSpawn();
