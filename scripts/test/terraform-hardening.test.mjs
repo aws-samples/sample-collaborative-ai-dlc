@@ -383,3 +383,30 @@ test('the AgentCore runtime role cannot assume roles', () => {
     /\{\s*(?:#[^\n]*\n\s*)*Effect\s+= "Deny"\s+Action\s+= \["sts:AssumeRole"\]\s+Resource\s+= "\*"\s*\}/,
   );
 });
+
+test('runtime grant enforcement is a separate, engine-data-gated broker rollout flag', () => {
+  const rootVariables = read('terraform/variables.tf');
+  assert.match(rootVariables, /variable "enforce_runtime_grants"[\s\S]*?default\s+= false/);
+
+  const rootMain = read('terraform/main.tf');
+  const [precondition] = resourceBlocks(rootMain, 'terraform_data').filter(
+    ({ name }) => name === 'runtime_grant_preconditions',
+  );
+  assert.ok(precondition, 'missing terraform_data "runtime_grant_preconditions"');
+  assert.match(precondition.body, /count\s+= var\.enforce_runtime_grants \? 1 : 0/);
+  assert.match(precondition.body, /condition\s+= var\.enable_engine_data\s/);
+  assert.match(
+    moduleBlock(rootMain, 'lambda'),
+    /enforce_runtime_grants\s+= var\.enforce_runtime_grants/,
+  );
+
+  const broker = moduleBlock(
+    read('terraform/modules/api/lambda/main.tf'),
+    'credential_broker_lambda',
+  );
+  assert.match(
+    broker,
+    /var\.enable_engine_data && var\.enforce_runtime_grants \? \{\s*RUNTIME_GRANTS_ENFORCED = "true"\s*\}/,
+  );
+  assert.equal(count(broker, /RUNTIME_GRANTS_ENFORCED/g), 1);
+});

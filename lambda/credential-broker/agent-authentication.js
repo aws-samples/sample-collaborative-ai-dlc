@@ -12,7 +12,7 @@ import {
 } from '../shared/agent-auth-contracts.js';
 import { createAgentProviderContext } from './agent-provider-registry.js';
 import { beginBrokerInvocation } from './invocation-accounting.js';
-import { brokerEnforcementEnabled, verifyBrokerGatewayGrant } from './gateway-authority.js';
+import { runtimeAuthorityRequired, verifyBrokerGatewayGrant } from './gateway-authority.js';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 export const authorizeAgentCredentialRequest = async (
@@ -78,7 +78,8 @@ export const authorizeAgentCredentialRequest = async (
     }
   }
   const invocation =
-    brokerEnforcementEnabled(env) && !context.renewing
+    !context.renewing &&
+    runtimeAuthorityRequired(event, env, { action: 'resolve-agent-credentials' })
       ? await beginBrokerInvocation({
           event,
           claims,

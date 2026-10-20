@@ -1451,6 +1451,8 @@ module "credential_broker_lambda" {
     }, var.enable_engine_data ? {
     ENGINE_DATA_ENABLED   = "true"
     GATEWAY_GRANT_KEY_IDS = var.gateway_grant_key_arn
+    } : {}, var.enable_engine_data && var.enforce_runtime_grants ? {
+    RUNTIME_GRANTS_ENFORCED = "true"
   } : {})
 
 }

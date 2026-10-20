@@ -375,3 +375,9 @@ variable "enable_engine_data" {
   type        = bool
   default     = false
 }
+
+variable "enforce_runtime_grants" {
+  description = "Retire the pre-engine-data runtime request shapes at the credential broker: Git credential and agent credential requests then always require the Gateway grant (and invocation accounting). While false, requests that carry the new authority fields are still fully verified, and legacy-shape requests from runtimes started before enable_engine_data are served the legacy way and logged as LEGACY_RUNTIME_REQUEST. Turn on only after that count has drained to zero. Requires enable_engine_data."
+  type        = bool
+  default     = false
+}

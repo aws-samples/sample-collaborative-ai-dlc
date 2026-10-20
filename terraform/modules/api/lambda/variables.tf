@@ -410,6 +410,12 @@ variable "enable_engine_data" {
   default     = false
 }
 
+variable "enforce_runtime_grants" {
+  description = "Whether the credential broker refuses the pre-engine-data runtime request shapes (only with enable_engine_data); otherwise it serves them the legacy way and logs LEGACY_RUNTIME_REQUEST"
+  type        = bool
+  default     = false
+}
+
 variable "gateway_grant_key_arn" {
   description = "KMS key that signs AgentCore MCP Gateway grants (used only when enable_mcp_gateway is true)"
   type        = string

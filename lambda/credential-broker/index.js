@@ -27,7 +27,7 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import {
   assertGatewayExecution,
   authorizeGitGateway,
-  brokerEnforcementEnabled,
+  runtimeAuthorityRequired,
   verifyBrokerGatewayGrant,
 } from './gateway-authority.js';
 
@@ -49,7 +49,7 @@ const AUTHORITY_ERROR_CODES = new Set([
 ]);
 
 const authorizeCredentialRequest = async (
-  { executionId, projectId, provider, repository, requiredAccess = 'write', gatewayGrant },
+  request,
   {
     ddbClient = ddb,
     ssmClient = ssm,
@@ -59,6 +59,14 @@ const authorizeCredentialRequest = async (
     verifyGrant = verifyBrokerGatewayGrant,
   } = {},
 ) => {
+  const {
+    executionId,
+    projectId,
+    provider,
+    repository,
+    requiredAccess = 'write',
+    gatewayGrant,
+  } = request;
   if (!executionId || !projectId || !provider || !repository) {
     throw Object.assign(
       new Error('executionId, projectId, provider, and repository are required'),
@@ -72,7 +80,11 @@ const authorizeCredentialRequest = async (
       code: 'INVALID_REQUEST',
     });
   }
-  const grant = brokerEnforcementEnabled(env)
+  // Pre-engine-data runtimes send neither an action nor a grant.
+  const grant = runtimeAuthorityRequired(request, env, {
+    action: 'source-control',
+    markers: ['action'],
+  })
     ? await authorizeGitGateway({ executionId, projectId, gatewayGrant }, verifyGrant)
     : null;
   const { Item: execution } = await ddbClient.send(
