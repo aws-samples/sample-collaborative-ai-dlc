@@ -1,4 +1,5 @@
 import { authorizeAgentCredentialRequest } from './agent-authentication-entry.js';
+import { authorizeMcpSecretRequest, MCP_SECRET_ERROR_CODES } from './mcp-secrets.js';
 import {
   authorizeInvocationAccountingRequest,
   isInvocationAccountingAction,
@@ -157,6 +158,9 @@ export const handler = async (event, context) => {
   // Only omission keeps the legacy request shape; malformed explicit actions deny.
   const action = Object.hasOwn(event ?? {}, 'action') ? event.action : 'source-control';
   try {
+    if (action === 'resolve-mcp-secrets') {
+      return await authorizeMcpSecretRequest(event, { ddbClient: ddb, ssmClient: ssm });
+    }
     if (isInvocationAccountingAction(action)) {
       return await authorizeInvocationAccountingRequest(event, { ddbClient: ddb, ssmClient: ssm });
     }
@@ -185,7 +189,9 @@ export const handler = async (event, context) => {
     // Both code helpers return only allowlisted constants — never provider-
     // derived error text, which can carry credential material.
     const code =
-      AUTHORITY_ERROR_CODES.has(error?.code) || INVOCATION_ACCOUNTING_ERROR_CODES.has(error?.code)
+      AUTHORITY_ERROR_CODES.has(error?.code) ||
+      INVOCATION_ACCOUNTING_ERROR_CODES.has(error?.code) ||
+      MCP_SECRET_ERROR_CODES.has(error?.code)
         ? error.code
         : isAgentCredentialAction(action)
           ? loggableAgentCredentialErrorCode(error)
@@ -195,6 +201,7 @@ export const handler = async (event, context) => {
       action:
         isAgentCredentialAction(action) ||
         isInvocationAccountingAction(action) ||
+        action === 'resolve-mcp-secrets' ||
         action === 'source-control'
           ? action
           : 'unknown',

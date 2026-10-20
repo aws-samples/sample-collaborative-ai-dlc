@@ -82,6 +82,7 @@ import {
 } from '../shared/sandbox-settings.js';
 import { validateSandboxConfig } from '../shared/sandbox-config.js';
 import { assertSandboxRuntime } from '../shared/agent-auth-runtime-capabilities.js';
+import { issueMcpSecretVerificationGrant } from '../shared/mcp-secret-verification-grant.js';
 import { createAuthenticationSettingsService } from './authentication-settings-service.js';
 import {
   authorizeLegacyProjectRead,
@@ -225,6 +226,7 @@ export const verifyMcpServers = async ({
   mcpServersByTier,
   projectId,
   unsavedSecrets,
+  verificationGrant,
   runtimeTarget = coreRuntimeTarget(),
 }) => {
   if (!runtimeTarget.agentRuntimeArn) {
@@ -268,6 +270,7 @@ export const verifyMcpServers = async ({
                 mcpServersByTier,
                 ...(projectId ? { projectId } : {}),
                 ...(unsavedSecrets ? { unsavedSecrets } : {}),
+                ...(verificationGrant ? { verificationGrant } : {}),
               }),
             ),
           }),
@@ -277,6 +280,10 @@ export const verifyMcpServers = async ({
     );
     return text ? JSON.parse(text) : { error: 'Empty response from runtime' };
   } catch (e) {
+    if (process.env.ENGINE_DATA_ENABLED === 'true') {
+      logger.error('[verify-mcp] runtime invoke failed');
+      return { error: 'MCP verification runtime invocation failed' };
+    }
     logger.error('[verify-mcp] runtime invoke failed', e);
     return { error: `Runtime invoke failed: ${e.message}` };
   }
@@ -1323,15 +1330,36 @@ export const handler = async (event, context) => {
       // are tier-scoped to the caller by the runtime resolver: a project verify's
       // unsavedSecrets bind to project refs only (never a global-named ref). Never
       // logged (see below).
-      const unsavedSecrets =
+      let unsavedSecrets =
         input.unsavedSecrets && typeof input.unsavedSecrets === 'object'
           ? input.unsavedSecrets
           : undefined;
+
+      let verificationGrant;
+      if (process.env.ENGINE_DATA_ENABLED === 'true') {
+        try {
+          verificationGrant = await issueMcpSecretVerificationGrant(ssm, {
+            projectId: verifyProjectId || null,
+            mcpServersByTier,
+          });
+          // The editor retains drafts for renamed/removed refs; only current editable refs travel.
+          if (unsavedSecrets) {
+            const editableRefs = extractSecretRefs(editedConfig).refs;
+            unsavedSecrets = Object.fromEntries(
+              Object.entries(unsavedSecrets).filter(([ref]) => editableRefs.has(ref)),
+            );
+          }
+        } catch {
+          logger.error('[verify-mcp] authorization failed');
+          return response(502, { error: 'MCP verification authorization failed' });
+        }
+      }
 
       const result = await verifyMcpServers({
         mcpServersByTier,
         projectId: verifyProjectId,
         unsavedSecrets,
+        ...(verificationGrant ? { verificationGrant } : {}),
         runtimeTarget,
       });
       if (result.error) return response(502, result);
