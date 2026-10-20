@@ -283,7 +283,7 @@ test('DynamoDB CMK access covers deployment and every runtime caller', () => {
     // main.tf but optional Lambda roles are declared beside their Lambdas.
     const source =
       path === 'terraform/modules/compute/agentcore/main.tf'
-        ? ['main.tf', 'mcp-gateway.tf']
+        ? ['main.tf', 'mcp-gateway.tf', 'engine-data.tf']
             .map((file) => read(`terraform/modules/compute/agentcore/${file}`))
             .join('\n')
             .replaceAll('[0]', '')

@@ -10,7 +10,8 @@
 //      names must equal the grant's;
 //   3. the execution META (consistent read) and the Neptune Intent anchor must
 //      belong to the grant's project and intent, and every stage, unit lane and
-//      Quorum edit the call names must resolve inside the granted execution;
+//      Quorum edit the call names must resolve inside the granted execution; a
+//      stage grant may only read, or write as its own stage instance and lane;
 //   4. the operation runs with a writer scope rebuilt from the grant and the
 //      resolved stage row, never from the request.
 // The graph connection is shared across requests of one Lambda environment;
@@ -26,6 +27,8 @@ import {
   EngineGraphScopeError,
   readIntentAnchor,
 } from '../shared/engine-graph-ops.js';
+import { isLoopBackAnswer } from '../shared/gate-answer.js';
+import { isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { GRAPH_OPS, GRAPH_SELECTOR } from './graph-schemas.js';
 import {
   ENGINE_GRANT_MODES,
@@ -34,8 +37,10 @@ import {
   denialResponse,
   deny,
   grantAudit,
+  grantStageInstanceId,
   hasPrototypeKey,
   issuePaths,
+  sameAsGrant,
   serializeError,
   verifyGrantOrDeny,
 } from './gateway-common.js';
@@ -57,12 +62,55 @@ const resolveStage = async (store, executionId, stageInstanceId) => {
   return stage;
 };
 
-const checkScope = async (store, { grant, spec, selector, input, executionId }) => {
+const LOOP_BACK_RESTART = /^loopback-(.+)$/;
+
+// A stage grant reads the whole execution but writes only as its own stage
+// instance and lane; the selector, whatever the op, may name nothing else.
+const bindStageGrant = async (store, { grant, spec, selector, input, executionId }, meta) => {
+  const names =
+    spec.stageGrant === 'own' ||
+    selector.stageInstanceId ||
+    supplied(selector.unitSlug) ||
+    supplied(selector.sectionIndex);
+  if (!names) return;
+  const own = grantStageInstanceId(grant, meta);
+  if (
+    !sameAsGrant(selector.stageInstanceId, own) ||
+    !sameAsGrant(selector.unitSlug, grant.unitSlug) ||
+    !sameAsGrant(selector.sectionIndex, grant.sectionIndex)
+  ) {
+    deny('scope_mismatch');
+  }
+  if (spec.stageGrant !== 'own') return;
+  if (!sameAsGrant(input.stageInstanceId, own) || !sameAsGrant(input.unitSlug, grant.unitSlug)) {
+    deny('scope_mismatch');
+  }
+  if (input.stageInstanceIds) {
+    // The loop-back re-run archives itself and the stage whose gate sent the
+    // work back to it, and nothing else. The gate must have been ANSWERED
+    // loop-back to this stage, read exactly as the stage runner reads it: a
+    // gate that only offered the jump (pending, superseded, or answered with
+    // another choice) authorizes no archive.
+    const loopBackId = LOOP_BACK_RESTART.exec(input.restartId)?.[1];
+    const gate = loopBackId
+      ? await store.getHumanTask(executionId, loopBackId, { consistentRead: true })
+      : null;
+    if (!isHumanTaskAnswerStatus(gate?.status) || !isLoopBackAnswer(gate, grant.stageId)) {
+      deny('scope_mismatch');
+    }
+    const allowed = new Set([own, gate.stageInstanceId].filter(Boolean));
+    if (!input.stageInstanceIds.every((id) => allowed.has(id))) deny('scope_mismatch');
+  }
+};
+
+const checkScope = async (store, authorized) => {
+  const { grant, spec, selector, input, executionId } = authorized;
   const meta = await store.getExecution(executionId, { consistentRead: true });
   if (!meta && spec.meta === 'required') deny('execution_not_found');
   if (meta && (meta.projectId !== grant.projectId || meta.intentId !== grant.intentId)) {
     deny('scope_mismatch');
   }
+  if (grant.mode === 'stage') await bindStageGrant(store, authorized, meta);
 
   let stage = null;
   if (selector.stageInstanceId) {
@@ -138,6 +186,7 @@ export const createGraphGateway = ({
       deny('op_not_allowed');
     }
     if (spec.grantModes && !spec.grantModes.includes(grant.mode)) deny('grant_mode_not_allowed');
+    if (grant.mode === 'stage' && !spec.stageGrant) deny('op_not_allowed');
 
     const { args } = event;
     if (!Array.isArray(args) || args.length > 2 || hasPrototypeKey(args)) {

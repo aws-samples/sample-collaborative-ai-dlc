@@ -291,12 +291,32 @@ export const createEngineGraphOps = ({
   let writer;
   const graph = () => (writer ??= createWriter({ g, scope: writerScope, clock }));
 
+  // The CURRENT head an artifact id names. Unit lanes may each hold a head
+  // with the same id, so the caller names the logical artifact (the key read
+  // from the head row) and exactly that head is resolved; without a key the
+  // id must be unambiguous.
+  const currentHead = async (artifactId, logicalKey = null) => {
+    const heads = (await graph().getIntentGraph({ includeContent: true })).filter(
+      (row) =>
+        row.id === artifactId &&
+        (logicalKey === null || artifactLogicalKeyFromRow(row, intentId) === logicalKey),
+    );
+    if (heads.length === 0) {
+      throw new EngineGraphError(`artifact "${artifactId}" not found`, 'not_found');
+    }
+    if (heads.length > 1) {
+      throw new EngineGraphError(
+        `artifact "${artifactId}" names several current heads; pass its logical key`,
+        'artifact_ambiguous',
+      );
+    }
+    return heads[0];
+  };
+
   // The engine's own extraction of the CURRENT head, recomputed here so a
   // derivation or enrichment can only ever describe what the graph holds.
-  const currentExtraction = async (artifactId, sourceHash) => {
-    const heads = await graph().getIntentGraph({ includeContent: true });
-    const artifact = heads.find((row) => row.id === artifactId);
-    if (!artifact) throw new EngineGraphError(`artifact "${artifactId}" not found`, 'not_found');
+  const currentExtraction = async ({ artifactId, logicalKey = null, sourceHash }) => {
+    const artifact = await currentHead(artifactId, logicalKey);
     const extraction = extractArtifactStructure({
       artifactType: artifact.artifact_type,
       artifactId: artifact.id,
@@ -335,11 +355,20 @@ export const createEngineGraphOps = ({
     linkSteeringInfluences: (input) => graph().linkSteeringInfluences(input),
     mirrorUnitDag: (input) => graph().mirrorUnitDag(input),
     ingestCodeFiles: (input) => graph().ingestCodeFiles(input),
-    mirrorArtifactDerivations: async ({ artifactId, sourceHash }) =>
-      graph().mirrorArtifactDerivations(await currentExtraction(artifactId, sourceHash)),
+    mirrorArtifactDerivations: async ({ artifactId, logicalKey = null, sourceHash }) =>
+      graph().mirrorArtifactDerivations(
+        await currentExtraction({ artifactId, logicalKey, sourceHash }),
+      ),
     resolveDerivedItemEdges: () => graph().resolveDerivedItemEdges(),
-    applyArtifactEnrichment: async ({ artifactId, gist, claims, model = null, sourceHash }) => {
-      await currentExtraction(artifactId, sourceHash);
+    applyArtifactEnrichment: async ({
+      artifactId,
+      logicalKey = null,
+      gist,
+      claims,
+      model = null,
+      sourceHash,
+    }) => {
+      await currentExtraction({ artifactId, logicalKey, sourceHash });
       return graph().applyArtifactEnrichment({ artifactId, gist, claims, model, sourceHash });
     },
     supersedeDerivationsForArtifacts: (input) => graph().supersedeDerivationsForArtifacts(input),
@@ -361,6 +390,7 @@ export const createEngineGraphOps = ({
     },
 
     // ── named ──
+    getArtifactContent: ({ artifactId, logicalKey = null }) => currentHead(artifactId, logicalKey),
     ensureIntent: ({ title = '' }) =>
       ensureIntentVertex({ g, projectId, intentId, title, now: clock() }),
     inspect: async ({ artifactType = null, artifactId = null }) => {

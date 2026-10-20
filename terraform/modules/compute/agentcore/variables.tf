@@ -219,7 +219,7 @@ variable "enable_mcp_gateway" {
 }
 
 variable "enable_engine_data" {
-  description = "Route the engine's process-state calls through the grant-verifying engine-data Lambda (requires enable_mcp_gateway)"
+  description = "Route the engine's process state, knowledge graph, catalog, blob and realtime calls through the grant-verifying engine-data Lambda (requires enable_mcp_gateway)"
   type        = bool
   default     = false
 }

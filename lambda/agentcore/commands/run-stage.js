@@ -97,7 +97,7 @@ import {
 import { resolveStageModel } from '../model-resolver.js';
 import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { CHECKPOINTS, answerFreeText, chosenLabel } from '../mcp/process-bridge.js';
-import { LOOP_BACK_OPTION, parseChoice } from '../../shared/gate-answer.js';
+import { isLoopBackAnswer } from '../../shared/gate-answer.js';
 import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner, isReleaseDependencyError } from '../sensor-runner.js';
 import {
@@ -898,21 +898,6 @@ const changeControlFingerprint = (changedInputs = []) =>
 
 const isChangeControlGate = (gate) =>
   typeof gate?.humanTaskId === 'string' && gate.humanTaskId.startsWith(CHANGE_CONTROL_GATE_PREFIX);
-
-// A build-and-test gate answered `loop-back` sends the run back to this
-// code-generation stage. The gate belongs to another stage, whose reset left this
-// row with no session, so the stage runs fresh with the answer in its prompt.
-//
-// Keyed on the ENGINE's offer, never on what the human typed: `loopBackTarget` is
-// written only by `awaitEngineGate`/`createHumanTask`, and only when the gate
-// actually offered the jump, and it names the stage the walk rewound to. Requiring
-// it to name THIS stage is what stops a `loop-back` string in any answer field of
-// any other gate — a `question` gate's `freeText`, for instance — from skipping the
-// `resume_no_session` guard below and re-entering a stage as a fresh run.
-const isLoopBackAnswer = (gate, stageId) =>
-  typeof gate?.loopBackTarget === 'string' &&
-  gate.loopBackTarget === stageId &&
-  parseChoice(gate?.answer, [LOOP_BACK_OPTION]) !== null;
 
 // The approved inputs whose bytes moved since an approval recorded them.
 // Identity is the artifact's LOGICAL key, not its type: a stage may consume

@@ -8,6 +8,7 @@
 // strict schema: it can rewrite META, so it accepts only what the runtime sends.
 import { z } from 'zod';
 import { EXECUTION_STATUS, RECEIPT_KINDS, STAGE_STATE } from '../shared/v2-process-keys.js';
+import { customRuleDescriptor } from './blob-schemas.js';
 
 const id = z.string().min(1);
 const optionalId = id.nullable().optional();
@@ -53,11 +54,38 @@ const patchFields = z
 
 const lane = { unitSlug: text, sectionIndex };
 
-const op = ({ args, executionId, stageIds = () => [] }) => ({ args, executionId, stageIds });
+// `checkMeta(args, meta, grant)` returns a denial reason (or null) for ops whose
+// arguments must also agree with the execution's META row.
+const op = ({ args, executionId, stageIds = () => [], checkMeta = () => null }) => ({
+  args,
+  executionId,
+  stageIds,
+  checkMeta,
+});
 const first = (args) => args[0];
 const inputExecution = (args) => args[0].executionId;
 const stageOf = (args) => [args[0].stageInstanceId];
 const ownedStage = (input) => (input.ownership ? [input.ownership.stageInstanceId] : []);
+
+// A checkpoint's rule refs are what export later reads from S3, so each one must
+// be a rule the execution META lists, at the granted project's exact key, pinned
+// to an object version. Anything else would let a runtime point a checkpoint at
+// another project's (or any) `custom-rules/` object.
+const customRuleRef = z.object({ filename: id, s3Key: id, versionId: id }).passthrough();
+const unlistedCustomRuleRef = ([checkpoint], meta, grant) => {
+  const listed = new Set(
+    (Array.isArray(meta.customRules) ? meta.customRules : [])
+      .map((rule) => customRuleDescriptor(grant.projectId, rule))
+      .filter(Boolean)
+      .map(({ filename, s3Key }) => `${filename}\n${s3Key}`),
+  );
+  for (const ref of checkpoint.customRuleRefs ?? []) {
+    const descriptor = customRuleDescriptor(grant.projectId, ref);
+    if (!descriptor || descriptor.filename !== ref.filename) return 'scope_mismatch';
+    if (!listed.has(`${descriptor.filename}\n${descriptor.s3Key}`)) return 'scope_mismatch';
+  }
+  return null;
+};
 
 export const STORE_OPS = Object.freeze({
   appendEvent: op({
@@ -285,10 +313,11 @@ export const STORE_OPS = Object.freeze({
         sourceStageInstanceId: optionalId,
         process: json,
         artifactRefs: z.array(z.unknown()).optional(),
-        customRuleRefs: z.array(z.unknown()).optional(),
+        customRuleRefs: z.array(customRuleRef).optional(),
       }),
     ],
     executionId: inputExecution,
+    checkMeta: unlistedCustomRuleRef,
   }),
   putUnitPlan: op({
     args: [

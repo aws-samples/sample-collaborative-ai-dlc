@@ -140,6 +140,8 @@ module "dynamodb_kms_runtime_access" {
     agentcore = aws_iam_role.agentcore.name
     }, local.mcp_gateway_enabled ? {
     mcp_tools = aws_iam_role.mcp_tools[0].name
+    } : {}, local.engine_data_enabled ? {
+    engine_data = aws_iam_role.engine_data[0].name
   } : {})
 }
 

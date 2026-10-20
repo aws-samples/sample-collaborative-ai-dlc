@@ -17,7 +17,10 @@
 //   unitRefs     input lanes that must exist in the execution's unit plan;
 //   quorumEditIds input Quorum edit ids that must belong to the execution;
 //   grantModes   when set, the exact grant modes allowed (narrower than modes);
-//   replaySafe   whether a stale-auth reconnect may re-run the whole operation.
+//   replaySafe   whether a stale-auth reconnect may re-run the whole operation;
+//   stageGrant   what a stage grant may do: 'read' (execution-wide reads),
+//                'own' (writes bound to the grant's own stage instance and lane)
+//                or null (not callable with a stage grant).
 import { z } from 'zod';
 import { LEARNING_LAYERS } from '../shared/mcp/graph-writer.js';
 import { CLOSURE_MAX_DEPTH, CLOSURE_MAX_NODES } from '../shared/artifact-edit.js';
@@ -40,6 +43,12 @@ const text = (max = TEXT_MAX) => z.string().max(max);
 const ids = (max = LIST_MAX) => z.array(id).max(max);
 const index = z.number().int().nonnegative();
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
+// artifactLogicalKey(): a JSON array of the identity dimensions, optionally
+// suffixed with `#<id>` for a same-stage sibling slot.
+const logicalKey = z
+  .string()
+  .min(1)
+  .max(8 * ID_MAX);
 const relativePath = z
   .string()
   .min(1)
@@ -75,6 +84,7 @@ const op = ({
   quorumEditIds = none,
   grantModes = null,
   replaySafe = false,
+  stageGrant = null,
 }) => ({
   input,
   modes,
@@ -86,8 +96,9 @@ const op = ({
   quorumEditIds,
   grantModes,
   replaySafe,
+  stageGrant,
 });
-const read = (input, rules = {}) => op({ input, replaySafe: true, ...rules });
+const read = (input, rules = {}) => op({ input, replaySafe: true, stageGrant: 'read', ...rules });
 
 const listing = {
   includeContent: z.boolean().optional(),
@@ -154,6 +165,7 @@ export const GRAPH_OPS = Object.freeze({
   linkSteeringInfluences: op({
     input: strict({ steerIds: ids(), stageInstanceId: id.optional() }),
     stageIds: (input) => (input.stageInstanceId ? [input.stageInstanceId] : []),
+    stageGrant: 'own',
   }),
   mirrorUnitDag: op({
     input: strict({
@@ -185,12 +197,18 @@ export const GRAPH_OPS = Object.freeze({
         .max(5000),
     }),
     stageIds: (input) => (input.stageInstanceId ? [input.stageInstanceId] : []),
+    stageGrant: 'own',
   }),
-  mirrorArtifactDerivations: op({ input: strict({ artifactId: id, sourceHash: sha256 }) }),
+  // `logicalKey` is the head row's artifact_logical_key: it picks one lane's
+  // head when several unit lanes hold an artifact with the same id.
+  mirrorArtifactDerivations: op({
+    input: strict({ artifactId: id, logicalKey: logicalKey.optional(), sourceHash: sha256 }),
+  }),
   resolveDerivedItemEdges: op({ input: empty }),
   applyArtifactEnrichment: op({
     input: strict({
       artifactId: id,
+      logicalKey: logicalKey.optional(),
       gist: text(),
       claims: z.array(text()).max(5),
       model: text(ID_MAX).nullable().optional(),
@@ -201,6 +219,7 @@ export const GRAPH_OPS = Object.freeze({
   recordContributionGap: op({
     input: strict({ agentRef: id, reason: text() }),
     requireStage: true,
+    stageGrant: 'own',
   }),
 
   ensureIntent: op({
@@ -209,6 +228,9 @@ export const GRAPH_OPS = Object.freeze({
     anchor: 'optional',
     grantModes: ['execution'],
   }),
+  // One current head with its body, so a reader that needs bodies (derive)
+  // fetches them one at a time instead of listing the whole intent with content.
+  getArtifactContent: read(strict({ artifactId: id, logicalKey: logicalKey.optional() })),
   inspect: read(
     strict({ artifactType: id.nullable().optional(), artifactId: id.nullable().optional() }),
     {
@@ -262,6 +284,9 @@ export const GRAPH_OPS = Object.freeze({
       actor: text(ID_MAX),
     }),
     stageIds: (input) => input.stageInstanceIds,
+    // A stage archives only on its own loop-back re-run; the gateway checks the
+    // gate (see graph-gateway.js).
+    stageGrant: 'own',
   }),
   snapshotCurrentArtifactHeads: op({ input: empty }),
   readCurrentArtifactHeadHashes: read(empty),

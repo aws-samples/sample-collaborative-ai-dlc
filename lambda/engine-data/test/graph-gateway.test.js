@@ -14,6 +14,7 @@ import { createGraphManager } from '../../shared/mcp/graph-manager.js';
 import { createGraphWriter } from '../../shared/mcp/graph-writer.js';
 import { GRAPH_OPS } from '../graph-schemas.js';
 import { createGraphGateway } from '../graph-gateway.js';
+import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 
 const NOW = Date.parse('2026-10-18T12:00:00.000Z');
 const KID = 'kid-1';
@@ -565,5 +566,116 @@ describe('graph connection', () => {
       },
     );
     expect(response.error).toMatchObject({ code: 'response_too_large' });
+  });
+});
+
+describe('stage grants act only as their own stage', () => {
+  const OWN_SI = planStageInstanceId('aidlc-v2@3', 'requirements-analysis');
+  const OTHER_SI = planStageInstanceId('aidlc-v2@3', 'application-design');
+  const STAGE = { ...OWN, mode: 'stage', stageId: 'requirements-analysis' };
+  const rows = {
+    [OWN_SI]: { executionId: 'e-1', stageInstanceId: OWN_SI, stageId: 'requirements-analysis' },
+    [OTHER_SI]: { executionId: 'e-1', stageInstanceId: OTHER_SI, stageId: 'application-design' },
+  };
+  const loopBackGate = (status, answer) => ({
+    stageInstanceId: OTHER_SI,
+    loopBackTarget: 'requirements-analysis',
+    status,
+    ...(answer === undefined ? {} : { answer }),
+  });
+  const gates = {
+    'lb-1': loopBackGate('rejected', { decision: 'loop-back' }),
+    'lb-2': {
+      ...loopBackGate('rejected', { decision: 'loop-back' }),
+      loopBackTarget: 'application-design',
+    },
+    'lb-pending': loopBackGate('pending'),
+    'lb-approved': loopBackGate('approved', { decision: 'approve' }),
+    'lb-declined': loopBackGate('rejected', { decision: 'request-changes' }),
+    'lb-superseded': loopBackGate('superseded', { decision: 'loop-back' }),
+  };
+  const pinned = {
+    createStore: () => ({
+      ...store,
+      getExecution: async () => ({ ...meta(OWN), workflowId: 'aidlc-v2', workflowVersion: 3 }),
+      getStage: async (e, s) => (e === 'e-1' ? (rows[s] ?? null) : null),
+      getHumanTask: async (e, id) => (e === 'e-1' ? (gates[id] ?? null) : null),
+    }),
+  };
+  const stageCall = (op, input = {}, selector = {}) => call(STAGE, op, input, selector, pinned);
+  const archive = (stageInstanceIds, restartId) =>
+    stageCall('archiveArtifactsForStages', {
+      stageInstanceIds,
+      restartId,
+      reason: 'r',
+      actor: 'a',
+    });
+
+  it('reads the whole execution, but only through its own stage selector', async () => {
+    expect((await stageCall('getIntentGraph')).ok).toBe(true);
+    expect((await stageCall('getLearningRules', {}, { stageInstanceId: OWN_SI })).ok).toBe(true);
+    expect((await stageCall('getIntentGraph', {}, { stageInstanceId: OTHER_SI })).error.code).toBe(
+      'scope_mismatch',
+    );
+  });
+
+  it('writes only as its own stage instance', async () => {
+    expect(
+      (await stageCall('linkSteeringInfluences', { steerIds: [], stageInstanceId: OWN_SI })).ok,
+    ).toBe(true);
+    expect(
+      (await stageCall('linkSteeringInfluences', { steerIds: [], stageInstanceId: OTHER_SI })).error
+        .code,
+    ).toBe('scope_mismatch');
+    expect(
+      (
+        await stageCall(
+          'recordContributionGap',
+          { agentRef: 'x', reason: 'y' },
+          { stageInstanceId: OTHER_SI },
+        )
+      ).error.code,
+    ).toBe('scope_mismatch');
+    expect(
+      (
+        await stageCall('ingestCodeFiles', {
+          repository: 'org/api',
+          commitRef: 'abc',
+          stageInstanceId: OWN_SI,
+          unitSlug: 'u-auth',
+          files: [],
+        })
+      ).error.code,
+    ).toBe('scope_mismatch');
+  });
+
+  it('archives only on its own loop-back, and only the two stages it rewinds', async () => {
+    expect((await archive([OWN_SI, OTHER_SI], 'loopback-lb-1')).ok).toBe(true);
+    expect((await archive([OTHER_SI], 'loopback-lb-2')).error.code).toBe('scope_mismatch');
+    expect((await archive([OTHER_SI], 'restart-1')).error.code).toBe('scope_mismatch');
+    expect((await archive([OTHER_SI], 'loopback-missing')).error.code).toBe('scope_mismatch');
+  });
+
+  it.each(['lb-pending', 'lb-approved', 'lb-declined', 'lb-superseded'])(
+    'does not archive on gate %s, which offered the loop-back but was not answered with it',
+    async (gateId) => {
+      expect((await archive([OWN_SI, OTHER_SI], `loopback-${gateId}`)).error.code).toBe(
+        'scope_mismatch',
+      );
+      expect((await archive([OWN_SI], `loopback-${gateId}`)).error.code).toBe('scope_mismatch');
+    },
+  );
+
+  it.each([
+    'updateArtifact',
+    'recordPullRequest',
+    'recordLearningRule',
+    'mirrorUnitDag',
+    'applyArtifactEdit',
+    'markArtifactsStale',
+    'snapshotCurrentArtifactHeads',
+    'supersedeDerivationsForArtifacts',
+  ])('leaves %s to execution grants', async (op) => {
+    expect((await stageCall(op)).error.code).toBe('op_not_allowed');
   });
 });
