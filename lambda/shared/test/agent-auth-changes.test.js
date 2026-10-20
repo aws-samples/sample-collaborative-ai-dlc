@@ -13,6 +13,8 @@ import { redeemAgentBinding } from '../agent-auth-redemption.js';
 import { createOAuthStateRepository } from '../agent-oauth-state-repository.js';
 import { createOAuthCredentialCoordinator } from '../agent-oauth-contract.js';
 import { normalizeConnection, connectionAudience } from '../agent-auth-catalog.js';
+import { isMaterialAuthInventoryRow } from '../agent-auth-inventory.js';
+import { INVOCATION_ACCOUNTING_TTL_SECONDS } from '../invocation-accounting-ticket.js';
 import { cleanup, createAuthTable, ddb, requireDynamoDbLocal } from './helpers/auth-table.js';
 
 beforeAll(requireDynamoDbLocal);
@@ -84,6 +86,38 @@ describe('revision-safe authentication changes with DynamoDB', () => {
     );
     expect(impact.filter((item) => item.outcome === 'loses-access')).toHaveLength(1);
     expect(impact.find((item) => item.outcome === 'loses-access').binding.provider).toBe('kiro');
+  });
+  it('keeps a stale ACTIVE invocation as evidence but no longer counts it as material', () => {
+    const now = Date.parse('2026-10-20T12:00:00Z');
+    const invocation = (id, startedAt, state = 'ACTIVE') => ({
+      pk: `AGENTAUTH#INVOCATION#${id}`,
+      sk: 'META',
+      type: 'AgentInvocation',
+      id,
+      projectId: 'p1',
+      state,
+      ...(startedAt === null ? {} : { startedAt: new Date(startedAt).toISOString() }),
+      heartbeatAt: new Date(startedAt ?? 0).toISOString(),
+      credentialBindings: [{ provider: 'kiro', source: 'space' }],
+    });
+    const ticketTtlMs = INVOCATION_ACCOUNTING_TTL_SECONDS * 1000;
+    const rows = [
+      invocation('live', now - 60_000),
+      invocation('unknown', now - ticketTtlMs + 1),
+      invocation('stale', now - ticketTtlMs),
+      invocation('legacy', null),
+    ];
+    expect(rows.map((row) => isMaterialAuthInventoryRow(row, now))).toEqual([
+      true,
+      true,
+      false,
+      true,
+    ]);
+    expect(materialAuthInventory(rows, now).map((item) => [item.id, item.liveness])).toEqual([
+      ['legacy', 'unknown'],
+      ['live', 'live'],
+      ['unknown', 'unknown'],
+    ]);
   });
   it('inventories more than 100 executions, drafts, failed work and auxiliary invocations', async () => {
     const tableName = await createAuthTable();

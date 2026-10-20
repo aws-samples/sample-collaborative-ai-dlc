@@ -1,5 +1,10 @@
 import { authorizeAgentCredentialRequest } from './agent-authentication-entry.js';
 import {
+  authorizeInvocationAccountingRequest,
+  isInvocationAccountingAction,
+  INVOCATION_ACCOUNTING_ERROR_CODES,
+} from './invocation-accounting.js';
+import {
   isAgentCredentialAction,
   loggableAgentCredentialErrorCode,
 } from './agent-provider-registry.js';
@@ -152,6 +157,9 @@ export const handler = async (event, context) => {
   // Only omission keeps the legacy request shape; malformed explicit actions deny.
   const action = Object.hasOwn(event ?? {}, 'action') ? event.action : 'source-control';
   try {
+    if (isInvocationAccountingAction(action)) {
+      return await authorizeInvocationAccountingRequest(event, { ddbClient: ddb, ssmClient: ssm });
+    }
     if (isAgentCredentialAction(action)) {
       return {
         ok: true,
@@ -176,14 +184,20 @@ export const handler = async (event, context) => {
   } catch (error) {
     // Both code helpers return only allowlisted constants — never provider-
     // derived error text, which can carry credential material.
-    const code = AUTHORITY_ERROR_CODES.has(error?.code)
-      ? error.code
-      : isAgentCredentialAction(action)
-        ? loggableAgentCredentialErrorCode(error)
-        : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
+    const code =
+      AUTHORITY_ERROR_CODES.has(error?.code) || INVOCATION_ACCOUNTING_ERROR_CODES.has(error?.code)
+        ? error.code
+        : isAgentCredentialAction(action)
+          ? loggableAgentCredentialErrorCode(error)
+          : loggableErrorCode(error, 'CREDENTIAL_BROKER_FAILED');
     logger.error('request denied', {
       code,
-      action: isAgentCredentialAction(action) || action === 'source-control' ? action : 'unknown',
+      action:
+        isAgentCredentialAction(action) ||
+        isInvocationAccountingAction(action) ||
+        action === 'source-control'
+          ? action
+          : 'unknown',
     });
     return { ok: false, code };
   }

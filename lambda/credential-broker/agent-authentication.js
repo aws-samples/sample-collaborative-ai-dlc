@@ -11,6 +11,8 @@ import {
   authError,
 } from '../shared/agent-auth-contracts.js';
 import { createAgentProviderContext } from './agent-provider-registry.js';
+import { beginBrokerInvocation } from './invocation-accounting.js';
+import { brokerEnforcementEnabled, verifyBrokerGatewayGrant } from './gateway-authority.js';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 export const authorizeAgentCredentialRequest = async (
@@ -21,6 +23,7 @@ export const authorizeAgentCredentialRequest = async (
     secret = null,
     env = process.env,
     now = undefined,
+    verifyGrant = verifyBrokerGatewayGrant,
     ...providerDependencies
   } = {},
 ) => {
@@ -74,30 +77,55 @@ export const authorizeAgentCredentialRequest = async (
       );
     }
   }
-  const credentials = await Promise.all(
-    claims.bindings.map(async (binding) => {
-      try {
-        // Verification is a separately signed, short-lived control-plane purpose.
-        // It cannot select an execution connection or mint renewal authority.
-        if (verification) return { binding, ...(await context.verify(binding)) };
-        return await redeemAgentBinding({
-          binding,
-          projectId: claims.projectId,
-          repository,
-          ssm: ssmClient,
-          base: env.AGENT_SETTINGS_SSM_PREFIX || '',
-          adapters,
-        });
-      } catch (error) {
-        if (!context.isolateDiscoveryFailure(binding)) throw error;
-        return { binding, error: context.loggableErrorCode(error) };
-      }
-    }),
-  );
+  const invocation =
+    brokerEnforcementEnabled(env) && !context.renewing
+      ? await beginBrokerInvocation({
+          event,
+          claims,
+          signTicket: context.signAccountingTicket,
+          ddb: ddbClient,
+          tableName: env.V2_PROCESS_TABLE,
+          now,
+          verifyGrant,
+        })
+      : null;
+  let credentials;
+  try {
+    credentials = await Promise.all(
+      claims.bindings.map(async (binding) => {
+        try {
+          // Verification is a separately signed, short-lived control-plane purpose.
+          // It cannot select an execution connection or mint renewal authority.
+          if (verification) return { binding, ...(await context.verify(binding)) };
+          return await redeemAgentBinding({
+            binding,
+            projectId: claims.projectId,
+            repository,
+            ssm: ssmClient,
+            base: env.AGENT_SETTINGS_SSM_PREFIX || '',
+            adapters,
+          });
+        } catch (error) {
+          if (!context.isolateDiscoveryFailure(binding)) throw error;
+          return { binding, error: context.loggableErrorCode(error) };
+        }
+      }),
+    );
+  } catch (error) {
+    try {
+      await invocation?.finishUnissued();
+    } catch {
+      /* Failed completion remains ACTIVE evidence; preserve the redemption error. */
+    }
+    throw error;
+  }
+  // A lost handoff acknowledgement is uncertain, not a known redemption failure.
+  await invocation?.markIssued();
   return {
     purpose: claims.purpose,
     projectId: claims.projectId,
     executionId: claims.executionId,
     credentials,
+    ...(invocation ? { accounting: invocation.accounting } : {}),
   };
 };
