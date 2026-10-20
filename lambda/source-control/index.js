@@ -6,6 +6,7 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { STSClient } from '@aws-sdk/client-sts';
+import { KMSClient, GetPublicKeyCommand } from '@aws-sdk/client-kms';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
 import { getProvider } from '../shared/git-providers.js';
@@ -25,12 +26,26 @@ import {
   resolveBindingCredential,
   verifyBindingCredential,
 } from '../shared/source-control-credentials.js';
+import { kmsPublicKeyResolver } from '../shared/gateway-grant.js';
+import {
+  RUNTIME_ALIAS_ERROR_CODES,
+  gatewayGrantVerifier,
+  handleRuntimeOperation,
+  isRuntimeAliasInvocation,
+} from './runtime-alias.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 const secrets = new SecretsManagerClient({});
 const sts = new STSClient({});
 const logger = new Logger({ persistentKeys: { component: 'source-control' } });
+const verifyRuntimeGrant = gatewayGrantVerifier(
+  kmsPublicKeyResolver({
+    kms: new KMSClient({}),
+    GetPublicKeyCommand,
+    allowedKeyIds: (process.env.GATEWAY_GRANT_KEY_IDS ?? '').split(',').map((id) => id.trim()),
+  }),
+);
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;
 
@@ -425,6 +440,22 @@ const reviewNumberFromPath = (path) =>
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
+  if (isRuntimeAliasInvocation(context)) {
+    try {
+      const result = await handleRuntimeOperation(event, {
+        ddbClient: ddb,
+        verifyGrant: verifyRuntimeGrant,
+        execute: executeSourceControlOperation,
+      });
+      return { ok: true, result };
+    } catch (error) {
+      const code = RUNTIME_ALIAS_ERROR_CODES.has(error?.code)
+        ? error.code
+        : loggableErrorCode(error, 'SOURCE_CONTROL_OPERATION_FAILED');
+      logger.error('runtime operation denied', { code });
+      return { ok: false, code };
+    }
+  }
   // Internal Lambda-only API. IAM is the authentication boundary.
   if (event?.action === 'validate-project' || event?.action === 'operate') {
     let conn;

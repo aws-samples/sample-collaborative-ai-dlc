@@ -405,7 +405,7 @@ variable "enable_mcp_gateway" {
 }
 
 variable "enable_engine_data" {
-  description = "Whether the engine's data access (process state, graph, catalog, blobs, realtime) goes through the engine-data Lambda; the intents Lambda then signs execution grants (static, for plan-time counts)"
+  description = "Whether the engine's data access (process state, graph, catalog, blobs, realtime) goes through the engine-data Lambda, with review operations through the source-control runtime alias; the intents Lambda then signs execution grants (static, for plan-time counts)"
   type        = bool
   default     = false
 }

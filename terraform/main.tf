@@ -664,6 +664,7 @@ module "api" {
   v2_executions_table_name                 = module.agentcore.v2_executions_table_name
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   runtime_compatibility_version            = module.agentcore.runtime_compatibility_version
+  enable_engine_data                       = var.enable_engine_data
   private_subnet_ids                       = module.networking.private_subnet_ids
   lambda_security_group_ids                = [module.lambda.lambda_security_group_id]
   neptune_endpoint                         = module.neptune.cluster_endpoint
