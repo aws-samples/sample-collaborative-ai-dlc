@@ -23,6 +23,9 @@ import {
 } from '../shared/agent-auth-contracts.js';
 import { AGENT_AUTH_MODES } from './command-registry.js';
 import { invokeCredentialBroker } from './clients.js';
+import { randomUUID } from 'node:crypto';
+import { currentGatewayGrant } from './mcp/gateway-context.js';
+import { brokerInvocationAccounting } from './invocation-accounting.js';
 
 const bindingKey = bindingIdentity;
 const grantMismatch = () =>
@@ -126,8 +129,12 @@ export const resolveInvocationAgentAuth = async ({
   leaseAdapters,
 } = {}) => {
   const invocationEnv = cleanBaseEnv(env);
+  const remoteAccounting = Boolean(env.ENGINE_DATA_FUNCTION);
+  const grantOnly =
+    remoteAccounting &&
+    [AGENT_AUTH_MODES.CAPABILITIES, AGENT_AUTH_MODES.VERIFY_CONNECTION].includes(authMode);
   let meta = null;
-  const executionId = payload.executionId || payload.intentId || null;
+  const executionId = grantOnly ? null : payload.executionId || payload.intentId || null;
   if (executionId && store?.getExecution) {
     meta = await store.getExecution(executionId, { consistentRead: true });
   }
@@ -164,68 +171,90 @@ export const resolveInvocationAgentAuth = async ({
   const brokerResult = await broker({
     action: 'resolve-agent-credentials',
     grant: payload.agentCredentialGrant,
+    ...(remoteAccounting
+      ? {
+          command: payload.command,
+          invocationNonce: randomUUID(),
+          ...(!grantOnly ? { gatewayGrant: currentGatewayGrant() } : {}),
+        }
+      : {}),
   });
-  if (
-    brokerResult.purpose !== authMode ||
-    (brokerResult.projectId ?? null) !== projectId ||
-    (brokerResult.executionId ?? null) !== executionId ||
-    !Array.isArray(brokerResult.credentials)
-  ) {
-    throw grantMismatch();
-  }
-  const authorized = new Map();
+  const accounting = remoteAccounting
+    ? brokerInvocationAccounting(brokerResult.accounting, broker)
+    : null;
   try {
-    for (const credential of brokerResult.credentials) {
-      const binding = normalizeCredentialBinding(credential?.binding);
-      authorized.set(bindingKey(binding), {
-        binding,
-        lease: credentialLeaseFromResponse(credential),
-      });
+    if (
+      brokerResult.purpose !== authMode ||
+      (brokerResult.projectId ?? null) !== projectId ||
+      (brokerResult.executionId ?? null) !== executionId ||
+      !Array.isArray(brokerResult.credentials)
+    ) {
+      throw grantMismatch();
     }
-  } catch {
-    throw grantMismatch();
-  }
-  if (brokerResult.credentials.length !== authorized.size) {
-    throw grantMismatch();
-  }
-  const expectedKeys = bindings.map(bindingKey).toSorted();
-  const authorizedKeys = [...authorized.keys()].toSorted();
-  if (
-    expectedKeys.length !== authorizedKeys.length ||
-    expectedKeys.some((key, index) => key !== authorizedKeys[index])
-  ) {
-    throw grantMismatch();
-  }
+    const authorized = new Map();
+    try {
+      for (const credential of brokerResult.credentials) {
+        const binding = normalizeCredentialBinding(credential?.binding);
+        authorized.set(bindingKey(binding), {
+          binding,
+          lease: credentialLeaseFromResponse(credential),
+        });
+      }
+    } catch {
+      throw grantMismatch();
+    }
+    if (brokerResult.credentials.length !== authorized.size) {
+      throw grantMismatch();
+    }
+    const expectedKeys = bindings.map(bindingKey).toSorted();
+    const authorizedKeys = [...authorized.keys()].toSorted();
+    if (
+      expectedKeys.length !== authorizedKeys.length ||
+      expectedKeys.some((key, index) => key !== authorizedKeys[index])
+    ) {
+      throw grantMismatch();
+    }
 
-  for (const binding of bindings) {
-    const credentialBinding = {
-      provider: binding.provider,
-      source: binding.source,
+    for (const binding of bindings) {
+      const credentialBinding = {
+        provider: binding.provider,
+        source: binding.source,
+      };
+      credentialBindings.push(credentialBinding);
+      const lease = authorized.get(bindingKey(binding))?.lease;
+      if (!lease?.material) {
+        missingProviders.push(binding.provider);
+        missingCredentialBindings.push(credentialBinding);
+        continue;
+      }
+      resolvedProviders.push(binding.provider);
+    }
+
+    const leaseState = await prepareCredentialLeases({
+      credentials: [...authorized.values()],
+      baseEnv: invocationEnv,
+      broker,
+      context: { purpose: authMode, projectId, executionId },
+      ...(leaseAdapters ? { adapters: leaseAdapters } : {}),
+    });
+    return {
+      ...leaseState,
+      ...(accounting ? { accounting } : {}),
+      projectId,
+      bindings,
+      credentialBindings,
+      resolvedProviders,
+      missingProviders,
+      missingCredentialBindings,
     };
-    credentialBindings.push(credentialBinding);
-    const lease = authorized.get(bindingKey(binding))?.lease;
-    if (!lease?.material) {
-      missingProviders.push(binding.provider);
-      missingCredentialBindings.push(credentialBinding);
-      continue;
+  } catch (error) {
+    if (accounting) {
+      try {
+        await accounting.finish();
+      } catch {
+        /* Failed completion remains ACTIVE evidence; preserve the setup error. */
+      }
     }
-    resolvedProviders.push(binding.provider);
+    throw error;
   }
-
-  const leaseState = await prepareCredentialLeases({
-    credentials: [...authorized.values()],
-    baseEnv: invocationEnv,
-    broker,
-    context: { purpose: authMode, projectId, executionId },
-    ...(leaseAdapters ? { adapters: leaseAdapters } : {}),
-  });
-  return {
-    ...leaseState,
-    projectId,
-    bindings,
-    credentialBindings,
-    resolvedProviders,
-    missingProviders,
-    missingCredentialBindings,
-  };
 };
