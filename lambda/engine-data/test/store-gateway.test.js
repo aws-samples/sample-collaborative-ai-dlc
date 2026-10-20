@@ -16,6 +16,7 @@ import { createProcessStore, isTransactionConflict } from '../../shared/v2-proce
 import { ENGINE_DATA_STORE_METHODS } from '../../shared/engine-data-ops.js';
 import { createRemoteProcessStore } from '../../agentcore/engine-data-client.js';
 import { scopeStageAttempt } from '../../shared/stage-attempt.js';
+import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 import { createStoreGateway } from '../store-gateway.js';
 
 const NOW = Date.parse('2026-10-18T12:00:00.000Z');
@@ -426,15 +427,134 @@ describe('engine-data authorization', () => {
     expect(typeof local).toBe('object');
   });
 
-  it('lets a discussion grant read only its own intent META', async () => {
-    const store = await remoteStore({
-      scope: { mode: 'discussion', projectId: 'p-1', intentId: 'e-1', executionId: 'e-1' },
-    });
-    seed(items({ META: { ...META, intentId: 'e-1' } }));
-    await expect(store.getExecution('e-1', { consistentRead: true })).resolves.toMatchObject({
+  describe('discussion grants', () => {
+    const DISCUSSION = {
+      mode: 'discussion',
+      projectId: 'p-1',
+      intentId: 'e-1',
       executionId: 'e-1',
+    };
+    const discussionStore = () => remoteStore({ scope: DISCUSSION });
+    beforeEach(() => seed(items({ META: { ...META, intentId: 'e-1' } })));
+
+    it('runs the assist calls on its own intent execution', async () => {
+      const store = await discussionStore();
+      await expect(store.getExecution('e-1', { consistentRead: true })).resolves.toMatchObject({
+        executionId: 'e-1',
+      });
+      await expect(
+        store.getExecutionRecords('e-1', { includeOutputs: false }),
+      ).resolves.toMatchObject({ events: [] });
+      expect(ddb.commandCalls(QueryCommand).length).toBeGreaterThan(0);
+      await store.recordMetric({
+        executionId: 'e-1',
+        stageInstanceId: null,
+        metrics: { tokensInput: 3, discussionAssistCalls: 1 },
+        resolvedModel: 'm',
+      });
+      await store.appendEvent({
+        executionId: 'e-1',
+        type: 'v2.discussion_assist.completed',
+        actor: 'quorum',
+        summary: 'Quorum summarize completed for discussion d-1',
+      });
+      expect(ddb.commandCalls(PutCommand)).toHaveLength(2);
     });
-    await denied(store.appendEvent({ executionId: 'e-1', type: 'x' }), 'op_not_allowed');
+
+    it('keeps every other method denied', async () => {
+      const store = await discussionStore();
+      await denied(
+        store.updateExecution({ executionId: 'e-1', status: 'RUNNING' }),
+        'op_not_allowed',
+      );
+      await denied(
+        store.appendOutput({ executionId: 'e-1', kind: 'text', content: 'x' }),
+        'op_not_allowed',
+      );
+      await denied(store.listEvents('e-1'), 'op_not_allowed');
+      expect(ddb.commandCalls(PutCommand)).toHaveLength(0);
+      expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+    });
+
+    it('denies another execution, a stage or a lane', async () => {
+      const store = await discussionStore();
+      await denied(store.getExecutionRecords('e-2'), 'scope_mismatch');
+      await denied(store.appendEvent({ executionId: 'e-2', type: 'x' }), 'scope_mismatch');
+      await denied(
+        store.appendEvent({ executionId: 'e-1', type: 'x', stageInstanceId: 'si-1' }),
+        'scope_mismatch',
+      );
+      await denied(
+        store.recordMetric({ executionId: 'e-1', unitSlug: 'api', metrics: {} }),
+        'scope_mismatch',
+      );
+      expect(ddb.commandCalls(PutCommand)).toHaveLength(0);
+    });
+
+    it('denies an execution of another project or intent', async () => {
+      for (const meta of [
+        { ...META, intentId: 'e-1', projectId: 'p-2' },
+        { ...META, intentId: 'i-other' },
+      ]) {
+        seed(items({ META: meta }));
+        const store = await discussionStore();
+        await denied(store.getExecutionRecords('e-1'), 'scope_mismatch');
+        await denied(store.recordMetric({ executionId: 'e-1', metrics: {} }), 'scope_mismatch');
+        await denied(store.appendEvent({ executionId: 'e-1', type: 'x' }), 'scope_mismatch');
+        expect(ddb.commandCalls(PutCommand)).toHaveLength(0);
+      }
+    });
+  });
+
+  describe('workflow checkpoint custom rule refs', () => {
+    const RULE = { filename: 'standards.md', s3Key: 'custom-rules/p-1/standards.md' };
+    const checkpoint = (customRuleRefs) => ({
+      ...CALLS.putWorkflowCheckpoint[0],
+      customRuleRefs,
+    });
+    beforeEach(() => seed(items({ META: { ...META, customRules: [RULE] } })));
+
+    it('accepts a pinned ref to a rule META lists', async () => {
+      const store = await remoteStore();
+      await store.putWorkflowCheckpoint(checkpoint([{ ...RULE, versionId: 'v-1' }]));
+      expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(1);
+    });
+
+    it.each([
+      ['another project key', { filename: 'standards.md', s3Key: 'custom-rules/p-2/standards.md' }],
+      ['a rule META does not list', { filename: 'other.md', s3Key: 'custom-rules/p-1/other.md' }],
+      ['a nested key', { filename: 'standards.md', s3Key: 'custom-rules/p-1/x/standards.md' }],
+      ['a mismatched filename', { filename: 'other.md', s3Key: RULE.s3Key }],
+    ])('denies %s', async (_label, ref) => {
+      const store = await remoteStore();
+      await denied(
+        store.putWorkflowCheckpoint(checkpoint([{ ...ref, versionId: 'v-1' }])),
+        'scope_mismatch',
+      );
+      expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    });
+
+    it('denies the foreign key even when META lists it for this execution', async () => {
+      const foreign = { filename: 'standards.md', s3Key: 'custom-rules/p-2/standards.md' };
+      seed(items({ META: { ...META, customRules: [foreign] } }));
+      const store = await remoteStore();
+      await denied(
+        store.putWorkflowCheckpoint(checkpoint([{ ...foreign, versionId: 'v-1' }])),
+        'scope_mismatch',
+      );
+      expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    });
+
+    it.each([
+      ['no versionId', RULE],
+      ['an empty versionId', { ...RULE, versionId: '' }],
+      ['a non-string versionId', { ...RULE, versionId: 7 }],
+      ['a non-object ref', 'custom-rules/p-1/standards.md'],
+    ])('rejects %s', async (_label, ref) => {
+      const store = await remoteStore();
+      await denied(store.putWorkflowCheckpoint(checkpoint([ref])), 'invalid_arguments');
+      expect(ddb.commandCalls(TransactWriteCommand)).toHaveLength(0);
+    });
   });
 
   it('never logs arguments or the grant', async () => {
@@ -472,5 +592,280 @@ describe('remote process store shape', () => {
     await expect(scoped.getStage('e-1', 'si-1')).resolves.toMatchObject({
       stageInstanceId: 'si-1',
     });
+  });
+});
+
+describe('stage grants act only as their own stage', () => {
+  // run-stage resolves instance ids in the workflow-pin namespace.
+  const PINNED = { ...META, workflowId: 'aidlc-v2', workflowVersion: 3 };
+  const OWN = planStageInstanceId('aidlc-v2@3', 'requirements-analysis');
+  const OTHER = planStageInstanceId('aidlc-v2@3', 'application-design');
+  const LANE = planStageInstanceId('aidlc-v2@3', 'code-generation', 'api', 0);
+  const STAGE_GRANT = {
+    mode: 'stage',
+    projectId: 'p-1',
+    intentId: 'i-1',
+    executionId: 'e-1',
+    stageId: 'requirements-analysis',
+    stageCallbackId: 'cb-1',
+    orchestratorRunId: 'run-1',
+  };
+  const LANE_GRANT = {
+    ...STAGE_GRANT,
+    stageId: 'code-generation',
+    unitSlug: 'api',
+    sectionIndex: 0,
+  };
+  const leg = (stageInstanceId) => ({
+    orchestratorRunId: 'run-1',
+    stageCallbackId: 'cb-1',
+    stageInstanceId,
+  });
+  const stageRow = (stageInstanceId, extra = {}) => ({
+    ...STAGE,
+    sk: `STAGE#${stageInstanceId}`,
+    stageInstanceId,
+    ...extra,
+  });
+
+  beforeEach(() =>
+    seed({
+      META: PINNED,
+      [`STAGE#${OWN}`]: stageRow(OWN),
+      [`STAGE#${OTHER}`]: stageRow(OTHER, { stageId: 'application-design' }),
+      [`STAGE#${LANE}`]: stageRow(LANE, { stageId: 'code-generation', unitSlug: 'api' }),
+      'HUMAN#h-own': { executionId: 'e-1', humanTaskId: 'h-own', stageInstanceId: OWN },
+      'HUMAN#h-other': { executionId: 'e-1', humanTaskId: 'h-other', stageInstanceId: OTHER },
+    }),
+  );
+
+  const call = async (scope, method, args) => {
+    const audit = [];
+    const response = await gatewayWith(audit)({
+      op: `store.${method}`,
+      args,
+      grant: await grantFor(scope),
+    });
+    return { response, audit };
+  };
+  const writes = () =>
+    ddb.calls().filter((c) => !['GetCommand', 'QueryCommand'].includes(c.args[0].constructor.name));
+
+  it('allows the writes run-stage makes for its own stage and leg', async () => {
+    for (const [method, args] of [
+      [
+        'updateStageState',
+        [{ executionId: 'e-1', stageInstanceId: OWN, state: 'SUCCEEDED', ownership: leg(OWN) }],
+      ],
+      ['appendEvent', [{ executionId: 'e-1', type: 'v2.stage.running', stageInstanceId: OWN }]],
+      ['appendEvent', [{ executionId: 'e-1', type: 'v2.stage.failed', stageInstanceId: null }]],
+      [
+        'recordSensorRun',
+        [{ executionId: 'e-1', stageInstanceId: OWN, sensorId: 's', result: 'PASS' }],
+      ],
+      [
+        'putReceipt',
+        [{ executionId: 'e-1', kind: 'summary-confirmation', stageInstanceId: OWN, attempt: 0 }],
+      ],
+      ['updateExecution', [{ executionId: 'e-1', status: 'RUNNING', ownership: leg(OWN) }]],
+      [
+        'supersedeHumanTask',
+        [{ executionId: 'e-1', humanTaskId: 'h-own', supersededBy: 'x', ownership: leg(OWN) }],
+      ],
+      [
+        'claimStageAttempt',
+        [{ executionId: 'e-1', ownership: leg(OWN), stageId: 'requirements-analysis' }],
+      ],
+      [
+        'markSteeringConsumed',
+        [{ executionId: 'e-1', steerId: 'st', createdAt: 't', stageInstanceId: OWN }],
+      ],
+    ]) {
+      const { response } = await call(STAGE_GRANT, method, args);
+      expect(response.error?.name, method).not.toBe('EngineDataAccessDenied');
+    }
+  });
+
+  it('allows execution-wide reads, including other stages', async () => {
+    for (const [method, args] of [
+      ['getExecution', ['e-1', { consistentRead: true }]],
+      ['getStage', ['e-1', OTHER, { consistentRead: true }]],
+      ['listReceipts', ['e-1', { stageInstanceId: OTHER }]],
+      ['listSensorRuns', ['e-1', { stageInstanceId: OTHER }]],
+      ['listEvents', ['e-1']],
+      ['getHumanTask', ['e-1', 'h-other']],
+      ['getUnitPlan', ['e-1']],
+    ]) {
+      const { response } = await call(STAGE_GRANT, method, args);
+      expect(response, method).toMatchObject({ ok: true });
+    }
+  });
+
+  it.each([
+    [
+      'updateStageState',
+      { executionId: 'e-1', stageInstanceId: OTHER, state: 'FAILED', ownership: leg(OTHER) },
+    ],
+    [
+      'putStage',
+      {
+        executionId: 'e-1',
+        stageInstanceId: OTHER,
+        stageId: 'application-design',
+        ownership: leg(OTHER),
+      },
+    ],
+    ['resumeStageRow', { executionId: 'e-1', stageInstanceId: OTHER, ownership: leg(OTHER) }],
+    ['appendEvent', { executionId: 'e-1', type: 'x', stageInstanceId: OTHER }],
+    ['appendOutput', { executionId: 'e-1', stageInstanceId: OTHER, content: 'x' }],
+    ['recordMetric', { executionId: 'e-1', stageInstanceId: OTHER, metrics: {} }],
+    [
+      'recordSensorRun',
+      { executionId: 'e-1', stageInstanceId: OTHER, sensorId: 's', result: 'FAIL' },
+    ],
+    [
+      'putReceipt',
+      { executionId: 'e-1', kind: 'summary-confirmation', stageInstanceId: OTHER, attempt: 0 },
+    ],
+    [
+      'createHumanTask',
+      { executionId: 'e-1', stageInstanceId: OTHER, kind: 'question', ownership: leg(OWN) },
+    ],
+    ['markLoopBackArchived', { executionId: 'e-1', stageInstanceId: OTHER, loopBackId: 'lb' }],
+    [
+      'markSteeringConsumed',
+      { executionId: 'e-1', steerId: 'st', createdAt: 't', stageInstanceId: OTHER },
+    ],
+    [
+      'claimStageAttempt',
+      { executionId: 'e-1', ownership: leg(OWN), stageId: 'application-design' },
+    ],
+    [
+      'updateStageState',
+      { executionId: 'e-1', stageInstanceId: OWN, state: 'RUNNING', ownership: leg(OTHER) },
+    ],
+    [
+      'supersedeHumanTask',
+      { executionId: 'e-1', humanTaskId: 'h-other', supersededBy: 'x', ownership: leg(OWN) },
+    ],
+  ])('denies a stage-A grant %s naming stage B', async (method, input) => {
+    const { response } = await call(STAGE_GRANT, method, [input]);
+    expect(response.error).toMatchObject({ name: 'EngineDataAccessDenied' });
+    expect(writes()).toHaveLength(0);
+  });
+
+  it.each([
+    ['another unit', { unitSlug: 'web' }],
+    ['another section', { sectionIndex: 1 }],
+    ['no lane', { unitSlug: null }],
+  ])('denies a lane grant writing for %s', async (_label, lane) => {
+    const { response } = await call(LANE_GRANT, 'appendEvent', [
+      {
+        executionId: 'e-1',
+        type: 'x',
+        stageInstanceId: LANE,
+        unitSlug: 'api',
+        sectionIndex: 0,
+        ...lane,
+      },
+    ]);
+    expect(response.error).toMatchObject({ code: 'scope_mismatch' });
+    const own = await call(LANE_GRANT, 'appendEvent', [
+      { executionId: 'e-1', type: 'x', stageInstanceId: LANE, unitSlug: 'api', sectionIndex: 0 },
+    ]);
+    expect(own.response).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['null', null],
+    ['another run', { ...leg(OWN), orchestratorRunId: 'run-0' }],
+    ['another callback', { ...leg(OWN), stageCallbackId: 'cb-0' }],
+  ])('denies an attempt-fenced write whose ownership is %s', async (_label, ownership) => {
+    const { response } = await call(STAGE_GRANT, 'updateStageState', [
+      { executionId: 'e-1', stageInstanceId: OWN, state: 'SUCCEEDED', ownership },
+    ]);
+    expect(response.error).toMatchObject({ code: 'ownership_mismatch' });
+    expect(writes()).toHaveLength(0);
+  });
+
+  it('denies a leg the grant did not sign and ownership a legless grant cannot prove', async () => {
+    const legless = { ...STAGE_GRANT, stageCallbackId: null, orchestratorRunId: null };
+    expect(
+      (
+        await call(legless, 'updateStageState', [
+          { executionId: 'e-1', stageInstanceId: OWN, state: 'SUCCEEDED', ownership: leg(OWN) },
+        ])
+      ).response.error,
+    ).toMatchObject({ code: 'ownership_mismatch' });
+    expect(
+      (
+        await call(legless, 'updateStageState', [
+          { executionId: 'e-1', stageInstanceId: OWN, state: 'SUCCEEDED' },
+        ])
+      ).response,
+    ).toMatchObject({ ok: true });
+    expect(
+      (
+        await call(STAGE_GRANT, 'putStage', [
+          {
+            executionId: 'e-1',
+            stageInstanceId: OWN,
+            stageCallbackId: 'cb-0',
+            ownership: leg(OWN),
+          },
+        ])
+      ).response.error,
+    ).toMatchObject({ code: 'scope_mismatch' });
+  });
+
+  it.each([
+    'putUnitPlan',
+    'syncUnitRows',
+    'updateCompose',
+    'putWorkflowCheckpoint',
+    'createExecution',
+    'updateQuorumEdit',
+    'setLoopBackRecommendation',
+    'recordGraphRead',
+  ])('leaves %s to execution grants', async (method) => {
+    const { response } = await call(STAGE_GRANT, method, CALLS[method]);
+    expect(response.error).toMatchObject({ name: 'EngineDataAccessDenied' });
+  });
+
+  it('raises a checkpoint repair counter on its own stage only', async () => {
+    const raise = (stageInstanceId, field = 'summaryRepairAttempts') =>
+      call(STAGE_GRANT, 'raiseStageCounter', [
+        { executionId: 'e-1', stageInstanceId, field, to: 1 },
+      ]);
+    const counterWrites = () =>
+      ddb
+        .commandCalls(UpdateCommand)
+        .filter((c) => c.args[0].input.ExpressionAttributeNames?.['#f'] !== undefined);
+
+    expect((await raise(OWN)).response).toMatchObject({ ok: true, result: true });
+    expect(counterWrites().map((c) => c.args[0].input.Key.sk)).toEqual([`STAGE#${OWN}`]);
+
+    expect((await raise(OTHER)).response.error).toMatchObject({ code: 'scope_mismatch' });
+    // The store's counter-field allowlist still applies behind the gateway.
+    expect((await raise(OWN, 'attempt')).response.error).toMatchObject({
+      message: expect.stringMatching(/unknown counter field/),
+    });
+    expect(counterWrites()).toHaveLength(1);
+  });
+
+  it('denies stage writes for an execution with no workflow pin', async () => {
+    seed(items());
+    const { response } = await call(STAGE_GRANT, 'appendEvent', [
+      { executionId: 'e-1', type: 'x' },
+    ]);
+    expect(response.error).toMatchObject({ code: 'scope_mismatch' });
+  });
+
+  it('leaves execution grants unbound', async () => {
+    const { response } = await call(EXECUTION, 'updateStageState', [
+      { executionId: 'e-1', stageInstanceId: OTHER, state: 'FAILED' },
+    ]);
+    expect(response).toMatchObject({ ok: true });
   });
 });

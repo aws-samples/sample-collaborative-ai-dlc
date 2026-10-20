@@ -26,6 +26,7 @@ import { createDiscussionAssistStart } from '../commands/discussion-assist-start
 import { createQuorumEditApplyStart } from '../commands/quorum-edit-apply-start.js';
 import { ingestStageCodeTraceability } from '../code-traceability.js';
 import { compileContextPack } from '../context-compiler.js';
+import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 
 const NOW = Date.parse('2026-10-19T12:00:00.000Z');
 const CLOCK = () => '2026-10-19T12:00:00.000Z';
@@ -48,26 +49,55 @@ const verifyGrant = (token) =>
   });
 
 const EXECUTION = { mode: 'execution', projectId: P, intentId: I, executionId: I };
+// Instance ids as run-stage derives them, so stage grants resolve to them.
+const PIN = { workflowId: 'aidlc-v2', workflowVersion: 1 };
+const SI_STORIES = planStageInstanceId('aidlc-v2@1', 'user-stories');
+const SI_CODE = planStageInstanceId('aidlc-v2@1', 'code-generation', 'auth', 0);
 const STAGES = {
-  'si-stories': { executionId: I, stageInstanceId: 'si-stories', stageId: 'user-stories' },
+  [SI_STORIES]: { executionId: I, stageInstanceId: SI_STORIES, stageId: 'user-stories' },
   'si-units': { executionId: I, stageInstanceId: 'si-units', stageId: 'units-generation' },
-  'si-code': {
+  [SI_CODE]: {
     executionId: I,
-    stageInstanceId: 'si-code',
+    stageInstanceId: SI_CODE,
     stageId: 'code-generation',
     sectionIndex: 0,
     unitSlug: 'auth',
   },
+  'si-stories-auth': {
+    executionId: I,
+    stageInstanceId: 'si-stories-auth',
+    stageId: 'user-stories',
+    sectionIndex: 0,
+    unitSlug: 'auth',
+  },
+  'si-stories-catalog': {
+    executionId: I,
+    stageInstanceId: 'si-stories-catalog',
+    stageId: 'user-stories',
+    sectionIndex: 0,
+    unitSlug: 'catalog',
+  },
 };
 // engine-data's own view of the process table.
 const engineDataStore = {
-  getExecution: async (id) => (id === I ? { executionId: I, projectId: P, intentId: I } : null),
+  getExecution: async (id) =>
+    id === I ? { executionId: I, projectId: P, intentId: I, ...PIN } : null,
   getStage: async (e, s) => (e === I ? (STAGES[s] ?? null) : null),
   getUnit: async (e, section, slug) =>
     e === I && section === 0 && ['auth', 'catalog', 'checkout'].includes(slug)
       ? { executionId: e }
       : null,
   getQuorumEdit: async (e, editId) => (e === I && editId === 'qe-1' ? { executionId: e } : null),
+  getHumanTask: async (e, id) =>
+    e === I && id === 'gate-1'
+      ? {
+          executionId: e,
+          stageInstanceId: 'si-units',
+          loopBackTarget: 'user-stories',
+          status: 'rejected',
+          answer: { decision: 'loop-back' },
+        }
+      : null,
 };
 
 const DAG_BODY = [
@@ -97,6 +127,7 @@ const STORIES_BODY = [
 let conn;
 let g;
 const ops = [];
+const exchanges = [];
 let openGraph;
 let openEngineGraph;
 
@@ -137,7 +168,9 @@ beforeAll(async () => {
   });
   const invoke = async (event) => {
     ops.push(event.op);
-    return asJson(await handler(asJson(event)));
+    const response = asJson(await handler(asJson(event)));
+    exchanges.push({ op: event.op, input: event.args?.[1] ?? null, response });
+    return response;
   };
   openEngineGraph = createRemoteGraphAccess({ invoke, grant: currentGatewayGrant });
   openGraph = vi.fn(directGraphTripwire());
@@ -221,14 +254,14 @@ describe('engine commands in remote mode', () => {
   it('derive-artifacts mirrors only this intent’s stage artifacts', async () => {
     await createGraphWriter({
       g,
-      scope: { projectId: P, intentId: I, executionId: I, stageInstanceId: 'si-stories' },
+      scope: { projectId: P, intentId: I, executionId: I, stageInstanceId: SI_STORIES },
       clock: CLOCK,
     }).createArtifact({ artifactType: 'stories', id: 'stories-1', content: STORIES_BODY });
     const store = recordingStore();
     const { result, ops: called } = await opsDuring(() =>
       granted(EXECUTION, () =>
         deriveArtifacts(
-          { projectId: P, intentId: I, executionId: I, stageInstanceId: 'si-stories' },
+          { projectId: P, intentId: I, executionId: I, stageInstanceId: SI_STORIES },
           remoteDeps({ store }),
         ),
       ),
@@ -236,11 +269,81 @@ describe('engine commands in remote mode', () => {
     expect(result).toMatchObject({ ok: true, artifacts: ['stories-1'], items: 1, errors: [] });
     expect(called).toEqual([
       'graph.getIntentGraph',
+      'graph.getArtifactContent',
       'graph.mirrorArtifactDerivations',
       'graph.resolveDerivedItemEdges',
     ]);
     const foreignItems = await g.V().has('intent_id', OTHER).hasLabel('Story').count().next();
     expect(foreignItems.value).toBe(0);
+  });
+
+  it('derives same-id artifacts of two unit lanes, locally and through engine-data', async () => {
+    const laneBody = (title) => STORIES_BODY.replace('Sign in', title);
+    const writeLane = (stageInstanceId, unitSlug, title) =>
+      createGraphWriter({
+        g,
+        scope: {
+          projectId: P,
+          intentId: I,
+          executionId: I,
+          stageInstanceId,
+          sectionIndex: 0,
+          unitSlug,
+        },
+        clock: CLOCK,
+      }).createArtifact({ artifactType: 'stories', id: 'lane-stories', content: laneBody(title) });
+    await writeLane('si-stories-auth', 'auth', 'Auth story');
+    await writeLane('si-stories-catalog', 'catalog', 'Catalog story');
+    const heads = await g
+      .V()
+      .has('Artifact', 'id', 'lane-stories')
+      .has('intent_id', I)
+      .count()
+      .next();
+    expect(heads.value).toBe(2);
+
+    const derive = (stageInstanceId, deps) =>
+      deriveArtifacts({ projectId: P, intentId: I, executionId: I, stageInstanceId }, deps);
+    for (const stageInstanceId of ['si-stories-auth', 'si-stories-catalog']) {
+      const local = await derive(stageInstanceId, {
+        store: recordingStore(),
+        openGraph: async () => g,
+      });
+      expect(local, `local ${stageInstanceId}`).toMatchObject({
+        ok: true,
+        artifacts: ['lane-stories'],
+        errors: [],
+      });
+      const { result: viaEngineData, ops: called } = await opsDuring(() =>
+        granted(EXECUTION, () => derive(stageInstanceId, remoteDeps({ store: recordingStore() }))),
+      );
+      expect(viaEngineData, `remote ${stageInstanceId}`).toMatchObject({
+        ok: true,
+        artifacts: ['lane-stories'],
+        errors: [],
+      });
+      expect(called).toContain('graph.mirrorArtifactDerivations');
+    }
+  });
+
+  it('derive-artifacts never asks engine-data for the whole intent with bodies', async () => {
+    exchanges.length = 0;
+    await granted(EXECUTION, () =>
+      deriveArtifacts(
+        { projectId: P, intentId: I, executionId: I, stageInstanceId: 'si-stories-auth' },
+        remoteDeps({ store: recordingStore() }),
+      ),
+    );
+    const listings = exchanges.filter(({ op }) => op === 'graph.getIntentGraph');
+    expect(listings.length).toBeGreaterThan(0);
+    for (const { input, response } of listings) {
+      expect(input.includeContent).toBeFalsy();
+      expect(response.result.some((row) => Object.hasOwn(row, 'content'))).toBe(false);
+    }
+    const bodies = exchanges.filter(({ op }) => op === 'graph.getArtifactContent');
+    expect(bodies.map(({ response }) => response.result.content)).toEqual([
+      STORIES_BODY.replace('Sign in', 'Auth story'),
+    ]);
   });
 
   it('the context compiler and graph sensors read through the same writer shape', async () => {
@@ -250,7 +353,7 @@ describe('engine commands in remote mode', () => {
           projectId: P,
           intentId: I,
           executionId: I,
-          stageInstanceId: 'si-stories',
+          stageInstanceId: SI_STORIES,
         });
         return compileContextPack({
           graph,
@@ -329,7 +432,7 @@ describe('engine commands in remote mode', () => {
             projectId: P,
             intentId: I,
             executionId: I,
-            stageInstanceId: 'si-stories',
+            stageInstanceId: SI_STORIES,
             stageId: 'user-stories',
             learnings: 'Always name the auth provider in stories.',
             recordedByName: 'Ada',
@@ -366,7 +469,7 @@ describe('engine commands in remote mode', () => {
               projectId: P,
               intentId: I,
               executionId: I,
-              stageInstanceId: 'si-code',
+              stageInstanceId: SI_CODE,
               sectionIndex: 0,
               unitSlug: 'auth',
             },
@@ -386,7 +489,7 @@ describe('engine commands in remote mode', () => {
             repos: ['acme/api'],
             workspaceDir: root,
             stageId: 'code-generation',
-            stageInstanceId: 'si-code',
+            stageInstanceId: SI_CODE,
             unitSlug: 'auth',
           }),
       ),
@@ -573,15 +676,15 @@ describe('engine commands in remote mode', () => {
           projectId: P,
           intentId: I,
           executionId: I,
-          stageInstanceId: 'si-stories',
+          stageInstanceId: SI_STORIES,
         });
         const gap = await stage.recordContributionGap({
           agentRef: 'aidlc-quality-agent',
           reason: 'session exited without evidence',
         });
-        await stage.linkSteeringInfluences({ steerIds: [], stageInstanceId: 'si-stories' });
+        await stage.linkSteeringInfluences({ steerIds: [], stageInstanceId: SI_STORIES });
         const archived = await memory.archiveArtifactsForStages({
-          stageInstanceIds: ['si-stories'],
+          stageInstanceIds: [SI_STORIES],
           restartId: 'loopback-gate-1',
           reason: 'Loop-back to user-stories: tests fail',
           actor: 'Ada',

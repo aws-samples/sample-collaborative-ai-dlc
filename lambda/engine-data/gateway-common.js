@@ -1,7 +1,9 @@
-// The pieces both engine-data gateways (process store and graph) share: the
-// denial type, grant verification, argument hygiene and the error envelope.
+// The pieces every engine-data gateway (store, graph, catalog, blob, realtime)
+// shares: the denial type, grant verification, argument hygiene and the error
+// envelope.
 import { isTransactionConflict } from '../shared/v2-process-store.js';
 import { ENGINE_DATA_DENIED_ERROR } from '../shared/engine-data-ops.js';
+import { stageInstanceId } from '../shared/v2-execution-plan.js';
 
 const PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -41,6 +43,34 @@ export const verifyGrantOrDeny = async (verifyGrant, token) => {
     return deny(error?.code === 'GATEWAY_GRANT_EXPIRED' ? 'grant_expired' : 'grant_invalid');
   }
 };
+
+// The one stage instance a stage grant may act as. The grant signs the stage,
+// unit and section, not the instance id; run-stage resolves its plan without an
+// execution id, so instance ids live in the execution's workflow-pin namespace
+// (the same derivation the credential broker uses for MCP secrets). An
+// execution without a pin has no instance a stage grant can prove it owns.
+export const grantStageInstanceId = (grant, meta) => {
+  if (
+    !grant.stageId ||
+    typeof meta?.workflowId !== 'string' ||
+    !meta.workflowId ||
+    meta.workflowVersion === undefined ||
+    meta.workflowVersion === null
+  ) {
+    return deny('scope_mismatch');
+  }
+  return stageInstanceId(
+    `${meta.workflowId}@${meta.workflowVersion}`,
+    grant.stageId,
+    grant.unitSlug,
+    grant.sectionIndex,
+  );
+};
+
+// A scope field the request supplies must equal the grant's signed value (null
+// when the grant has none); an omitted field names nothing.
+export const sameAsGrant = (value, granted) =>
+  value === undefined || (value ?? null) === (granted ?? null);
 
 export const grantAudit = (grant) => ({
   projectId: grant.projectId,

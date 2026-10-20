@@ -44,4 +44,27 @@ export const parseChoice = (answer, allowed) => {
   return null;
 };
 
-export default { GATE_CHOICES, LOOP_BACK_OPTION, OVERRIDE_REASON_MAX, parseChoice };
+// A build-and-test gate answered `loop-back` sends the run back to the
+// code-generation stage `stageId`. The gate belongs to another stage, whose reset
+// left the target row with no session, so the target runs fresh with the answer
+// in its prompt.
+//
+// Keyed on the ENGINE's offer, never on what the human typed: `loopBackTarget` is
+// written only by `awaitEngineGate`/`createHumanTask`, and only when the gate
+// actually offered the jump, and it names the stage the walk rewound to. Requiring
+// it to name the target stage is what stops a `loop-back` string in any answer
+// field of any other gate — a `question` gate's `freeText`, for instance — from
+// skipping the stage runner's `resume_no_session` guard and re-entering a stage as
+// a fresh run.
+export const isLoopBackAnswer = (gate, stageId) =>
+  typeof gate?.loopBackTarget === 'string' &&
+  gate.loopBackTarget === stageId &&
+  parseChoice(gate?.answer, [LOOP_BACK_OPTION]) !== null;
+
+export default {
+  GATE_CHOICES,
+  LOOP_BACK_OPTION,
+  OVERRIDE_REASON_MAX,
+  isLoopBackAnswer,
+  parseChoice,
+};
