@@ -13,7 +13,7 @@ import {
 } from '../shared/mcp-secret-config.js';
 import {
   assertGatewayExecution,
-  brokerEnforcementEnabled,
+  engineDataEnabled,
   gatewayScopeDenied,
   verifyBrokerGatewayGrant,
 } from './gateway-authority.js';
@@ -171,7 +171,7 @@ export const authorizeMcpSecretRequest = async (
     throw mcpSecretError('MCP_SECRET_REQUEST_INVALID');
   if (Object.hasOwn(request, 'gatewayGrant') === Object.hasOwn(request, 'verificationGrant'))
     throw mcpSecretError('MCP_SECRET_AUTHORITY_REQUIRED');
-  if (!brokerEnforcementEnabled(env)) throw mcpSecretError('MCP_SECRETS_DISABLED');
+  if (!engineDataEnabled(env)) throw mcpSecretError('MCP_SECRETS_DISABLED');
   const authority = Object.hasOwn(request, 'gatewayGrant')
     ? await stageAuthority(request, { ddbClient, env, verifyGrant })
     : await verificationAuthority(request, { ssmClient, env, now });

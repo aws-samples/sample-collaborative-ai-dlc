@@ -14,7 +14,7 @@ import {
   verifyInvocationAccountingTicket,
 } from '../shared/invocation-accounting-ticket.js';
 import {
-  brokerEnforcementEnabled,
+  engineDataEnabled,
   gatewayScopeDenied,
   verifyBrokerGatewayGrant,
 } from './gateway-authority.js';
@@ -153,7 +153,7 @@ export const authorizeInvocationAccountingRequest = async (
   { ddbClient, ssmClient, secret = null, env = process.env, now = Date.now } = {},
 ) => {
   if (
-    !brokerEnforcementEnabled(env) ||
+    !engineDataEnabled(env) ||
     !env.V2_PROCESS_TABLE ||
     !event ||
     !isInvocationAccountingAction(event.action) ||

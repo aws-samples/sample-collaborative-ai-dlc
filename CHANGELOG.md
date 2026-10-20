@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- With `enable_engine_data` on, the credential broker binds Git credentials to the engine's execution grant, records agent invocations and resolves custom MCP secrets for stages and verify-mcp, and provider review operations go to a grant-only `runtime` alias of the source-control Lambda. The runtime role is unchanged in this release; a later release removes its direct data permissions and its access to the unqualified source-control function.
+- With `enable_engine_data` on, the credential broker binds Git credentials to the engine's execution grant, records agent invocations and resolves custom MCP secrets for stages and verify-mcp, and provider review operations go to a grant-only `runtime` alias of the source-control Lambda. The runtime role is unchanged in this release; a later release removes its direct data permissions and its access to the unqualified source-control function. Runtimes started before the flag was turned on keep their Git and agent credentials: until `enforce_runtime_grants` (off by default, requires `enable_engine_data`) is set, the broker still fully verifies every request that carries the new authority fields and serves requests in the old shape the old way, logging each as `LEGACY_RUNTIME_REQUEST`. Turn it on once that count reaches zero.
 
 ## [2.3.1] - 2026-11-13
 
