@@ -143,6 +143,8 @@ module "dynamodb_kms_runtime_access" {
     }, local.mcp_gateway_enabled ? {
     mcp_tools       = aws_iam_role.mcp_tools[0].name
     mcp_interceptor = aws_iam_role.mcp_interceptor[0].name
+    } : {}, local.engine_data_enabled ? {
+    engine_data = aws_iam_role.engine_data[0].name
   } : {})
 }
 

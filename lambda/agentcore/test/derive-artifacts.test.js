@@ -66,10 +66,8 @@ describe('deriveArtifacts', () => {
       items: 1,
       enrichment: 'off',
     });
-    expect(writer.getIntentGraph).toHaveBeenCalledWith({
-      includeContent: true,
-      includeSuperseded: true,
-    });
+    // The listing carries no bodies; each target's body is read on its own.
+    expect(writer.getIntentGraph.mock.calls[0][0]).toEqual({ includeSuperseded: true });
     expect(writer.mirrorArtifactDerivations).toHaveBeenCalledTimes(1);
     expect(store.appendEvent.mock.calls[0][0].type).toBe('v2.derive.completed');
     expect(broadcast.mock.calls[0][0]).toMatchObject({ action: 'agent.derived', sectionCount: 1 });

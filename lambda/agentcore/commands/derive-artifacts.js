@@ -14,7 +14,10 @@ import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
 import { machineCliModels } from '../model-resolver.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
-import { selectCurrentArtifactHeads } from '../../shared/artifact-versioning.js';
+import {
+  artifactLogicalKeyFromRow,
+  selectCurrentArtifactHeads,
+} from '../../shared/artifact-versioning.js';
 
 const artifactTs = (r) => String(r.updated_at ?? r.created_at ?? '');
 export const currentArtifacts = (rows = []) =>
@@ -58,7 +61,15 @@ export const buildEnrichmentPrompt = ({ artifactType, title, content }) => {
 };
 
 // Enrich one artifact via the one-shot CLI, recording spend before interpreting its answer.
-const enrichArtifact = async ({ artifact, extraction, graph, oneShot, cliArgs, recordUsage }) => {
+const enrichArtifact = async ({
+  artifact,
+  logicalKey,
+  extraction,
+  graph,
+  oneShot,
+  cliArgs,
+  recordUsage,
+}) => {
   // Unchanged content keeps its existing summary — no repeat spend.
   if (
     artifact.enrichment_source_hash &&
@@ -80,6 +91,7 @@ const enrichArtifact = async ({ artifact, extraction, graph, oneShot, cliArgs, r
   const claims = Array.isArray(parsed.claims) ? parsed.claims.map(String).slice(0, 5) : [];
   await graph.applyArtifactEnrichment({
     artifactId: artifact.id,
+    logicalKey,
     gist,
     claims,
     model: out.model,
@@ -123,7 +135,9 @@ export const deriveArtifacts = async (payload, deps) => {
   try {
     graph = await openEngineGraph({ projectId, intentId, executionId, stageInstanceId });
 
-    const rows = await graph.getIntentGraph({ includeContent: true, includeSuperseded: true });
+    // Metadata only: bodies are fetched one target at a time below, so no
+    // single engine-data response has to carry the whole intent's content.
+    const rows = await graph.getIntentGraph({ includeSuperseded: true });
     const all = currentArtifacts(rows);
     // Orphan sweep (rewind hygiene): a re-run that minted a NEW artifact id
     // leaves the OLD (superseded) artifact's sections/items current forever —
@@ -169,7 +183,9 @@ export const deriveArtifacts = async (payload, deps) => {
       env,
     };
     const enrichmentDeadline = Date.now() + ENRICHMENT_BUDGET_MS;
-    for (const artifact of targets) {
+    for (const head of targets) {
+      const logicalKey = artifactLogicalKeyFromRow(head, intentId);
+      const artifact = await graph.getArtifactContent({ artifactId: head.id, logicalKey });
       const extraction = extractArtifactStructure({
         artifactType: artifact.artifact_type,
         artifactId: artifact.id,
@@ -180,9 +196,11 @@ export const deriveArtifacts = async (payload, deps) => {
         continue;
       }
       // The graph re-reads and re-extracts the artifact itself and refuses a
-      // projection of content that changed since this read.
+      // projection of content that changed since this read. The logical key
+      // names this lane's head when other lanes reuse the same artifact id.
       const mirrored = await graph.mirrorArtifactDerivations({
         artifactId: artifact.id,
+        logicalKey,
         sourceHash: extraction.contentHash,
       });
       artifacts.push(mirrored.artifactId);
@@ -199,6 +217,7 @@ export const deriveArtifacts = async (payload, deps) => {
       try {
         const result = await enrichArtifact({
           artifact,
+          logicalKey,
           extraction,
           graph,
           oneShot,

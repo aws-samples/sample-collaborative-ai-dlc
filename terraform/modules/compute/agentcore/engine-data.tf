@@ -6,14 +6,47 @@
 #      operation, argument schema, ids owned by the grant) -> process table,
 #      Neptune
 #
-# The engine's process-store and graph calls go through it. The runtime role
-# keeps its own permissions until every engine data path goes through a
-# grant-checked Lambda; removing them is the last step of the series.
+# The engine's process-store, graph, catalog, owned-blob and realtime calls go
+# through it. The runtime role keeps its own permissions until the final strip.
 # ---------------------------------------------------------------------------
 
 locals {
   engine_data_enabled = var.enable_engine_data
   engine_data_dir     = "${path.module}/../../../../lambda/engine-data"
+  artifacts_objects   = "${var.artifacts_bucket_arn}/"
+
+  # The S3 IAM grammar is looser than the handlers' key grammar; both apply.
+  # HeadObject is authorized by s3:GetObject (GetObjectVersion when versioned).
+  engine_data_catalog_objects = [
+    "${local.artifacts_objects}blocks/bodies/sha256/*",
+    "${local.artifacts_objects}blocks/scripts/sha256/*",
+    "${local.artifacts_objects}aidlc-releases/v1/*/manifest.json",
+    "${local.artifacts_objects}aidlc-releases/v1/*/catalog.json",
+    "${local.artifacts_objects}aidlc-releases/v1/runtime/sha256/*",
+    "${local.artifacts_objects}aidlc-runtime/*/core/aidlc-common/conductor.md",
+    "${local.artifacts_objects}custom-rules/*",
+  ]
+
+  engine_data_optional_statements = concat(
+    var.blocks_table_arn != "" ? [{
+      Sid      = "CatalogTable"
+      Effect   = "Allow"
+      Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+      Resource = [var.blocks_table_arn, "${var.blocks_table_arn}/index/GSI1"]
+    }] : [],
+    var.connections_table_arn != "" ? [{
+      Sid      = "IntentRecipients"
+      Effect   = "Allow"
+      Action   = ["dynamodb:Query"]
+      Resource = ["${var.connections_table_arn}/index/DocumentIdIndex"]
+    }] : [],
+    var.websocket_execution_arn != "" ? [{
+      Sid      = "IntentBroadcast"
+      Effect   = "Allow"
+      Action   = ["execute-api:ManageConnections"]
+      Resource = "${var.websocket_execution_arn}/*/POST/@connections/*"
+    }] : [],
+  )
 }
 
 resource "terraform_data" "engine_data_requires_gateway" {
@@ -60,7 +93,7 @@ resource "aws_iam_role_policy" "engine_data" {
   role = aws_iam_role.engine_data[0].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Sid      = "VerifyGatewayGrants"
         Effect   = "Allow"
@@ -84,7 +117,19 @@ resource "aws_iam_role_policy" "engine_data" {
           "${aws_dynamodb_table.v2_executions.arn}/index/*",
         ]
       },
-    ]
+      {
+        Sid      = "CatalogAndCustomRuleObjects"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = local.engine_data_catalog_objects
+      },
+      {
+        Sid      = "IntentAttachments"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:GetObjectVersion"]
+        Resource = "${local.artifacts_objects}intent-attachments/committed/*"
+      },
+    ], local.engine_data_optional_statements)
   })
 }
 
@@ -128,6 +173,10 @@ module "engine_data_lambda" {
     V2_PROCESS_TABLE        = aws_dynamodb_table.v2_executions.name
     NEPTUNE_ENDPOINT        = var.neptune_endpoint
     GATEWAY_GRANT_KEY_IDS   = aws_kms_key.gateway_grant[0].arn
+    ARTIFACTS_BUCKET        = var.artifacts_bucket_name
+    BLOCKS_TABLE            = var.blocks_table_name
+    CONNECTIONS_TABLE       = var.connections_table_name
+    WEBSOCKET_ENDPOINT      = var.websocket_endpoint
   }
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7

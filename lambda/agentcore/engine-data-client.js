@@ -16,6 +16,7 @@ import {
   ENGINE_DATA_GRAPH_OPS,
   ENGINE_DATA_REALTIME_OPS,
   ENGINE_DATA_STORE_METHODS,
+  ENGINE_DATA_STORE_READ_METHODS,
   engineDataBlobOp,
   engineDataCatalogOp,
   engineDataGraphOp,
@@ -75,9 +76,12 @@ const invokeWith = async (client, event, env) => {
 };
 
 const defaultInvoke = (event, env = process.env) => invokeWith(lambdaClient(), event, env);
-// A graph mutation is not safe to replay after an ambiguous failure, so graph
-// calls never retry at the transport.
-const defaultGraphInvoke = (event, env = process.env) => invokeWith(lambdaClient(1), event, env);
+// A mutation is not safe to replay after an ambiguous failure (the Lambda may
+// have run it), so mutating store methods and graph calls never retry at the
+// transport.
+const singleAttemptInvoke = (event, env = process.env) => invokeWith(lambdaClient(1), event, env);
+const defaultGraphInvoke = singleAttemptInvoke;
+const STORE_READS = new Set(ENGINE_DATA_STORE_READ_METHODS);
 
 const remoteCall = async ({ invoke, grant, op, args }) => {
   const token = grant();
@@ -96,13 +100,17 @@ const remoteCall = async ({ invoke, grant, op, args }) => {
   return body.result;
 };
 
-export const createRemoteProcessStore = ({ invoke = defaultInvoke, grant }) => {
+// `invoke` replaces both transports (tests, in-process gateways); by default
+// reads may retry and every other method is sent exactly once.
+export const createRemoteProcessStore = ({ invoke, grant }) => {
   if (typeof grant !== 'function')
     throw new Error('createRemoteProcessStore requires a grant source');
-  const call =
-    (method) =>
-    (...args) =>
-      remoteCall({ invoke, grant, op: engineDataOp(method), args });
+  const invokeFor = (method) =>
+    invoke ?? (STORE_READS.has(method) ? defaultInvoke : singleAttemptInvoke);
+  const call = (method) => {
+    const send = invokeFor(method);
+    return (...args) => remoteCall({ invoke: send, grant, op: engineDataOp(method), args });
+  };
   return Object.fromEntries(ENGINE_DATA_STORE_METHODS.map((method) => [method, call(method)]));
 };
 

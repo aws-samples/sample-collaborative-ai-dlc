@@ -44,6 +44,24 @@ export const ENGINE_DATA_STORE_METHODS = Object.freeze([
   'getReceipt',
 ]);
 
+// The store methods that only read. A transport retry of one of these after an
+// ambiguous failure is harmless; every other method writes (or claims, appends,
+// raises) and must reach engine-data at most once per call — the store's own
+// CAS and conflict retries already run server-side.
+export const ENGINE_DATA_STORE_READ_METHODS = Object.freeze([
+  'getStage',
+  'getExecution',
+  'getHumanTask',
+  'listReceipts',
+  'getUnitPlan',
+  'listSensorRuns',
+  'listPendingSteering',
+  'listEvents',
+  'getExecutionRecords',
+  'getQuorumEdit',
+  'getReceipt',
+]);
+
 export const ENGINE_DATA_DENIED_ERROR = 'EngineDataAccessDenied';
 
 export const engineDataOp = (method) => `${ENGINE_DATA_OP_PREFIX}${method}`;
@@ -94,6 +112,7 @@ export const ENGINE_DATA_GRAPH_NAMED_OPS = Object.freeze([
   'archiveArtifactsForStages',
   'snapshotCurrentArtifactHeads',
   'readCurrentArtifactHeadHashes',
+  'getArtifactContent',
 ]);
 
 export const ENGINE_DATA_GRAPH_OPS = Object.freeze([

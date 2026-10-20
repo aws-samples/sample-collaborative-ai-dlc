@@ -2,8 +2,8 @@
 //
 // Each blob call arrives as `{ op: 'blob.<name>', args: [input], grant }` and is
 // authorized on its own:
-//   1. the grant is verified and must be an engine grant (execution, stage or
-//      conflict); discussion grants get no object access;
+//   1. the grant is verified and must be an execution or stage grant;
+//      discussion and conflict grants get no object access;
 //   2. the op must be on the shared allowlist and its input must match the
 //      strict schema;
 //   3. the execution META (consistent read) must exist and belong to the
@@ -174,6 +174,7 @@ export const createBlobGateway = ({
       ? op.slice(ENGINE_DATA_BLOB_PREFIX.length)
       : null;
     if (!name || !ALLOWED_OPS.has(name) || !Object.hasOwn(BLOB_OPS, name)) deny('op_not_allowed');
+    if (grant.mode === 'conflict') deny('op_not_allowed');
     const { args } = event;
     if (!Array.isArray(args) || args.length !== 1 || hasPrototypeKey(args)) {
       deny('invalid_arguments');

@@ -3,7 +3,8 @@
 // Each call arrives as `{ op: 'realtime.broadcastIntent', args: [{ payload }],
 // grant }` and is authorized on its own:
 //   1. the grant is verified: engine grants may send agent/compose events, a
-//      discussion grant only discussion.message;
+//      discussion grant only discussion.message, a conflict grant only its
+//      lane's agent.unit and agent.metric;
 //   2. the payload must match the closed event DTO and encode within 32 KiB;
 //   3. every ownership id the event carries must equal the grant's. The
 //      execution META (consistent read) must belong to the grant's project and
@@ -34,12 +35,15 @@ import {
   grantAudit,
   hasPrototypeKey,
   issuePaths,
+  onConflictLane,
   serializeError,
   verifyGrantOrDeny,
 } from './gateway-common.js';
 
 const ALLOWED_OPS = new Set(ENGINE_DATA_REALTIME_OPS);
 const DISCUSSION_ACTION = 'discussion.message';
+// resolve-conflict's lane progress and its CLI usage recorder's metric.
+const CONFLICT_ACTIONS = new Set(['agent.unit', 'agent.metric']);
 const QUORUM_EDIT_PANE = /^qedit-(.+)$/;
 
 const realtimeError = (code, message) => ({
@@ -129,10 +133,12 @@ export const createRealtimeGateway = ({
     const { action } = result.data.payload;
     record.action = action;
     if (discussion !== (action === DISCUSSION_ACTION)) deny('op_not_allowed');
+    if (grant.mode === 'conflict' && !CONFLICT_ACTIONS.has(action)) deny('op_not_allowed');
     // The validated object is strict, so the original carries exactly the
     // checked fields and keeps the producer's field order on the wire.
     const payload = args[0].payload;
     checkIds(grant, payload);
+    if (grant.mode === 'conflict' && !onConflictLane(grant, payload)) deny('scope_mismatch');
     return { grant, payload, discussion };
   };
 
