@@ -397,3 +397,15 @@ variable "iam_permissions_boundary_arn" {
   type        = string
   default     = ""
 }
+
+variable "enable_mcp_gateway" {
+  description = "Whether the built-in MCP is served through AgentCore Gateway (static, so IAM resources can be counted at plan time)"
+  type        = bool
+  default     = false
+}
+
+variable "gateway_grant_key_arn" {
+  description = "KMS key that signs AgentCore MCP Gateway grants (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
+}

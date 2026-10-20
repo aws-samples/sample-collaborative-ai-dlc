@@ -1,0 +1,446 @@
+[
+  {
+    "name": "get_artifact",
+    "description": "Fetch one business artifact by id. Use mode \"toc\" or \"summary\" to avoid loading full markdown unless needed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        }
+      },
+      "required": ["id"]
+    }
+  },
+  {
+    "name": "lookup_artifacts",
+    "description": "List existing artifacts of a given type in this intent as compact metadata (incl. summary_gist/summary_claims when enriched), without full markdown content.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "artifactType": {
+          "type": "string"
+        }
+      },
+      "required": ["artifactType"]
+    }
+  },
+  {
+    "name": "get_intent_graph",
+    "description": "Snapshot every artifact in this intent (id, type, title, and summary_gist/summary_claims when enriched) to orient before working — often enough context without any full read.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "get_artifact_neighbors",
+    "description": "Artifacts directly linked to a given artifact, optionally by edge + direction. Returns compact metadata, not full markdown.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "edge": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string"
+        }
+      },
+      "required": ["id"]
+    }
+  },
+  {
+    "name": "get_artifact_toc",
+    "description": "List derived markdown sections for one artifact as compact metadata (heading, slug, order, content length).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": ["id"]
+    }
+  },
+  {
+    "name": "get_section",
+    "description": "Fetch one derived markdown section by artifact id and heading or slug.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "artifactId": {
+          "type": "string"
+        },
+        "heading": {
+          "type": "string"
+        },
+        "slug": {
+          "type": "string"
+        }
+      },
+      "required": ["artifactId"]
+    }
+  },
+  {
+    "name": "get_items",
+    "description": "List derived typed items in this intent, optionally filtered by item label (Story, Requirement, Component, etc.) and artifact type.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "itemType": {
+          "type": "string"
+        },
+        "artifactType": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      }
+    }
+  },
+  {
+    "name": "search_graph",
+    "description": "Substring search across this intent’s artifacts (title/content/type + enrichment summaries), returning compact metadata and snippets.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string"
+        },
+        "artifactType": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "integer"
+        }
+      },
+      "required": ["query"]
+    }
+  },
+  {
+    "name": "get_coverage",
+    "description": "One-call coverage report over the typed graph items: requirements uncovered by stories (incl. must-haves), stories unmapped to units, unknown references. Pass unitSlug for one lane’s stories + contracts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "unitSlug": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "get_team_knowledge",
+    "description": "Read the PROJECT's accrued team knowledge — durable learnings from prior intents in this project (conventions, decisions, gotchas). Shared across all intents. Optionally narrow to one agent (the 'shared' corpus is always included). The relevant entries are also injected into your prompt; use this to re-read or pull another agent's corpus.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "agentRef": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "get_learning_rules",
+    "description": "Read the PROJECT's accrued learning rules — guardrails (ALWAYS/NEVER conventions) prior intents recorded. These already steer you: they are merged into your resolved rules at their layer's precedence. Use this to see them explicitly.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "create_artifact",
+    "description": "Record a business artifact this stage produces. artifactType is the v2 artifact name (e.g. \"requirements-analysis\"). Output NOT written through a tool is discarded.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "artifactType": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "props": {
+          "type": "object",
+          "properties": {}
+        },
+        "links": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "toId": {
+                "type": "string"
+              },
+              "edge": {
+                "type": "string"
+              }
+            },
+            "required": ["toId", "edge"]
+          }
+        }
+      },
+      "required": ["artifactType", "id"]
+    }
+  },
+  {
+    "name": "update_artifact",
+    "description": "Update mutable properties on an existing artifact (never its id/type/provenance).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "props": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "required": ["id", "props"]
+    }
+  },
+  {
+    "name": "link_artifacts",
+    "description": "Create a typed edge between two existing artifacts.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fromId": {
+          "type": "string"
+        },
+        "toId": {
+          "type": "string"
+        },
+        "edge": {
+          "type": "string"
+        }
+      },
+      "required": ["fromId", "toId", "edge"]
+    }
+  },
+  {
+    "name": "record_team_knowledge",
+    "description": "Record a durable learning for the PROJECT — a reusable convention, decision, constraint, or gotcha that should steer FUTURE intents (not a per-intent output; use create_artifact for those). Shared across every intent in this project. Use a stable kebab-case id so a later run updates the same entry instead of duplicating it. agentRef scopes it to one agent's corpus, or 'shared' for cross-cutting knowledge.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "agentRef": {
+          "type": "string"
+        },
+        "props": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "required": ["id", "content"]
+    }
+  },
+  {
+    "name": "record_learning_rule",
+    "description": "Record a durable GUARDRAIL for the project — a binding ALWAYS/NEVER convention that should constrain FUTURE intents (e.g. 'NEVER store secrets in plaintext config'). Unlike record_team_knowledge (reference prose the agent reads), a learning rule enters the rule-resolution stack at its layer's precedence and overrides broader layers. Use a stable kebab-case id so a later run updates it. layer: 'team-learnings' for a broad convention, 'project-learnings' for a specific binding constraint that should win.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "layer": {
+          "type": "string"
+        },
+        "pairing": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "content"]
+    }
+  },
+  {
+    "name": "ask_question",
+    "description": "Ask the human team one or more structured questions. Use for ambiguous requirements or decisions you cannot make alone. Returns EITHER the answer inline (if the human responds quickly) OR { parked: true } — when parked, STOP IMMEDIATELY: end your turn with no further tool calls (do not send_output or summarize). You will be resumed with the answer and can continue then.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["label"]
+                }
+              }
+            },
+            "required": ["text", "type", "options"]
+          }
+        }
+      },
+      "required": ["questions"]
+    }
+  },
+  {
+    "name": "send_output",
+    "description": "Stream a unit of human-facing output (markdown) to the UI. Persisted so it survives a page reload.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        }
+      },
+      "required": ["content"]
+    }
+  },
+  {
+    "name": "collect_metric",
+    "description": "Record a numeric metric sample (e.g. tokensInput, tokensOutput, contextWindowPct).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "metrics": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      "required": ["metrics"]
+    }
+  },
+  {
+    "name": "emit_stage_note",
+    "description": "Append a short process/progress note to the execution audit trail. Set loopBackRecommended to a one-line reason when build/test results show the generated code itself must be revised and you must NOT revise it yourself. It records a recommendation for the human reviewer — it does not re-run anything, and the human decides at the stage gate.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "loopBackRecommended": {
+          "type": "string"
+        }
+      },
+      "required": ["summary"]
+    }
+  },
+  {
+    "name": "submit_review",
+    "description": "Reviewer-only: submit your clean-room stage review verdict. Use READY only when the stage artifacts satisfy the stage definition and constraints; use NOT-READY with concrete findings when the builder must revise. Pass your agent name as `reviewer` and start `findings` with the identity marker line `**Reviewer:** <your-agent-name>`.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "reviewer": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "string"
+        },
+        "findings": {
+          "type": "string"
+        },
+        "round": {
+          "type": "number"
+        }
+      },
+      "required": ["verdict"]
+    }
+  },
+  {
+    "name": "record_project_type",
+    "description": "Workspace Detection only: persist the deterministic workspace classification for later stages and native exports.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "projectType": {
+          "type": "string"
+        }
+      },
+      "required": ["projectType"]
+    }
+  },
+  {
+    "name": "confirm_summary",
+    "description": "Raise the ONE consolidated confirmation checkpoint for this stage. Render every decision you are about to commit as bullets in `summary`. The human answers exactly \"Looks correct\" or \"Request changes\". You MUST call this and receive \"Looks correct\" BEFORE you create or update any stage output artifact. On \"Request changes\" you receive the requested change, revise, and call this again. Returns EITHER the decision inline OR { parked: true } — when parked, STOP IMMEDIATELY: end your turn with no further tool calls; you will be resumed with the decision.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "summary": {
+          "type": "string"
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["summary"]
+    }
+  },
+  {
+    "name": "request_plan_approval",
+    "description": "Present your implementation plan and how to test it, and wait for approval BEFORE you write any code. The human answers exactly \"Approve plan\" or \"Request changes\". The normal platform completion path checks for the recorded approval before it proceeds; this workflow check does not constrain direct writes made with the container credentials. On \"Request changes\" you receive the requested change, revise the plan, and call this again. Returns EITHER the decision inline OR { parked: true } — when parked, STOP IMMEDIATELY: end your turn with no further tool calls; you will be resumed with the decision.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "plan": {
+          "type": "string"
+        },
+        "testInstructions": {
+          "type": "string"
+        }
+      },
+      "required": ["plan", "testInstructions"]
+    }
+  }
+]

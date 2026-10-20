@@ -34,6 +34,8 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
+import { gatewayScopeForCommand } from '../shared/gateway-grant.js';
+import { gatewayGrantIssuerFromEnv } from '../shared/gateway-grant-issuer.js';
 import {
   prepareAgentInvocation,
   executionCredentialBinding,
@@ -112,6 +114,7 @@ const s3 = new S3Client({});
 const lambda = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const defaultStore = createProcessStore({ ddb });
+const gatewayGrantIssuer = gatewayGrantIssuerFromEnv();
 
 const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
 
@@ -282,6 +285,7 @@ const defaultDeps = () => ({
   loadPlan: (args) => loadExecutionPlan({ ddb, tableName: BLOCKS_TABLE(), ...args }),
   invokeRuntime: defaultInvokeRuntime,
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
+  issueGatewayGrant: gatewayGrantIssuer,
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
   openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body, attemptKey }) =>
@@ -438,7 +442,19 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 
   const { projectId, workflowId, workflowVersion, scope } = meta;
   const credentialBinding = executionCredentialBinding(meta);
-  const invokeIntentRuntime = async (payload, runtimeSessionId) => {
+  const invokeIntentRuntime = async (rawPayload, runtimeSessionId, { policy = null } = {}) => {
+    const gatewayScope =
+      typeof deps.issueGatewayGrant === 'function'
+        ? gatewayScopeForCommand(rawPayload, {
+            projectId,
+            intentId: meta.intentId,
+            executionId,
+            policy,
+          })
+        : null;
+    const payload = gatewayScope
+      ? { ...rawPayload, gatewayGrant: await deps.issueGatewayGrant(gatewayScope) }
+      : rawPayload;
     const authMode = commandDefinition(payload.command)?.agentAuth;
     if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {
       return rawInvokeRuntime(payload, runtimeSessionId, runtimeTarget);
@@ -2748,6 +2764,7 @@ const runStage = async (
         stageCallbackId,
       },
       sessionId,
+      { policy: stage.policy ?? null },
     ),
   );
   // The accept response only says "job started" — a refusal (unknown command on
