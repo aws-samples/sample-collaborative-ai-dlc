@@ -279,7 +279,15 @@ test('DynamoDB CMK access covers deployment and every runtime caller', () => {
     'terraform/modules/compute/agentcore/main.tf',
     'terraform/modules/realtime/yjs-server/scaling.tf',
   ]) {
-    const source = read(path);
+    // The AgentCore module splits its roles across files; its KMS map lives in
+    // main.tf but optional Lambda roles are declared beside their Lambdas.
+    const source =
+      path === 'terraform/modules/compute/agentcore/main.tf'
+        ? ['main.tf', 'mcp-gateway.tf']
+            .map((file) => read(`terraform/modules/compute/agentcore/${file}`))
+            .join('\n')
+            .replaceAll('[0]', '')
+        : read(path);
     assert.deepEqual(
       kmsAuthorizedRoles(source),
       dynamodbCallerRoles(source),

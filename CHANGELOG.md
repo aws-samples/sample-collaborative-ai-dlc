@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in AgentCore Gateway path for the built-in MCP (`enable_mcp_gateway`, off by default). The four agent CLIs keep the same `aidlc` server and tool names; a runtime proxy forwards calls to an `AWS_IAM` Gateway whose Lambda target verifies a KMS-signed, control-plane grant and the current execution and stage state on every call before running the existing tool handlers. Requires VPC networking. The runtime role keeps its existing permissions in this release.
+
 ### Changed
 
 - CodeCommit setup moved from a per-user role handshake to a single platform connection. A platform admin sets one IAM role ARN and region in **Admin → Source Control → AWS CodeCommit** ("Test & save"), and every space uses it; space creators pick CodeCommit repositories from the same generic list as the other providers, with no ARN, region, external ID or IAM to supply. The external ID is now one value per deployment (`aidlc:<uuid>`, provisioned by Terraform) instead of one per user. Which repositories a space may use is controlled by tagging each repository `aidlc=true` (an explicit repository-ARN list is an equally supported, more locked-down variant); the setup guide adds a concrete deny that limits who may set the tag ([#531](https://github.com/aws-samples/sample-collaborative-ai-dlc/issues/531)).

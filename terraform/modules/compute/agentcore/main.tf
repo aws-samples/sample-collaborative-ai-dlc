@@ -136,9 +136,11 @@ module "dynamodb_kms_runtime_access" {
 
   kms_key_arn = var.kms_key_arn
   dns_suffix  = local.dns_suffix
-  role_names = {
+  role_names = merge({
     agentcore = aws_iam_role.agentcore.name
-  }
+    }, local.mcp_gateway_enabled ? {
+    mcp_tools = aws_iam_role.mcp_tools[0].name
+  } : {})
 }
 
 # ---------------------------------------------------------------------------
@@ -757,7 +759,7 @@ resource "aws_security_group" "agentcore" {
 # ---------------------------------------------------------------------------
 
 locals {
-  runtime_environment_variables = {
+  runtime_environment_variables = merge({
     AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
     V2_WORKSPACE_DIR              = "/mnt/workspace"
     V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
@@ -776,11 +778,14 @@ locals {
     RUNTIME_COMPATIBILITY_VERSION = "1"
     POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
-  }
+    }, local.mcp_gateway_enabled ? {
+    AIDLC_MCP_GATEWAY_URL    = aws_bedrockagentcore_gateway.mcp[0].gateway_url
+    AIDLC_MCP_GATEWAY_TARGET = aws_bedrockagentcore_gateway_target.aidlc[0].name
+  } : {})
 }
 
 resource "awscc_bedrockagentcore_runtime" "stage_executor" {
-  depends_on = [aws_iam_role_policy.agentcore]
+  depends_on = [aws_iam_role_policy.agentcore, aws_iam_role_policy.agentcore_invoke_mcp_gateway]
 
   agent_runtime_name = replace("${var.project_name}_agentcore_${var.environment}", "-", "_")
   role_arn           = aws_iam_role.agentcore.arn

@@ -21,6 +21,7 @@
     "@aws-sdk/credential-providers": "^3.1106.0",
     "@aws-sdk/lib-dynamodb": "^3.1106.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@smithy/signature-v4": "^5.6.6",
     "gremlin": "^3.8.1",
     "gremlin-aws-sigv4": "^3.6.1",
     "js-yaml": "4.3.2",

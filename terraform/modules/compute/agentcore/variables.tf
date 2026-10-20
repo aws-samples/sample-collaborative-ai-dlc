@@ -211,3 +211,9 @@ variable "iam_permissions_boundary_arn" {
   type        = string
   default     = ""
 }
+
+variable "enable_mcp_gateway" {
+  description = "Serve the built-in aidlc MCP tools through AgentCore Gateway and a grant-verifying Lambda instead of the in-runtime MCP server"
+  type        = bool
+  default     = false
+}

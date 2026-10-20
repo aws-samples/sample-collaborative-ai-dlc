@@ -19,6 +19,7 @@
     "lambda/gitlab",
     "lambda/bitbucket",
     "lambda/codecommit",
+    "lambda/mcp-tools",
     "lambda/migrate-tracker-fields",
     "lambda/seed-blocks",
     "lambda/sso-token",
