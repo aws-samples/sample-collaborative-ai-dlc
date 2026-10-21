@@ -2801,6 +2801,22 @@ Claude terminal-projection corrections are implemented locally. Local checks do
 not close the remaining live stability or latency work. Keep each simplification
 independently reviewable; preserve the existing authority and checkpoint owners.
 
+- [ ] **Incident — live intent `576ffeb2` failed after continued execution
+      (2026-10-21).** The user reported failure of intent
+      `576ffeb2-1bbc-4874-99e0-17d0e5a18f77` in project
+      `22371643-2db5-42a4-a571-e47fc35745f5` after the local qualification work.
+      Failure code, timeline, harness/model/package, deployed image/controller
+      alignment and relation to earlier defects are not yet established.
+      Investigate this exact run through scoped read-only metadata and safe
+      diagnostics; preserve its answers, publications, checkpoints and terminal
+      state. Compare actual deployed behavior with reviewed `6bdb147`, without
+      assuming local commits were deployed or that this repeats a prior parser
+      error. Explain the specific test-coverage or deployment gap, reproduce the
+      supported failure locally where evidence permits, and retain the regression
+      with any bounded correction. Record exact evidence and remaining uncertainty
+      here. A green scripted-provider matrix does not close live reliability;
+      do not replay, repair, deploy or start a new live run as part of diagnosis.
+
 - [x] **Verification — local installed-CLI journeys for all supported harnesses.**
       **Current implementation task, authorized 2026-10-16.** Extend
       `npm run test:native-qualification` to select the native image by immutable
