@@ -2799,19 +2799,112 @@ The reviewed baseline is `3bb52c7`: bounded publication I/O, single manifest
 validation, immediate reply feedback, runtime phase notices and the two installed
 Claude terminal-projection corrections are implemented locally. Local checks do
 not close the remaining live stability or latency work. Keep each simplification
-independently reviewable; preserve the existing authority and checkpoint owners.
+independently reviewable; preserve execution authority and retained-run
+compatibility while implementing the recovery direction below.
+
+- [ ] **Active goal — prove AI-DLC recovery on the surviving EFS workspace
+      and remove mandatory exact recovery snapshots (2026-10-21).** User:
+      “Ok let’s prove that with the goal to remove snapshots. Record that in
+      the document and work towards that!” This authorizes implementation and
+      local qualification, superseding the decision-only restriction below.
+      Treat EFS as available for this work. The target behavior is the same
+      class of recovery as running AI-DLC locally: the process may disappear,
+      while the working directory, including unfinished edits, survives.
+      Start a fresh CLI with confirmation and let AI-DLC reconcile its own
+      workflow. Do not build another workflow recovery engine in the wrapper.
+
+      **Upstream evidence, not yet integrated acceptance.** The pinned AI-DLC
+      2.11.0 runtime archive has SHA-256
+      `68906435223b47d6dfda59d79def78974d7b37e38b5649a56402a0007a41fad4`,
+      independently checked against `scripts/native-qualification-package.mjs`.
+      Its `runtime/claude/.claude/aidlc-common/protocols/stage-protocol-recovery.md`
+      explicitly describes fresh-session recovery after compaction, crash or
+      clean restart, reading artifacts, optional stage memory, audit history,
+      state documents and the runtime graph. It resumes the last incomplete
+      stage without reconstructing the previous conversation buffer.
+      `runtime/claude/.claude/hooks/aidlc-session-start.ts` binds the selected
+      workflow and injects its context on session startup. The protocol also
+      covers interrupted transitions and inconsistent state. These source reads
+      establish intended upstream behavior; they are not proof that our native
+      invocation, credentials, gates or replacement-runtime path already works.
+
+      **Selected responsibility boundary.** EFS preserves the actual project
+      and generated dependencies. AI-DLC owns reconstruction of workflow
+      context, reconciliation of incomplete work and its existing human gates.
+      Native owns the pinned environment/package, binding to the correct
+      project/space/intent, confirmed predecessor stop and exclusive successor
+      ownership, explicit fresh-session confirmation, command-delivery identity
+      and the user-visible history. Accepted answers remain immutable history;
+      delivered or uncertain commands must not be automatically replayed.
+      Continuing from EFS does not silently mark interrupted work as completed,
+      restore the last publication over it, or permit a stale writer to act.
+
+      **Removal scope.** Remove full private workspace/dependency/CLI
+      capture, export and restore from the new ordinary execution/recovery
+      path once that path is proven. Successful turn admission must not depend
+      on the ability to serialize the previous CLI session. Preserve verified,
+      immutable published results and interactions, accepted answers and
+      authoritative lifecycle records; these serve history and delivery, not
+      portable reconstruction of the entire filesystem. Retained executions
+      keep their pinned configuration and readable legacy checkpoints. Do not
+      silently reinterpret old rows, weaken existing checkpoint validation or
+      introduce an unqualified fallback. EFS-loss recovery is outside this
+      qualification; missing or mismatched storage must be reported explicitly.
+      Reuse the existing environment/tools feature and its immutable revisions
+      where integration is required; do not introduce another catalogue.
+
+      **Finite implementation and proof sequence.**
+
+      1. Trace and exercise the installed AI-DLC fresh-session entry point,
+         intent binding, session-start hooks and approval behavior. Use the
+         actual pinned package and CLI; do not manufacture workflow state or
+         claim scripted output alone proves upstream recovery.
+      2. Implement the smallest native adapter and compatible execution mode
+         that retains the same workspace, starts a new CLI session and invokes
+         AI-DLC's supported resume. Carry the contract through controller,
+         runtime, API and UI confirmation/status consumers. No private
+         checkpoint may be required for a new-mode publication or restart.
+      3. Extend the existing reproducible suite: complete a real workflow
+         boundary, install/build/test dependencies including internal hardlinks,
+         interrupt work, terminate the old runtime, discard its local CLI home,
+         and start a new runtime against the unchanged shared workspace.
+         Assert a new CLI session, correct intent/stage, retained files and
+         decisions, confirmation and required gates, successful continuation
+         and a newly admitted result. Assert zero recovery snapshot
+         capture/upload/download/restore calls in this new mode.
+      4. Cover interruption while waiting and during work, accepted versus
+         delivered/uncertain answers, duplicate/lost acknowledgements,
+         cancellation, concurrent recovery attempts, wrong workspace/config,
+         preserved incomplete edits and legacy checkpoint readers. Count
+         workflow effects and delivered commands; do not infer success from
+         transcript text or test counts alone.
+      5. Qualify a newly built production image with fresh verified fixtures.
+         Begin with Claude, then validate the supported Codex/OpenCode paths;
+         keep Kiro's authentication limitation explicit. A persistent local
+         volume proves the process-replacement composition, not actual EFS/NFS
+         or deployed lifecycle behavior. Record exact commands, source/image
+         identities and PASS/FAIL/BLOCKED/NOT RUN evidence. After local review,
+         prepare the coordinated deployment and a fresh live EFS acceptance
+         sequence as a separate boundary.
+
+      **Status:** goal and upstream source evidence recorded; implementation
+      and installed fresh-session acceptance are pending. No snapshot removal
+      or new recovery mode has been claimed as working. Historical failed
+      intents remain unchanged and are not qualification fixtures.
 
 - [ ] **Decision review — live intent `9c0a0e09` failed during exact recovery
       export (2026-10-21); evidence and architecture review complete, product
-      decisions pending.** No compatibility patch is authorized by this review.
+      direction superseded by the active EFS/AI-DLC recovery goal above.**
+      This review originally authorized no compatibility patch; the subsequent
+      user instruction now authorizes the bounded implementation above.
       The user requires preservation of accepted answers and published work,
       with **confirmed recovery into a fresh CLI session**. Exact restoration of
       the previous CLI session is no longer a mandatory product requirement.
       The existing environment/tools feature is the image-selection foundation
-      to reuse. Whether a verified public turn can be admitted without a portable
-      exact checkpoint remains **undecided**. This entry supersedes the earlier
-      assumption that exact CLI export must always gate progress; it does not
-      change the deployed contract or any historical run.
+      to reuse. The active goal is to admit verified results without requiring
+      portable exact CLI export, after proving the replacement recovery path.
+      The evidence and alternatives below remain historical context; they do
+      not change the deployed contract or any historical run.
 
       **Verified incident and alignment.** Intent
       `9c0a0e09-625b-4607-b56d-fb5c96588d97`, project
@@ -3065,7 +3158,8 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       harmless portability warning. Public credential-retention policy and the
       same-UID protected-outcome `not_verified` boundary remain unchanged.
 
-      Remaining user decisions, after the distinction above:
+      Decisions left open at review time, before the subsequent active goal
+      above selected EFS availability and AI-DLC-owned fresh-session recovery:
 
       1. **Admission:** may a completed, validated public turn become available
          with an explicit “exact session recovery unavailable” condition, or
