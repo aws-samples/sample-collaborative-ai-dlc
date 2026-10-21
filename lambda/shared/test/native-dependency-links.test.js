@@ -116,4 +116,44 @@ describe('closed dependency inventory', () => {
     expect(() => plan(legacy)).toThrow();
     expect(getter).not.toHaveBeenCalled();
   });
+  it('bounds directory alias depth independently of inventory order', () => {
+    for (const count of [16, 17, 24]) {
+      const f = fixture();
+      f.metadata.dependencyLinks = Array.from({ length: count }, (_, n) => {
+        f.metadata.directories.push({
+          scope: 'project',
+          path: `node_modules/p${n}`,
+          mode: 0o755,
+          mtimeNs: '1',
+        });
+        return link(`node_modules/p${n}/next`, n === 0 ? '../../vendor/pkg' : `../p${n - 1}`);
+      });
+      const aliases = f.metadata.dependencyLinks;
+      for (const ordered of [
+        aliases,
+        [...aliases].reverse(),
+        [...aliases.slice(8), ...aliases.slice(0, 8)],
+      ]) {
+        f.metadata.dependencyLinks = ordered;
+        if (count === 16) expect(plan(f)).toHaveLength(count);
+        else expect(() => plan(f)).toThrow();
+      }
+    }
+  });
+  it('rejects dependency hardlinks even when no alias references them', () => {
+    const f = fixture();
+    f.metadata.dependencyLinks = [];
+    f.files.push(
+      ...['node_modules/first.js', 'node_modules/second.js'].map((path) => ({
+        scope: 'project',
+        path,
+        bytes: 10,
+      })),
+    );
+    f.metadata.hardlinks.push({
+      scope: 'project',
+      paths: ['node_modules/first.js', 'node_modules/second.js'],
+    });
+    expect(() => plan(f)).toThrow();
+  });
 });

@@ -2802,8 +2802,8 @@ not close the remaining live stability or latency work. Keep each simplification
 independently reviewable; preserve the existing authority and checkpoint owners.
 
 - [ ] **Incident — live intent `576ffeb2` failed after continued execution
-      (2026-10-21); dependency implementation and packaged local acceptance complete,
-      independent review/live acceptance remain.** The user reported failure of intent
+      (2026-10-21); dependency implementation, independent review and packaged
+      local acceptance complete; deployment/live acceptance remain.** The user reported failure of intent
       `576ffeb2-1bbc-4874-99e0-17d0e5a18f77` in project
       `22371643-2db5-42a4-a571-e47fc35745f5`. **Confirmed:** the restored turn-4
       baseline passed; Claude completed; the final public workspace snapshot
@@ -2925,6 +2925,48 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       | Release / qualification tooling | **262 passed / 0 failed / 0 skipped**, including 14 preparation/packaged-tool contracts; launcher `sh -n` passes. `/tmp/native-dependencies-release-final.log` |
       | Documentation | `uv sync --frozen --offline --group docs` and `uv run --offline zensical build` pass, no issues. `/tmp/native-dependencies-docs.log` |
       | Static checks | Lint passes with existing warnings; formatting, secrets, SDK alignment and architecture pass (393 modules, zero complexity-budget violations). Dependency check: zero errors / 14 existing warnings; SDK check retains its existing Smithy-range warning. |
+
+      **Independent review and final local acceptance (2026-10-21).**
+      Parent review of `f473125` / `ddfa682` confirmed the workload, packaging
+      and legacy-reader paths, then corrected two remaining inventory checks.
+      A 24-directory-alias chain bypassed the 16-link bound when its suffixes
+      appeared first in the inventory; reversing the inventory rejected it.
+      The planner now retains each subtree's longest chain length, so the
+      same limit applies in every order. Stored schema-3 metadata also accepted
+      dependency hardlink groups that no alias referenced, although capture
+      rejected them. Checkpoint admission and restore now enforce that same
+      rejection. Both new regression tests failed on `ddfa682`; the corrected
+      focused run passed **578 tests / 2 platform skips** across eight suites.
+      Evidence: `/tmp/native-dependencies-parent-boundary-before.log` and
+      `/tmp/native-dependencies-parent-focus-fixed.log`.
+
+      Parent prepared and verified fresh inputs in the initially empty
+      `/tmp/native-dependencies-parent.9HCEl1`, rebuilt the production Dockerfile
+      with its default probe flag, and independently ran the complete packaged
+      [runbook command](#native-local-qualification).
+      **Claude, Codex and OpenCode PASS / exit 0**; Claude again
+      completed all five checkpoints, both cold restores, real install/build/test
+      and restored build/test, confirmed cancellation and zero answer replay.
+      The same run passed **1,357 backend / 5 skipped**, **308 UI/service**,
+      **480 Linux**, the targeted WebSocket, architecture and wiring checks.
+      The separate full backend run with two workers passed **10,495 tests /
+      8 skipped** across 362 passing / 1 skipped files. Lint, formatting,
+      secrets, SDK alignment, all eight controller builds and the frozen
+      offline documentation build passed.
+      Kiro was not rerun; its managed-authentication BLOCKED result is unchanged.
+      Final local image:
+      **`sha256:2a48536be3fe6769bd505ca0851d8c981eb7b75b259f39c87feb360d2f962034`**.
+      All **258** packaged production files matched inventory SHA-256
+      `794367b6b13b152d1bb0c13fe6757eb3d80eeec1fc1c4d2d4fe226064907c097`;
+      separate controller qualification bundle SHA-256
+      `75af9e4868c0b36b1c63c1852f5bae3645ddfba6d8ab44d74f9749233a085c78`.
+      The rebuilt production API hash is unchanged from the candidate above;
+      execution-worker bundle SHA-256 is
+      `319b4e4b4fdb2e0f75fe5be2368e73a59a254c7faba2a1b9c82c9f4f78b4d6d0`.
+      Evidence: `/tmp/native-dependencies-parent-{prepare,production-build,
+      packaged,backend,controller-build,static,docs}.log`. This local image supersedes the
+      earlier `2cdb…` candidate for deployment qualification; the reader-first
+      rollout and fresh live gate below remain unexecuted.
 
       Earlier attempts are not erased: the first UI regression used the wrong
       accessible role (**204 pass / 1 fail**), then passed **205/205** with

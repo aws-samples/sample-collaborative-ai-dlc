@@ -103,16 +103,20 @@ const rejectDirectoryCycles = (plan, directories) => {
       : [],
   );
   const active = new Set();
-  const done = new Set();
-  const visit = (index, depth) => {
-    if (done.has(index)) return;
-    if (active.has(index) || depth > NATIVE_DEPENDENCY_LINK_LIMITS.chain) invalid();
+  const lengths = new Map();
+  const visit = (index) => {
+    if (lengths.has(index)) return lengths.get(index);
+    if (active.has(index) || active.size >= NATIVE_DEPENDENCY_LINK_LIMITS.chain) invalid();
     active.add(index);
-    for (const next of edges[index]) visit(next, depth + 1);
+    const length = 1 + edges[index].reduce((max, next) => Math.max(max, visit(next)), 0);
     active.delete(index);
-    done.add(index);
+    if (length > NATIVE_DEPENDENCY_LINK_LIMITS.chain) invalid();
+    // Retain the suffix length so a previously visited subtree still counts
+    // toward every incoming path's bound, independent of inventory order.
+    lengths.set(index, length);
+    return length;
   };
-  for (let index = 0; index < plan.length; index++) visit(index, 0);
+  for (let index = 0; index < plan.length; index++) visit(index);
 };
 
 export const nativeDependencyLinks = (metadata, files, bounds = {}) => {
@@ -144,6 +148,14 @@ export const nativeDependencyLinks = (metadata, files, bounds = {}) => {
   const directories = new Set(
     metadata.directories.filter((d) => d.scope === 'project').map((d) => d.path),
   );
+  // Capture rejects dependency hardlinks even when no symlink references them.
+  // Enforce the same contract before admitting or restoring a stored inventory.
+  if (
+    metadata.hardlinks.some(
+      (group) => group.scope === 'project' && group.paths.some(nativeDependencyLinkPath),
+    )
+  )
+    invalid();
   const aliases = new Map();
   let bytes = files.reduce((sum, file) => sum + file.bytes, 0);
   for (const link of links) {
