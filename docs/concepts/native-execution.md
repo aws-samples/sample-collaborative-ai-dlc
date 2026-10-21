@@ -2801,9 +2801,341 @@ Claude terminal-projection corrections are implemented locally. Local checks do
 not close the remaining live stability or latency work. Keep each simplification
 independently reviewable; preserve the existing authority and checkpoint owners.
 
+- [ ] **Decision review — live intent `9c0a0e09` failed during exact recovery
+      export (2026-10-21); evidence and architecture review complete, product
+      decisions pending.** No compatibility patch is authorized by this review.
+      The user requires preservation of accepted answers and published work,
+      with **confirmed recovery into a fresh CLI session**. Exact restoration of
+      the previous CLI session is no longer a mandatory product requirement.
+      The existing environment/tools feature is the image-selection foundation
+      to reuse. Whether a verified public turn can be admitted without a portable
+      exact checkpoint remains **undecided**. This entry supersedes the earlier
+      assumption that exact CLI export must always gate progress; it does not
+      change the deployed contract or any historical run.
+
+      **Verified incident and alignment.** Intent
+      `9c0a0e09-625b-4607-b56d-fb5c96588d97`, project
+      `22371643-2db5-42a4-a571-e47fc35745f5`, is `FAILED` with
+      `native_recovery_external_hardlink`, turn 4, writer 3, epoch 1, current
+      version 2015. Attempt `ac1e885f-7c9b-43c0-9aaa-d93bd43751cf`, runtime session
+      `e98f6a7b-5c0c-4513-8d76-1767ecb3dc8e`, Claude session
+      `348a8e75-e2f5-4193-8312-13207ee36fc9`. The admitted model is
+      `global.anthropic.claude-sonnet-5-5`; package 2.11.0 is
+      `sha256:9fdb284f4601d3c8c2d828abda2b9b98f3ecaca149870da3a11dbc2ee24805b1`,
+      materialization
+      `sha256:8c277086e76f1b47fabccaa6be4fc3f9b39efa1f9e2ed2cab18517e561caeb24`.
+      The source checkout commit recorded by authority is
+      `d99d2511c43f07ff2451e7e13f5a8f45b16dfce2` (application source, **not** runtime
+      source). Configuration hash is
+      `358da96cc06d42303211c16dc2055797588052a15a9063dd0647dc759fd9c542`.
+
+      Runtime `native_411511fd458201eb161eedc7b962cc0a-9h91tU2Uli`, version **2**,
+      endpoint `exec_07105e31be4cfb24f15b52937fd311fc`, is pinned to
+      `sha256:6656cb760ad3f8f00c5c205b6098ac2adb6a23ea8482c1deabcb4bbc2cac0e06`.
+      `GetAgentRuntime(version=2)` independently confirms the image, VPC mode,
+      EFS `fs-0dbff85b86169efdc`, access point `fsap-074f4d7f84b023ce3` mounted at
+      `/mnt/native`, idle timeout **900 s**, maximum lifetime **28,800 s**.
+      Network-disabled inspection of the already-cached **exact digest** confirms
+      installed Claude **2.1.296**. The following image files match `7a251b4`
+      byte-for-byte; this is selected-owner alignment, not an attestation of every
+      file in the image:
+
+      | Owner | SHA-256 in deployed image and checkout |
+      | --- | --- |
+      | `lambda/agentcore/native/session-recovery-files.js` | `883ee0747519f2ad6022750cae60022876142dfd8c2e1c79f8a64d80d6c8b7fd` |
+      | `lambda/agentcore/native/executor.js` | `d93706f6128002834b1a95d57474f78bf34ce0801d64935b6e1ceecf0ec683f2` |
+      | `lambda/agentcore/native/execution-files.js` | `62ade886e67e600f85562989da1997f479cd3d7df272152d63616de8b3efc49f` |
+      | `lambda/shared/native-project-files.js` | `9ecea31631002a69cd6248864d8bdcf52205bb43a597968ce3f2d6b380cc7228` |
+      | `lambda/shared/native-recovery-checkpoint.js` | `12c727d3e3478f078d111d76cc8b36618174807a4e24b8867ddebe759853485d` |
+
+      Controller `collaborative-ai-dlc-native-runs-dev-execution`, Node 24/arm64,
+      last modified **17:02:56 UTC**, reports CodeSha256
+      `9vUPG/tdOaIfwywaSbMB40FPx5HfsDkrWTl1HG2bJ/o=`. This exactly matches retained
+      local ZIP `terraform/builds/cd2f87531cf6e8e2309108ba41d847a293077495b494535edcc4617ca0fa88bf.zip`.
+      Rebuilding its entry point **in memory** with current package-script esbuild
+      options gives the identical `execution-worker.mjs` hash
+      `319b4e4b4fdb2e0f75fe5be2368e73a59a254c7faba2a1b9c82c9f4f78b4d6d0`.
+      There is no demonstrated stale implementation at this failure boundary.
+      The prior parent-qualified image `2a48536b…` is a different build; its
+      qualification remains local evidence, not this run's image identity.
+
+      **UTC timeline, separate from output activity.** Consistent, scalar-projected
+      DynamoDB reads drained all 24 `EVENT#` rows, three `RESPONSE#`, five `ANSWER#`
+      observations and three `PUBLICATION#` rows. Partition in
+      `collaborative-ai-dlc-native-runs-dev`:
+      `NATIVE#add8e837bfc55131d8a186459b1b6348b8eba0f04a3e9b0c3e848a6e6a318c1e`.
+      Last lifecycle event is `EVENT#0000000000002007`; row version later reaches
+      2015 through bookkeeping. **Independent** `OUTPUT_CURSOR` is seq 117,
+      writer 3/index 64. Neither cursor proves workflow completion.
+
+      | Turn / writer | Acceptance and delivery | CLI launch → completion | Public upload / private capture / admitted boundary |
+      | --- | --- | --- | --- |
+      | 1 / 1 | Start 17:42:32.120; delivery 17:43:25.641 | 17:47:03.402 → 17:48:20.623 (**77.221 s**) | Files 17:48:21.076; interaction 21.107; capture 1.650 s, 408 files/10,426,865 bytes; upload 3.782 s; admitted **17:48:34.032**, event 340 |
+      | 2 / 2 | Answer 18:20:54.600; `SESSION_LOST` 18:21:08.129; predecessor stopped/writer 2 restoring 18:21:15.990; delivery 18:25:10.122 | 18:25:10.212 → 18:31:20.466 (**370.254 s**) | Capture 2.041 s, 430 files/10,863,391 bytes; upload 6.775 s; admitted **18:31:37.968**, event 878 |
+      | 3 / 3 | Answer 18:55:39.915; `SESSION_LOST` 18:55:51.483; predecessor stopped/writer 3 restoring 18:55:58.583; delivery 19:00:00.517 | 19:00:00.728 → 19:03:34.994 (**214.266 s**) | Capture 1.870 s, 439 files/10,953,830 bytes; upload 6.443 s; admitted **19:03:52.257**, event 1251 |
+      | 4 / 3 | Answer 19:07:31.278; dispatch 35.964; delivery **19:07:36.358**, event 1270 | 19:07:36.666 → **19:19:33.650** (**716.984 s**) | Final public snapshot passed 19:19:33.905; files uploaded 34.726, interaction 34.766; capture started **34.766**, failed **37.861**; no checkpoint upload or fourth admission |
+
+      Turn 1 installation/configuration took **208.711 s**, separately from CLI
+      execution. The two waiting intervals before answers 2/3 were **32m20.568s**
+      and **24m01.947s**, both beyond the configured 15-minute idle timeout.
+      `SESSION_LOST` and successful writer changes/restores are recorded;
+      idle expiry is a supported explanation, **not a directly observed AWS
+      termination cause**. Each cold reply took about 4m15s/4m21s to delivery.
+      Actual download/restore intervals were 18:21:27.456–18:21:48.037 and
+      18:56:07.971–18:56:31.221. The further ~197/~205 s before authority recorded
+      recovery completion includes the current restore path's verified package
+      preparation, machine reinstall/re-pin and cleanup (`executor.js:1926–2008`);
+      those substeps are not separately timed here. Do not call them EFS latency.
+      The full 97m10.092s start-to-stop interval was not continuous CLI execution.
+      Fourth-turn acceptance-to-delivery was **5.080 s**; it then spent
+      **716.984 s** in CLI execution/cleanup. CLI-reported duration 691,877 ms,
+      API duration 253,683 ms and 21 inner turns are observational fields, not
+      independent wall-clock phases or proof of model-only inference time.
+
+      The fourth final public inventory contains **65 files/642,581 bytes**,
+      versus 41/51,671 in publication 3. A structured v2 form (one question/two
+      choices) passed presentation handling. These uploads are runtime receipts,
+      **not admitted publication 4**. Capture failed after **3.095 s**, before
+      `checkpointCaptureCompleted` or `checkpointUploadStarted`. At
+      **19:19:41.709**, controller request
+      `834c0980-1bbf-51c3-83b1-6ad3093d9d65` observed `status=failed`,
+      `runtimeCode=native_recovery_external_hardlink`, matching turn/writer/request
+      identities and no identity mismatch. It fenced/stopped the session and
+      committed `FAILED` with stop confirmation **19:19:42.212**, event 2007.
+      Final bookkeeping timestamp is **19:19:51.557**.
+
+      Content-free runtime evidence: 114 `native.lifecycle` records in
+      `/aws/bedrock-agentcore/runtimes/native_411511fd458201eb161eedc7b962cc0a-9h91tU2Uli-exec_07105e31be4cfb24f15b52937fd311fc`;
+      streams `2026/10/21/[runtime-logs]ae7d3bc9-da74-4582-985b-d9b7fc1f1ce3`
+      (writer 1), `…c8292929-3a46-4802-af4a-782ef725405e` (writer 2),
+      `…59f943a6-c915-4d3a-a9b0-fc590f02b85f` (writer 3).
+      Controller group `/aws/lambda/collaborative-ai-dlc-native-runs-dev-execution`,
+      stream `2026/10/21/[$LATEST]00854671fdeb4daeb8637c0812eddd84`;
+      diagnostic scope hash
+      `7b008f411cc0b1067d64538a93a02466bebdabdebe8f6595fdd6afcbf438d765`.
+
+      Last admitted publication:
+      `bd711053245f68d9d7b399a465e6e6032875ae8d423f8e66f0f2238a6296799e`;
+      checkpoint:
+      `e78852ea8f56a94ee660abbe2a849a50caa7c7021e4598237e5e6495e2812067`;
+      interaction:
+      `130ed3a13a88d41d44d840d48b236f5730f17e58b6088c79b90d0209f03d6e22`, all
+      sequence 3. Fourth command `450856e7-b765-423e-9407-62b5d20de500`, request
+      `3979e8cb-5d20-4b29-a7af-36f2a4bdead8`, has an immutable accepted RESPONSE
+      and `ANSWER#130ed3a…#delivered` observation at 19:07:36.358. Current recovery
+      eligibility requires a **pending, undispatched** answer and matching prior
+      boundary (`execution-store.js:364`); this failed/delivered turn is ineligible.
+      Do not replay answer 4, restore checkpoint 3 as an automatic retry, or claim
+      fourth-turn uploaded work has been admitted. No run was changed.
+
+      **Cause confidence and the missing evidence.** This is our private exporter
+      rejecting filesystem topology, not a model, parser, public-snapshot, EFS
+      mount or AWS hardlink-operation error. The exact same code has two producers
+      in the verified deployed `session-recovery-files.js`:
+      (1) line 700 rejects `nlink != 1` for a dependency file under the declared
+      policy, even if every alias is inside the captured tree; (2) line 799 rejects
+      an unenumerated alias group outside the generated-workflow exception.
+      A hardlink is another name for the same inode, **not a symlink with an
+      outside target**. The error name alone proves neither an outside-workspace
+      alias nor the creator/tool/path. No retained content-free event identifies
+      the branch, scope, category or link count. Those historical details remain
+      unknown. A future diagnostic needs only rejection branch, project/home
+      scope, enumerated category, policy version, `nlink` and enumerated alias
+      count (optionally a path hash), not raw filenames or private content. That
+      instrumentation is a proposed prerequisite, not an edit in this review.
+
+      Three temporary synthetic fixtures through the production capture owner
+      demonstrated: internal dependency aliases → line 700 rejection; an ordinary
+      file with an outside alias → line 799 rejection; ordinary fully enumerated
+      internal aliases → one retained hardlink group. Fixtures used inert Claude
+      JSONL and were deleted; no model/CLI session ran. They explain the branches,
+      **not the historical file**. The parent-reviewed suite actually asserts the
+      dependency rejection (`native-session-recovery-files.test.js:235`); the
+      packaged npm journey qualified symlink-based `.bin`/`file:` layouts, not
+      arbitrary hardlink stores. This is the central acceptance error: successful
+      export of the declared fixture was used as a proxy for reliable application
+      progress under a broader generated workload. More path exceptions alone do
+      not answer whether export belongs on the success path.
+
+      **Why EFS was selected, and what checkpoints are for.** Repository history
+      `8708fed:docs/development/native-storage-options.md` records the September
+      24/25 decision: AI-DLC 2.9.0 installation/project pinning used hardlink locks;
+      managed `/mnt/workspace` rejected them with errno -524, while local disk and
+      then EFS passed. EFS tests included hardlinks, symlinks, rename, executable
+      modes and >1 GiB checksum readback. The then-user chose microVM + EFS, with
+      active CLI homes/databases local, and excluded Instances. These are dated
+      repository records, not newly repeated live tests. The new request permits
+      comparing the existing Instances option; it does not authorize switching.
+
+      The two supplied AWS URLs now redirect to the guide index. AWS's current
+      sitemap leads to [File system configurations for AgentCore Runtime](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-filesystem-configurations.html),
+      verified 2026-10-21. It distinguishes managed session storage (Preview), EFS,
+      S3 Files and Instances/EBS. Managed session storage still excludes hardlinks;
+      its current docs **support rename and in-session advisory locking** and say
+      permissions are stored but not enforced within the session. Do not repeat
+      a blanket claim that all rename/locking is unsupported or that this page
+      proves atomic crash durability. It describes 14-day idle expiry/version-reset
+      behavior. EFS supports hardlinks, symlinks and advisory locks, is shared
+      through access points and persists until customer deletion; access-point
+      UID/GID and single-writer isolation still matter. S3 Files excludes
+      hardlinks and would not fix the original active-filesystem incompatibility.
+      [Regions](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/agentcore-regions.html)
+      lists both microVMs and Instances in N. Virginia; no account capacity/quota
+      or new Instances deployment was verified. [Instances](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-instances-how-it-works.html)
+      documents EBS surviving stop/restart until session deletion, a new instance
+      on resume, and a maximum session duration of 14 days. Filesystem options are
+      compute-specific; Instances cannot simply add the current EFS configuration.
+
+      | Responsibility | Current owner and guarantee | What it does not guarantee |
+      | --- | --- | --- |
+      | Runnable files/tooling | Image binaries + per-run EFS machine/project; `provisioner.js`, `execution-runtime.js` | An image cannot prevent repositories/install scripts from generating new links, caches or active databases. |
+      | Mutable durable work | EFS project survives a microVM; access point isolates the run | No immutable turn boundary, database transaction consistency, process memory or proof that only one writer acts. Deletion/corruption still require backup policy. |
+      | Active CLI session | Per-attempt local HOME/XDG, native CLI adapters | EFS project persistence does not preserve these local files or live processes. Moving all SQLite/WAL state onto NFS is not an established fix. |
+      | Immutable results and human input | Versioned S3 publication/interaction + DynamoDB publication/RESPONSE/ANSWER records | Public files exclude Git, CLI/control paths, dependency inventory and some engine-private material; they are not a full CLI/home or arbitrary workspace backup. |
+      | Portable exact recovery | Private versioned S3 checkpoint: project/private inventory + selected session state + bytes/modes/topology, bound to publication/interaction/image/package | Compatibility with every package-manager cache or future CLI layout; preservation of external side effects or CPU/process state. |
+      | Admission/stop authority | DynamoDB CAS, epoch/attempt/writer/request fences; provider stop evidence | EFS locks, filesystem exports, activity text and S3 upload success cannot replace this authority. |
+
+      Exact checkpoints have a real benefit here: they restored the two lost
+      sessions, including local CLI context. Their costs are topology/private
+      format restrictions, duplicated inventory/object verification, session
+      compatibility maintenance, stored bytes and latency. This run's successful
+      capture+upload totals were **5.432 / 8.816 / 8.313 s** per turn; controller
+      verification/admission followed. Cold recovery additionally rebuilt the
+      machine installation. These costs are distinct from the much larger fourth
+      CLI interval; removing export does not make that interval disappear.
+
+      The fatal dependency is explicit: `runtime-server.js:32` supplies
+      `execution-prepare.js:490`'s recovery publisher; `executor.js:1298–1355`
+      captures/uploads before setting `publication_ready`. A throw bypasses that
+      status, and `execution-worker.js:489–499` fences/stops and records FAILED.
+      `execution-lifecycle.js:434` verifies public/interaction/checkpoint receipts
+      before atomic `store.publish`. Crucially, its checkpoint and the store's
+      `publish` checkpoint parameter are **already optional for compatibility**
+      (`execution-store.js:1542`); DynamoDB does not intrinsically require an exact
+      CLI export. The production runtime's unconditional use of the publisher
+      creates today's requirement. Removing a callback alone would still leave
+      fresh recovery undefined and is not a complete policy change.
+
+      **Existing environments/tools: reuse, not a new catalogue.**
+      `lambda/environments/catalog-recipe.js` resolves pinned base/tool versions,
+      exact packages, bounded build commands and protected runtime variables;
+      `tool-catalog.js` owns executable/dependency resolution and verification.
+      `environments/status.js` pins built image digests, applies image/security
+      checks, provisions via `runtime-backends`, and records verification before
+      publication. `shared/environment-snapshot.js:59` consistently resolves a
+      published/superseded, verified, compatible immutable revision.
+      `projects/index.js:995` exposes member reads and owner/admin assignment;
+      `intents/index.js:5870` captures that environment snapshot for ordinary
+      intents. `frontend/src/components/project-settings/EnvironmentTab.tsx`
+      already presents revision, included tools and stack warnings.
+
+      Native instead takes `NATIVE_EXECUTION_IMAGE_URI/DIGEST` from deployment
+      (`execution-config.js:84`), prepares a dedicated runtime/AP/role and deliberately
+      bypasses project environments (`shared/runtime-target.js:18`, settings table
+      above). Its image is protected, but its selection/verification experience
+      diverges from the existing product. Smallest reuse: resolve and pin the
+      selected **environment revision/image/tool snapshot** at native admission;
+      validate native protocol/capabilities for that revision; instantiate the
+      protected per-run runtime from that image with existing native identity and
+      storage guards. Do not reuse a shared runtime's broad access point, silently
+      fall back to another image, import workspace internals into shared code, or
+      pretend current environment verification already qualifies native recovery.
+      Revision readers must precede new writers; retained native runs keep their
+      old configuration hashes/image. Environment definition constrains starting
+      tooling, not every state generated by arbitrary build commands. Actual
+      project assignment was not queried: current native does not consume it.
+
+      **Three alternatives for the decision (not implementation commitments).**
+
+      | Option | Failure/recovery and retained work | Contract / migration / environment | Cost and residual risk |
+      | --- | --- | --- | --- |
+      | **A. Keep mandatory portable exact checkpoints** | Every completed turn still waits for exact private export. Unsupported topology stops the run; preceding admitted work/answers survive, newer uploaded work is not admitted. Eligible cold resumes restore the same CLI session; delivered answers never replay. | Extend the existing versioned inventory to explicit closed hardlink/cache classes, external-alias policy and resource budgets; compatible readers before writers. Reuse managed image/tool revisions. Old runs retain their original exact contracts. | Most session continuity and portability; continued format/security/closure maintenance, duplicated dependency bytes and export latency. Defining an image reduces variants but cannot make arbitrary dependency stores closed. Larger caches, active files and future CLI layouts can still block useful work. Stronger than the user's requested recovery guarantee. |
+      | **B. Separate published-work durability from optional exact CLI recovery; retain EFS** | Verify/admit immutable public work and interaction under the same authority fence; record exact-session recovery availability separately. On session loss stop/fence, show last published boundary and require confirmation for a fresh CLI. Keep accepted answers as history, never requeue delivered commands. Whether live progress continues without exact export is the pending decision. | New versioned admission/recovery mode, no silent rewrite of old rows or checkpoints. Specify the minimum workflow resume state that must remain durable, rebind a fresh CLI to pinned workflow/gates, and reuse environment revisions. Public results alone currently omit private engine/config state: this requires a deliberate logical-resume adapter, not replaying conversation or trusting all mutable EFS files. | Removes exact CLI/dependency export from the ordinary critical path if approved. EFS retains caches/current bytes; S3 publications survive loss of EFS for their defined file set. Fresh CLI loses hidden conversational context; dependency rebuild and unpublished-EFS handling need explicit rules. Public validation, credential protection and uncertain external effects still gate safety. Extra export, if retained, must not race a successor writer. |
+      | **C. Use the existing managed-environment Instances/EBS backend** | Persistent per-session block storage can retain workspace/caches and appropriate local CLI stores across stop/restart. Processes still restart; fresh CLI confirmation remains the user contract. Immutable published work/answers and stop/dispatch fences remain necessary. | Reuse `runtime-backends/instances.js`, capacity-provider fingerprints, revision snapshots and `shared/runtime-session.js` stop-vs-release retention. Requires a **new runtime**: compute type cannot be changed in place. Native needs a reviewed backend adapter, volume/root identity checks and cleanup ownership; old EFS runs stay on EFS. Not a request to build another environment service. | Better fit for filesystem-heavy tools/local database placement and longer sessions; cold EC2 startup, capacity/quotas, patch-on-restart, retained EBS/EC2 costs and lifecycle operations. Volume loss/deletion still needs recovery policy. Changing storage alone does **not** fix this incident if the same mandatory exporter remains. Current repository default Instances lifetime is 28,800 s, despite AWS supporting longer. |
+
+      **Preferred direction: B, conditional on the admission decision, with the
+      existing environment feature reused; evaluate C only if filesystem/idle
+      measurements justify changing compute.** A is a valid choice when exact
+      automatic CLI continuity is worth its restrictions, but that is no longer
+      the user's stated requirement. Keep immutable results, answer identity,
+      required human gates, credentials and writer/stop fences. Separate the
+      ability to preserve published work, the ability to resume logically, and
+      the optional ability to reconstruct the old CLI session. Do not weaken
+      checkpoint readers or classify a corrupt/security-invalid record as a
+      harmless portability warning. Public credential-retention policy and the
+      same-UID protected-outcome `not_verified` boundary remain unchanged.
+
+      Remaining user decisions, after the distinction above:
+
+      1. **Admission:** may a completed, validated public turn become available
+         with an explicit “exact session recovery unavailable” condition, or
+         must execution pause after preserving its result until recovery is
+         available? Recommend admission with honest recovery status; no decision
+         has been applied. This does not authorize admitting invalid public
+         data, bypassing human approval, or invoking another model as repair.
+      2. **Unpublished EFS work:** after a crash, retain the newer mutable work
+         separately for review while confirmed recovery starts from published
+         work, or allow a separately confirmed salvage path? Recommend preserve
+         for review, without silently promoting it. Never destroy that work or
+         automatically replay uncertain side effects.
+      3. **Generated dependencies:** is reconstruction from the pinned image,
+         manifests/lockfiles and integrity-checked packages acceptable when the
+         working volume is unavailable, or must exact installed bytes also be
+         portable? Rebuild requires available artifacts/registries or a defined
+         cache; lockfiles alone cannot guarantee offline availability or
+         deterministic install scripts. Authored source and approved results are
+         preserved in either choice, not treated as disposable cache.
+
+      A finite migration/acceptance sequence after those decisions: (1) define
+      published-work/fresh-CLI reconstruction coverage, including private workflow
+      bindings, source-baseline gaps, instructions, approvals and dependency
+      policy; add compatible readers and expose recovery capability before new
+      writers; (2) integrate immutable environment selection without retargeting
+      retained runs; (3) implement the selected mode at existing publication,
+      execution and recovery owners; (4) test product outcomes under internal
+      dependency hardlinks, outside aliases, large caches, exact-export failure,
+      idle expiry, lost acknowledgements, uncertain delivered side effects,
+      restart with newer EFS work, volume unavailable, and required gates;
+      (5) qualify a fresh **production-built** image with install/build/test,
+      public admission, >15-minute wait, confirmed fresh-CLI recovery and another
+      protected answer/publication. Verify old-image readers independently.
+      Only after local acceptance/review should a bounded authorized fresh live
+      intent exercise that sequence with deployed digest/controller checks.
+      No historical intent is repaired or reused as the smoke test. No deployment
+      or additional live run is recommended by this decision review.
+
+      **Review verification and limits.** STS reverified account 746558295630 /
+      `assumed-role/ReadOnly/jwthewes-Isengard`; every AWS call used
+      `AWS_PROFILE=solution-read AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
+      AWS_PAGER=''`. All AWS reads were scoped metadata/fixed-schema logs. Three
+      initial projection queries failed with DynamoDB `ValidationException`
+      because `sequence` needed an attribute-name alias; corrected queries drained
+      successfully. DEFAULT runtime logs contained no lifecycle events; the exact
+      admitted execution endpoint did. No AWS access denial, private S3 body,
+      EFS mount, credential read, runtime/model invocation or cloud mutation.
+      An initial local Docker socket read was sandbox-denied; the authorized
+      network-disabled cached-image inspection then succeeded. The original AWS
+      documentation URLs redirected; current official sitemap URLs above were
+      verified instead. Controller reproduction is an in-memory build only.
+      Node 24.21.0 validation: `npm run format:check --
+      docs/concepts/native-execution.md`, `npx secretlint
+      docs/concepts/native-execution.md`, and `git diff --check` passed.
+      `UV_CACHE_DIR=/tmp/native-decision-uv-cache uv sync --frozen --group docs`
+      and `UV_CACHE_DIR=/tmp/native-decision-uv-cache uv run python
+      scripts/build-docs.py` passed (no issues; published-doc build excludes this
+      draft tracker by design). The three new official links were fetched and
+      verified; cited local owners and historical Git paths were read. The three
+      synthetic branch checks and byte-identical controller build above are
+      analysis probes, not a new runtime acceptance suite. No application test
+      changes or broad reruns are justified for this documentation-only decision
+      review. Production/test files and all failed-run state remain unchanged.
+
 - [ ] **Incident — live intent `576ffeb2` failed after continued execution
       (2026-10-21); dependency implementation, independent review and packaged
-      local acceptance complete; deployment/live acceptance remain.** The user reported failure of intent
+      local acceptance complete; live acceptance remains.** Relevant recovery
+      implementation is now verified deployed in the later `9c0a0e09` incident
+      above; its private-export failure does not close the live acceptance gate.
+      The user reported failure of intent
       `576ffeb2-1bbc-4874-99e0-17d0e5a18f77` in project
       `22371643-2db5-42a4-a571-e47fc35745f5`. **Confirmed:** the restored turn-4
       baseline passed; Claude completed; the final public workspace snapshot
