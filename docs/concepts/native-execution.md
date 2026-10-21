@@ -2805,8 +2805,17 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       (2026-10-21).** The user reported failure of intent
       `576ffeb2-1bbc-4874-99e0-17d0e5a18f77` in project
       `22371643-2db5-42a4-a571-e47fc35745f5` after the local qualification work.
-      Failure code, timeline, harness/model/package, deployed image/controller
-      alignment and relation to earlier defects are not yet established.
+      Initial consistent scalar read confirms **FAILED**, `native_snapshot_link`,
+      Claude / Sonnet 5.5, turn 4, writer generation 2, epoch 1. The recorded
+      image is `sha256:55af546654300d86c78575f0fb03df63bae81e74cf4862eb3a4ae3924d5b32d7`;
+      package is `sha256:9fdb284f4601d3c8c2d828abda2b9b98f3ecaca149870da3a11dbc2ee24805b1`.
+      Latest publication/checkpoint sequence is 3. Start was
+      **2026-10-20 18:23:09.273 UTC**; stop confirmation was
+      **2026-10-21 13:49:00.059 UTC**, with the authority row updated at
+      **13:49:12.074 UTC**. These timestamps do not establish continuous CLI
+      execution between them. The current snapshot owner emits this code for a
+      symbolic link, distinct from the earlier output-parser failure. The actual
+      link, failing phase/timeline and deployed source alignment remain unknown.
       Investigate this exact run through scoped read-only metadata and safe
       diagnostics; preserve its answers, publications, checkpoints and terminal
       state. Compare actual deployed behavior with reviewed `6bdb147`, without
