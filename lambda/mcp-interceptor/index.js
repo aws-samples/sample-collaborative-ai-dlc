@@ -4,6 +4,7 @@ import { ddb, openGraph } from './clients.js';
 import { closeGraphSource } from '../shared/mcp/graph-writer.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { kmsPublicKeyResolver, verifyGatewayGrant } from '../shared/gateway-grant.js';
+import { gatewayGrantRetirementCheckFromEnv } from '../shared/gateway-grant-retirement.js';
 import { createGatewayAuthorizer } from '../shared/mcp/gateway-authorization.js';
 import { createGatewayInterceptor } from './interceptor.js';
 
@@ -15,9 +16,11 @@ const publicKeyFor = kmsPublicKeyResolver({
   allowedKeyIds: (process.env.GATEWAY_GRANT_KEY_IDS ?? '').split(','),
 });
 
+const isRetired = gatewayGrantRetirementCheckFromEnv({ ddb });
+
 export const handler = createGatewayInterceptor({
   authorizer: createGatewayAuthorizer({
-    verifyGrant: (token) => verifyGatewayGrant(token, { publicKeyFor }),
+    verifyGrant: (token) => verifyGatewayGrant(token, { publicKeyFor, isRetired }),
     createStore: () => createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
     openGraph,
     closeGraphSource,

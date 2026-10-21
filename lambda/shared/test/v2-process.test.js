@@ -841,6 +841,70 @@ describe('createProcessStore', () => {
     ).resolves.toBeNull();
   });
 
+  it('failStageAttemptForGrantRetirement overrides the worker’s own verdict, fenced by attempt and run', async () => {
+    ddb.on(UpdateCommand).resolves({ Attributes: { state: 'FAILED' } });
+    await expect(
+      store.failStageAttemptForGrantRetirement({
+        executionId: 'e1',
+        stageInstanceId: 'si-1',
+        stageCallbackId: 'cb-1',
+        orchestratorRunId: 'run-1',
+      }),
+    ).resolves.toEqual({ state: 'FAILED' });
+    const input = ddb.commandCalls(UpdateCommand)[0].args[0].input;
+    expect(input.ConditionExpression).toBe(
+      'attribute_exists(pk) AND #state IN (:running, :succeeded, :waiting) AND ' +
+        'stageCallbackId = :callbackId AND ' +
+        '(attribute_not_exists(orchestratorRunId) OR orchestratorRunId = :runId)',
+    );
+    expect(input.ExpressionAttributeValues).toMatchObject({
+      ':running': 'RUNNING',
+      ':succeeded': 'SUCCEEDED',
+      ':waiting': 'WAITING_FOR_HUMAN',
+      ':failed': 'FAILED',
+      ':callbackId': 'cb-1',
+      ':runId': 'run-1',
+      ':err': 'gateway_grant_retirement_failed',
+    });
+    expect(input.ExpressionAttributeValues[':g2sk']).toBe(
+      executionTypeStateIndex({ executionId: 'e1', type: 'STAGE', state: 'FAILED', id: 'si-1' })
+        .GSI2SK,
+    );
+  });
+
+  it('failStageAttemptForGrantRetirement leaves another attempt’s row alone', async () => {
+    ddb
+      .on(UpdateCommand)
+      .rejects(Object.assign(new Error('cas'), { name: 'ConditionalCheckFailedException' }));
+    await expect(
+      store.failStageAttemptForGrantRetirement({
+        executionId: 'e1',
+        stageInstanceId: 'si-1',
+        stageCallbackId: 'stale-callback',
+      }),
+    ).resolves.toBeNull();
+    expect(ddb.commandCalls(UpdateCommand)[0].args[0].input.ConditionExpression).not.toContain(
+      ':runId',
+    );
+  });
+
+  it('adds and clears unretired grant jtis on META as a string set', async () => {
+    ddb.on(UpdateCommand).resolves({});
+    await store.addPendingGrantRetirements({ executionId: 'e1', grantIds: ['j1', 'j1', 'j2'] });
+    await store.clearPendingGrantRetirements({ executionId: 'e1', grantIds: ['j1'] });
+    expect(await store.addPendingGrantRetirements({ executionId: 'e1', grantIds: [] })).toBeNull();
+    const [add, clear] = ddb.commandCalls(UpdateCommand).map((c) => c.args[0].input);
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(2);
+    expect(add).toMatchObject({
+      Key: { pk: 'EXEC#e1', sk: 'META' },
+      UpdateExpression: 'ADD pendingGrantRetirements :ids SET updatedAt = :ts',
+      ConditionExpression: 'attribute_exists(pk)',
+    });
+    expect(add.ExpressionAttributeValues[':ids']).toEqual(new Set(['j1', 'j2']));
+    expect(clear.UpdateExpression).toBe('DELETE pendingGrantRetirements :ids SET updatedAt = :ts');
+    expect(clear.ExpressionAttributeValues[':ids']).toEqual(new Set(['j1']));
+  });
+
   it('resumeStageRow folds the open park window into waitMs, clears parkedAt, preserves startedAt/attempt', async () => {
     // A resume PATCHES the parked row — rebuilding it (putStage) was the
     // "stage duration resets when a question is answered" bug.

@@ -1,6 +1,10 @@
 import { KMSClient, GetPublicKeyCommand } from '@aws-sdk/client-kms';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { kmsPublicKeyResolver, verifyGatewayGrant } from '../shared/gateway-grant.js';
+import { authError } from '../shared/agent-auth-contracts.js';
+import { gatewayGrantRetirementCheckFromEnv } from '../shared/gateway-grant-retirement.js';
 import { assertEngineGrantFor } from '../shared/execution-repository-authority.js';
 
 export {
@@ -44,7 +48,51 @@ const publicKeyFor = kmsPublicKeyResolver({
   allowedKeyIds: (process.env.GATEWAY_GRANT_KEY_IDS ?? '').split(',').map((id) => id.trim()),
 });
 
-export const verifyBrokerGatewayGrant = (token) => verifyGatewayGrant(token, { publicKeyFor });
+// A retired grant is denied wherever a grant is verified, in transition and in
+// enforcement alike: like every other grant claim, a presented grant is never
+// downgraded. Only legacy-shape requests, which carry no grant, are unaffected.
+const isRetired = gatewayGrantRetirementCheckFromEnv({
+  ddb: DynamoDBDocumentClient.from(new DynamoDBClient({})),
+});
+
+export const verifyBrokerGatewayGrant = (token) =>
+  verifyGatewayGrant(token, { publicKeyFor, isRetired });
+
+const renewalEnded = () =>
+  authError('AGENT_CREDENTIAL_GRANT_INVALID', 'The renewal is no longer authorized');
+
+// A renewal re-runs only what can end it, never the handoff's Gateway verification or
+// invocation accounting: the execution must not have been cancelled since the handoff,
+// and the Gateway grant the handoff was authorized by (named in the renewal token) must
+// not have been retired. A run that ends on its own retires its grants one by one, so
+// its renewals end with them, while a grant issued after the run (a discussion, an
+// artifact-edit derive) keeps renewing. Renewal tokens issued before the binding name
+// no grant: served the legacy way in transition, refused once grants are enforced.
+// `execution` is the META row the caller read; a missing one is already refused.
+export const assertRenewalAuthority = async ({
+  claims,
+  execution,
+  env,
+  action,
+  isGrantRetired = isRetired,
+}) => {
+  const origin = claims.gatewayGrant ?? null;
+  if (!origin) {
+    if (runtimeGrantsEnforced(env)) throw renewalEnded();
+    if (engineDataEnabled(env))
+      logger.warn('legacy renewal token', { code: 'LEGACY_RENEWAL_TOKEN', action });
+  }
+  if (execution?.status === 'CANCELLED') {
+    const cancelledAt = Date.parse(execution.completedAt);
+    const issuedAt = origin?.issuedAt ?? claims.issuedAt;
+    if (!Number.isFinite(cancelledAt) || issuedAt * 1000 <= cancelledAt) throw renewalEnded();
+  }
+  if (!origin) return;
+  // Fail closed: a lookup failure throws an uncoded error the runtime retries.
+  if (typeof isGrantRetired !== 'function')
+    throw new Error('Gateway grant retirement is not configured');
+  if ((await isGrantRetired(origin)) !== false) throw renewalEnded();
+};
 
 export const authorizeGitGateway = async (request, verifyGrant = verifyBrokerGatewayGrant) =>
   assertEngineGrantFor(await verifyGrant(request.gatewayGrant), request);

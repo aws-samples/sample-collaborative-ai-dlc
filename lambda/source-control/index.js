@@ -27,6 +27,7 @@ import {
   verifyBindingCredential,
 } from '../shared/source-control-credentials.js';
 import { kmsPublicKeyResolver } from '../shared/gateway-grant.js';
+import { gatewayGrantRetirementCheckFromEnv } from '../shared/gateway-grant-retirement.js';
 import {
   RUNTIME_ALIAS_ERROR_CODES,
   gatewayGrantVerifier,
@@ -45,6 +46,7 @@ const verifyRuntimeGrant = gatewayGrantVerifier(
     GetPublicKeyCommand,
     allowedKeyIds: (process.env.GATEWAY_GRANT_KEY_IDS ?? '').split(',').map((id) => id.trim()),
   }),
+  gatewayGrantRetirementCheckFromEnv({ ddb }),
 );
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
 const __ = gremlin.process.statics;

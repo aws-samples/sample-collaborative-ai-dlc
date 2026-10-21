@@ -21,6 +21,7 @@
 // REPLAY DISCIPLINE: every side effect (agent invokes, provider operations,
 // and all store writes) MUST be inside ctx.step(...) or it re-executes on replay.
 
+import { randomUUID } from 'node:crypto';
 import { withDurableExecution } from '@aws/durable-execution-sdk-js';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -36,6 +37,17 @@ import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { issueAgentCredentialGrant } from '../shared/agent-credential-grants.js';
 import { gatewayScopeForCommand } from '../shared/gateway-grant.js';
 import { gatewayGrantIssuerFromEnv } from '../shared/gateway-grant-issuer.js';
+import {
+  gatewayGrantIssuanceGuardFromEnv,
+  gatewayGrantRetirerFromEnv,
+} from '../shared/gateway-grant-retirement.js';
+import {
+  GATEWAY_GRANT_RETIREMENT_FAILURE,
+  GATEWAY_GRANT_RETIREMENT_RETRY,
+  GatewayGrantRetirementExhaustedError,
+  retireGrantDurably,
+  retirePendingGrantsDurably,
+} from './grant-retirement.js';
 import {
   prepareAgentInvocation,
   executionCredentialBinding,
@@ -115,6 +127,10 @@ const lambda = new LambdaClient({});
 const agentcore = new BedrockAgentCoreClient({});
 const defaultStore = createProcessStore({ ddb });
 const gatewayGrantIssuer = gatewayGrantIssuerFromEnv();
+const gatewayGrantRetirer = gatewayGrantRetirerFromEnv({ ddb });
+const gatewayGrantIssuanceGuard = gatewayGrantIssuanceGuardFromEnv({ ddb });
+
+export { GATEWAY_GRANT_RETIREMENT_FAILURE, GATEWAY_GRANT_RETIREMENT_RETRY };
 
 const logger = new Logger({ persistentKeys: { component: 'v2-orchestrator' } });
 
@@ -286,6 +302,8 @@ const defaultDeps = () => ({
   invokeRuntime: defaultInvokeRuntime,
   issueAgentCredentialGrant: (claims) => issueAgentCredentialGrant(ssm, claims),
   issueGatewayGrant: gatewayGrantIssuer,
+  retireGatewayGrant: gatewayGrantRetirer,
+  awaitGrantIssuance: gatewayGrantIssuanceGuard,
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
   openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body, attemptKey }) =>
@@ -442,7 +460,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 
   const { projectId, workflowId, workflowVersion, scope } = meta;
   const credentialBinding = executionCredentialBinding(meta);
-  const invokeIntentRuntime = async (rawPayload, runtimeSessionId, { policy = null } = {}) => {
+  // `gatewayGrantId` pins the grant's jti (runStage memoizes it per stage
+  // attempt) so a re-driven dispatch re-signs the SAME jti the stage callback
+  // later retires.
+  const invokeIntentRuntime = async (
+    rawPayload,
+    runtimeSessionId,
+    { policy = null, gatewayGrantId = null } = {},
+  ) => {
     const gatewayScope =
       typeof deps.issueGatewayGrant === 'function'
         ? gatewayScopeForCommand(rawPayload, {
@@ -453,7 +478,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           })
         : null;
     const payload = gatewayScope
-      ? { ...rawPayload, gatewayGrant: await deps.issueGatewayGrant(gatewayScope) }
+      ? {
+          ...rawPayload,
+          gatewayGrant: gatewayGrantId
+            ? await deps.issueGatewayGrant(gatewayScope, { randomId: () => gatewayGrantId })
+            : await deps.issueGatewayGrant(gatewayScope),
+        }
       : rawPayload;
     const authMode = commandDefinition(payload.command)?.agentAuth;
     if (!authMode || !credentialBinding || typeof deps.issueAgentCredentialGrant !== 'function') {
@@ -535,6 +565,51 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
   // Guarded by the ownership token: a retired run (cancel/rewind relaunched the
   // intent under a new runId) fails the CAS and exits quietly instead of
   // clobbering the new run's META.
+  // A run retires each grant it issues, by jti, when that grant's use ends
+  // (runtimeStep below, and runStage for stage grants); its terminal outcome
+  // writes no execution-level retirement. That keeps grants issued after the
+  // run ended by someone else (a discussion, an artifact-edit derive) valid,
+  // and leaves nothing for a /start after FAILED to race.
+  const grantRetirement =
+    typeof deps.issueGatewayGrant === 'function' && typeof deps.retireGatewayGrant === 'function'
+      ? { retireGatewayGrant: deps.retireGatewayGrant, store, executionId }
+      : null;
+
+  // One synchronous engine command whose payload carries a Gateway grant: the
+  // jti is memoized in its own step (a re-driven invoke re-signs the same jti),
+  // the command runs in `stepName`, and once it returns — or throws — the jti
+  // is retired, fail-closed with the durable retry strategy. `body(invoke)` is
+  // the step body; `invoke` is invokeIntentRuntime pinned to that jti. An
+  // exhausted retirement leaves the jti on META and throws, which fails the run.
+  const runtimeStep = async (ctxArg, stepName, body, stepOptions) => {
+    if (!grantRetirement)
+      return ctxArg.step(stepName, () => body(invokeIntentRuntime), stepOptions);
+    const gatewayGrantId = await ctxArg.step(`grant-id-sync-${stepName}`, async () => randomUUID());
+    const invoke = (payload, session, options = {}) =>
+      invokeIntentRuntime(payload, session, { ...options, gatewayGrantId });
+    let result;
+    let failure = null;
+    try {
+      result = await ctxArg.step(stepName, () => body(invoke), stepOptions);
+    } catch (error) {
+      failure = error;
+    }
+    const retired = await retireGrantDurably(ctxArg, grantRetirement, {
+      stepKey: `sync-${stepName}`,
+      grant: { grantId: gatewayGrantId, executionId, outcome: failure ? 'error' : 'returned' },
+    });
+    // An unretired grant takes priority over the command's own error, which
+    // best-effort callers would otherwise swallow.
+    if (!retired) {
+      throw new GatewayGrantRetirementExhaustedError(
+        gatewayGrantId,
+        failure ? { cause: failure } : {},
+      );
+    }
+    if (failure) throw failure;
+    return result;
+  };
+
   const fail = async (reason, detail, structuredFailure = null) => {
     const message = detail ? `${reason}: ${detail}` : reason;
     const failure = {
@@ -593,6 +668,35 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     });
     runId = claim.runId;
     orchestratorExpiresAt = claim.orchestratorExpiresAt;
+    // A cancel/rewind/recompose/repair may have just retired this execution's
+    // grants up to the current second. The claim above
+    // replaced the run id, so no older writer can move that retirement later;
+    // wait until this clock — the one that stamps `iat` — is past it, so this
+    // run's first grant is not born retired. A failed read only risks such a
+    // grant being refused (consumers fail closed), so the run proceeds.
+    if (
+      typeof deps.issueGatewayGrant === 'function' &&
+      typeof deps.awaitGrantIssuance === 'function'
+    ) {
+      await ctx.step('await-grant-retirement', async () => {
+        try {
+          const { retiredAt, waitedMs, bounded } = await deps.awaitGrantIssuance(executionId);
+          if (bounded) {
+            logger.warn('gateway execution retirement is ahead of this clock', {
+              retiredAt,
+              waitedMs,
+            });
+          }
+          return { waitedMs };
+        } catch (error) {
+          logger.warn('gateway execution retirement could not be read', {
+            code: 'GATEWAY_GRANT_RETIREMENT_UNAVAILABLE',
+            error: error?.name ?? 'Error',
+          });
+          return { waitedMs: 0 };
+        }
+      });
+    }
     // init-ws — clone repos, create the Neptune Intent anchor, seed RUNNING state.
     // Idempotent in the runtime (ConditionalCheckFailed → already initialized), so
     // a replay of this step is safe.
@@ -602,9 +706,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         : null;
     const sessionId = sessionIdFor(intentId);
     const publishCheckpoint = async (stepName, sourceStageInstanceId = null) => {
-      const result = await ctx.step(stepName, async () => {
+      const result = await runtimeStep(ctx, stepName, async (invoke) => {
         try {
-          return await invokeIntentRuntime(
+          return await invoke(
             {
               command: 'create-workflow-checkpoint',
               projectId,
@@ -640,8 +744,8 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       'v2.workspace.initializing',
       `Initializing workspace (${(meta.repos ?? []).length} repo(s))…`,
     );
-    const initResult = await ctx.step('init-ws', () =>
-      invokeIntentRuntime(
+    const initResult = await runtimeStep(ctx, 'init-ws', (invoke) =>
+      invoke(
         {
           command: 'init-ws',
           projectId,
@@ -930,6 +1034,11 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             planStageInstanceId(namespace, stage.stageId, unitSlug, sectionIndex)),
         store,
         suffix,
+        retireGatewayGrant:
+          typeof deps.issueGatewayGrant === 'function' &&
+          typeof deps.retireGatewayGrant === 'function'
+            ? deps.retireGatewayGrant
+            : null,
         ids: { projectId, intentId, executionId, orchestratorRunId: runId },
         workflowId,
         workflowVersion,
@@ -1183,6 +1292,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       ctx,
       store,
       invokeRuntime: invokeIntentRuntime,
+      runtimeStep,
       stopSession: stopIntentSession,
       broadcast,
       emitEvent,
@@ -1311,25 +1421,28 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           }
 
           if (outputArtifactTypes.length > 0) {
-            const derived = await ctx.step(`derive-artifacts-${stage.stageId}${suffix}`, () =>
-              invokeIntentRuntime(
-                {
-                  command: 'derive-artifacts',
-                  projectId,
-                  intentId,
-                  executionId,
-                  stageInstanceId: stage.stageInstanceId ?? null,
-                  sectionIndexes: segments
-                    .filter((candidate) => candidate.kind === 'section')
-                    .map((candidate) => candidate.index),
-                  artifactTypes: outputArtifactTypes,
-                  enrichment: deriveEnrichment,
-                  ...(requestedCli ? { requestedCli } : {}),
-                  ...(cliModels ? { cliModels } : {}),
-                  ...(tierModels ? { tierModels } : {}),
-                },
-                sessionId,
-              ),
+            const derived = await runtimeStep(
+              ctx,
+              `derive-artifacts-${stage.stageId}${suffix}`,
+              (invoke) =>
+                invoke(
+                  {
+                    command: 'derive-artifacts',
+                    projectId,
+                    intentId,
+                    executionId,
+                    stageInstanceId: stage.stageInstanceId ?? null,
+                    sectionIndexes: segments
+                      .filter((candidate) => candidate.kind === 'section')
+                      .map((candidate) => candidate.index),
+                    artifactTypes: outputArtifactTypes,
+                    enrichment: deriveEnrichment,
+                    ...(requestedCli ? { requestedCli } : {}),
+                    ...(cliModels ? { cliModels } : {}),
+                    ...(tierModels ? { tierModels } : {}),
+                  },
+                  sessionId,
+                ),
             );
             if (!derived || derived.ok === false) {
               await emitEvent(
@@ -1352,20 +1465,23 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // the plan validator already rejects for its own section.)
           let unitPlanForGate = null;
           if (producesUnitDag) {
-            const promotion = await ctx.step(`promote-units-${stage.stageId}${suffix}`, () =>
-              invokeIntentRuntime(
-                {
-                  command: 'promote-units',
-                  projectId,
-                  intentId,
-                  executionId,
-                  stageInstanceId: stage.stageInstanceId ?? null,
-                  sectionIndexes: segments
-                    .filter((candidate) => candidate.kind === 'section')
-                    .map((candidate) => candidate.index),
-                },
-                sessionId,
-              ),
+            const promotion = await runtimeStep(
+              ctx,
+              `promote-units-${stage.stageId}${suffix}`,
+              (invoke) =>
+                invoke(
+                  {
+                    command: 'promote-units',
+                    projectId,
+                    intentId,
+                    executionId,
+                    stageInstanceId: stage.stageInstanceId ?? null,
+                    sectionIndexes: segments
+                      .filter((candidate) => candidate.kind === 'section')
+                      .map((candidate) => candidate.index),
+                  },
+                  sessionId,
+                ),
             );
             if (!promotion || promotion.ok === false) {
               const out = await fail(
@@ -2172,11 +2288,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             // stage is already approved and the human's decision stands.
             const offeredLearning = learningsRitual ? gateLearnings(validation.gate?.answer) : '';
             if (offeredLearning) {
-              await ctx.step(
+              await runtimeStep(
+                ctx,
                 `record-learning-${stage.stageInstanceId ?? stage.stageId}-${round}`,
-                async () => {
+                async (invoke) => {
                   try {
-                    return await invokeIntentRuntime(
+                    return await invoke(
                       {
                         command: 'record-learning',
                         projectId,
@@ -2422,6 +2539,19 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       }
     }
 
+    // A grant whose retirement exhausted its retries in a lane that was later
+    // retried or skipped is still on META: retire it before the run reports
+    // success, or fail the run (the jti stays recorded for the next relaunch).
+    if (grantRetirement) {
+      const pendingRetired = await retirePendingGrantsDurably(ctx, grantRetirement);
+      if (!pendingRetired) {
+        return await fail(
+          GATEWAY_GRANT_RETIREMENT_FAILURE,
+          'gateway grants of the run could not be retired',
+        );
+      }
+    }
+
     // Terminal success — CAS on the ownership token: a retired run (relaunched
     // under a new runId while this one was still unwinding) exits quietly. The
     // verdict is the step result so a durable replay sees it too.
@@ -2581,9 +2711,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           );
         }
       }
-      const recordResult = await ctx.step('record-pr', async () => {
+      const recordResult = await runtimeStep(ctx, 'record-pr', async (invoke) => {
         try {
-          return await invokeIntentRuntime(
+          return await invoke(
             { command: 'record-pr', projectId, intentId, executionId, prs: openedPrs },
             sessionId,
           );
@@ -2611,6 +2741,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     // at the durable-function boundary (module INIT crashes used to fail with
     // zero user-visible feedback).
     logger.error('orchestrator failed', err);
+    if (err instanceof GatewayGrantRetirementExhaustedError) {
+      return await fail(GATEWAY_GRANT_RETIREMENT_FAILURE, err.message);
+    }
     return await fail('orchestrator_error', err?.message ?? String(err));
   }
 };
@@ -2679,6 +2812,9 @@ const runStage = async (
     // callback result arrives to report the id.
     stageInstanceId,
     store,
+    // Records the attempt's grant jti as retired once its callback arrives.
+    // Null when the deployment issues no grant or has no retirement table.
+    retireGatewayGrant = null,
   },
 ) => {
   // The attempt key names every durable identity for this stage attempt. It
@@ -2696,6 +2832,36 @@ const runStage = async (
     heartbeatTimeout: STAGE_CALLBACK_HEARTBEAT_TIMEOUT,
   });
 
+  // The grant's jti, memoized per attempt: a re-driven dispatch step re-signs
+  // the same jti, so the one retirement below covers every token this attempt
+  // handed the runtime. A resume leg is a new attempt and gets a new jti.
+  const gatewayGrantId = retireGatewayGrant
+    ? await ctx.step(`grant-id-${attemptKey}`, async () => randomUUID())
+    : null;
+
+  // End-of-stage retirement: once the callback (or its timeout/failure) is in,
+  // the runtime has no more legitimate use for the grant. Fail-closed: the
+  // step throws on a write failure and is retried; the attempt does not
+  // settle until the jti is retired. Returns false once retries are exhausted
+  // (the jti is then recorded on META by retireGrantDurably).
+  const retireGrant = async (result) => {
+    if (!gatewayGrantId) return true;
+    return retireGrantDurably(
+      ctx,
+      { retireGatewayGrant, store, executionId: ids.executionId },
+      {
+        stepKey: attemptKey,
+        grant: {
+          grantId: gatewayGrantId,
+          executionId: ids.executionId,
+          stageId: stage.stageId,
+          stageCallbackId,
+          outcome: typeof result?.state === 'string' ? result.state : null,
+        },
+      },
+    );
+  };
+
   const reconcileFailure = async (result) => {
     if (result?.state !== 'FAILED' || !stageInstanceId) return result;
     await ctx.step(`reconcile-stage-${attemptKey}`, () =>
@@ -2709,69 +2875,110 @@ const runStage = async (
     return result;
   };
 
-  const dispatch = await ctx.step(`run-${attemptKey}`, async () =>
-    invokeRuntime(
-      {
-        command: 'run-stage-start',
-        // Launch-latency anchor (cold start metric): stamped at dispatch,
-        // INSIDE the step so a memoized replay never re-stamps it. The
-        // container computes agentLaunchMs = accept − dispatchedAt, covering
-        // the InvokeAgentRuntime hop + any microVM cold start.
-        dispatchedAt: nowIso(),
-        ...ids,
-        stageId: stage.stageId,
-        // Unit lane (WP4): run-stage derives the per-unit instance id, stamps
-        // the slug on every row/event/broadcast, and scopes the prompt.
-        unitSlug,
-        sectionIndex,
-        workflowId,
-        workflowVersion,
-        ...(aidlcRepoRef ? { aidlcRepoRef } : {}),
-        ...(methodologyPins ? { methodologyPins } : {}),
-        ...(methodologyRelease ? { methodologyRelease } : {}),
-        scope,
-        ...(skipStageIds?.length ? { skipStageIds } : {}),
-        ...(composedGrid ? { composedGrid } : {}),
-        ...(policyScope ? { policyScope } : {}),
-        ...(intentSettings ? { intentSettings } : {}),
-        ...(cliModels ? { cliModels } : {}),
-        ...(tierModels ? { tierModels } : {}),
-        ...(requestedCli ? { requestedCli } : {}),
-        ...(mcpServersByTier ? { mcpServersByTier } : {}),
-        ...(customRules ? { customRules } : {}),
-        ...(attachments ? { attachments } : {}),
-        // Repository and branch references for source self-heal. AgentCore
-        // resolves a short-lived credential directly from the broker.
-        ...cloneInputs,
-        resumeFrom: resumeFrom ?? null,
-        // The validation revision the checkpoint receipts are scoped to. Sent
-        // only for a stage with a resolved release policy and only after a
-        // "Request changes", so every other payload is unchanged.
-        ...(stage.policy && validationRound ? { validationRound } : {}),
-        // The gate the revision's feedback lives on, sent under the same
-        // condition. A later leg of the revision resumes from whatever gate
-        // parked it, so the gate it resumes is not the one that asked for
-        // changes; naming the validation gate is what keeps the personas on the
-        // real feedback.
-        ...(stage.policy && validationRound && validationGateId ? { validationGateId } : {}),
-        reviewFeedback: reviewFeedback
-          ? {
-              batchId: reviewFeedback.batchId ?? null,
-              prompt: reviewFeedback.prompt,
-              targets: reviewFeedback.targets ?? [],
-            }
-          : null,
-        stageCallbackId,
-      },
-      sessionId,
-      { policy: stage.policy ?? null },
-    ),
-  );
+  // Every outcome of the attempt — verdict, refusal, bad body, callback
+  // timeout or failure — ends the grant's legitimate use.
+  // An unretired grant fails the attempt whatever its verdict. The worker may
+  // already have written its own verdict (SUCCEEDED, WAITING_FOR_HUMAN) to the
+  // attempt row, which failRunningStageAttempt would leave alone, so the row is
+  // failed by the retirement-specific reconciliation, fenced by this attempt's
+  // callback id and run.
+  const settle = async (result) => {
+    if (!(await retireGrant(result))) {
+      if (stageInstanceId) {
+        await ctx.step(`reconcile-stage-grant-${attemptKey}`, () =>
+          store.failStageAttemptForGrantRetirement({
+            executionId: ids.executionId,
+            stageInstanceId,
+            stageCallbackId,
+            orchestratorRunId: ids.orchestratorRunId ?? null,
+            runtimeError: GATEWAY_GRANT_RETIREMENT_FAILURE,
+          }),
+        );
+      }
+      return {
+        ok: false,
+        state: 'FAILED',
+        reason: GATEWAY_GRANT_RETIREMENT_FAILURE,
+        detail: `stage verdict ${typeof result?.state === 'string' ? result.state : 'unknown'}`,
+      };
+    }
+    return reconcileFailure(result);
+  };
+
+  // A dispatch that throws (transport error after the runtime may have
+  // accepted the job) still handed the grant out: retire it before the error
+  // reaches the run's failure path.
+  let dispatch;
+  try {
+    dispatch = await ctx.step(`run-${attemptKey}`, async () =>
+      invokeRuntime(
+        {
+          command: 'run-stage-start',
+          // Launch-latency anchor (cold start metric): stamped at dispatch,
+          // INSIDE the step so a memoized replay never re-stamps it. The
+          // container computes agentLaunchMs = accept − dispatchedAt, covering
+          // the InvokeAgentRuntime hop + any microVM cold start.
+          dispatchedAt: nowIso(),
+          ...ids,
+          stageId: stage.stageId,
+          // Unit lane (WP4): run-stage derives the per-unit instance id, stamps
+          // the slug on every row/event/broadcast, and scopes the prompt.
+          unitSlug,
+          sectionIndex,
+          workflowId,
+          workflowVersion,
+          ...(aidlcRepoRef ? { aidlcRepoRef } : {}),
+          ...(methodologyPins ? { methodologyPins } : {}),
+          ...(methodologyRelease ? { methodologyRelease } : {}),
+          scope,
+          ...(skipStageIds?.length ? { skipStageIds } : {}),
+          ...(composedGrid ? { composedGrid } : {}),
+          ...(policyScope ? { policyScope } : {}),
+          ...(intentSettings ? { intentSettings } : {}),
+          ...(cliModels ? { cliModels } : {}),
+          ...(tierModels ? { tierModels } : {}),
+          ...(requestedCli ? { requestedCli } : {}),
+          ...(mcpServersByTier ? { mcpServersByTier } : {}),
+          ...(customRules ? { customRules } : {}),
+          ...(attachments ? { attachments } : {}),
+          // Repository and branch references for source self-heal. AgentCore
+          // resolves a short-lived credential directly from the broker.
+          ...cloneInputs,
+          resumeFrom: resumeFrom ?? null,
+          // The validation revision the checkpoint receipts are scoped to. Sent
+          // only for a stage with a resolved release policy and only after a
+          // "Request changes", so every other payload is unchanged.
+          ...(stage.policy && validationRound ? { validationRound } : {}),
+          // The gate the revision's feedback lives on, sent under the same
+          // condition. A later leg of the revision resumes from whatever gate
+          // parked it, so the gate it resumes is not the one that asked for
+          // changes; naming the validation gate is what keeps the personas on the
+          // real feedback.
+          ...(stage.policy && validationRound && validationGateId ? { validationGateId } : {}),
+          reviewFeedback: reviewFeedback
+            ? {
+                batchId: reviewFeedback.batchId ?? null,
+                prompt: reviewFeedback.prompt,
+                targets: reviewFeedback.targets ?? [],
+              }
+            : null,
+          stageCallbackId,
+        },
+        sessionId,
+        { policy: stage.policy ?? null, gatewayGrantId },
+      ),
+    );
+  } catch (error) {
+    if (!(await retireGrant({ state: 'FAILED' }))) {
+      throw new GatewayGrantRetirementExhaustedError(gatewayGrantId, { cause: error });
+    }
+    throw error;
+  }
   // The accept response only says "job started" — a refusal (unknown command on
   // an old container, duplicate job, missing fields) fails the stage HERE; the
   // verdict for an accepted job always travels through the callback.
   if (!dispatch || dispatch.ok === false || dispatch.error) {
-    return reconcileFailure({
+    return settle({
       ok: false,
       state: 'FAILED',
       reason: dispatch?.reason ?? 'stage_dispatch_failed',
@@ -2787,16 +2994,16 @@ const runStage = async (
     const raw = await stageDone;
     const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
     if (!result || typeof result !== 'object') {
-      return reconcileFailure({
+      return settle({
         ok: false,
         state: 'FAILED',
         reason: 'stage_bad_callback_result',
       });
     }
-    return reconcileFailure(result);
+    return settle(result);
   } catch (err) {
     if (err instanceof SyntaxError) {
-      return reconcileFailure({
+      return settle({
         ok: false,
         state: 'FAILED',
         reason: 'stage_bad_callback_result',
@@ -2804,7 +3011,7 @@ const runStage = async (
       });
     }
     // Callback timeout / heartbeat expiry (dead container) / explicit failure.
-    return reconcileFailure({
+    return settle({
       ok: false,
       state: 'FAILED',
       reason: 'stage_callback_failed',

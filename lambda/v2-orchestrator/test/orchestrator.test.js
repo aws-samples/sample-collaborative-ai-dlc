@@ -2,6 +2,31 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { __durableHandler } from './fixtures/completion-handler.js';
 import { promoteUnits } from '../../agentcore/commands/promote-units.js';
 import dependentSkeletonPlan from './fixtures/dependent-skeleton-plan.json';
+import { GATEWAY_GRANT_RETIREMENT_RETRY } from '../index.js';
+
+// Retirement steps carry a retry strategy; this fake ctx.step honours it
+// (without the delays) the way the durable SDK does: re-run the body until it
+// succeeds or the strategy stops, then throw.
+const retryingStep = (ctxArg, attempts = []) => {
+  const step = ctxArg.step;
+  return async (name, fn, options) => {
+    if (!options?.retryStrategy) return step(name, fn);
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await fn();
+      } catch (error) {
+        const decision = options.retryStrategy(error, attempt);
+        attempts.push({ name, attempt, decision });
+        if (!decision.shouldRetry) throw error;
+      }
+    }
+  };
+};
+const GATEWAY_GRANT_RETIREMENT_RETRY_ATTEMPTS = (() => {
+  let attempt = 1;
+  while (GATEWAY_GRANT_RETIREMENT_RETRY(new Error('x'), attempt).shouldRetry) attempt += 1;
+  return attempt;
+})();
 
 // The orchestrator's control flow is driven through an injected `deps` bag and a
 // fake DurableContext — no real AWS/Neptune. This isolates the sequencing logic
@@ -1631,6 +1656,28 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     }
   });
 
+  it('retires every lane grant by jti — lane stages at settle, lane git after each command', async () => {
+    deps.issueGatewayGrant = vi.fn(
+      async (scope, options) => `gw:${scope.mode}:${options?.randomId?.() ?? 'unpinned'}`,
+    );
+    deps.retireGatewayGrant = vi.fn(async () => ({ retired: true }));
+    deps.store.addPendingGrantRetirements = vi.fn(async () => []);
+    deps.store.failStageAttemptForGrantRetirement = vi.fn(async () => null);
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const signed = [...invokes, ...checkpointInvokes].map((p) => p.gatewayGrant.split(':')[2]);
+    expect(signed).not.toContain('unpinned');
+    const retired = deps.retireGatewayGrant.mock.calls.map(([r]) => r.grantId);
+    expect(new Set(retired)).toEqual(new Set(signed));
+    expect(retired).toHaveLength(new Set(signed).size);
+    for (const command of ['init-lane', 'merge-lane']) {
+      for (const payload of invokes.filter((p) => p.command === command)) {
+        expect(retired).toContain(payload.gatewayGrant.split(':')[2]);
+      }
+    }
+    expect(deps.store.addPendingGrantRetirements).not.toHaveBeenCalled();
+  });
+
   it('runs the full section lifecycle: skeleton lane solo, then remaining lanes, each with init-lane → stages → merge-lane', async () => {
     const res = await start();
     expect(res.ok).toBe(true);
@@ -2075,6 +2122,64 @@ describe('PR per unit delivery', () => {
     });
     expect(deps.unitPrProvider.createDraft).not.toHaveBeenCalled();
     expect(deps.unitPrProvider.setDraft).not.toHaveBeenCalled();
+    expect(unitStates.map((row) => row.state)).not.toContain('PR_DRAFT');
+  });
+
+  it.each([
+    ['the projection returns', { commandThrows: false, recordFails: false }],
+    ['the projection command throws too', { commandThrows: true, recordFails: false }],
+    ['the jti cannot even be recorded', { commandThrows: true, recordFails: true }],
+  ])('fails the lane when the unit-PR grant cannot be retired (%s)', async (_label, mode) => {
+    const { Logger } = await import('@aws-lambda-powertools/logger');
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    configure({
+      statusFor: async ({ number }) => ({
+        providerId: `provider-${number}`,
+        number,
+        url: `https://example.test/pr/${number}`,
+        sourceBranch: 'aidlc/i1--s1-unit-auth',
+        targetBranch: 'aidlc/i1',
+        headSha: `head-${number}`,
+        targetSha: 'intent-before',
+        state: 'open',
+        draft: true,
+        mergeable: true,
+      }),
+    });
+    ctx.step = retryingStep(ctx);
+    deps.issueGatewayGrant = vi.fn(
+      async (scope, options) => `gw:${scope.mode}:${options?.randomId?.() ?? 'unpinned'}`,
+    );
+    const runtime = deps.invokeRuntime;
+    let projectionJti = null;
+    deps.invokeRuntime = vi.fn(async (payload, ...rest) => {
+      if (payload.command === 'record-unit-pr') {
+        projectionJti = payload.gatewayGrant.split(':')[2];
+        if (mode.commandThrows) throw new Error('graph unavailable');
+      }
+      return runtime(payload, ...rest);
+    });
+    deps.retireGatewayGrant = vi.fn(async ({ grantId }) => {
+      if (grantId === projectionJti) throw new Error('AccessDeniedException');
+      return { retired: true };
+    });
+    deps.store.addPendingGrantRetirements = vi.fn(async ({ grantIds }) => {
+      if (mode.recordFails) throw new Error('ThrottlingException');
+      return grantIds;
+    });
+    deps.store.failStageAttemptForGrantRetirement = vi.fn(async () => null);
+    try {
+      await start();
+    } finally {
+      log.mockRestore();
+    }
+    expect(projectionJti).toMatch(/^[0-9a-f-]{36}$/);
+    expect(deps.store.addPendingGrantRetirements).toHaveBeenCalledWith({
+      executionId: 'i1',
+      grantIds: [projectionJti],
+    });
+    const failed = unitStates.find((row) => row.slug === 'auth' && row.state === 'FAILED');
+    expect(failed?.fields?.failureReason).toContain('gateway_grant_retirement_failed');
     expect(unitStates.map((row) => row.state)).not.toContain('PR_DRAFT');
   });
 
@@ -3725,5 +3830,429 @@ describe('credential-free runtime payloads', () => {
     const result = await start();
     expect(result.ok).toBe(true);
     for (const payload of invokes) expect(payload).not.toHaveProperty('gitAuthor');
+  });
+});
+
+describe('gateway grant retirement by jti', () => {
+  const start = () =>
+    __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+  const grantIdOf = (payload) => payload.gatewayGrant?.split(':')[2] ?? null;
+  const allPayloads = () => [...invokes, ...checkpointInvokes];
+  const claimedRunId = () =>
+    deps.store.updateExecution.mock.calls.map(([c]) => c).find((c) => c.orchestratorRunId)
+      ?.orchestratorRunId;
+  let order;
+  beforeEach(() => {
+    order = [];
+    deps.issueGatewayGrant = vi.fn(async (scope, options) => {
+      const id = options?.randomId?.() ?? 'unpinned';
+      order.push(`issue:${scope.mode}:${id}`);
+      return `gw:${scope.mode}:${id}`;
+    });
+    deps.retireGatewayGrant = vi.fn(async ({ grantId }) => {
+      order.push(`retire:${grantId}`);
+      return { retired: true, alreadyRetired: false };
+    });
+    deps.awaitGrantIssuance = vi.fn(async () => {
+      order.push('await-issuance');
+      return { retiredAt: null, waitedMs: 0, bounded: false };
+    });
+    deps.store.addPendingGrantRetirements = vi.fn(async ({ grantIds }) => {
+      order.push(`pending:${grantIds.join(',')}`);
+      return grantIds;
+    });
+    deps.store.clearPendingGrantRetirements = vi.fn(async ({ grantIds }) => grantIds);
+    deps.store.failStageAttemptForGrantRetirement = vi.fn(async () => ({ state: 'FAILED' }));
+    const updateExecution = deps.store.updateExecution;
+    deps.store.updateExecution = vi.fn(async (input) => {
+      if (input.status) order.push(`status:${input.status}`);
+      return updateExecution(input);
+    });
+  });
+  const stageRetirements = () =>
+    deps.retireGatewayGrant.mock.calls.map(([r]) => r).filter((r) => r.stageId);
+
+  it('retires each stage grant when its callback arrives, before the next stage starts', async () => {
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const starts = stageStarts();
+    const [a, b] = starts.map(grantIdOf);
+    expect(a).toMatch(/^[0-9a-f-]{36}$/);
+    expect(b).toMatch(/^[0-9a-f-]{36}$/);
+    expect(a).not.toBe(b);
+    expect(stageRetirements()).toEqual([
+      {
+        grantId: a,
+        executionId: 'i1',
+        stageId: 'a',
+        stageCallbackId: starts[0].stageCallbackId,
+        outcome: 'SUCCEEDED',
+      },
+      {
+        grantId: b,
+        executionId: 'i1',
+        stageId: 'b',
+        stageCallbackId: starts[1].stageCallbackId,
+        outcome: 'SUCCEEDED',
+      },
+    ]);
+    expect(order.indexOf(`retire:${a}`)).toBeLessThan(order.indexOf(`issue:stage:${b}`));
+  });
+
+  it('retires every synchronous command grant right after the command returns', async () => {
+    deps.openPr = vi.fn(async ({ repoId }) => ({
+      prUrl: `https://github.com/${repoId}/pull/7`,
+      prNumber: 7,
+    }));
+    const res = await start();
+    expect(res.ok).toBe(true);
+    const sync = allPayloads().filter((p) => p.command !== 'run-stage-start' && p.gatewayGrant);
+    expect(sync.map((p) => p.command)).toEqual(
+      expect.arrayContaining(['init-ws', 'create-workflow-checkpoint', 'record-pr']),
+    );
+    for (const payload of sync) {
+      const id = grantIdOf(payload);
+      expect(id).toMatch(/^[0-9a-f-]{36}$/);
+      // Issued, then retired before anything else is signed.
+      const issued = order.indexOf(`issue:execution:${id}`);
+      expect(order[issued + 1]).toBe(`retire:${id}`);
+    }
+    expect(new Set(sync.map(grantIdOf)).size).toBe(sync.length);
+    expect(deps.retireGatewayGrant).toHaveBeenCalledWith({
+      grantId: grantIdOf(sync.find((p) => p.command === 'init-ws')),
+      executionId: 'i1',
+      outcome: 'returned',
+    });
+    // Every grant the run signed is retired by jti; nothing is left to an
+    // execution-level write, and the run never writes one.
+    const issuedIds = order.filter((e) => e.startsWith('issue:')).map((e) => e.split(':')[2]);
+    const retiredIds = deps.retireGatewayGrant.mock.calls.map(([r]) => r.grantId);
+    expect(new Set(retiredIds)).toEqual(new Set(issuedIds));
+    expect(issuedIds).not.toContain('unpinned');
+    expect(order.at(-1)).toMatch(/^retire:/);
+  });
+
+  it('retires a synchronous grant when its command throws, then fails the run', async () => {
+    deps.invokeRuntime = makeRuntime(ctx, (payload) => {
+      if (payload.command === 'init-ws') throw new Error('AgentCore 500');
+      return okScript(payload);
+    });
+    const res = await start();
+    expect(res).toMatchObject({ ok: false, reason: 'orchestrator_error' });
+    const initWs = invokes.find((p) => p.command === 'init-ws');
+    expect(deps.retireGatewayGrant).toHaveBeenCalledWith({
+      grantId: grantIdOf(initWs),
+      executionId: 'i1',
+      outcome: 'error',
+    });
+    expect(order.indexOf(`retire:${grantIdOf(initWs)}`)).toBeLessThan(
+      order.indexOf('status:FAILED'),
+    );
+  });
+
+  it('re-signs the same jti when a synchronous step is re-driven, and retires it once', async () => {
+    const step = ctx.step;
+    ctx.step = async (name, fn, options) => {
+      if (name === 'init-ws') await fn();
+      return step(name, fn, options);
+    };
+    await start();
+    const ids = invokes.filter((p) => p.command === 'init-ws').map(grantIdOf);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(1);
+    expect(deps.retireGatewayGrant.mock.calls.filter(([r]) => r.grantId === ids[0])).toHaveLength(
+      1,
+    );
+  });
+
+  it('retires the parked leg and gives the resume leg a fresh jti', async () => {
+    deps.store.getExecution
+      .mockResolvedValueOnce(META)
+      .mockResolvedValue({ ...META, pendingHumanTaskId: 'h1' });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
+      if (n === 1) return { ok: true };
+      if (n === 2) return { ok: true, state: 'WAITING_FOR_HUMAN', humanTaskId: 'h1' };
+      return { ok: true, state: 'SUCCEEDED' };
+    });
+    expect((await start()).ok).toBe(true);
+    const [parked, resumed] = stageStarts();
+    expect(resumed.resumeFrom).toBe('h1');
+    expect(grantIdOf(resumed)).not.toBe(grantIdOf(parked));
+    expect(stageRetirements().map((r) => [r.grantId, r.outcome])).toEqual([
+      [grantIdOf(parked), 'WAITING_FOR_HUMAN'],
+      [grantIdOf(resumed), 'SUCCEEDED'],
+    ]);
+    expect(order.indexOf(`retire:${grantIdOf(parked)}`)).toBeLessThan(
+      order.indexOf(`issue:stage:${grantIdOf(resumed)}`),
+    );
+  });
+
+  it('re-signs the same jti when the dispatch step is re-driven, and retires it once', async () => {
+    const step = ctx.step;
+    ctx.step = async (name, fn, options) => {
+      if (name === 'run-a') await fn();
+      return step(name, fn, options);
+    };
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    deps.invokeRuntime = makeRuntime(ctx, (payload, n) =>
+      n === 1 ? { ok: true } : { ok: true, state: 'SUCCEEDED' },
+    );
+    await start();
+    const ids = stageStarts().map(grantIdOf);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(1);
+    expect(stageRetirements()).toEqual([expect.objectContaining({ grantId: ids[0] })]);
+  });
+
+  it.each([
+    ['a FAILED verdict', { ok: false, state: 'FAILED', reason: 'boom' }, 'FAILED'],
+    ['a refused dispatch', null, 'FAILED'],
+  ])('retires the grant on %s', async (_label, verdict, outcome) => {
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    const runtime = makeRuntime(ctx, (payload, n) => (n === 1 ? { ok: true } : verdict));
+    deps.invokeRuntime = verdict
+      ? runtime
+      : vi.fn(async (payload, ...rest) =>
+          payload.command === 'run-stage-start'
+            ? (invokes.push(payload), { ok: false, reason: 'job_already_running' })
+            : runtime(payload, ...rest),
+        );
+    await start();
+    const [attempt] = stageStarts();
+    expect(deps.retireGatewayGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ grantId: grantIdOf(attempt), outcome }),
+    );
+  });
+
+  it('retires the stage grant when the dispatch itself throws', async () => {
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    const runtime = makeRuntime(ctx, okScript);
+    deps.invokeRuntime = vi.fn(async (payload, ...rest) => {
+      if (payload.command === 'run-stage-start') {
+        invokes.push(payload);
+        throw new Error('socket hang up');
+      }
+      return runtime(payload, ...rest);
+    });
+    const res = await start();
+    expect(res).toMatchObject({ ok: false, reason: 'orchestrator_error' });
+    const [attempt] = stageStarts();
+    expect(stageRetirements()).toEqual([
+      expect.objectContaining({ grantId: grantIdOf(attempt), outcome: 'FAILED' }),
+    ]);
+    expect(order.indexOf(`retire:${grantIdOf(attempt)}`)).toBeLessThan(
+      order.indexOf('status:FAILED'),
+    );
+  });
+
+  it('retries a failed jti retirement and settles the stage only once it lands', async () => {
+    const attempts = [];
+    ctx.step = retryingStep(ctx, attempts);
+    let failures = 2;
+    deps.retireGatewayGrant = vi.fn(async ({ grantId, stageId }) => {
+      if (stageId && failures-- > 0) {
+        throw Object.assign(new Error('throttled'), {
+          name: 'ProvisionedThroughputExceededException',
+        });
+      }
+      order.push(`retire:${grantId}`);
+      return { retired: true, alreadyRetired: false };
+    });
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
+    expect(await start()).toEqual({ ok: true, intentId: 'i1', stages: 1 });
+    expect(stageRetirements()).toHaveLength(3);
+    expect(attempts.map((a) => [a.name, a.attempt, a.decision.shouldRetry])).toEqual([
+      ['retire-grant-a', 1, true],
+      ['retire-grant-a', 2, true],
+    ]);
+    // Bounded exponential backoff.
+    expect(attempts[0].decision.delay.seconds).toBeGreaterThanOrEqual(2);
+    expect(attempts[1].decision.delay.seconds).toBeGreaterThanOrEqual(5);
+    expect(deps.store.addPendingGrantRetirements).not.toHaveBeenCalled();
+  });
+
+  it.each(['SUCCEEDED', 'WAITING_FOR_HUMAN'])(
+    'fails a %s stage attempt, its row and the run when the jti retirement exhausts its retries',
+    async (verdict) => {
+      const { Logger } = await import('@aws-lambda-powertools/logger');
+      const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+      const attempts = [];
+      ctx.step = retryingStep(ctx, attempts);
+      deps.retireGatewayGrant = vi.fn(async ({ grantId, stageId }) => {
+        if (stageId) throw Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+        order.push(`retire:${grantId}`);
+        return { retired: true };
+      });
+      deps.invokeRuntime = makeRuntime(ctx, (payload) =>
+        payload.command === 'run-stage-start'
+          ? { ok: true, state: verdict, ...(verdict === 'SUCCEEDED' ? {} : { humanTaskId: 'h1' }) }
+          : okScript(payload),
+      );
+      try {
+        const res = await start();
+        expect(res).toMatchObject({ ok: false, reason: 'stage_failed' });
+        expect(res.detail).toContain('gateway_grant_retirement_failed');
+        expect(stageRetirements()).toHaveLength(GATEWAY_GRANT_RETIREMENT_RETRY_ATTEMPTS);
+        expect(attempts.at(-1).decision.shouldRetry).toBe(false);
+        // Stage b never started: the run did not advance past settle().
+        expect(stageStarts().map((p) => p.stageId)).toEqual(['a']);
+        const [attempt] = stageStarts();
+        // The worker's own verdict on the row is overridden, fenced by this
+        // attempt's callback id and run.
+        expect(deps.store.failStageAttemptForGrantRetirement).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            executionId: 'i1',
+            stageCallbackId: attempt.stageCallbackId,
+            orchestratorRunId: claimedRunId(),
+            runtimeError: 'gateway_grant_retirement_failed',
+          }),
+        );
+        // The unretired jti is on META before the run is reported FAILED.
+        expect(order.indexOf(`pending:${grantIdOf(attempt)}`)).toBeGreaterThan(-1);
+        expect(order.indexOf(`pending:${grantIdOf(attempt)}`)).toBeLessThan(
+          order.indexOf('status:FAILED'),
+        );
+        expect(log).toHaveBeenCalledWith(
+          'gateway grant retirement failed after retries',
+          expect.objectContaining({
+            code: 'GATEWAY_GRANT_RETIREMENT_FAILED',
+            metric: 'GatewayGrantRetirementFailed',
+            value: 1,
+            stageId: 'a',
+            error: 'AccessDeniedException',
+          }),
+        );
+        const failed = deps.store.updateExecution.mock.calls
+          .map(([c]) => c)
+          .find((c) => c.status === 'FAILED');
+        expect(failed.failureReason).toContain('gateway_grant_retirement_failed');
+      } finally {
+        log.mockRestore();
+      }
+    },
+  );
+
+  it('records an unretired synchronous grant and fails the run before the next command', async () => {
+    const { Logger } = await import('@aws-lambda-powertools/logger');
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    ctx.step = retryingStep(ctx);
+    deps.retireGatewayGrant = vi.fn(async () => {
+      throw Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+    });
+    try {
+      const res = await start();
+      expect(res).toMatchObject({ ok: false, reason: 'gateway_grant_retirement_failed' });
+      const initWs = invokes.find((p) => p.command === 'init-ws');
+      expect(deps.store.addPendingGrantRetirements).toHaveBeenCalledExactlyOnceWith({
+        executionId: 'i1',
+        grantIds: [grantIdOf(initWs)],
+      });
+      expect(order.indexOf(`pending:${grantIdOf(initWs)}`)).toBeLessThan(
+        order.indexOf('status:FAILED'),
+      );
+      expect(invokes.map((p) => p.command)).toEqual(['init-ws']);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('retires grants META still records as unretired before reporting success', async () => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      pendingGrantRetirements: new Set(['old-jti']),
+    }));
+    expect((await start()).ok).toBe(true);
+    expect(deps.retireGatewayGrant).toHaveBeenCalledWith({
+      grantId: 'old-jti',
+      executionId: 'i1',
+      outcome: 'pending_retry',
+    });
+    expect(deps.store.clearPendingGrantRetirements).toHaveBeenCalledWith({
+      executionId: 'i1',
+      grantIds: ['old-jti'],
+    });
+    expect(order.indexOf('retire:old-jti')).toBeLessThan(order.indexOf('status:SUCCEEDED'));
+  });
+
+  it('fails instead of succeeding while a recorded grant cannot be retired', async () => {
+    const { Logger } = await import('@aws-lambda-powertools/logger');
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    ctx.step = retryingStep(ctx);
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      pendingGrantRetirements: new Set(['old-jti']),
+    }));
+    deps.retireGatewayGrant = vi.fn(async ({ grantId }) => {
+      if (grantId === 'old-jti') throw new Error('down');
+      return { retired: true };
+    });
+    try {
+      expect(await start()).toMatchObject({
+        ok: false,
+        reason: 'gateway_grant_retirement_failed',
+      });
+      expect(order).not.toContain('status:SUCCEEDED');
+      expect(deps.store.clearPendingGrantRetirements).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('writes no execution-level retirement at the terminal outcome', async () => {
+    deps.retireGatewayExecution = vi.fn();
+    expect((await start()).ok).toBe(true);
+    deps.invokeRuntime = makeRuntime(ctx, (payload) =>
+      payload.command === 'init-ws' ? { ok: false, reason: 'clone_failed' } : okScript(payload),
+    );
+    expect(await start()).toMatchObject({ ok: false, reason: 'init_ws_failed' });
+    expect(deps.retireGatewayExecution).not.toHaveBeenCalled();
+  });
+
+  it('waits past a prior retirement after claiming the run and before signing any grant', async () => {
+    const steps = [];
+    const step = ctx.step;
+    ctx.step = async (name, fn, options) => {
+      steps.push(name);
+      return step(name, fn, options);
+    };
+    await start();
+    expect(deps.awaitGrantIssuance).toHaveBeenCalledExactlyOnceWith('i1');
+    expect(order[0]).toBe('await-issuance');
+    expect(steps.indexOf('await-grant-retirement')).toBe(steps.indexOf('mint-run-id') + 1);
+  });
+
+  it('proceeds when the prior retirement cannot be read', async () => {
+    deps.awaitGrantIssuance = vi.fn(async () => {
+      throw Object.assign(new Error('throttled'), { name: 'ThrottlingException' });
+    });
+    expect((await start()).ok).toBe(true);
+    expect(deps.issueGatewayGrant).toHaveBeenCalled();
+  });
+
+  it('adds no durable step without a grant issuer or a retirement table', async () => {
+    const names = [];
+    const step = ctx.step;
+    ctx.step = async (name, fn, options) => {
+      names.push(name);
+      return step(name, fn, options);
+    };
+    deps.retireGatewayGrant = null;
+    deps.awaitGrantIssuance = null;
+    await start();
+    expect(stageStarts().map(grantIdOf)).toEqual(['unpinned', 'unpinned']);
+    deps.issueGatewayGrant = null;
+    deps.retireGatewayGrant = vi.fn();
+    deps.awaitGrantIssuance = vi.fn();
+    await start();
+    expect(
+      names.some((n) =>
+        /^(await-grant-retirement|grant-id-|retire-grant-|pending-grant-|load-pending-grant)/.test(
+          n,
+        ),
+      ),
+    ).toBe(false);
+    expect(deps.retireGatewayGrant).not.toHaveBeenCalled();
+    expect(deps.awaitGrantIssuance).not.toHaveBeenCalled();
   });
 });

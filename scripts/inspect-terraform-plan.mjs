@@ -34,6 +34,14 @@ const expectedRetirement = (change) => {
 
 const destructive = (change) => change.change?.actions?.includes('delete');
 
+// The grant retirement table only holds markers for grants of a Gateway that is
+// being turned off; disabling enable_mcp_gateway always deletes it. A replace
+// (delete + create) is still refused: it would drop markers of live grants.
+const gatewayGrantRetirementsOff = (change) =>
+  change.type === 'aws_dynamodb_table' &&
+  /aws_dynamodb_table\.gateway_grant_retirements(\[\d+\])?$/.test(change.address) &&
+  isDeepStrictEqual(change.change?.actions, ['delete']);
+
 // Attribute and enabled/disabled values per resource type. Cognito uses an
 // ACTIVE/INACTIVE string rather than a boolean.
 const protectionSettings = {
@@ -82,8 +90,15 @@ if (deletionProtectionOnly) {
 }
 
 const rejected = (plan.resource_changes || []).filter(
-  (change) => destructive(change) && protectedTypes.has(change.type) && !expectedRetirement(change),
+  (change) =>
+    destructive(change) &&
+    protectedTypes.has(change.type) &&
+    !expectedRetirement(change) &&
+    !gatewayGrantRetirementsOff(change),
 );
+for (const change of (plan.resource_changes || []).filter(gatewayGrantRetirementsOff)) {
+  console.log(`Allowed Gateway grant retirement table removal: ${change.address}`);
+}
 const expected = (plan.resource_changes || []).filter(
   (change) => destructive(change) && expectedRetirement(change),
 );

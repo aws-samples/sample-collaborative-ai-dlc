@@ -423,6 +423,29 @@ test('Terraform plan inspection rejects protected deletion and allows the retire
   assert.match(accepted.stdout, /Allowed retired v1 resource removal/);
 });
 
+test('Terraform plan inspection allows deleting the Gateway grant retirement table, not replacing it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-plan-'));
+  const address = 'module.agentcore.aws_dynamodb_table.gateway_grant_retirements[0]';
+  const offPlan = join(dir, 'off.json');
+  const replacePlan = join(dir, 'replace.json');
+  writeJson(offPlan, {
+    resource_changes: [{ address, type: 'aws_dynamodb_table', change: { actions: ['delete'] } }],
+  });
+  writeJson(replacePlan, {
+    resource_changes: [
+      { address, type: 'aws_dynamodb_table', change: { actions: ['delete', 'create'] } },
+    ],
+  });
+
+  const accepted = run('node', [inspector, offPlan]);
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.match(accepted.stdout, /Allowed Gateway grant retirement table removal/);
+
+  const rejected = run('node', [inspector, replacePlan]);
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /protected persistent resources/);
+});
+
 test('Terraform teardown preparation only permits existing-resource protection updates', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-teardown-plan-'));
   const address = 'module.dynamodb.aws_dynamodb_table.sessions';
