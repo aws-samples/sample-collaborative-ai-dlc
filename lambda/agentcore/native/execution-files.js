@@ -8,6 +8,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { nativePublicationPath } from '../../shared/native-publication.js';
 import { canonicalNativePath, nativeFileExclusion } from '../../shared/native-project-files.js';
+import { nativeSnapshotDiagnostic } from '../../shared/native-execution-failure.js';
 export { canonicalNativePath, nativeFileExclusion } from '../../shared/native-project-files.js';
 
 export const NATIVE_SNAPSHOT_LIMITS = Object.freeze({
@@ -38,8 +39,35 @@ const equalStat = (a, b) =>
   equalNode(a, b) &&
   ['mode', 'uid', 'gid', 'nlink', 'size', 'mtimeNs', 'ctimeNs'].every((key) => a[key] === b[key]);
 
+const rejectLink = (path, counts, onDiagnostic) => {
+  const parts = path.split('/');
+  const dependency = parts.indexOf('node_modules');
+  const diagnostic = nativeSnapshotDiagnostic({
+    reason: 'symbolic_link',
+    pathClass:
+      dependency >= 0
+        ? parts[dependency + 1] === '.bin'
+          ? 'dependency_bin'
+          : 'dependency'
+        : parts[0] === 'aidlc'
+          ? 'workflow'
+          : 'other',
+    pathDepth: parts.length,
+    pathSha256: createHash('sha256').update(path).digest('hex'),
+    ...counts,
+  });
+  try {
+    onDiagnostic?.(diagnostic);
+  } catch {
+    // Telemetry must not alter the rejection or introduce another filesystem read.
+  }
+  throw Object.assign(new NativeSnapshotError('native_snapshot_link'), {
+    snapshotDiagnostic: diagnostic,
+  });
+};
+
 /**
- * snapshotNativeExecutionFiles({project, signal?, limits?, io?}) returns
+ * snapshotNativeExecutionFiles({project, signal?, limits?, io?, onDiagnostic?}) returns
  * {schemaVersion:1, complete:true, files:[{path,bytes,sha256,role,content:Buffer}],
  * totalBytes, exclusions:[{path,reason}]}. Contents are exact, including binary
  * files, empty files, BOMs and CRLF. No text decoding or redaction is performed.
@@ -51,6 +79,7 @@ export const snapshotNativeExecutionFiles = async ({
   limits: overrides = {},
   forbiddenBytes = [],
   io = fs,
+  onDiagnostic,
 } = {}) => {
   const limits = { ...NATIVE_SNAPSHOT_LIMITS, ...overrides };
   if (
@@ -103,7 +132,12 @@ export const snapshotNativeExecutionFiles = async ({
       if (++entryCount > limits.maxEntries || depth > limits.maxDepth)
         fail('native_snapshot_limit');
       const path = name ? join(project, name) : project;
-      if (before.isSymbolicLink()) fail('native_snapshot_link');
+      if (before.isSymbolicLink())
+        rejectLink(
+          name,
+          { entries: entryCount, files: files.length, bytes: totalBytes },
+          onDiagnostic,
+        );
       if (before.dev !== root.dev) fail('native_snapshot_mount');
       inventory.set(name, before);
       if (before.isDirectory()) {

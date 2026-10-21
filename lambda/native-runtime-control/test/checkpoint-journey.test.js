@@ -529,6 +529,30 @@ it.each([
             ]),
           );
         }
+        if (scenario.kind === 'snapshot') {
+          expect(persistedFailure.snapshotDiagnostic).toMatchObject({
+            phase: 'final',
+            reason: 'symbolic_link',
+            pathClass: 'other',
+            pathDepth: 1,
+          });
+          expect(persistedFailure.timings.workspaceBaselineCompleted).toBeTypeOf('number');
+          expect(persistedFailure.timings.workspaceSnapshotStarted).toBeTypeOf('number');
+          expect(persistedFailure.timings.snapshotRejected).toBeTypeOf('number');
+          expect(persistedFailure.timings.publicationStarted).toBeUndefined();
+          expect(persistedFailure.timings.checkpointCaptureStarted).toBeUndefined();
+          expect(diagnostics).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                snapshotDiagnostic: expect.objectContaining({
+                  phase: 'final',
+                  reason: 'symbolic_link',
+                }),
+              }),
+            ]),
+          );
+          expect(JSON.stringify(diagnostics)).not.toContain('unsafe-link');
+        }
       } else if (scenario.kind !== 'cancel') {
         expect(f.row().status).toBe('AWAITING_USER');
         expect(f.row().recoveryCheckpoint.sequence).toBe(turn);

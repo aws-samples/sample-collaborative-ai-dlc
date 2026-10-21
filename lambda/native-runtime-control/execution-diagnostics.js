@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import {
   NATIVE_RUNTIME_FAILURE_CODES,
   nativeOutputDiagnostic,
+  nativeSnapshotDiagnostic,
 } from '../shared/native-execution-failure.js';
 
 const PHASES = new Set(['start', 'continue', 'status', 'recover', 'unknown']);
@@ -190,6 +191,7 @@ export const nativeDiagnosticReport = (row, report) => {
   };
   const response = own(row, 'response');
   const outputDiagnostic = nativeOutputDiagnostic(own(report, 'outputDiagnostic'));
+  const snapshotDiagnostic = nativeSnapshotDiagnostic(own(report, 'snapshotDiagnostic'));
   return {
     status: enumeration(STATUSES, own(report, 'status')),
     runtimeCode: enumeration(RUNTIME_CODES, own(report, 'code')),
@@ -197,6 +199,7 @@ export const nativeDiagnosticReport = (row, report) => {
       ? { recoveryFailureCode: enumeration(RUNTIME_CODES, own(report, 'recoveryFailureCode')) }
       : {}),
     ...(outputDiagnostic ? { outputDiagnostic } : {}),
+    ...(snapshotDiagnostic ? { snapshotDiagnostic } : {}),
     sequence: counter(own(report, 'sequence')),
     expectedSequence: counter(own(row, 'turnSequence') ?? 1),
     writerGeneration: counter(reportedGeneration),
@@ -224,6 +227,8 @@ export const emitNativeExecutionDiagnostic = (sink, input) => {
     };
     const outputDiagnostic = nativeOutputDiagnostic(own(input, 'outputDiagnostic'));
     if (outputDiagnostic) value.outputDiagnostic = outputDiagnostic;
+    const snapshotDiagnostic = nativeSnapshotDiagnostic(own(input, 'snapshotDiagnostic'));
+    if (snapshotDiagnostic) value.snapshotDiagnostic = snapshotDiagnostic;
     for (const [key, values] of [
       ['status', STATUSES],
       ['runtimeCode', RUNTIME_CODES],

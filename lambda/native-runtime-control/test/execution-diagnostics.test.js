@@ -198,6 +198,90 @@ describe('native controller diagnostic privacy boundary', () => {
       log.mockRestore();
     }
   });
+  it('retains bounded snapshot evidence through runtime, lifecycle and controller sinks', () => {
+    const s = sinks();
+    const getter = vi.fn(() => {
+      throw new Error(CANARY);
+    });
+    const expected = {
+      reason: 'symbolic_link',
+      phase: 'final',
+      pathClass: 'dependency_bin',
+      pathSha256: 'a'.repeat(64),
+      pathDepth: 3,
+      entries: 42,
+      files: 9,
+      bytes: 1200,
+    };
+    const diagnostic = {
+      ...expected,
+      path: CANARY,
+      target: CANARY,
+      get prompt() {
+        return getter();
+      },
+    };
+    s.diagnostics({
+      ...nativeDiagnosticReport(row, {
+        ...identity,
+        status: 'failed',
+        code: 'native_snapshot_link',
+        snapshotDiagnostic: diagnostic,
+      }),
+      phase: 'status',
+      stage: 'report',
+      code: 'REPORT_OBSERVED',
+    });
+    expect(s.events()[0]).toMatchObject({
+      runtimeCode: 'native_snapshot_link',
+      snapshotDiagnostic: expected,
+    });
+    const log = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      recordNativeBoundary({}, 'snapshotRejected', 100, diagnostic);
+      expect(JSON.parse(log.mock.calls[0][0])).toEqual({
+        type: 'native.lifecycle',
+        boundary: 'snapshotRejected',
+        at: 100,
+        ...expected,
+      });
+      const hostile = {
+        reason: 'symbolic_link',
+        phase: CANARY,
+        pathClass: CANARY,
+        pathSha256: CANARY,
+        pathDepth: -1,
+        entries: Infinity,
+        files: 2 ** 40,
+        get bytes() {
+          return getter();
+        },
+      };
+      s.diagnostics({ snapshotDiagnostic: hostile });
+      recordNativeBoundary({}, 'snapshotRejected', 101, hostile);
+      expect(s.events()[1].snapshotDiagnostic).toEqual({ reason: 'symbolic_link' });
+      expect(JSON.parse(log.mock.calls[1][0])).toEqual({
+        type: 'native.lifecycle',
+        boundary: 'snapshotRejected',
+        at: 101,
+        reason: 'symbolic_link',
+      });
+      s.diagnostics({ snapshotDiagnostic: { reason: CANARY } });
+      s.diagnostics({
+        snapshotDiagnostic: {
+          get reason() {
+            return getter();
+          },
+        },
+      });
+      expect(s.events()[2].snapshotDiagnostic).toBeUndefined();
+      expect(s.events()[3].snapshotDiagnostic).toBeUndefined();
+      expect(getter).not.toHaveBeenCalled();
+      s.assertPrivate();
+    } finally {
+      log.mockRestore();
+    }
+  });
   it.each([
     'native_recovery_home_path_invalid',
     'native_recovery_session_id_mismatch',

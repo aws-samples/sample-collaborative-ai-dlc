@@ -1,7 +1,11 @@
 // Fixed-schema timings only: no prompts, environment, filesystem paths,
 // credentials, session IDs or private transcripts enter lifecycle telemetry.
 import { NATIVE_PRESENTATION_REASONS } from './native-pending-input.js';
-import { nativeOutputDiagnostic, nativeRuntimeFailureCode } from './native-execution-failure.js';
+import {
+  nativeOutputDiagnostic,
+  nativeSnapshotDiagnostic,
+  nativeRuntimeFailureCode,
+} from './native-execution-failure.js';
 
 const BOUNDARIES = new Set([
   'accepted',
@@ -27,6 +31,7 @@ const BOUNDARIES = new Set([
   'workspaceBaselineCompleted',
   'workspaceSnapshotStarted',
   'workspaceSnapshotCompleted',
+  'snapshotRejected',
   'checkpointVerificationStarted',
   'checkpointVerificationCompleted',
   'checkpointDownloadStarted',
@@ -71,6 +76,7 @@ export const recordNativeBoundary = (identity, boundary, at = Date.now(), counts
   const event = { type: 'native.lifecycle', boundary, at };
   if (boundary === 'executionFailed') event.code = nativeRuntimeFailureCode(counts);
   if (boundary === 'outputRejected') Object.assign(event, nativeOutputDiagnostic(counts));
+  if (boundary === 'snapshotRejected') Object.assign(event, nativeSnapshotDiagnostic(counts));
   if (boundary === 'harnessUsageObserved') {
     for (const key of ['durationMs', 'durationApiMs', 'numTurns'])
       if (
@@ -106,7 +112,9 @@ export const recordNativeBoundary = (identity, boundary, at = Date.now(), counts
   for (const key of ['projectId', 'executionId', 'attemptId'])
     if (typeof own(identity, key) === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(own(identity, key)))
       event[key] = own(identity, key);
-  for (const key of ['sequence', 'writerGeneration', 'files', 'bytes', 'retries'])
+  for (const key of boundary === 'snapshotRejected'
+    ? ['sequence', 'writerGeneration', 'retries']
+    : ['sequence', 'writerGeneration', 'files', 'bytes', 'retries'])
     if (Number.isSafeInteger(own(counts, key)) && own(counts, key) >= 0)
       event[key] = own(counts, key);
   try {

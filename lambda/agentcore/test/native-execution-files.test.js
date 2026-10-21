@@ -86,6 +86,48 @@ describe('exact native execution files', () => {
     });
   });
 
+  it.each([
+    ['node_modules/.bin/fixture-tool', 'dependency_bin'],
+    ['nested/node_modules/fixture-tool', 'dependency'],
+    ['aidlc/generated-link', 'workflow'],
+    ['generated-link', 'other'],
+  ])(
+    'identifies a rejected public link category without reading its target: %s',
+    async (path, pathClass) => {
+      await write('target', 'safe fixture bytes');
+      await fs.mkdir(dirname(join(project, path)), { recursive: true, mode: 0o700 });
+      await fs.symlink(join(root, 'private-target-not-to-be-read'), join(project, path));
+      const diagnostics = [];
+      const io = {
+        ...fs,
+        readlink: () => {
+          throw Error('must not read target');
+        },
+      };
+      await expect(
+        snapshot({
+          io,
+          onDiagnostic: (value) => {
+            diagnostics.push(value);
+            throw Error('advisory sink unavailable');
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: 'native_snapshot_link',
+        snapshotDiagnostic: {
+          reason: 'symbolic_link',
+          pathClass,
+          pathDepth: path.split('/').length,
+          pathSha256: createHash('sha256').update(path).digest('hex'),
+        },
+      });
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0].entries).toBeGreaterThan(0);
+      expect(JSON.stringify(diagnostics)).not.toContain('private-target');
+      expect(JSON.stringify(diagnostics)).not.toContain(path);
+    },
+  );
+
   it.skipIf(process.platform === 'win32')('rejects a FIFO without blocking', async () => {
     execFileSync('/usr/bin/mkfifo', [join(project, 'pipe')]);
     await expect(snapshot()).rejects.toMatchObject({ code: 'native_snapshot_special_file' });

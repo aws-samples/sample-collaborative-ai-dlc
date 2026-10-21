@@ -173,6 +173,25 @@ export const nativeOutputDiagnostic = (input) => {
   return result;
 };
 
+// Public-snapshot diagnostics describe the rejected entry, never its path,
+// target, contents or creating process. A named directory is not provenance.
+export const nativeSnapshotDiagnostic = (input) => {
+  if (own(input, 'reason') !== 'symbolic_link') return undefined;
+  const result = { reason: 'symbolic_link' };
+  const pathClass = own(input, 'pathClass');
+  if (['dependency_bin', 'dependency', 'workflow', 'other'].includes(pathClass))
+    result.pathClass = pathClass;
+  const phase = own(input, 'phase');
+  if (['baseline', 'final'].includes(phase)) result.phase = phase;
+  const hash = own(input, 'pathSha256');
+  if (typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash)) result.pathSha256 = hash;
+  for (const key of ['pathDepth', 'entries', 'files', 'bytes']) {
+    const value = own(input, key);
+    if (Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647) result[key] = value;
+  }
+  return result;
+};
+
 export const nativeRuntimeFailureCode = (error) => {
   try {
     const descriptor = Object.getOwnPropertyDescriptor(error, 'code');

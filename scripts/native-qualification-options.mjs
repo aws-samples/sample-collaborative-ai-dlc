@@ -117,6 +117,7 @@ export function linuxDockerArgs({ image, assets, root, name, linuxBindings }) {
     'runner',
     '--maxWorkers=2',
     'lambda/agentcore/test/native-command-runner.test.js',
+    'lambda/agentcore/test/native-execution-files.test.js',
     'lambda/agentcore/test/native-session-recovery-files.test.js',
     'lambda/agentcore/test/native-opencode-recovery-command.test.js',
     'lambda/shared/test/native-recovery-checkpoint.test.js',

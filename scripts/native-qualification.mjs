@@ -44,6 +44,7 @@ if (!options.installedOnly) {
     'lambda/native-runtime-control/test/activity-store.test.js',
     'lambda/native-runtime-control/test/execution-diagnostics.test.js',
     'lambda/agentcore/test/native-executor.test.js',
+    'lambda/agentcore/test/native-execution-files.test.js',
     'lambda/agentcore/test/native-activity.test.js',
     'lambda/agentcore/test/native-executor-output.test.js',
     'lambda/agentcore/test/native-pending-question.test.js',

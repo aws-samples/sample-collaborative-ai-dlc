@@ -64,6 +64,17 @@ const model = {
   kiro: null,
 }[harness];
 
+// A real offline package-manager workload, not a hand-created snapshot link.
+// No registry access, package scripts or model decisions are required.
+const dependencyInstall = [
+  'mkdir -p vendor/fixture-bin',
+  `printf '%s' '{"name":"fixture-project","version":"1.0.0","private":true,"dependencies":{"fixture-bin":"file:vendor/fixture-bin"}}' > package.json`,
+  `printf '%s' '{"name":"fixture-bin","version":"1.0.0","bin":{"fixture-tool":"cli.js"}}' > vendor/fixture-bin/package.json`,
+  `printf '%s\\n' '#!/usr/bin/env node' 'process.exit(0);' > vendor/fixture-bin/cli.js`,
+  `printf '%s\\n' 'node_modules/' > .gitignore`,
+  'npm install --offline --ignore-scripts --no-audit --no-fund --package-lock=false',
+].join(' && ');
+
 async function codexHistory({ directory, env, provider, sessionId, forkId, createFork }) {
   historyProbes++;
   const started = performance.now();
@@ -562,7 +573,7 @@ try {
     let lostAdmissionAck = false;
     let paging;
     let coldRestored = false;
-    const coldRecovery = ['codex', 'opencode'].includes(harness);
+    const coldRecovery = ['claude', 'codex', 'opencode'].includes(harness);
     const recoveryAcks = [];
     const controls = [];
     const observedStore = {
@@ -631,7 +642,7 @@ try {
               inheritedPages: after.inherited.pages,
               rebuiltWithoutSQLite: true,
             });
-          } else {
+          } else if (harness === 'opencode') {
             assert.equal(input.metadata.schemaVersion, 2);
             assert.equal(input.metadata.binLinks.length, 7, 'Actual pinned npm bin links occurred');
             for (const link of input.metadata.binLinks) {
@@ -648,6 +659,18 @@ try {
               beforeTurn: 3,
               verifiedFiles: input.files.length,
               exactLinks: input.metadata.binLinks.length,
+            });
+          } else {
+            for (const file of input.files)
+              assert.deepEqual(
+                await fs.readFile(join(file.scope === 'home' ? input.home : project, file.path)),
+                file.content,
+              );
+            report({
+              probe: 'cold-restore-claude',
+              status: 'PASS',
+              beforeTurn: 3,
+              verifiedFiles: input.files.length,
             });
           }
           coldRestored = true;
@@ -698,7 +721,9 @@ try {
                 ? harness === 'opencode'
                   ? null
                   : 'mkdir -p nested && cd nested && pwd'
-                : null;
+                : harness === 'claude' && turns === 4
+                  ? dependencyInstall
+                  : null;
           provider.begin({
             turn: turns,
             command,
@@ -714,6 +739,7 @@ try {
           });
           const started = performance.now();
           lastInput = localProviderInvocation(harness, invocation, provider.url);
+          phase = `workflow-turn-${turns}-command`;
           const result = await runNativeCommand({ ...lastInput, timeoutMs: 60_000 });
           assert.equal(result.cleanupComplete, true, 'Installed process descendants reaped');
           if (result.exitCode !== 0) {
@@ -729,6 +755,7 @@ try {
           }
           assert.equal(result.exitCode, 0, `Installed turn ${turns} exited unsuccessfully`);
           if (harness === 'opencode') {
+            phase = `workflow-turn-${turns}-dependency-verification`;
             const packages = await verifyQualificationOpenCodeDependencies(
               project,
               lastInput.env.XDG_CONFIG_HOME,
@@ -740,6 +767,7 @@ try {
               installedBy: 'pinned CLI Arborist',
               offline: true,
             });
+            phase = `workflow-turn-${turns}-tool-verification`;
             const toolFrames = result.stdout
               .trim()
               .split('\n')
@@ -786,12 +814,17 @@ try {
             }
             report({ probe: 'opencode-dependency-links', links });
           }
+          phase = `workflow-turn-${turns}-provider-verification`;
           const observations = provider.result();
-          assert.equal(observations.toolSent, turns <= 2, 'Required actual tool variant occurred');
+          assert.equal(
+            observations.toolSent,
+            turns <= 2 || command !== null,
+            'Required actual tool variant occurred',
+          );
           const primary = observations.requests.filter((sample) => sample.primary);
           assert.equal(
             primary.length,
-            harness === 'opencode' && turns === 1 ? 3 : turns <= 2 ? 2 : 1,
+            harness === 'opencode' && turns === 1 ? 3 : turns <= 2 || command !== null ? 2 : 1,
             'No repeated primary queries',
           );
           report({
@@ -842,6 +875,10 @@ try {
         return result;
       },
       stop: async ({ execution, recoveryId }) => {
+        if (!recoveryId) {
+          assert.equal(runtime.isBusy(), false, 'Failed turn and descendants already settled');
+          return { confirmed: true, runtimeSessionId: execution.runtimeSessionId };
+        }
         assert.equal(coldRecovery, true);
         assert.ok(recoveryId);
         assert.equal((await fence.read(executionIdentity(execution))).state, 'FENCED');
@@ -1052,6 +1089,68 @@ try {
       restoredBeforeTurn: 3,
       externalProviderCalls: 0,
     });
+    if (harness === 'claude') {
+      phase = 'public-dependency-layout';
+      const priorPublication = f.row().publication;
+      const priorCheckpoint = f.row().recoveryCheckpoint;
+      const question = await api.interaction(f.prepared, async () => {});
+      latestAnswer = {
+        requestId: randomUUID(),
+        interactionId: question.id,
+        contentSha256: question.contentSha256,
+        text: 'Fixture answer 3.',
+      };
+      const answer = await api.respond(f.prepared, ACTOR, latestAnswer, async () => {});
+      assert.equal(
+        (await api.respond(f.prepared, ACTOR, latestAnswer, async () => {})).response.id,
+        answer.response.id,
+      );
+      await supervisor(f.identity);
+      const failed = await runtime.settle();
+      assert.equal(turns, 4);
+      assert.equal(failed.status, 'failed');
+      assert.equal(failed.code, 'native_snapshot_link');
+      assert.equal(failed.snapshotDiagnostic.phase, 'final');
+      assert.equal(failed.snapshotDiagnostic.pathClass, 'dependency_bin');
+      assert.equal(failed.snapshotDiagnostic.reason, 'symbolic_link');
+      assert.ok(failed.timings.workspaceBaselineCompleted);
+      assert.ok(failed.timings.harnessCompleted);
+      assert.ok(failed.timings.snapshotRejected);
+      for (const absent of [
+        'workspaceSnapshotCompleted',
+        'publicationStarted',
+        'checkpointCaptureStarted',
+      ])
+        assert.equal(failed.timings[absent], undefined);
+      assert.equal(
+        (await fs.lstat(join(project, 'node_modules/.bin/fixture-tool'))).isSymbolicLink(),
+        true,
+        'The actual installed CLI executed npm and left its generated layout intact',
+      );
+      await supervisor(f.identity);
+      assert.equal(f.row().status, 'FAILED');
+      assert.equal(f.row().failureCode, 'native_snapshot_link');
+      assert.equal(f.row().stopConfirmation.writerGeneration, 2);
+      assert.deepEqual(f.row().publication, priorPublication);
+      assert.deepEqual(f.row().recoveryCheckpoint, priorCheckpoint);
+      assert.equal(f.row().turnSequence, 4);
+      await checkpoints.read(executionIdentity(f.row()), priorCheckpoint, { verifyFiles: true });
+      await supervisor(f.identity);
+      assert.equal(turns, 4, 'No replay or stale checkpoint substitution after a delivered answer');
+      report({
+        probe: 'public-dependency-layout',
+        status: 'REJECTED_UNSUPPORTED',
+        tool: 'offline npm install',
+        turn: 4,
+        writerGeneration: 2,
+        code: failed.code,
+        snapshotDiagnostic: failed.snapshotDiagnostic,
+        previousCheckpointVerified: 3,
+        publication4: false,
+        stopConfirmed: true,
+        replayCount: 0,
+      });
+    }
     report({ status: lifecycleFailed || protocolFailed ? 'FAIL' : 'PASS' });
     if (lifecycleFailed || protocolFailed) process.exitCode = 1;
   }

@@ -2802,29 +2802,236 @@ not close the remaining live stability or latency work. Keep each simplification
 independently reviewable; preserve the existing authority and checkpoint owners.
 
 - [ ] **Incident — live intent `576ffeb2` failed after continued execution
-      (2026-10-21).** The user reported failure of intent
+      (2026-10-21); public filesystem compatibility remains open.** The user reported failure of intent
       `576ffeb2-1bbc-4874-99e0-17d0e5a18f77` in project
-      `22371643-2db5-42a4-a571-e47fc35745f5` after the local qualification work.
-      Initial consistent scalar read confirms **FAILED**, `native_snapshot_link`,
-      Claude / Sonnet 5.5, turn 4, writer generation 2, epoch 1. The recorded
-      image is `sha256:55af546654300d86c78575f0fb03df63bae81e74cf4862eb3a4ae3924d5b32d7`;
-      package is `sha256:9fdb284f4601d3c8c2d828abda2b9b98f3ecaca149870da3a11dbc2ee24805b1`.
-      Latest publication/checkpoint sequence is 3. Start was
-      **2026-10-20 18:23:09.273 UTC**; stop confirmation was
-      **2026-10-21 13:49:00.059 UTC**, with the authority row updated at
-      **13:49:12.074 UTC**. These timestamps do not establish continuous CLI
-      execution between them. The current snapshot owner emits this code for a
-      symbolic link, distinct from the earlier output-parser failure. The actual
-      link, failing phase/timeline and deployed source alignment remain unknown.
-      Investigate this exact run through scoped read-only metadata and safe
-      diagnostics; preserve its answers, publications, checkpoints and terminal
-      state. Compare actual deployed behavior with reviewed `6bdb147`, without
-      assuming local commits were deployed or that this repeats a prior parser
-      error. Explain the specific test-coverage or deployment gap, reproduce the
-      supported failure locally where evidence permits, and retain the regression
-      with any bounded correction. Record exact evidence and remaining uncertainty
-      here. A green scripted-provider matrix does not close live reliability;
-      do not replay, repair, deploy or start a new live run as part of diagnosis.
+      `22371643-2db5-42a4-a571-e47fc35745f5`. **Confirmed:** the restored turn-4
+      baseline passed; Claude completed; the final public workspace snapshot
+      rejected a symbolic link before any turn-4 publication or private recovery
+      capture. This is distinct from the earlier parser and private-checkpoint
+      defects. **Unknown:** exact link, target and creator. Those details were
+      never retained by the deployed rejection owner. Do not substitute the
+      synthetic npm fixture below for historical evidence.
+
+      **Authority and source alignment.** A fully paginated consistent scalar
+      query returned 162 rows (one page) from
+      `collaborative-ai-dlc-native-runs-dev`, partition
+      `NATIVE#01cab9c7d7cb15a23ac5e2ddce2c002019f595017cd3a0554f6b4f82b0663190`.
+      `EXECUTION` remains **FAILED / native_snapshot_link**, version **2223**,
+      turn **4**, writer **2**, epoch **1**. Last lifecycle event is **2207**;
+      `OUTPUT_CURSOR` is separately **123**, writer-2 index **58**. Attempt
+      `d94958a7-b263-4acd-84f7-e8ab81fe81e3`, runtime session
+      `92fb673d-f8a2-44f7-ae15-876a1f04e1e6`, native Claude session
+      `061f492d-c56f-4ba7-bbde-0dccf5dcf89b`.
+      Admitted model is `global.anthropic.claude-sonnet-5-5`, harness Claude,
+      package `sha256:9fdb284f4601d3c8c2d828abda2b9b98f3ecaca149870da3a11dbc2ee24805b1`
+      (attested AI-DLC **2.11.0**). AgentCore executable version **2** pins
+      `sha256:55af546654300d86c78575f0fb03df63bae81e74cf4862eb3a4ae3924d5b32d7`.
+      Network-disabled inspection of that cached immutable image confirmed
+      **Claude 2.1.296**, **Node 24.19.0**, Linux ARM64. File hashes of executor,
+      snapshot, public exclusions, private recovery, output parser, command
+      runner, failure allowlist and private bin-link helper match `394fbfb`
+      and reviewed `6bdb147`. In particular, `execution-files.js` SHA-256
+      `face0bfa4610c684bb9b94e86e981b6270c716c007ff19d7b627025aef5c6293`
+      and `native-project-files.js`
+      `ff962b339c02423da054d277cda5aed75026785893c0a0b6e471d64bc7887387`
+      are unchanged from the earlier baseline. There is no evidence of a
+      missing deployed public-link fix. This is file-level alignment, not
+      complete image-build provenance.
+      Worker `collaborative-ai-dlc-native-runs-dev-execution` CodeSha256
+      `es7MGKicynI4S3Kkqom0Yme/kv2BZPa77xoWQ+nqRAc=` was modified
+      **2026-10-20 17:50:26 UTC**; API CodeSha256
+      `7bwBj+AlrTdC/r/O/g1S8PH4QFUpTxTXkNETqwzX8I4=` at **17:45:07 UTC**.
+      Both are `$LATEST`; their source commit is unverified.
+
+      **Measured chronology (UTC).** The overnight interval was an admitted
+      question waiting for a reply, not continuous CLI execution.
+
+      | Boundary | UTC time / elapsed |
+      | --- | --- |
+      | Start; first dispatch | Oct 20 **18:23:09.273**; **18:23:46.500** |
+      | Initial package / pin / harness setup | **18:24:10.300–18:27:18.563**; package **145.330 s**, pin **20.195 s**, harness **22.723 s** |
+      | Turn 1 CLI; publication/checkpoint 1 admitted | **18:27:18.818–18:28:51.413** (**92.595 s**); **18:29:05.436** |
+      | Reply 2 accepted / delivered; CLI; admission 2 | **18:29:24.540 / 27.127**; **18:29:27.202–18:35:12.283** (**345.081 s**); **18:35:31.572** |
+      | Reply 3 accepted / delivered; CLI; admission 3 | **18:38:48.135 / 52.497**; **18:38:52.705–18:41:38.565** (**165.860 s**); **18:41:58.948** |
+      | Reply 4 accepted; cold recovery requested | Oct 21 **13:27:48.921**; **13:28:04.867**, `SESSION_LOST` |
+      | Predecessor stopped; writer 2 restoring | **13:28:13.000** |
+      | Checkpoint download/verification; filesystem restore | **13:28:24.151–28.020**; **13:28:28.122–47.294** |
+      | Recovery admitted; reply 4 delivered | **13:32:06.264**; **13:32:10.752** (**261.831 s** after acceptance) |
+      | Baseline snapshot; CLI | **13:32:10.627–10.845**; **13:32:10.911–13:48:57.864** (**1006.953 s**) |
+      | First raw / useful output | **13:32:13.181 / 13:33:06.573** |
+      | Final snapshot start; link rejection | **13:48:57.880 / 13:48:58.088** (**208 ms**) |
+      | FAILED / positive stop confirmation; latest bookkeeping | **13:49:00.059**; **13:49:12.074** |
+
+      The gap between filesystem restore and recovery admission is not fully
+      attributed; do not label it model time or a failed restore. The
+      **16m46.953s** CLI interval includes tools/workflow/provider work, not
+      measured inference alone. Turn-4 baseline had **41 files / 50,564 bytes**,
+      matching publication 3's counts; verification of the exact checkpoint
+      preceded the restore. Prior private capture times were
+      **1.836 / 1.842 / 1.954 s**, uploads **4.178 / 8.611 / 8.256 s**.
+      These phases did not run at all on turn 4.
+
+      **Decisive evidence and owner.** Runtime group
+      `/aws/bedrock-agentcore/runtimes/native_a2546ecf077f8a863e9ee8a20db4d934-zFASJEFWeU-exec_cc85199c2dd0192dfcb61f0b9507abe5`,
+      streams `2026/10/20/[runtime-logs]8b29906c-fa30-4f40-a20e-77922f76d1b1`
+      and `2026/10/21/[runtime-logs]532a5374-aee3-473b-8635-6318ff3f57f4`.
+      The latter records `harnessCompleted → workspaceSnapshotStarted →
+      executionFailed(code=native_snapshot_link)`. Worker group
+      `/aws/lambda/collaborative-ai-dlc-native-runs-dev-execution` records
+      `REPORT_OBSERVED` / `RUNTIME_TERMINAL` with that same code at
+      **13:48:59.672 / 59.749**, request
+      `0400c2e8-5b83-5741-b2f6-a1ba9e8b5a8c`, stream
+      `2026/10/21/[$LATEST]261b1a014bfd42a8bb829a3baa182c81`.
+      `executor.runNativeTurn → snapshotNativeExecutionFiles.walk` rejects
+      `lstat.isSymbolicLink()` after parent visibility exclusions, before
+      `publishFiles`, `publishInteraction` or `captureRecovery`. Root and
+      hardlink rejections have different codes. The controller preserves this
+      known code through its mapper, diagnostic sink and terminal authority.
+
+      Server-side fixed category predicates on this execution's tool records
+      found `node_modules` at **13:35:59.735** (`OUTPUT#0000000000000077`) and `npm install`
+      at **13:36:46.240 / 13:39:16.216** (`OUTPUT#0000000000000078` /
+      `OUTPUT#0000000000000084`). Only keys,
+      timestamps and match categories were returned, not commands or output
+      content. This makes a dependency-created link plausible, **not proven**;
+      a command mention does not prove successful execution or identify the
+      rejected link. No whole private records, conversations, checkpoint bodies,
+      interaction bodies or runtime filesystem were read. All AWS calls used
+      verified `solution-read`, `us-east-1`; no current permission denial.
+      Previous broad-read rejections remain respected.
+
+      **Retained work and recovery.** Publication 3
+      `2a6f5bfd21c0887c80922a553116b5c682da3b617666617c5bb7cb39533867e9`
+      and checkpoint 3
+      `d68df8735429615b2bc8156ff4f7468a8ab367224ee99753929d984535f13c2e`
+      survive. Interaction 3 is
+      `50c78aa27c6714be9a029937d6ccaf0da87e5413a74ea7a23ce2a9dfa80153a7`.
+      Reply-4 command `5fcd9517-c59c-41b0-961f-7fe5183cebe4`, request
+      `f0505e76-5157-4b72-8cb5-20200fcce407`, was delivered. No turn-4
+      publication/checkpoint exists and its tool activity is not committed
+      artifact evidence. The terminal row has no supported recovery offer.
+      Restoring checkpoint 3 and replaying that answer is **not safe retry**.
+      This investigation has not changed the run or its accepted answers.
+
+      **Concrete coverage gap and local correction.** Existing unit tests and
+      the scripted three-turn `checkpoint-journey` already expected
+      `native_snapshot_link` to fail the run. They qualified rejection and
+      retained-checkpoint safety, not compatibility with npm-created public
+      filesystem layouts. The installed Claude journey restored files directly;
+      it did not exercise the controller's cold writer-generation transition.
+      The public snapshot suite was also absent from the reusable host/Linux
+      selection. It is now included. The installed Claude scenario now uses
+      real cold restore into writer 2, three admitted checkpoints, then a
+      fourth protected answer whose actual installed CLI executes an **offline
+      npm install of a local bin package** through an inert Bash tool response.
+      `.gitignore` excludes `node_modules` for Git, but the production public
+      snapshot still rejects npm's `.bin` link. Its explicit workload outcome
+      is **REJECTED_UNSUPPORTED**, never a successful dependency workload.
+      Assertions cover no publication/capture 4, exact retained checkpoint 3,
+      positive stop and no delivered-answer replay.
+
+      New `snapshotRejected` telemetry persists the **baseline/final phase**,
+      fixed reason `symbolic_link`, bounded directory category, relative-path
+      SHA-256/depth and traversal counts through runtime status and both
+      controller diagnostic layers. It never reads a target, emits a raw
+      path/target/content or identifies an assumed creator. Categories derive
+      only from literal directory names (`dependency_bin`, `dependency`,
+      `workflow`, `other`). Getter-bearing, unknown or unbounded fields are
+      discarded; failed diagnostic sinks cannot change snapshot rejection.
+      New-run transport instructions disclose the existing link limitation
+      and prohibit skipping required dependencies/tests as a workaround.
+      Existing accepted answers and retained pins are not rewritten. This
+      communication is not proof that a real model will avoid the layout.
+      The status field is additive: old images omit it and remain readable;
+      both updated runtime and controller are needed to retain the complete
+      new diagnostic. No publication/checkpoint schema or recovery eligibility
+      changed.
+
+      **Decision still required; not fixed by an allowlist exception.**
+      `native-project-files.js` deliberately keeps generated dependencies in
+      public content independently of `.gitignore`; recovery's public subset
+      must equal that exact publication. Supporting dependency links therefore
+      needs an explicit publication/recovery contract, resource bounds and
+      retained-reader compatibility—not swallowing this error, following
+      arbitrary targets, deleting files or silently omitting them. The
+      OpenCode schema-2 private `.opencode/node_modules/.bin` contract grants
+      no public-link capability for Claude. Choose a bounded generated-
+      dependency representation/exclusion plus exact restoration policy, or
+      explicitly restrict these workloads before execution. The former needs
+      dedicated implementation and qualification before calling normal
+      dependency-install workflows supported. No new cloud access is needed
+      to establish this incompatibility; exact historical link attribution
+      would require separately authorized, content-free filesystem inspection
+      of the stopped workspace, which was not performed.
+
+      **Validation and next qualification.** Five new diagnostic assertions
+      failed against the original production owners (four snapshot variants
+      and the composed later-turn failure); the corrected focused run passed
+      **108 tests**. An initial sandbox run had **100 pass / 8 fail** solely
+      from denied loopback sockets; the same eight passed with permitted local
+      sockets. Full backend `npm test -- --maxWorkers=4` passed **10,447**,
+      skipped **8**, with **361 passing / 1 skipped files**. The complete
+      native qualification command passed **1,309 backend / 5 skipped**,
+      **307 UI/service**, **1 targeted WebSocket / 32 unselected**,
+      **434 Linux**, **6 architecture regressions** and **22 wiring** checks.
+      Installed Claude passed its existing four-turn terminal/subagent baseline,
+      the cold three-turn workflow, exact restore and the fourth-turn
+      **REJECTED_UNSUPPORTED** dependency workload assertions. Installed Codex
+      passed its composed three-turn/paged-fork recovery.
+      Inert provider responses use fixture model labels; this does not qualify
+      live Sonnet 5.5 behavior.
+      **Combined installed matrix: FAIL.** OpenCode **1.19.0** failed the
+      fixture's `workflow-turn-1-dependency-verification` because project
+      `.opencode/package-lock.json` was missing. One focused retry reproduced
+      it; a controlled read-only overlay of unchanged `394fbfb` production
+      files reproduced the same missing-lock failure with these fresh fixtures
+      and image `55af…`. This is not introduced by this diagnostic change and
+      is not the Claude live failure, but it blocks an all-harness qualification
+      claim on this image. No lock assertion was removed or weakened.
+      Kiro was not rerun; its managed-authentication limitation stays open.
+      Earlier all-three PASS evidence used image `70c9…`; preserve that dated
+      result rather than transferring it to this image.
+
+      Exact reusable invocation for these prepared, verified fixtures:
+
+      ```bash
+      export PATH="$HOME/.nvm/versions/node/v24.21.0/bin:$PATH"
+      export NODE_OPTIONS=--no-experimental-webstorage
+      export NATIVE_IMAGE=746558295630.dkr.ecr.us-east-1.amazonaws.com/collaborative-ai-dlc-agentcore-dev@sha256:55af546654300d86c78575f0fb03df63bae81e74cf4862eb3a4ae3924d5b32d7
+      export NATIVE_FIXTURES=/tmp/native-576-fixtures
+      node scripts/native-qualification-package.mjs --verify-fixtures "$NATIVE_FIXTURES"
+      npm run test:native-qualification -- --cli claude,codex,opencode \
+        --image "$NATIVE_IMAGE" --assets "$NATIVE_FIXTURES/assets" \
+        --opencode-cache "$NATIVE_FIXTURES/opencode-cache" \
+        --linux-bindings "$NATIVE_FIXTURES/linux-node-modules"
+      ```
+
+      For a new machine, prepare a fresh empty fixture directory using the
+      [existing runbook](#native-local-qualification), then substitute it above.
+      `--installed-only --cli claude` selects the exact Claude regression;
+      `--installed-only --cli opencode` reproduces the remaining lockfile gap.
+      No CLI or dependency versions were changed. `npm run test:release`
+      passed **259 / 0 skipped**; controller's eight bundles built; lint,
+      format, secretlint, dependency/SDK, architecture (**392 production
+      modules, zero violations**), wiring and frozen offline docs build passed.
+      Existing lint warnings and **14 dependency warnings / zero errors**
+      remain. A sandbox uv-cache-lock denial was resolved by running the same
+      frozen offline docs command with permitted local cache access.
+      Evidence logs are `/tmp/native-576-{before,focus-permitted,qualification,
+      opencode-repeat,opencode-baseline,backend,release}.log`; these contain
+      synthetic test data, separate from projected live metadata.
+
+      Keep this incident open for the policy decision
+      and live compatibility evidence; do not ask the user to deploy these
+      diagnostics as if they solve the workload failure. After review and any
+      chosen contract implementation, qualify an **unmodified newly built
+      production image**, then authorize one fresh live intent with discrete
+      scope selection, three admitted question/reply checkpoints, a cold
+      reconnect/restore and the declared dependency-install/build workload.
+      Require snapshot/capture/admission success under that declared policy,
+      exact history, no answer replay and positive stop evidence. Keep this
+      failed run unchanged. Browser, EFS, real-provider and long workload
+      behavior remain unqualified by the offline fixture.
 
 - [x] **Verification — local installed-CLI journeys for all supported harnesses.**
       **Current implementation task, authorized 2026-10-16.** Extend
@@ -3539,10 +3746,16 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       ```
 
       This runs the host controller/adapter/UI/WebSocket journeys,
-      architecture/wiring checks, **404** Linux process/filesystem/manifest
+      architecture/wiring checks, **434** Linux process/filesystem/manifest
       regressions, then each selected installed row. Linux regressions use the
       same offline/read-only container boundary and two workers. Ordinary host
       checks remain credential-free and require no registry/model access.
+      The current Claude row additionally tests cold writer-generation recovery
+      and a real offline npm install after three admitted checkpoints. Its
+      public `.bin` link workload must report **REJECTED_UNSUPPORTED** with
+      checkpoint 3 retained, not successful dependency-workload support. See
+      the `576ffeb2` incident above for the new image `55af…` results and its
+      separately reproduced OpenCode missing-lock qualification failure.
       All installed containers use `--pull never`, `--network none`,
       read-only image/source/assets and disposable tmpfs.
 

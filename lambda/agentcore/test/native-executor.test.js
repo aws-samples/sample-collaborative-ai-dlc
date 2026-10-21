@@ -1204,6 +1204,9 @@ describe('native invocation and first-wait classification', () => {
     expect(prompt).toContain('Do not approve a gate, answer on behalf of the user');
     expect(prompt).toContain('compose_command, scope_commands or choices');
     expect(prompt).toContain('Do not reconstruct those commands');
+    expect(prompt).toContain('symbolic links are unsupported');
+    expect(prompt).toContain('.gitignore does not exclude generated dependencies');
+    expect(prompt).toContain('Do not skip required dependencies or tests');
   });
   it.each([undefined, null, '', 'CODEX', 'unknown', ['codex'], {}])(
     'refuses an unsupported prompt harness: %j',

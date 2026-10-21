@@ -31,7 +31,10 @@ import {
 } from './initialization-evidence.js';
 import { inspectNativeEfsWorkspace } from './efs-workspace.js';
 import { snapshotNativeExecutionFiles } from './execution-files.js';
-import { nativeRuntimeFailureCode } from '../../shared/native-execution-failure.js';
+import {
+  nativeRuntimeFailureCode,
+  nativeSnapshotDiagnostic,
+} from '../../shared/native-execution-failure.js';
 import {
   captureNativeSessionRecovery,
   restoreNativeSessionRecovery,
@@ -90,6 +93,12 @@ export const nativeFirstTurnPrompt = ({ harness, request } = {}) => {
     'in your normal assistant response, preserve any normal workflow artifacts, leave ' +
     'the native workflow waiting, and end this turn. The platform will show your response and files to ' +
     'the user. Do not approve a gate, answer on behalf of the user, or continue past that wait. ' +
+    'Native public-workspace capability: publications require ordinary files and directories; ' +
+    'symbolic links are unsupported, and .gitignore does not exclude generated dependencies. ' +
+    'Package installs and build tools can create links, including node_modules/.bin. ' +
+    'If a required step needs that unsupported layout, explain the constraint and wait before ' +
+    'running it. Do not skip required dependencies or tests, follow external targets, or copy ' +
+    'private files as a workaround. ' +
     NATIVE_QUESTION_MODE_INSTRUCTION +
     NATIVE_PENDING_SPEC_INSTRUCTION +
     NATIVE_INTAKE_ANSWER_INSTRUCTION
@@ -1010,9 +1019,21 @@ export const createNativeExecutor = ({
     await clearNativePendingSpec(project);
     activityTurn.lifecycle({ title: 'Inspecting workspace' });
     timing('workspaceBaselineStarted');
+    const snapshotWorkspace = (phase) =>
+      snapshot({
+        project,
+        signal,
+        forbiddenBytes,
+        onDiagnostic: (details) => {
+          const safe = nativeSnapshotDiagnostic(details);
+          if (!safe) return;
+          current.report.snapshotDiagnostic = { ...safe, phase };
+          timing('snapshotRejected', current.report.snapshotDiagnostic);
+        },
+      });
     let beforeFiles;
     {
-      const baseline = await snapshot({ project, signal, forbiddenBytes });
+      const baseline = await snapshotWorkspace('baseline');
       beforeFiles = baseline.files.map(fileRef);
       timing('workspaceBaselineCompleted', {
         files: baseline.files.length,
@@ -1088,7 +1109,7 @@ export const createNativeExecutor = ({
     });
     const renderedSpec = rendered.spec;
     timing('workspaceSnapshotStarted');
-    const files = await snapshot({ project, signal, forbiddenBytes });
+    const files = await snapshotWorkspace('final');
     timing('workspaceSnapshotCompleted', { files: files.files.length, bytes: files.totalBytes });
     const pendingInput = buildNativePendingInput({
       gate: nativeGateFromSnapshot(files),
