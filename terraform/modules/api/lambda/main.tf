@@ -1277,9 +1277,10 @@ module "source_control_lambda" {
     ENVIRONMENT                        = var.environment
     CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
     }, var.enable_engine_data ? {
-    ENGINE_DATA_ENABLED   = "true"
-    GATEWAY_GRANT_KEY_IDS = var.gateway_grant_key_arn
-    V2_PROCESS_TABLE      = var.v2_executions_table_name
+    ENGINE_DATA_ENABLED            = "true"
+    GATEWAY_GRANT_KEY_IDS          = var.gateway_grant_key_arn
+    V2_PROCESS_TABLE               = var.v2_executions_table_name
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
   } : {})
 }
 
@@ -1479,8 +1480,9 @@ module "credential_broker_lambda" {
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
     }, var.enable_engine_data ? {
-    ENGINE_DATA_ENABLED   = "true"
-    GATEWAY_GRANT_KEY_IDS = var.gateway_grant_key_arn
+    ENGINE_DATA_ENABLED            = "true"
+    GATEWAY_GRANT_KEY_IDS          = var.gateway_grant_key_arn
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
     } : {}, var.enable_engine_data && var.enforce_runtime_grants ? {
     RUNTIME_GRANTS_ENFORCED = "true"
   } : {})
@@ -1622,7 +1624,9 @@ module "projects_lambda" {
     # save-time cross-tier collision check.
     MCP_SECRETS_SSM_PREFIX    = "/${var.project_name}/${var.environment}"
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-  }, local.notification_event_env)
+    }, var.enable_mcp_gateway ? {
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {}, local.notification_event_env)
 }
 
 # Users Lambda
@@ -3288,7 +3292,10 @@ module "intents_lambda" {
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     TRACKERS_FUNCTION                 = module.trackers_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
-  }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
+    }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
+    var.enable_mcp_gateway ? {
+      GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {})
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
@@ -3619,7 +3626,10 @@ module "v2_orchestrator_lambda" {
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
     PR_TITLE_TRACKER_KEY                 = tostring(var.pr_title_tracker_key)
     },
-    var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
+    var.enable_mcp_gateway ? {
+      GATEWAY_GRANT_KEY_ID           = var.gateway_grant_key_arn
+      GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+    } : {},
     # Execution-scoped grants authorize engine-data calls only; without engine
     # data the orchestrator signs stage and conflict grants alone.
     var.enable_engine_data ? { ENGINE_DATA_ENABLED = "true" } : {},

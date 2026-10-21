@@ -473,3 +473,15 @@ variable "notification_event_source" {
   type        = string
   default     = "collaborative-ai-dlc"
 }
+
+variable "gateway_grant_retirement_table_name" {
+  description = "Table the orchestrator, intents and projects Lambdas record retired Gateway grants and executions in and grant consumers check (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
+}
+
+variable "gateway_grant_retirement_table_arn" {
+  description = "ARN of the retired Gateway grant table (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
+}

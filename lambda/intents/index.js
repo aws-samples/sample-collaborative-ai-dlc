@@ -31,8 +31,14 @@ import {
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
 import { requirePlatformAdmin } from '../shared/authz.js';
-import { gatewayScopeForCommand } from '../shared/gateway-grant.js';
+import { COMPOSE_GRANT_TTL_SECONDS, gatewayScopeForCommand } from '../shared/gateway-grant.js';
 import { gatewayGrantIssuerFromEnv } from '../shared/gateway-grant-issuer.js';
+import {
+  GatewayGrantRetirementError,
+  gatewayExecutionRetirerFromEnv,
+  gatewayGrantRetirerFromEnv,
+  pendingGrantRetirementIds,
+} from '../shared/gateway-grant-retirement.js';
 import {
   isEnvironmentResolutionError,
   resolveEnvironmentSnapshot,
@@ -243,18 +249,216 @@ const issueInvocationAgentCredentialGrant = async (request) =>
 // Lambda's GATEWAY_GRANT_KEY_ID only then.
 const gatewayGrantIssuer = gatewayGrantIssuerFromEnv();
 
-// The signed grant a runtime command's registry scope declares, as payload
-// fields. Identity is the caller's verified intent (these commands run on the
-// intent's own execution). Empty without an issuer or for a command that needs
-// no grant, so the payload stays unchanged when the Gateway is off.
-const gatewayGrantFields = async (command, { projectId, intentId }) => {
+const logGrantRetirementFailure = (fields, error) =>
+  logger.error('gateway execution retirement failed', {
+    code: 'GATEWAY_GRANT_RETIREMENT_FAILED',
+    metric: 'GatewayGrantRetirementFailed',
+    value: 1,
+    ...fields,
+    error: error?.name ?? 'Error',
+  });
+
+// Retire every Gateway grant of an execution issued so far, for a deliberate
+// stop that ends or replaces its run (cancel, rewind, recompose, lane repair,
+// delete, the durable watchdog); a run's own end retires its grants one by one
+// and writes nothing here. Fail-closed: called BEFORE the operation changes
+// any state, and a failed write throws GatewayGrantRetirementError so the
+// operation aborts with a retryable error instead of ending the run while its
+// grants stay valid. `ifOrchestratorRunId` is the run id the caller read from
+// META (null: none): the write lands only while META still names it, so a
+// stale request (two concurrent rewinds, a watchdog racing a relaunch) can
+// never retire a newer run's grants; it gets `{ superseded: true }` back and
+// must not change anything either. A no-op when the deployment has no
+// retirement table (MCP Gateway disabled).
+const retireExecutionGrants = async (executionId, reason, { ifOrchestratorRunId }) => {
+  const retire = gatewayExecutionRetirerFromEnv({ ddb });
+  if (!retire) return null;
+  try {
+    return await retire({ executionId, reason, ifOrchestratorRunId: ifOrchestratorRunId ?? null });
+  } catch (error) {
+    logGrantRetirementFailure({ executionId, reason }, error);
+    throw new GatewayGrantRetirementError(executionId, error);
+  }
+};
+
+const grantRetirementUnavailable = (response) =>
+  response(503, {
+    error: 'The run’s Gateway grants could not be retired; nothing was changed. Retry.',
+    code: 'grant_retirement_unavailable',
+  });
+
+class StaleRunRequestError extends Error {
+  constructor(executionId) {
+    super('The run changed while the request was in flight');
+    this.name = 'StaleRunRequestError';
+    this.executionId = executionId;
+  }
+}
+
+// A synchronous command already acted, but neither its grant's retirement nor
+// the record of it landed: the caller must not treat the request as done.
+const grantRetirementUnrecorded = (response) =>
+  response(503, {
+    error:
+      'The command ran, but its Gateway grant could not be retired or recorded. Retry once the service recovers.',
+    code: 'grant_retirement_unavailable',
+  });
+
+const staleRunRequest = (response) =>
+  response(409, {
+    error:
+      'The run changed while this request was in flight; nothing was changed. Refresh and retry.',
+    code: 'run_superseded',
+  });
+
+// For the HTTP writers: the 503 / 409 response to return, or null once
+// retired. `ifOrchestratorRunId` is the run id of the META row the request
+// validated, so a stale writer never revokes a relaunched run.
+const retireExecutionGrantsOrRefuse = async (
+  executionId,
+  reason,
+  response,
+  { ifOrchestratorRunId },
+) => {
+  try {
+    const retired = await retireExecutionGrants(executionId, reason, { ifOrchestratorRunId });
+    return retired?.superseded ? staleRunRequest(response) : null;
+  } catch (error) {
+    if (error instanceof GatewayGrantRetirementError) return grantRetirementUnavailable(response);
+    throw error;
+  }
+};
+
+// The jtis an earlier run could not retire (its retirement exhausted; the run
+// recorded them on META before it reported its failure). /start, rewind,
+// recompose and lane repair retire them before they relaunch, fail-closed, and
+// then clear them. Returns the 503 response to return, or null.
+const retirePendingGrantsOrRefuse = async (meta, response) => {
+  const pending = pendingGrantRetirementIds(meta);
+  if (!pending.length) return null;
+  const retire = gatewayGrantRetirerFromEnv({ ddb });
+  try {
+    if (!retire) throw new Error('GATEWAY_GRANT_RETIREMENT_TABLE is not configured');
+    for (const grantId of pending) {
+      await retire({ grantId, executionId: meta.executionId, outcome: 'pending_retry' });
+    }
+  } catch (error) {
+    logGrantRetirementFailure(
+      { executionId: meta.executionId, reason: 'pending_grants', pending: pending.length },
+      error,
+    );
+    return grantRetirementUnavailable(response);
+  }
+  // A relaunch requires the set to be gone (its write is conditioned on
+  // attribute_not_exists), so a failed clear refuses too; the retry is
+  // idempotent.
+  try {
+    await store.clearPendingGrantRetirements({ executionId: meta.executionId, grantIds: pending });
+  } catch (error) {
+    logGrantRetirementFailure(
+      { executionId: meta.executionId, reason: 'pending_grants_clear', pending: pending.length },
+      error,
+    );
+    return grantRetirementUnavailable(response);
+  }
+  return null;
+};
+
+// A relaunch write (status → CREATED) conditioned on META owing no grant
+// retirement. A concurrent derive can record an unretired jti after the
+// request read META; the condition then fails, and the jtis now on META are
+// retired and the write retried once. Returns { updated } or { refused } (the
+// 503 to return) — also when yet another jti arrived during that retry, so a
+// pending-grant refusal is always 503 grant_retirement_unavailable. Any other
+// condition failure propagates to the caller.
+const relaunchWithoutPendingGrants = async (executionId, write, response) => {
+  const pendingAfterConditionFailure = async (error) => {
+    if (error?.name !== 'ConditionalCheckFailedException') throw error;
+    const current = await store.getExecution(executionId, { consistentRead: true });
+    if (!pendingGrantRetirementIds(current).length) throw error;
+    return current;
+  };
+  try {
+    return { updated: await write() };
+  } catch (error) {
+    const current = await pendingAfterConditionFailure(error);
+    const refused = await retirePendingGrantsOrRefuse(current, response);
+    if (refused) return { refused };
+  }
+  try {
+    return { updated: await write() };
+  } catch (error) {
+    await pendingAfterConditionFailure(error);
+    logger.warn('gateway grants kept arriving while relaunching', {
+      code: 'GATEWAY_GRANT_RETIREMENT_PENDING',
+      executionId,
+    });
+    return { refused: grantRetirementUnavailable(response) };
+  }
+};
+
+// Synchronous retirement attempts for a grant this Lambda issued for one
+// synchronous runtime command (no durable retry here: the HTTP request is the
+// unit of work). Three quick attempts, then the jti is recorded on META for the
+// next relaunch to retry.
+const SYNC_GRANT_RETIREMENT_ATTEMPTS = 3;
+const SYNC_GRANT_RETIREMENT_BACKOFF_MS = 100;
+
+// The signed grant a synchronous runtime command's registry scope declares,
+// with its jti pinned so it can be retired once the command returns. Identity
+// is the caller's verified intent (these commands run on the intent's own
+// execution). `fields` is empty without an issuer or for a command that needs
+// no grant, so the payload stays unchanged when the Gateway is off. `retire()`
+// never throws; it returns 'retired', 'recorded' (retirement failed, logged
+// GATEWAY_GRANT_RETIREMENT_FAILED, jti recorded on META for the next relaunch)
+// or 'unrecorded' (recording failed too). The command has already acted, so
+// the caller returns its result on 'recorded'; on 'unrecorded' nothing
+// durable remembers the live grant, and the caller answers 503
+// grant_retirement_unavailable even though the projection changed.
+// `ttlSeconds` narrows the grant's lifetime below the default.
+const issueSyncGatewayGrant = async (command, { projectId, intentId }, { ttlSeconds } = {}) => {
   const scope = gatewayGrantIssuer
     ? gatewayScopeForCommand(
         { command },
         { projectId, intentId, executionId: intentId, engineData: true },
       )
     : null;
-  return scope ? { gatewayGrant: await gatewayGrantIssuer(scope) } : {};
+  if (!scope) return { fields: {}, retire: async () => 'retired' };
+  const retireGrant = gatewayGrantRetirerFromEnv({ ddb });
+  const grantId = randomUUID();
+  const gatewayGrant = await gatewayGrantIssuer(scope, {
+    randomId: () => grantId,
+    ...(ttlSeconds ? { ttlSeconds } : {}),
+  });
+  const retire = async () => {
+    if (!retireGrant) return 'retired';
+    let lastError = null;
+    for (let attempt = 1; attempt <= SYNC_GRANT_RETIREMENT_ATTEMPTS; attempt += 1) {
+      try {
+        await retireGrant({ grantId, executionId: intentId, outcome: command });
+        return 'retired';
+      } catch (error) {
+        lastError = error;
+        if (attempt < SYNC_GRANT_RETIREMENT_ATTEMPTS) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, SYNC_GRANT_RETIREMENT_BACKOFF_MS * attempt),
+          );
+        }
+      }
+    }
+    logGrantRetirementFailure({ executionId: intentId, reason: command, grantId }, lastError);
+    try {
+      await store.addPendingGrantRetirements({ executionId: intentId, grantIds: [grantId] });
+      return 'recorded';
+    } catch (error) {
+      logGrantRetirementFailure(
+        { executionId: intentId, reason: `${command}_pending_record`, grantId },
+        error,
+      );
+      return 'unrecorded';
+    }
+  };
+  return { fields: { gatewayGrant }, retire };
 };
 
 // Finalizes a browser upload after S3 emits Object Created: verify it against
@@ -2533,10 +2737,15 @@ const handleArtifactContentUpdate = async ({
   // content is already saved; a failed derive is picked up by the next
   // stage-exit derive or the admin backfill.
   let derived = false;
+  let deriveGrantRetirement = 'retired';
   if (
     runtimeTargetInput(records.meta, AGENTCORE_RUNTIME_ARN()).agentRuntimeArn &&
     artifact.artifactType
   ) {
+    // The edit is already saved; the derive's grant is retired once it
+    // returns. A failed retirement that is recorded on META only logs (the
+    // response stands); one that cannot even be recorded answers 503.
+    let deriveGrant = null;
     try {
       const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
         purpose: 'execution',
@@ -2546,6 +2755,7 @@ const handleArtifactContentUpdate = async ({
         agentCli: records.meta.agentCli,
         runtimeCapabilities: records.meta.environment,
       });
+      deriveGrant = await issueSyncGatewayGrant('derive-artifacts', { projectId, intentId });
       const res = await agentcore.send(
         new InvokeAgentRuntimeCommand({
           ...runtimeTargetInput(records.meta, AGENTCORE_RUNTIME_ARN()),
@@ -2564,7 +2774,7 @@ const handleArtifactContentUpdate = async ({
               ...(records.meta.cliModels ? { cliModels: records.meta.cliModels } : {}),
               ...(records.meta.tierModels ? { tierModels: records.meta.tierModels } : {}),
               ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
-              ...(await gatewayGrantFields('derive-artifacts', { projectId, intentId })),
+              ...deriveGrant.fields,
             }),
           ),
         }),
@@ -2573,8 +2783,11 @@ const handleArtifactContentUpdate = async ({
       derived = text ? JSON.parse(text).ok !== false : false;
     } catch (err) {
       logger.error('[artifact-edit] derive dispatch failed', err);
+    } finally {
+      if (deriveGrant) deriveGrantRetirement = await deriveGrant.retire();
     }
   }
+  if (deriveGrantRetirement === 'unrecorded') return grantRetirementUnrecorded(response);
   return response(200, {
     artifactId: canonicalArtifactId,
     editedAt: edit.editedAt,
@@ -3232,7 +3445,7 @@ const validationIntentDenied = (event, meta, response) => {
 };
 
 const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, response }) => {
-  const meta = await store.getExecution(intentId);
+  const meta = await store.getExecution(intentId, { consistentRead: true });
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
@@ -3367,6 +3580,11 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
       return response(409, { error: error.message, code: error.code });
     }
   }
+  // A FAILED run may have ended on a grant it could not retire (recorded on
+  // META before it reported FAILED). The relaunch writes no execution-level
+  // retirement, so those jtis are retired first, or the start is refused.
+  const pendingRetirementRefused = await retirePendingGrantsOrRefuse(meta, response);
+  if (pendingRetirementRefused) return pendingRetirementRefused;
   // Flip <current> → CREATED (CAS on the observed status) so a double-start
   // can't launch two runs, then hand off to the orchestrator (init-ws + run the
   // plan). If the hand-off throws, roll back to the prior status — otherwise the
@@ -3376,35 +3594,44 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
   const durableExecutionName = durableExecutionNameForIntent(intentId);
   let updated;
   try {
-    updated = await store.updateExecution({
-      executionId: intentId,
-      projectId,
-      status: 'CREATED',
-      fromStatus: priorStatus,
-      ifAttachmentRevision: Number(meta.attachmentRevision ?? 0),
-      startedAt: meta.startedAt,
-      durableExecutionName,
-      durableExecutionArn: null,
-      orchestratorStartedAt: null,
-      orchestratorExpiresAt: null,
-      // Clear any stale failure from a prior attempt as we re-enter the pipeline.
-      failureReason: null,
-      failure: null,
-      startedBy: starter.sub,
-      starterName: starter.displayName,
-      starterEmail: starter.email,
-      ...mcpLaunch.update,
-      ...(priorStatus === 'DRAFT'
-        ? {
-            agentCli: selectedAgentCli,
-            credentialBinding: selectedCredentialBinding,
-            agentSandbox,
-          }
-        : {}),
-      // Launch-time skip override (validated above; undefined = untouched).
-      ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
-      ...(gridOverride !== undefined ? { composedGrid: gridOverride } : {}),
-    });
+    const launched = await relaunchWithoutPendingGrants(
+      intentId,
+      () =>
+        store.updateExecution({
+          executionId: intentId,
+          projectId,
+          status: 'CREATED',
+          fromStatus: priorStatus,
+          ifAttachmentRevision: Number(meta.attachmentRevision ?? 0),
+          ifNoPendingGrantRetirements: true,
+          repairRelaunch: null,
+          startedAt: meta.startedAt,
+          durableExecutionName,
+          durableExecutionArn: null,
+          orchestratorStartedAt: null,
+          orchestratorExpiresAt: null,
+          // Clear any stale failure from a prior attempt as we re-enter the pipeline.
+          failureReason: null,
+          failure: null,
+          startedBy: starter.sub,
+          starterName: starter.displayName,
+          starterEmail: starter.email,
+          ...mcpLaunch.update,
+          ...(priorStatus === 'DRAFT'
+            ? {
+                agentCli: selectedAgentCli,
+                credentialBinding: selectedCredentialBinding,
+                agentSandbox,
+              }
+            : {}),
+          // Launch-time skip override (validated above; undefined = untouched).
+          ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
+          ...(gridOverride !== undefined ? { composedGrid: gridOverride } : {}),
+        }),
+      response,
+    );
+    if (launched.refused) return launched.refused;
+    updated = launched.updated;
   } catch (error) {
     if (error?.name === 'ConditionalCheckFailedException') {
       return response(409, { error: 'Intent changed while starting — refresh and retry' });
@@ -3461,6 +3688,10 @@ const handleCancelIntent = async ({ event, projectId, intentId, response }) => {
     return response(409, { error: `Intent is ${meta.status}, cannot cancel` });
   }
   const responder = getResponder(event);
+  const retirementRefused = await retireExecutionGrantsOrRefuse(intentId, 'cancelled', response, {
+    ifOrchestratorRunId: meta.orchestratorRunId ?? null,
+  });
+  if (retirementRefused) return retirementRefused;
   await retireParkedRun(intentId, `cancelled by ${responder.displayName || responder.sub}`);
   // The run is over — free the warm microVM now instead of waiting for the
   // idle reap (the persistent mount survives for a later rewind relaunch).
@@ -3474,6 +3705,7 @@ const handleCancelIntent = async ({ event, projectId, intentId, response }) => {
     projectId,
     status: 'CANCELLED',
     fromStatus: meta.status,
+    repairRelaunch: null,
     startedAt: meta.startedAt,
     pendingHumanTaskId: null,
     // A recorded answer whose callback failed is moot once the run ends.
@@ -3918,7 +4150,18 @@ const handleComposeIntent = async ({ event, body, projectId, intentId, sub, resp
     instructions,
     reportKey,
   });
+  // The compose job runs in the background after the runtime accepts it, and
+  // nothing here learns when it ends: its grant lives no longer than the job
+  // can (COMPOSE_GRANT_TTL_SECONDS), or with the execution on a cancel,
+  // rewind, recompose, repair or delete. A dispatch that fails or is refused
+  // never started a job, so its grant is retired at once.
+  let composeGrant = null;
   try {
+    composeGrant = await issueSyncGatewayGrant(
+      'compose-plan-start',
+      { projectId, intentId },
+      { ttlSeconds: COMPOSE_GRANT_TTL_SECONDS },
+    );
     const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
       purpose: 'compose',
       projectId,
@@ -3970,7 +4213,7 @@ const handleComposeIntent = async ({ event, body, projectId, intentId, sub, resp
             ...(meta.methodologyRelease && meta.methodologyPins
               ? { methodologyPins: meta.methodologyPins }
               : {}),
-            ...(await gatewayGrantFields('compose-plan-start', { projectId, intentId })),
+            ...composeGrant.fields,
           }),
         ),
       }),
@@ -3981,6 +4224,7 @@ const handleComposeIntent = async ({ event, body, projectId, intentId, sub, resp
       throw new Error(accepted.reason ?? 'compose dispatch refused');
     }
   } catch (err) {
+    await composeGrant?.retire();
     // The accept failed — terminalize the row so the UI never spins on a
     // compose no container is running.
     await store
@@ -4372,6 +4616,12 @@ const handleDeleteIntent = async ({
       sessionCleanupStore,
       artifactsBucket: ARTIFACTS_BUCKET(),
       actor: responder.displayName || responder.sub,
+      retireExecutionGrants: async (reason) => {
+        const retired = await retireExecutionGrants(intentId, reason, {
+          ifOrchestratorRunId: meta.orchestratorRunId ?? null,
+        });
+        if (retired?.superseded) throw new StaleRunRequestError(intentId);
+      },
       force: false,
     });
   } catch (err) {
@@ -4381,6 +4631,8 @@ const handleDeleteIntent = async ({
           'Intent is RUNNING, cannot delete — wait for it to park or finish, or cancel it first',
       });
     }
+    if (err instanceof GatewayGrantRetirementError) return grantRetirementUnavailable(response);
+    if (err instanceof StaleRunRequestError) return staleRunRequest(response);
     if (err instanceof SessionReleaseHandoffError) {
       // Nothing was removed: the intent still owns its workspace sessions.
       logger.error('Intent delete: workspace release could not be handed off', err, {
@@ -4436,6 +4688,10 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
     ...(meta.cliModels ? { cliModels: meta.cliModels } : {}),
     ...(meta.tierModels ? { tierModels: meta.tierModels } : {}),
   };
+  // The derive mutates the projection, so its result is returned even when
+  // the grant's retirement afterwards fails (logged, jti kept on META) —
+  // unless the jti could not be recorded either: then 503.
+  let deriveGrant = null;
   try {
     const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
       purpose: 'execution',
@@ -4445,6 +4701,7 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
       agentCli: meta.agentCli,
       runtimeCapabilities: meta.environment,
     });
+    deriveGrant = await issueSyncGatewayGrant(payload.command, { projectId, intentId });
     const res = await agentcore.send(
       new InvokeAgentRuntimeCommand({
         ...deriveRuntimeTarget,
@@ -4455,12 +4712,16 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
           JSON.stringify({
             ...payload,
             ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
-            ...(await gatewayGrantFields(payload.command, { projectId, intentId })),
+            ...deriveGrant.fields,
           }),
         ),
       }),
     );
+    // The command is over once its whole response body has arrived.
     const text = res.response ? await res.response.transformToString() : '';
+    const deriveGrantRetirement = await deriveGrant.retire();
+    deriveGrant = null;
+    if (deriveGrantRetirement === 'unrecorded') return grantRetirementUnrecorded(response);
     const out = text ? JSON.parse(text) : {};
     if (out.ok === false) {
       return response(422, {
@@ -4479,6 +4740,9 @@ const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
     });
   } catch (err) {
     logger.error('[derive] runtime invoke failed', err);
+    if (deriveGrant && (await deriveGrant.retire()) === 'unrecorded') {
+      return grantRetirementUnrecorded(response);
+    }
     return response(502, { error: 'Failed to invoke the derive runtime' });
   }
 };
@@ -4583,6 +4847,138 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
     return response(409, { error: `Intent is ${meta.status}; no active run can be repaired` });
   }
 
+  // The relaunch of a repair whose cleanup is done: guarded on the retired
+  // run id the repair wrote and on META owing no grant retirement. Shared
+  // by a fresh repair and by a retry that resumes a recorded relaunch
+  // (META.repairRelaunch) whose guarded write was refused.
+  const relaunchRepair = async ({
+    repairId,
+    retiredRunId,
+    sectionIndex,
+    fromStageId,
+    laneSlugs,
+    archivedArtifactCount,
+    mcpLaunchUpdate,
+  }) => {
+    const relauncher = getResponder(event);
+    const durableExecutionName = durableExecutionNameForIntent(intentId);
+    // Fenced on the retired run id and on META owing no grant retirement (a
+    // derive may have recorded a jti since the pending ones were retired);
+    // on a refusal the old run is already retired and META keeps the
+    // recorded relaunch, so the repair can simply be retried. The recorded
+    // relaunch is cleared only once the orchestrator is invoked, so a
+    // failed invoke (rolled back to FAILED) is resumable too.
+    let relaunched;
+    try {
+      relaunched = await relaunchWithoutPendingGrants(
+        intentId,
+        () =>
+          store.updateExecution({
+            ifNoPendingGrantRetirements: true,
+            ifOrchestratorRunId: retiredRunId,
+            executionId: intentId,
+            projectId,
+            status: 'CREATED',
+            fromStatus: 'FAILED',
+            startedAt: meta.startedAt,
+            durableExecutionName,
+            durableExecutionArn: null,
+            orchestratorStartedAt: null,
+            orchestratorExpiresAt: null,
+            pendingHumanTaskId: null,
+            resumeRequired: null,
+            failureReason: null,
+            failure: null,
+            completedAt: null,
+            rewindFromStageId: fromStageId,
+            startedBy: relauncher.sub,
+            starterName: relauncher.displayName,
+            starterEmail: relauncher.email,
+            ...mcpLaunchUpdate,
+          }),
+        response,
+      );
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return staleRunRequest(response);
+      throw error;
+    }
+    if (relaunched.refused) return relaunched.refused;
+    const { updated } = relaunched;
+    try {
+      // Only after this request won the fenced write: a stale retry must
+      // never delete the checkpoint of a run another request launched.
+      await store.deleteWorkflowCheckpoint(intentId);
+      const invoked = await invokeOrchestrator(
+        {
+          action: 'start',
+          intentId,
+          executionId: intentId,
+          startAtStageId: fromStageId,
+        },
+        { durableExecutionName },
+      );
+      if (invoked?.durableExecutionArn) {
+        await store
+          .updateExecution({
+            executionId: intentId,
+            durableExecutionArn: invoked.durableExecutionArn,
+          })
+          .catch((error) => logger.error('Repair durable execution ARN stamp failed', error));
+      }
+      await store
+        .updateExecution({ executionId: intentId, repairRelaunch: null })
+        .catch((error) => logger.warn('Repair relaunch record could not be cleared', { error }));
+    } catch (error) {
+      await store.updateExecution({
+        executionId: intentId,
+        projectId,
+        status: 'FAILED',
+        fromStatus: 'CREATED',
+        startedAt: meta.startedAt,
+        pendingHumanTaskId: null,
+        failureReason: 'lane_repair_relaunch_failed',
+        durableExecutionArn: null,
+      });
+      throw error;
+    }
+    return response(202, {
+      intent: mapIntent(updated),
+      repair: {
+        repairId,
+        sectionIndex,
+        laneSlugs,
+        archivedArtifactCount,
+        fromStageId,
+      },
+    });
+  };
+
+  // A repair that this intent's META still records (its retired run was
+  // never replaced): `phase: 'relaunch'` once every cleanup step landed,
+  // `phase: 'cleanup'` before that. A relaunch-phase record is resumed
+  // directly; a cleanup-phase record redoes the (idempotent) cleanup for
+  // the recorded section and lanes instead of re-scanning eligibility,
+  // which the half-done cleanup may already have erased.
+  const recorded =
+    meta.status === 'FAILED' &&
+    meta.repairRelaunch?.retiredRunId &&
+    meta.orchestratorRunId === meta.repairRelaunch.retiredRunId
+      ? meta.repairRelaunch
+      : null;
+  if (recorded?.phase === 'relaunch') {
+    const resumeBlocked = await sourceControlLaunchGuard(meta, response);
+    if (resumeBlocked) return resumeBlocked;
+    const resumeMcpLaunch = await prepareMcpLaunch(g, meta);
+    if (resumeMcpLaunch.error) {
+      return response(resumeMcpLaunch.statusCode, resumeMcpLaunch.error);
+    }
+    return relaunchRepair({
+      ...recorded,
+      archivedArtifactCount: 0,
+      mcpLaunchUpdate: resumeMcpLaunch.update,
+    });
+  }
+
   // Consistent: an answer committed just before this read must be seen.
   const records = await store.getExecutionRecords(intentId, {
     includeOutputs: false,
@@ -4625,7 +5021,7 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
           pr.number != null,
       ),
   );
-  if (orphaned.length === 0 && prUnits.length === 0) {
+  if (!recorded && orphaned.length === 0 && prUnits.length === 0) {
     return response(409, {
       error: 'No orphaned parallel lane waits or recoverable PR reviews were detected',
       code: 'repair_not_needed',
@@ -4639,13 +5035,13 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
       ].filter((index) => index !== null && index !== undefined && Number.isInteger(Number(index))),
     ),
   ];
-  if (sectionIndexes.length !== 1) {
+  if (!recorded && sectionIndexes.length !== 1) {
     return response(409, {
       error: 'Repair currently requires all orphaned lanes to belong to one section',
       sections: sectionIndexes,
     });
   }
-  const sectionIndex = Number(sectionIndexes[0]);
+  const sectionIndex = Number(recorded ? recorded.sectionIndex : sectionIndexes[0]);
   const repairableStates = new Set([
     'READY',
     'RUNNING',
@@ -4663,7 +5059,9 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
       !hasUnitSkipDecision(unit, records.unitPlan) &&
       repairableStates.has(unit.state),
   );
-  const repairSlugs = [...new Set(repairUnits.map((unit) => unit.slug))];
+  const repairSlugs = recorded
+    ? [...recorded.laneSlugs]
+    : [...new Set(repairUnits.map((unit) => unit.slug))];
   if (repairSlugs.length === 0) {
     return response(409, { error: 'No active lanes are available to repair' });
   }
@@ -4698,7 +5096,7 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
     return row && !completedStageStates.has(row.state);
   });
   const responder = getResponder(event);
-  const repairId = `repair-${randomUUID()}`;
+  const repairId = recorded?.repairId ?? `repair-${randomUUID()}`;
   const repairReason = `Recover durable parallel work in section ${sectionIndex}`;
   const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
   if (sourceControlBlocked) return sourceControlBlocked;
@@ -4776,18 +5174,43 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
   const resumeBlockedLate = await laneResumeBlocksRepair(latest.meta ?? meta, latest);
   if (resumeBlockedLate) return response(409, resumeBlockedLate);
 
-  await store.updateExecution({
-    executionId: intentId,
-    projectId,
-    status: 'FAILED',
-    fromStatus: meta.status,
-    startedAt: meta.startedAt,
-    pendingHumanTaskId: null,
-    resumeRequired: null,
-    failureReason: 'lane_repair_in_progress',
-    completedAt: null,
-    orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
-  });
+  // Fail-closed, before the first write: nothing changes if it fails, and a
+  // request that lost a race with another relaunch (META names another
+  // run) is refused as stale.
+  const repairPendingRefused = await retirePendingGrantsOrRefuse(meta, response);
+  if (repairPendingRefused) return repairPendingRefused;
+  const repairRetirementRefused = await retireExecutionGrantsOrRefuse(
+    intentId,
+    'lane_repair',
+    response,
+    { ifOrchestratorRunId: meta.orchestratorRunId ?? null },
+  );
+  if (repairRetirementRefused) return repairRetirementRefused;
+  const repairRelaunchRecord = {
+    repairId,
+    retiredRunId: recorded?.retiredRunId ?? `retired-${randomBytes(8).toString('hex')}`,
+    sectionIndex,
+    fromStageId: sectionStages[0].stageId,
+    laneSlugs: repairSlugs,
+  };
+  const repairRetiredRunId = repairRelaunchRecord.retiredRunId;
+  if (!recorded) {
+    await store.updateExecution({
+      executionId: intentId,
+      projectId,
+      status: 'FAILED',
+      fromStatus: meta.status,
+      startedAt: meta.startedAt,
+      pendingHumanTaskId: null,
+      resumeRequired: null,
+      failureReason: 'lane_repair_in_progress',
+      completedAt: null,
+      orchestratorRunId: repairRetiredRunId,
+      // Recorded before any destructive cleanup, in the cleanup phase: a
+      // request that dies mid-cleanup is finished by a retried repair.
+      repairRelaunch: { ...repairRelaunchRecord, phase: 'cleanup' },
+    });
+  }
   if (priorDurableExecutionArn) {
     try {
       await lambdaClient.send(
@@ -4822,6 +5245,30 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
           code: 'durable_stop_failed',
         });
       }
+    }
+    // A RUNNING old run could still sign grants until the stop above
+    // landed; retire again now that it can sign no more. A failure leaves
+    // META FAILED/repairable (like a failed stop), so the repair is retried.
+    // Fenced on the retired run id this repair wrote: if another request
+    // replaced it meanwhile, that request owns the run and this one stops.
+    const postStopRetirementRefused = await retireExecutionGrantsOrRefuse(
+      intentId,
+      'lane_repair',
+      response,
+      { ifOrchestratorRunId: repairRetiredRunId },
+    );
+    if (postStopRetirementRefused) {
+      if (postStopRetirementRefused.statusCode === 503) {
+        await store
+          .updateExecution({
+            executionId: intentId,
+            projectId,
+            failureReason: 'lane_repair_grant_retirement_failed',
+            ifOrchestratorRunId: repairRetiredRunId,
+          })
+          .catch(() => {});
+      }
+      return postStopRetirementRefused;
     }
   }
 
@@ -4947,70 +5394,27 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
     })
     .catch(() => {});
 
-  const fromStageId = sectionStages[0].stageId;
-  const durableExecutionName = durableExecutionNameForIntent(intentId);
-  await store.deleteWorkflowCheckpoint(intentId);
-  const updated = await store.updateExecution({
-    executionId: intentId,
-    projectId,
-    status: 'CREATED',
-    fromStatus: 'FAILED',
-    startedAt: meta.startedAt,
-    durableExecutionName,
-    durableExecutionArn: null,
-    orchestratorStartedAt: null,
-    orchestratorExpiresAt: null,
-    pendingHumanTaskId: null,
-    resumeRequired: null,
-    failureReason: null,
-    failure: null,
-    completedAt: null,
-    rewindFromStageId: fromStageId,
-    startedBy: responder.sub,
-    starterName: responder.displayName,
-    starterEmail: responder.email,
-    ...mcpLaunch.update,
-  });
+  // Every cleanup step landed (stage resets, PR reconciliation, unit rows
+  // with recoveryPreserveCompleted): from here a retry only relaunches.
   try {
-    const invoked = await invokeOrchestrator(
-      {
-        action: 'start',
-        intentId,
-        executionId: intentId,
-        startAtStageId: fromStageId,
-      },
-      { durableExecutionName },
-    );
-    if (invoked?.durableExecutionArn) {
-      await store
-        .updateExecution({
-          executionId: intentId,
-          durableExecutionArn: invoked.durableExecutionArn,
-        })
-        .catch((error) => logger.error('Repair durable execution ARN stamp failed', error));
-    }
-  } catch (error) {
     await store.updateExecution({
       executionId: intentId,
-      projectId,
-      status: 'FAILED',
-      fromStatus: 'CREATED',
-      startedAt: meta.startedAt,
-      pendingHumanTaskId: null,
-      failureReason: 'lane_repair_relaunch_failed',
-      durableExecutionArn: null,
+      repairRelaunch: { ...repairRelaunchRecord, phase: 'relaunch' },
+      ifOrchestratorRunId: repairRetiredRunId,
     });
+  } catch (error) {
+    if (error?.name === 'ConditionalCheckFailedException') return staleRunRequest(response);
     throw error;
   }
-  return response(202, {
-    intent: mapIntent(updated),
-    repair: {
-      repairId,
-      sectionIndex,
-      laneSlugs: repairSlugs,
-      archivedArtifactCount: archivedArtifacts.length,
-      fromStageId,
-    },
+
+  return relaunchRepair({
+    repairId,
+    retiredRunId: repairRetiredRunId,
+    sectionIndex,
+    fromStageId: sectionStages[0].stageId,
+    laneSlugs: repairSlugs,
+    archivedArtifactCount: archivedArtifacts.length,
+    mcpLaunchUpdate: mcpLaunch.update,
   });
 };
 
@@ -5161,9 +5565,25 @@ const handleRewindIntent = async ({ event, body, projectId, intentId, g, respons
 
   const mcpLaunch = await prepareMcpLaunch(g, meta);
   if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
+  // Grants first, fail-closed, before any write — the artifact archive
+  // below is not additive (it stamps superseded_at on the live artifacts),
+  // so a refused retirement must come before it: a 503 or a stale 409
+  // leaves the run, its artifacts and its rows exactly where they were.
+  // Conditional on the run this request validated, so a delayed duplicate
+  // rewind cannot retire the grants of the run the first one relaunched.
+  const rewindPendingRefused = await retirePendingGrantsOrRefuse(meta, response);
+  if (rewindPendingRefused) return rewindPendingRefused;
+  const rewindRetirementRefused = await retireExecutionGrantsOrRefuse(
+    intentId,
+    'rewound',
+    response,
+    { ifOrchestratorRunId: meta.orchestratorRunId ?? null },
+  );
+  if (rewindRetirementRefused) return rewindRetirementRefused;
   // Artifact history is a hard precondition for a restart. Snapshot before
   // META, gates, stage rows, lanes, or sessions are touched; a Neptune
-  // failure leaves the run exactly where it was and no relaunch occurs.
+  // failure leaves the run where it was (its grants already retired) and
+  // no relaunch occurs.
   const archivedArtifacts = await archiveArtifactsForStages({
     g,
     intentId,
@@ -5178,6 +5598,7 @@ const handleRewindIntent = async ({ event, body, projectId, intentId, g, respons
   // already superseded by the first cleanup step, with no action capable
   // of waking it. FAILED remains rewindable, so a repeated request can
   // safely finish an interrupted reset.
+  const rewindRetiredRunId = `retired-${randomBytes(8).toString('hex')}`;
   try {
     await store.updateExecution({
       executionId: intentId,
@@ -5190,7 +5611,7 @@ const handleRewindIntent = async ({ event, body, projectId, intentId, g, respons
       failureReason: 'rewind_in_progress',
       completedAt: null,
       ifOrchestratorRunId: meta.orchestratorRunId,
-      orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+      orchestratorRunId: rewindRetiredRunId,
     });
   } catch (error) {
     if (error?.name === 'ConditionalCheckFailedException') {
@@ -5212,6 +5633,27 @@ const handleRewindIntent = async ({ event, body, projectId, intentId, g, respons
     sectionIndexes: [...new Set(sectionStages.map((s) => s.parallelSection))],
     unitSlugs,
   });
+  // The old run kept its run id until the write above, so a concurrent gate
+  // answer could still resume it and have a grant issued after the first
+  // retirement. Retire again now that it is retired and stopped, fenced on
+  // the retired run id this rewind wrote (as lane repair does). A failure
+  // leaves META FAILED, so the rewind is simply retried.
+  const rewindPostStopRefused = await retireExecutionGrantsOrRefuse(intentId, 'rewound', response, {
+    ifOrchestratorRunId: rewindRetiredRunId,
+  });
+  if (rewindPostStopRefused) {
+    if (rewindPostStopRefused.statusCode === 503) {
+      await store
+        .updateExecution({
+          executionId: intentId,
+          projectId,
+          failureReason: 'rewind_grant_retirement_failed',
+          ifOrchestratorRunId: rewindRetiredRunId,
+        })
+        .catch(() => {});
+    }
+    return rewindPostStopRefused;
+  }
   // Record the guidance BEFORE resetting/relaunching: the restarted stage
   // reads pending steering at entry, so the correction can never be missed.
   // A guidance-less retry records no steering row — there is nothing to
@@ -5290,30 +5732,42 @@ const handleRewindIntent = async ({ event, body, projectId, intentId, g, respons
   // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
   const durableExecutionName = durableExecutionNameForIntent(intentId);
   await store.deleteWorkflowCheckpoint(intentId);
-  const updated = await store.updateExecution({
-    executionId: intentId,
-    projectId,
-    status: 'CREATED',
-    fromStatus: 'FAILED',
-    startedAt: meta.startedAt,
-    durableExecutionName,
-    durableExecutionArn: null,
-    orchestratorStartedAt: null,
-    orchestratorExpiresAt: null,
-    pendingHumanTaskId: null,
-    resumeRequired: null,
-    failureReason: null,
-    failure: null,
-    completedAt: null,
-    rewindFromStageId: fromStageId,
-    startedBy: responder.sub,
-    starterName: responder.displayName,
-    starterEmail: responder.email,
-    // Un-skip: the rewind target leaves the intent's skip overlay so the
-    // relaunch (and every later plan recompute) actually runs it.
-    ...(unskipping ? { skipStageIds: rewindSkipIds.length ? rewindSkipIds : null } : {}),
-    ...mcpLaunch.update,
-  });
+  // Fenced on META owing no grant retirement (a derive may have recorded a
+  // jti since the pending ones were retired above); on a refusal the old
+  // run is already retired and the request can simply be retried.
+  const relaunched = await relaunchWithoutPendingGrants(
+    intentId,
+    () =>
+      store.updateExecution({
+        ifNoPendingGrantRetirements: true,
+        repairRelaunch: null,
+        executionId: intentId,
+        projectId,
+        status: 'CREATED',
+        fromStatus: 'FAILED',
+        startedAt: meta.startedAt,
+        durableExecutionName,
+        durableExecutionArn: null,
+        orchestratorStartedAt: null,
+        orchestratorExpiresAt: null,
+        pendingHumanTaskId: null,
+        resumeRequired: null,
+        failureReason: null,
+        failure: null,
+        completedAt: null,
+        rewindFromStageId: fromStageId,
+        startedBy: responder.sub,
+        starterName: responder.displayName,
+        starterEmail: responder.email,
+        // Un-skip: the rewind target leaves the intent's skip overlay so the
+        // relaunch (and every later plan recompute) actually runs it.
+        ...(unskipping ? { skipStageIds: rewindSkipIds.length ? rewindSkipIds : null } : {}),
+        ...mcpLaunch.update,
+      }),
+    response,
+  );
+  if (relaunched.refused) return relaunched.refused;
+  const { updated } = relaunched;
   try {
     const invoked = await invokeOrchestrator(
       {
@@ -5502,6 +5956,18 @@ const handleRecomposeIntent = async ({ event, body, projectId, intentId, g, resp
     .map((r) => r.stageInstanceId)
     .filter(Boolean);
   const recomposeRestartId = `restart-${randomUUID()}`;
+  // Grants first, fail-closed and fenced on the validated run, before the
+  // archive (which supersedes the live artifacts): a 503 or a stale 409
+  // leaves the run and its artifacts untouched.
+  const recomposePendingRefused = await retirePendingGrantsOrRefuse(meta, response);
+  if (recomposePendingRefused) return recomposePendingRefused;
+  const recomposeRetirementRefused = await retireExecutionGrantsOrRefuse(
+    intentId,
+    'recomposed',
+    response,
+    { ifOrchestratorRunId: meta.orchestratorRunId ?? null },
+  );
+  if (recomposeRetirementRefused) return recomposeRetirementRefused;
   await archiveArtifactsForStages({
     g,
     intentId,
@@ -5512,12 +5978,13 @@ const handleRecomposeIntent = async ({ event, body, projectId, intentId, g, resp
   });
 
   // Retire only after every affected artifact was durably snapshotted.
+  const recomposeRetiredRunId = `retired-${randomBytes(8).toString('hex')}`;
   try {
     await store.updateExecution({
       executionId: intentId,
       fromStatus: meta.status,
       ifOrchestratorRunId: meta.orchestratorRunId,
-      orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+      orchestratorRunId: recomposeRetiredRunId,
     });
   } catch (error) {
     if (error?.name === 'ConditionalCheckFailedException') {
@@ -5531,6 +5998,16 @@ const handleRecomposeIntent = async ({ event, body, projectId, intentId, g, resp
   }
   await retireParkedRun(intentId, `recomposed from ${fromStage.stageId}`);
   await stopRuntimeSessions(intentId, meta);
+  // Retire again now that the old run is retired and stopped (see rewind),
+  // fenced on the retired run id written above. A failure leaves META in its
+  // recomposable status with nothing relaunched, so the recompose is retried.
+  const recomposePostStopRefused = await retireExecutionGrantsOrRefuse(
+    intentId,
+    'recomposed',
+    response,
+    { ifOrchestratorRunId: recomposeRetiredRunId },
+  );
+  if (recomposePostStopRefused) return recomposePostStopRefused;
   for (const stageInstanceId of resetIds) {
     await store.resetStageRow({ executionId: intentId, stageInstanceId }).catch(() => {});
   }
@@ -5545,32 +6022,44 @@ const handleRecomposeIntent = async ({ event, body, projectId, intentId, g, resp
   const priorStatus = meta.status;
   const durableExecutionName = durableExecutionNameForIntent(intentId);
   await store.deleteWorkflowCheckpoint(intentId);
-  const updated = await store.updateExecution({
-    executionId: intentId,
-    projectId,
-    status: 'CREATED',
-    fromStatus: priorStatus,
-    startedAt: meta.startedAt,
-    durableExecutionName,
-    durableExecutionArn: null,
-    orchestratorStartedAt: null,
-    orchestratorExpiresAt: null,
-    pendingHumanTaskId: null,
-    failureReason: null,
-    failure: null,
-    completedAt: null,
-    rewindFromStageId: fromStage.stageId,
-    scope: newScope,
-    composedGrid: newGrid,
-    // Persist the pruned overlay (see priorSkipIds above) so META never
-    // pins a skip the new grid already excludes.
-    skipStageIds: priorSkipIds.length ? priorSkipIds : null,
-    planWarnings: planResult.warnings?.length ? planResult.warnings : null,
-    startedBy: responder.sub,
-    starterName: responder.displayName,
-    starterEmail: responder.email,
-    ...mcpLaunch.update,
-  });
+  // Fenced on META owing no grant retirement (a derive may have recorded a
+  // jti since the pending ones were retired above); on a refusal the old
+  // run is already retired and the request can simply be retried.
+  const relaunched = await relaunchWithoutPendingGrants(
+    intentId,
+    () =>
+      store.updateExecution({
+        ifNoPendingGrantRetirements: true,
+        repairRelaunch: null,
+        executionId: intentId,
+        projectId,
+        status: 'CREATED',
+        fromStatus: priorStatus,
+        startedAt: meta.startedAt,
+        durableExecutionName,
+        durableExecutionArn: null,
+        orchestratorStartedAt: null,
+        orchestratorExpiresAt: null,
+        pendingHumanTaskId: null,
+        failureReason: null,
+        failure: null,
+        completedAt: null,
+        rewindFromStageId: fromStage.stageId,
+        scope: newScope,
+        composedGrid: newGrid,
+        // Persist the pruned overlay (see priorSkipIds above) so META never
+        // pins a skip the new grid already excludes.
+        skipStageIds: priorSkipIds.length ? priorSkipIds : null,
+        planWarnings: planResult.warnings?.length ? planResult.warnings : null,
+        startedBy: responder.sub,
+        starterName: responder.displayName,
+        starterEmail: responder.email,
+        ...mcpLaunch.update,
+      }),
+    response,
+  );
+  if (relaunched.refused) return relaunched.refused;
+  const { updated } = relaunched;
   try {
     const invoked = await invokeOrchestrator(
       {
@@ -7140,6 +7629,13 @@ const repairExpiredDurableExecution = async ({
   summary = 'Durable execution expired while the intent was waiting',
   failureReason = 'durable_callback_expired',
 }) => {
+  // The durable run is already gone. Retire its grants first, conditional on
+  // that run still owning the execution (a relaunch's grants are never
+  // retired); a failed write throws before the status changes, so the intent
+  // stays active and the next watchdog tick tries again.
+  await retireExecutionGrants(executionId, failureReason, {
+    ifOrchestratorRunId: meta?.orchestratorRunId ?? null,
+  });
   const updated = await store.updateExecution({
     executionId,
     projectId,

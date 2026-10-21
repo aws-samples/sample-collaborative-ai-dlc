@@ -36,6 +36,8 @@ export const RUNTIME_ALIAS_ERROR_CODES = new Set([
   'GATEWAY_GRANT_EXPIRED',
   'GATEWAY_GRANT_NOT_CONFIGURED',
   'GATEWAY_GRANT_SCOPE_MISMATCH',
+  'GATEWAY_GRANT_RETIRED',
+  'GATEWAY_GRANT_RETIREMENT_UNAVAILABLE',
 ]);
 
 // Only the trusted invocation context can select this branch; nothing in the
@@ -139,8 +141,10 @@ export const runtimeAliasEnabled = (env) =>
   env.ENGINE_DATA_ENABLED === 'true' &&
   (env.GATEWAY_GRANT_KEY_IDS ?? '').split(',').some((id) => id.trim());
 
-export const gatewayGrantVerifier = (publicKeyFor) => (token) =>
-  verifyGatewayGrant(token, { publicKeyFor });
+export const gatewayGrantVerifier =
+  (publicKeyFor, isRetired = null) =>
+  (token) =>
+    verifyGatewayGrant(token, { publicKeyFor, isRetired });
 
 // The runtime alias reaches the same provider operation as the control-plane
 // entry point, but only for an execution the signed Gateway grant names and

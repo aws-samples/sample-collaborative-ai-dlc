@@ -6,7 +6,8 @@
 // command and is counted, so a path that still uses the runtime role's data
 // permissions cannot pass.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import gremlin from 'gremlin';
@@ -21,14 +22,24 @@ import { runWithGatewayGrant } from '../mcp/gateway-context.js';
 import { broadcastToIntent, invokeSourceControlOperation } from '../clients.js';
 import { customRulePinsFor, graphAccessFor, processStoreFor } from '../http-server.js';
 import { initWs } from '../commands/init-ws.js';
-import { verifyReviewTargets } from '../commands/run-stage.js';
+import { runStage, verifyReviewTargets } from '../commands/run-stage.js';
 import { deriveArtifacts } from '../commands/derive-artifacts.js';
 import { recordPr } from '../commands/record-pr.js';
 import { initLane } from '../commands/lane.js';
 import { verifyMcp } from '../commands/verify-mcp.js';
 import { resolveStageMcpSecrets } from '../mcp-secret-broker.js';
 import { fetchCustomRules } from '../custom-rules.js';
+import { renderRulesDoc } from '../stage-materializer.js';
 import { createReleaseScriptClosureReader } from '../release-script-closure.js';
+import { issueGatewayGrant, verifyGatewayGrant } from '../../shared/gateway-grant.js';
+import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
+import {
+  STAGE_WRITE_METHODS,
+  STORE_READ_METHODS,
+  createStoreGateway,
+} from '../../engine-data/store-gateway.js';
+import { GRAPH_OPS } from '../../engine-data/graph-schemas.js';
+import { createGraphGateway } from '../../engine-data/graph-gateway.js';
 
 const GRANT = 'stage-grant-token';
 const SOURCE_CONTROL_ALIAS =
@@ -56,6 +67,9 @@ const lambdaMock = mockClient(LambdaClient);
 let directGraph;
 let invocations;
 let workspace;
+// When set, store.* and graph.* requests are answered by the real engine-data
+// gateways (grant verification and scope binding included).
+let engineDataGateway = null;
 
 // engine-data answers for the ops these commands use; everything else is a
 // successful no-result call, as for a store write.
@@ -71,6 +85,9 @@ const serveLambda = () =>
   lambdaMock.on(InvokeCommand).callsFake(async ({ FunctionName, Payload }) => {
     const request = JSON.parse(Buffer.from(Payload).toString('utf8'));
     invocations.push({ FunctionName, request });
+    if (FunctionName === 'engine-data' && engineDataGateway?.handles(request.op)) {
+      return respond(await engineDataGateway.handle(request));
+    }
     if (FunctionName === 'engine-data') {
       const result = Object.hasOwn(ENGINE_DATA_RESULTS, request.op)
         ? ENGINE_DATA_RESULTS[request.op]
@@ -139,6 +156,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  engineDataGateway = null;
   vi.unstubAllEnvs();
   directGraph.mockRestore();
   await rm(workspace, { recursive: true, force: true });
@@ -349,5 +367,237 @@ describe('source-control client with engine-data off', () => {
       operation: 'default-branch',
       args: {},
     });
+  });
+});
+
+// run-stage under a real signed stage grant, with every process-store and graph
+// call answered by the engine-data gateways: none of the calls the stage makes
+// may be denied by the stage binding.
+describe('run-stage under a stage grant', () => {
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  const NOW = Date.now();
+  const WORKFLOW = { id: 'aidlc-v2', version: 3 };
+  const STAGE_ID = 'requirements-analysis';
+  const OWN_SI = planStageInstanceId('aidlc-v2@3', STAGE_ID);
+  const LEG = { orchestratorRunId: 'run-1', stageCallbackId: 'cb-1' };
+
+  const library = () => ({
+    stagesById: {
+      [STAGE_ID]: {
+        id: STAGE_ID,
+        version: 1,
+        phase: 'inception',
+        mode: 'inline',
+        leadAgent: 'aidlc-product-agent',
+        produces: [STAGE_ID],
+        consumes: [],
+        sensors: [],
+        humanValidation: 'required',
+        bodyRef: { s3Key: 'blocks/bodies/sha256/stage' },
+      },
+    },
+    agentsById: {
+      'aidlc-product-agent': {
+        id: 'aidlc-product-agent',
+        modelOverride: null,
+        bodyRef: { s3Key: 'blocks/bodies/sha256/agent' },
+      },
+    },
+    sensorsById: {},
+    rulesById: {},
+    artifactsById: { [STAGE_ID]: { id: STAGE_ID, terminal: true } },
+    knowledgeById: {},
+  });
+  const workflow = () => ({
+    ...WORKFLOW,
+    placements: [{ stageId: STAGE_ID, order: 0, scopeMembership: { feature: 'EXECUTE' } }],
+    ruleRefs: [],
+    scopeRefs: [{ scopeId: 'feature' }],
+  });
+
+  // An in-memory process store behind the gateway: the scope reads the gateway
+  // makes and a plausible answer for each write.
+  const backingStore = () => {
+    const stages = new Map();
+    const meta = {
+      ...IDS,
+      status: 'RUNNING',
+      workflowId: WORKFLOW.id,
+      workflowVersion: WORKFLOW.version,
+      orchestratorRunId: LEG.orchestratorRunId,
+    };
+    const upsert = (input) => {
+      stages.set(input.stageInstanceId, {
+        ...stages.get(input.stageInstanceId),
+        executionId: IDS.executionId,
+        stageId: STAGE_ID,
+        ...input,
+      });
+      return {};
+    };
+    const explicit = {
+      getExecution: async () => meta,
+      getStage: async (_e, id) => stages.get(id) ?? null,
+      getHumanTask: async () => null,
+      claimStageAttempt: async ({ ownership }) => upsert({ ...ownership, state: 'RUNNING' }),
+      putStage: async (input) => upsert(input),
+      resumeStageRow: async (input) => upsert(input),
+      updateStageState: async (input) => upsert(input),
+      appendOutput: async () => ({ seq: 1, timestamp: 'T' }),
+      recordMetric: async () => ({ metricId: 'm-1' }),
+      recordSensorRun: async () => ({ sensorRunId: 'sr-1' }),
+      listReceipts: async () => [],
+      listSensorRuns: async () => [],
+      listPendingSteering: async () => [],
+      listEvents: async () => [],
+    };
+    // Any other write succeeds with an empty row.
+    return new Proxy(explicit, {
+      get: (target, name) => target[name] ?? (async () => ({})),
+    });
+  };
+
+  // A graph that holds the Intent anchor and answers every operation emptily.
+  const anchoredGraph = () => {
+    const chain = {
+      V: () => chain,
+      has: () => chain,
+      values: () => chain,
+      toList: async () => [IDS.projectId],
+      hasNext: async () => true,
+    };
+    return chain;
+  };
+
+  const serveEngineData = () => {
+    const verifyGrant = (token) =>
+      verifyGatewayGrant(token, { publicKeyFor: async () => publicKey });
+    const denials = [];
+    const audit = (record) => {
+      if (record.decision === 'deny') denials.push(record);
+    };
+    const store = backingStore();
+    const storeGateway = createStoreGateway({ verifyGrant, createStore: () => store, audit });
+    const graphGateway = createGraphGateway({
+      verifyGrant,
+      createStore: () => store,
+      withGraph: (fn) => fn(anchoredGraph()),
+      createOps: () => new Proxy({}, { get: () => async () => [] }),
+      audit,
+    });
+    engineDataGateway = {
+      handles: (op) => op.startsWith('store.') || op.startsWith('graph.'),
+      handle: (request) =>
+        request.op.startsWith('store.') ? storeGateway(request) : graphGateway(request),
+    };
+    return denials;
+  };
+
+  const stageGrant = (scope) =>
+    issueGatewayGrant(
+      { mode: 'stage', ...IDS, stageId: STAGE_ID, ...scope },
+      { keyId: 'kid', sign: async (m) => cryptoSign('sha256', m, privateKey), now: () => NOW },
+    );
+
+  const runDeps = () => ({
+    ...containerDeps(),
+    loadLibrary: async () => ({ workflow: workflow(), library: library() }),
+    loadBlockBody: async (b) => (b?.bodyRef?.s3Key ? `body:${b.bodyRef.s3Key}` : ''),
+    materializeStage: async ({ stage }) => ({
+      prompt: `PROMPT ${stage.stageId}`,
+      mcpConfigPath: '/ws/.aidlc/mcp.json',
+    }),
+    materializeMcpConfig: async () => '/ws/.aidlc/mcp.json',
+    materializeKiroAgent: async () => 'aidlc',
+    materializeOpenCodeConfig: async () => '{"share":"disabled"}',
+    materializeCodexHome: async () => '/ws/.aidlc/codex-home',
+    renderRulesDoc,
+    mcpEntry: '/opt/agentcore/mcp/index.js',
+    availableClis: ['claude'],
+    env: { ...REMOTE_ENV, BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6' },
+    spawnFn: () => ({
+      on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+      stdin: { end() {} },
+    }),
+    clock: () => 'T',
+    commitAndPushAll: async () => ({ ok: true, committed: false, results: [] }),
+  });
+
+  const payload = {
+    ...IDS,
+    stageId: STAGE_ID,
+    workflowId: WORKFLOW.id,
+    workflowVersion: WORKFLOW.version,
+    scope: 'feature',
+    workspaceDir: '/ws',
+    mcpServersByTier: { global: {}, project: { p: { command: 'npx', env: { K: '${PK}' } } } },
+  };
+
+  it.each([
+    ['an orchestrated leg', LEG],
+    ['a legacy dispatch without a leg', {}],
+  ])('makes only calls the binding allows for %s', async (_label, leg) => {
+    const denials = serveEngineData();
+    const token = await stageGrant(leg);
+    const result = await runWithGatewayGrant(token, () =>
+      runStage({ ...payload, ...leg }, runDeps()),
+    );
+    expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED', stageInstanceId: OWN_SI });
+    const ops = opsCalled();
+    expect(ops).toEqual(
+      expect.arrayContaining([
+        'store.putStage',
+        'store.updateExecution',
+        'store.updateStageState',
+        'store.appendEvent',
+      ]),
+    );
+    if (leg.orchestratorRunId) expect(ops).toContain('store.claimStageAttempt');
+    expect(denials).toEqual([]);
+    expect(directCallCount()).toBe(0);
+  });
+
+  // The path above does not reach every call site (parks, sensors, loop-backs,
+  // ensembles, change control), so the code that runs under a stage grant is
+  // also read for every store method and graph operation it names.
+  it('names only store methods and graph operations a stage grant may call', async () => {
+    const sources = await Promise.all(
+      [
+        'commands/run-stage.js',
+        'ensemble-runner.js',
+        'sensor-runner.js',
+        'release-script-closure.js',
+        'persona-dispatch.js',
+        'auth-resolver.js',
+        'code-traceability.js',
+      ].map((file) => readFile(new URL(`../${file}`, import.meta.url), 'utf8')),
+    );
+    const source = sources.join('\n');
+    const stageStore = new Set([...STORE_READ_METHODS, ...STAGE_WRITE_METHODS]);
+    const storeCalls = new Set(
+      [...source.matchAll(/\b(?:store|processStore)\s*\??\.\s*([A-Za-z]+)\s*(?:\?\.\s*)?\(/g)].map(
+        ([, method]) => method,
+      ),
+    );
+    expect(storeCalls.size).toBeGreaterThan(10);
+    // Optional calls (`store.method?.(…)`) are calls too: the checkpoint repair
+    // raises its counter that way.
+    expect(storeCalls).toContain('raiseStageCounter');
+    expect([...storeCalls].filter((method) => !stageStore.has(method))).toEqual([]);
+    const graphCalls = Object.keys(GRAPH_OPS).filter((name) =>
+      new RegExp(`\\.${name}\\s*(?:\\?\\.\\s*)?\\(`).test(source),
+    );
+    expect(graphCalls.length).toBeGreaterThan(3);
+    expect(graphCalls.filter((name) => !GRAPH_OPS[name].stageGrant)).toEqual([]);
+  });
+
+  it('is denied when the grant names another stage', async () => {
+    const denials = serveEngineData();
+    const token = await stageGrant({ ...LEG, stageId: 'application-design' });
+    await runWithGatewayGrant(token, () => runStage({ ...payload, ...LEG }, runDeps())).catch(
+      () => null,
+    );
+    expect(denials.length).toBeGreaterThan(0);
+    expect(denials[0]).toMatchObject({ reason: expect.stringMatching(/mismatch/) });
   });
 });
