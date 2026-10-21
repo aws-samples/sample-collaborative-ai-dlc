@@ -554,6 +554,8 @@ module "lambda" {
   enable_engine_data                       = var.enable_engine_data
   enforce_runtime_grants                   = var.enforce_runtime_grants
   gateway_grant_key_arn                    = module.agentcore.gateway_grant_key_arn
+  gateway_grant_retirement_table_name      = module.agentcore.gateway_grant_retirement_table_name
+  gateway_grant_retirement_table_arn       = module.agentcore.gateway_grant_retirement_table_arn
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   environment_registry_table_arn           = module.dynamodb.environment_registry_table_arn
   core_image_digest                        = module.agentcore.image_digest

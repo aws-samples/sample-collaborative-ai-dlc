@@ -183,6 +183,8 @@ module "engine_data_lambda" {
     BLOCKS_TABLE            = var.blocks_table_name
     CONNECTIONS_TABLE       = var.connections_table_name
     WEBSOCKET_ENDPOINT      = var.websocket_endpoint
+
+    GATEWAY_GRANT_RETIREMENT_TABLE = aws_dynamodb_table.gateway_grant_retirements[0].name
   }
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7

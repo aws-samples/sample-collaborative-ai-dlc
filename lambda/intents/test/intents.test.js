@@ -1,7 +1,7 @@
 import { __durableHandler as runOrchestrator } from '../../v2-orchestrator/index.js';
 import { createProcessStore } from '../../shared/v2-process-store.js';
 import { unitPlanIdentity } from '../../shared/unit-completion.js';
-import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { generateKeyPairSync, randomUUID, sign as cryptoSign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import gremlin from 'gremlin';
@@ -42,7 +42,7 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { KMSClient, SignCommand } from '@aws-sdk/client-kms';
-import { verifyGatewayGrant } from '../../shared/gateway-grant.js';
+import { COMPOSE_GRANT_TTL_SECONDS, verifyGatewayGrant } from '../../shared/gateway-grant.js';
 // Used to compute the deterministic stage-instance ids the rewind flow resets/supersedes.
 import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 import { buildFromFiles } from '../../shared/block-mappers.js';
@@ -58,6 +58,7 @@ import {
   __test as releaseResolverTest,
   methodologyReleasePinFromManifest,
 } from '../../shared/release-resolver.js';
+import { conditionCheckPasses } from '../../shared/test/ddb-condition-eval.js';
 
 const RELEASE_PROFILE = 'current-stable';
 
@@ -121,6 +122,14 @@ let transactWriteBarrier = null;
 let sourceControlOperationHandler = null;
 let credentialMetadataHandler = null;
 let failResumeMarkerWrites = 0;
+// The process-table TransactWriteCommand fake, kept so a test that routes the
+// retirement table's transactions can delegate every other transaction to it.
+let procTransact = null;
+// Called with the UpdateCommand input before a META update is evaluated — lets
+// a test land a concurrent write between the handler's read and its CAS.
+let beforeMetaUpdate = null;
+// Same, for every process-table UpdateCommand (e.g. to fail a UNIT# write).
+let beforeUpdate = null;
 
 const MANAGED_ENVIRONMENT_SNAPSHOT = {
   environmentId: 'polyglot',
@@ -146,6 +155,8 @@ const installDdbFakes = () => {
   yjsStore.clear();
   transactWriteBarrier = null;
   failResumeMarkerWrites = 0;
+  beforeMetaUpdate = null;
+  beforeUpdate = null;
   ddbMock.on(GetCommand).callsFake((input) => {
     if (input.Key.documentId) return { Item: yjsStore.get(input.Key.documentId) };
     const key =
@@ -172,7 +183,7 @@ const installDdbFakes = () => {
     procStore.set(k, { ...item });
     return {};
   });
-  ddbMock.on(TransactWriteCommand).callsFake(async (input) => {
+  procTransact = async (input) => {
     await transactWriteBarrier;
     const puts = (input.TransactItems ?? []).map((item) => item.Put).filter(Boolean);
     const updates = (input.TransactItems ?? []).map((item) => item.Update).filter(Boolean);
@@ -212,7 +223,8 @@ const installDdbFakes = () => {
       if (Delete) procStore.delete(keyOf(Delete.Key.pk, Delete.Key.sk));
     }
     return {};
-  });
+  };
+  ddbMock.on(TransactWriteCommand).callsFake(procTransact);
   ddbMock.on(QueryCommand).callsFake((input) => {
     const values = input.ExpressionAttributeValues || {};
     let items = [...procStore.values()];
@@ -281,6 +293,8 @@ const installDdbFakes = () => {
       failResumeMarkerWrites -= 1;
       throw new Error('resume marker write failed');
     }
+    beforeUpdate?.(input);
+    if (input.Key.sk === 'META') beforeMetaUpdate?.(input);
     const k = keyOf(input.Key.pk, input.Key.sk);
     const existing = procStore.get(k);
     const values = input.ExpressionAttributeValues || {};
@@ -307,6 +321,12 @@ const installDdbFakes = () => {
       casFail();
     }
     if (cond.includes('attribute_exists(pk)') && !existing) casFail();
+    if (
+      cond.includes('attribute_not_exists(pendingGrantRetirements)') &&
+      existing?.pendingGrantRetirements !== undefined
+    ) {
+      casFail();
+    }
     if (cond.includes('#state = :ready') && (!existing || existing.state !== values[':ready'])) {
       casFail();
     }
@@ -392,6 +412,18 @@ const installDdbFakes = () => {
     }
     if (input.UpdateExpression?.includes('draftRevision = if_not_exists'))
       next.draftRevision = (existing?.draftRevision ?? 0) + 1;
+    // String-set ADD / DELETE (pendingGrantRetirements).
+    const setOp = /^(ADD|DELETE) (\w+) (:\w+)/.exec(input.UpdateExpression || '');
+    if (setOp) {
+      const [, op, field, ref] = setOp;
+      const current = new Set(next[field] ?? []);
+      for (const id of values[ref]) {
+        if (op === 'ADD') current.add(id);
+        else current.delete(id);
+      }
+      if (current.size) next[field] = current;
+      else delete next[field];
+    }
     procStore.set(k, next);
     return { Attributes: { ...next } };
   });
@@ -2938,6 +2970,59 @@ describe('POST /compose — composer sessions', () => {
     }
   });
 
+  it('bounds a compose grant by the job, and retires it when the dispatch is refused', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    const recorder = recordGrantRetirement();
+    try {
+      agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+        response: {
+          transformToString: async () => JSON.stringify({ ok: false, reason: 'busy' }),
+        },
+      });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse(
+        (await createIntent(sub, projectId, { title: 'I', prompt: 'Ambiguous ask' })).body,
+      );
+      const res = await composeReq(sub, projectId, intent.id);
+      expect(res.statusCode).toBe(503);
+      const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+      const { gatewayGrant } = JSON.parse(Buffer.from(call.payload).toString('utf8'));
+      const verified = await verifiedGatewayGrant(gatewayGrant);
+      expect(verified.expiresAt - verified.issuedAt).toBe(COMPOSE_GRANT_TTL_SECONDS);
+      expect(recorder.grantRetirements).toEqual([
+        expect.objectContaining({
+          pk: `GRANT#${verified.grantId}`,
+          executionId: intent.id,
+          outcome: 'compose-plan-start',
+        }),
+      ]);
+    } finally {
+      recorder.restore();
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
+  it('leaves an accepted compose grant live for its background job', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    const recorder = recordGrantRetirement();
+    try {
+      agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+        response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+      });
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse(
+        (await createIntent(sub, projectId, { title: 'I', prompt: 'Ambiguous ask' })).body,
+      );
+      expect((await composeReq(sub, projectId, intent.id)).statusCode).toBe(202);
+      expect(recorder.grantRetirements).toEqual([]);
+    } finally {
+      recorder.restore();
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
   it('409s compose on a non-DRAFT intent and 400s an empty draft', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -3212,6 +3297,39 @@ describe('POST /recompose — in-flight reshape', () => {
       expect(orchestratorInvokes()).toHaveLength(0);
     },
   );
+
+  it('retires before archiving: a failed retirement leaves every artifact current', async () => {
+    const log = vi
+      .spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error')
+      .mockImplementation(() => {});
+    const recorder = recordGrantRetirement({ failWith: new Error('down') });
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedRecomposeFixtures();
+      const intent = await seedRun(sub, projectId, {
+        rows: [
+          { stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' },
+          { stageInstanceId: 'si-optional', stageId: 'optional', state: 'WAITING_FOR_HUMAN' },
+        ],
+        metaOver: { orchestratorRunId: 'run-1' },
+      });
+      const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+      const before = { ...procStore.get(metaKey) };
+      const res = await recomposeReq(sub, projectId, intent.id, {
+        composedGrid: { analyze: 'EXECUTE', optional: 'EXECUTE', build: 'SKIP' },
+        scope: 'feature-lean',
+      });
+      expect(res.statusCode).toBe(503);
+      expect(recorder.events).toEqual(['retire:recomposed']);
+      expect(archiveArtifactsSpy).not.toHaveBeenCalled();
+      expect(procStore.get(metaKey)).toEqual(before);
+      expect(orchestratorInvokes()).toHaveLength(0);
+    } finally {
+      recorder.restore();
+      log.mockRestore();
+    }
+  });
 
   it('freezes the past: a stage that ran cannot flip to SKIP', async () => {
     const sub = `u-${randomUUID()}`;
@@ -6521,6 +6639,59 @@ describe('POST /rewind', () => {
     }
   });
 
+  it('retires the execution’s grants before stopping the old session, then relaunches', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    const recorder = recordGrantRetirement();
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedPlan();
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, { status: 'FAILED', environment: MANAGED_ENVIRONMENT_SNAPSHOT });
+      seedStageRow(intent.id, 'implement', 'FAILED');
+      const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
+      expect(res.statusCode).toBe(202);
+      expect(recorder.retirements.map((r) => r.Key)).toEqual([{ pk: `EXEC#${intent.id}` }]);
+      expect(recorder.events.indexOf('retire:rewound')).toBe(0);
+      expect(recorder.events).toContain('stop-session');
+      expect(orchestratorInvokes()).toHaveLength(1);
+    } finally {
+      recorder.restore();
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
+  it('a failed retirement refuses the rewind with a 503 before any state change', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    const recorder = recordGrantRetirement({
+      failWith: Object.assign(new Error('down'), { name: 'InternalServerError' }),
+    });
+    const log = vi.spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error');
+    log.mockImplementation(() => {});
+    try {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedPlan();
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, { status: 'FAILED', environment: MANAGED_ENVIRONMENT_SNAPSHOT });
+      seedStageRow(intent.id, 'implement', 'FAILED');
+      const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+      const stageKey = keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`);
+      const before = { meta: { ...procStore.get(metaKey) }, stage: { ...procStore.get(stageKey) } };
+      const res = await rewind(sub, projectId, intent.id, { fromStageId: 'implement' });
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body).code).toBe('grant_retirement_unavailable');
+      expect(procStore.get(metaKey)).toEqual(before.meta);
+      expect(procStore.get(stageKey)).toEqual(before.stage);
+      expect(recorder.events).toEqual(['retire:rewound']);
+      expect(orchestratorInvokes()).toHaveLength(0);
+    } finally {
+      log.mockRestore();
+      recorder.restore();
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
+  });
+
   it('a failed session stop never blocks the rewind (best-effort)', async () => {
     process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
     try {
@@ -6585,6 +6756,476 @@ describe('POST /rewind', () => {
     const res = await rewind(sub, projectId, intent.id, { fromStageId: 'no-such-stage' });
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).stages).toEqual(['design', 'implement']);
+  });
+
+  // ── Review regressions: jti-level retirement, stale writers, pending jtis ────
+
+  describe('gateway grant retirement — stale writers, pending jtis, synchronous grants', () => {
+    let recorder = null;
+    beforeEach(() => {
+      process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    });
+    afterEach(() => {
+      recorder?.restore();
+      recorder = null;
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    });
+    const quietErrors = async () =>
+      vi
+        .spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error')
+        .mockImplementation(() => {});
+    const post = (sub, projectId, intentId, action, body = {}) =>
+      handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intentId}/${action}`,
+        pathParameters: { projectId, intentId },
+        body: JSON.stringify(body),
+        ...claims(sub),
+      });
+    // A retirement table backed by the recorder's landed writes, read the way
+    // every grant consumer reads it.
+    const consumerView = () => ({
+      send: async ({ input }) => {
+        if (input.TableName === 'process') {
+          return { Item: procStore.get(keyOf(input.Key.pk, input.Key.sk)) ?? null };
+        }
+        if (input.Key.pk.startsWith('GRANT#')) {
+          const grantId = input.Key.pk.slice('GRANT#'.length);
+          return {
+            Item: recorder.grantRetirements.find((r) => r.grantId === grantId) ? { pk: 1 } : null,
+          };
+        }
+        const execution = recorder.retirements.find((r) => r.Key.pk === input.Key.pk);
+        return {
+          Item: execution ? { retiredAt: execution.ExpressionAttributeValues[':retiredAt'] } : null,
+        };
+      },
+    });
+    const failedRunWithPendingGrant = async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedPlan();
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, {
+        status: 'FAILED',
+        orchestratorRunId: 'run-old',
+        environment: MANAGED_ENVIRONMENT_SNAPSHOT,
+        failureReason: 'stage_failed: a: gateway_grant_retirement_failed',
+        pendingGrantRetirements: new Set(['jti-unretired']),
+      });
+      seedStageRow(intent.id, 'implement', 'FAILED');
+      return { sub, projectId, intent, metaKey: keyOf(`EXEC#${intent.id}`, 'META') };
+    };
+
+    it('has every consumer refuse a jti recorded on META before any GRANT# row exists', async () => {
+      recorder = recordGrantRetirement();
+      const { intent } = await failedRunWithPendingGrant();
+      const { isGatewayGrantRetired } = await import('../../shared/gateway-grant-retirement.js');
+      const view = {
+        ddb: consumerView(),
+        tableName: GRANT_RETIREMENT_TABLE,
+        processTableName: 'process',
+      };
+      expect(recorder.grantRetirements).toEqual([]);
+      const issuedAt = Math.floor(Date.now() / 1000);
+      await expect(
+        isGatewayGrantRetired(view, { grantId: 'jti-unretired', executionId: intent.id, issuedAt }),
+      ).resolves.toBe(true);
+      await expect(
+        isGatewayGrantRetired(view, { grantId: 'jti-other', executionId: intent.id, issuedAt }),
+      ).resolves.toBe(false);
+    });
+
+    it('/start after a FAILED run retires the jtis it could not retire, then relaunches', async () => {
+      recorder = recordGrantRetirement();
+      const { sub, projectId, intent, metaKey } = await failedRunWithPendingGrant();
+      const res = await post(sub, projectId, intent.id, 'start');
+      expect(res.statusCode).toBe(202);
+      expect(recorder.grantRetirements).toEqual([
+        expect.objectContaining({
+          pk: 'GRANT#jti-unretired',
+          executionId: intent.id,
+          outcome: 'pending_retry',
+        }),
+      ]);
+      expect(procStore.get(metaKey).pendingGrantRetirements).toBeUndefined();
+      expect(orchestratorInvokes()).toHaveLength(1);
+      // The old run's grant is now refused by every consumer; nothing was
+      // retired execution-wide, so the relaunch's grants are untouched.
+      const { isGatewayGrantRetired } = await import('../../shared/gateway-grant-retirement.js');
+      const view = {
+        ddb: consumerView(),
+        tableName: GRANT_RETIREMENT_TABLE,
+        processTableName: 'process',
+      };
+      await expect(
+        isGatewayGrantRetired(view, {
+          grantId: 'jti-unretired',
+          executionId: intent.id,
+          issuedAt: 1,
+        }),
+      ).resolves.toBe(true);
+      await expect(
+        isGatewayGrantRetired(view, {
+          grantId: 'jti-new-run',
+          executionId: intent.id,
+          issuedAt: Math.floor(Date.now() / 1000),
+        }),
+      ).resolves.toBe(false);
+      expect(recorder.retirements).toEqual([]);
+    });
+
+    it('/start is refused with a 503 while a recorded jti cannot be retired', async () => {
+      const log = await quietErrors();
+      try {
+        recorder = recordGrantRetirement({ failGrantsWith: new Error('down') });
+        const { sub, projectId, intent, metaKey } = await failedRunWithPendingGrant();
+        const before = { ...procStore.get(metaKey) };
+        const res = await post(sub, projectId, intent.id, 'start');
+        expect(res.statusCode).toBe(503);
+        expect(JSON.parse(res.body).code).toBe('grant_retirement_unavailable');
+        expect(procStore.get(metaKey)).toEqual(before);
+        expect(orchestratorInvokes()).toHaveLength(0);
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    it('/start retires a jti a concurrent derive recorded after the read, then launches', async () => {
+      recorder = recordGrantRetirement();
+      const { sub, projectId, intent, metaKey } = await failedRunWithPendingGrant();
+      procStore.set(metaKey, { ...procStore.get(metaKey), pendingGrantRetirements: undefined });
+      delete procStore.get(metaKey).pendingGrantRetirements;
+      let injected = false;
+      beforeMetaUpdate = (input) => {
+        if (injected || !input.ConditionExpression?.includes('pendingGrantRetirements')) return;
+        injected = true;
+        procStore.set(metaKey, {
+          ...procStore.get(metaKey),
+          pendingGrantRetirements: new Set(['jti-late']),
+        });
+      };
+      const res = await post(sub, projectId, intent.id, 'start');
+      expect(res.statusCode).toBe(202);
+      expect(injected).toBe(true);
+      expect(recorder.grantRetirements.map((r) => r.pk)).toEqual(['GRANT#jti-late']);
+      expect(procStore.get(metaKey).pendingGrantRetirements).toBeUndefined();
+      expect(procStore.get(metaKey).status).toBe('CREATED');
+      expect(orchestratorInvokes()).toHaveLength(1);
+    });
+
+    it('/start answers 503 when another jti arrives during the single retry', async () => {
+      recorder = recordGrantRetirement();
+      const { sub, projectId, intent, metaKey } = await failedRunWithPendingGrant();
+      delete procStore.get(metaKey).pendingGrantRetirements;
+      let arrivals = 0;
+      beforeMetaUpdate = (input) => {
+        if (!input.ConditionExpression?.includes('pendingGrantRetirements')) return;
+        arrivals += 1;
+        procStore.get(metaKey).pendingGrantRetirements = new Set([`jti-late-${arrivals}`]);
+      };
+      const res = await post(sub, projectId, intent.id, 'start');
+      expect(arrivals).toBe(2);
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body).code).toBe('grant_retirement_unavailable');
+      expect(recorder.grantRetirements.map((r) => r.pk)).toEqual(['GRANT#jti-late-1']);
+      expect(procStore.get(metaKey).status).toBe('FAILED');
+      expect(orchestratorInvokes()).toHaveLength(0);
+    });
+
+    it('a rewind relaunch also answers 503 when another jti arrives during the retry', async () => {
+      recorder = recordGrantRetirement();
+      const { sub, projectId, intent, metaKey } = await failedRunWithPendingGrant();
+      delete procStore.get(metaKey).pendingGrantRetirements;
+      let arrivals = 0;
+      beforeMetaUpdate = (input) => {
+        if (
+          input.ExpressionAttributeValues?.[':status'] !== 'CREATED' ||
+          !input.ConditionExpression?.includes('pendingGrantRetirements')
+        ) {
+          return;
+        }
+        arrivals += 1;
+        procStore.get(metaKey).pendingGrantRetirements = new Set([`jti-late-${arrivals}`]);
+      };
+      const res = await post(sub, projectId, intent.id, 'rewind', { fromStageId: 'implement' });
+      expect(arrivals).toBe(2);
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body).code).toBe('grant_retirement_unavailable');
+      expect(orchestratorInvokes()).toHaveLength(0);
+    });
+
+    it('/start is refused with a 503 when the late jti cannot be retired', async () => {
+      const log = await quietErrors();
+      try {
+        recorder = recordGrantRetirement({ failGrantsWith: new Error('down') });
+        const { sub, projectId, intent, metaKey } = await failedRunWithPendingGrant();
+        delete procStore.get(metaKey).pendingGrantRetirements;
+        beforeMetaUpdate = (input) => {
+          if (!input.ConditionExpression?.includes('pendingGrantRetirements')) return;
+          procStore.get(metaKey).pendingGrantRetirements = new Set(['jti-late']);
+        };
+        const res = await post(sub, projectId, intent.id, 'start');
+        expect(res.statusCode).toBe(503);
+        expect(JSON.parse(res.body).code).toBe('grant_retirement_unavailable');
+        expect(procStore.get(metaKey).status).toBe('FAILED');
+        expect(orchestratorInvokes()).toHaveLength(0);
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    it('fences the rewind relaunch write on META owing no grant retirement', async () => {
+      recorder = recordGrantRetirement();
+      const { sub, projectId, intent, metaKey } = await failedRunWithPendingGrant();
+      delete procStore.get(metaKey).pendingGrantRetirements;
+      let injected = false;
+      beforeMetaUpdate = (input) => {
+        if (
+          injected ||
+          !input.ConditionExpression?.includes('pendingGrantRetirements') ||
+          input.ExpressionAttributeValues[':status'] !== 'CREATED'
+        ) {
+          return;
+        }
+        injected = true;
+        procStore.get(metaKey).pendingGrantRetirements = new Set(['jti-late']);
+      };
+      const res = await post(sub, projectId, intent.id, 'rewind', { fromStageId: 'implement' });
+      expect(res.statusCode).toBe(202);
+      expect(injected).toBe(true);
+      expect(recorder.grantRetirements.map((r) => r.pk)).toEqual(['GRANT#jti-late']);
+      expect(procStore.get(metaKey).pendingGrantRetirements).toBeUndefined();
+    });
+
+    it('a fresh DRAFT (orchestratorRunId stored as null) can be deleted and cancelled', async () => {
+      recorder = recordGrantRetirement();
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const draft = JSON.parse((await createIntent(sub, projectId)).body);
+      const draftMeta = procStore.get(keyOf(`EXEC#${draft.id}`, 'META'));
+      expect(draftMeta).toHaveProperty('orchestratorRunId', null);
+      const deleted = await handler({
+        httpMethod: 'DELETE',
+        path: `/projects/${projectId}/intents/${draft.id}`,
+        pathParameters: { projectId, intentId: draft.id },
+        ...claims(sub),
+      });
+      expect(deleted.statusCode).toBe(204);
+      expect(recorder.retirements.map((r) => r.Key.pk)).toEqual([`EXEC#${draft.id}`]);
+
+      // An unclaimed CREATED run (the orchestrator never stamped a run id).
+      const created = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(created.id, { status: 'CREATED' });
+      expect(procStore.get(keyOf(`EXEC#${created.id}`, 'META')).orchestratorRunId).toBeNull();
+      const cancelled = await post(sub, projectId, created.id, 'cancel');
+      expect(cancelled.statusCode).toBe(200);
+      expect(recorder.retirements.map((r) => r.Key.pk)).toContain(`EXEC#${created.id}`);
+    });
+
+    it('rewind retries recorded jtis before it retires the execution', async () => {
+      recorder = recordGrantRetirement();
+      const { sub, projectId, intent } = await failedRunWithPendingGrant();
+      const res = await post(sub, projectId, intent.id, 'rewind', { fromStageId: 'implement' });
+      expect(res.statusCode).toBe(202);
+      expect(recorder.events.slice(0, 2)).toEqual(['retire-grant:jti-unretired', 'retire:rewound']);
+    });
+
+    it('a stale rewind is refused (409) without retiring the relaunched run or touching anything', async () => {
+      const { sub, projectId, intent } = await failedRunWithPendingGrant();
+      const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+      procStore.set(metaKey, { ...procStore.get(metaKey), pendingGrantRetirements: undefined });
+      const stageKey = keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('implement')}`);
+      // The concurrent rewind relaunched the run after this request read META.
+      recorder = recordGrantRetirement({
+        beforeRetire: () =>
+          procStore.set(metaKey, {
+            ...procStore.get(metaKey),
+            status: 'CREATED',
+            orchestratorRunId: 'run-relaunched',
+          }),
+      });
+      const res = await post(sub, projectId, intent.id, 'rewind', { fromStageId: 'implement' });
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe('run_superseded');
+      expect(recorder.events).toEqual(['retire:rewound', 'retire-superseded']);
+      // No execution-level retirement landed: the relaunched run's grants verify.
+      expect(recorder.retirements).toEqual([]);
+      const { isGatewayGrantRetired } = await import('../../shared/gateway-grant-retirement.js');
+      await expect(
+        isGatewayGrantRetired(
+          { ddb: consumerView(), tableName: GRANT_RETIREMENT_TABLE, processTableName: 'process' },
+          {
+            grantId: 'jti-new-run',
+            executionId: intent.id,
+            issuedAt: Math.floor(Date.now() / 1000),
+          },
+        ),
+      ).resolves.toBe(false);
+      expect(procStore.get(metaKey)).toMatchObject({
+        status: 'CREATED',
+        orchestratorRunId: 'run-relaunched',
+      });
+      expect(procStore.get(stageKey).state).toBe('FAILED');
+      expect(archiveArtifactsSpy).not.toHaveBeenCalled();
+      expect(orchestratorInvokes()).toHaveLength(0);
+    });
+
+    it('fences cancel on the run it validated, and refuses a stale cancel', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+      setStatus(intent.id, {
+        status: 'WAITING',
+        pendingHumanTaskId: 'h1',
+        orchestratorRunId: 'run-1',
+      });
+      const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+      recorder = recordGrantRetirement({
+        beforeRetire: () =>
+          procStore.set(metaKey, { ...procStore.get(metaKey), orchestratorRunId: 'run-2' }),
+      });
+      const res = await post(sub, projectId, intent.id, 'cancel');
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe('run_superseded');
+      expect(procStore.get(metaKey).status).toBe('WAITING');
+      expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1')).status).toBe('pending');
+      expect(recorder.retirements).toEqual([]);
+    });
+
+    it('a failed retirement refuses the rewind before any artifact is superseded', async () => {
+      const log = await quietErrors();
+      try {
+        recorder = recordGrantRetirement({ failWith: new Error('down') });
+        const { sub, projectId, intent } = await failedRunWithPendingGrant();
+        const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+        procStore.set(metaKey, { ...procStore.get(metaKey), pendingGrantRetirements: undefined });
+        await seedIntentAnchor(intent.id);
+        await g
+          .addV('Artifact')
+          .property('id', 'a-impl-503')
+          .property('intent_id', intent.id)
+          .property('artifact_type', 'doc')
+          .property('title', 'impl')
+          .property('content', 'x')
+          .property('created_at', '2026-01-01T00:00:00.000Z')
+          .property('created_by_stage_instance_id', siOf('implement'))
+          .next();
+        const res = await post(sub, projectId, intent.id, 'rewind', { fromStageId: 'implement' });
+        expect(res.statusCode).toBe(503);
+        expect(archiveArtifactsSpy).not.toHaveBeenCalled();
+        const artifact = await g.V().has('Artifact', 'id', 'a-impl-503').valueMap().next();
+        expect(artifact.value.get('superseded_at')).toBeUndefined();
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    const deriveAsAdmin = (sub, projectId, intentId) =>
+      handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intentId}/derive`,
+        pathParameters: { projectId, intentId },
+        body: null,
+        requestContext: {
+          authorizer: { claims: { sub, email: `${sub}@x`, 'cognito:groups': 'platform-admin' } },
+        },
+      });
+    const seedFinishedRun = async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intentId = `i-${randomUUID()}`;
+      procStore.set(keyOf(`EXEC#${intentId}`, 'META'), {
+        pk: `EXEC#${intentId}`,
+        sk: 'META',
+        type: 'Execution',
+        executionId: intentId,
+        intentId,
+        projectId,
+        status: 'SUCCEEDED',
+        environment: MANAGED_ENVIRONMENT_SNAPSHOT,
+      });
+      agentcoreMock.on(InvokeAgentRuntimeCommand).callsFake(async () => {
+        recorder.events.push('derive-returned');
+        return { response: { transformToString: async () => JSON.stringify({ ok: true }) } };
+      });
+      return { sub, projectId, intentId };
+    };
+
+    it('retires a synchronous derive grant by jti right after the command returns', async () => {
+      recorder = recordGrantRetirement();
+      const { sub, projectId, intentId } = await seedFinishedRun();
+      const res = await deriveAsAdmin(sub, projectId, intentId);
+      expect(res.statusCode).toBe(200);
+      const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+      const { gatewayGrant } = JSON.parse(Buffer.from(call.payload).toString('utf8'));
+      // Valid when issued on a SUCCEEDED run: no terminal execution retirement.
+      const verified = await verifiedGatewayGrant(gatewayGrant);
+      expect(recorder.grantRetirements).toEqual([
+        expect.objectContaining({
+          pk: `GRANT#${verified.grantId}`,
+          executionId: intentId,
+          outcome: 'derive-artifacts',
+        }),
+      ]);
+      expect(recorder.events).toEqual(['derive-returned', `retire-grant:${verified.grantId}`]);
+      expect(recorder.retirements).toEqual([]);
+    });
+
+    it('returns the derive result when its grant cannot be retired, and records the jti', async () => {
+      const log = await quietErrors();
+      try {
+        recorder = recordGrantRetirement({ failGrantsWith: new Error('down') });
+        const { sub, projectId, intentId } = await seedFinishedRun();
+        const res = await deriveAsAdmin(sub, projectId, intentId);
+        expect(res.statusCode).toBe(200);
+        const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+        const { gatewayGrant } = JSON.parse(Buffer.from(call.payload).toString('utf8'));
+        const { grantId } = await verifiedGatewayGrant(gatewayGrant);
+        expect(recorder.events.filter((e) => e.startsWith('retire-grant:'))).toHaveLength(3);
+        expect([
+          ...procStore.get(keyOf(`EXEC#${intentId}`, 'META')).pendingGrantRetirements,
+        ]).toEqual([grantId]);
+        expect(log).toHaveBeenCalledWith(
+          'gateway execution retirement failed',
+          expect.objectContaining({
+            code: 'GATEWAY_GRANT_RETIREMENT_FAILED',
+            metric: 'GatewayGrantRetirementFailed',
+            grantId,
+          }),
+        );
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    it('answers 503 when the derive grant can be neither retired nor recorded', async () => {
+      const log = await quietErrors();
+      try {
+        recorder = recordGrantRetirement({ failGrantsWith: new Error('down') });
+        const { sub, projectId, intentId } = await seedFinishedRun();
+        beforeMetaUpdate = (input) => {
+          if (input.UpdateExpression?.startsWith('ADD pendingGrantRetirements')) {
+            throw Object.assign(new Error('throttled'), { name: 'ThrottlingException' });
+          }
+        };
+        const res = await deriveAsAdmin(sub, projectId, intentId);
+        expect(res.statusCode).toBe(503);
+        expect(JSON.parse(res.body).code).toBe('grant_retirement_unavailable');
+        // The derive itself ran; only its grant is unaccounted for.
+        expect(recorder.events).toContain('derive-returned');
+        expect(
+          procStore.get(keyOf(`EXEC#${intentId}`, 'META')).pendingGrantRetirements,
+        ).toBeUndefined();
+        expect(log).toHaveBeenCalledWith(
+          'gateway execution retirement failed',
+          expect.objectContaining({ reason: 'derive-artifacts_pending_record' }),
+        );
+      } finally {
+        log.mockRestore();
+      }
+    });
   });
 });
 
@@ -7024,6 +7665,262 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     },
   );
 
+  const seedRepairableRun = async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:old',
+      orchestratorRunId: 'old-run',
+      pendingHumanTaskId: 'answered-gate',
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'CHECKPOINT',
+      checkpointId: 'stale-checkpoint',
+    });
+    seedStageRow(intent.id, 'units-gen');
+    seedStageRow(intent.id, 'cg', 'foundation', 'SUCCEEDED', 1);
+    seedStageRow(intent.id, 'cg', 'asset-containment', 'WAITING_FOR_HUMAN', 1);
+    seedStageRow(intent.id, 'cg', 'live-data-energy-flow', 'WAITING_FOR_HUMAN', 1);
+    seedStageRow(intent.id, 'cg', 'echarts-integration', 'SUCCEEDED', 1);
+    seedGate(intent.id, 'answered-gate', {
+      status: 'answered',
+      stageInstanceId: siOf('cg', 'live-data-energy-flow', 1),
+    });
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPLAN'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNITPLAN',
+      executionId: intent.id,
+      units: [
+        { slug: 'foundation', dependsOn: [] },
+        { slug: 'asset-containment', dependsOn: ['foundation'] },
+        { slug: 'live-data-energy-flow', dependsOn: ['foundation'] },
+        { slug: 'echarts-integration', dependsOn: ['foundation'] },
+        { slug: 'blocked-dependent', dependsOn: ['asset-containment'] },
+        { slug: 'dependent', dependsOn: ['asset-containment'] },
+      ],
+      batches: [
+        ['foundation'],
+        ['asset-containment', 'live-data-energy-flow', 'echarts-integration'],
+        ['blocked-dependent', 'dependent'],
+      ],
+    });
+    const unitRow = (slug, state) =>
+      procStore.set(keyOf(`EXEC#${intent.id}`, `UNIT#S1#${slug}`), {
+        pk: `EXEC#${intent.id}`,
+        sk: `UNIT#S1#${slug}`,
+        type: 'Unit',
+        executionId: intent.id,
+        sectionIndex: 1,
+        slug,
+        state,
+      });
+    unitRow('foundation', 'MERGED');
+    unitRow('asset-containment', 'RUNNING');
+    unitRow('live-data-energy-flow', 'RUNNING');
+    unitRow('echarts-integration', 'PR_DRAFT');
+    unitRow('blocked-dependent', 'BLOCKED');
+    unitRow('dependent', 'PENDING');
+    procStore.set(keyOf(`EXEC#${intent.id}`, 'UNITPR#S1#echarts-integration#owner%2Frepo'), {
+      pk: `EXEC#${intent.id}`,
+      sk: 'UNITPR#S1#echarts-integration#owner%2Frepo',
+      type: 'UnitPr',
+      executionId: intent.id,
+      sectionIndex: 1,
+      unitSlug: 'echarts-integration',
+      repository: 'owner/repo',
+      state: 'READY',
+      readyHeadSha: 'tainted-head',
+    });
+
+    return { sub, projectId, intent };
+  };
+
+  it('a failed retirement refuses the repair with a 503 before the run is retired or stopped', async () => {
+    const { sub, projectId, intent } = await seedRepairableRun();
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    const before = { ...procStore.get(metaKey) };
+    const recorder = recordGrantRetirement({ failWith: new Error('down') });
+    const log = vi.spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error');
+    log.mockImplementation(() => {});
+    let res;
+    try {
+      res = await repair(sub, projectId, intent.id);
+    } finally {
+      recorder.restore();
+      log.mockRestore();
+    }
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body).code).toBe('grant_retirement_unavailable');
+    expect(procStore.get(metaKey)).toEqual(before);
+    expect(recorder.events).toEqual(['retire:lane_repair']);
+    expect(lambdaMock.commandCalls(StopDurableExecutionCommand)).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+
+  it('finishes an interrupted repair cleanup from its record instead of skipping it', async () => {
+    const { sub, projectId, intent } = await seedRepairableRun();
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    const unitKey = (slug) => keyOf(`EXEC#${intent.id}`, `UNIT#S1#${slug}`);
+    // The request dies after the stage rows were reset, before any unit row
+    // was updated.
+    beforeUpdate = (input) => {
+      if (input.Key.sk?.startsWith('UNIT#')) throw new Error('Lambda timed out');
+    };
+    const log = vi.spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error');
+    log.mockImplementation(() => {});
+    let first;
+    try {
+      first = await repair(sub, projectId, intent.id);
+    } finally {
+      log.mockRestore();
+    }
+    expect(first.statusCode).toBe(500);
+    expect(procStore.get(metaKey).repairRelaunch).toMatchObject({ phase: 'cleanup' });
+    expect(procStore.get(unitKey('asset-containment')).recoveryPreserveCompleted).toBeUndefined();
+    expect(orchestratorInvokes()).toHaveLength(0);
+
+    beforeUpdate = null;
+    const retried = await repair(sub, projectId, intent.id);
+    expect(retried.statusCode).toBe(202);
+    // The cleanup ran to completion on the retry: the unit rows preserve
+    // completed stages, and the completed lane stage was never reset.
+    for (const slug of ['asset-containment', 'live-data-energy-flow']) {
+      expect(procStore.get(unitKey(slug))).toMatchObject({
+        state: 'PENDING',
+        recoveryPreserveCompleted: true,
+      });
+    }
+    expect(
+      procStore.get(keyOf(`EXEC#${intent.id}`, `STAGE#${siOf('cg', 'foundation', 1)}`)).state,
+    ).toBe('SUCCEEDED');
+    const payload = JSON.parse(
+      Buffer.from(orchestratorInvokes().at(-1).args[0].input.Payload).toString(),
+    );
+    expect(payload).toMatchObject({ action: 'start', startAtStageId: 'cg' });
+    expect(procStore.get(metaKey).repairRelaunch).toBeUndefined();
+  });
+
+  it('a stale relaunch-phase retry never deletes the newer run’s checkpoint', async () => {
+    const { sub, projectId, intent } = await seedRepairableRun();
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    const checkpointKey = keyOf(`EXEC#${intent.id}`, 'CHECKPOINT');
+    procStore.set(metaKey, {
+      ...procStore.get(metaKey),
+      status: 'FAILED',
+      orchestratorRunId: 'retired-x',
+      repairRelaunch: {
+        repairId: 'repair-x',
+        retiredRunId: 'retired-x',
+        sectionIndex: 1,
+        fromStageId: 'cg',
+        laneSlugs: ['asset-containment'],
+        phase: 'relaunch',
+      },
+    });
+    // Another request relaunched after this retry read META, and the new run
+    // has already checkpointed; the retry only learns it at its fenced write.
+    procStore.set(checkpointKey, {
+      pk: `EXEC#${intent.id}`,
+      sk: 'CHECKPOINT',
+      checkpointId: 'new-run-checkpoint',
+    });
+    beforeMetaUpdate = (input) => {
+      if (input.ExpressionAttributeValues?.[':status'] !== 'CREATED') return;
+      procStore.set(metaKey, {
+        ...procStore.get(metaKey),
+        status: 'RUNNING',
+        orchestratorRunId: 'run-new',
+      });
+    };
+    const res = await repair(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(409);
+    expect(procStore.get(checkpointKey)).toMatchObject({ checkpointId: 'new-run-checkpoint' });
+    expect(procStore.get(metaKey)).toMatchObject({
+      status: 'RUNNING',
+      orchestratorRunId: 'run-new',
+    });
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+
+  it('resumes a recorded repair relaunch that a pending-grant refusal stopped', async () => {
+    const { sub, projectId, intent } = await seedRepairableRun();
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    // The relaunch write meets a jti a derive recorded meanwhile, and it
+    // cannot be retired: the repair's cleanup is done, its relaunch refused.
+    let recorder = recordGrantRetirement({ failGrantsWith: new Error('down') });
+    beforeMetaUpdate = (input) => {
+      if (
+        input.ExpressionAttributeValues?.[':status'] === 'CREATED' &&
+        input.ConditionExpression?.includes('pendingGrantRetirements')
+      ) {
+        procStore.get(metaKey).pendingGrantRetirements = new Set(['jti-late']);
+      }
+    };
+    const log = vi.spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error');
+    log.mockImplementation(() => {});
+    let refused;
+    try {
+      refused = await repair(sub, projectId, intent.id);
+    } finally {
+      recorder.restore();
+      log.mockRestore();
+    }
+    expect(refused.statusCode).toBe(503);
+    expect(JSON.parse(refused.body).code).toBe('grant_retirement_unavailable');
+    expect(procStore.get(metaKey)).toMatchObject({
+      status: 'FAILED',
+      repairRelaunch: expect.objectContaining({ fromStageId: 'cg', sectionIndex: 1 }),
+    });
+    expect(orchestratorInvokes()).toHaveLength(0);
+
+    // Retry: the lanes are already reset (nothing looks orphaned any more), so
+    // the recorded relaunch is resumed once the late jti can be retired.
+    beforeMetaUpdate = null;
+    recorder = recordGrantRetirement();
+    let retried;
+    try {
+      retried = await repair(sub, projectId, intent.id);
+    } finally {
+      recorder.restore();
+    }
+    expect(retried.statusCode).toBe(202);
+    expect(JSON.parse(retried.body).repair).toMatchObject({ fromStageId: 'cg', sectionIndex: 1 });
+    expect(recorder.grantRetirements.map((r) => r.pk)).toEqual(['GRANT#jti-late']);
+    const payload = JSON.parse(
+      Buffer.from(orchestratorInvokes().at(-1).args[0].input.Payload).toString(),
+    );
+    expect(payload).toMatchObject({ action: 'start', startAtStageId: 'cg' });
+    expect(procStore.get(metaKey).status).toBe('CREATED');
+    expect(procStore.get(metaKey).repairRelaunch).toBeUndefined();
+    expect(procStore.get(metaKey).pendingGrantRetirements).toBeUndefined();
+  });
+
+  it('retires again after stopping the old run, and stays repairable if that write fails', async () => {
+    const { sub, projectId, intent } = await seedRepairableRun();
+    const recorder = recordGrantRetirement({ failWith: new Error('down'), failAt: [2] });
+    const log = vi.spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error');
+    log.mockImplementation(() => {});
+    let res;
+    try {
+      res = await repair(sub, projectId, intent.id);
+    } finally {
+      recorder.restore();
+      log.mockRestore();
+    }
+    expect(res.statusCode).toBe(503);
+    expect(recorder.events).toEqual(['retire:lane_repair', 'stop-durable', 'retire:lane_repair']);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))).toMatchObject({
+      status: 'FAILED',
+      failureReason: 'lane_repair_grant_retirement_failed',
+    });
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+
   it('repairs orphaned parallel waits while preserving merged units', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -7096,9 +7993,21 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       readyHeadSha: 'tainted-head',
     });
 
-    const res = await repair(sub, projectId, intent.id);
+    const recorder = recordGrantRetirement();
+    let res;
+    try {
+      res = await repair(sub, projectId, intent.id);
+    } finally {
+      recorder.restore();
+    }
 
     expect(res.statusCode).toBe(202);
+    // The old run's grants are retired before its durable execution is stopped.
+    expect(recorder.events.slice(0, 3)).toEqual([
+      'retire:lane_repair',
+      'stop-durable',
+      'retire:lane_repair',
+    ]);
     expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'CHECKPOINT'))).toBe(false);
     expect(JSON.parse(res.body).repair).toMatchObject({
       sectionIndex: 1,
@@ -11519,6 +12428,336 @@ describe('the policy scope a composed grid runs on', () => {
 
       expect(created.statusCode).toBe(201);
       expect(Object.hasOwn(metaFor(JSON.parse(created.body).id), 'policyScope')).toBe(false);
+    });
+  });
+});
+
+// ── Execution-level Gateway grant retirement (paths without a stage callback) ──
+
+const GRANT_RETIREMENT_TABLE = 'retired-grants';
+// Routes the retirement table's writes to a recorder and records, in one
+// timeline, when the run is woken/stopped — so a test can assert the
+// retirement lands BEFORE anything is stopped. Returns a restore function.
+// `failAt` (1-based write numbers) limits `failWith` to those writes.
+// Execution retirements are fenced on the run the request validated (a
+// ConditionCheck on META in the same transaction); the fake evaluates it
+// against procStore. `retirements` holds the landed execution updates,
+// `grantRetirements` the landed jti puts.
+const recordGrantRetirement = ({
+  failWith = null,
+  failAt = null,
+  failGrantsWith = null,
+  beforeRetire = null,
+} = {}) => {
+  process.env.GATEWAY_GRANT_RETIREMENT_TABLE = GRANT_RETIREMENT_TABLE;
+  const events = [];
+  const retirements = [];
+  const grantRetirements = [];
+  let writes = 0;
+  // Evaluated as DynamoDB would on the marshalled META: a stored null run id
+  // is an existing NULL attribute, not an absent one.
+  const runCheckFails = (check) =>
+    Boolean(check) &&
+    !conditionCheckPasses(check, procStore.get(keyOf(check.Key.pk, check.Key.sk)) ?? null);
+  const record = async (input, check = null) => {
+    writes += 1;
+    beforeRetire?.(writes);
+    events.push(`retire:${input.ExpressionAttributeValues[':reason']}`);
+    if (failWith && (!failAt || failAt.includes(writes))) throw failWith;
+    if (runCheckFails(check)) {
+      events.push('retire-superseded');
+      throw Object.assign(new Error('cancelled'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'ConditionalCheckFailed' }, { Code: 'None' }],
+      });
+    }
+    retirements.push(input);
+    return {};
+  };
+  ddbMock
+    .on(UpdateCommand, { TableName: GRANT_RETIREMENT_TABLE })
+    .callsFake((input) => record(input));
+  ddbMock.on(TransactWriteCommand).callsFake(async (input) => {
+    const items = input.TransactItems ?? [];
+    const update = items.find((item) => item.Update?.TableName === GRANT_RETIREMENT_TABLE)?.Update;
+    if (!update) return procTransact(input);
+    return record(update, items.find((item) => item.ConditionCheck)?.ConditionCheck ?? null);
+  });
+  ddbMock.on(PutCommand, { TableName: GRANT_RETIREMENT_TABLE }).callsFake(async (input) => {
+    events.push(`retire-grant:${input.Item.grantId}`);
+    if (failGrantsWith) throw failGrantsWith;
+    grantRetirements.push(input.Item);
+    return {};
+  });
+  lambdaMock.on(StopDurableExecutionCommand).callsFake(async () => {
+    events.push('stop-durable');
+    return { StopTimestamp: new Date('2026-07-17T00:00:00.000Z') };
+  });
+  lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).callsFake(async () => {
+    events.push('wake');
+    return {};
+  });
+  agentcoreMock.on(StopRuntimeSessionCommand).callsFake(async () => {
+    events.push('stop-session');
+    return {};
+  });
+  const restore = () => {
+    delete process.env.GATEWAY_GRANT_RETIREMENT_TABLE;
+  };
+  return { events, retirements, grantRetirements, restore };
+};
+const firstStopIndex = (events) =>
+  events.findIndex((e) => ['stop-durable', 'wake', 'stop-session'].includes(e));
+
+describe('gateway execution grant retirement — intents writers', () => {
+  const cancel = (sub, projectId, intentId) =>
+    handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intentId}/cancel`,
+      pathParameters: { projectId, intentId },
+      ...claims(sub),
+    });
+  let recorder = null;
+  beforeEach(() => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+  });
+  afterEach(() => {
+    recorder?.restore();
+    recorder = null;
+    delete process.env.AGENTCORE_RUNTIME_ARN;
+  });
+
+  const parkedIntent = async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    setStatus(intent.id, {
+      status: 'WAITING',
+      pendingHumanTaskId: 'h1',
+      orchestratorRunId: 'run-1',
+      environment: MANAGED_ENVIRONMENT_SNAPSHOT,
+    });
+    return { sub, projectId, intent };
+  };
+
+  it('cancel retires the execution’s grants before waking or stopping the run', async () => {
+    recorder = recordGrantRetirement();
+    const { sub, projectId, intent } = await parkedIntent();
+    const res = await cancel(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).status).toBe('CANCELLED');
+    expect(recorder.retirements).toHaveLength(1);
+    expect(recorder.retirements[0]).toMatchObject({
+      TableName: GRANT_RETIREMENT_TABLE,
+      Key: { pk: `EXEC#${intent.id}` },
+      ConditionExpression: 'attribute_not_exists(retiredAt) OR retiredAt < :retiredAt',
+      ExpressionAttributeValues: expect.objectContaining({
+        ':executionId': intent.id,
+        ':reason': 'cancelled',
+        ':retiredAt': expect.any(Number),
+      }),
+    });
+    expect(recorder.events[0]).toBe('retire:cancelled');
+    expect(recorder.events).toEqual(expect.arrayContaining(['wake', 'stop-session']));
+    expect(recorder.events.indexOf('retire:cancelled')).toBeLessThan(
+      firstStopIndex(recorder.events),
+    );
+  });
+
+  const retirementDown = () =>
+    Object.assign(new Error('denied'), { name: 'AccessDeniedException' });
+  const runStopEvents = (events) =>
+    events.filter((e) => ['stop-durable', 'wake', 'stop-session'].includes(e));
+
+  it('a failed retirement refuses the cancel with a retryable 503 and changes nothing', async () => {
+    const { Logger } = await import('@aws-lambda-powertools/logger');
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    try {
+      recorder = recordGrantRetirement({ failWith: retirementDown() });
+      const { sub, projectId, intent } = await parkedIntent();
+      const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+      const before = { ...procStore.get(metaKey) };
+      const res = await cancel(sub, projectId, intent.id);
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body).code).toBe('grant_retirement_unavailable');
+      expect(procStore.get(metaKey)).toEqual(before);
+      expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1')).status).toBe('pending');
+      expect(runStopEvents(recorder.events)).toEqual([]);
+      expect(log).toHaveBeenCalledWith(
+        'gateway execution retirement failed',
+        expect.objectContaining({
+          code: 'GATEWAY_GRANT_RETIREMENT_FAILED',
+          metric: 'GatewayGrantRetirementFailed',
+          value: 1,
+          executionId: intent.id,
+          reason: 'cancelled',
+          error: 'AccessDeniedException',
+        }),
+      );
+
+      // The retry succeeds once the table is reachable again.
+      recorder.restore();
+      recorder = recordGrantRetirement();
+      const retried = await cancel(sub, projectId, intent.id);
+      expect(retried.statusCode).toBe(200);
+      expect(JSON.parse(retried.body).status).toBe('CANCELLED');
+      expect(recorder.events[0]).toBe('retire:cancelled');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('a failed retirement refuses the delete with a 503 and removes nothing', async () => {
+    const log = vi.spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error');
+    log.mockImplementation(() => {});
+    try {
+      recorder = recordGrantRetirement({ failWith: retirementDown() });
+      const { sub, projectId, intent } = await parkedIntent();
+      const res = await handler({
+        httpMethod: 'DELETE',
+        path: `/projects/${projectId}/intents/${intent.id}`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(503);
+      expect(JSON.parse(res.body).code).toBe('grant_retirement_unavailable');
+      expect(procStore.has(keyOf(`EXEC#${intent.id}`, 'META'))).toBe(true);
+      expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'HUMAN#h1')).status).toBe('pending');
+      expect(runStopEvents(recorder.events)).toEqual([]);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('writes nothing when the deployment has no retirement table', async () => {
+    const { sub, projectId, intent } = await parkedIntent();
+    expect((await cancel(sub, projectId, intent.id)).statusCode).toBe(200);
+    expect(
+      ddbMock
+        .commandCalls(UpdateCommand)
+        .filter((c) => c.args[0].input.TableName === GRANT_RETIREMENT_TABLE),
+    ).toHaveLength(0);
+  });
+
+  it('delete retires the execution’s grants before retiring or releasing the run', async () => {
+    recorder = recordGrantRetirement();
+    const { sub, projectId, intent } = await parkedIntent();
+    const res = await handler({
+      httpMethod: 'DELETE',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(204);
+    expect(recorder.retirements.map((r) => r.ExpressionAttributeValues[':reason'])).toEqual([
+      'deleted',
+    ]);
+    expect(recorder.events[0]).toBe('retire:deleted');
+    expect(firstStopIndex(recorder.events)).toBeGreaterThan(0);
+  });
+
+  describe('durable watchdog', () => {
+    const transactRetirements = [];
+    const routeRetirementTransactions = () => {
+      transactRetirements.length = 0;
+      ddbMock.on(TransactWriteCommand).callsFake(async (input) => {
+        const [{ ConditionCheck: check }, { Update: update }] = input.TransactItems;
+        expect(update.TableName).toBe(GRANT_RETIREMENT_TABLE);
+        const meta = procStore.get(keyOf(check.Key.pk, check.Key.sk));
+        if (meta?.orchestratorRunId !== check.ExpressionAttributeValues?.[':retiringRun']) {
+          throw Object.assign(new Error('cancelled'), {
+            name: 'TransactionCanceledException',
+            CancellationReasons: [{ Code: 'ConditionalCheckFailed' }, { Code: 'None' }],
+          });
+        }
+        transactRetirements.push({ check, update });
+        return {};
+      });
+    };
+
+    it('retires a dead run’s grants only while that run still owns the execution', async () => {
+      recorder = recordGrantRetirement();
+      const { intent } = await parkedIntent();
+      routeRetirementTransactions();
+      setStatus(intent.id, { orchestratorExpiresAt: '2024-01-01T00:00:00.000Z' });
+      const out = await handler({
+        action: 'repair-durable-executions',
+        candidates: [procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))],
+      });
+      expect(out).toMatchObject({ repaired: 1 });
+      expect(transactRetirements).toHaveLength(1);
+      expect(transactRetirements[0].check).toMatchObject({
+        TableName: 'v2-proc-test',
+        Key: { pk: `EXEC#${intent.id}`, sk: 'META' },
+        ConditionExpression: 'orchestratorRunId = :retiringRun',
+        ExpressionAttributeValues: { ':retiringRun': 'run-1' },
+      });
+      expect(transactRetirements[0].update).toMatchObject({
+        Key: { pk: `EXEC#${intent.id}` },
+        ExpressionAttributeValues: expect.objectContaining({ ':reason': expect.any(String) }),
+      });
+    });
+
+    it('retires before the status write, and leaves the intent active for the next tick when it fails', async () => {
+      const log = vi.spyOn(
+        (await import('@aws-lambda-powertools/logger')).Logger.prototype,
+        'error',
+      );
+      log.mockImplementation(() => {});
+      try {
+        recorder = recordGrantRetirement();
+        const { intent } = await parkedIntent();
+        routeRetirementTransactions();
+        setStatus(intent.id, { orchestratorExpiresAt: '2024-01-01T00:00:00.000Z' });
+        const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+        let down = true;
+        ddbMock.on(TransactWriteCommand).callsFake(async (input) => {
+          if (down) throw Object.assign(new Error('throttled'), { name: 'ThrottlingException' });
+          const [{ ConditionCheck: check }, { Update: update }] = input.TransactItems;
+          // Ownership is checked while META still names the dead run: the
+          // status write has not happened yet.
+          expect(procStore.get(metaKey).status).toBe('WAITING');
+          transactRetirements.push({ check, update });
+          return {};
+        });
+
+        const first = await handler({
+          action: 'repair-durable-executions',
+          candidates: [procStore.get(metaKey)],
+        });
+        expect(first).toMatchObject({ repaired: 0 });
+        expect(first.errors).toEqual([expect.objectContaining({ executionId: intent.id })]);
+        expect(procStore.get(metaKey).status).toBe('WAITING');
+
+        down = false;
+        const next = await handler({
+          action: 'repair-durable-executions',
+          candidates: [procStore.get(metaKey)],
+        });
+        expect(next).toMatchObject({ repaired: 1 });
+        expect(transactRetirements).toHaveLength(1);
+        expect(procStore.get(metaKey).status).toBe('FAILED');
+      } finally {
+        log.mockRestore();
+      }
+    });
+
+    it('treats a relaunch that already claimed the execution as retired and skips the repair', async () => {
+      recorder = recordGrantRetirement();
+      const { intent } = await parkedIntent();
+      routeRetirementTransactions();
+      setStatus(intent.id, { orchestratorExpiresAt: '2024-01-01T00:00:00.000Z' });
+      const candidate = { ...procStore.get(keyOf(`EXEC#${intent.id}`, 'META')) };
+      // A relaunch re-stamped the run id after the watchdog read its candidate.
+      setStatus(intent.id, { orchestratorRunId: 'run-2', status: 'RUNNING' });
+      const out = await handler({ action: 'repair-durable-executions', candidates: [candidate] });
+      expect(out).toMatchObject({ repaired: 0, skipped: 1, errors: [] });
+      expect(transactRetirements).toHaveLength(0);
+      expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))).toMatchObject({
+        status: 'RUNNING',
+        orchestratorRunId: 'run-2',
+      });
     });
   });
 });

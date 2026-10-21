@@ -7,6 +7,7 @@ import { createProcessBridge } from '../shared/mcp/process-bridge.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { kmsPublicKeyResolver, verifyGatewayGrant } from '../shared/gateway-grant.js';
+import { gatewayGrantRetirementCheckFromEnv } from '../shared/gateway-grant-retirement.js';
 import { createToolGateway } from './tool-gateway.js';
 
 const logger = new Logger({ persistentKeys: { component: 'mcp-tools' } });
@@ -17,8 +18,10 @@ const publicKeyFor = kmsPublicKeyResolver({
   allowedKeyIds: (process.env.GATEWAY_GRANT_KEY_IDS ?? '').split(','),
 });
 
+const isRetired = gatewayGrantRetirementCheckFromEnv({ ddb });
+
 export const handler = createToolGateway({
-  verifyGrant: (token) => verifyGatewayGrant(token, { publicKeyFor }),
+  verifyGrant: (token) => verifyGatewayGrant(token, { publicKeyFor, isRetired }),
   createStore: () => createProcessStore({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
   openGraph,
   closeGraphSource,

@@ -12,7 +12,11 @@ import {
 } from '../shared/agent-auth-contracts.js';
 import { createAgentProviderContext } from './agent-provider-registry.js';
 import { beginBrokerInvocation } from './invocation-accounting.js';
-import { runtimeAuthorityRequired, verifyBrokerGatewayGrant } from './gateway-authority.js';
+import {
+  assertRenewalAuthority,
+  runtimeAuthorityRequired,
+  verifyBrokerGatewayGrant,
+} from './gateway-authority.js';
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
 export const authorizeAgentCredentialRequest = async (
@@ -24,6 +28,8 @@ export const authorizeAgentCredentialRequest = async (
     env = process.env,
     now = undefined,
     verifyGrant = verifyBrokerGatewayGrant,
+    // Undefined selects the broker's retirement check (assertRenewalAuthority's default).
+    isGrantRetired,
     ...providerDependencies
   } = {},
 ) => {
@@ -34,7 +40,7 @@ export const authorizeAgentCredentialRequest = async (
     now,
     ...providerDependencies,
   });
-  const { claims, adapters, verification } = context;
+  const { claims, verification } = context;
   const repository = createAgentConnectionRepository({
     ddb: ddbClient,
     tableName: env.V2_PROCESS_TABLE,
@@ -76,6 +82,14 @@ export const authorizeAgentCredentialRequest = async (
         'Grant does not match the execution binding',
       );
     }
+    if (context.renewing)
+      await assertRenewalAuthority({
+        claims,
+        execution,
+        env,
+        action: event.action,
+        isGrantRetired,
+      });
   }
   const invocation =
     !context.renewing &&
@@ -90,6 +104,7 @@ export const authorizeAgentCredentialRequest = async (
           verifyGrant,
         })
       : null;
+  const adapters = context.adaptersWith(invocation?.renewalAuthority ?? null);
   let credentials;
   try {
     credentials = await Promise.all(

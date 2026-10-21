@@ -9,6 +9,8 @@ import {
   scopeGridFor,
 } from '../commands/compose-plan-start.js';
 import { INVOKE_DIALECT_ANNEX, invokeDialectAnnex } from '../stage-materializer.js';
+import { DEFAULT_ONE_SHOT_TIMEOUT_MS } from '../cli/one-shot.js';
+import { COMPOSE_GRANT_TTL_SECONDS } from '../../shared/gateway-grant.js';
 
 // The annex the COMPOSER receives: it registers no platform tools, so every
 // answer whose channel is one is rewritten onto the proposal it returns.
@@ -192,6 +194,23 @@ describe('compose-plan-start — release-pinned intents', () => {
     expect(deps.loadLibraryFn).toHaveBeenCalledWith({ workflowId: 'aidlc-v2', workflowVersion: 4 });
     expect(deps.listMergedBlocksFn).toHaveBeenCalledWith('SCOPE');
     expect(deps.listReleaseBlocksFn).not.toHaveBeenCalled();
+  });
+});
+
+// The compose grant is bounded by the job instead of being retired when it
+// ends, so the job's one CLI call must stay within that bound with room for
+// the reads and writes around it.
+describe('compose-plan-start — grant lifetime', () => {
+  it('runs one composer CLI call under the default one-shot timeout', async () => {
+    const deps = makeDeps({
+      oneShotText:
+        '```json\n{"mode":"matched","scope":"bugfix","rationale":["fits"],"confidence":0.8}\n```',
+    });
+    await createComposePlanStart(deps)(basePayload);
+    await waitForFinish(deps.store);
+    expect(deps.oneShot).toHaveBeenCalledTimes(1);
+    expect(deps.oneShot.mock.calls[0][0]).not.toHaveProperty('timeoutMs');
+    expect(DEFAULT_ONE_SHOT_TIMEOUT_MS / 1000).toBeLessThanOrEqual(COMPOSE_GRANT_TTL_SECONDS / 4);
   });
 });
 

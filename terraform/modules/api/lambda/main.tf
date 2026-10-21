@@ -1250,9 +1250,10 @@ module "source_control_lambda" {
     ENVIRONMENT                        = var.environment
     CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
     }, var.enable_engine_data ? {
-    ENGINE_DATA_ENABLED   = "true"
-    GATEWAY_GRANT_KEY_IDS = var.gateway_grant_key_arn
-    V2_PROCESS_TABLE      = var.v2_executions_table_name
+    ENGINE_DATA_ENABLED            = "true"
+    GATEWAY_GRANT_KEY_IDS          = var.gateway_grant_key_arn
+    V2_PROCESS_TABLE               = var.v2_executions_table_name
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
   } : {})
 }
 
@@ -1449,8 +1450,9 @@ module "credential_broker_lambda" {
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
     }, var.enable_engine_data ? {
-    ENGINE_DATA_ENABLED   = "true"
-    GATEWAY_GRANT_KEY_IDS = var.gateway_grant_key_arn
+    ENGINE_DATA_ENABLED            = "true"
+    GATEWAY_GRANT_KEY_IDS          = var.gateway_grant_key_arn
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
     } : {}, var.enable_engine_data && var.enforce_runtime_grants ? {
     RUNTIME_GRANTS_ENFORCED = "true"
   } : {})
@@ -1566,7 +1568,7 @@ module "projects_lambda" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID              = var.aws_sdk_ua_app_id
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     ENVIRONMENT                    = var.environment
@@ -1592,7 +1594,9 @@ module "projects_lambda" {
     # save-time cross-tier collision check.
     MCP_SECRETS_SSM_PREFIX    = "/${var.project_name}/${var.environment}"
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-  }
+    }, var.enable_mcp_gateway ? {
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {})
 }
 
 # Users Lambda
@@ -3250,7 +3254,10 @@ module "intents_lambda" {
     V2_ORCHESTRATOR_FUNCTION          = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
-  }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
+    }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
+    var.enable_mcp_gateway ? {
+      GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {})
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
@@ -3572,7 +3579,10 @@ module "v2_orchestrator_lambda" {
     WEBSOCKET_ENDPOINT                   = var.websocket_api_endpoint_https
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
-  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
+    }, var.enable_mcp_gateway ? {
+    GATEWAY_GRANT_KEY_ID           = var.gateway_grant_key_arn
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {})
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 

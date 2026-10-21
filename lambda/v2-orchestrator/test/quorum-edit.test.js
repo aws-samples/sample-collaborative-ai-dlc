@@ -200,6 +200,57 @@ describe('runQuorumEdit', () => {
     ]);
   });
 
+  it('retires each phase grant by jti once its callback is in', async () => {
+    const order = [];
+    deps.issueGatewayGrant = vi.fn(async (scope, options) => {
+      const id = options?.randomId?.() ?? 'unpinned';
+      order.push(`issue:${id}`);
+      return `gw:${scope.mode}:${id}`;
+    });
+    deps.retireGatewayGrant = vi.fn(async ({ grantId }) => {
+      order.push(`retire:${grantId}`);
+      return { retired: true };
+    });
+    deps.store.addPendingGrantRetirements = vi.fn(async () => []);
+    const run = runQuorumEdit(EVENT, ctx, deps);
+    await vi.waitFor(() => {
+      if (!ctx.resolvers.has('cb-qe-decision-cb-qe-1')) throw new Error('not parked yet');
+    });
+    const planJti = invokes[0].gatewayGrant.split(':')[2];
+    expect(planJti).toMatch(/^[0-9a-f-]{36}$/);
+    // Parked on the human decision: the plan job's grant is already retired.
+    expect(order).toEqual([`issue:${planJti}`, `retire:${planJti}`]);
+    approve();
+    expect(await run).toMatchObject({ ok: true });
+    const applyJti = invokes[1].gatewayGrant.split(':')[2];
+    expect(applyJti).not.toBe(planJti);
+    expect(order.slice(2)).toEqual([`issue:${applyJti}`, `retire:${applyJti}`]);
+    expect(deps.store.addPendingGrantRetirements).not.toHaveBeenCalled();
+  });
+
+  it('fails the edit and records the jti when a phase grant cannot be retired', async () => {
+    const { Logger } = await import('@aws-lambda-powertools/logger');
+    const log = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    deps.issueGatewayGrant = vi.fn(
+      async (scope, options) => `gw:${scope.mode}:${options?.randomId?.()}`,
+    );
+    deps.retireGatewayGrant = vi.fn(async () => {
+      throw new Error('down');
+    });
+    deps.store.addPendingGrantRetirements = vi.fn(async ({ grantIds }) => grantIds);
+    try {
+      const res = await runQuorumEdit(EVENT, ctx, deps);
+      expect(res).toMatchObject({ ok: false, reason: 'gateway_grant_retirement_failed' });
+      expect(deps.store.addPendingGrantRetirements).toHaveBeenCalledWith({
+        executionId: 'i1',
+        grantIds: [invokes[0].gatewayGrant.split(':')[2]],
+      });
+      expect(invokes).toHaveLength(1);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('sends no gateway grant when the deployment has not enabled the Gateway', async () => {
     const run = runQuorumEdit(EVENT, ctx, deps);
     await vi.waitFor(() => {

@@ -57,6 +57,9 @@ export const beginBrokerInvocation = async ({
     !tableName
   )
     throw invalid();
+  // The Gateway grant that authorizes an execution handoff also bounds the renewals the
+  // handoff issues: their tokens name it, and each renewal re-checks its retirement.
+  let renewalAuthority = null;
   if (definition.grantScope !== GRANT_SCOPES.NONE) {
     const grant = await verifyGrant(event.gatewayGrant);
     if (
@@ -65,6 +68,12 @@ export const beginBrokerInvocation = async ({
       grant.executionId !== claims.executionId
     )
       throw gatewayScopeDenied();
+    if (grant.executionId)
+      renewalAuthority = {
+        grantId: grant.grantId,
+        executionId: grant.executionId,
+        issuedAt: grant.issuedAt,
+      };
   }
   if (!claims.bindings.length) return null;
   const id = createHash('sha256')
@@ -120,6 +129,7 @@ export const beginBrokerInvocation = async ({
     throw authError('INVOCATION_ACCOUNTING_CONFLICT', 'Credential redemption is still pending');
   const issuedAt = Math.floor(Date.parse(invocation.startedAt) / 1000);
   return {
+    renewalAuthority,
     accounting: {
       invocationId: id,
       ticket: signTicket({

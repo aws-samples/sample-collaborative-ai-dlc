@@ -9,6 +9,7 @@ import {
   ScanCommand,
   BatchWriteCommand,
   GetCommand,
+  TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
@@ -1213,6 +1214,51 @@ describe('DELETE /projects/:id', () => {
     );
     expect(await g.V().hasLabel('TeamKnowledge').hasNext()).toBe(true);
     expect(await g.V().hasLabel('LearningRule').hasNext()).toBe(true);
+  });
+
+  it('retires each intent’s grants fenced on the run it read, and keeps an intent whose run changed', async () => {
+    vi.stubEnv('GATEWAY_GRANT_RETIREMENT_TABLE', 'retired-grants');
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const intentId = await seedIntent(id, { status: 'WAITING' });
+    projectExecs.get(id)[0].orchestratorRunId = 'run-listed';
+    const checks = [];
+    // A relaunch replaced the run id after the delete listed the intent.
+    ddbMock.on(TransactWriteCommand).callsFake(async (input) => {
+      const [{ ConditionCheck: check }, { Update: update }] = input.TransactItems;
+      checks.push({ check, update });
+      throw Object.assign(new Error('cancelled'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'ConditionalCheckFailed' }, { Code: 'None' }],
+      });
+    });
+    const log = vi.spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error');
+    log.mockImplementation(() => {});
+    try {
+      const res = await handler({
+        httpMethod: 'DELETE',
+        pathParameters: { projectId: id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body).intents).toEqual([intentId]);
+    } finally {
+      log.mockRestore();
+    }
+    expect(checks).toHaveLength(1);
+    expect(checks[0].check).toMatchObject({
+      TableName: 'v2-proc-test',
+      Key: { pk: `EXEC#${intentId}`, sk: 'META' },
+      ConditionExpression: 'orchestratorRunId = :retiringRun',
+      ExpressionAttributeValues: { ':retiringRun': 'run-listed' },
+    });
+    expect(checks[0].update).toMatchObject({
+      TableName: 'retired-grants',
+      Key: { pk: `EXEC#${intentId}` },
+    });
+    // Nothing of the intent or the project was removed.
+    expect(await g.V().has('Intent', 'id', intentId).hasNext()).toBe(true);
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(true);
   });
 
   it('force-retires a RUNNING intent instead of refusing the project delete', async () => {

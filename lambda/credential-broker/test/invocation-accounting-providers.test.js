@@ -54,7 +54,14 @@ const harness = () => {
     expiresAt: time + 900_000,
   }));
   const ddbClient = { send: vi.fn((command) => ddb.send(command)) };
-  const verifyGrant = vi.fn(async () => ({ mode: 'stage', projectId: 'p', executionId: 'e' }));
+  const verifyGrant = vi.fn(async () => ({
+    mode: 'stage',
+    projectId: 'p',
+    executionId: 'e',
+    grantId: 'gateway-grant',
+    issuedAt: Math.floor(time / 1000),
+  }));
+  const isGrantRetired = vi.fn(async () => false);
   const deps = {
     secret,
     now,
@@ -68,6 +75,7 @@ const harness = () => {
     registry: createBrokerProviderRegistry([FIXTURE_BROKER_PROVIDER]),
     tokenClient: { issue },
     verifyGrant,
+    isGrantRetired,
   };
   const request = (purpose = 'execution') => ({
     action: 'resolve-agent-credentials',
@@ -131,6 +139,11 @@ describe('accounting beside signed provider authority', () => {
     expect(renewal).not.toHaveProperty('accounting');
     expect(renewal.credentials[0].lease.authorizationExpiresAt).toBe(ceiling);
     expect(h.verifyGrant).not.toHaveBeenCalled();
+    expect(h.isGrantRetired).toHaveBeenCalledExactlyOnceWith({
+      grantId: 'gateway-grant',
+      executionId: 'e',
+      issuedAt: Math.floor(Date.parse('2026-10-19T12:00:00Z') / 1000),
+    });
     expect(
       h.ddbClient.send.mock.calls.some(([command]) => command instanceof TransactWriteCommand),
     ).toBe(false);

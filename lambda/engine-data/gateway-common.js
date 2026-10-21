@@ -35,12 +35,22 @@ export const hasPrototypeKey = (value) => {
 export const issuePaths = (prefix, error) =>
   error.issues.slice(0, 5).map((issue) => `${prefix}.${issue.path.join('.')}:${issue.code}`);
 
+const GRANT_DENIAL_REASONS = Object.freeze({
+  GATEWAY_GRANT_EXPIRED: 'grant_expired',
+  GATEWAY_GRANT_RETIRED: 'grant_retired',
+  GATEWAY_GRANT_RETIREMENT_UNAVAILABLE: 'grant_retirement_unavailable',
+});
+
 export const verifyGrantOrDeny = async (verifyGrant, token) => {
   if (typeof token !== 'string' || !token) deny('missing_grant');
   try {
     return await verifyGrant(token);
   } catch (error) {
-    return deny(error?.code === 'GATEWAY_GRANT_EXPIRED' ? 'grant_expired' : 'grant_invalid');
+    return deny(
+      Object.hasOwn(GRANT_DENIAL_REASONS, error?.code ?? '')
+        ? GRANT_DENIAL_REASONS[error.code]
+        : 'grant_invalid',
+    );
   }
 };
 

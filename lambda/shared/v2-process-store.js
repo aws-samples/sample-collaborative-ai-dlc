@@ -150,6 +150,12 @@ const snapshotCondition = (row, fields) => {
   };
 };
 
+// A non-empty DynamoDB string set of grant jtis, or null (pendingGrantRetirements).
+const pendingGrantIdSet = (grantIds) => {
+  const unique = [...new Set((grantIds ?? []).filter((id) => typeof id === 'string' && id))];
+  return unique.length ? new Set(unique) : null;
+};
+
 const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   if (!client) throw new Error('createProcessStore requires a DynamoDB DocumentClient');
   const ddb = retryTransactionConflicts(client);
@@ -465,6 +471,11 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     orchestratorExpiresAt,
     rewindFromStageId,
     resumeRequired,
+    // A lane repair's recorded relaunch ({ repairId, retiredRunId, sectionIndex,
+    // fromStageId, laneSlugs }): written with the repair's retired-run write,
+    // before any destructive cleanup, so a refused relaunch can be resumed.
+    // null REMOVEs it.
+    repairRelaunch,
     currentPhase,
     currentStage,
     pendingHumanTaskId,
@@ -514,6 +525,10 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     // clearing a resolved marker never drops a newer one for another gate.
     ifResumeRequiredFor = null,
     ifDraftRevision = null,
+    // A relaunch requires META to owe no Gateway grant retirement: the jti set
+    // is removed once emptied (DynamoDB drops an empty set), so absence means
+    // every recorded jti was retired.
+    ifNoPendingGrantRetirements = false,
   }) => {
     const ts = now();
     const sets = ['updatedAt = :ts'];
@@ -663,6 +678,12 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     }
     // Clearing REMOVEs the marker rather than writing null, so a run that never
     // needed a resume keeps the row shape it always had.
+    if (repairRelaunch === null) {
+      removes.push('repairRelaunch');
+    } else if (repairRelaunch !== undefined) {
+      sets.push('repairRelaunch = :rrl');
+      values[':rrl'] = repairRelaunch;
+    }
     if (resumeRequired === null) {
       removes.push('resumeRequired');
     } else if (resumeRequired !== undefined) {
@@ -862,6 +883,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
           : 'draftRevision = :ifDraftRevision',
       );
       values[':ifDraftRevision'] = ifDraftRevision;
+    }
+    if (ifNoPendingGrantRetirements) {
+      conditions.push('attribute_not_exists(pendingGrantRetirements)');
     }
     if (conditions.length) params.ConditionExpression = conditions.join(' AND ');
     const credentialWrites = [];
@@ -1074,6 +1098,99 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       if (error?.name === 'ConditionalCheckFailedException') return null;
       throw error;
     }
+  };
+
+  // Fail a stage attempt whose Gateway grant could not be retired. Unlike
+  // failRunningStageAttempt this also overrides the worker's own verdict
+  // (SUCCEEDED, WAITING_FOR_HUMAN): the attempt's outcome is not accepted while
+  // its grant may still be used. Fenced by the attempt's callback id (and, when
+  // given, by the run that dispatched it), so a later retry or resume of the
+  // stage is never touched. Null when the row is absent, already FAILED or
+  // SKIPPED, or owned by another attempt.
+  const failStageAttemptForGrantRetirement = async ({
+    executionId,
+    stageInstanceId,
+    stageCallbackId,
+    orchestratorRunId = null,
+    runtimeError = 'gateway_grant_retirement_failed',
+  }) => {
+    if (!stageCallbackId) {
+      throw new Error('failStageAttemptForGrantRetirement requires stageCallbackId');
+    }
+    const ts = now();
+    try {
+      const { Attributes } = await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: stageKey(executionId, stageInstanceId),
+          ConditionExpression:
+            'attribute_exists(pk) AND #state IN (:running, :succeeded, :waiting) AND ' +
+            'stageCallbackId = :callbackId' +
+            (orchestratorRunId
+              ? ' AND (attribute_not_exists(orchestratorRunId) OR orchestratorRunId = :runId)'
+              : ''),
+          UpdateExpression:
+            'SET #state = :failed, updatedAt = :ts, completedAt = :ts, GSI2SK = :g2sk, runtimeError = :err',
+          ExpressionAttributeNames: { '#state': 'state' },
+          ExpressionAttributeValues: {
+            ':running': 'RUNNING',
+            ':succeeded': 'SUCCEEDED',
+            ':waiting': 'WAITING_FOR_HUMAN',
+            ':failed': 'FAILED',
+            ':callbackId': stageCallbackId,
+            ':ts': ts,
+            ':g2sk': executionTypeStateIndex({
+              executionId,
+              type: 'STAGE',
+              state: 'FAILED',
+              id: stageInstanceId,
+            }).GSI2SK,
+            ':err': runtimeError,
+            ...(orchestratorRunId ? { ':runId': orchestratorRunId } : {}),
+          },
+          ReturnValues: 'ALL_NEW',
+        }),
+      );
+      return Attributes;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return null;
+      throw error;
+    }
+  };
+
+  // Gateway grant jtis whose retirement exhausted its retries, kept on META (a
+  // string set) until a later control-plane action retires them: /start,
+  // rewind, recompose and lane repair retry them before they relaunch the run
+  // (gateway-grant-retirement.js). ADD/DELETE on a set are idempotent, so a
+  // replayed durable step or a repeated request is harmless.
+  const addPendingGrantRetirements = async ({ executionId, grantIds }) => {
+    const grantIdSet = pendingGrantIdSet(grantIds);
+    if (!grantIdSet) return null;
+    await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: executionMetaKey(executionId),
+        UpdateExpression: 'ADD pendingGrantRetirements :ids SET updatedAt = :ts',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':ids': grantIdSet, ':ts': now() },
+      }),
+    );
+    return [...grantIdSet];
+  };
+
+  const clearPendingGrantRetirements = async ({ executionId, grantIds }) => {
+    const grantIdSet = pendingGrantIdSet(grantIds);
+    if (!grantIdSet) return null;
+    await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: executionMetaKey(executionId),
+        UpdateExpression: 'DELETE pendingGrantRetirements :ids SET updatedAt = :ts',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':ids': grantIdSet, ':ts': now() },
+      }),
+    );
+    return [...grantIdSet];
   };
 
   // Flip a parked stage (WAITING_FOR_HUMAN) back to RUNNING on resume WITHOUT
@@ -3492,6 +3609,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     getStage,
     updateStageState,
     failRunningStageAttempt,
+    failStageAttemptForGrantRetirement,
+    addPendingGrantRetirements,
+    clearPendingGrantRetirements,
     resumeStageRow,
     appendEvent,
     listEvents,

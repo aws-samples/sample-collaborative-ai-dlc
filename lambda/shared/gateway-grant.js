@@ -28,6 +28,12 @@ export const GATEWAY_GRANT_MODES = Object.freeze(['stage', 'discussion', 'confli
 // Discussion assists have no execution/stage row to re-check per call, so their
 // grant must expire on its own, quickly.
 export const DISCUSSION_GRANT_TTL_SECONDS = 300;
+// A compose job (compose-plan-start) runs in the background after the runtime
+// accepts it and the control plane does not observe its end, so its grant must
+// also expire on its own: catalog and graph reads, one composer CLI call bounded
+// by the one-shot timeout (120s), validation and the result write fit well
+// inside 15 minutes (agentcore/test/compose-plan-start.test.js pins the bound).
+export const COMPOSE_GRANT_TTL_SECONDS = 15 * 60;
 const CLOCK_SKEW_SECONDS = 60;
 const MAX_TOKEN_BYTES = 4096;
 
@@ -212,7 +218,15 @@ const parsePart = (part) => {
 
 // `publicKeyFor(kid) -> Promise<KeyObject | DER SPKI | PEM>`: the verifier's
 // trust anchor. An unknown kid must reject.
-export const verifyGatewayGrant = async (token, { publicKeyFor, now = Date.now }) => {
+// `isRetired({ grantId, executionId, issuedAt }) -> Promise<boolean>`: the
+// control plane's retirement records (gateway-grant-retirement.js) for this jti
+// and for every grant of its execution issued up to a point in time. Consulted
+// only for a grant that is otherwise valid; a lookup failure rejects the grant
+// (fail closed).
+export const verifyGatewayGrant = async (
+  token,
+  { publicKeyFor, now = Date.now, isRetired = null },
+) => {
   if (typeof token !== 'string' || !token || Buffer.byteLength(token) > MAX_TOKEN_BYTES) {
     throw invalid();
   }
@@ -292,6 +306,24 @@ export const verifyGatewayGrant = async (token, { publicKeyFor, now = Date.now }
   }
   const scope = normalizeGatewayScope(payload);
   if (payload.sub !== (scope.executionId ?? `intent:${scope.intentId}`)) throw invalid();
+  if (typeof isRetired === 'function') {
+    let retired;
+    try {
+      retired = await isRetired({
+        grantId: payload.jti,
+        executionId: scope.executionId,
+        issuedAt: payload.iat,
+      });
+    } catch {
+      throw new GatewayGrantError(
+        'GATEWAY_GRANT_RETIREMENT_UNAVAILABLE',
+        'Gateway grant retirement could not be checked',
+      );
+    }
+    if (retired !== false) {
+      throw new GatewayGrantError('GATEWAY_GRANT_RETIRED', 'Gateway grant has been retired');
+    }
+  }
   return {
     ...scope,
     grantId: payload.jti,

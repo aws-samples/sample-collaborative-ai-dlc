@@ -233,6 +233,8 @@ module "mcp_tools_lambda" {
     CONNECTIONS_TABLE       = var.connections_table_name
     WEBSOCKET_ENDPOINT      = var.websocket_endpoint
     GATEWAY_GRANT_KEY_IDS   = aws_kms_key.gateway_grant[0].arn
+
+    GATEWAY_GRANT_RETIREMENT_TABLE = aws_dynamodb_table.gateway_grant_retirements[0].name
   }
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
