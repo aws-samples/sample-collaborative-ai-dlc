@@ -2,9 +2,10 @@
 // interceptor in front of every target. Pure orchestration over injected
 // dependencies, deny-by-default:
 //   1. the Gateway already authenticated the caller (SigV4, InvokeGateway);
-//   2. the control-plane grant is verified (signature, audience, expiry, kid)
-//      and its mode is one the built-in MCP serves (never an engine-data
-//      `execution` grant);
+//   2. the control-plane grant is verified (signature, audience, expiry, kid,
+//      and not retired by the control plane, failing closed when the
+//      retirement records cannot be read) and its mode is one the built-in MCP
+//      serves (never an engine-data `execution` grant);
 //   3. the runtime's session context must stay inside the grant, including the
 //      signed release-policy digest;
 //   4. for a tool call, the target must be known and the tool in the role's

@@ -184,7 +184,7 @@ export const createBrokerProviderRegistry = (providers) => {
     return dependencies.get(provider.id);
   };
   const bind =
-    (provider, adapter, { claims, request, key, presentedToken, overrides }) =>
+    (provider, adapter, { claims, request, key, presentedToken, renewalAuthority, overrides }) =>
     async ({ ssm, connection, binding }) => {
       const deps = { ...dependenciesOf(provider), ...overrides };
       let result;
@@ -199,7 +199,14 @@ export const createBrokerProviderRegistry = (providers) => {
         request,
         policy: provider.renewal,
         presentedToken,
-        issueRenewal: () => signRenewal({ claims, binding, policy: provider.renewal, key }),
+        issueRenewal: () =>
+          signRenewal({
+            claims,
+            binding,
+            policy: provider.renewal,
+            key,
+            gatewayGrant: renewalAuthority,
+          }),
       });
       return { lease };
     };
@@ -273,14 +280,19 @@ export const createAgentProviderContext = async (
       'AGENT_CREDENTIAL_GRANT_INVALID',
       'Connection verification is not supported for this mechanism',
     );
-  const adapters = registry.adaptersFor({
-    claims,
-    request: renewing ? 'renew' : verification ? 'verify' : 'resolve',
-    key,
-    presentedToken: renewing ? presentedToken : null,
-    provider: renewing ?? verifier,
-    overrides,
-  });
+  // `renewalAuthority`: the verified Gateway grant that authorized an execution handoff,
+  // named in the renewal tokens the handoff issues.
+  const adaptersWith = (renewalAuthority = null) =>
+    registry.adaptersFor({
+      claims,
+      request: renewing ? 'renew' : verification ? 'verify' : 'resolve',
+      key,
+      presentedToken: renewing ? presentedToken : null,
+      renewalAuthority: renewing ? null : renewalAuthority,
+      provider: renewing ?? verifier,
+      overrides,
+    });
+  const adapters = adaptersWith();
   return {
     claims,
     verification,
@@ -288,6 +300,7 @@ export const createAgentProviderContext = async (
     signAccountingTicket: (ticketClaims) =>
       signInvocationAccountingTicket(ticketClaims, key, { now }),
     adapters,
+    adaptersWith,
     // The signed binding stands in for the connection row: no repository read, and the
     // 'verify' lease carries no renewal and ends with the grant.
     verify: async (binding) => {
