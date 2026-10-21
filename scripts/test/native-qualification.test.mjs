@@ -18,9 +18,34 @@ import {
   prepareQualificationFixtures,
   verifyQualificationAssets,
   verifyQualificationLinuxBindings,
+  frozenOpenCodePackument,
 } from '../native-qualification-package.mjs';
 
 const image = `cached/native@sha256:${'a'.repeat(64)}`;
+test('offline registry resolution cannot drift beyond the frozen archive closure', () => {
+  const item = {
+    version: '2.1.0',
+    integrity: 'sha512-fixture',
+    resolved: 'https://registry.npmjs.org/msgpackr/-/msgpackr-2.1.0.tgz',
+  };
+  const version = {
+    name: 'msgpackr',
+    version: item.version,
+    dependencies: { fixture: '^1' },
+    dist: { integrity: item.integrity, tarball: item.resolved },
+  };
+  const current = {
+    name: 'msgpackr',
+    'dist-tags': { latest: '2.1.2' },
+    versions: { '2.1.0': version, '2.1.2': { ...version, version: '2.1.2' } },
+  };
+  const frozen = frozenOpenCodePackument(current, 'msgpackr', item);
+  assert.deepEqual(Object.keys(frozen.versions), ['2.1.0']);
+  assert.deepEqual(frozen.versions['2.1.0'], version, 'Preserve the actual registry manifest');
+  assert.equal(current['dist-tags'].latest, '2.1.2', 'Input evidence is unchanged');
+  for (const patch of [{ version: 'missing' }, { integrity: 'changed' }, { resolved: 'changed' }])
+    assert.throws(() => frozenOpenCodePackument(current, 'msgpackr', { ...item, ...patch }));
+});
 test('legacy invocation retains Claude; explicit selection has no missing-input fallback', () => {
   assert.equal(qualificationOptions([]).image, undefined);
   assert.deepEqual(qualificationOptions(['--image', image, '--assets', '/tmp/assets']).clis, [

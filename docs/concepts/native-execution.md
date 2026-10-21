@@ -2812,6 +2812,41 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       never retained by the deployed rejection owner. Do not substitute the
       synthetic npm fixture below for historical evidence.
 
+      **Implementation in progress, authorized 2026-10-21.** The user has
+      selected safe support for ordinary dependency installs/builds. The earlier
+      generic policy-decision blocker is superseded. Implement a versioned
+      dependency representation with exact private restoration, bounded internal
+      link resolution and unchanged authored/public artifacts; retain legacy
+      readers. Acceptance requires cold recovery → real offline npm install
+      and build/test → admitted checkpoint → exact cold restore → successful
+      build/continuation, using an actual newly built production image without
+      replacing its production modules. Resolve OpenCode's separately reproduced
+      missing-lock fixture mismatch, prepare fresh attested inputs, and record
+      candidate evidence here. `1125434` was independently reviewed with
+      **172 focused tests passed**; that is baseline evidence only. No failed-run
+      replay, cloud mutation, push, deployment or live-provider execution is
+      authorized.
+
+      **OpenCode fixture correction (2026-10-21, independently scoped).**
+      The missing `.opencode/package-lock.json` was an incomplete offline
+      installation, not a recovery-file deletion or a Bun lockfile variant.
+      The actual installed **OpenCode 1.19.0** log reported
+      `background dependency install failed`: registry metadata selected
+      `msgpackr-2.1.2.tgz`, while the frozen archive inventory contains
+      **2.1.0**. `npm cache add name@version` had cached current version-range
+      metadata alongside old exact archives. Fresh preparation now filters
+      that metadata to the exact verified registry manifests already pinned
+      in the fixture. It preserves their dependencies, archive URLs and
+      SHA-512 integrity; reuse rejects drifting metadata. It does not write
+      the CLI's project manifest/lock or change a dependency version.
+      OpenCode's real Arborist installation now creates both project and
+      config locks; the unchanged 32-package version/integrity assertion
+      passes after three workflow turns and exact cold recovery.
+      Before evidence: `/tmp/native-dependencies-opencode-cause.log`.
+      After: `/tmp/native-dependencies-opencode-packaged.log`, a newly built
+      production runtime with a separate controller test bundle. This closes
+      the offline fixture mismatch; live registry availability is not qualified.
+
       **Authority and source alignment.** A fully paginated consistent scalar
       query returned 162 rows (one page) from
       `collaborative-ai-dlc-native-runs-dev`, partition

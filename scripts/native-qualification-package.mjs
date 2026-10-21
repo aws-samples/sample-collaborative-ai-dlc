@@ -8,6 +8,8 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
+import { delimiter } from 'node:path';
 
 const releaseUrl = 'https://github.com/awslabs/aidlc-workflows/releases/download/v2.11.0';
 const assets = {
@@ -62,7 +64,41 @@ const opencodeLock = async () =>
     ),
   );
 
+// Use npm's own cache API rather than encoding its index format ourselves.
+// This is preparation tooling, not a runtime dependency.
+async function npmCacheApi() {
+  for (const directory of process.env.PATH.split(delimiter)) {
+    const binary = join(directory, 'npm');
+    if (existsSync(binary)) return createRequire(await fs.realpath(binary))('cacache');
+  }
+  throw new Error('Fixture preparation requires npm with its bundled cache API');
+}
+
+export function frozenOpenCodePackument(packument, name, item) {
+  const version = packument.versions?.[item.version];
+  assert.equal(version?.name, name, 'Pinned registry package name');
+  assert.equal(version?.version, item.version, 'Pinned registry package version');
+  assert.equal(version?.dist?.integrity, item.integrity, 'Pinned registry package integrity');
+  assert.equal(version?.dist?.tarball, item.resolved, 'Pinned registry archive');
+  return { name, 'dist-tags': { latest: item.version }, versions: { [item.version]: version } };
+}
+
+async function freezeOpenCodeResolution(cache, lock) {
+  const cacache = await npmCacheApi();
+  for (const [path, item] of Object.entries(lock.packages)) {
+    if (!path) continue;
+    const name = path.replace(/^node_modules\//, '');
+    const key = `make-fetch-happen:request-cache:https://registry.npmjs.org/${name.replace('/', '%2f')}`;
+    const entry = await cacache.get(join(cache, '_cacache'), key);
+    const frozen = frozenOpenCodePackument(JSON.parse(entry.data), name, item);
+    await cacache.put(join(cache, '_cacache'), key, JSON.stringify(frozen), {
+      metadata: entry.metadata,
+    });
+  }
+}
+
 async function verifyOpenCodeCache(cache, lock) {
+  const cacache = await npmCacheApi();
   for (const [path, item] of Object.entries(lock.packages)) {
     if (!path) continue;
     const hex = Buffer.from(item.integrity.replace(/^sha512-/, ''), 'base64').toString('hex');
@@ -80,6 +116,14 @@ async function verifyOpenCodeCache(cache, lock) {
       `sha512-${createHash('sha512').update(bytes).digest('base64')}`,
       item.integrity,
       'Public dependency artifact integrity',
+    );
+    const name = path.replace(/^node_modules\//, '');
+    const key = `make-fetch-happen:request-cache:https://registry.npmjs.org/${name.replace('/', '%2f')}`;
+    const packument = JSON.parse((await cacache.get(join(cache, '_cacache'), key)).data);
+    assert.deepEqual(
+      packument,
+      frozenOpenCodePackument(packument, name, item),
+      'Offline registry metadata must advertise only the frozen dependency version',
     );
   }
 }
@@ -182,6 +226,7 @@ async function prepareOpenCodeCache(cache) {
       },
     );
     assert.equal(result.status, 0, 'Pinned public cache preparation');
+    await freezeOpenCodeResolution(cache, lock);
     await verifyOpenCodeCache(cache, lock);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
