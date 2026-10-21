@@ -204,6 +204,7 @@ export interface NativePublication {
   files: NativePublishedFile[];
   question: { fileId: string; path: string; sha256: string } | null;
   projectionStatus: 'pending' | 'complete';
+  filesystemPolicy?: 'node-dependencies-v1';
 }
 
 export interface NativeFileContent extends Omit<NativePublishedFile, 'role'> {
@@ -681,7 +682,8 @@ function publication(value: unknown): NativePublication {
     !timestamp(value.createdAt) ||
     !Array.isArray(value.files) ||
     typeof value.projectionStatus !== 'string' ||
-    !['pending', 'complete'].includes(value.projectionStatus)
+    !['pending', 'complete'].includes(value.projectionStatus) ||
+    (value.filesystemPolicy !== undefined && value.filesystemPolicy !== 'node-dependencies-v1')
   ) {
     throw new Error('The native publication could not be verified.');
   }
@@ -728,6 +730,9 @@ function publication(value: unknown): NativePublication {
     files,
     question,
     projectionStatus: value.projectionStatus as NativePublication['projectionStatus'],
+    ...(value.filesystemPolicy === 'node-dependencies-v1'
+      ? ({ filesystemPolicy: value.filesystemPolicy } as const)
+      : {}),
   };
 }
 

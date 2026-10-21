@@ -3,6 +3,7 @@
 import { snapshotNativeExecutionFiles } from './execution-files.js';
 import { nativeCredentialPath } from '../../shared/native-project-files.js';
 import { NATIVE_PUBLICATION_LIMITS } from '../../shared/native-publication.js';
+import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-dependency-links.js';
 
 export const captureNativeSourceBaseline = async ({
   project,
@@ -15,7 +16,12 @@ export const captureNativeSourceBaseline = async ({
 }) => {
   let snapshot;
   try {
-    snapshot = await snapshotNativeExecutionFiles({ project, signal, forbiddenBytes });
+    snapshot = await snapshotNativeExecutionFiles({
+      project,
+      signal,
+      forbiddenBytes,
+      filesystemPolicy: NATIVE_DEPENDENCY_POLICY,
+    });
   } catch (error) {
     if (error.code === 'native_snapshot_limit') return { unavailable: 'snapshot_limit' };
     if (error.code === 'native_snapshot_credential_content') return { unavailable: 'file_policy' };
@@ -35,6 +41,7 @@ export const captureNativeSourceBaseline = async ({
     outcome: 'STOPPED',
     sequence: 1,
     files: snapshot.files,
+    filesystemPolicy: snapshot.filesystemPolicy,
   });
   return { epoch: identity.epoch, receipt };
 };

@@ -2,6 +2,7 @@
 // Targets are references into the independently verified regular-file inventory,
 // never authority to read another path or reconstruct a missing dependency.
 import { canonicalNativePath, nativeCredentialPath } from './native-project-files.js';
+import { nativeDependencyLinks } from './native-dependency-links.js';
 
 const TREE = '.opencode/node_modules';
 const BIN = `${TREE}/.bin/`;
@@ -57,11 +58,54 @@ const resolveBinLink = (harness, link, depth, bytes) => {
 export const nativeRecoveryBinLinkTarget = (harness, link, depth = 64, bytes = 2048) =>
   resolveBinLink(harness, link, depth, bytes).target;
 
+const dependencyPlan = (metadata, files, { entries, depth, pathBytes, totalBytes }) => {
+  const { filesystemPolicy: _policy, dependencyLinks: _dependencies, ...legacyMetadata } = metadata;
+  const descriptors = Object.getOwnPropertyDescriptors(metadata.binLinks ?? {});
+  if (
+    !Array.isArray(metadata.binLinks) ||
+    Reflect.ownKeys(descriptors).length !== metadata.binLinks.length + 1 ||
+    Array.from({ length: metadata.binLinks.length }, (_, index) => descriptors[index]).some(
+      (entry) => !entry?.enumerable || !Object.hasOwn(entry, 'value'),
+    )
+  )
+    invalid();
+  const legacy = metadata.binLinks.length
+    ? nativeRecoveryBinLinks({ ...legacyMetadata, schemaVersion: 2 }, files, {
+        entries,
+        depth,
+        pathBytes,
+        totalBytes,
+      })
+    : [];
+  const dependencies = nativeDependencyLinks(metadata, files, {
+    entries,
+    depth,
+    pathBytes,
+    totalBytes,
+  });
+  if (legacy.length + dependencies.length + metadata.directories.length + files.length > entries)
+    invalid();
+  if (
+    files.reduce((sum, file) => sum + file.bytes, 0) +
+      [...legacy, ...dependencies].reduce(
+        (sum, { link }) => sum + Buffer.byteLength(link.target),
+        0,
+      ) >
+    totalBytes
+  )
+    invalid();
+  return [...legacy, ...dependencies];
+};
+
 export const nativeRecoveryBinLinks = (
   metadata,
   files,
   { entries = 40_000, depth = 64, pathBytes = 2048, totalBytes = 256 * 1024 * 1024 } = {},
 ) => {
+  if (metadata.schemaVersion === 3)
+    return dependencyPlan(metadata, files, { entries, depth, pathBytes, totalBytes });
+  if (Object.hasOwn(metadata, 'filesystemPolicy') || Object.hasOwn(metadata, 'dependencyLinks'))
+    invalid();
   if (metadata.schemaVersion === 1) {
     if (Object.hasOwn(metadata, 'binLinks')) invalid();
     return [];

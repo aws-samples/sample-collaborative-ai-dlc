@@ -7,6 +7,24 @@ import { executionIdentity } from '../execution-runtime.js';
 import { nativeWriterGeneration } from '../execution-store.js';
 import { executionFixture } from './execution-fixtures.js';
 import { ACTOR } from './fixtures.js';
+import { verifyPublicProjectFiles } from '../execution-lifecycle.js';
+
+it('binds publication visibility to the exact checkpoint filesystem policy', () => {
+  const source = { scope: 'project', path: 'package-lock.json', sha256: 'a'.repeat(64), bytes: 1 };
+  const dependency = { ...source, path: 'node_modules/pkg/index.js' };
+  const publication = { filesystemPolicy: 'node-dependencies-v1', files: [source] };
+  const checkpoint = {
+    filesystem: { filesystemPolicy: 'node-dependencies-v1' },
+    files: [source, dependency],
+  };
+  expect(() => verifyPublicProjectFiles(checkpoint, publication)).not.toThrow();
+  expect(() => verifyPublicProjectFiles({ ...checkpoint, filesystem: {} }, publication)).toThrow();
+  expect(() => verifyPublicProjectFiles(checkpoint, { files: [source, dependency] })).toThrow();
+  expect(() => verifyPublicProjectFiles(checkpoint, { ...publication, files: [] })).toThrow();
+  expect(() =>
+    verifyPublicProjectFiles({ files: [source, dependency] }, { files: [source, dependency] }),
+  ).not.toThrow();
+});
 
 const publication = (sequence = 1) => ({
   id: String(sequence).repeat(64),

@@ -4,9 +4,27 @@ import { DiscussButton } from '@/components/discussion/DiscussButton';
 import { Badge } from '@/components/ui/badge';
 import { nativeArtifactRevisionId } from '@/lib/nativeCollaboration';
 import { nativeHistorySearch } from '@/lib/nativeRevisionLinks';
-import type { NativeFileContent, NativePublishedFile } from '@/services/nativeIntents';
+import type {
+  NativeFileContent,
+  NativePublishedFile,
+  NativePublication,
+} from '@/services/nativeIntents';
 import type { NativeRevisionFile } from '@/services/nativeHistory';
 import { NativeResultDownload } from './NativeResultDownload';
+
+export function NativeFilesystemNotice({
+  policy,
+}: {
+  policy: NativePublication['filesystemPolicy'];
+}) {
+  if (!policy) return null;
+  return (
+    <p className="text-xs text-muted-foreground">
+      Generated node_modules dependencies are kept in the private recovery checkpoint. Source files,
+      package manifests and lockfiles are published below.
+    </p>
+  );
+}
 
 export function NativeFileView({
   file,

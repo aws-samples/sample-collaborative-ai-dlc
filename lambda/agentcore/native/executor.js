@@ -35,6 +35,7 @@ import {
   nativeRuntimeFailureCode,
   nativeSnapshotDiagnostic,
 } from '../../shared/native-execution-failure.js';
+import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-dependency-links.js';
 import {
   captureNativeSessionRecovery,
   restoreNativeSessionRecovery,
@@ -93,12 +94,12 @@ export const nativeFirstTurnPrompt = ({ harness, request } = {}) => {
     'in your normal assistant response, preserve any normal workflow artifacts, leave ' +
     'the native workflow waiting, and end this turn. The platform will show your response and files to ' +
     'the user. Do not approve a gate, answer on behalf of the user, or continue past that wait. ' +
-    'Native public-workspace capability: publications require ordinary files and directories; ' +
-    'symbolic links are unsupported, and .gitignore does not exclude generated dependencies. ' +
-    'Package installs and build tools can create links, including node_modules/.bin. ' +
-    'If a required step needs that unsupported layout, explain the constraint and wait before ' +
-    'running it. Do not skip required dependencies or tests, follow external targets, or copy ' +
-    'private files as a workaround. ' +
+    'Native filesystem capability: ordinary npm installs, local file: dependencies and builds ' +
+    'are supported. Generated node_modules trees, including bounded relative internal links, ' +
+    'are retained exactly in private recovery; authored files, package manifests and lockfiles ' +
+    'remain published. Other public symbolic links, external/absolute or private targets, ' +
+    'cycles and missing targets are unsupported. Do not skip required dependencies or tests ' +
+    'or copy private files as a workaround. ' +
     NATIVE_QUESTION_MODE_INSTRUCTION +
     NATIVE_PENDING_SPEC_INSTRUCTION +
     NATIVE_INTAKE_ANSWER_INSTRUCTION
@@ -1024,6 +1025,7 @@ export const createNativeExecutor = ({
         project,
         signal,
         forbiddenBytes,
+        filesystemPolicy: NATIVE_DEPENDENCY_POLICY,
         onDiagnostic: (details) => {
           const safe = nativeSnapshotDiagnostic(details);
           if (!safe) return;
@@ -1216,6 +1218,7 @@ export const createNativeExecutor = ({
         commit: configuration.repository.commit,
       },
       files: files.files,
+      filesystemPolicy: files.filesystemPolicy,
       ...(current.sourceBaseline ? { sourceBaseline: current.sourceBaseline } : {}),
       questionPath,
       signal,
@@ -1305,6 +1308,7 @@ export const createNativeExecutor = ({
         forbiddenBytes,
         signal,
         limits: RECOVERY_CAPTURE_LIMITS,
+        filesystemPolicy: files.filesystemPolicy,
       });
       const captureCounts = {
         files: captured.files.length,

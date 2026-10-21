@@ -30,7 +30,7 @@ export const nativeCredentialPath = (path) => {
 
 // Independent of .gitignore: normal workflow state, directives, questions,
 // audit, verification and unknown artifact formats remain public run content.
-export const nativeFileExclusion = (path) => {
+export const nativeFileExclusion = (path, filesystemPolicy) => {
   if (!canonicalNativePath(path))
     throw Object.assign(new Error('native_snapshot_path_invalid'), {
       code: 'native_snapshot_path_invalid',
@@ -53,5 +53,7 @@ export const nativeFileExclusion = (path) => {
     const name = parts.at(-1);
     if (/(?:lock|mutex|key)(?:\.|$)/.test(name)) return 'private-lock';
   }
+  if (filesystemPolicy === 'node-dependencies-v1' && parts.includes('node_modules'))
+    return 'private-dependency';
   return null;
 };

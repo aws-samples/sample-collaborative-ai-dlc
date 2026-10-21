@@ -21,25 +21,28 @@ export const recoveryStopId = (row, reason) => {
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 };
 export const writerOptions = (row) => ({ writerGeneration: nativeWriterGeneration(row) });
-export const excludedProjectPath = (path) => {
+export const excludedProjectPath = (path, filesystemPolicy) => {
   // The publisher applies its predicate before descending into directories.
   // Apply it to ancestors too so children of private lock directories retain
   // exactly that same visibility when verifying a flat checkpoint inventory.
   let prefix = '';
   for (const part of path.split('/')) {
     prefix = prefix ? `${prefix}/${part}` : part;
-    if (nativeFileExclusion(prefix)) return true;
+    if (nativeFileExclusion(prefix, filesystemPolicy)) return true;
   }
   return false;
 };
 export const verifyPublicProjectFiles = (checkpoint, publication) => {
   if (!Array.isArray(checkpoint.files) || !Array.isArray(publication.files))
     fail('NATIVE_RECOVERY_INVALID');
+  if ((checkpoint.filesystem?.filesystemPolicy ?? null) !== (publication.filesystemPolicy ?? null))
+    fail('NATIVE_RECOVERY_INVALID');
   const files = new Map();
   const published = new Set();
   try {
     for (const file of checkpoint.files) {
-      if (file.scope !== 'project' || excludedProjectPath(file.path)) continue;
+      if (file.scope !== 'project' || excludedProjectPath(file.path, publication.filesystemPolicy))
+        continue;
       if (files.has(file.path)) fail('NATIVE_RECOVERY_INVALID');
       files.set(file.path, file);
     }
@@ -47,7 +50,7 @@ export const verifyPublicProjectFiles = (checkpoint, publication) => {
     for (const file of publication.files) {
       const restored = files.get(file.path);
       if (
-        excludedProjectPath(file.path) ||
+        excludedProjectPath(file.path, publication.filesystemPolicy) ||
         published.has(file.path) ||
         !restored ||
         restored.bytes !== file.bytes ||

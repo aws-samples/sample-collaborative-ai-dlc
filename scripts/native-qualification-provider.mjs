@@ -56,7 +56,7 @@ function sendCodexResponse(res, text, command, id) {
         call_id: `call_${id}`,
         type: 'function_call',
         name: 'exec_command',
-        arguments: JSON.stringify({ cmd: command, max_output_tokens: 1000 }),
+        arguments: JSON.stringify({ cmd: command, max_output_tokens: 1000, yield_time_ms: 10_000 }),
         status: 'completed',
       }
     : {
@@ -141,6 +141,7 @@ export async function qualificationProvider(harness) {
   let failure;
   let samples = [];
   let calls = 0;
+  let commandCallId;
   const server = createServer(async (req, res) => {
     try {
       let raw = '';
@@ -195,6 +196,20 @@ export async function qualificationProvider(harness) {
       if (nextCommand) toolSent = true;
       const text = primary ? `Fixture question ${turn}?` : 'Fixture title';
       const id = `fixture${calls}`;
+      if (harness === 'codex' && primary) {
+        if (nextCommand) commandCallId = `call_${id}`;
+        else if (commandCallId) {
+          const result = request.input?.findLast(
+            (item) => item.type === 'function_call_output' && item.call_id === commandCallId,
+          );
+          assert.match(
+            result?.output ?? '',
+            /(?:^|\n)Process exited with code 0(?:\n|$)/,
+            'The scripted provider requires successful tool completion before its next question',
+          );
+          commandCallId = undefined;
+        }
+      }
       if (harness === 'claude')
         sendClaudeResponse(
           res,
@@ -266,6 +281,7 @@ export async function qualificationProvider(harness) {
       toolSent = false;
       incompleteSent = false;
       writeSent = false;
+      commandCallId = undefined;
       samples = [];
     },
     engineAsk: () => engineAsk,

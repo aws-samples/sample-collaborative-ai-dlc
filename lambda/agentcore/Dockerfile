@@ -143,14 +143,16 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
     && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_arm64"; \
     fi
 
+# CLI tools may start login shells, which reset the runtime's custom PATH.
+# This dispatcher selects only the admitted installation through AIDLC_BIN_DIR;
+# it installs/enables no workflow by itself and fails closed when unconfigured.
+RUN install -m 0755 /opt/agentcore/native/aidlc-launcher.sh /usr/local/bin/aidlc
+
 # Explicit dev fixture only. Build verifies all five original public assets
 # against the successful import and verifies the signature without credentials.
 ARG ENABLE_NATIVE_INTERACTION_PROBE=false
 RUN ENABLE_NATIVE_INTERACTION_PROBE="${ENABLE_NATIVE_INTERACTION_PROBE}" \
-    node /opt/agentcore/native/install-probe-fixture.mjs \
-    && if [ "${ENABLE_NATIVE_INTERACTION_PROBE}" = "true" ]; then \
-        install -m 0755 /opt/agentcore/native/aidlc-launcher.sh /usr/local/bin/aidlc; \
-    fi
+    node /opt/agentcore/native/install-probe-fixture.mjs
 
 WORKDIR /mnt/workspace
 USER node

@@ -44,6 +44,7 @@ export default defineConfig({
       'lambda/agentcore/test/native-turn-*.test.js',
       'lambda/shared/test/native-execution-fence.test.js',
       'lambda/shared/test/native-recovery-checkpoint.test.js',
+      'lambda/shared/test/native-dependency-links.test.js',
       'lambda/agentcore/test/native-github-signature-verifier.test.js',
       'lambda/intents/test/backend-boundary.test.js',
       'lambda/intents/test/native-realtime-token.test.js',

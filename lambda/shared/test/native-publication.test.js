@@ -71,6 +71,29 @@ const setup = () => {
     },
   };
 };
+it('records the versioned dependency policy without reinterpreting legacy inventories', async () => {
+  const { store } = setup();
+  const data = input();
+  data.files.push({
+    path: 'node_modules/pkg/index.js',
+    role: 'code',
+    content: Buffer.from('retained legacy file'),
+  });
+  const old = await store.write(data);
+  expect(
+    (await store.read(identity, old)).files.some((f) => f.path.startsWith('node_modules/')),
+  ).toBe(true);
+  await expect(
+    store.write({ ...data, filesystemPolicy: 'node-dependencies-v1' }),
+  ).rejects.toThrow();
+  data.files.pop();
+  const receipt = await store.write({ ...data, filesystemPolicy: 'node-dependencies-v1' });
+  expect(await store.read(identity, receipt, { verifyFiles: true })).toMatchObject({
+    schemaVersion: 3,
+    filesystemPolicy: 'node-dependencies-v1',
+    sourceBaseline: null,
+  });
+});
 
 it.each(['upload', 'verify'])(
   'bounds %s inventory work to four and drains failures',

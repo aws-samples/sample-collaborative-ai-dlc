@@ -15,6 +15,11 @@ import {
   nativeRecoveryBinLinks,
   nativeRecoveryBinLinkTarget,
 } from '../../shared/native-recovery-bin-links.js';
+import {
+  NATIVE_DEPENDENCY_POLICY,
+  nativeDependencyLinkPath,
+  nativeDependencyLinkSyntax,
+} from '../../shared/native-dependency-links.js';
 
 export const NATIVE_RECOVERY_FILE_LIMITS = Object.freeze({
   maxFiles: 100_000,
@@ -91,8 +96,10 @@ export const nativeRecoveryProjectExclusion = (path) => {
 const context = (input) => {
   const { project, home, harness, nativeSessionId, signal, forbiddenBytes = [] } = input ?? {};
   const limits = { ...NATIVE_RECOVERY_FILE_LIMITS, ...input?.limits };
+  const filesystemPolicy = input?.filesystemPolicy ?? input?.metadata?.filesystemPolicy;
   if (
     !Object.hasOwn(FORMATS, harness) ||
+    (filesystemPolicy !== undefined && filesystemPolicy !== NATIVE_DEPENDENCY_POLICY) ||
     typeof nativeSessionId !== 'string' ||
     !ID.test(nativeSessionId ?? '') ||
     ![project, home].every(
@@ -126,6 +133,7 @@ const context = (input) => {
     secrets: forbiddenBytes.map((v) => Buffer.from(v)),
     io: input.io ?? fs,
     run: input.run ?? runRecoveryCommand,
+    filesystemPolicy,
   };
 };
 const rootStat = async (path, io) => {
@@ -541,19 +549,29 @@ const captureBinLink = async (ctx, absolute, attributes, metadata, stat) => {
   const target = bytes.toString('utf8');
   if (!Buffer.from(target).equals(bytes)) fail('symlink');
   const link = { ...attributes, target };
+  if (ctx.filesystemPolicy && nativeDependencyLinkPath(link.path)) {
+    try {
+      nativeDependencyLinkSyntax(link, { depth: ctx.limits.maxDepth });
+    } catch {
+      fail('symlink');
+    }
+    credentialCheck(ctx, bytes);
+    metadata.dependencyLinks.push(link);
+    return;
+  }
   try {
     nativeRecoveryBinLinkTarget(ctx.harness, link);
   } catch {
     fail('symlink');
   }
   credentialCheck(ctx, bytes);
-  metadata.schemaVersion = 2;
+  if (!ctx.filesystemPolicy) metadata.schemaVersion = 2;
   metadata.binLinks ??= [];
   metadata.binLinks.push(link);
 };
 
 const checkBinMounts = async (ctx, plan) => {
-  if (!plan.length || process.platform !== 'linux') return;
+  if ((!plan.length && !ctx.filesystemPolicy) || process.platform !== 'linux') return;
   // dev alone cannot detect a same-filesystem bind mount. This is a bounded,
   // read-only namespace inventory, not a scan of unrelated files/processes.
   const bytes = await ctx.io.readFile('/proc/self/mountinfo');
@@ -570,7 +588,7 @@ const checkBinMounts = async (ctx, plan) => {
     if (
       point !== ctx.project &&
       inside(ctx.project, point) &&
-      paths.some((path) => inside(point, path))
+      (ctx.filesystemPolicy || paths.some((path) => inside(point, path)))
     )
       fail('mount');
   }
@@ -582,6 +600,21 @@ const verifyCapturedBinLinks = async (ctx, plan) => {
     if ((await ctx.io.readlink(join(ctx.project, link.path))) !== link.target) fail('changed');
 };
 
+const captureMetadata = (ctx) => ({
+  schemaVersion: ctx.filesystemPolicy ? 3 : 1,
+  ...(ctx.filesystemPolicy
+    ? { filesystemPolicy: ctx.filesystemPolicy, dependencyLinks: [], binLinks: [] }
+    : {}),
+  harness: ctx.harness,
+  harnessVersion: NATIVE_RECOVERY_HARNESS_VERSIONS[ctx.harness],
+  nativeSessionId: ctx.nativeSessionId,
+  format: FORMATS[ctx.harness],
+  project: ctx.project,
+  home: ctx.home,
+  directories: [],
+  hardlinks: [],
+});
+
 export const captureNativeSessionRecovery = async (input = {}) => {
   const ctx = context(input);
   const { io, project, home, limits, signal } = ctx;
@@ -590,17 +623,7 @@ export const captureNativeSessionRecovery = async (input = {}) => {
       project: await rootStat(project, io),
       home: await rootStat(home, io),
     };
-    const metadata = {
-      schemaVersion: 1,
-      harness: ctx.harness,
-      harnessVersion: NATIVE_RECOVERY_HARNESS_VERSIONS[ctx.harness],
-      nativeSessionId: ctx.nativeSessionId,
-      format: FORMATS[ctx.harness],
-      project,
-      home,
-      directories: [],
-      hardlinks: [],
-    };
+    const metadata = captureMetadata(ctx);
     const files = [];
     const exclusions = [];
     const observed = new Map();
@@ -673,6 +696,8 @@ export const captureNativeSessionRecovery = async (input = {}) => {
           await walk(scope, path ? `${path}/${name}` : name, depth + 1);
       } else {
         if (!stat.isFile()) fail('special_file');
+        if (ctx.filesystemPolicy && nativeDependencyLinkPath(path) && stat.nlink !== 1n)
+          fail('external_hardlink');
         if (scope === 'home' && !homeAllowed(ctx.harness, ctx.nativeSessionId, path, metadata))
           fail('home_path_invalid');
         if (
@@ -870,8 +895,10 @@ const restoreBinLinks = async (ctx, plan, fileMap, directories) => {
     const file = fileMap.get(`project:${target}`);
     const path = join(ctx.project, target);
     const stat = await ctx.io.lstat(path, { bigint: true });
-    if (!stat.isFile() || stat.size !== BigInt(file.bytes)) fail('restore_unverified');
-    if (hash(await readRecoveryFile(ctx, path, stat)) !== file.sha256) fail('restore_unverified');
+    if (file) {
+      if (!stat.isFile() || stat.size !== BigInt(file.bytes)) fail('restore_unverified');
+      if (hash(await readRecoveryFile(ctx, path, stat)) !== file.sha256) fail('restore_unverified');
+    } else if (!stat.isDirectory() || stat.isSymbolicLink()) fail('restore_unverified');
     await directories('project', dirname(link.path));
     await ctx.io.symlink(link.target, join(ctx.project, link.path));
     if (process.platform === 'darwin') await ctx.io.lchmod(join(ctx.project, link.path), link.mode);
@@ -934,7 +961,7 @@ export const restoreNativeSessionRecovery = async (input = {}) => {
     const { metadata, files } = input;
     if (
       !plain(metadata) ||
-      ![1, 2].includes(metadata.schemaVersion) ||
+      ![1, 2, 3].includes(metadata.schemaVersion) ||
       metadata.harness !== ctx.harness ||
       metadata.harnessVersion !== NATIVE_RECOVERY_HARNESS_VERSIONS[ctx.harness] ||
       metadata.nativeSessionId !== ctx.nativeSessionId ||
@@ -1065,8 +1092,8 @@ export const restoreNativeSessionRecovery = async (input = {}) => {
       }
       written.add(scopePath(file));
     }
-    await restoreDirectoryModes(ctx, metadata, safeDirectory);
     const restoredLinks = await restoreBinLinks(ctx, binLinks, fileMap, safeDirectory);
+    await restoreDirectoryModes(ctx, metadata, safeDirectory);
     if (ctx.harness === 'opencode') {
       await ctx.run({
         ...ctx,

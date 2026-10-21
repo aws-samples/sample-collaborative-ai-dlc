@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router';
 import { nativeHistorySearch, parseNativeHistoryLocation } from '@/lib/nativeRevisionLinks';
 import { NativeHistoryView } from './NativeHistoryView';
 import { NativeRunInspection } from './NativeRunInspection';
-import { NativeFileView } from './NativeFileView';
+import { NativeFileView, NativeFilesystemNotice } from './NativeFileView';
 import { WorkProductsCard } from './WorkProductsCard';
 import { NativeResultDownload } from './NativeResultDownload';
 import { NativeCompletionEvidence } from './NativeCompletionEvidence';
@@ -439,6 +439,7 @@ function NativePublicationContent({
           {!projectionComplete && ' · Graph projection pending'}
         </p>
       )}
+      {publication && <NativeFilesystemNotice policy={publication.filesystemPolicy} />}
       <TabsContent value="overview" className="space-y-4">
         {!error && interaction && intent.execution && (
           <NativeInteractionPanel

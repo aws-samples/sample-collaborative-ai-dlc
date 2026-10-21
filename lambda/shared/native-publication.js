@@ -3,6 +3,8 @@
 import { createHash } from 'node:crypto';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { canonicalJson } from './workflow-checkpoint.js';
+import { NATIVE_DEPENDENCY_POLICY } from './native-dependency-links.js';
+import { nativeFileExclusion } from './native-project-files.js';
 
 const SHA = /^[a-f0-9]{64}$/;
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
@@ -125,9 +127,11 @@ const validateManifest = (value, identity) => {
       'repository',
       'files',
       'question',
-      ...(value.schemaVersion === 2 ? ['sourceBaseline'] : []),
+      ...([2, 3].includes(value.schemaVersion) ? ['sourceBaseline'] : []),
+      ...(value.schemaVersion === 3 ? ['filesystemPolicy'] : []),
     ]) ||
-    ![1, 2].includes(value.schemaVersion) ||
+    ![1, 2, 3].includes(value.schemaVersion) ||
+    (value.schemaVersion === 3 && value.filesystemPolicy !== NATIVE_DEPENDENCY_POLICY) ||
     canonicalJson(value.scope) !==
       canonicalJson({
         projectId: scope.projectId,
@@ -154,7 +158,7 @@ const validateManifest = (value, identity) => {
     value.files.length > NATIVE_PUBLICATION_LIMITS.files
   )
     fail();
-  if (value.schemaVersion === 2) {
+  if (value.schemaVersion === 2 || (value.schemaVersion === 3 && value.sourceBaseline !== null)) {
     const baseline = value.sourceBaseline;
     const absent =
       exact(baseline, ['unavailable']) &&
@@ -175,6 +179,7 @@ const validateManifest = (value, identity) => {
     if (
       !exact(file, ['id', 'path', 'bytes', 'sha256', 'role', 'mediaType', 'object']) ||
       paths.has(nativePublicationPath(file.path)) ||
+      (value.schemaVersion === 3 && nativeFileExclusion(file.path, value.filesystemPolicy)) ||
       file.id !== nativeFileId(scope, file.path) ||
       !Number.isSafeInteger(file.bytes) ||
       file.bytes < 0 ||
@@ -301,8 +306,10 @@ export const createNativePublications = ({
       questionPath = null,
       sequence = 1,
       sourceBaseline,
+      filesystemPolicy,
     }) {
       const scope = nativePublicationScope(identity);
+      if (filesystemPolicy !== undefined && filesystemPolicy !== NATIVE_DEPENDENCY_POLICY) fail();
       if (!Array.isArray(files) || files.length > NATIVE_PUBLICATION_LIMITS.files) fail();
       let total = 0;
       const normalized = files.map((file) => {
@@ -329,8 +336,12 @@ export const createNativePublications = ({
       // are only used in this prospective validation, never published or returned.
       const manifest = validateManifest(
         {
-          schemaVersion: sourceBaseline ? 2 : 1,
-          ...(sourceBaseline ? { sourceBaseline } : {}),
+          schemaVersion: filesystemPolicy ? 3 : sourceBaseline ? 2 : 1,
+          ...(filesystemPolicy
+            ? { filesystemPolicy, sourceBaseline: sourceBaseline ?? null }
+            : sourceBaseline
+              ? { sourceBaseline }
+              : {}),
           scope: {
             projectId: scope.projectId,
             executionId: scope.executionId,
@@ -440,7 +451,8 @@ export const createNativePublications = ({
         verifyFiles,
       });
       if (
-        baseline.schemaVersion !== 1 ||
+        ![1, 3].includes(baseline.schemaVersion) ||
+        Boolean(baseline.sourceBaseline) ||
         baseline.sequence !== 1 ||
         baseline.nativeSessionId !== null ||
         baseline.outcome !== 'STOPPED' ||
@@ -465,4 +477,5 @@ export const nativePublicationView = (receipt, manifest, projectionStatus) => ({
   files: manifest.files.map(({ object: _object, ...file }) => file),
   question: manifest.question,
   projectionStatus,
+  ...(manifest.filesystemPolicy ? { filesystemPolicy: manifest.filesystemPolicy } : {}),
 });

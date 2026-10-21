@@ -2802,7 +2802,8 @@ not close the remaining live stability or latency work. Keep each simplification
 independently reviewable; preserve the existing authority and checkpoint owners.
 
 - [ ] **Incident — live intent `576ffeb2` failed after continued execution
-      (2026-10-21); public filesystem compatibility remains open.** The user reported failure of intent
+      (2026-10-21); dependency implementation and packaged local acceptance complete,
+      independent review/live acceptance remain.** The user reported failure of intent
       `576ffeb2-1bbc-4874-99e0-17d0e5a18f77` in project
       `22371643-2db5-42a4-a571-e47fc35745f5`. **Confirmed:** the restored turn-4
       baseline passed; Claude completed; the final public workspace snapshot
@@ -2812,7 +2813,7 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       never retained by the deployed rejection owner. Do not substitute the
       synthetic npm fixture below for historical evidence.
 
-      **Implementation in progress, authorized 2026-10-21.** The user has
+      **Implementation authorized 2026-10-21.** The user has
       selected safe support for ordinary dependency installs/builds. The earlier
       generic policy-decision blocker is superseded. Implement a versioned
       dependency representation with exact private restoration, bounded internal
@@ -2826,6 +2827,140 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       **172 focused tests passed**; that is baseline evidence only. No failed-run
       replay, cloud mutation, push, deployment or live-provider execution is
       authorized.
+
+      **Implemented filesystem contract.** Ordinary npm dependency state is
+      now an explicit private inventory, not a public file-list exception
+      inferred from `.gitignore`. Public manifest **schema 3** binds
+      `filesystemPolicy: node-dependencies-v1`; private filesystem **schema 3**
+      carries the same policy and `dependencyLinks`. Public manifests retain
+      source, workflow artifacts, package manifests/lockfiles, local dependency
+      source and generated build/test results. Generated `node_modules` files
+      and links remain in the exact private checkpoint. The API/current/history
+      file views disclose this split. Existing credential/platform exclusions
+      remain unchanged; this does not resolve the separate retained-publication
+      credential-file policy or same-UID protected-outcome boundary.
+
+      | Boundary / owner | Supported contract and rejection |
+      | --- | --- |
+      | Public snapshot / `execution-files`, `native-project-files` | New policy excludes `node_modules` from publication only. Other public links still fail; no `.gitignore` interpretation or files deleted. |
+      | Capture / `session-recovery-files` | Capture regular dependency bytes independently; retain each alias's relative target, mode and nanosecond mtime. `node_modules/.bin` executable links and `file:` dependency directory aliases are supported. No target is followed to read bytes. |
+      | Shared planner / `native-dependency-links` | A link must live below a real `node_modules` directory and resolve through captured real ancestors to an independently captured public project file/directory. It may reference local source outside `node_modules`, but never outside the project or into private/credential paths. |
+      | Bounds | Existing controller limits: **20,000 files**, **40,000 entries**, **64 MiB/file**, **256 MiB total**, depth **64**. At most **1,024 dependency aliases**, resolution/directory-link chains **16**, path/target **2,048 bytes**, components **255 bytes**. Alias target bytes count toward the total. No budget was raised. |
+      | Hostile/unsupported layouts | Reject absolute/external targets, even intermediate escapes, missing/file ancestors, dangling links, cycles, aliases as physical parents, dependency hardlinks, nested mounts and observed mutation. Root `node_modules` symlinks and non-npm hardlink-store layouts are not advertised support. |
+      | Recovery / existing restore owner | Validate the complete plan and hashes before writing. Restore real directories/files first, aliases last, then modes/times; verify exact bytes, targets, inode observations and metadata. Never fetch or reinstall to simulate restoration. |
+      | Authority / `execution-lifecycle` | Checkpoint and publication policies must match; compare every public file's exact bytes/hash. Admit only after full publication/interaction/checkpoint verification. Fencing, cancellation, accepted answers and lost-ACK semantics are unchanged. |
+      | Retained readers | Public schema **1/2**, private filesystem **1/2**, and the narrow OpenCode private bin-link contract keep their original meanings. Readers reject cross-version policy fields. Existing runs keep their immutable image pins. |
+
+      **Positive regression, not rejection-as-success.** The same actual-Claude
+      fixture on `1125434` completed the real offline npm command, then failed
+      final snapshot 4 with `native_snapshot_link / dependency_bin`
+      (`/tmp/native-dependencies-before.log`). The candidate's newly built
+      production image passes **five admitted checkpoints**, two cold
+      writer transitions (**1 → 2 → 3**), real `npm install --offline`,
+      actual `npm run build` and `npm test`, exact cold restoration of
+      checkpoint 4, and another build/test from the restored executables.
+      It preserves a `file:` directory alias, its executable chain and an
+      ordinary packed dependency's executable link (**three aliases**).
+      Public source, root package/lock and build files remain visible.
+      Final cancellation confirms stop and preserves checkpoint 5; duplicate
+      submissions/lost acknowledgements replay **zero** delivered answers.
+      No model/provider call was made. A separate **1,200-file / 37.5 MiB**
+      dependency-tree round trip exercises a size above the public file limit.
+      Hostile links, old schemas, mutations, read-only link parents, credential
+      boundaries, admission-policy mismatch and safe-stop regressions remain.
+      This fixes the reproduced workload incompatibility; the exact historical
+      link in `576ffeb2` is still unknown.
+
+      **Production-image gap found by this acceptance.** The first complete
+      packaged run passed Claude's dependency workload and OpenCode, but Codex
+      failed the typed-ask assertion after checkpoint 1. A bounded synthetic
+      tool receipt proved exit **127**, `aidlc: command not found`, not corrupt
+      recovery or model output. The production Dockerfile installed the
+      login-shell dispatcher only with `ENABLE_NATIVE_INTERACTION_PROBE=true`.
+      Cached probe-enabled images concealed that dependency; a default
+      production build did not contain it. The existing fail-closed dispatcher
+      is now installed unconditionally. It selects only `AIDLC_BIN_DIR` supplied
+      by the admitted runtime setup; no workflow is enabled/installed implicitly.
+      An unconfigured invocation must exit 127. Installed Codex now passes
+      the 12-option typed scope, three checkpoints, cold restore and fork/paged
+      history. The scripted provider also refuses a failed/still-running tool
+      receipt instead of manufacturing the next fixture question.
+      Evidence: `/tmp/native-dependencies-qualification-final.log` (failed
+      matrix), `/tmp/native-dependencies-codex-tool-probe.log` (synthetic
+      missing-command receipt), and
+      `/tmp/native-dependencies-codex-packaged-fixed.log` (PASS).
+      This is a production packaging correction, not a CLI version change.
+
+      **Candidate acceptance (2026-10-21).** The complete command in the
+      [updated runbook](#native-local-qualification) returned **PASS/0** for
+      **Claude 2.1.296, Codex 0.162.1 and OpenCode 1.19.0** using attested
+      **AI-DLC 2.11.0**. Kiro **2.29.1** was not rerun and remains **BLOCKED**
+      at managed authentication. This is not a four-harness or live-model pass.
+      Fresh inputs were prepared into the initially empty
+      `/tmp/native-dependencies-frozen-20261021` (6 attested assets, 32 frozen
+      dependency artifacts/metadata, locked Linux binding 1.1.5).
+      The production image was built with
+      `docker build --platform linux/arm64 --progress plain --iidfile /tmp/native-dependencies-production.iid -f lambda/agentcore/Dockerfile lambda`,
+      default probe flag **false**, unchanged CLI/package pins, no image push.
+      Immutable local image **`sha256:2cdbf1924facdecf88befcb805e7dbc26ecbc465cd882d7660aa685a06835912`**;
+      Linux ARM64 / Node **24.19.0**. This is a full production-Dockerfile build,
+      not an overlay on image `55af…`. All **258** runtime/shared source files
+      matched; source inventory SHA-256
+      **`143da426b0082b241f207b054735d765a1ab199478ed18cb0fbcc14cc28a5fd3`**.
+      The separate controller qualification bundle SHA-256 is
+      `3d1f86249e572f5adc730bdeec7ef05b042cf13e424da500b7390cdca47f5db3`.
+      Normal production controller builds also pass: API bundle SHA-256
+      `a4aebd9810d99a151b5807bffbe0bc73dcc6f511911bf557fef782c0245d6820`;
+      execution-worker bundle
+      `284ea6980b03b4ffcaf04a0b977eea0d62b62ac67438e40a27726c648a8e12a3`.
+      These are local content/build identities, not deployed Lambda versions.
+
+      | Validation | Result / evidence |
+      | --- | --- |
+      | Complete packaged qualification | **1,355 backend / 5 skipped**, **308 UI/service**, **1 WebSocket / 32 unselected**, **478 Linux / 0 skipped**, **6 architecture**, **22 wiring**; all three selected installed workflows PASS. `/tmp/native-dependencies-qualification-accepted.log` |
+      | Full backend, four workers | **10,493 passed / 8 skipped**, 362 passing / 1 skipped files. `/tmp/native-dependencies-backend-full.log`. Subsequent retained-schema guard and final image changes are covered by the complete native run above. |
+      | Full frontend, four workers | **1,933 passed / 0 skipped**, 141 files; production TypeScript/Vite build passed, existing large-chunk warning. `/tmp/native-dependencies-frontend-full.log`, `-frontend-build.log` |
+      | Focused dependency/storage tests | **161 passed / 2 platform skips**; explicit safe alias resolution, hostile layouts, exact restore, policy admission and legacy compatibility. Linux reruns include platform cases. `/tmp/native-dependencies-focus3.log` |
+      | Production bundles | All eight native-controller bundles build; runtime content verified inside the actual image. `/tmp/native-dependencies-controller-build-final.log`, `-production-build-launcher.log` |
+      | Release / qualification tooling | **262 passed / 0 failed / 0 skipped**, including 14 preparation/packaged-tool contracts; launcher `sh -n` passes. `/tmp/native-dependencies-release-final.log` |
+      | Documentation | `uv sync --frozen --offline --group docs` and `uv run --offline zensical build` pass, no issues. `/tmp/native-dependencies-docs.log` |
+      | Static checks | Lint passes with existing warnings; formatting, secrets, SDK alignment and architecture pass (393 modules, zero complexity-budget violations). Dependency check: zero errors / 14 existing warnings; SDK check retains its existing Smithy-range warning. |
+
+      Earlier attempts are not erased: the first UI regression used the wrong
+      accessible role (**204 pass / 1 fail**), then passed **205/205** with
+      the real tab control. Packaged staging first lacked its read-only mount
+      directory, then incorrectly resolved controller-only SDK imports through
+      the runtime image; separate controller bundling fixed those test wiring
+      issues. The first full packaged matrix failed on the real missing Codex
+      launcher described above, despite passing the dependency workload.
+      Those failed results are retained in `-packaged-first.log`,
+      `-packaged-second.log` and `-qualification-final.log`; the accepted
+      run is explicitly `-qualification-accepted.log`.
+
+      **Deployment order and finite live gate (not executed).** After independent
+      review, deploy the schema-3-capable controller readers and frontend before
+      admitting this runtime image. Keep new starts paused operationally until
+      the coordinated deployment completes; retained image/schema-1/2 runs
+      remain readable and keep their own pins. Record the actual registry digest,
+      installed versions and runtime/controller source alignment; a mutable tag
+      or local test count is insufficient.
+      Use a **fresh** intent in space
+      `22371643-2db5-42a4-a571-e47fc35745f5`, with a bounded npm project requiring
+      an actual local `file:` executable dependency and an ordinary dependency.
+      Complete current-step typed scope/questions through protected UI answers,
+      preserving every required human gate. Exercise two answer/checkpoint
+      turns, refresh/reconnect and published history. At a valid waiting point,
+      exercise supported cold recovery after natural session loss, then require
+      install/build/test and admission of a dependency-bearing checkpoint.
+      Cold-recover that checkpoint before another authorized continuation/build;
+      verify same session/attempt/epoch, increasing writer generation, exact
+      retained files and no repeated delivered answer. If cancellation is
+      exercised, use only the fresh run's supported action and verify confirmed
+      stop plus the last admitted checkpoint. Stop qualification at any failed
+      boundary; collect only its scoped safe diagnostics. Do not retry or repair
+      `576ffeb2`, substitute checkpoint 3, or replay delivered answer 4.
+      Live provider behavior, deployed storage/latency and browser operation
+      remain unqualified; no deployment, cloud mutation or model call occurred.
 
       **OpenCode fixture correction (2026-10-21, independently scoped).**
       The missing `.opencode/package-lock.json` was an incomplete offline
@@ -2948,7 +3083,8 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       Restoring checkpoint 3 and replaying that answer is **not safe retry**.
       This investigation has not changed the run or its accepted answers.
 
-      **Concrete coverage gap and local correction.** Existing unit tests and
+      **Historical `1125434` diagnostic baseline (superseded by the positive
+      workload above).** Existing unit tests and
       the scripted three-turn `checkpoint-journey` already expected
       `native_snapshot_link` to fail the run. They qualified rejection and
       retained-checkpoint safety, not compatibility with npm-created public
@@ -2982,7 +3118,8 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       new diagnostic. No publication/checkpoint schema or recovery eligibility
       changed.
 
-      **Decision still required; not fixed by an allowlist exception.**
+      **Historical decision record (`1125434`; user approval above supersedes
+      the pending decision).**
       `native-project-files.js` deliberately keeps generated dependencies in
       public content independently of `.gitignore`; recovery's public subset
       must equal that exact publication. Supporting dependency links therefore
@@ -2999,7 +3136,7 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       would require separately authorized, content-free filesystem inspection
       of the stopped workspace, which was not performed.
 
-      **Validation and next qualification.** Five new diagnostic assertions
+      **Historical `1125434` validation.** Five new diagnostic assertions
       failed against the original production owners (four snapshot variants
       and the composed later-turn failure); the corrected focused run passed
       **108 tests**. An initial sandbox run had **100 pass / 8 fail** solely
@@ -3737,26 +3874,39 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       **Reusable local runbook.** From the repository root, use Node **24.21.0**
       (npm **11.19.0**), the locked backend/frontend dependencies (`npm ci` and
       `npm --prefix frontend ci` for a new checkout), Python 3 for the wiring
-      checks, and Docker with a Linux ARM64 runtime. The immutable image below
-      must already be cached: `docker image inspect "$NATIVE_IMAGE"` checks it.
-      Neither preparation nor validation pulls an image or substitutes a tag.
-      Tests mount the candidate checkout source alongside the image's real
-      installed binaries; this is not an unmodified candidate production image.
+      checks, and Docker with a Linux ARM64 runtime. **Packaged-image mode is
+      the release acceptance path from 2026-10-21 onward.** Build the actual
+      production Dockerfile/context with unchanged pins. Qualification itself
+      never pulls an image or substitutes a mutable tag. Runtime/shared module
+      origins resolve to `/opt/agentcore` and `/opt/shared`; every packaged
+      source file is SHA-256 checked against the candidate. Tests/providers
+      mount separately. Controller and in-memory AWS ports use a separate
+      candidate Lambda-style bundle with its own reported SHA-256, not the
+      runtime image's dependency tree. No production source overlays are used.
 
       Prepare a new directory explicitly while public downloads are permitted:
 
       ```bash
       export PATH="$HOME/.nvm/versions/node/v24.21.0/bin:$PATH"
-      export NATIVE_IMAGE=746558295630.dkr.ecr.us-east-1.amazonaws.com/collaborative-ai-dlc-agentcore-dev@sha256:70c9fcd3595f2a785cc78d1ca339b3cd9bb6a488d332253512e373b21c895650
-      docker image inspect "$NATIVE_IMAGE" --format '{{.Os}}/{{.Architecture}}'
+      export NODE_OPTIONS=--no-experimental-webstorage
       export NATIVE_FIXTURES="$(mktemp -d /tmp/native-qualification.XXXXXX)"
       node scripts/native-qualification-package.mjs --prepare-fixtures "$NATIVE_FIXTURES"
       node scripts/native-qualification-package.mjs --verify-fixtures "$NATIVE_FIXTURES"
+      docker build --platform linux/arm64 --progress plain \
+        --iidfile "$NATIVE_FIXTURES/image.iid" \
+        -f lambda/agentcore/Dockerfile lambda
+      export NATIVE_IMAGE="$(cat "$NATIVE_FIXTURES/image.iid")"
+      docker image inspect "$NATIVE_IMAGE" --format '{{.Id}} {{.Os}}/{{.Architecture}}'
+      npm --workspace lambda/native-runtime-control run build
+      npm run test:native-qualification -- --packaged-image --cli claude,codex,opencode \
+        --image "$NATIVE_IMAGE" --assets "$NATIVE_FIXTURES/assets" \
+        --opencode-cache "$NATIVE_FIXTURES/opencode-cache" \
+        --linux-bindings "$NATIVE_FIXTURES/linux-node-modules"
       ```
 
       Preparation verifies exact SHA-256/size pins for AI-DLC **2.11.0** release
       assets and provenance, all **32** frozen OpenCode **1.19.0** npm artifacts
-      by SHA-512, and the repository-locked Linux ARM64/glibc Rolldown binding
+      by SHA-512 and their exact offline resolution metadata, and the repository-locked Linux ARM64/glibc Rolldown binding
       (**1.1.5**). It installs that optional test binding into the fixture
       directory with scripts disabled, without changing repository dependencies.
       Reuse also checks every unpacked binding file against its exact byte pin,
@@ -3770,27 +3920,39 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       refuses a nonempty destination; verification never fetches. Existing
       prepared inputs can be reused after the verification command.
 
-      **Full local validation command** (current expected aggregate: BLOCKED/2
+      `--installed-only --packaged-image --cli claude` selects the dependency
+      regression; select `codex` or `opencode` for their installed paths.
+      `--cli all` additionally includes Kiro and retains **BLOCKED/2**, not PASS,
+      at its managed-authentication boundary. Omit `--packaged-image` only for
+      an explicitly labelled source-overlay comparison on a cached immutable
+      registry digest. Such comparisons are not production-image acceptance.
+      Disposable containers and staged test/controller files are cleaned by
+      the runner. After retaining logs/image identity, remove only the owned
+      fixture destination with `rm -rf "$NATIVE_FIXTURES"`; optional local
+      `docker image rm "$NATIVE_IMAGE"` removes that build, not unrelated images.
+
+      **Optional all-harness command** (current expected aggregate: BLOCKED/2
       solely for Kiro's supported-input gap):
 
       ```bash
-      npm run test:native-qualification -- --cli all \
+      npm run test:native-qualification -- --packaged-image --cli all \
         --image "$NATIVE_IMAGE" --assets "$NATIVE_FIXTURES/assets" \
         --opencode-cache "$NATIVE_FIXTURES/opencode-cache" \
         --linux-bindings "$NATIVE_FIXTURES/linux-node-modules"
       ```
 
       This runs the host controller/adapter/UI/WebSocket journeys,
-      architecture/wiring checks, **434** Linux process/filesystem/manifest
+      architecture/wiring checks, **478** Linux process/filesystem/manifest
       regressions, then each selected installed row. Linux regressions use the
       same offline/read-only container boundary and two workers. Ordinary host
       checks remain credential-free and require no registry/model access.
-      The current Claude row additionally tests cold writer-generation recovery
-      and a real offline npm install after three admitted checkpoints. Its
-      public `.bin` link workload must report **REJECTED_UNSUPPORTED** with
-      checkpoint 3 retained, not successful dependency-workload support. See
-      the `576ffeb2` incident above for the new image `55af…` results and its
-      separately reproduced OpenCode missing-lock qualification failure.
+      The current Claude row additionally requires five admitted checkpoints:
+      cold writer-generation recovery, a real offline npm install/build/test,
+      a second cold restore and successful build/test from retained dependency
+      bytes and links. Its required outcome is **PASS**, with checkpoint 5
+      retained after confirmed cancellation and zero answer replay. The former
+      `REJECTED_UNSUPPORTED` scenario remains dated evidence under `576ffeb2`;
+      it is no longer an accepted workload outcome.
       All installed containers use `--pull never`, `--network none`,
       read-only image/source/assets and disposable tmpfs.
 
@@ -3799,7 +3961,7 @@ independently reviewable; preserve the existing authority and checkpoint owners.
       adapter or fixture, run a focused installed row:
 
       ```bash
-      npm run test:native-qualification -- --installed-only --cli opencode \
+      npm run test:native-qualification -- --installed-only --packaged-image --cli opencode \
         --image "$NATIVE_IMAGE" --assets "$NATIVE_FIXTURES/assets" \
         --opencode-cache "$NATIVE_FIXTURES/opencode-cache"
       ```

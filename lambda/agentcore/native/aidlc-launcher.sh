@@ -1,5 +1,5 @@
 #!/bin/sh
-# Native probes select their installed version through AIDLC_BIN_DIR. Keep this
+# Native execution selects its installed version through AIDLC_BIN_DIR. Keep this
 # entry point on the login shell's default PATH; workflow files stay on EFS.
 case "${AIDLC_BIN_DIR:-}" in
   /*) ;;

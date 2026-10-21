@@ -10,6 +10,8 @@ import {
   restoreNativeSessionRecovery,
   NATIVE_RECOVERY_HARNESS_VERSIONS,
 } from '../native/session-recovery-files.js';
+import { snapshotNativeExecutionFiles } from '../native/execution-files.js';
+import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-dependency-links.js';
 
 const id = '019a0011-2222-7333-8444-555555555555';
 const childId = '019a0011-2222-7333-8444-666666666666';
@@ -116,6 +118,168 @@ const generatedBin = async () => {
 };
 
 describe('private native recovery files', () => {
+  it('retains npm directory aliases and executable chains, then builds after exact offline restore', async () => {
+    await rollout();
+    await write('project', 'package.json', '{"private":true}');
+    await write('project', 'package-lock.json', '{"lockfileVersion":3}');
+    await write('project', '.gitignore', 'node_modules/\n');
+    await write(
+      'project',
+      'vendor/local/cli.js',
+      '#!/usr/bin/env node\nconsole.log("built");\n',
+      0o755,
+    );
+    await write(
+      'project',
+      'node_modules/ordinary/bin.js',
+      '#!/usr/bin/env node\nconsole.log("ordinary");\n',
+      0o755,
+    );
+    await fs.mkdir(join(project, 'node_modules/.bin'), { mode: 0o755 });
+    await writeBinLink('../vendor/local', join(project, 'node_modules/local'));
+    await writeBinLink('../local/cli.js', join(project, 'node_modules/.bin/local'));
+    await writeBinLink('../ordinary/bin.js', join(project, 'node_modules/.bin/ordinary'));
+    const input = options({ filesystemPolicy: NATIVE_DEPENDENCY_POLICY });
+    const publicFiles = await snapshotNativeExecutionFiles(input);
+    expect(publicFiles.files.map((f) => f.path)).toEqual([
+      '.gitignore',
+      'package-lock.json',
+      'package.json',
+      'vendor/local/cli.js',
+    ]);
+    const captured = await captureNativeSessionRecovery(input);
+    expect(captured.metadata.schemaVersion).toBe(3);
+    expect(captured.metadata.dependencyLinks).toHaveLength(3);
+    expect(captured.files.some((f) => f.path === 'node_modules/ordinary/bin.js')).toBe(true);
+    await emptyRestoreRoots();
+    await restoreNativeSessionRecovery({ ...options(), ...captured });
+    for (const link of captured.metadata.dependencyLinks) {
+      expect(await fs.readlink(join(project, link.path))).toBe(link.target);
+      expect(String((await fs.lstat(join(project, link.path), { bigint: true })).mtimeNs)).toBe(
+        link.mtimeNs,
+      );
+    }
+    for (const file of captured.files)
+      expect(await fs.readFile(join(file.scope === 'home' ? home : project, file.path))).toEqual(
+        file.content,
+      );
+    expect(
+      execFileSync(join(project, 'node_modules/.bin/local'), { encoding: 'utf8' }).trim(),
+    ).toBe('built');
+    expect(
+      execFileSync(join(project, 'node_modules/.bin/ordinary'), { encoding: 'utf8' }).trim(),
+    ).toBe('ordinary');
+  });
+
+  it.each([
+    ['absolute', '/tmp/outside'],
+    ['escape', '../../../outside'],
+    ['escape-and-return', '../../../project/vendor/local/cli.js'],
+    ['missing', '../missing'],
+    ['missing-ancestor', '../missing/../ordinary/bin.js'],
+    ['file-ancestor', '../ordinary/bin.js/../bin.js'],
+    ['private', '../../.claude/private'],
+    ['credential', '../../vendor/local/.npmrc'],
+    ['cycle', './tool'],
+    ['directory-cycle', '..'],
+  ])('rejects dependency link %s without following it', async (_name, target) => {
+    await rollout();
+    await write('project', 'node_modules/ordinary/bin.js', 'safe');
+    await write('project', '.claude/private', 'private');
+    await write('project', 'vendor/local/.npmrc', 'private');
+    await fs.mkdir(join(project, 'node_modules/.bin'), { mode: 0o755 });
+    await writeBinLink(target, join(project, 'node_modules/.bin/tool'));
+    await expect(
+      captureNativeSessionRecovery(options({ filesystemPolicy: NATIVE_DEPENDENCY_POLICY })),
+    ).rejects.toMatchObject({
+      code: expect.stringMatching(/^native_recovery_(?:symlink|bin_link_invalid)$/),
+    });
+  });
+
+  it('does not apply the new dependency policy to a legacy capture', async () => {
+    await rollout();
+    await write('project', 'node_modules/ordinary/bin.js', 'safe');
+    await fs.mkdir(join(project, 'node_modules/.bin'), { mode: 0o755 });
+    await writeBinLink('../ordinary/bin.js', join(project, 'node_modules/.bin/tool'));
+    await expect(captureNativeSessionRecovery(options())).rejects.toMatchObject({
+      code: 'native_recovery_symlink',
+    });
+  });
+
+  it.each(['link-mutation', 'hardlink', 'restore-target-mutation', 'read-only-parent'])(
+    'preserves dependency integrity across %s',
+    async (kind) => {
+      await rollout();
+      const target = await write('project', 'node_modules/pkg/bin.js', 'exact', 0o755);
+      const alias = join(project, 'node_modules/.bin/tool');
+      await fs.mkdir(dirname(alias), { mode: 0o755 });
+      await writeBinLink('../pkg/bin.js', alias);
+      const input = options({ filesystemPolicy: NATIVE_DEPENDENCY_POLICY });
+      if (kind === 'link-mutation') {
+        const io = {
+          ...fs,
+          readlink: async (path, ...args) => {
+            const value = await fs.readlink(path, ...args);
+            if (path === alias) {
+              await fs.unlink(path);
+              await fs.symlink('../missing', path);
+            }
+            return value;
+          },
+        };
+        await expect(captureNativeSessionRecovery({ ...input, io })).rejects.toMatchObject({
+          code: 'native_recovery_changed',
+        });
+        return;
+      }
+      if (kind === 'hardlink') {
+        await fs.link(target, join(project, 'node_modules/pkg/other.js'));
+        await expect(captureNativeSessionRecovery(input)).rejects.toMatchObject({
+          code: 'native_recovery_external_hardlink',
+        });
+        return;
+      }
+      if (kind === 'read-only-parent') await fs.chmod(dirname(alias), 0o555);
+      const captured = await captureNativeSessionRecovery(input);
+      // Make the saved copy removable; captured modes remain immutable.
+      await fs.chmod(dirname(alias), 0o755);
+      await emptyRestoreRoots();
+      if (kind === 'restore-target-mutation') {
+        const io = {
+          ...fs,
+          symlink: async (value, path) => {
+            await fs.symlink(value, path);
+            await fs.writeFile(target, 'corrupt');
+          },
+        };
+        await expect(
+          restoreNativeSessionRecovery({ ...input, ...captured, io }),
+        ).rejects.toMatchObject({ code: 'native_recovery_restore_unverified' });
+      } else {
+        await restoreNativeSessionRecovery({ ...input, ...captured });
+        expect((await fs.stat(dirname(alias))).mode & 0o777).toBe(0o555);
+        expect(await fs.readlink(alias)).toBe('../pkg/bin.js');
+        await fs.chmod(dirname(alias), 0o755);
+      }
+    },
+  );
+
+  it('keeps a dependency inventory beyond the public file count within the private budget', async () => {
+    await rollout();
+    await write('project', 'src/main.js', 'authored');
+    await write('project', 'package-lock.json', '{"lockfileVersion":3}');
+    const bytes = Buffer.alloc(32 * 1024, 0x61);
+    for (let n = 0; n < 1200; n++) await write('project', `node_modules/pkg/file-${n}`, bytes);
+    const input = options({ filesystemPolicy: NATIVE_DEPENDENCY_POLICY });
+    expect((await snapshotNativeExecutionFiles(input)).files).toHaveLength(2);
+    const captured = await captureNativeSessionRecovery(input);
+    expect(captured.files.filter((f) => f.path.startsWith('node_modules/'))).toHaveLength(1200);
+    expect(captured.totalBytes).toBeGreaterThan(37 * 1024 * 1024);
+    await emptyRestoreRoots();
+    await restoreNativeSessionRecovery({ ...options(), ...captured });
+    expect(await fs.readFile(join(project, 'node_modules/pkg/file-1199'))).toEqual(bytes);
+  }, 30_000);
+
   it('round-trips generated OpenCode bin links with independent exact target bytes and metadata', async () => {
     const checkpoint = await generatedBin();
     expect(checkpoint.metadata.schemaVersion).toBe(2);

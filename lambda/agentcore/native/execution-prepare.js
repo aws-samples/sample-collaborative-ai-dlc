@@ -452,6 +452,7 @@ export const createNativeExecutionPorts = ({
       signal,
       sequence = 1,
       sourceBaseline,
+      filesystemPolicy,
     }) {
       checkIdentity(env, identity);
       checkAbort(signal);
@@ -470,6 +471,7 @@ export const createNativeExecutionPorts = ({
         questionPath,
         sequence,
         ...(sourceBaseline ? { sourceBaseline } : {}),
+        ...(filesystemPolicy ? { filesystemPolicy } : {}),
       });
       checkAbort(signal);
       return { uploaded: true, receipt };

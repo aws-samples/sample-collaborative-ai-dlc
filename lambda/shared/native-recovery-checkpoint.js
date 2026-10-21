@@ -227,23 +227,25 @@ const inventory = (files, identity, writing = false) => {
       if (paths.has(parts.slice(0, index).join('/'))) invalid();
   }
 };
+const filesystemFields = (harness, version) => [
+  'schemaVersion',
+  'harness',
+  'harnessVersion',
+  'nativeSessionId',
+  'format',
+  'project',
+  'home',
+  'directories',
+  'hardlinks',
+  ...([2, 3].includes(version) ? ['binLinks'] : []),
+  ...(version === 3 ? ['filesystemPolicy', 'dependencyLinks'] : []),
+  ...(harness === 'claude' ? ['claudeProjectKey'] : []),
+];
 const sessionMetadata = (value) => {
   const data = value.filesystem;
-  shape(data, [
-    'schemaVersion',
-    'harness',
-    'harnessVersion',
-    'nativeSessionId',
-    'format',
-    'project',
-    'home',
-    'directories',
-    'hardlinks',
-    ...(data?.schemaVersion === 2 ? ['binLinks'] : []),
-    ...(value.harness === 'claude' ? ['claudeProjectKey'] : []),
-  ]);
+  shape(data, filesystemFields(value.harness, data?.schemaVersion));
   if (
-    ![1, 2].includes(data.schemaVersion) ||
+    ![1, 2, 3].includes(data.schemaVersion) ||
     data.harness !== value.harness ||
     data.nativeSessionId !== value.nativeSessionId ||
     data.format !== SESSION_FORMATS[value.harness] ||

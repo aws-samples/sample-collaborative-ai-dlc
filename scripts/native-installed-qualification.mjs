@@ -67,12 +67,17 @@ const model = {
 // A real offline package-manager workload, not a hand-created snapshot link.
 // No registry access, package scripts or model decisions are required.
 const dependencyInstall = [
-  'mkdir -p vendor/fixture-bin',
-  `printf '%s' '{"name":"fixture-project","version":"1.0.0","private":true,"dependencies":{"fixture-bin":"file:vendor/fixture-bin"}}' > package.json`,
+  'mkdir -p vendor/fixture-bin vendor/fixture-ordinary test',
+  `printf '%s' '{"name":"fixture-project","version":"1.0.0","private":true,"scripts":{"build":"fixture-tool && fixture-ordinary","test":"node --test test/*.test.cjs"},"dependencies":{"fixture-bin":"file:vendor/fixture-bin","fixture-ordinary":"file:vendor/fixture-ordinary-1.0.0.tgz"}}' > package.json`,
   `printf '%s' '{"name":"fixture-bin","version":"1.0.0","bin":{"fixture-tool":"cli.js"}}' > vendor/fixture-bin/package.json`,
-  `printf '%s\\n' '#!/usr/bin/env node' 'process.exit(0);' > vendor/fixture-bin/cli.js`,
+  `printf '%s\\n' '#!/usr/bin/env node' 'const fs=require("node:fs");fs.mkdirSync("dist",{recursive:true});fs.writeFileSync("dist/local.txt","local build");' > vendor/fixture-bin/cli.js`,
+  `printf '%s' '{"name":"fixture-ordinary","version":"1.0.0","bin":{"fixture-ordinary":"cli.js"}}' > vendor/fixture-ordinary/package.json`,
+  `printf '%s\\n' '#!/usr/bin/env node' 'require("node:fs").writeFileSync("dist/ordinary.txt","ordinary build");' > vendor/fixture-ordinary/cli.js`,
+  `printf '%s' 'const t=require("node:test"),a=require("node:assert/strict"),fs=require("node:fs");t("both restored executables build",()=>{a.equal(fs.readFileSync("dist/local.txt","utf8"),"local build");a.equal(fs.readFileSync("dist/ordinary.txt","utf8"),"ordinary build");});' > test/build.test.cjs`,
   `printf '%s\\n' 'node_modules/' > .gitignore`,
-  'npm install --offline --ignore-scripts --no-audit --no-fund --package-lock=false',
+  'npm pack ./vendor/fixture-ordinary --offline --ignore-scripts --pack-destination vendor',
+  'npm install --offline --ignore-scripts --no-audit --no-fund',
+  'npm run build --offline && npm test --offline',
 ].join(' && ');
 
 async function codexHistory({ directory, env, provider, sessionId, forkId, createFork }) {
@@ -370,6 +375,25 @@ try {
     version: NATIVE_RECOVERY_HARNESS_VERSIONS[harness],
     node: process.version,
   });
+  phase = 'login-shell-workflow-dispatch';
+  const launcher = await runNativeCommand({
+    command: '/bin/bash',
+    args: ['-lc', 'command -v aidlc'],
+    cwd: base,
+    env: { HOME: versionHome, PATH: '/usr/bin:/bin' },
+    timeoutMs: 10_000,
+  });
+  assert.equal(launcher.exitCode, 0, 'Workflow dispatcher survives login-shell PATH reset');
+  assert.equal(launcher.stdout.trim(), '/usr/local/bin/aidlc');
+  const unconfigured = await runNativeCommand({
+    command: '/usr/local/bin/aidlc',
+    args: ['--version'],
+    cwd: base,
+    env: { HOME: versionHome, PATH: '/usr/bin:/bin' },
+    timeoutMs: 10_000,
+  });
+  assert.equal(unconfigured.exitCode, 127, 'No implicit installation or unpinned workflow');
+  report({ probe: 'login-shell-workflow-dispatch', status: 'PASS', unconfiguredRejected: true });
   phase = 'package-assets';
   await fs.mkdir(root, { mode: 0o700 });
   const pkg = await prepareQualificationPackage(root, process.env.NATIVE_QUALIFICATION_PACKAGE);
@@ -573,6 +597,7 @@ try {
     let lostAdmissionAck = false;
     let paging;
     let coldRestored = false;
+    const restoredTurns = new Set();
     const coldRecovery = ['claude', 'codex', 'opencode'].includes(harness);
     const recoveryAcks = [];
     const controls = [];
@@ -604,7 +629,7 @@ try {
         }),
         restoreRecovery: async (input) => {
           phase = 'cold-restore';
-          assert.equal(coldRestored, false, 'Recovery retry must not restore twice');
+          assert.equal(restoredTurns.has(turns), false, 'Recovery retry must not restore twice');
           const restored = await restoreNativeSessionRecovery(input);
           if (harness === 'opencode') {
             const lockRoot = join(input.home, '.local/state/opencode/locks');
@@ -643,7 +668,7 @@ try {
               rebuiltWithoutSQLite: true,
             });
           } else if (harness === 'opencode') {
-            assert.equal(input.metadata.schemaVersion, 2);
+            assert.equal(input.metadata.schemaVersion, 3);
             assert.equal(input.metadata.binLinks.length, 7, 'Actual pinned npm bin links occurred');
             for (const link of input.metadata.binLinks) {
               assert.equal(await fs.readlink(join(project, link.path)), link.target);
@@ -672,7 +697,14 @@ try {
               beforeTurn: 3,
               verifiedFiles: input.files.length,
             });
+            for (const link of input.metadata.dependencyLinks ?? []) {
+              assert.equal(await fs.readlink(join(project, link.path)), link.target);
+              const stat = await fs.lstat(join(project, link.path), { bigint: true });
+              assert.equal(String(stat.mtimeNs), link.mtimeNs);
+              assert.equal(Number(stat.mode & 0o777n), link.mode);
+            }
           }
+          restoredTurns.add(turns);
           coldRestored = true;
           return restored;
         },
@@ -723,7 +755,9 @@ try {
                   : 'mkdir -p nested && cd nested && pwd'
                 : harness === 'claude' && turns === 4
                   ? dependencyInstall
-                  : null;
+                  : harness === 'claude' && turns === 5
+                    ? `node -e 'require("node:fs").rmSync("dist",{recursive:true})' && npm run build --offline && npm test --offline`
+                    : null;
           provider.begin({
             turn: turns,
             command,
@@ -735,7 +769,9 @@ try {
                   : { writePath: join(project, 'nested/fixture.txt') }
                 : undefined,
             expectedHistory:
-              coldRecovery && turns === 3 ? ['Fixture question 1?', 'Fixture question 2?'] : [],
+              coldRecovery && [3, 5].includes(turns)
+                ? ['Fixture question 1?', 'Fixture question 2?']
+                : [],
           });
           const started = performance.now();
           lastInput = localProviderInvocation(harness, invocation, provider.url);
@@ -1091,62 +1127,92 @@ try {
     });
     if (harness === 'claude') {
       phase = 'public-dependency-layout';
-      const priorPublication = f.row().publication;
-      const priorCheckpoint = f.row().recoveryCheckpoint;
-      const question = await api.interaction(f.prepared, async () => {});
-      latestAnswer = {
-        requestId: randomUUID(),
-        interactionId: question.id,
-        contentSha256: question.contentSha256,
-        text: 'Fixture answer 3.',
-      };
-      const answer = await api.respond(f.prepared, ACTOR, latestAnswer, async () => {});
-      assert.equal(
-        (await api.respond(f.prepared, ACTOR, latestAnswer, async () => {})).response.id,
-        answer.response.id,
-      );
+      for (const turn of [4, 5]) {
+        const question = await api.interaction(f.prepared, async () => {});
+        latestAnswer = {
+          requestId: randomUUID(),
+          interactionId: question.id,
+          contentSha256: question.contentSha256,
+          text: `Fixture answer ${turn - 1}.`,
+        };
+        const answer = await api.respond(f.prepared, ACTOR, latestAnswer, async () => {});
+        assert.equal(
+          (await api.respond(f.prepared, ACTOR, latestAnswer, async () => {})).response.id,
+          answer.response.id,
+        );
+        await settle();
+        assert.equal(turns, turn);
+        assert.equal(f.row().status, 'AWAITING_USER');
+        assert.equal(f.row().recoveryCheckpoint.sequence, turn);
+        assert.equal(f.row().publication.sequence, turn);
+        const manifest = await publications.read(executionIdentity(f.row()), f.row().publication, {
+          verifyFiles: true,
+        });
+        assert.equal(manifest.filesystemPolicy, 'node-dependencies-v1');
+        assert.equal(
+          manifest.files.some((file) => file.path.includes('node_modules/')),
+          false,
+        );
+        for (const path of [
+          'package.json',
+          'package-lock.json',
+          'vendor/fixture-bin/cli.js',
+          'dist/local.txt',
+          'dist/ordinary.txt',
+          'test/build.test.cjs',
+        ])
+          assert.ok(
+            manifest.files.some((file) => file.path === path),
+            `Authored/build file remains published: ${path}`,
+          );
+        const privateFiles = await checkpoints.read(
+          executionIdentity(f.row()),
+          f.row().recoveryCheckpoint,
+          { verifyFiles: true },
+        );
+        assert.ok(
+          privateFiles.files.some((file) => file.path === 'node_modules/fixture-ordinary/cli.js'),
+        );
+        assert.equal(
+          captured.metadata.dependencyLinks.length,
+          3,
+          'npm generated two bin aliases and the local directory alias',
+        );
+        assert.equal(await fs.readFile(join(project, 'dist/local.txt'), 'utf8'), 'local build');
+        assert.equal(
+          await fs.readFile(join(project, 'dist/ordinary.txt'), 'utf8'),
+          'ordinary build',
+        );
+        if (turn === 4) {
+          // Cold generation 3 must reconstruct dependency state before the next
+          // protected reply; no installation or registry is used on restore.
+          for (const directory of [project, lastInput.env.HOME])
+            for (const entry of await fs.readdir(directory))
+              await fs.rm(join(directory, entry), { recursive: true, force: true });
+          await fs.rm(homeRoot, { recursive: true, force: true });
+          runtime = createRuntime();
+          assert.equal((await runtime.status(executionIdentity(f.row()))).recovered, true);
+        }
+      }
+      assert.deepEqual([...restoredTurns], [2, 4]);
+      assert.equal(f.row().writerGeneration, 3);
+      const checkpoint = f.row().recoveryCheckpoint;
+      await api.respond(f.prepared, ACTOR, latestAnswer, async () => {});
       await supervisor(f.identity);
-      const failed = await runtime.settle();
-      assert.equal(turns, 4);
-      assert.equal(failed.status, 'failed');
-      assert.equal(failed.code, 'native_snapshot_link');
-      assert.equal(failed.snapshotDiagnostic.phase, 'final');
-      assert.equal(failed.snapshotDiagnostic.pathClass, 'dependency_bin');
-      assert.equal(failed.snapshotDiagnostic.reason, 'symbolic_link');
-      assert.ok(failed.timings.workspaceBaselineCompleted);
-      assert.ok(failed.timings.harnessCompleted);
-      assert.ok(failed.timings.snapshotRejected);
-      for (const absent of [
-        'workspaceSnapshotCompleted',
-        'publicationStarted',
-        'checkpointCaptureStarted',
-      ])
-        assert.equal(failed.timings[absent], undefined);
-      assert.equal(
-        (await fs.lstat(join(project, 'node_modules/.bin/fixture-tool'))).isSymbolicLink(),
-        true,
-        'The actual installed CLI executed npm and left its generated layout intact',
-      );
+      assert.equal(turns, 5, 'Lost/duplicate answer acknowledgements never replay CLI work');
+      await api.cancel(f.prepared, async () => {});
       await supervisor(f.identity);
-      assert.equal(f.row().status, 'FAILED');
-      assert.equal(f.row().failureCode, 'native_snapshot_link');
-      assert.equal(f.row().stopConfirmation.writerGeneration, 2);
-      assert.deepEqual(f.row().publication, priorPublication);
-      assert.deepEqual(f.row().recoveryCheckpoint, priorCheckpoint);
-      assert.equal(f.row().turnSequence, 4);
-      await checkpoints.read(executionIdentity(f.row()), priorCheckpoint, { verifyFiles: true });
-      await supervisor(f.identity);
-      assert.equal(turns, 4, 'No replay or stale checkpoint substitution after a delivered answer');
+      assert.equal(f.row().status, 'CANCELLED');
+      assert.equal(f.row().stopConfirmation.writerGeneration, 3);
+      assert.deepEqual(f.row().recoveryCheckpoint, checkpoint);
       report({
         probe: 'public-dependency-layout',
-        status: 'REJECTED_UNSUPPORTED',
-        tool: 'offline npm install',
-        turn: 4,
-        writerGeneration: 2,
-        code: failed.code,
-        snapshotDiagnostic: failed.snapshotDiagnostic,
-        previousCheckpointVerified: 3,
-        publication4: false,
+        status: 'PASS',
+        tool: 'offline npm install, build and test; restored build and test',
+        turn: 5,
+        writerGeneration: 3,
+        dependencyLinks: 3,
+        admittedCheckpoints: 5,
         stopConfirmed: true,
         replayCount: 0,
       });

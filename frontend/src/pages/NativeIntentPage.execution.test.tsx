@@ -193,6 +193,16 @@ beforeEach(() => {
   );
   api.graph.mockResolvedValue(graph);
 });
+it('shows the admitted dependency retention policy without changing published source files', async () => {
+  api.get.mockResolvedValue(waiting);
+  api.publication.mockResolvedValue({ ...publication, filesystemPolicy: 'node-dependencies-v1' });
+  renderPage();
+  expect(
+    await screen.findByText(/Generated node_modules dependencies are kept/),
+  ).toBeInTheDocument();
+  await userEvent.setup().click(screen.getByRole('tab', { name: 'Files' }));
+  expect(await screen.findByRole('button', { name: /src\/pipe.ts/ })).toBeInTheDocument();
+});
 afterEach(() => {
   cleanup();
   vi.useRealTimers();

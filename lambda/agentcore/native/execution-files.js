@@ -9,6 +9,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { nativePublicationPath } from '../../shared/native-publication.js';
 import { canonicalNativePath, nativeFileExclusion } from '../../shared/native-project-files.js';
 import { nativeSnapshotDiagnostic } from '../../shared/native-execution-failure.js';
+import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-dependency-links.js';
 export { canonicalNativePath, nativeFileExclusion } from '../../shared/native-project-files.js';
 
 export const NATIVE_SNAPSHOT_LIMITS = Object.freeze({
@@ -80,12 +81,14 @@ export const snapshotNativeExecutionFiles = async ({
   forbiddenBytes = [],
   io = fs,
   onDiagnostic,
+  filesystemPolicy,
 } = {}) => {
   const limits = { ...NATIVE_SNAPSHOT_LIMITS, ...overrides };
   if (
     typeof project !== 'string' ||
     !isAbsolute(project) ||
     resolve(project) !== project ||
+    (filesystemPolicy !== undefined && filesystemPolicy !== NATIVE_DEPENDENCY_POLICY) ||
     (signal !== undefined && !(signal instanceof AbortSignal)) ||
     !Array.isArray(forbiddenBytes) ||
     forbiddenBytes.length > 64 ||
@@ -145,7 +148,7 @@ export const snapshotNativeExecutionFiles = async ({
         for (const child of names) {
           const relative = name ? `${name}/${child}` : child;
           if (!canonicalNativePath(relative)) fail('native_snapshot_path_invalid');
-          const excluded = nativeFileExclusion(relative);
+          const excluded = nativeFileExclusion(relative, filesystemPolicy);
           if (excluded) {
             if (++entryCount > limits.maxEntries) fail('native_snapshot_limit');
             exclusions.push({ path: relative, reason: excluded });
@@ -210,7 +213,14 @@ export const snapshotNativeExecutionFiles = async ({
     for (const [path, stat] of inventory) await unchanged(path, stat);
     if ((await io.realpath(project)) !== project) fail('native_snapshot_changed');
     checkAbort();
-    return { schemaVersion: 1, complete: true, files, totalBytes, exclusions };
+    return {
+      schemaVersion: 1,
+      complete: true,
+      files,
+      totalBytes,
+      exclusions,
+      ...(filesystemPolicy ? { filesystemPolicy } : {}),
+    };
   } catch (error) {
     if (error instanceof NativeSnapshotError) throw error;
     fail('native_snapshot_io_failed');

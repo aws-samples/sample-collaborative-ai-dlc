@@ -454,6 +454,14 @@ describe('native execution and committed publication boundary', () => {
       ['/projects/project-1/native-intents/run-1/graph'],
     ]);
   });
+  it('retains the versioned dependency policy and rejects an unknown policy', async () => {
+    get.mockResolvedValue({ ...publication, filesystemPolicy: 'node-dependencies-v1' });
+    expect((await nativeIntentsService.publication('project-1', 'run-1')).filesystemPolicy).toBe(
+      'node-dependencies-v1',
+    );
+    get.mockResolvedValue({ ...publication, filesystemPolicy: 'follow-all-links' });
+    await expect(nativeIntentsService.publication('project-1', 'run-1')).rejects.toThrow();
+  });
   it.each([
     { files: [descriptor, descriptor] },
     { files: [{ ...descriptor, role: ['question'] }] },

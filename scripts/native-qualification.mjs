@@ -5,6 +5,8 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { rm } from 'node:fs/promises';
+import { stagePackagedQualification } from './native-qualification-packaged.mjs';
 import {
   qualificationOptions,
   installedDockerArgs,
@@ -59,6 +61,7 @@ if (!options.installedOnly) {
     'lambda/shared/test/native-publication.test.js',
     'lambda/shared/test/native-pending-input.test.js',
     'lambda/shared/test/native-recovery-checkpoint.test.js',
+    'lambda/shared/test/native-dependency-links.test.js',
     'lambda/shared/test/native-execution-fence.test.js',
   ];
   run(
@@ -122,69 +125,79 @@ if (!options.installedOnly) {
     'test_*.py',
   ]);
 }
-if (options.linuxBindings) {
-  await verifyQualificationLinuxBindings(options.linuxBindings);
-  const name = `native-qualification-linux-${randomUUID()}`;
-  console.log(
-    '\nNative qualification: Linux process/filesystem/manifest regressions (scripted CLI)',
-  );
-  let result;
-  try {
-    result = spawnSync('docker', linuxDockerArgs({ ...options, root, name }), {
-      cwd: root,
-      stdio: 'inherit',
-      timeout: 10 * 60_000,
-    });
-  } finally {
-    spawnSync('docker', ['rm', '--force', name], { stdio: 'ignore', timeout: 10_000 });
-  }
-  if (result.status !== 0) {
-    console.error('Linux regression tier: FAIL');
-    process.exit(1);
-  }
-  console.log('Linux regression tier: PASS');
-} else
-  console.log('Linux-only regression tier: NOT RUN (supply --linux-bindings with image/assets).');
-if (options.image) {
-  const results = [];
-  for (const cli of options.clis) {
-    const statuses = [];
-    for (const baseline of cli === 'claude' ? [true, false] : [false]) {
-      console.log(
-        `Installed ${cli}: ${
-          baseline
-            ? 'four-turn terminal/cwd/subagent baseline'
-            : cli === 'kiro'
-              ? 'real package initialization and v2 authentication boundary'
-              : 'production-composed journey and failures'
-        }`,
-      );
-      const name = `native-qualification-${randomUUID()}`;
-      try {
-        const result = spawnSync(
-          'docker',
-          installedDockerArgs({ ...options, root, cli, baseline, name }),
-          { cwd: root, stdio: 'inherit', timeout: 10 * 60_000 },
-        );
-        statuses.push(result.status);
-      } finally {
-        // A timed-out Docker client does not itself stop its container. Only
-        // remove the disposable container whose random name this run owns.
-        spawnSync('docker', ['rm', '--force', name], { stdio: 'ignore', timeout: 10_000 });
-      }
+const staged = options.packagedImage ? await stagePackagedQualification(root) : null;
+const containerOptions = { ...options, root: staged?.directory ?? root, dependenciesRoot: root };
+try {
+  if (options.linuxBindings) {
+    await verifyQualificationLinuxBindings(options.linuxBindings);
+    const name = `native-qualification-linux-${randomUUID()}`;
+    console.log(
+      '\nNative qualification: Linux process/filesystem/manifest regressions (scripted CLI)',
+    );
+    let result;
+    try {
+      result = spawnSync('docker', linuxDockerArgs({ ...containerOptions, name }), {
+        cwd: root,
+        stdio: 'inherit',
+        timeout: 10 * 60_000,
+      });
+    } finally {
+      spawnSync('docker', ['rm', '--force', name], { stdio: 'ignore', timeout: 10_000 });
     }
-    const status = installedStatus(statuses);
-    console.log(`Installed ${cli}: ${status}`);
-    results.push(status);
-  }
-  const status = results.includes('FAIL')
-    ? 'FAIL'
-    : results.includes('BLOCKED')
-      ? 'BLOCKED'
-      : 'PASS';
-  console.log(
-    `Installed matrix: ${status}; image=${options.image}; candidate source mounted from checkout.`,
-  );
-  if (status !== 'PASS') process.exitCode = status === 'BLOCKED' ? 2 : 1;
-} else console.log('Installed CLI/workflow tier: NOT RUN (supply --image and --assets).');
+    if (result.status !== 0) {
+      console.error('Linux regression tier: FAIL');
+      throw new Error('Linux regression tier failed');
+    }
+    console.log('Linux regression tier: PASS');
+  } else
+    console.log('Linux-only regression tier: NOT RUN (supply --linux-bindings with image/assets).');
+  if (options.image) {
+    const results = [];
+    for (const cli of options.clis) {
+      const statuses = [];
+      for (const baseline of cli === 'claude' ? [true, false] : [false]) {
+        console.log(
+          `Installed ${cli}: ${
+            baseline
+              ? 'four-turn terminal/cwd/subagent baseline'
+              : cli === 'kiro'
+                ? 'real package initialization and v2 authentication boundary'
+                : 'production-composed journey and failures'
+          }`,
+        );
+        const name = `native-qualification-${randomUUID()}`;
+        try {
+          const result = spawnSync(
+            'docker',
+            installedDockerArgs({ ...containerOptions, cli, baseline, name }),
+            { cwd: root, stdio: 'inherit', timeout: 10 * 60_000 },
+          );
+          statuses.push(result.status);
+        } finally {
+          // A timed-out Docker client does not itself stop its container. Only
+          // remove the disposable container whose random name this run owns.
+          spawnSync('docker', ['rm', '--force', name], { stdio: 'ignore', timeout: 10_000 });
+        }
+      }
+      const status = installedStatus(statuses);
+      console.log(`Installed ${cli}: ${status}`);
+      results.push(status);
+    }
+    const status = results.includes('FAIL')
+      ? 'FAIL'
+      : results.includes('BLOCKED')
+        ? 'BLOCKED'
+        : 'PASS';
+    console.log(
+      `Installed matrix: ${status}; image=${options.image}; ${
+        staged
+          ? `packaged-image mode (expected source SHA256 ${staged.sourceSha256})`
+          : 'candidate source mounted from checkout'
+      }.`,
+    );
+    if (status !== 'PASS') process.exitCode = status === 'BLOCKED' ? 2 : 1;
+  } else console.log('Installed CLI/workflow tier: NOT RUN (supply --image and --assets).');
+} finally {
+  if (staged) await rm(staged.directory, { recursive: true, force: true });
+}
 console.log('Live model compliance, deployed IAM/runtime and browser latency: NOT QUALIFIED.');

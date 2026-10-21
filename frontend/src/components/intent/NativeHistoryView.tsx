@@ -4,7 +4,7 @@ import { compareInventory, NativeFileComparison } from './NativeFileComparison';
 import { Button } from '@/components/ui/button';
 import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { ArtifactMarkdown } from './ArtifactMarkdown';
-import { NativeFileView } from './NativeFileView';
+import { NativeFileView, NativeFilesystemNotice } from './NativeFileView';
 import { NativeResultDownload } from './NativeResultDownload';
 import { NativeSourceComparison } from './NativeSourceComparison';
 import { NativePresentationNotice } from './NativeInteractionPanel';
@@ -301,6 +301,7 @@ export function NativeHistoryView({
                   Link to this revision
                 </Link>
               </div>
+              <NativeFilesystemNotice policy={revision.filesystemPolicy} />
               {decision ? (
                 <section aria-label="Historical proposal and decision" className="space-y-3">
                   {decision.interaction ? (

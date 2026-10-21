@@ -117,6 +117,42 @@ const binInput = () => {
   );
   return data;
 };
+const dependencyInput = () => {
+  const data = input();
+  data.filesystem.schemaVersion = 3;
+  data.filesystem.filesystemPolicy = 'node-dependencies-v1';
+  data.filesystem.binLinks = [];
+  data.filesystem.dependencyLinks = [
+    {
+      scope: 'project',
+      path: 'node_modules/pkg',
+      target: '../vendor/pkg',
+      mode: 0o777,
+      mtimeNs: '1',
+    },
+    {
+      scope: 'project',
+      path: 'node_modules/.bin/tool',
+      target: '../pkg/cli.js',
+      mode: 0o777,
+      mtimeNs: '2',
+    },
+  ];
+  data.files.push(file('project', 'vendor/pkg/cli.js', 'exact executable', { mode: 0o755 }));
+  const paths = new Set(
+    data.filesystem.directories.filter((d) => d.scope === 'project').map((d) => d.path),
+  );
+  for (const f of [...data.files, ...data.filesystem.dependencyLinks]) {
+    if (f.scope !== 'project') continue;
+    const parts = f.path.split('/');
+    for (let n = 1; n < parts.length; n++) paths.add(parts.slice(0, n).join('/'));
+  }
+  data.filesystem.directories = [
+    ...data.filesystem.directories.filter((d) => d.scope !== 'project'),
+    ...[...paths].map((path) => ({ scope: 'project', path, mode: 0o755, mtimeNs: '1' })),
+  ];
+  return data;
+};
 const INVALID = { code: 'NATIVE_RECOVERY_INVALID' };
 const UNAVAILABLE = { code: 'NATIVE_RECOVERY_UNAVAILABLE' };
 const MISSING = { code: 'NATIVE_RECOVERY_MISSING' };
@@ -289,6 +325,33 @@ describe('private native recovery checkpoint', () => {
       calls.filter((call) => call.constructor.name === 'PutObjectCommand').at(-1).input.Key,
     ).toBe(receipt.manifest.key);
   });
+  it('publishes and verifies version-3 dependency aliases with exact independent target bytes', async () => {
+    const { store } = setup(),
+      data = dependencyInput();
+    const receipt = await store.publish(data);
+    const loaded = await store.readFiles(identity, receipt);
+    expect(loaded.manifest.filesystem).toEqual(data.filesystem);
+    expect(loaded.files.find((f) => f.path === 'vendor/pkg/cli.js').content).toEqual(
+      Buffer.from('exact executable'),
+    );
+    expect(loaded.files.some((f) => f.path === 'node_modules/pkg')).toBe(false);
+  });
+  it.each(['missing-target', 'unknown-policy', 'alias-child', 'private-target'])(
+    'rejects version-3 corruption before object writes: %s',
+    async (kind) => {
+      const { store, calls } = setup(),
+        data = dependencyInput();
+      if (kind === 'missing-target')
+        data.files = data.files.filter((f) => f.path !== 'vendor/pkg/cli.js');
+      if (kind === 'unknown-policy') data.filesystem.filesystemPolicy = 'follow-everything';
+      if (kind === 'alias-child')
+        data.files.push(file('project', 'node_modules/pkg/extra', 'extra'));
+      if (kind === 'private-target')
+        data.filesystem.dependencyLinks[0].target = '../.native-control';
+      await expect(store.publish(data)).rejects.toMatchObject(INVALID);
+      expect(calls).toHaveLength(0);
+    },
+  );
 
   it('returns the same immutable receipt on replay, regardless of inventory order', async () => {
     const { store, versions } = setup();
