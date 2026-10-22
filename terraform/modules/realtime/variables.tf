@@ -82,3 +82,15 @@ variable "doc_token_enforce" {
   type        = bool
   default     = true
 }
+
+variable "iam_role_path" {
+  description = "Path for the IAM roles this module creates"
+  type        = string
+  default     = "/"
+}
+
+variable "iam_permissions_boundary_arn" {
+  description = "Permissions boundary for the IAM roles this module creates; empty sets none"
+  type        = string
+  default     = ""
+}

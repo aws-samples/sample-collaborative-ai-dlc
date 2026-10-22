@@ -108,8 +108,10 @@ module "dynamodb_kms_runtime_access" {
 #          purge-neptune
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "neptune_reader" {
-  name               = "${var.project_name}-neptune-reader-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-neptune-reader-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "neptune_reader_basic" {
@@ -142,8 +144,10 @@ resource "aws_iam_role_policy" "neptune_reader" {
 # by a removed member. Keep that write grant isolated from the read-only
 # Lambdas that share neptune-reader.
 resource "aws_iam_role" "users" {
-  name               = "${var.project_name}-users-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-users-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "users_basic" {
@@ -178,8 +182,10 @@ resource "aws_iam_role_policy" "users" {
 # agent-questions statement went with the retired v1 answer/resume path.)
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "neptune_questions" {
-  name               = "${var.project_name}-neptune-questions-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-neptune-questions-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "neptune_questions_basic" {
@@ -208,8 +214,10 @@ resource "aws_iam_role_policy" "neptune_questions" {
 # OAuth callback + token storage; no Neptune, no ECS, no Cognito.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "github_connector" {
-  name               = "${var.project_name}-github-connector-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-github-connector-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "github_connector_basic" {
@@ -277,8 +285,10 @@ resource "aws_iam_role_policy" "github_connector" {
 # when a user disconnects; it never reads repository credentials.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "trackers" {
-  name               = "${var.project_name}-trackers-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-trackers-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "trackers_basic" {
@@ -374,8 +384,10 @@ resource "aws_iam_role_policy" "trackers" {
 # platform-admin gate before any group mutation).
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "cognito_reader" {
-  name               = "${var.project_name}-cognito-reader-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-cognito-reader-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "cognito_reader_basic" {
@@ -419,8 +431,10 @@ resource "aws_iam_role_policy" "cognito_reader" {
 # execution engine. Still intentionally isolated from the other Lambda roles.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "agents_orchestrator" {
-  name               = "${var.project_name}-agents-orchestrator-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-agents-orchestrator-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "agents_orchestrator_basic" {
@@ -606,8 +620,10 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
 # uploads/downloads the .md bodies directly.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "neptune_artifacts" {
-  name               = "${var.project_name}-neptune-artifacts-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-neptune-artifacts-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "neptune_artifacts_basic" {
@@ -799,8 +815,10 @@ resource "aws_iam_role_policy" "projects_intent_cascade" {
 # handler from inheriting project deletion, S3, SSM, or AgentCore permissions.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "neptune_tasks" {
-  name               = "${var.project_name}-neptune-tasks-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-neptune-tasks-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "neptune_tasks_basic" {
@@ -835,8 +853,10 @@ resource "aws_iam_role_policy" "neptune_tasks" {
 # source from codeload.github.com.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "blocks" {
-  name               = "${var.project_name}-blocks-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-blocks-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "blocks_basic" {
@@ -906,8 +926,10 @@ resource "aws_iam_role_policy" "blocks" {
 # authorization context — so granting it would widen the role for no effect.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "workflows" {
-  name               = "${var.project_name}-workflows-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-workflows-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "workflows_basic" {
@@ -964,8 +986,10 @@ resource "aws_iam_role_policy" "workflows" {
 # other Lambda's role grants permission to invoke the function that uses it.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "intent_pin_lookup" {
-  name               = "${var.project_name}-intent-pin-lookup-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-intent-pin-lookup-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "intent_pin_lookup_basic" {
@@ -1006,8 +1030,10 @@ resource "aws_iam_role_policy" "intent_pin_lookup" {
 # user-facing building-blocks and workflows Lambdas cannot write releases.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "seed_blocks" {
-  name               = "${var.project_name}-seed-blocks-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-seed-blocks-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "seed_blocks_basic" {
@@ -1075,8 +1101,10 @@ resource "aws_security_group" "lambda" {
 # Project source-control service. This is the only API-facing component allowed
 # to resolve delegated credentials and call repository provider APIs.
 resource "aws_iam_role" "source_control" {
-  name               = "${var.project_name}-source-control-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-source-control-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "source_control_basic" {
@@ -1214,8 +1242,10 @@ module "source_control_lambda" {
 # AgentCore-only credential broker. It has no API Gateway or event source; the
 # runtime role is the sole role granted lambda:InvokeFunction below.
 resource "aws_iam_role" "credential_broker" {
-  name               = "${var.project_name}-credential-broker-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-credential-broker-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "credential_broker_basic" {
@@ -1912,8 +1942,10 @@ module "github_lambda" {
 # OAuth callback + token storage for GitLab; mirrors github-connector.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "gitlab_connector" {
-  name               = "${var.project_name}-gitlab-connector-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-gitlab-connector-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "gitlab_connector_basic" {
@@ -2020,8 +2052,10 @@ module "gitlab_lambda" {
 # gitlab-connector role (Bitbucket tokens refresh like GitLab's).
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "bitbucket_connector" {
-  name               = "${var.project_name}-bitbucket-connector-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-bitbucket-connector-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "bitbucket_connector_basic" {
@@ -2126,8 +2160,10 @@ module "bitbucket_lambda" {
 # policy) to list repositories while a project is being connected.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "codecommit_connector" {
-  name               = "${var.project_name}-codecommit-connector-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-codecommit-connector-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "codecommit_connector_basic" {
@@ -2346,8 +2382,10 @@ module "timeline_events_lambda" {
 # discussion.message broadcasts) + Quorum AgentCore invocation.
 # -----------------------------------------------------------------------------
 resource "aws_iam_role" "discussions" {
-  name               = "${var.project_name}-discussions-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-discussions-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "discussions_basic" {
@@ -2789,8 +2827,10 @@ resource "aws_iam_role_policy" "realtime_fanout" {
 # =============================================================================
 
 resource "aws_iam_role" "intents" {
-  name               = "${var.project_name}-intents-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-intents-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "intents_basic" {
@@ -3268,8 +3308,10 @@ resource "aws_lambda_function_event_invoke_config" "intents_attachment_created" 
 # =============================================================================
 
 resource "aws_iam_role" "v2_orchestrator" {
-  name               = "${var.project_name}-v2-orchestrator-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-v2-orchestrator-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "v2_orchestrator_basic" {
