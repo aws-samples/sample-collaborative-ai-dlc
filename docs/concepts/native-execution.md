@@ -3021,6 +3021,120 @@ compatibility while implementing the recovery direction below.
       Environment/tool catalogue integration remains separable work; this
       change keeps the existing per-run immutable environment/image binding.
 
+      **Pre-deployment review (2026-10-22; candidate `2e00762`).** A second
+      source/contract review traced configuration and wire versions, image
+      retention, credential renewal, confirmation, stop/generation CAS,
+      answer history, public admission and deployment gates. No additional
+      production defect was established. This is an author review, not a
+      claim that a separate peer has approved the change.
+
+      The new `resume-owner-loss` case in the existing
+      `workspace-resume-journey.test.js` crosses the actual local runtime HTTP
+      server and production SDK response reader. A real inert CLI finishes a
+      resume, but its acknowledgement and in-memory owner are lost before
+      authority admission. A cold repeat encounters the durable existing
+      owner. The supervisor positively stops/fences that generation, preserves
+      the last admitted publication and requires a **new** member confirmation.
+      The old confirmation is rejected. Only the new confirmation starts
+      another session; the earlier answer executes zero times, no private
+      checkpoint operation occurs, and the retained hardlinks/unfinished file
+      survive. This passed before any production edit. It disproved the
+      initial review concern that HTTP error classification would make this
+      path fatal: the outer supervisor already handles the mismatch correctly.
+      Keep the regression rather than adding an unnecessary error exception.
+      This extends transport/ownership coverage, not live AWS transport proof.
+
+      Review validation: **284 backend tests PASS** across the workspace
+      journey, recovery worker, status retry, credentials, retained images,
+      runtime HTTP server and execution fence
+      (`/tmp/native-efs-predeploy-review.log`); **102 UI tests PASS** for the
+      interaction/confirmation page and retained answer history
+      (`/tmp/native-efs-predeploy-ui.log`). **21 mocked deployment/image/
+      packaging contracts PASS**, **22 wiring checks PASS**, and deployment
+      shell syntax, lint, format, secrets, architecture, dependency checks
+      (14 existing warnings / zero errors) and documentation build PASS.
+      No production module, dependency, CLI pin, Terraform resource or image
+      input changed in this review. The prior packaged-image acceptance
+      remains evidence for those unchanged bytes; no new image build or
+      installed-provider pass is claimed for the added host HTTP test.
+      Quick repeat of the expanded journey, already included in the existing
+      qualification entrypoint:
+
+      ```bash
+      NODE_OPTIONS=--no-experimental-webstorage node node_modules/vitest/vitest.mjs run \
+        --config vitest.native-foundation.config.js --maxWorkers=2 \
+        lambda/native-runtime-control/test/workspace-resume-journey.test.js
+      ```
+
+      **User-operated deployment boundary.** The agent has not run these
+      commands or changed cloud state. Use the existing dev deployment
+      credentials and configuration paths. Preserve the selected project's
+      current source/package/model configuration and keep
+      `native_services_enabled=true`; this retains existing-run services.
+      These overrides close only admission while the matching code and
+      frontend are rolled out. They use `--var` deliberately: `TF_VAR_*` loses
+      to an existing value in the selected tfvars file. `--skip-seed` avoids
+      unrelated baseline workflow reseeding.
+
+      ```bash
+      export PATH=/Users/jwthewes/.nvm/versions/node/v24.21.0/bin:$PATH
+      ./scripts/deploy-terraform.sh dev --skip-seed \
+        --var enable_native_preparation=false \
+        --var native_execution_admission_enabled=false
+      ./scripts/deploy-frontend.sh dev
+      ./scripts/deploy-terraform.sh dev --skip-seed \
+        --var enable_native_preparation=true \
+        --var native_execution_admission_enabled=true
+      ```
+
+      Inspect the normal Terraform plan for the intended dev stack before
+      applying; do not accept unexpected replacement of retained native data.
+      A local image ID is not a registry digest: record the digest actually
+      published by this deployment and compare the source/package/CLI pins.
+      Do not reuse a saved plan from before the candidate commit or from the
+      admission-closed phase to reopen admission. The deployment scripts also
+      perform their existing platform maintenance; these are user-operated
+      deployment commands, not read-only diagnostic commands.
+
+      **Bounded first live acceptance.** Start one fresh intent in space
+      `22371643-2db5-42a4-a571-e47fc35745f5`, initially with the qualified Claude
+      path and the user's selected model. Choose a small real implementation
+      that installs dependencies and runs its build/tests. Use the normal
+      workflow and required approvals; do not ask the model to bypass gates.
+      Send the new URL after starting so scoped, content-free telemetry can
+      verify `efs-workspace-v1`, actual image/package/CLI pins, turn/publication
+      identities and absence of private checkpoint boundaries.
+
+      1. Complete two question/reply rounds. Check explicit choices, grouped
+         questions, required approvals, published files and answer history.
+         Refresh/reconnect and verify saved answers and current question.
+      2. At an admitted question, leave it unanswered and close the tab for
+         at least 17 minutes. Source config sets idle timeout to 900 seconds
+         and maximum lifetime to 28,800 seconds; elapsed time alone does not
+         prove a particular deployed session expired. Confirm that boundary
+         from scoped telemetry. Reopen and submit a normal reply once.
+      3. If the runtime expired, the saved reply must remain in history and
+         the app must require explicit fresh-session confirmation after
+         positive stop proof. Confirm once. Verify the same EFS binding and
+         upstream stage, a new CLI identity, surviving files/dependencies,
+         required gates and zero automatic replay. Review/resubmit any
+         definitely-undelivered answer against the recovered question.
+      4. Complete the recovered work through a new verified publication and
+         build/test result. Record observed phase timings and any degraded
+         presentation. A successful CLI exit alone is not acceptance.
+      5. Qualify interruption during active work separately using the **new**
+         attempt's exact runtime identity. Prepare the narrowly scoped stop
+         action only after that identity exists and obtain user execution/
+         authorization; do not approximate this with the terminal Cancel
+         action. Finally test Cancel and positive stop. No failed historical
+         intent or delivered historical answer is replayed.
+
+      Deployment, provider/model behavior, browser behavior and EFS/NFS
+      replacement are still NOT RUN for this candidate. OpenCode delegated
+      dependency builds and Kiro managed-auth qualification remain explicitly
+      separate gaps. The next release decision depends on this finite live
+      evidence, not another aggregate unit-test count.
+
       **Historical first installed upstream proof PASS
       (2026-10-21).** Fresh fixture root
       `/tmp/native-efs-resume.jpYJi7` was prepared from an empty directory and

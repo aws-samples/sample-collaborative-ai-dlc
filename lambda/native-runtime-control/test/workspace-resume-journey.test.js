@@ -2,8 +2,10 @@ import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { Readable } from 'node:stream';
 import { expect, it, vi } from 'vitest';
 import { createNativeExecutor } from '../../agentcore/native/executor.js';
+import { createNativeRuntimeServer } from '../../agentcore/native/runtime-server.js';
 import { createNativeExecutionPorts } from '../../agentcore/native/execution-prepare.js';
 import { runNativeCommand } from '../../agentcore/native/command-runner.js';
 import { captureNativeSessionRecovery } from '../../agentcore/native/session-recovery-files.js';
@@ -11,7 +13,10 @@ import { createNativePublications } from '../../shared/native-publication.js';
 import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeExecutionFence } from '../../shared/native-execution-fence.js';
 import { NATIVE_WORKSPACE_RECOVERY } from '../../shared/native-recovery-mode.js';
-import { createNativeExecutionSupervisor } from '../execution-worker.js';
+import {
+  createNativeExecutionSupervisor,
+  invokeNativeExecutionRuntime,
+} from '../execution-worker.js';
 import { createNativeExecutionApi } from '../execution-api.js';
 import { executionIdentity } from '../execution-runtime.js';
 import { executionFixture } from './execution-fixtures.js';
@@ -28,6 +33,7 @@ it.each([
   'wrong-workspace',
   'wrong-config',
   'unconfirmed-stop',
+  'resume-owner-loss',
 ])('confirmed workspace resume preserves work and never replays %s input', async (scenario) => {
   const f = executionFixture({ harness: 'claude', recoveryMode: NATIVE_WORKSPACE_RECOVERY });
   await f.start();
@@ -173,6 +179,37 @@ it.each([
       },
     });
   let runtime = create();
+  let server;
+  let servedRuntime;
+  const invokeHttp = async ({ execution, payload }) => {
+    if (servedRuntime !== runtime) {
+      if (server) await new Promise((resolve) => server.close(resolve));
+      server = createNativeRuntimeServer({
+        env,
+        checkWorkspace: async () => ({}),
+        createExecutor: () => runtime,
+      });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      servedRuntime = runtime;
+    }
+    return invokeNativeExecutionRuntime({
+      execution,
+      payload,
+      runtime: {
+        async send(command) {
+          const response = await fetch(`http://127.0.0.1:${server.address().port}/invocations`, {
+            method: 'POST',
+            body: command.input.payload,
+          });
+          return {
+            statusCode: response.status,
+            contentType: response.headers.get('content-type'),
+            response: Readable.fromWeb(response.body),
+          };
+        },
+      },
+    });
+  };
   let loseResumeAck = true;
   let loseAnswerAck = scenario === 'uncertain';
   const invocations = [];
@@ -190,16 +227,20 @@ it.each([
       git: { username: 'fixture', password: 'fixture-git' },
       source: { branch: 'main', commit: 'c'.repeat(40) },
     }),
-    invoke: async ({ payload }) => {
+    invoke: async ({ execution, payload }) => {
       invocations.push(payload);
-      const report = await runtime[
-        {
-          'native-start': 'start',
-          'native-continue': 'continue',
-          'native-status': 'status',
-          'native-resume': 'resume',
-        }[payload.command]
-      ](payload).catch((error) => {
+      const report = await (
+        scenario === 'resume-owner-loss'
+          ? invokeHttp({ execution, payload })
+          : runtime[
+              {
+                'native-start': 'start',
+                'native-continue': 'continue',
+                'native-status': 'status',
+                'native-resume': 'resume',
+              }[payload.command]
+            ](payload)
+      ).catch((error) => {
         lastRuntimeError = error.code;
         throw error;
       });
@@ -209,6 +250,13 @@ it.each([
       }
       if (payload.command === 'native-resume' && loseResumeAck) {
         loseResumeAck = false;
+        if (scenario === 'resume-owner-loss') {
+          // The CLI really ran, but this publication was never admitted.
+          // Lose both the acknowledgement and the in-memory runtime owner.
+          await runtime.settle();
+          await fs.rm(homes, { recursive: true });
+          runtime = create();
+        }
         throw Object.assign(new Error('lost acknowledgement'), { code: 'ECONNRESET' });
       }
       return report;
@@ -333,11 +381,36 @@ it.each([
       expect(modelTurns).toBe(priorModelTurns);
       return;
     }
+    const coldResume = scenario === 'resume-owner-loss';
+    if (coldResume) {
+      await settle('RECOVERY_REQUIRED');
+      expect(f.row().recovery.reason).toBe('RESTORE_FAILED');
+      expect(f.row().recovery.canRecover).toBe(true);
+      expect(f.row().stopConfirmation.writerGeneration).toBe(2);
+      expect(f.row().publication).toEqual(first);
+      expect(modelTurns).toBe(priorModelTurns + 1);
+      // Neither a cold reissue nor the previous confirmation may launch work.
+      await expect(
+        api.recover(f.prepared, { ...request, confirmWorkspaceResume: true }, recheck),
+      ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CONFLICT' });
+      expect(modelTurns).toBe(priorModelTurns + 1);
+      await api.recover(
+        f.prepared,
+        {
+          requestId: randomUUID(),
+          recoveryId: f.row().recovery.id,
+          confirmWorkspaceResume: true,
+        },
+        recheck,
+      );
+    }
     await settle('AWAITING_USER');
-    expect(f.row().writerGeneration).toBe(2);
+    const generation = coldResume ? 3 : 2;
+    const expectedTurns = priorModelTurns + (coldResume ? 2 : 1);
+    expect(f.row().writerGeneration).toBe(generation);
     expect(f.row().publication.sequence).toBe(2);
     expect(f.row().publication.nativeSessionId).not.toBe(oldSession);
-    expect(modelTurns).toBe(priorModelTurns + 1);
+    expect(modelTurns).toBe(expectedTurns);
     expect(setup).toBe(3, 'Existing project and machine are not reinitialized');
     expect(await fs.readFile(join(project, 'unfinished.md'), 'utf8')).toBe(
       'Unpublished work must survive.\n',
@@ -355,11 +428,11 @@ it.each([
       interactionContentSha256: firstRow.interactionContentSha256,
     });
     expect(history.response.text).toBe(reply.text);
-    expect(history.retained.delivery).toBe(scenario);
+    expect(history.retained.delivery).toBe(coldResume ? 'undelivered' : scenario);
     expect(history.publication).toBeNull(); // Fresh resume did not consume the old answer.
     const resumes = invocations.filter((input) => input.command === 'native-resume');
     expect(resumes.length).toBeGreaterThanOrEqual(2); // lost ACK, same action
-    expect(new Set(resumes.map((input) => input.recoveryId)).size).toBe(1);
+    expect(new Set(resumes.map((input) => input.recoveryId)).size).toBe(coldResume ? 2 : 1);
     expect(
       resumes.every((input) => !input.text && !input.checkpoint && !input.nativeSessionId),
     ).toBe(true);
@@ -368,24 +441,25 @@ it.each([
       .split('\n')
       .map(JSON.parse);
     expect(effects.filter((event) => event.prompt === reply.text)).toHaveLength(
-      scenario === 'undelivered' ? 0 : 1,
+      scenario === 'undelivered' || coldResume ? 0 : 1,
     );
     expect(effects.at(-1).prompt).toContain('/aidlc --resume');
     expect(effects.at(-1).prompt).not.toContain(reply.text);
     await api.respond(f.prepared, ACTOR, reply, recheck);
     await supervisor(f.identity);
-    expect(modelTurns).toBe(priorModelTurns + 1);
+    expect(modelTurns).toBe(expectedTurns);
     expect(forbiddenPrivate).not.toHaveBeenCalled();
     expect(memory.writes.some((key) => key.startsWith('native-recovery/'))).toBe(false);
     await api.cancel(f.prepared, recheck);
     await supervisor(f.identity);
     expect(f.row().status).toBe('CANCELLED');
     expect(f.row().publication.sequence).toBe(2);
-    expect(f.row().stopConfirmation.writerGeneration).toBe(2);
+    expect(f.row().stopConfirmation.writerGeneration).toBe(generation);
   } finally {
     if (runtime.isBusy())
       await runtime.cancel({ ...firstIdentity, writerGeneration: f.row().writerGeneration });
     await runtime.settle();
+    if (server) await new Promise((resolve) => server.close(resolve));
     await fs.rm(base, { recursive: true, force: true });
   }
 });
