@@ -42,6 +42,7 @@ export const NATIVE_RUNTIME_FAILURE_CODES = Object.freeze([
   'native_execution_configuration_invalid',
   'native_execution_credentials_missing',
   'native_execution_directory_invalid',
+  'native_execution_workspace_invalid',
   'native_execution_disabled',
   'native_execution_file_invalid',
   'native_execution_harness_invalid',

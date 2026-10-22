@@ -268,6 +268,63 @@ describe('controller-only native credential facade', () => {
     f.executionStore.response = vi.fn(async () => structuredClone(response));
     return { ...f, response };
   };
+  const workspaceResume = async () => {
+    const f = await continuation();
+    const id = '81000000-0000-4000-8000-000000000001';
+    Object.assign(f.state.row, {
+      status: 'RECOVERING',
+      writerGeneration: 2,
+      startedAt: 100,
+      updatedAt: 200,
+      configuration: { ...f.state.row.configuration, recoveryMode: 'efs-workspace-v1' },
+      recovery: {
+        id,
+        phase: 'RESTORING',
+        canRecover: false,
+        previousGeneration: 1,
+        writerGeneration: 2,
+      },
+      workspaceResume: { id, sequence: 2, writerGeneration: 2 },
+      stopConfirmation: {
+        runtimeSessionId: f.state.row.runtimeSessionId,
+        writerGeneration: 1,
+        confirmedAt: 150,
+      },
+    });
+    delete f.state.row.response;
+    return f;
+  };
+  it('renews pinned credentials only for the stopped and explicitly confirmed workspace successor without reading or replaying an old answer', async () => {
+    const f = await workspaceResume();
+    expect(await f.invoke()).toMatchObject({ ok: true, model: { value: MODEL }, source: SOURCE });
+    expect(f.executionStore.response).not.toHaveBeenCalled();
+    expect(spies.source).not.toHaveBeenCalled();
+  });
+  it.each([
+    'no-stop',
+    'wrong-generation',
+    'wrong-episode',
+    'fencing',
+    'old-answer',
+    'legacy-mode',
+    'cancelled',
+  ])('denies %s workspace resume before reading credentials', async (change) => {
+    const f = await workspaceResume();
+    const row = f.state.row;
+    if (change === 'no-stop') delete row.stopConfirmation;
+    if (change === 'wrong-generation') row.stopConfirmation.writerGeneration = 2;
+    if (change === 'wrong-episode') row.workspaceResume.id = OTHER;
+    if (change === 'fencing') row.recovery.phase = 'FENCING';
+    if (change === 'old-answer') row.response = { deliveryStatus: 'delivered' };
+    if (change === 'legacy-mode') delete row.configuration.recoveryMode;
+    if (change === 'cancelled') row.cancelRequested = true;
+    expect(await f.invoke()).toMatchObject({
+      ok: false,
+      code: 'NATIVE_EXECUTION_CREDENTIALS_NOT_ACTIVE',
+    });
+    expect(f.ssm.send).not.toHaveBeenCalled();
+    expect(spies.git).not.toHaveBeenCalled();
+  });
 
   it('refreshes the original starter binding for a reply by a different project member', async () => {
     const f = await continuation();

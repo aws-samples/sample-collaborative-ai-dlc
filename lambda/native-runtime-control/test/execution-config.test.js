@@ -126,6 +126,7 @@ describe('native first-turn configuration', () => {
     const result = await f.resolve();
     expect(result).toEqual({
       harness: 'codex',
+      recoveryMode: 'efs-workspace-v1',
       model: null,
       promptSha256: nativePromptSha256(f.draft.request.prompt),
       packageId: f.draft.candidate.packagePin.packageId,

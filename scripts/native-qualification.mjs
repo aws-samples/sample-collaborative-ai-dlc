@@ -34,6 +34,7 @@ const run = (label, command, arguments_, cwd = root) => {
 if (!options.installedOnly) {
   const backend = [
     'lambda/native-runtime-control/test/checkpoint-journey.test.js',
+    'lambda/native-runtime-control/test/workspace-resume-journey.test.js',
     'lambda/native-runtime-control/test/execution-serial-worker.test.js',
     'lambda/native-runtime-control/test/execution-worker.test.js',
     'lambda/native-runtime-control/test/execution-recovery.test.js',

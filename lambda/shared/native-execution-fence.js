@@ -6,11 +6,18 @@ import { createHash } from 'node:crypto';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { canonicalJson } from './workflow-checkpoint.js';
 import { nativePublicationScope } from './native-publication.js';
+import { NATIVE_WORKSPACE_RECOVERY } from './native-recovery-mode.js';
 
 const keys = ['projectId', 'executionId', 'bindingId', 'attemptId', 'runtimeSessionId'];
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA = /^[a-f0-9]{64}$/;
-const REASONS = ['SESSION_LOST', 'RESTORE_FAILED', 'CHECKPOINT_UNAVAILABLE', 'DELIVERY_UNCERTAIN'];
+const REASONS = [
+  'SESSION_LOST',
+  'RESTORE_FAILED',
+  'CHECKPOINT_UNAVAILABLE',
+  'DELIVERY_UNCERTAIN',
+  'WORKSPACE_UNAVAILABLE',
+];
 const integer = (value) => Number.isSafeInteger(value) && value >= 1;
 const generation = (record) => record.writerGeneration ?? 1;
 const precondition = (error) =>
@@ -85,8 +92,12 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
       const fields = [...keys, 'schemaVersion', 'state'];
       if (record.schemaVersion === 1) {
         if (!['ACTIVE', 'CANCELLED'].includes(record.state)) fail();
-      } else if (record.schemaVersion === 2) {
+      } else if ([2, 3].includes(record.schemaVersion)) {
         fields.push('writerGeneration', 'recoveryId', 'checkpointId', 'reason');
+        if (record.schemaVersion === 3) {
+          fields.push('recoveryMode');
+          if (record.recoveryMode !== NATIVE_WORKSPACE_RECOVERY) fail();
+        }
         if (
           !integer(record.writerGeneration) ||
           !['ACTIVE', 'FENCED', 'CANCELLED'].includes(record.state) ||
@@ -106,7 +117,9 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
             (record.writerGeneration === 1
               ? record.recoveryId !== null || record.checkpointId !== null || record.reason !== null
               : record.recoveryId === null ||
-                record.checkpointId === null ||
+                (record.schemaVersion === 3
+                  ? record.checkpointId !== null
+                  : record.checkpointId === null) ||
                 record.reason === null))
         )
           fail();
@@ -124,7 +137,9 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
   const put = async (identity, record, previous) => {
     if (previous && (typeof previous.etag !== 'string' || !/^"[^"\r\n]+"$/.test(previous.etag)))
       fail();
-    const body = Buffer.from(canonicalJson({ schemaVersion: 2, ...scope(identity), ...record }));
+    const body = Buffer.from(
+      canonicalJson({ schemaVersion: record.recoveryMode ? 3 : 2, ...scope(identity), ...record }),
+    );
     const result = await s3.send(
       new PutObjectCommand({
         ...parameters(identity),
@@ -159,7 +174,11 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
       const latest = await readVersion(identity);
       if (
         canonicalJson(latest.record) ===
-        canonicalJson({ schemaVersion: 2, ...scope(identity), ...next })
+        canonicalJson({
+          schemaVersion: next.recoveryMode ? 3 : 2,
+          ...scope(identity),
+          ...next,
+        })
       )
         return latest.record;
       if (latest.record.state === 'CANCELLED') fail('NATIVE_EXECUTION_CANCELLED');
@@ -196,6 +215,7 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
               recoveryId: record?.recoveryId ?? null,
               checkpointId: record?.checkpointId ?? null,
               reason: record?.reason ?? null,
+              ...(record?.recoveryMode ? { recoveryMode: record.recoveryMode } : {}),
             },
       );
     },
@@ -220,17 +240,27 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
           // ever admitting the predecessor or incrementing its generation.
         }
         if (!['ACTIVE', 'FENCED'].includes(record.state)) conflict();
-        return { state: 'FENCED', writerGeneration, recoveryId, checkpointId: null, reason };
+        return {
+          state: 'FENCED',
+          writerGeneration,
+          recoveryId,
+          checkpointId: null,
+          reason,
+          ...(record.recoveryMode ? { recoveryMode: record.recoveryMode } : {}),
+        };
       });
     },
-    async activate(identity, { writerGeneration, recoveryId, checkpointId }) {
+    async activate(identity, { writerGeneration, recoveryId, checkpointId, recoveryMode }) {
+      const workspace = recoveryMode === NATIVE_WORKSPACE_RECOVERY;
       if (
         !integer(writerGeneration) ||
         writerGeneration === 1 ||
         typeof recoveryId !== 'string' ||
         !UUID.test(recoveryId) ||
-        typeof checkpointId !== 'string' ||
-        !SHA.test(checkpointId)
+        (recoveryMode !== undefined && !workspace) ||
+        (workspace
+          ? checkpointId !== null
+          : typeof checkpointId !== 'string' || !SHA.test(checkpointId))
       )
         fail();
       return transition(identity, (record) => {
@@ -239,13 +269,15 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
           record?.state === 'ACTIVE' &&
           record.writerGeneration === writerGeneration &&
           record.recoveryId === recoveryId &&
-          record.checkpointId === checkpointId
+          record.checkpointId === checkpointId &&
+          record.recoveryMode === recoveryMode
         )
           return null;
         if (
           record?.state !== 'FENCED' ||
           record.writerGeneration !== writerGeneration - 1 ||
-          record.recoveryId !== recoveryId
+          record.recoveryId !== recoveryId ||
+          (record.recoveryMode !== undefined && record.recoveryMode !== recoveryMode)
         )
           conflict();
         return {
@@ -254,6 +286,7 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
           recoveryId,
           checkpointId,
           reason: record.reason,
+          ...(workspace ? { recoveryMode } : {}),
         };
       });
     },

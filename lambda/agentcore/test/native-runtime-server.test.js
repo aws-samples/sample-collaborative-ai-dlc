@@ -340,6 +340,40 @@ const executionFixture = async () => {
 };
 
 describe('native execution HTTP lifecycle on real loopback sockets', () => {
+  it('uses wire v2 only for explicitly pinned workspace commands and routes resume separately', async () => {
+    const executor = Object.fromEntries(
+      ['start', 'continue', 'recover', 'resume', 'status', 'cancel', 'settle'].map((method) => [
+        method,
+        vi.fn(async () => ({ accepted: true, method })),
+      ]),
+    );
+    executor.isBusy = () => false;
+    const createExecutor = vi.fn(async () => executor);
+    const port = await start({ env: executionEnv, createExecutor, checkWorkspace: vi.fn() });
+    const payload = {
+      ...startPayload(),
+      configuration: { ...startPayload().configuration, recoveryMode: 'efs-workspace-v1' },
+    };
+    expect((await request(port, '/invocations', payload)).status).toBe(400);
+    expect(createExecutor).not.toHaveBeenCalled();
+    expect(
+      (await request(port, '/invocations', { ...payload, schemaVersion: 2 })).body.method,
+    ).toBe('start');
+    expect(
+      (
+        await request(port, '/invocations', {
+          ...payload,
+          schemaVersion: 2,
+          command: 'native-resume',
+        })
+      ).body.method,
+    ).toBe('resume');
+    expect(executor.recover).not.toHaveBeenCalled();
+    expect(
+      (await request(port, '/invocations', { ...startPayload(), schemaVersion: 2 })).status,
+    ).toBe(400);
+    expect((await request(port, '/invocations', startPayload())).body.method).toBe('start');
+  });
   it.each([
     'WAITING_FOR_INPUT',
     'STOPPED',

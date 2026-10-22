@@ -13,6 +13,10 @@ import {
   NATIVE_PENDING_INPUT_LIMITS,
 } from '../../shared/native-pending-input.js';
 import { NATIVE_RECOVERY_LIMITS } from '../../shared/native-recovery-checkpoint.js';
+import {
+  nativeRecoveryModeValid,
+  nativeWorkspaceRecovery,
+} from '../../shared/native-recovery-mode.js';
 import { createNativeTurnOutput } from './turn-output.js';
 import { resolveKiroPromptEvidence } from './kiro-prompt.js';
 import { kiroAssistantHash } from './kiro-acp-turn.js';
@@ -81,7 +85,7 @@ const sameIdentity = (a, b) => IDENTITY.every((key) => a[key] === b[key]);
 const within = (base, path) => path === base || path.startsWith(`${base}/`);
 const identityOf = (payload) => Object.fromEntries(IDENTITY.map((key) => [key, payload[key]]));
 
-export const nativeFirstTurnPrompt = ({ harness, request } = {}) => {
+export const nativeFirstTurnPrompt = ({ harness, request, recoveryMode } = {}) => {
   if (!HARNESSES.includes(harness)) fail('native_execution_harness_invalid');
   // Codex expands a named skill from $aidlc in exec as well as interactive mode.
   const marker = harness === 'codex' ? '$aidlc' : '/aidlc';
@@ -96,10 +100,30 @@ export const nativeFirstTurnPrompt = ({ harness, request } = {}) => {
     'the user. Do not approve a gate, answer on behalf of the user, or continue past that wait. ' +
     'Native filesystem capability: ordinary npm installs, local file: dependencies and builds ' +
     'are supported. Generated node_modules trees, including bounded relative internal links, ' +
-    'are retained exactly in private recovery; authored files, package manifests and lockfiles ' +
+    (nativeWorkspaceRecovery({ recoveryMode })
+      ? 'remain in this persistent workspace; no exact private CLI backup is required. Authored files, package manifests and lockfiles '
+      : 'are retained exactly in private recovery; authored files, package manifests and lockfiles ') +
     'remain published. Other public symbolic links, external/absolute or private targets, ' +
     'cycles and missing targets are unsupported. Do not skip required dependencies or tests ' +
     'or copy private files as a workaround. ' +
+    NATIVE_QUESTION_MODE_INSTRUCTION +
+    NATIVE_PENDING_SPEC_INSTRUCTION +
+    NATIVE_INTAKE_ANSWER_INSTRUCTION
+  );
+};
+
+export const nativeWorkspaceResumePrompt = ({ harness }) => {
+  if (!HARNESSES.includes(harness)) fail('native_execution_harness_invalid');
+  return (
+    `${harness === 'codex' ? '$aidlc' : '/aidlc'} --resume\n\n` +
+    'The member explicitly confirmed a fresh CLI session on this same surviving workspace. ' +
+    'Use the pinned AI-DLC recovery protocol and its supported resume entrypoint. ' +
+    'The workspace contains its existing workflow records and may contain interrupted, unpublished edits. ' +
+    'Do not initialize another project, replace this directory from a publication, or reconstruct a workflow in parallel. ' +
+    'AI-DLC must reconcile its artifacts, audit, state and runtime graph, continue incomplete work, or ask the member. ' +
+    'This confirmation grants no workflow approval and contains no replay of an earlier answer or command. ' +
+    'Do not infer that a prior answer was consumed or repeat uncertain external effects. ' +
+    'At the next required question or human gate, preserve work, present it and end this turn. ' +
     NATIVE_QUESTION_MODE_INSTRUCTION +
     NATIVE_PENDING_SPEC_INSTRUCTION +
     NATIVE_INTAKE_ANSWER_INSTRUCTION
@@ -623,6 +647,7 @@ export const configureNativeClaudeSessionEnd = async (project) => {
 const canonicalConfig = (configuration) => {
   if (
     !configuration ||
+    !nativeRecoveryModeValid(configuration) ||
     !HARNESSES.includes(configuration.harness) ||
     !(configuration.model === null || safeText(configuration.model, 256)) ||
     !text(configuration.prompt, 64 * 1024) ||
@@ -636,6 +661,7 @@ const canonicalConfig = (configuration) => {
   const { harness, model, prompt, packageVersion, repository } = configuration;
   return {
     harness,
+    ...(configuration.recoveryMode ? { recoveryMode: configuration.recoveryMode } : {}),
     model,
     prompt,
     packageVersion,
@@ -833,7 +859,19 @@ export const createNativeExecutor = ({
   const prepareNativeTurn = async (payload, onActivity) => {
     timing('preparationStarted');
     const signal = current.controller.signal;
-    const continuing = payload.command === 'native-continue';
+    const continuing = payload.command !== 'native-start';
+    if (payload.command === 'native-resume') {
+      const restored = await prepareRecovery({
+        payload,
+        root,
+        project,
+        home: current.home,
+        signal,
+      });
+      if (restored?.package?.packageId !== current.workspacePackageId)
+        fail('native_execution_workspace_invalid');
+      current.package = restored.package;
+    }
     const prepared = continuing
       ? await prepareContinuation({ payload, signal })
       : await prepare({ payload, root, project, home: current.home, signal });
@@ -988,13 +1026,34 @@ export const createNativeExecutor = ({
       await checkDirectories();
       if (configuration.harness === 'claude') await configureNativeClaudeSessionEnd(project);
       current.package = structuredClone(pkg);
+      if (nativeWorkspaceRecovery(configuration)) {
+        const nodes = {};
+        for (const [name, path] of [
+          ['root', root],
+          ['project', project],
+          ['machine', join(root, 'machine')],
+        ]) {
+          await privateDirectory(path);
+          // NFS st_dev belongs to the current client mount, not the surviving
+          // EFS directory. Persist its full-width file ID, never that device ID.
+          nodes[name] = { ino: String((await fs.lstat(path, { bigint: true })).ino) };
+        }
+        await writeJson(join(control, 'workspace.json'), {
+          schemaVersion: 1,
+          identity: current.identity,
+          configurationSha256: current.configurationSha256,
+          packageId: pkg.packageId,
+          sourceBaseline: current.sourceBaseline,
+          nodes,
+        });
+      }
       timing('initializationVerificationCompleted');
     }
     timing('installationCompleted');
     return {
       payload,
       signal,
-      continuing,
+      continuing: payload.command === 'native-continue',
       pkg,
       configuration,
       forbiddenBytes,
@@ -1053,12 +1112,16 @@ export const createNativeExecutor = ({
       XDG_CACHE_HOME: join(current.home, '.cache'),
       OPENCODE_DISABLE_AUTOUPDATE: '1',
     };
-    const prompt = continuing
-      ? payload.text
-      : nativeFirstTurnPrompt({
-          harness: configuration.harness,
-          request: configuration.prompt,
-        });
+    const prompt =
+      payload.command === 'native-resume'
+        ? nativeWorkspaceResumePrompt(configuration)
+        : continuing
+          ? payload.text
+          : nativeFirstTurnPrompt({
+              harness: configuration.harness,
+              request: configuration.prompt,
+              recoveryMode: configuration.recoveryMode,
+            });
     const nextPromptEvidence =
       configuration.harness === 'kiro'
         ? await resolveKiroPromptEvidence({ project, prompt })
@@ -1295,7 +1358,7 @@ export const createNativeExecutor = ({
         completed.messages.map((message) => message.text).join(''),
       ),
     };
-    if (publishRecovery) {
+    if (publishRecovery && !nativeWorkspaceRecovery(configuration)) {
       // Quiescent private session state is required for the next reply.
       // Public artifact/message uploads alone are not a resumable session.
       timing('checkpointCaptureStarted');
@@ -1430,6 +1493,27 @@ export const createNativeExecutor = ({
       fail('native_execution_local_record_unavailable');
     }
   };
+  const createFreshHome = async (identity, generation, directories) => {
+    await fs.mkdir(homeRoot, { recursive: true, mode: 0o700 });
+    directories.set(homeRoot, await privateDirectory(homeRoot));
+    const bindingHome = join(homeRoot, identity.bindingId);
+    await fs.mkdir(bindingHome, { mode: 0o700 }).catch((error) => {
+      if (generation === 1 || error.code !== 'EEXIST') throw error;
+    });
+    directories.set(bindingHome, await privateDirectory(bindingHome));
+    const home = join(
+      bindingHome,
+      generation === 1 ? identity.attemptId : `${identity.attemptId}-writer-${generation}`,
+    );
+    directories.set(home, await createPrivateDirectory(home));
+    await createPrivateDirectory(join(home, '.codex'));
+    await fs.writeFile(
+      join(home, '.codex/config.toml'),
+      `[projects.${JSON.stringify(project)}]\ntrust_level = "trusted"\n`,
+      { flag: 'wx', mode: 0o600 },
+    );
+    return home;
+  };
   const status = async (value) => {
     const identity = validateIdentity(value);
     const writerGeneration = generationOf(value);
@@ -1523,7 +1607,7 @@ export const createNativeExecutor = ({
     const writerGeneration = generationOf(input);
     if (
       input.command !== 'native-start' ||
-      input.schemaVersion !== 1 ||
+      input.schemaVersion !== (nativeWorkspaceRecovery(input.configuration) ? 2 : 1) ||
       writerGeneration !== 1 ||
       (input.sequence !== undefined && input.sequence !== 1)
     )
@@ -1596,21 +1680,7 @@ export const createNativeExecutor = ({
         join(root, 'machine/bin'),
       ])
         directories.set(path, await createPrivateDirectory(path));
-      await fs.mkdir(homeRoot, { recursive: true, mode: 0o700 });
-      directories.set(homeRoot, await privateDirectory(homeRoot));
-      current.home = join(homeRoot, identity.bindingId, identity.attemptId);
-      await fs.mkdir(join(homeRoot, identity.bindingId), { mode: 0o700 });
-      directories.set(
-        join(homeRoot, identity.bindingId),
-        await privateDirectory(join(homeRoot, identity.bindingId)),
-      );
-      directories.set(current.home, await createPrivateDirectory(current.home));
-      await createPrivateDirectory(join(current.home, '.codex'));
-      await fs.writeFile(
-        join(current.home, '.codex/config.toml'),
-        `[projects.${JSON.stringify(project)}]\ntrust_level = "trusted"\n`,
-        { flag: 'wx', mode: 0o600 },
-      );
+      current.home = await createFreshHome(identity, writerGeneration, directories);
       await persist();
       // Freeze the normalized configuration rather than retaining mutable
       // caller objects across the acknowledgement/async boundary.
@@ -1628,13 +1698,135 @@ export const createNativeExecutor = ({
       launching = false;
     }
   };
+  const resumeWorkspace = async (value) => {
+    const input = structuredClone(value);
+    const identity = validateIdentity(input);
+    const writerGeneration = generationOf(input);
+    const configuration = canonicalConfig(input.configuration);
+    const configurationSha256 = digest(JSON.stringify(configuration));
+    const controller = new AbortController();
+    if (
+      input.command !== 'native-resume' ||
+      input.schemaVersion !== 2 ||
+      !nativeWorkspaceRecovery(configuration) ||
+      writerGeneration < 2 ||
+      !Number.isSafeInteger(input.sequence) ||
+      input.sequence < 1 ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
+        input.recoveryId ?? '',
+      ) ||
+      input.imageDigest !== env.NATIVE_EXECUTION_IMAGE_DIGEST ||
+      ['text', 'checkpoint', 'nativeSessionId', 'requestId'].some((key) =>
+        Object.hasOwn(input, key),
+      ) ||
+      ![assertRecoveryAdmission, prepareRecovery, prepareContinuation].every(
+        (port) => typeof port === 'function',
+      )
+    )
+      fail('native_execution_request_invalid');
+    if (launching) fail('native_execution_busy');
+    if (current) {
+      if (
+        poisoned ||
+        !sameIdentity(current.identity, identity) ||
+        current.writerGeneration !== writerGeneration ||
+        current.configurationSha256 !== configurationSha256 ||
+        current.report.recoveryId !== input.recoveryId ||
+        current.report.sequence !== input.sequence
+      )
+        fail('native_execution_owner_conflict');
+      return { ...report(), accepted: true, duplicate: true };
+    }
+    launching = true;
+    try {
+      await assertRecoveryAdmission({
+        identity,
+        writerGeneration,
+        recoveryId: input.recoveryId,
+        checkpointId: null,
+        recoveryMode: configuration.recoveryMode,
+        signal: controller.signal,
+      });
+      await inspectMount({ workspaceDir: root });
+      const previous = await readExisting(identity, writerGeneration - 1);
+      const workspace = await readLocalRecord(join(control, 'workspace.json'));
+      if (
+        previous.configurationSha256 !== configurationSha256 ||
+        workspace.schemaVersion !== 1 ||
+        !sameIdentity(workspace.identity ?? {}, identity) ||
+        workspace.configurationSha256 !== configurationSha256 ||
+        !/^sha256:[a-f0-9]{64}$/.test(workspace.packageId ?? '')
+      )
+        fail('native_execution_workspace_invalid');
+      const directories = new Map();
+      for (const [name, path] of [
+        ['root', root],
+        ['project', project],
+        ['machine', join(root, 'machine')],
+      ]) {
+        const node = await privateDirectory(path);
+        if (String((await fs.lstat(path, { bigint: true })).ino) !== workspace.nodes?.[name]?.ino)
+          fail('native_execution_workspace_invalid');
+        directories.set(path, node);
+      }
+      for (const path of [control, join(root, 'machine/data'), join(root, 'machine/bin')])
+        directories.set(path, await privateDirectory(path));
+      ownerDirectory = directoryForGeneration(writerGeneration);
+      // An existing cold owner may already have delivered this resume action.
+      // Never reconstruct its ACK or execute it again; require another stopped,
+      // explicitly confirmed generation through the authority.
+      directories.set(ownerDirectory, await createPrivateDirectory(ownerDirectory));
+      current = {
+        identity,
+        writerGeneration,
+        configurationSha256,
+        directories,
+        controller,
+        sourceBaseline: workspace.sourceBaseline,
+        workspacePackageId: workspace.packageId,
+        report: {
+          schemaVersion: 1,
+          ...identity,
+          writerGeneration,
+          sequence: input.sequence,
+          recoveryId: input.recoveryId,
+          requestId: input.recoveryId,
+          status: 'preparing',
+          updatedAt: Date.now(),
+        },
+      };
+      await writeJson(join(ownerDirectory, 'owner.json'), {
+        schemaVersion: 1,
+        identity,
+        writerGeneration,
+        configurationSha256,
+      });
+      await syncDirectory(control);
+      current.home = await createFreshHome(identity, writerGeneration, directories);
+      await persist();
+      const payload = structuredClone({ ...input, configuration });
+      task = new Promise((resolveTask) => setImmediate(() => resolveTask(execute(payload))));
+      return { ...report(), accepted: true, duplicate: false };
+    } catch (error) {
+      if (current) {
+        poisoned = true;
+        current.report.status = 'stopped_needs_review';
+        current.report.code = 'native_execution_workspace_invalid';
+      }
+      if (error?.code === 'EEXIST') fail('native_execution_existing_owner');
+      if (/^native_execution_[a-z_]{1,64}$/.test(error?.code ?? '')) throw error;
+      fail('native_execution_workspace_invalid');
+    } finally {
+      launching = false;
+    }
+  };
   const continueTurn = async (value) => {
     const input = structuredClone(value);
     const identity = validateIdentity(input);
     const writerGeneration = generationOf(input);
     if (
       input.command !== 'native-continue' ||
-      input.schemaVersion !== 1 ||
+      input.schemaVersion !== (nativeWorkspaceRecovery(input.configuration) ? 2 : 1) ||
       !Number.isSafeInteger(input.sequence) ||
       input.sequence < 2 ||
       !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
@@ -1762,6 +1954,7 @@ export const createNativeExecutor = ({
     if (
       input.command !== 'native-recover' ||
       input.schemaVersion !== 1 ||
+      nativeWorkspaceRecovery(configuration) ||
       writerGeneration < 2 ||
       !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
         input.recoveryId ?? '',
@@ -2103,6 +2296,7 @@ export const createNativeExecutor = ({
     start,
     continue: continueTurn,
     recover,
+    resume: resumeWorkspace,
     status,
     cancel,
     isBusy: () => launching || poisoned || (current && ACTIVE.has(current.report.status)) === true,

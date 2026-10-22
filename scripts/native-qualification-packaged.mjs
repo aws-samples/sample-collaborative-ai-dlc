@@ -39,14 +39,19 @@ async function bundleControllerAdapter(root, directory) {
     },
     logLevel: 'silent',
   });
-  const runner = join(directory, 'scripts/native-installed-qualification.mjs');
-  let source = await fs.readFile(runner, 'utf8');
-  for (const path of controllers)
-    source = source.replaceAll(
-      `'../lambda/native-runtime-control/${path}'`,
-      "'../controller-qualification.mjs'",
-    );
-  await fs.writeFile(runner, source);
+  for (const name of [
+    'native-installed-qualification.mjs',
+    'native-workspace-qualification-driver.mjs',
+  ]) {
+    const runner = join(directory, 'scripts', name);
+    let source = await fs.readFile(runner, 'utf8');
+    for (const path of controllers)
+      source = source.replaceAll(
+        `'../lambda/native-runtime-control/${path}'`,
+        "'../controller-qualification.mjs'",
+      );
+    await fs.writeFile(runner, source);
+  }
   return hash(await fs.readFile(filename));
 }
 

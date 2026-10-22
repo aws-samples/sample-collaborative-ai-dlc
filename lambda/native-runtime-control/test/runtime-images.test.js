@@ -110,6 +110,24 @@ describe('native runtime image policy', () => {
       });
     },
   );
+  it.each(['RECOVERY_REQUIRED', 'RECOVERING'])(
+    'retains the exact workspace-mode image during %s without inventing an exact checkpoint',
+    async (status) => {
+      const revocations = {};
+      const { images } = policy(revocations);
+      const execution = row(status, {
+        configuration: { image: OLD, recoveryMode: 'efs-workspace-v1' },
+      });
+      expect(await images.decide({ image: OLD, row: execution, deployment })).toEqual({
+        status: 'retained',
+      });
+      revocations[nativeRuntimeImageKey(OLD.digest).pk] = revocation(OLD.digest);
+      expect((await images.decide({ image: OLD, row: execution, deployment })).status).toBe(
+        'revoked',
+      );
+      expect(nativeImageRenewalEligible({ ...execution, status: 'FAILED' })).toBe(false);
+    },
+  );
 
   it('keeps authorization independent of how many older pins are referenced', async () => {
     const { images } = policy();

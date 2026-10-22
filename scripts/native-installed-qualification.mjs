@@ -41,6 +41,12 @@ import {
   localProviderInvocation,
 } from './native-qualification-provider.mjs';
 import { qualifyKiro } from './native-qualification-kiro.mjs';
+import {
+  qualifyClaudeWorkspaceProtocol,
+  qualifyWorkspaceTransport,
+} from './native-workspace-protocol-qualification.mjs';
+
+import { dependencyInstall } from './native-qualification-dependencies.mjs';
 
 const harness = process.argv[2];
 assert.ok(Object.hasOwn(NATIVE_RECOVERY_HARNESS_VERSIONS, harness), 'Select an installed CLI');
@@ -63,22 +69,6 @@ const model = {
   opencode: 'fixture/test',
   kiro: null,
 }[harness];
-
-// A real offline package-manager workload, not a hand-created snapshot link.
-// No registry access, package scripts or model decisions are required.
-const dependencyInstall = [
-  'mkdir -p vendor/fixture-bin vendor/fixture-ordinary test',
-  `printf '%s' '{"name":"fixture-project","version":"1.0.0","private":true,"scripts":{"build":"fixture-tool && fixture-ordinary","test":"node --test test/*.test.cjs"},"dependencies":{"fixture-bin":"file:vendor/fixture-bin","fixture-ordinary":"file:vendor/fixture-ordinary-1.0.0.tgz"}}' > package.json`,
-  `printf '%s' '{"name":"fixture-bin","version":"1.0.0","bin":{"fixture-tool":"cli.js"}}' > vendor/fixture-bin/package.json`,
-  `printf '%s\\n' '#!/usr/bin/env node' 'const fs=require("node:fs");fs.mkdirSync("dist",{recursive:true});fs.writeFileSync("dist/local.txt","local build");' > vendor/fixture-bin/cli.js`,
-  `printf '%s' '{"name":"fixture-ordinary","version":"1.0.0","bin":{"fixture-ordinary":"cli.js"}}' > vendor/fixture-ordinary/package.json`,
-  `printf '%s\\n' '#!/usr/bin/env node' 'require("node:fs").writeFileSync("dist/ordinary.txt","ordinary build");' > vendor/fixture-ordinary/cli.js`,
-  `printf '%s' 'const t=require("node:test"),a=require("node:assert/strict"),fs=require("node:fs");t("both restored executables build",()=>{a.equal(fs.readFileSync("dist/local.txt","utf8"),"local build");a.equal(fs.readFileSync("dist/ordinary.txt","utf8"),"ordinary build");});' > test/build.test.cjs`,
-  `printf '%s\\n' 'node_modules/' > .gitignore`,
-  'npm pack ./vendor/fixture-ordinary --offline --ignore-scripts --pack-destination vendor',
-  'npm install --offline --ignore-scripts --no-audit --no-fund',
-  'npm run build --offline && npm test --offline',
-].join(' && ');
 
 async function codexHistory({ directory, env, provider, sessionId, forkId, createFork }) {
   historyProbes++;
@@ -1216,6 +1206,33 @@ try {
         stopConfirmed: true,
         replayCount: 0,
       });
+    }
+    // Each scenario owns a full attested installation. Finish and dispose the
+    // exact-recovery fixture before creating the independent workspace-mode
+    // fixture; retaining both exceeds the deliberately bounded 1 GiB tmpfs.
+    await api.cancel(f.prepared, async () => {});
+    await supervisor(f.identity);
+    assert.equal(f.row().status, 'CANCELLED');
+    assert.equal(f.row().stopConfirmation.writerGeneration, f.row().writerGeneration);
+    await runtime.settle();
+    await provider.close();
+    runtime = undefined;
+    provider = undefined;
+    const beforeDisposal = await fs.statfs(base);
+    await fs.rm(base, { recursive: true, force: true });
+    const afterDisposal = await fs.statfs('/tmp');
+    report({
+      probe: 'scenario-disposal',
+      stopped: true,
+      reclaimedBytes:
+        afterDisposal.bavail * afterDisposal.bsize - beforeDisposal.bavail * beforeDisposal.bsize,
+    });
+    if (harness === 'claude') {
+      phase = 'upstream-workspace-resume';
+      await qualifyClaudeWorkspaceProtocol({ composed: true });
+    } else {
+      phase = 'upstream-workspace-resume';
+      await qualifyWorkspaceTransport(harness);
     }
     report({ status: lifecycleFailed || protocolFailed ? 'FAIL' : 'PASS' });
     if (lifecycleFailed || protocolFailed) process.exitCode = 1;

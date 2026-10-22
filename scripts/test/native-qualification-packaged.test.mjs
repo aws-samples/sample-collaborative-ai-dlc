@@ -99,7 +99,18 @@ test('packaged mode admits immutable local content IDs and mounts tests without 
     ])
       await writeFile(join(root, 'lambda/native-runtime-control', path), 'export {};');
     await writeFile(join(root, 'scripts/native-installed-qualification.mjs'), 'export {};');
+    await writeFile(
+      join(root, 'scripts/native-workspace-qualification-driver.mjs'),
+      "import {executionIdentity} from '../lambda/native-runtime-control/execution-runtime.js';",
+    );
     staged = await stagePackagedQualification(root);
+    assert.match(
+      await readFile(
+        join(staged.directory, 'scripts/native-workspace-qualification-driver.mjs'),
+        'utf8',
+      ),
+      /from '..\/controller-qualification.mjs'/,
+    );
     assert.equal(
       await readlink(join(staged.directory, 'lambda/agentcore/owner.js')),
       '/opt/agentcore/owner.js',

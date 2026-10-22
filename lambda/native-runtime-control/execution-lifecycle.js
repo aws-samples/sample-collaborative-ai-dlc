@@ -3,6 +3,7 @@ import { nativeTurnSequence, nativeWriterGeneration } from './execution-store.js
 import { executionIdentity, executionRuntimeConfiguration } from './execution-runtime.js';
 import { nativeFileExclusion } from '../shared/native-project-files.js';
 import { recordNativeBoundary } from '../shared/native-lifecycle.js';
+import { nativeWorkspaceRecovery, nativeCommandSchema } from '../shared/native-recovery-mode.js';
 export const fail = (code) => {
   throw Object.assign(new Error(code), { code });
 };
@@ -80,7 +81,9 @@ export const checkReportIdentity = (row, report) => {
 };
 export const admitted = (row, report) =>
   report?.sequence === nativeTurnSequence(row) &&
-  (!row.response || report.requestId === row.response.commandId) &&
+  (row.workspaceResume?.sequence === nativeTurnSequence(row)
+    ? report.requestId === row.workspaceResume.id
+    : !row.response || report.requestId === row.response.commandId) &&
   ['preparing', 'running', 'publishing', 'publication_ready'].includes(report.status) &&
   (report.recovered !== true || report.status === 'publication_ready');
 export const priorBoundary = (row, report) =>
@@ -206,6 +209,41 @@ export const checkedCredentials = (row, material) => {
   return material;
 };
 
+const recoveryPayload = async (row, draft, credentials) => {
+  const configuration = executionRuntimeConfiguration(draft, row);
+  const common = {
+    ...writerPayload(row),
+    recoveryId: row.recovery.id,
+    configuration,
+    imageDigest: row.configuration.image.digest,
+    package: { candidate: draft.candidate, archiveReceipt: draft.archiveReceipt },
+  };
+  if (!nativeWorkspaceRecovery(row.configuration))
+    return {
+      ...common,
+      command: 'native-recover',
+      schemaVersion: 1,
+      sequence: row.publication.sequence,
+      checkpoint: row.recoveryCheckpoint,
+      publication: row.publication,
+      interaction: row.interaction,
+    };
+  const material = checkedCredentials(row, await credentials(row));
+  if (
+    !material?.ok ||
+    material.source?.commit !== row.sourceCommit ||
+    material.source?.branch !== row.sourceBranch
+  )
+    fail('NATIVE_EXECUTION_SOURCE_CHANGED');
+  return {
+    ...common,
+    command: 'native-resume',
+    schemaVersion: 2,
+    sequence: nativeTurnSequence(row),
+    credentials: { model: material.model, git: material.git },
+  };
+};
+
 export const reconcileNativeRecovery = async ({
   state,
   draft,
@@ -219,14 +257,17 @@ export const reconcileNativeRecovery = async ({
   observedInvoke,
   status,
   observe,
+  credentials,
 }) => {
   const recovery = state.row.recovery;
+  const workspace = nativeWorkspaceRecovery(state.row.configuration);
   try {
-    await verifyCheckpoint(
-      state.row.recoveryCheckpoint,
-      state.row.publication,
-      state.row.interaction,
-    );
+    if (!workspace)
+      await verifyCheckpoint(
+        state.row.recoveryCheckpoint,
+        state.row.publication,
+        state.row.interaction,
+      );
   } catch (error) {
     if (['NATIVE_RECOVERY_INVALID', 'NATIVE_RECOVERY_MISSING'].includes(error.code))
       return requireRecovery('CHECKPOINT_UNAVAILABLE');
@@ -251,33 +292,31 @@ export const reconcileNativeRecovery = async ({
   await fence.activate(executionIdentity(state.row), {
     writerGeneration: nativeWriterGeneration(state.row),
     recoveryId: recovery.id,
-    checkpointId: state.row.recoveryCheckpoint.id,
+    checkpointId: workspace ? null : state.row.recoveryCheckpoint.id,
+    ...(workspace ? { recoveryMode: state.row.configuration.recoveryMode } : {}),
   });
   await check();
   let report;
   let phase = 'recover';
   try {
+    const payload = await recoveryPayload(state.row, draft, credentials);
+    await check();
     const ack = await observedInvoke({
       execution: state.row,
-      payload: {
-        command: 'native-recover',
-        schemaVersion: 1,
-        ...writerPayload(state.row),
-        recoveryId: recovery.id,
-        sequence: state.row.publication.sequence,
-        checkpoint: state.row.recoveryCheckpoint,
-        publication: state.row.publication,
-        interaction: state.row.interaction,
-        configuration: executionRuntimeConfiguration(draft, state.row),
-        imageDigest: state.row.configuration.image.digest,
-        package: { candidate: draft.candidate, archiveReceipt: draft.archiveReceipt },
-      },
+      payload,
     });
     await check();
     checkReportIdentity(state.row, ack);
     phase = 'status';
-    report = ack.status === 'recovery_ready' ? ack : await status();
+    report = workspace || ack.status === 'recovery_ready' ? ack : await status();
   } catch (error) {
+    if (
+      workspace &&
+      [error?.code, runtimeReadFailures.get(error)?.runtimeCode].includes(
+        'native_execution_workspace_invalid',
+      )
+    )
+      return requireRecovery('WORKSPACE_UNAVAILABLE');
     if (recoveryReadRejected(error)) return requireRecovery('RESTORE_FAILED');
     const failureClass = statusReadFailure(error);
     if (!failureClass) throw error;
@@ -297,6 +336,12 @@ export const reconcileNativeRecovery = async ({
   }
   await check();
   checkReportIdentity(state.row, report);
+  if (workspace) {
+    if (report.recoveryId !== recovery.id || !admitted(state.row, report))
+      return requireRecovery('RESTORE_FAILED');
+    state.row = await store.recovered({ row: state.row });
+    return yieldPending();
+  }
   if (
     report.recoveryId !== recovery.id ||
     report.checkpointId !== state.row.recoveryCheckpoint.id ||
@@ -349,6 +394,7 @@ export const reconcileNativeDispatch = async ({
     checkReportIdentity(state.row, report);
     if (!priorBoundary(state.row, report)) return requireRecovery('DELIVERY_UNCERTAIN');
     if (report.recovered === true) {
+      if (nativeWorkspaceRecovery(state.row.configuration)) return requireRecovery('SESSION_LOST');
       if (!state.row.recoveryCheckpoint) return requireRecovery('CHECKPOINT_UNAVAILABLE');
       try {
         await verifyCheckpoint(
@@ -376,7 +422,7 @@ export const reconcileNativeDispatch = async ({
   const configuration = executionRuntimeConfiguration(draft, state.row);
   let payload = {
     command: 'native-start',
-    schemaVersion: 1,
+    schemaVersion: nativeCommandSchema(state.row.configuration),
     ...writerPayload(state.row),
     imageDigest: state.row.configuration.image.digest,
     sequence: nativeTurnSequence(state.row),
@@ -399,7 +445,7 @@ export const reconcileNativeDispatch = async ({
       fail('NATIVE_EXECUTION_RUNTIME_MISMATCH');
     payload = {
       command: 'native-continue',
-      schemaVersion: 1,
+      schemaVersion: nativeCommandSchema(state.row.configuration),
       ...writerPayload(state.row),
       sequence: response.sequence,
       requestId: response.commandId,

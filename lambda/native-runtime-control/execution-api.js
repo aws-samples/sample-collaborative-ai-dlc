@@ -60,6 +60,7 @@ export const nativeExecutionView = (row) =>
         model: row.configuration.model,
         credentialSource: row.configuration.credentialBinding.source,
         imageDigest: row.configuration.image.digest,
+        ...(row.configuration.recoveryMode ? { recoveryMode: row.configuration.recoveryMode } : {}),
         repository: {
           provider: row.configuration.repository.provider,
           repository: row.configuration.repository.repository,

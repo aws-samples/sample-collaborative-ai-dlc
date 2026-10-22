@@ -370,6 +370,29 @@ it('opens the exact proposal, immutable answer, raw unknown file and resulting r
   expect(mocks.respond).not.toHaveBeenCalled();
 });
 
+it('keeps a definitely undelivered answer visible after confirmed fresh-session recovery without offering historical replay', async () => {
+  const original = mocks.decision.getMockImplementation()!;
+  mocks.decision.mockImplementation(async (...args) => {
+    const value = await original(...args);
+    return {
+      ...value,
+      answer: {
+        ...value.answer,
+        deliveryStatus: 'unknown',
+        deliveredAt: null,
+        resultingPublication: null,
+        resumeRetention: { recordedAt: stamp, delivery: 'undelivered' },
+      },
+    };
+  });
+  mount();
+  expect(await screen.findByText('Accepted exact answer')).toBeVisible();
+  expect(screen.getByText(/Retained during fresh-session recovery.*not sent again/i)).toBeVisible();
+  expect(screen.getByText(/Review it against the resumed question/i)).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Send reply' })).not.toBeInTheDocument();
+  expect(mocks.respond).not.toHaveBeenCalled();
+});
+
 it('preserves a named revision across new heads, browser back/forward, and current/history switches', async () => {
   mount();
   await screen.findByText('old plan');

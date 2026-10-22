@@ -26,7 +26,11 @@ import {
 
 const clone = (v) => structuredClone(v);
 const hash = (v) => createHash('sha256').update(v).digest('hex');
-export const executionFixture = ({ harness = 'codex', model = 'openai.example' } = {}) => {
+export const executionFixture = ({
+  harness = 'codex',
+  model = 'openai.example',
+  recoveryMode,
+} = {}) => {
   const prepared = {
     ...nativeRuntimeBindingKey(IDENTITY),
     ...IDENTITY,
@@ -46,6 +50,7 @@ export const executionFixture = ({ harness = 'codex', model = 'openai.example' }
   const configuration = {
     harness,
     model,
+    ...(recoveryMode ? { recoveryMode } : {}),
     promptSha256: hash(prepared.request.prompt),
     packageId: prepared.candidate.packagePin.packageId,
     materializationId: prepared.candidate.materializationId,

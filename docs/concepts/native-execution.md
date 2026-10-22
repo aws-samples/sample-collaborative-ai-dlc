@@ -135,16 +135,19 @@ a previously imported package or prepared workspace as continuing authorization.
 ### Files and checkpoints
 
 The native runtime owns mutable workflow files. At a quiescent turn boundary it
-uploads candidate publications and private recovery checkpoints to versioned S3
-storage. The supervisor verifies their exact versions, hashes, inventories,
-session identity, and pinned context. The authority admits the publication only
-for the current lease and writer generation, recording immutable history and
-the committed head in DynamoDB.
+uploads candidate public results and interactions to versioned S3. The supervisor
+verifies their exact versions, hashes, inventories, session identity and pinned
+context before the authority admits them for the current lease and writer.
+**New executions pin `recoveryMode: efs-workspace-v1` (2026-10-21): their ordinary
+turns do not capture or export private recovery checkpoints.** The surviving EFS
+directory preserves generated dependencies and unfinished edits. Retained
+executions with no recovery-mode field continue their original exact-checkpoint
+contract, including private inventory verification before admission.
 
 Publications contain readable work products and the presented interaction.
-Private checkpoints also carry the state needed to restore the same harness
-conversation; they are not public artifacts. Required publications, answers, and
-recovery state are independent of optional debug archives and their retention.
+Legacy private checkpoints carry the state needed to restore the same harness
+conversation; they are not public artifacts. Required publications and answers
+are independent of optional debug archives and their retention.
 A published proposal is evidence of what was shown, not permission to perform
 the actions it proposes.
 
@@ -401,12 +404,22 @@ before requesting session stop. Cancellation does not admit another writer.
 Already committed history remains readable, and projection may finish an
 already admitted revision.
 
-Recovery requires a verified checkpoint and positive confirmation that the
-predecessor session stopped before a new writer generation is admitted. It
-restores the same conversation with its pinned dependencies and accepted-answer
-history. An ambiguous delivery is reported for review rather than blindly
-replaying a possibly executed turn. Unknown schemas and unsupported recovery
-formats fail closed; silently starting a fresh conversation is not recovery.
+Both recovery modes require positive predecessor-stop proof and exclusive
+successor admission. Retained exact mode additionally requires a verified
+checkpoint and restores the prior conversation. New `efs-workspace-v1` mode
+requires explicit member confirmation, opens a new CLI home/session on the same
+surviving directory, and invokes AI-DLC's supported resume entrypoint. AI-DLC
+reconciles its own artifacts/audit/state and asks any further workflow questions.
+Native never restores an older publication over unfinished work.
+
+Confirmation authorizes a **new resume action**, not an earlier answer. Delivered,
+uncertain and definitely undelivered answers remain immutable history and are
+not resent. An undelivered answer is explicitly marked as retained: the member
+reviews it against the recovered question and submits a new protected answer if
+still appropriate. Missing/wrong workspace binding, corrupt state, unknown modes
+and unsupported legacy formats fail closed. There is no silent mode fallback.
+The [active proof and qualification evidence](#open-work) distinguish this local
+contract from deployed EFS, browser and real-provider acceptance.
 
 ### Support matrix and settings
 
@@ -2813,7 +2826,231 @@ compatibility while implementing the recovery direction below.
       Start a fresh CLI with confirmation and let AI-DLC reconcile its own
       workflow. Do not build another workflow recovery engine in the wrapper.
 
-      **Upstream evidence, not yet integrated acceptance.** The pinned AI-DLC
+      **Status (2026-10-22): implementation and packaged local acceptance
+      complete; independent review and the bounded deployed EFS acceptance
+      below remain open.** The open tracker item does not mean unfinished
+      local implementation or establish deployed stability.
+
+      **Implemented contract (2026-10-21; local acceptance below).**
+
+      | Boundary / owner | New mode | Retained compatibility / failure behavior |
+      | --- | --- | --- |
+      | Configuration / `execution-config`, `execution-store` | Fresh starts pin `recoveryMode: efs-workspace-v1`; it is immutable thereafter. | Absent mode keeps exact recovery. Unknown modes are rejected. |
+      | Runtime transport / `execution-lifecycle`, `runtime-server` | Wire schema 2 for start/continue/resume; `native-resume` carries an episode ID, generation, pins and renewed credentials, never prior answer text or a checkpoint. | Legacy wire 1 and `native-recover` remain. Old execution images reject wire 2 before tools; preparation-only images still load without execution imports. |
+      | Workspace / `executor`, `execution-prepare` | A small control binding records native identity, configuration/package pin, source-baseline reference and full-width directory file IDs. A fresh home/session uses the existing project and verified package installation. | Missing/replaced directories or changed binding yield `WORKSPACE_UNAVAILABLE`. NFS client device IDs are not persistent identity; mount/device checks still protect each running process. EFS access-point binding remains verified by the existing runtime configuration owner. |
+      | Turn success / executor → public verifier → store | Quiescent public files, interactions, credentials exclusions, exact object versions/hashes and atomic current-writer admission remain required. No private capture, upload, download or restore is called; the new runtime IAM policy omits private checkpoint access. | Legacy capture/read/restore, dependency schema 3 and old interaction readers remain unchanged. Unsafe public output and corrupt authority still fail closed. |
+      | Recovery / authority and fence | Positive predecessor stop, explicit member confirmation, one recovery episode and exclusive successor generation; fence schema 3 binds the new mode with no checkpoint ID. | Cancellation wins; duplicate/lost acknowledgements do not create another writer or replay commands. There is no silent legacy-to-workspace transition. |
+      | Credential/image renewal | Only the exact confirmed `RECOVERING/RESTORING` successor can renew credentials without an answer. Membership, source binding, cancellation, image revocation and final consistent rechecks remain. Workspace recovery retains its original image after later deployments. | Ordinary reply credential checks still verify the immutable answer. Missing stop proof, wrong episode/generation, an old response pointer or legacy mode cannot take the new credential path. |
+      | UI/API and answer history | “Resume in a fresh session” opens a confirmation dialog bound to the current recovery episode. Accepted answers remain immutable and carry a retained/delivered/uncertain/undelivered observation. | No earlier answer is sent automatically, including a definitely undelivered one. History explains that it must be reviewed against AI-DLC's recovered question and submitted anew if appropriate. |
+      | Workflow recovery | The pinned engine owns stage selection, artifact reconciliation, reviews and approvals. Native supplies the supported resume prompt and current-step form capability. | A further upstream reconciliation question is a legitimate waiting outcome, never permission for the wrapper to answer it or advance a gate. |
+
+      **Installed proof, with exact scope.** Actual Claude 2.1.296 + AI-DLC
+      2.11.0 passed the composed controller/executor journey: ten admitted
+      publications, eleven CLI invocations including one interrupted tool,
+      three distinct CLI sessions, two discarded local homes, three initial
+      setup commands and **zero private recovery operations**. Real engine
+      commands/hooks create the workflow, requirements, review request,
+      subagent review and awaiting-approval state. A waiting-session loss is
+      detected on the next protected reply; that undelivered answer is retained.
+      Confirmed resume reopens the same requirements gate. A real tool then
+      writes unfinished work and remains running until cancelled; the second
+      confirmed fresh session retains that file, npm-created directory/bin
+      links and an internal dependency hardlink, runs build/test again, and
+      presents the same gate. Only a subsequent explicit fixture-human
+      `Approve` advances the engine. The original exporter rejects the internal
+      hardlink with `native_recovery_external_hardlink` in the composed
+      regression; new-mode public admission succeeds without calling it.
+
+      Codex 0.162.1 independently passed ten publications/two sessions, actual
+      offline npm install/build/test and rebuild with the retained hardlink.
+      Its real engine asked whether newly discovered code meant an existing
+      project: the fixture supplies an explicit protected human answer using
+      the engine's returned command, then resumes the same Requirements
+      Analysis with its gate intact. OpenCode 1.19.0 passed seven
+      publications/two sessions, real supported engine commands and an
+      unfinished file written by its actual write tool; the same incomplete
+      stage and gate survive. Its orchestrator's existing shell permission
+      permits direct framework commands and rejects shell redirection/arbitrary
+      npm commands. This pass preserves that policy: **OpenCode dependency
+      build through its delegated code-generation agent is not qualified by
+      this smaller scenario**. Kiro remains blocked at managed authentication.
+
+      These tests use real installed CLI processes, hooks, engine records and
+      filesystem operations, with scripted loopback inference and in-memory
+      AWS adapters. They instantiate a replacement runtime owner in the local
+      test process; they do not qualify AWS runtime replacement, NFS remounts,
+      browser interaction or real-model compliance. No historical intent was
+      read, changed or replayed during this implementation. In particular,
+      neither `576ffeb2` nor `9c0a0e09` is converted or repaired.
+
+      **Corrections caught before release.** The first fixture started an
+      install before workflow creation and correctly triggered the engine's
+      brownfield path; installation now follows the actual initial stage.
+      Attempting Code Generation without its active plan directive was
+      correctly rejected; the interruption case preserves the pending
+      Requirements Analysis gate instead of weakening it. The longer Claude
+      journey requires 33 scripted requests, beyond the old fixture's global
+      limit of 32; only this explicitly bounded fixture raises its ceiling to
+      64. OpenCode's rejected redirection is handled through its existing
+      engine-output → real write-tool fixture transport. The audit also found
+      and corrected the credential facade's old dispatch-only admission and
+      the retained-image policy's checkpoint-only recovery condition. The
+      preparation-only runtime import regression was caught by the full
+      backend suite and fixed with an execution-gated compatibility import.
+
+      **Fresh production build and repeatable qualification.** Prepared empty
+      fixture/cache/binding root: `/tmp/native-efs-resume.jpYJi7`. Full
+      `lambda/agentcore/Dockerfile` build (normal cached Docker layers, no thin
+      overlay) produced immutable local image
+      `sha256:bc33998b7279f28bc795afeea93e35d57aef4b26d102a0fd62a1908a835f9143`.
+      Packaged audit verifies 259 actual image files and resolves the executor
+      to `/opt/agentcore/native/executor.js`; production source is not mounted
+      over the image. Source inventory SHA-256:
+      `ed0854422bb989a43337118b5791eff84761421092537a5a2ccbadebcad1dc4b`.
+      Candidate controller test adapter SHA-256:
+      `51c0a9d9446964c2f199fffb5d6b4239d1ebbfcb120c3ddcfcf1465f92a7bf30`.
+      Actual deployment Lambda bundles were also built separately with
+      `npm run build -w native-runtime-control` (all eight bundles PASS).
+      SHA-256 for the changed admission/renewal owners:
+
+      | Deployment bundle | SHA-256 |
+      | --- | --- |
+      | API | `a4aebd9810d99a151b5807bffbe0bc73dcc6f511911bf557fef782c0245d6820` |
+      | Authority | `ba07fb0bbd6bfa7bec9fd08bf5378bc67e816720f3c80c06d50e75309e9f8730` |
+      | Execution worker | `1974b82fe6d4ee71331b4e2a1d17b07c24f83cb936a5d6d78af594b37096cedc` |
+      | Credential facade | `bc7cf281ddfd3603202f9a356f1f5e0703e17a65928b093a91ef52e54392e856` |
+
+      **Repository validation (2026-10-21).** Full backend:
+      **10,514 PASS / 8 SKIPPED**, 363 passing files / one skipped
+      (`/tmp/native-efs-backend-final.log`). Full frontend:
+      **1,937 PASS**, 141 files (`/tmp/native-efs-frontend.log`);
+      the subsequently added retained-answer history regression passed in its
+      31-test file (`/tmp/native-efs-history-ui-fixed.log`). Frontend build
+      including TypeScript PASS (existing chunk-size warnings). Release/script
+      suite **263 PASS / zero FAIL** (`/tmp/native-efs-release-final.log`).
+      Lint, formatting, secrets, SDK alignment, dependency checks (14 existing
+      warnings / zero errors), architecture budgets and 22 wiring checks PASS.
+      Documentation build PASS. No application or dependency versions changed.
+
+      **Complete packaged entrypoint PASS.** Repeatable command below; final log:
+      `/tmp/native-efs-packaged-final.log`. Host native contracts:
+      **1,373 PASS / 5 SKIPPED**; selected UI/service:
+      **313 PASS**; actual WebSocket test **one PASS / 32 filtered out**;
+      Linux **480 PASS**. Actual installed Claude, Codex and OpenCode:
+      **PASS**, including retained exact-mode journeys and the new
+      fresh-session journeys described above. The full production image
+      source inventory matched before the installed runs. The separate
+      packaged Kiro check exited **2 / BLOCKED** at managed authentication
+      before ACP session creation (`/tmp/native-efs-kiro-packaged.log`);
+      its successful package initialization is not a workflow/recovery pass.
+
+      The first combined packaged run **FAILED** in OpenCode's second
+      installation (`/tmp/native-efs-packaged.log`). Bounded diagnostics
+      established installer **ENOSPC**, with 288,378,880 bytes available
+      after rejection, in `/tmp/native-efs-opencode-packaged-diagnostic-2.log`.
+      The runner had retained the completed exact-mode fixture while starting
+      another full installation in its 1 GiB tmpfs. It now asserts confirmed
+      stop and disposes only that owned fixture after all its assertions,
+      before starting the independent new-mode proof. This reclaimed
+      524,693,504 bytes for OpenCode in the successful run. No production
+      storage limit, installer, lock or workload was weakened.
+
+      Failed exploratory runs remain evidence: sandbox-denied local sockets
+      required the authorized host test environment; a preparation-only
+      runtime import regression failed one full-backend test before the lazy
+      execution-boundary import fixed it. The first release run had a denied
+      loopback and an outdated dummy packaged-driver fixture. The first
+      retained-answer rendering assertion used an incorrect test regex
+      (30 PASS / one FAIL); its corrected assertion passed. These failures
+      were not relabelled as successful runs.
+      The first normal commit hook on 2026-10-22 also failed the graph
+      integration suite's Docker port allocation (`Timed out after 10000ms
+      while waiting for container ports to be bound to the host`):
+      2,018 tests passed / eight skipped, one suite failed before its assertions.
+      The complete backend run above had passed that suite. The normal hook
+      is rerun with two workers; no hook or integration assertion is bypassed.
+
+      ```bash
+      export PATH=/Users/jwthewes/.nvm/versions/node/v24.21.0/bin:$PATH
+      export NODE_OPTIONS=--no-experimental-webstorage
+      NATIVE_FIXTURES=$(mktemp -d /tmp/native-efs-resume.XXXXXX)
+      node scripts/native-qualification-package.mjs --prepare-fixtures "$NATIVE_FIXTURES"
+      node scripts/native-qualification-package.mjs --verify-fixtures "$NATIVE_FIXTURES"
+      docker build --platform linux/arm64 --progress plain \
+        --iidfile "$NATIVE_FIXTURES/image.iid" -f lambda/agentcore/Dockerfile lambda
+      npm run build -w native-runtime-control
+      npm run test:native-qualification -- --packaged-image \
+        --image "$(cat "$NATIVE_FIXTURES/image.iid")" \
+        --assets "$NATIVE_FIXTURES/assets" \
+        --opencode-cache "$NATIVE_FIXTURES/opencode-cache" \
+        --linux-bindings "$NATIVE_FIXTURES/linux-node-modules" \
+        --cli claude,codex,opencode
+      ```
+
+      The runner removes only its own disposable containers/staged fixtures.
+      After review, the operator may delete the explicitly named fixture
+      directory and untagged local image if no longer needed; do not prune
+      unrelated Docker resources. Repeat in a **new empty** directory for an
+      independent qualification. This run's prepared assets were reused only
+      within its own bounded diagnosis/qualification cycle.
+
+      **Remaining deployment/live gate — not run.** After independent review,
+      deploy the matching runtime image, authority/API, execution worker,
+      credential facade and frontend together; keep new admission closed
+      during a partial rollout. Verify exact runtime/package/image and mode
+      pins on one **fresh** intent in the selected space. Exercise typed
+      scope/current-step questions, two member replies/publications, history
+      and refresh, then a waiting-session expiry and an interrupted tool.
+      Require authoritative stop before the confirmation dialog can resume.
+      Verify same EFS access-point/directory and unfinished edits, new CLI
+      identity, correct upstream stage/gates, successful install/build/test,
+      new verified public admission and no private checkpoint calls. Check
+      delivered/uncertain/undelivered answer history and zero automatic replay.
+      Verify cancellation/confirmed stop and a retained exact-mode read without
+      executing any failed historical intent. Missing/wrong EFS must block.
+      EFS loss recovery, real-provider latency/side effects and same-UID
+      protected completion remain outside the local proof (`not_verified`).
+      Environment/tool catalogue integration remains separable work; this
+      change keeps the existing per-run immutable environment/image binding.
+
+      **Historical first installed upstream proof PASS
+      (2026-10-21).** Fresh fixture root
+      `/tmp/native-efs-resume.jpYJi7` was prepared from an empty directory and
+      verified with `scripts/native-qualification-package.mjs`; all six public
+      release artifacts, 32 frozen OpenCode cache packages and the locked Linux
+      bindings passed verification. The new
+      `scripts/native-workspace-protocol-qualification.mjs` uses actual Claude
+      2.1.296 and attested AI-DLC 2.11.0 with deterministic loopback inference
+      inside `--network none`. Real CLI tools and hooks create the intent,
+      Requirements Analysis artifacts, a separate reviewer invocation, an
+      engine-issued review request, completed review and pending approval.
+      After deleting the old CLI home, a new Claude session runs the engine's
+      supported `next --resume` / `continue` sequence. It selects the same
+      artifact paths and returns `gate_only: true`; only a subsequent explicit
+      fixture-human `Approve` advances to Code Generation. No state document
+      or audit row is fabricated and no recovery snapshot is used.
+
+      Repeat this focused proof with the prepared assets mounted at `/assets`,
+      the checkout at `/fixture`, a disposable executable `/tmp`, and the
+      network disabled:
+      `node /fixture/scripts/native-workspace-protocol-qualification.mjs`.
+      It is also part of the Claude installed tier in
+      `npm run test:native-qualification`. The initial result is in
+      `/tmp/native-efs-upstream-proof.log`: two distinct CLI sessions,
+      old home absent, real review completed, same required gate reopened,
+      explicit approval advanced. This first protocol result used immutable
+      local image
+      `sha256:2a48536be3fe6769bd505ca0851d8c981eb7b75b259f39c87feb360d2f962034`
+      with candidate source mounted. It is **not** the new production-image,
+      controller-confirmation, AWS EFS, browser or real-model acceptance.
+      The completed packaged/controller proof is recorded above; AWS EFS,
+      browser and real-model acceptance remain open. An exploratory combined `intent create &&
+      next` command initially emitted the engine's hooks-not-yet-fired notice;
+      issuing `next` as a subsequent real hooked tool call resolves it. The
+      reusable proof keeps those operations separate and asserts the actual
+      resulting gate, rather than treating CLI exit zero as workflow success.
+
+      **Upstream source evidence (distinct from installed acceptance).** The pinned AI-DLC
       2.11.0 runtime archive has SHA-256
       `68906435223b47d6dfda59d79def78974d7b37e38b5649a56402a0007a41fad4`,
       independently checked against `scripts/native-qualification-package.mjs`.

@@ -364,6 +364,14 @@ export function NativeHistoryView({
                           {new Date(decision.answer.uncertainAt).toLocaleString()}.
                         </p>
                       )}
+                      {decision.answer.resumeRetention && (
+                        <p className="text-sm">
+                          Retained during fresh-session recovery; this answer was not sent again.
+                          {decision.answer.resumeRetention.delivery === 'undelivered'
+                            ? ' It was not delivered. Review it against the resumed question before submitting a new answer.'
+                            : ' Recovery does not establish whether AI-DLC applied it.'}
+                        </p>
+                      )}
                       <p className="text-sm">
                         Engine application, rejection and verified approval/completion: not
                         recorded.

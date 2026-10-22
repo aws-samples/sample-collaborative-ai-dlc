@@ -65,6 +65,10 @@ export interface NativeAnswerHistory {
   deliveredAt: string | null;
   uncertainAt: string | null;
   resultingPublication: (NativeRevisionTarget & { recordedAt: string }) | null;
+  resumeRetention?: {
+    recordedAt: string;
+    delivery: 'delivered' | 'uncertain' | 'undelivered';
+  };
   applicationStatus: 'not_recorded';
   rejectionStatus: 'not_recorded';
   approvalStatus: 'not_recorded';
@@ -131,6 +135,13 @@ function answerHistory(
   )
     invalid();
   if (value.deliveredAt && value.deliveryStatus !== 'delivered') invalid();
+  if (
+    value.resumeRetention !== undefined &&
+    (!record(value.resumeRetention) ||
+      !date(value.resumeRetention.recordedAt) ||
+      !['delivered', 'uncertain', 'undelivered'].includes(String(value.resumeRetention.delivery)))
+  )
+    invalid();
   return value as unknown as NativeAnswerHistory;
 }
 

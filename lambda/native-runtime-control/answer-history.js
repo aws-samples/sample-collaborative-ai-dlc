@@ -7,9 +7,26 @@ export const answerHistoryKey = (row, interactionId, kind) => ({
 });
 
 export const nativeAnswerHistory = (before, row) => {
-  const response = row.response;
+  const retained =
+    before?.response &&
+    row.workspaceResume?.id !== before.workspaceResume?.id &&
+    row.workspaceResume?.id &&
+    !row.response;
+  const response = retained ? before.response : row.response;
   if (!response || response.commandId !== before?.response?.commandId) return [];
   const facts = [];
+  if (retained)
+    facts.push([
+      'retained',
+      {
+        delivery:
+          before.response.deliveryStatus === 'delivered'
+            ? 'delivered'
+            : before.dispatch
+              ? 'uncertain'
+              : 'undelivered',
+      },
+    ]);
   if (before.response.deliveryStatus === 'pending' && response.deliveryStatus === 'delivered')
     facts.push(['delivered', {}]);
   if (
@@ -67,7 +84,8 @@ export const answerObservation = (value, row, response, kind) => {
     value.timestamp > row.updatedAt ||
     (kind === 'publication' &&
       (!/^[a-f0-9]{64}$/.test(value.publicationId ?? '') ||
-        value.publicationSequence !== response.sequence))
+        value.publicationSequence !== response.sequence)) ||
+    (kind === 'retained' && !['delivered', 'uncertain', 'undelivered'].includes(value.delivery))
   )
     throw Object.assign(new Error('Native answer history could not be verified'), {
       code: 'NATIVE_EXECUTION_CONFLICT',
@@ -80,5 +98,6 @@ export const answerObservation = (value, row, response, kind) => {
           publicationSequence: value.publicationSequence,
         }
       : {}),
+    ...(kind === 'retained' ? { delivery: value.delivery } : {}),
   };
 };

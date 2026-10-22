@@ -13,6 +13,7 @@
 // blocks execution: committed publications, files, interactions and graphs
 // remain readable.
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
+import { nativeWorkspaceRecovery } from '../shared/native-recovery-mode.js';
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const URI =
@@ -32,7 +33,8 @@ const RESUMABLE = new Set([
   'WAITING_FOR_INPUT',
   'CANCEL_REQUESTED',
 ]);
-// A retained checkpoint keeps its pin eligible while recovery is pending.
+// Recovery keeps the selected mode's image: a retained exact checkpoint, or
+// the surviving-workspace protocol. Eligibility never grants a new writer.
 const RECOVERY = new Set(['RECOVERY_REQUIRED', 'RECOVERING']);
 
 export class NativeRuntimeImageError extends Error {
@@ -65,7 +67,9 @@ export const nativeRuntimeImageKey = (digest) => {
 /** True while the run's pinned image must stay usable for renewal/recovery. */
 export const nativeImageRenewalEligible = (row) =>
   Boolean(row) &&
-  (RESUMABLE.has(row.status) || (RECOVERY.has(row.status) && Boolean(row.recoveryCheckpoint)));
+  (RESUMABLE.has(row.status) ||
+    (RECOVERY.has(row.status) &&
+      (nativeWorkspaceRecovery(row.configuration) || Boolean(row.recoveryCheckpoint))));
 
 const revocationValue = (item, digest) => {
   const key = nativeRuntimeImageKey(digest);

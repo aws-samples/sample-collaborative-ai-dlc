@@ -97,3 +97,10 @@ test('has no fixed limit on the number of retained pins', () => {
   });
   assert.equal(requiredPins(rows).length, 40);
 });
+
+test('the deployment inventory keeps a workspace recovery image without a private checkpoint', () => {
+  const execution = row('resume', 'RECOVERING', pin('a'));
+  execution.configuration.recoveryMode = 'efs-workspace-v1';
+  assert.equal(requiredPins([execution])[0].digest, pin('a').digest);
+  assert.deepEqual(requiredPins([{ ...execution, status: 'FAILED' }]), []);
+});

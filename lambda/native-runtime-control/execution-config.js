@@ -29,6 +29,7 @@ import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { nativeExecutionConfiguration } from './execution-store.js';
 import { ID, UUID, UUID_V4, matches, nativeDraftRequest, pinPackageJob } from './store.js';
 import { nativeDraftPrompt } from './draft-prompt.js';
+import { NATIVE_WORKSPACE_RECOVERY } from '../shared/native-recovery-mode.js';
 
 const __ = gremlin.process.statics;
 const T = gremlin.process.t;
@@ -381,6 +382,7 @@ export const createNativeExecutionConfiguration =
       if (!isDeepStrictEqual(current, binding)) fail('SOURCE_CONTROL_CHANGED');
       return nativeExecutionConfiguration({
         ...pins,
+        recoveryMode: NATIVE_WORKSPACE_RECOVERY,
         model,
         credentialBinding,
         ...deployment,

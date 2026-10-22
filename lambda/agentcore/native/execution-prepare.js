@@ -12,6 +12,7 @@ import { createNativePublications } from '../../shared/native-publication.js';
 import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeExecutionFence } from '../../shared/native-execution-fence.js';
 import { createNativeRecoveryCheckpoints } from '../../shared/native-recovery-checkpoint.js';
+import { nativeWorkspaceRecovery } from '../../shared/native-recovery-mode.js';
 import { loadNativePackage } from './package-loader.js';
 import { runNativeCommand } from './command-runner.js';
 import { withGitCredential } from '../git-auth.js';
@@ -108,7 +109,8 @@ export const createNativeExecutionPorts = ({
     if (
       input.writerGeneration < 2 ||
       record.recoveryId !== input.recoveryId ||
-      record.checkpointId !== input.checkpointId
+      record.checkpointId !== input.checkpointId ||
+      record.recoveryMode !== input.recoveryMode
     )
       fail('native_execution_recovery_unconfirmed');
   };
@@ -532,7 +534,12 @@ export const createNativeExecutionPorts = ({
         identity: dispatch,
         writerGeneration: dispatch.writerGeneration,
         recoveryId: dispatch.recoveryId,
-        checkpointId: dispatch.checkpoint?.id,
+        checkpointId: nativeWorkspaceRecovery(dispatch.configuration)
+          ? null
+          : dispatch.checkpoint?.id,
+        ...(dispatch.configuration?.recoveryMode
+          ? { recoveryMode: dispatch.configuration.recoveryMode }
+          : {}),
         signal,
       });
       const config = dispatch.configuration;

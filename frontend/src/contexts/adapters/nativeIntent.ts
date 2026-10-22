@@ -58,6 +58,8 @@ export const recoveryMessages: Record<NativeRecovery['reason'], string> = {
     'A verified recovery checkpoint is unavailable. Your committed content remains available below.',
   DELIVERY_UNCERTAIN:
     'The last command may have executed. Inspect work and export its exact results; this command cannot be replayed through recovery.',
+  WORKSPACE_UNAVAILABLE:
+    'The surviving workspace or its binding could not be verified. Resume is blocked; published work and accepted answers remain available.',
 };
 export const imageBlocked = (intent: NativeIntent) =>
   ['revoked', 'unapproved', 'unavailable'].includes(intent.execution?.imageStatus ?? '');
@@ -66,7 +68,9 @@ export const canRecover = (intent: NativeIntent) =>
   intent.executionAvailable === true &&
   intent.execution?.status === 'RECOVERY_REQUIRED' &&
   intent.execution.revision !== undefined &&
-  intent.execution.recovery?.canRecover === true;
+  intent.execution.recovery?.canRecover === true &&
+  (intent.execution.recoveryMode !== 'efs-workspace-v1' ||
+    intent.execution.stopStatus?.state === 'confirmed');
 // Fixed public responses from lambda/native-runtime-control/api.js. Never
 // render arbitrary ApiError.message/body text, even for a recognized code.
 const nativeActionErrors: Record<string, readonly [number, string]> = {
@@ -377,7 +381,10 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
     }
   };
 
-  const execute = async (action: 'start' | 'cancel' | 'recover') => {
+  const execute = async (
+    action: 'start' | 'cancel' | 'recover',
+    confirmation?: { recoveryId: string },
+  ) => {
     if (!intent || actionInFlight.current) return;
     if (
       action === 'start' &&
@@ -391,6 +398,12 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
     )
       return;
     if (action === 'recover' && !canRecover(intent)) return;
+    if (
+      action === 'recover' &&
+      intent.execution?.recoveryMode === 'efs-workspace-v1' &&
+      confirmation?.recoveryId !== intent.execution.recovery?.id
+    )
+      return;
     actionInFlight.current = action;
     setActing(action);
     setError(null);
@@ -403,7 +416,13 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
       if (action === 'recover') {
         const recoveryId = intent.execution!.recovery!.id;
         if (recoveryRequest.current?.recoveryId !== recoveryId)
-          recoveryRequest.current = { requestId: crypto.randomUUID(), recoveryId };
+          recoveryRequest.current = {
+            requestId: crypto.randomUUID(),
+            recoveryId,
+            ...(intent.execution!.recoveryMode === 'efs-workspace-v1'
+              ? { confirmWorkspaceResume: true as const }
+              : {}),
+          };
         next = await nativeIntentsService.recover(projectId, intentId, recoveryRequest.current);
       } else if (action === 'start') {
         startRequest.current ??= {

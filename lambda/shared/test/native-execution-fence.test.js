@@ -53,6 +53,51 @@ const make = () => {
 };
 
 describe('controller-owned native cancellation fence', () => {
+  it('admits explicit workspace successors without checkpoints and prevents a later legacy downgrade', async () => {
+    const { fence } = make();
+    const recoveryId = '55555555-5555-4555-8555-555555555555';
+    await fence.ensureActive(identity);
+    await fence.suspend(identity, { writerGeneration: 1, recoveryId });
+    const input = {
+      writerGeneration: 2,
+      recoveryId,
+      checkpointId: null,
+      recoveryMode: 'efs-workspace-v1',
+    };
+    expect(await fence.activate(identity, input)).toMatchObject({
+      schemaVersion: 3,
+      state: 'ACTIVE',
+      ...input,
+    });
+    expect(await fence.activate(identity, input)).toMatchObject({ schemaVersion: 3, ...input });
+    await fence.suspend(identity, { writerGeneration: 2, recoveryId });
+    await expect(
+      fence.activate(identity, { writerGeneration: 3, recoveryId, checkpointId: 'a'.repeat(64) }),
+    ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_FENCE_CONFLICT' });
+    await fence.cancel(identity);
+    await expect(fence.activate(identity, { ...input, writerGeneration: 3 })).rejects.toMatchObject(
+      { code: 'NATIVE_EXECUTION_CANCELLED' },
+    );
+  });
+  it('rejects a corrupt workspace fence carrying an exact checkpoint instead of granting authority', async () => {
+    const { fence, objects } = make();
+    const recoveryId = '55555555-5555-4555-8555-555555555555';
+    await fence.ensureActive(identity);
+    await fence.suspend(identity, { writerGeneration: 1, recoveryId });
+    await fence.activate(identity, {
+      writerGeneration: 2,
+      recoveryId,
+      checkpointId: null,
+      recoveryMode: 'efs-workspace-v1',
+    });
+    const stored = objects.get(nativeExecutionFenceKey(identity));
+    stored.body = Buffer.from(
+      JSON.stringify({ ...JSON.parse(stored.body), checkpointId: 'a'.repeat(64) }),
+    );
+    await expect(fence.read(identity)).rejects.toMatchObject({
+      code: 'NATIVE_EXECUTION_FENCE_INVALID',
+    });
+  });
   it('denies delayed starts after cancellation and cannot reopen with a retried ACTIVE write', async () => {
     const { fence } = make();
     await fence.ensureActive(identity);

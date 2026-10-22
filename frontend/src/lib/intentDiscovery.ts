@@ -7,7 +7,7 @@ export type NativeDiscoveredIntent = NativeIntentSummary & {
   executionStatusUnavailable?: boolean;
   execution?: Pick<
     NativeExecution,
-    'status' | 'revision' | 'updatedAt' | 'responsePending' | 'turnSequence'
+    'status' | 'revision' | 'updatedAt' | 'responsePending' | 'turnSequence' | 'recoveryMode'
   > | null;
 };
 
@@ -45,6 +45,11 @@ export function nativeIntentStatusLabel(
   let label = intent.execution
     ? nativeExecutionLabels[intent.execution.status]
     : nativePreparationLabels[intent.status];
+  if (
+    intent.execution?.status === 'RECOVERING' &&
+    intent.execution.recoveryMode === 'efs-workspace-v1'
+  )
+    label = 'Resuming in a fresh session';
   if (
     intent.execution?.status === 'DISPATCHING' &&
     (intent.execution.responsePending === true || (intent.execution.turnSequence ?? 0) > 1)

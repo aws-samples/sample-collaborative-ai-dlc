@@ -213,6 +213,17 @@ describe('explicit native runtime upgrade', () => {
     });
     expect(recovery.Resource).not.toContain('native-executions/');
     expect(recovery.Resource).not.toContain('native-execution-control/');
+    const workspace = nativeExecutionPolicy({
+      draft: f.draft,
+      execution: {
+        ...f.execution,
+        configuration: { ...f.execution.configuration, recoveryMode: 'efs-workspace-v1' },
+      },
+      deployment: f.deployment,
+    }).permissionsPolicy;
+    expect(workspace.Statement).toEqual(
+      policy.Statement.filter((s) => s.Sid !== 'PreserveOwnRecoveryCheckpoint'),
+    );
   });
 
   it('does not mutate after authority is revoked', async () => {

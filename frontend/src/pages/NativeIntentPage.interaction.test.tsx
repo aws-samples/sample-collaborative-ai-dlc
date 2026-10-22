@@ -1010,6 +1010,68 @@ function recovering(revision = 11): NativeIntent {
   };
 }
 
+it('requires confirmation for fresh-session resume and sends no earlier answer', async () => {
+  requireRecovery({
+    recoveryMode: 'efs-workspace-v1',
+    stopStatus: { state: 'confirmed', confirmedAt: '2026-09-29T12:00:00Z' },
+  });
+  renderPage();
+  await loaded();
+  await click('Resume in fresh session');
+  expect(await screen.findByRole('alertdialog')).toHaveTextContent('including unfinished edits');
+  expect(screen.getByRole('alertdialog')).toHaveTextContent('No previous answer is sent again');
+  expect(transport.post).not.toHaveBeenCalled();
+  await click('Keep stopped');
+  expect(transport.post).not.toHaveBeenCalled();
+  transport.post.mockImplementationOnce(async () => {
+    intent = recovering();
+    intent.execution!.stopStatus = { state: 'unconfirmed', confirmedAt: null };
+    return intent;
+  });
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
+  expect(transport.post).toHaveBeenCalledExactlyOnceWith(
+    '/projects/project-1/native-intents/run-1/recover',
+    {
+      requestId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+      recoveryId: 'recovery-1',
+      confirmWorkspaceResume: true,
+    },
+  );
+  expect(await screen.findByText('Resuming in a fresh session')).toBeVisible();
+  expect(transport.post.mock.calls.some(([path]) => path.endsWith('/responses'))).toBe(false);
+});
+
+it.each([undefined, { state: 'unconfirmed', confirmedAt: null }] as const)(
+  'does not offer fresh-session resume without confirmed predecessor stop %j',
+  async (stopStatus) => {
+    requireRecovery({ recoveryMode: 'efs-workspace-v1', stopStatus });
+    renderPage();
+    await loaded();
+    expect(
+      screen.queryByRole('button', { name: 'Resume in fresh session' }),
+    ).not.toBeInTheDocument();
+    expect(transport.post).not.toHaveBeenCalled();
+  },
+);
+
+it('deduplicates a lost fresh-session acknowledgement after another explicit confirmation', async () => {
+  requireRecovery({
+    recoveryMode: 'efs-workspace-v1',
+    stopStatus: { state: 'confirmed', confirmedAt: '2026-09-29T12:00:00Z' },
+  });
+  transport.post.mockRejectedValueOnce(new ApiError(502, 'unavailable'));
+  renderPage();
+  await loaded();
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
+  const first = transport.post.mock.calls[0];
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
+  expect(transport.post.mock.calls[1]).toEqual(first);
+  expect(transport.post.mock.calls.every(([path]) => path.endsWith('/recover'))).toBe(true);
+});
+
 // Real WebCrypto work is not controlled by the polling clock. Flush React and
 // wait for the verified content rather than assuming advancing timers loads it.
 async function verifiedText(text: string) {

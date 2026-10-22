@@ -15,7 +15,9 @@ function replyStatus(execution: NativeExecution, reply: Reply): string {
     return 'Delivery is uncertain. The command may have executed. Inspect work before taking further action.';
   if (['RECOVERY_REQUIRED', 'RECOVERING'].includes(execution.status))
     return reply.receipt
-      ? 'Your reply is saved.'
+      ? execution.recoveryMode === 'efs-workspace-v1'
+        ? 'Your earlier reply remains in history. Fresh-session recovery will not send it again.'
+        : 'Your reply is saved.'
       : 'Replying is paused while this session needs recovery.';
   if (['CANCELLED', 'STOPPED', 'FAILED'].includes(execution.status))
     return reply.receipt

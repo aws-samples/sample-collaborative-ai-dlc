@@ -126,7 +126,8 @@ function sendOpenCodeResponse(res, request, text, tool, id) {
   res.end('data: [DONE]\n\n');
 }
 
-export async function qualificationProvider(harness) {
+export async function qualificationProvider(harness, { claudeReply, requestLimit = 32 } = {}) {
+  assert.ok(Number.isSafeInteger(requestLimit) && requestLimit >= 1 && requestLimit <= 64);
   let turn = 0;
   let started;
   let toolSent = false;
@@ -149,7 +150,7 @@ export async function qualificationProvider(harness) {
         raw += bytes;
         assert.ok(Buffer.byteLength(raw) <= 4 * 1024 * 1024, 'Bounded fixture input');
       }
-      assert.ok(++calls <= 32, 'Bounded fixture request count');
+      assert.ok(++calls <= requestLimit, 'Bounded fixture request count');
       assert.equal(
         new URL(req.url, 'http://fixture').pathname,
         harness === 'claude'
@@ -192,6 +193,12 @@ export async function qualificationProvider(harness) {
         res.writeHead(200, { 'content-type': 'text/event-stream' }).end('data: {"type":');
         return;
       }
+      if (harness === 'claude' && claudeReply) {
+        const blocks = await claudeReply(request);
+        assert.ok(Array.isArray(blocks) && blocks.length > 0 && blocks.length <= 4);
+        sendClaudeResponse(res, request, blocks, `fixture${calls}`);
+        return;
+      }
       const nextCommand = primary && !toolSent ? command : null;
       if (nextCommand) toolSent = true;
       const text = primary ? `Fixture question ${turn}?` : 'Fixture title';
@@ -231,7 +238,7 @@ export async function qualificationProvider(harness) {
           : null;
         if (primary && openCodeWorkflow && !tool && !writeSent) {
           let content = 'fixture cwd witness';
-          if (openCodeWorkflow.questionPath) {
+          if (openCodeWorkflow.questionPath || openCodeWorkflow.directivePath) {
             const result = request.messages.findLast((message) => message.role === 'tool');
             const output =
               typeof result?.content === 'string'
@@ -240,9 +247,16 @@ export async function qualificationProvider(harness) {
             assert.ok(output, 'Actual engine tool result is required');
             // OpenCode may append bash metadata after the engine JSON.
             engineAsk = JSON.parse(output.slice(output.indexOf('{'), output.lastIndexOf('}') + 1));
-            assert.equal(engineAsk.ask_type, 'compose-offer');
-            assert.ok(engineAsk.scope_commands.length > 0, 'Real workflow supplied typed choices');
-            content = JSON.stringify({ version: 3, ask: engineAsk });
+            if (openCodeWorkflow.questionPath) {
+              assert.equal(engineAsk.ask_type, 'compose-offer');
+              assert.ok(
+                engineAsk.scope_commands.length > 0,
+                'Real workflow supplied typed choices',
+              );
+            }
+            content = JSON.stringify(
+              openCodeWorkflow.questionPath ? { version: 3, ask: engineAsk } : engineAsk,
+            );
           }
           assert.ok(
             tools.some((entry) => entry.function?.name === 'write'),
@@ -251,7 +265,10 @@ export async function qualificationProvider(harness) {
           tool = {
             name: 'write',
             input: {
-              filePath: openCodeWorkflow.questionPath ?? openCodeWorkflow.writePath,
+              filePath:
+                openCodeWorkflow.questionPath ??
+                openCodeWorkflow.directivePath ??
+                openCodeWorkflow.writePath,
               content,
             },
           };
@@ -288,6 +305,7 @@ export async function qualificationProvider(harness) {
     result() {
       if (failure) throw failure;
       return {
+        totalRequests: calls,
         requests: samples,
         toolSent,
         incompleteSent,

@@ -13,6 +13,16 @@ import { nativeIntentStatusLabel, nativeIntentTitle } from '@/lib/intentDiscover
 import { nativeExecutionFailureMessage } from '@/lib/nativeExecutionFailure';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { NativeIntentContent } from '@/components/intent/NativeIntentContent';
 import { NativePromptEditor } from '@/components/intent/NativePromptEditor';
 import { currentSessionEpoch } from '@/services/sessionExpiry';
@@ -53,6 +63,7 @@ export function NativeWorkspaceView({
   onViewActivity?: () => void;
 }) {
   const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [resumeEpisode, setResumeEpisode] = useState<string | null>(null);
   const {
     projectId,
     intent,
@@ -114,11 +125,16 @@ export function NativeWorkspaceView({
             <p className="text-sm">
               {intent.execution
                 ? intent.execution.status === 'RECOVERING'
-                  ? 'Restoring the saved AI-DLC session. You can leave this page and return to the same link.'
+                  ? intent.execution.recoveryMode === 'efs-workspace-v1'
+                    ? 'Opening a fresh CLI session on the surviving workspace. AI-DLC will reconcile its work and required questions.'
+                    : 'Restoring the saved AI-DLC session. You can leave this page and return to the same link.'
                   : intent.execution.status === 'RECOVERY_REQUIRED'
-                    ? intent.execution.recovery
-                      ? recoveryMessages[intent.execution.recovery.reason]
-                      : 'Session recovery is required. Refresh status to check whether recovery is available.'
+                    ? intent.execution.recoveryMode === 'efs-workspace-v1' &&
+                      intent.execution.recovery?.canRecover
+                      ? 'The previous runtime is stopped. Confirm a fresh session to resume AI-DLC on the surviving workspace. Earlier answers remain in history and will not be sent again.'
+                      : intent.execution.recovery
+                        ? recoveryMessages[intent.execution.recovery.reason]
+                        : 'Session recovery is required. Refresh status to check whether recovery is available.'
                     : intent.execution.status === 'WAITING_FOR_INPUT'
                       ? 'The workflow is waiting. Published files and its question appear below once available.'
                       : intent.execution.status === 'AWAITING_USER'
@@ -164,8 +180,19 @@ export function NativeWorkspaceView({
                 </Button>
               )}
               {canRecover(intent) && (
-                <Button onClick={() => void execute('recover')} disabled={acting !== null}>
-                  {acting === 'recover' ? 'Requesting recovery…' : 'Recover session'}
+                <Button
+                  onClick={() => {
+                    if (intent.execution?.recoveryMode === 'efs-workspace-v1')
+                      setResumeEpisode(intent.execution.recovery!.id);
+                    else void execute('recover');
+                  }}
+                  disabled={acting !== null}
+                >
+                  {acting === 'recover'
+                    ? 'Requesting recovery…'
+                    : intent.execution?.recoveryMode === 'efs-workspace-v1'
+                      ? 'Resume in fresh session'
+                      : 'Recover session'}
                 </Button>
               )}
               {!intent.execution && (
@@ -217,6 +244,42 @@ export function NativeWorkspaceView({
             open={configurationOpen}
             onOpenChange={setConfigurationOpen}
           />
+          <AlertDialog
+            open={resumeEpisode !== null}
+            onOpenChange={(open) => {
+              if (!open) setResumeEpisode(null);
+            }}
+          >
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Resume AI-DLC in a fresh session?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  Use the same surviving workspace, including unfinished edits. AI-DLC will
+                  reconcile its workflow and ask for any required decisions. This does not restore
+                  an old publication or approve a workflow gate. Earlier answers and results remain
+                  in history. No previous answer is sent again, including a saved answer that was
+                  not delivered; review it against the resumed question before submitting a new
+                  answer.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Keep stopped</AlertDialogCancel>
+                <AlertDialogAction
+                  disabled={
+                    !canRecover(intent) ||
+                    intent.execution?.recovery?.id !== resumeEpisode ||
+                    acting !== null
+                  }
+                  onClick={() => {
+                    if (resumeEpisode) void execute('recover', { recoveryId: resumeEpisode });
+                    setResumeEpisode(null);
+                  }}
+                >
+                  Confirm fresh session
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </>
       )}
     </div>

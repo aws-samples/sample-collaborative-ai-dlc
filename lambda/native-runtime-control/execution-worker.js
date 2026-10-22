@@ -92,7 +92,11 @@ export const createNativeExecutionSupervisor =
     const observe = (value) => emitNativeExecutionDiagnostic(diagnostics, value);
     const observedInvoke = async (input) => {
       const phase = nativeDiagnosticPhase(input.payload.command);
-      if (['native-start', 'native-continue', 'native-recover'].includes(input.payload.command))
+      if (
+        ['native-start', 'native-continue', 'native-recover', 'native-resume'].includes(
+          input.payload.command,
+        )
+      )
         recordNativeBoundary(executionIdentity(state.row), 'dispatchStarted', now(), {
           sequence: nativeTurnSequence(state.row),
           writerGeneration: nativeWriterGeneration(state.row),
@@ -402,6 +406,7 @@ export const createNativeExecutionSupervisor =
           observedInvoke,
           status,
           observe,
+          credentials,
         });
       }
       if (state.row.status === 'DISPATCHING') {

@@ -153,14 +153,16 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
       }
       let answer = null;
       if (facts) {
-        const { response, delivered, uncertain, publication } = facts;
+        const { response, delivered, uncertain, publication, retained } = facts;
         // The observation names the command consumed by publication admission.
         // Verify that exact publication still exists before exposing its link.
         if (publication) await revisions.publication(row, publication);
         const pointer = row.response?.commandId === response.commandId ? row.response : null;
         const deliveryStatus = delivered
           ? 'delivered'
-          : uncertain || (pointer && row.recovery?.reason === 'DELIVERY_UNCERTAIN')
+          : uncertain ||
+              retained?.delivery === 'uncertain' ||
+              (pointer && row.recovery?.reason === 'DELIVERY_UNCERTAIN')
             ? 'uncertain'
             : (pointer?.deliveryStatus ?? 'unknown');
         answer = {
@@ -181,6 +183,7 @@ export const createNativeRevisionApi = ({ read, revisions, interactions, store }
           deliveredAt: delivered?.recordedAt ?? null,
           uncertainAt: uncertain?.recordedAt ?? null,
           resultingPublication: publication,
+          ...(retained ? { resumeRetention: retained } : {}),
           applicationStatus: 'not_recorded',
           rejectionStatus: 'not_recorded',
           approvalStatus: 'not_recorded',

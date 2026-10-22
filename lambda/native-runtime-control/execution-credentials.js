@@ -6,7 +6,12 @@ import { isDeepStrictEqual } from 'node:util';
 import { readCredentialBindingValue } from '../shared/agent-credentials.js';
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
 import { assertCurrentGitConnection, getGitConnection } from '../shared/git-connection-store.js';
-import { nativeExecutionConfiguration, nativeTurnSequence } from './execution-store.js';
+import {
+  nativeExecutionConfiguration,
+  nativeTurnSequence,
+  nativeWriterGeneration,
+} from './execution-store.js';
+import { nativeWorkspaceRecovery } from '../shared/native-recovery-mode.js';
 import {
   nativeExecutionDeployment,
   nativePromptSha256,
@@ -85,10 +90,31 @@ const preparedSnapshot = (draft) => ({
   runtimeVersion: draft.runtimeVersion,
   runtimeEndpoint: draft.runtimeEndpoint,
 });
+const confirmedWorkspaceResume = (row) =>
+  nativeWorkspaceRecovery(row?.configuration) &&
+  row.status === 'RECOVERING' &&
+  row.recovery?.phase === 'RESTORING' &&
+  row.recovery.canRecover === false &&
+  matches(row.recovery.id, UUID_V4) &&
+  nativeWriterGeneration(row) >= 2 &&
+  row.recovery.previousGeneration === nativeWriterGeneration(row) - 1 &&
+  row.recovery.writerGeneration === nativeWriterGeneration(row) &&
+  row.workspaceResume?.id === row.recovery.id &&
+  row.workspaceResume?.sequence === nativeTurnSequence(row) &&
+  row.workspaceResume?.writerGeneration === nativeWriterGeneration(row) &&
+  row.stopConfirmation?.writerGeneration === row.recovery.previousGeneration &&
+  row.stopConfirmation?.runtimeSessionId === row.runtimeSessionId &&
+  Number.isSafeInteger(row.stopConfirmation?.confirmedAt) &&
+  row.stopConfirmation.confirmedAt >= row.startedAt &&
+  row.stopConfirmation.confirmedAt <= row.updatedAt &&
+  row.response === undefined &&
+  row.dispatch === undefined &&
+  row.recoveryCheckpoint === undefined &&
+  row.recovery.checkpointId === undefined;
 const authorizeExecution = (row, payload, deployment) => {
   if (
     !row ||
-    !['UPGRADING', 'DISPATCHING'].includes(row.status) ||
+    (!['UPGRADING', 'DISPATCHING'].includes(row.status) && !confirmedWorkspaceResume(row)) ||
     row.cancelRequested !== false ||
     row.scope?.projectId !== payload.projectId ||
     row.scope?.executionId !== payload.executionId ||
@@ -101,6 +127,7 @@ const authorizeExecution = (row, payload, deployment) => {
   const config = nativeExecutionConfiguration(row.configuration);
   if (
     nativeTurnSequence(row) > 1 &&
+    !confirmedWorkspaceResume(row) &&
     (row.status !== 'DISPATCHING' ||
       row.response?.deliveryStatus !== 'pending' ||
       row.response.sequence !== nativeTurnSequence(row) ||
@@ -129,7 +156,7 @@ const authorizeExecution = (row, payload, deployment) => {
     BigInt(row.target.runtimeVersion) < BigInt(row.preparation.runtimeVersion) ||
     (config.image.digest !== row.preparation.image.digest &&
       BigInt(row.target.runtimeVersion) <= BigInt(row.preparation.runtimeVersion)) ||
-    (row.status === 'DISPATCHING' &&
+    ((row.status === 'DISPATCHING' || confirmedWorkspaceResume(row)) &&
       (!isNativeSourceBranch(row.sourceBranch) || !isNativeSourceCommit(row.sourceCommit)))
   )
     fail('CHANGED');
@@ -221,7 +248,7 @@ export const createNativeExecutionCredentials =
       const execution = structuredClone(await executionStore.get(scope));
       authorizeExecution(execution, payload, deployment);
       await authorizeImage(images, execution, deployment);
-      if (nativeTurnSequence(execution) > 1) {
+      if (nativeTurnSequence(execution) > 1 && !confirmedWorkspaceResume(execution)) {
         const response = await executionStore.response?.(
           execution,
           execution.response.interactionId,

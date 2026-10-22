@@ -47,6 +47,16 @@ const codes = new Set([
   'native_workspace_rename_failed',
   'native_workspace_readback_failed',
 ]);
+const executionMethods = {
+  'native-start': 'start',
+  'native-continue': 'continue',
+  'native-recover': 'recover',
+  'native-resume': 'resume',
+  'native-status': 'status',
+  'native-activity': 'activity',
+  'native-cancel': 'cancel',
+};
+
 const executionErrors = new Map([
   ['native_execution_scope_mismatch', 400],
   ['native_execution_request_invalid', 400],
@@ -60,6 +70,7 @@ const executionErrors = new Map([
   ['native_execution_cancelled', 409],
   ['native_execution_reply_admission_unconfirmed', 409],
   ['native_execution_recovery_failed', 409],
+  ['native_execution_workspace_invalid', 409],
 ]);
 
 const readBody = (request) =>
@@ -147,6 +158,7 @@ export const createNativeRuntimeServer = ({
         'native-start',
         'native-continue',
         'native-recover',
+        'native-resume',
         'native-status',
         'native-activity',
         'native-cancel',
@@ -155,12 +167,22 @@ export const createNativeRuntimeServer = ({
       if (!enabled) return send(403, { ok: false, code: 'native_execution_disabled' });
       if (IDENTITY.some((key) => payload[key] !== identity[key]))
         return send(400, { ok: false, code: 'native_execution_scope_mismatch' });
-      const starting = ['native-start', 'native-continue', 'native-recover'].includes(
-        payload.command,
-      );
+      const starting = [
+        'native-start',
+        'native-continue',
+        'native-recover',
+        'native-resume',
+      ].includes(payload.command);
+      // Preparation-only images have no shared execution modules. Keep this
+      // compatibility reader behind the same enabled boundary as the executor.
+      const expectedSchema = starting
+        ? (await import('../../shared/native-recovery-mode.js')).nativeCommandSchema(
+            payload.configuration,
+          )
+        : null;
       if (
         starting
-          ? payload.schemaVersion !== 1
+          ? payload.schemaVersion !== expectedSchema
           : Object.keys(payload).some(
               (key) =>
                 ![
@@ -181,17 +203,7 @@ export const createNativeRuntimeServer = ({
       if (starting) startRequests++;
       try {
         const active = await getExecutor();
-        const method = starting
-          ? payload.command === 'native-start'
-            ? 'start'
-            : payload.command === 'native-recover'
-              ? 'recover'
-              : 'continue'
-          : payload.command === 'native-status'
-            ? 'status'
-            : payload.command === 'native-activity'
-              ? 'activity'
-              : 'cancel';
+        const method = executionMethods[payload.command];
         if (typeof active[method] !== 'function')
           return send(409, { ok: false, code: 'native_execution_recovery_failed' });
         return send(200, await active[method](payload));

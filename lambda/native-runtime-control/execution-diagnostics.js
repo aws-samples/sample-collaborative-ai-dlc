@@ -7,7 +7,7 @@ import {
   nativeSnapshotDiagnostic,
 } from '../shared/native-execution-failure.js';
 
-const PHASES = new Set(['start', 'continue', 'status', 'recover', 'unknown']);
+const PHASES = new Set(['start', 'continue', 'status', 'recover', 'resume', 'unknown']);
 const STAGES = new Set(['sdk', 'http', 'body', 'report', 'call', 'decision']);
 const CODES = new Set([
   'SDK_FAILURE',
@@ -90,6 +90,7 @@ const REASONS = new Set([
   'RESTORE_FAILED',
   'CHECKPOINT_UNAVAILABLE',
   'DELIVERY_UNCERTAIN',
+  'WORKSPACE_UNAVAILABLE',
 ]);
 const IDENTITY_FIELDS = [
   'projectId',

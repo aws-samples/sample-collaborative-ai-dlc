@@ -3,6 +3,10 @@
 // manifest/file verification remain the caller's responsibility.
 import { createHash, randomUUID } from 'node:crypto';
 import { NATIVE_RUNTIME_FAILURE_CODES } from '../shared/native-execution-failure.js';
+import {
+  nativeRecoveryModeValid,
+  nativeWorkspaceRecovery,
+} from '../shared/native-recovery-mode.js';
 import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import {
   nativeRuntimeBindingKey,
@@ -169,22 +173,27 @@ const branch = (value) =>
       .every((part) => part !== '' && !part.startsWith('.') && !part.endsWith('.lock')));
 
 export const nativeExecutionConfiguration = (value) => {
-  shape(value, [
-    'harness',
-    'model',
-    'promptSha256',
-    'packageId',
-    'materializationId',
-    'source',
-    'repository',
-    'credentialBinding',
-    'image',
-    'publicationBucket',
-    'packageBucket',
-    'accountId',
-  ]);
+  shape(
+    value,
+    [
+      'harness',
+      'model',
+      'promptSha256',
+      'packageId',
+      'materializationId',
+      'source',
+      'repository',
+      'credentialBinding',
+      'image',
+      'publicationBucket',
+      'packageBucket',
+      'accountId',
+    ],
+    ['recoveryMode'],
+  );
   check(
-    ['claude', 'codex', 'kiro', 'opencode'].includes(value.harness) &&
+    nativeRecoveryModeValid(value) &&
+      ['claude', 'codex', 'kiro', 'opencode'].includes(value.harness) &&
       (value.model === null || matches(value.model, /^[A-Za-z0-9][A-Za-z0-9_.:/()-]{0,255}$/)) &&
       matches(value.promptSha256, SHA256) &&
       matches(value.packageId, DIGEST) &&
@@ -344,6 +353,7 @@ const RECOVERY_REASONS = [
   'RESTORE_FAILED',
   'CHECKPOINT_UNAVAILABLE',
   'DELIVERY_UNCERTAIN',
+  'WORKSPACE_UNAVAILABLE',
 ];
 const recoveryCheckpointValue = (value) => {
   shape(value, ['id', 'sequence', 'manifest']);
@@ -512,6 +522,7 @@ const ROW_OPTIONAL = [
   'dispatch',
   'recovery',
   'lastRecoveryId',
+  'workspaceResume',
   'stopConfirmation',
 ];
 const validateStopConfirmation = (row) => {
@@ -526,6 +537,31 @@ const validateStopConfirmation = (row) => {
       row.stopConfirmation.confirmedAt >= row.startedAt &&
       row.stopConfirmation.confirmedAt <= row.updatedAt,
   );
+};
+const hasRecoveryBoundary = (row) =>
+  nativeWorkspaceRecovery(row.configuration) || recoverableBoundary(row);
+const validRecoveryCheckpoint = (row) =>
+  nativeWorkspaceRecovery(row.configuration)
+    ? row.recovery.checkpointId === undefined
+    : row.recovery.checkpointId === row.recoveryCheckpoint.id;
+const canConfirmRecovery = (row) =>
+  nativeWorkspaceRecovery(row.configuration)
+    ? row.stopConfirmation?.writerGeneration === nativeWriterGeneration(row)
+    : row.recovery.reason === 'RESTORE_FAILED' && recoverableBoundary(row);
+
+const validateWorkspaceResume = (row) => {
+  if (Object.hasOwn(row, 'workspaceResume')) {
+    shape(row.workspaceResume, ['id', 'sequence', 'writerGeneration']);
+    check(
+      nativeWorkspaceRecovery(row.configuration) &&
+        matches(row.workspaceResume.id, UUID) &&
+        integer(row.workspaceResume.sequence, 1) &&
+        row.workspaceResume.sequence <= nativeTurnSequence(row) &&
+        integer(row.workspaceResume.writerGeneration, 2) &&
+        row.workspaceResume.writerGeneration <=
+          (row.recovery?.writerGeneration ?? nativeWriterGeneration(row)),
+    );
+  }
 };
 const validate = (row, expectedScope) => {
   shape(row, ROW_FIELDS, ROW_OPTIONAL);
@@ -682,7 +718,10 @@ const validate = (row, expectedScope) => {
   }
   if (Object.hasOwn(row, 'recoveryCheckpoint')) {
     recoveryCheckpointValue(row.recoveryCheckpoint);
-    check(row.recoveryCheckpoint.sequence === row.publication?.sequence);
+    check(
+      !nativeWorkspaceRecovery(row.configuration) &&
+        row.recoveryCheckpoint.sequence === row.publication?.sequence,
+    );
   }
   if (Object.hasOwn(row, 'dispatch')) {
     shape(row.dispatch, ['sequence', 'writerGeneration', 'commandId', 'attemptedAt']);
@@ -715,12 +754,12 @@ const validate = (row, expectedScope) => {
     check(typeof row.recovery.canRecover === 'boolean');
     if (row.status === 'RECOVERING') {
       check(
-        recoverableBoundary(row) &&
+        hasRecoveryBoundary(row) &&
           !row.recovery.canRecover &&
           ['FENCING', 'RESTORING'].includes(row.recovery.phase) &&
           integer(row.recovery.previousGeneration, 1) &&
           row.recovery.writerGeneration === row.recovery.previousGeneration + 1 &&
-          row.recovery.checkpointId === row.recoveryCheckpoint.id &&
+          validRecoveryCheckpoint(row) &&
           nativeWriterGeneration(row) ===
             (row.recovery.phase === 'FENCING'
               ? row.recovery.previousGeneration
@@ -730,12 +769,12 @@ const validate = (row, expectedScope) => {
       check(
         ['RECOVERY_REQUIRED', 'CANCEL_REQUESTED', 'CANCELLED'].includes(row.status) &&
           Object.keys(row.recovery).length === 3 &&
-          (!row.recovery.canRecover ||
-            (row.recovery.reason === 'RESTORE_FAILED' && recoverableBoundary(row))),
+          (!row.recovery.canRecover || canConfirmRecovery(row)),
       );
     }
   } else check(!['RECOVERING', 'RECOVERY_REQUIRED'].includes(row.status));
   if (Object.hasOwn(row, 'lastRecoveryId')) check(matches(row.lastRecoveryId, UUID));
+  validateWorkspaceResume(row);
   check(Buffer.byteLength(JSON.stringify(row)) <= MAX_ROW_BYTES);
   return clone(row);
 };
@@ -1017,7 +1056,7 @@ export const createNativeExecutionStore = ({
           (!response.publicationId || response.publicationId === found.receipt.id),
       );
       const observations = await Promise.all(
-        ['delivered', 'uncertain', 'publication'].map(async (kind) =>
+        ['delivered', 'uncertain', 'publication', 'retained'].map(async (kind) =>
           answerObservation(
             await readRecord(answerHistoryKey(row, interactionId, kind)),
             row,
@@ -1031,6 +1070,7 @@ export const createNativeExecutionStore = ({
         delivered: observations[0],
         uncertain: observations[1],
         publication: observations[2],
+        retained: observations[3],
       };
     },
     async start(input) {
@@ -1423,7 +1463,7 @@ export const createNativeExecutionStore = ({
       if (row.status !== 'RECOVERING' || row.recovery.phase !== 'RESTORING') fail('CONFLICT');
       const next = {
         ...row,
-        status: 'DISPATCHING',
+        status: nativeWorkspaceRecovery(row.configuration) ? 'RUNNING' : 'DISPATCHING',
         lastRecoveryId: row.recovery.id,
         leaseExpiresAt: clock() + leaseMs,
       };
@@ -1447,7 +1487,9 @@ export const createNativeExecutionStore = ({
           recovery: {
             id: input.recoveryId ?? randomUUID(),
             reason: input.reason,
-            canRecover: input.reason === 'RESTORE_FAILED' && recoverableBoundary(row),
+            canRecover: nativeWorkspaceRecovery(row.configuration)
+              ? Object.hasOwn(input, 'stoppedSessionId') && input.reason !== 'WORKSPACE_UNAVAILABLE'
+              : input.reason === 'RESTORE_FAILED' && recoverableBoundary(row),
           },
         }),
       );
@@ -1459,13 +1501,19 @@ export const createNativeExecutionStore = ({
         executionId: input.executionId,
         bindingId: input.bindingId,
       });
-      shape(input.request, ['requestId', 'recoveryId']);
+      shape(input.request, ['requestId', 'recoveryId'], ['confirmWorkspaceResume']);
       check(matches(input.request.requestId, UUID) && matches(input.request.recoveryId, UUID));
       for (let retry = 0; retry < 4; retry++) {
         const row = await get(currentScope);
         if (!row) fail('NOT_FOUND');
         if (row.bindingId !== input.bindingId) fail('CONFLICT');
         if (row.cancelRequested) fail('CANCELLED');
+        const workspace = nativeWorkspaceRecovery(row.configuration);
+        check(
+          workspace
+            ? input.request.confirmWorkspaceResume === true
+            : input.request.confirmWorkspaceResume === undefined,
+        );
         // The server-issued episode deduplicates recovery across members and
         // tabs. A lost response must not start another writer generation.
         if (
@@ -1477,7 +1525,9 @@ export const createNativeExecutionStore = ({
           row.status !== 'RECOVERY_REQUIRED' ||
           row.recovery.id !== input.request.recoveryId ||
           !row.recovery.canRecover ||
-          !recoverableBoundary(row)
+          (workspace
+            ? row.stopConfirmation?.writerGeneration !== nativeWriterGeneration(row)
+            : !recoverableBoundary(row))
         )
           fail('CONFLICT');
         const next = unlease({
@@ -1490,9 +1540,23 @@ export const createNativeExecutionStore = ({
             phase: 'FENCING',
             previousGeneration: nativeWriterGeneration(row),
             writerGeneration: nativeWriterGeneration(row) + 1,
-            checkpointId: row.recoveryCheckpoint.id,
+            ...(workspace ? {} : { checkpointId: row.recoveryCheckpoint.id }),
           },
         });
+        if (workspace) {
+          // Confirmation admits a new resume command, never the previous
+          // answer. Its immutable ledger and delivery observations survive.
+          // Even definitively undelivered input is retained for the member to
+          // review against the question AI-DLC recovers from the live files.
+          next.turnSequence = (row.publication?.sequence ?? 0) + 1;
+          next.workspaceResume = {
+            id: row.recovery.id,
+            sequence: next.turnSequence,
+            writerGeneration: nativeWriterGeneration(row) + 1,
+          };
+          delete next.response;
+          delete next.dispatch;
+        }
         try {
           return await commit(row, next, 'response');
         } catch (error) {
@@ -1540,6 +1604,7 @@ export const createNativeExecutionStore = ({
       const row = await owned(input.row);
       const interaction = input.interaction ? interactionValue(input.interaction, row) : null;
       const checkpoint = input.checkpoint ? recoveryCheckpointValue(input.checkpoint) : null;
+      if (nativeWorkspaceRecovery(row.configuration) && checkpoint) fail('CONFLICT');
       if (checkpoint) check(interaction !== null && checkpoint.sequence === publication.sequence);
       if (interaction) {
         check(
