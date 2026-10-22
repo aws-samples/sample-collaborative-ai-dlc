@@ -589,6 +589,28 @@ describe('construction autonomy: an autonomous grant', () => {
     expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
   });
 
+  // A stage whose Plan Approval was turned off by a setting carries no plan
+  // gate, so the grant is not refused by the Plan Approval clause. The stage
+  // still lost a gate it would have had, and that notice reaches the human: the
+  // autonomous walk must stop there rather than waive it.
+  it.each([
+    { name: 'for this intent', withheld: { source: 'intent', scope: 'feature' } },
+    { name: 'by the scope default', withheld: { source: 'scope-default', scope: 'bugfix' } },
+  ])(
+    'keeps the human gate on a stage whose Plan Approval was turned off $name',
+    async ({ withheld }) => {
+      deps.loadPlan = vi.fn(async () => ({
+        valid: true,
+        plan: {
+          stages: [ANCHOR, { ...SECOND, policy: { ...POLICY, planApprovalWithheld: withheld } }],
+        },
+      }));
+      await run();
+      expect(gateFor('si-build-and-test')).not.toBeNull();
+      expect(eventsOfType('v2.gate.auto_approved')).toEqual([]);
+    },
+  );
+
   it.each([
     { name: 'the run was cancelled', over: { status: 'CANCELLED' } },
     { name: 'another orchestrator took the run over', over: { orchestratorRunId: 'someone-else' } },
