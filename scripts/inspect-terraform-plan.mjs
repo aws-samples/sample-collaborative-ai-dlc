@@ -34,20 +34,27 @@ const expectedRetirement = (change) => {
 
 const destructive = (change) => change.change?.actions?.includes('delete');
 
-const protectionAttribute = (change) => {
-  if (change.type === 'aws_dynamodb_table') return 'deletion_protection_enabled';
-  if (change.type === 'aws_neptune_cluster') return 'deletion_protection';
-  return undefined;
+// Attribute and enabled/disabled values per resource type. Cognito uses an
+// ACTIVE/INACTIVE string rather than a boolean.
+const protectionSettings = {
+  aws_dynamodb_table: { attribute: 'deletion_protection_enabled', enabled: true, disabled: false },
+  aws_neptune_cluster: { attribute: 'deletion_protection', enabled: true, disabled: false },
+  aws_cognito_user_pool: {
+    attribute: 'deletion_protection',
+    enabled: 'ACTIVE',
+    disabled: 'INACTIVE',
+  },
 };
 
 const onlyDisablesDeletionProtection = (change) => {
   if (!isDeepStrictEqual(change.change?.actions, ['update'])) return false;
 
-  const attribute = protectionAttribute(change);
-  if (!attribute) return false;
+  const settings = protectionSettings[change.type];
+  if (!settings) return false;
+  const { attribute, enabled, disabled } = settings;
   const before = structuredClone(change.change.before);
   const after = structuredClone(change.change.after);
-  if (before?.[attribute] !== true || after?.[attribute] !== false) return false;
+  if (before?.[attribute] !== enabled || after?.[attribute] !== disabled) return false;
   delete before[attribute];
   delete after[attribute];
   return isDeepStrictEqual(before, after);

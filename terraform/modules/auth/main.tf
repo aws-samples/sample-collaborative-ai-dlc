@@ -95,6 +95,8 @@ resource "aws_lambda_permission" "allow_cognito_sso_token" {
 resource "aws_cognito_user_pool" "main" {
   name = "${var.project_name}-${var.environment}-user-pool"
 
+  deletion_protection = var.deletion_protection ? "ACTIVE" : "INACTIVE"
+
   # Email sign-in configuration (use email as username)
   username_attributes = ["email"]
 

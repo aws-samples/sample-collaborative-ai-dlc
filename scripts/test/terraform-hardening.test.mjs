@@ -320,8 +320,14 @@ test('teardown covers every protected data store and cannot automate production'
         .filter(({ body }) => body.includes('deletion_protection_enabled'))
         .map(({ name }) => `${moduleAddress}.aws_dynamodb_table.${name}`),
     )
-    .concat('module.neptune.aws_neptune_cluster.main')
+    .concat(
+      'module.neptune.aws_neptune_cluster.main',
+      ...resourceBlocks(read('terraform/modules/auth/main.tf'), 'aws_cognito_user_pool')
+        .filter(({ body }) => body.includes('deletion_protection'))
+        .map(({ name }) => `module.auth.aws_cognito_user_pool.${name}`),
+    )
     .toSorted();
+  assert.ok(protectedResources.includes('module.auth.aws_cognito_user_pool.main'));
 
   const destroy = read('scripts/destroy.sh');
   const teardownTargets = [...destroy.matchAll(/^\s+-target=([^\s]+)$/gm)]

@@ -112,3 +112,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "deletion_protection" {
+  description = "Enable Cognito user pool deletion protection. Federated and local identities (and every workspace keyed by their sub) cannot be restored once the pool is deleted."
+  type        = bool
+  default     = false
+}

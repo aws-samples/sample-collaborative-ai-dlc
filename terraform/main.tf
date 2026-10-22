@@ -312,6 +312,8 @@ module "waf" {
 module "auth" {
   source = "./modules/auth"
 
+  deletion_protection = var.deletion_protection
+
   aws_sdk_ua_app_id       = local.aws_sdk_ua_app_id
   project_name            = var.project_name
   environment             = var.environment

@@ -198,7 +198,7 @@ Keep `environment`, `project_name` and `aws_region` in the tfvars. The retired-v
 
 !!! warning "A production environment must be named exactly `prod`"
 
-    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger Yjs collaboration containers, immutable ECR repositories, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, DynamoDB and Neptune deletion protection, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run.
+    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger Yjs collaboration containers, immutable ECR repositories, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, DynamoDB, Neptune and Cognito user pool deletion protection, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run.
 
     A near-miss name such as `production`, `prd`, or `prod-us` is treated as **non-production**: the hardening is silently disabled and the buckets become force-destroyable. Name the production environment `prod` and nothing else.
 
