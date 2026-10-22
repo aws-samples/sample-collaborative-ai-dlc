@@ -29,7 +29,27 @@ const TOKENS_PER_UNIT = 1_000_000;
 // Static fallback — current published Anthropic-on-Bedrock token prices
 // (USD / 1M tokens). Keyed by canonical family. Used when the cached table lacks
 // an entry. Update when a model ships or a price changes.
+//
+// Claude 5.x entries are Amazon Bedrock Standard-tier on-demand prices from the
+// AWS Price List (offer AmazonBedrockFoundationModels, eu-west-1 / us-east-1,
+// October 2026). `input`/`output` are the Global cross-region inference rates
+// (`global.` ids); `regional` holds the Geo cross-region / in-Region rates
+// (`eu.`, `us.`, `apac.` and bare `anthropic.` ids), which Bedrock bills at
+// 1.1x. Mythos 5 has no Global profile, so only its regional rate is billable.
+// Not covered: Haiku 5.5 bills prompts over 100K tokens at 5x (input
+// $0.50/$0.55, output $2.50/$2.75), but metric samples don't carry per-request
+// prompt length, so the base rate is used. Cache read/write tokens are not
+// priced by costForMetrics.
 const FALLBACK_PRICES = {
+  'claude-fable-5-1': { input: 10, output: 50, regional: { input: 11, output: 55 } },
+  'claude-mythos-5-1': { input: 10, output: 50, regional: { input: 11, output: 55 } },
+  'claude-opus-5-5': { input: 4, output: 20, regional: { input: 4.4, output: 22 } },
+  'claude-sonnet-5-5': { input: 2, output: 10, regional: { input: 2.2, output: 11 } },
+  'claude-haiku-5-5': { input: 0.1, output: 0.5, regional: { input: 0.11, output: 0.55 } },
+  'claude-fable-5': { input: 10, output: 50, regional: { input: 11, output: 55 } },
+  'claude-mythos-5': { input: 10, output: 50, regional: { input: 11, output: 55 } },
+  'claude-opus-5': { input: 5, output: 25, regional: { input: 5.5, output: 27.5 } },
+  'claude-sonnet-5': { input: 2, output: 10, regional: { input: 2.2, output: 11 } },
   'claude-opus-4-8': { input: 5, output: 25 },
   'claude-opus-4-7': { input: 5, output: 25 },
   'claude-opus-4-6': { input: 5, output: 25 },
@@ -66,14 +86,25 @@ const modelFamily = (modelId) => {
   return id;
 };
 
+// True when a resolved model id routes through Bedrock Global cross-region
+// inference (`global.` profile, optionally behind an opencode provider prefix).
+const isGlobalProfile = (modelId) =>
+  /^(amazon-bedrock\/)?global\./.test(
+    String(modelId ?? '')
+      .trim()
+      .toLowerCase(),
+  );
+
 // Build a priceFor(modelId) → { model, family, currency, inputPerToken,
 // outputPerToken, priced } resolver over a given table (falling back to the
-// static seed). Per-token rates are derived from the per-1M table entry.
+// static seed). Per-token rates are derived from the per-1M table entry. An
+// entry with a `regional` rate uses it for every id except a `global.` profile.
 const makePriceResolver = (table = {}) => {
   const lookup = { ...FALLBACK_PRICES, ...table };
   return (modelId) => {
     const family = modelFamily(modelId);
-    const entry = family ? lookup[family] : null;
+    const base = family ? lookup[family] : null;
+    const entry = base?.regional && !isGlobalProfile(modelId) ? base.regional : base;
     if (!entry) {
       return {
         model: modelId ?? null,
