@@ -273,7 +273,12 @@ function StageChip({
           !isRunning &&
           !isWaiting &&
           !isFailed &&
-          palette.conditionalBg.split(' ')[0],
+          // Keep the dark-mode background too; taking only the first class
+          // left a light yellow fill under light text in dark mode.
+          palette.conditionalBg
+            .split(' ')
+            .filter((c) => /^(dark:)?bg-/.test(c))
+            .join(' '),
         selected && 'ring-2 ring-primary/50 ring-offset-1 ring-offset-background',
       )}
     >
