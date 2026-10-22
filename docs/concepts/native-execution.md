@@ -2830,6 +2830,11 @@ compatibility while implementing the recovery direction below.
       complete; independent review and the bounded deployed EFS acceptance
       below remain open.** The open tracker item does not mean unfinished
       local implementation or establish deployed stability.
+      Implementation and reusable qualification commit:
+      `76872b5dc8a7f0a72c46e8ff142936fcb1b2462e`.
+      The post-commit source inventory and controller test-adapter hash still
+      match the packaged acceptance below. No push, deployment, live provider
+      call or historical-run mutation occurred.
 
       **Implemented contract (2026-10-21; local acceptance below).**
 
@@ -2968,7 +2973,10 @@ compatibility while implementing the recovery direction below.
       while waiting for container ports to be bound to the host`):
       2,018 tests passed / eight skipped, one suite failed before its assertions.
       The complete backend run above had passed that suite. The normal hook
-      is rerun with two workers; no hook or integration assertion is bypassed.
+      then passed with two workers: **2,024 PASS / 2 SKIPPED**, all 59 suites
+      passing (`/tmp/native-efs-implementation-commit-retry.log`).
+      Both production dependency audits reported zero vulnerabilities.
+      No hook or integration assertion was bypassed.
 
       ```bash
       export PATH=/Users/jwthewes/.nvm/versions/node/v24.21.0/bin:$PATH
