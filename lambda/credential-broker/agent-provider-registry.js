@@ -184,12 +184,16 @@ export const createBrokerProviderRegistry = (providers) => {
     return dependencies.get(provider.id);
   };
   const bind =
-    (provider, adapter, { claims, request, key, presentedToken, renewalAuthority, overrides }) =>
+    (
+      provider,
+      adapter,
+      { claims, request, key, presentedToken, renewalAuthority, overrides, now = Date.now },
+    ) =>
     async ({ ssm, connection, binding }) => {
       const deps = { ...dependenciesOf(provider), ...overrides };
       let result;
       try {
-        result = await adapter({ ssm, connection, binding, claims, request, deps });
+        result = await adapter({ ssm, connection, binding, claims, request, deps, now });
       } catch (error) {
         throw classified(provider, error);
       }
@@ -291,6 +295,7 @@ export const createAgentProviderContext = async (
       renewalAuthority: renewing ? null : renewalAuthority,
       provider: renewing ?? verifier,
       overrides,
+      now,
     });
   const adapters = adaptersWith();
   return {
