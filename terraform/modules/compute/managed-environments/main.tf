@@ -971,6 +971,10 @@ module "tool_control_lambda" {
     CORE_IMAGE_DIGEST             = var.core_image_digest
     RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
     CORS_ALLOWED_ORIGINS          = var.cors_allowed_origins
+
+    # x86_64 tool builds (empty/no-op when the amd64 core is not published)
+    CORE_IMAGE_URI_AMD64    = var.core_image_uri_amd64
+    CORE_IMAGE_DIGEST_AMD64 = var.core_image_digest_amd64
   }
 
   depends_on = [aws_iam_role_policy_attachment.tool_control_vpc]
@@ -1055,6 +1059,18 @@ resource "aws_iam_role_policy" "tool_status" {
           "ecr:DescribeImageScanFindings",
         ]
         Resource = aws_ecr_repository.managed_tools.arn
+      },
+      {
+        # Same as the environment status role: with ECR enhanced scanning,
+        # DescribeImageScanFindings is served by Amazon Inspector and also
+        # needs inspector2 read access (no resource-level scoping available).
+        # Without it every tool image inspection fails in such accounts.
+        Effect = "Allow"
+        Action = [
+          "inspector2:ListCoverage",
+          "inspector2:ListFindings",
+        ]
+        Resource = "*"
       },
     ]
   })
