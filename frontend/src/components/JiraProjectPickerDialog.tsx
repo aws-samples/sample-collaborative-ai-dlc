@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { trackersService, type ExternalProject } from '@/services/trackers';
 import { getTrackerProvider } from '@/lib/trackerProviders';
 import { cn } from '@/lib/utils';
@@ -23,6 +24,20 @@ interface Props {
 // Lists Jira projects accessible to the connected user and lets them pick
 // one to bind to the current collaborative project. Self-contained so the
 // fetch + radio-list state doesn't sprawl across ProjectSettings.
+// Large sites list hundreds of projects, so the list is searchable by name and
+// key, and each project shows its type (Product Discovery, Software, ...).
+const PROJECT_TYPE_LABEL: Record<string, string> = {
+  software: 'Software',
+  business: 'Business',
+  service_desk: 'Service management',
+  product_discovery: 'Product Discovery',
+};
+
+const matchesFilter = (project: ExternalProject, filter: string) => {
+  const f = filter.trim().toLowerCase();
+  return !f || project.name.toLowerCase().includes(f) || project.key.toLowerCase().includes(f);
+};
+
 export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props) {
   const meta = getTrackerProvider('jira-cloud');
   const [projects, setProjects] = useState<ExternalProject[]>([]);
@@ -30,12 +45,27 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props
   const [chosenKey, setChosenKey] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState('');
+
+  const visible = useMemo(
+    () => projects.filter((p) => matchesFilter(p, filter)),
+    [projects, filter],
+  );
+
+  // A selection the search hides is cleared, so Add never submits a project
+  // the user can no longer see.
+  const changeFilter = (value: string) => {
+    setFilter(value);
+    const chosen = projects.find((p) => p.key === chosenKey);
+    if (chosen && !matchesFilter(chosen, value)) setChosenKey(null);
+  };
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setProjects([]);
     setChosenKey(null);
+    setFilter('');
     setError(null);
     setLoading(true);
     trackersService
@@ -43,7 +73,8 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props
       .then((list) => {
         if (cancelled) return;
         setProjects(list);
-        if (list.length > 0) setChosenKey(list[0].key);
+        // No preselection: with hundreds of projects the first one is never
+        // the right one, and Add would silently bind it.
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -73,7 +104,7 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Add Jira project</DialogTitle>
           <DialogDescription>
@@ -81,7 +112,16 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props
             Jira issue" panel will list issues from this project.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-2 py-4 max-h-72 overflow-y-auto">
+        {!loading && !error && projects.length > 0 && (
+          <Input
+            value={filter}
+            onChange={(e) => changeFilter(e.target.value)}
+            placeholder={`Search ${projects.length} projects by name or key…`}
+            aria-label="Search Jira projects"
+            autoFocus
+          />
+        )}
+        <div className="space-y-2 py-2 max-h-80 overflow-y-auto">
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading projects…</p>
           ) : error ? (
@@ -90,8 +130,10 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props
             <p className="text-sm text-muted-foreground">
               No Jira projects accessible. Check that your Atlassian user has read access.
             </p>
+          ) : visible.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No projects match "{filter.trim()}".</p>
           ) : (
-            projects.map((p) => (
+            visible.map((p) => (
               <label
                 key={p.key}
                 className={cn(
@@ -108,8 +150,13 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props
                   className="mt-1 accent-primary"
                 />
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium text-sm">{p.name}</p>
-                  <p className="text-xs text-muted-foreground font-mono">{p.key}</p>
+                  <p className="font-medium text-sm wrap-anywhere">{p.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-mono">{p.key}</span>
+                    {p.projectTypeKey && (
+                      <> · {PROJECT_TYPE_LABEL[p.projectTypeKey] ?? p.projectTypeKey}</>
+                    )}
+                  </p>
                 </div>
               </label>
             ))

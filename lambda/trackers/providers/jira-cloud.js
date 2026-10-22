@@ -493,19 +493,70 @@ const parsePageNumber = (raw) => {
 // Provider methods
 // ---------------------------------------------------------------------------
 
-const listExternalProjects = async ({ ddb, ssm, secrets, userId }) => {
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
-  const r = await jiraFetch(ctx, '/rest/api/3/project/search?maxResults=100');
+// The project picker filters this list client-side, so it must hold every
+// project the user can see, not just the first page: a large site has
+// hundreds. Capped on both results and requests so a huge site still answers
+// inside the API Gateway 29s limit.
+const PROJECT_PAGE_SIZE = 100;
+const PROJECT_MAX_RESULTS = 2000;
+const PROJECT_MAX_REQUESTS = 40;
+
+const fetchProjectPage = async (ctx, startAt) => {
+  const params = new URLSearchParams({
+    startAt: String(startAt),
+    maxResults: String(PROJECT_PAGE_SIZE),
+    orderBy: 'name',
+  });
+  const r = await jiraFetch(ctx, `/rest/api/3/project/search?${params.toString()}`);
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     throw new ProviderError(r.status, data.errorMessages?.[0] || 'Failed to list Jira projects');
   }
   const values = Array.isArray(data.values) ? data.values : [];
-  return values.map((p) => ({
-    key: p.key,
-    name: p.name,
-    displayKey: p.key,
-  }));
+  // Jira may apply a smaller limit than requested and may omit isLast, so
+  // completion comes from this response's own metadata.
+  const pageStart = Number.isFinite(data.startAt) ? data.startAt : startAt;
+  const next = pageStart + values.length;
+  const total = Number.isFinite(data.total) ? data.total : null;
+  const limit = Number.isFinite(data.maxResults) ? data.maxResults : PROJECT_PAGE_SIZE;
+  let isLast;
+  if (values.length === 0) isLast = true;
+  else if (typeof data.isLast === 'boolean') isLast = data.isLast;
+  else if (total !== null) isLast = next >= total;
+  else if (data.nextPage) isLast = false;
+  else isLast = values.length < limit;
+  return {
+    projects: values.map((p) => ({
+      key: p.key,
+      name: p.name,
+      displayKey: p.key,
+      // software, business, service_desk or product_discovery.
+      projectTypeKey: p.projectTypeKey,
+    })),
+    next,
+    isLast,
+  };
+};
+
+// Pages are fetched one at a time, each continuing from where the previous
+// response ended. Sequential requests also keep any 401 token refresh single
+// (Atlassian rotates refresh tokens, so parallel refreshes would race).
+const listExternalProjects = async ({ ddb, ssm, secrets, userId }) => {
+  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const projects = [];
+  const seen = new Set();
+  let startAt = 0;
+  for (let request = 0; request < PROJECT_MAX_REQUESTS; request += 1) {
+    const page = await fetchProjectPage(ctx, startAt);
+    for (const project of page.projects) {
+      if (seen.has(project.key)) continue;
+      seen.add(project.key);
+      projects.push(project);
+    }
+    if (page.isLast || projects.length >= PROJECT_MAX_RESULTS || page.next <= startAt) break;
+    startAt = page.next;
+  }
+  return projects.slice(0, PROJECT_MAX_RESULTS);
 };
 
 const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) => {
