@@ -248,6 +248,23 @@ describe('versioned IAM broker authorization', () => {
     ).rejects.toMatchObject({ code: 'AGENT_CREDENTIAL_GRANT_EXPIRED' });
     expect(f.stsClient.send).toHaveBeenCalledTimes(2);
   });
+  it('never requests an STS session past the signed renewal deadline', async () => {
+    const f = fixture();
+    const original = (await authorizeAgentCredentialRequest({ grant: f.grant }, f.deps))
+      .credentials[0];
+    expect(f.stsClient.send.mock.calls[0][0].input.DurationSeconds).toBe(3600);
+    const renew = () =>
+      authorizeAgentCredentialRequest(
+        { action: BEDROCK_IAM_RENEWAL.action, grant: original.renewalToken },
+        f.deps,
+      );
+    f.advance(7 * HOUR + 1800_000 + 500);
+    await renew();
+    expect(f.stsClient.send.mock.calls[1][0].input.DurationSeconds).toBe(1799);
+    f.advance(1800_000 - 899_000);
+    await expect(renew()).rejects.toMatchObject({ code: 'AGENT_CREDENTIAL_GRANT_EXPIRED' });
+    expect(f.stsClient.send).toHaveBeenCalledTimes(2);
+  });
   it('rejects handoff/renewal audience substitution, tampering and revoked connections', async () => {
     const f = fixture();
     const c = (await authorizeAgentCredentialRequest({ grant: f.grant }, f.deps)).credentials[0];
