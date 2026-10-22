@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../git-token.js', () => ({
   discoverGitHubInstallation: vi.fn(),
@@ -21,6 +21,7 @@ vi.mock('../git-providers.js', async (importOriginal) => {
 import {
   missingScopes,
   parseScopes,
+  verifyCodeCommitRoleBinding,
   verifyGitHubAppBinding,
   resolveBindingCredential,
 } from '../source-control-credentials.js';
@@ -269,5 +270,133 @@ describe('resolveBindingCredential GitLab 401 retry support', () => {
       },
     });
     expect(credential.refresh).toBeUndefined();
+  });
+});
+
+describe('verifyCodeCommitRoleBinding (platform connection, #531)', () => {
+  const ROLE = 'arn:aws:iam::123456789012:role/aidlc-codecommit-access';
+  const OTHER_ROLE = 'arn:aws:iam::210987654321:role/someone-elses-role';
+  const EXTERNAL_ID = 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e';
+  const REPO = 'arn:aws:codecommit:eu-west-1:123456789012:demo';
+
+  const ssmReturning = (value) => ({
+    async send(command) {
+      if (command.constructor.name === 'GetParameterCommand') {
+        return { Parameter: { Value: value } };
+      }
+      throw new Error(`unexpected ${command.constructor.name}`);
+    },
+  });
+
+  const stsOk = () => ({
+    calls: [],
+    async send(command) {
+      this.calls.push(command);
+      return {
+        Credentials: {
+          AccessKeyId: 'ASIA',
+          SecretAccessKey: 's',
+          SessionToken: 't',
+          Expiration: new Date(),
+        },
+        AssumedRoleUser: { Arn: 'arn:aws:sts::123456789012:assumed-role/x/y' },
+      };
+    },
+  });
+
+  let env;
+  beforeEach(() => {
+    env = { ...process.env };
+    process.env.CODECOMMIT_EXTERNAL_ID = EXTERNAL_ID;
+    process.env.CODECOMMIT_CONNECTION_PARAM = '/aidlc/dev/codecommit-connection';
+    getProvider.mockImplementation((provider) => {
+      if (provider === 'codecommit') {
+        return { getRepositoryAccess: async () => ({ canRead: true, canWrite: true }) };
+      }
+      throw new Error(`unexpected provider ${provider}`);
+    });
+  });
+
+  it('takes the role from the connection and the external id from the env, ignoring the selection', async () => {
+    const sts = stsOk();
+    const credential = await verifyCodeCommitRoleBinding({
+      ssm: ssmReturning(JSON.stringify({ roleArn: ROLE, region: 'eu-west-1' })),
+      sts,
+      repo: REPO,
+      // A selection that tries to name a different role/external id is ignored.
+      selection: { roleArn: OTHER_ROLE, externalId: 'aidlc:ffffffff-ffff-ffff-ffff-ffffffffffff' },
+    });
+    expect(credential.authType).toBe('codecommit-role');
+    expect(credential.roleArn).toBe(ROLE);
+    expect(credential.externalId).toBe(EXTERNAL_ID);
+    expect(sts.calls[0].input.RoleArn).toBe(ROLE);
+    expect(sts.calls[0].input.ExternalId).toBe(EXTERNAL_ID);
+  });
+
+  it('throws CODECOMMIT_NOT_CONFIGURED when no connection is set (bind returns the 409)', async () => {
+    const sts = stsOk();
+    await expect(
+      verifyCodeCommitRoleBinding({
+        ssm: ssmReturning('{}'),
+        sts,
+        repo: REPO,
+        selection: {},
+      }),
+    ).rejects.toMatchObject({ code: 'CODECOMMIT_NOT_CONFIGURED' });
+    // Nothing is assumed when there is no connection.
+    expect(sts.calls).toHaveLength(0);
+  });
+
+  it('rejects an unreadable repository with INSUFFICIENT_REPOSITORY_ACCESS', async () => {
+    getProvider.mockImplementation(() => ({
+      getRepositoryAccess: async () => ({ canRead: false, canWrite: false }),
+    }));
+    await expect(
+      verifyCodeCommitRoleBinding({
+        ssm: ssmReturning(JSON.stringify({ roleArn: ROLE, region: 'eu-west-1' })),
+        sts: stsOk(),
+        repo: REPO,
+        selection: {},
+      }),
+    ).rejects.toMatchObject({ code: 'INSUFFICIENT_REPOSITORY_ACCESS' });
+  });
+
+  it('resolveBindingCredential keeps assuming the role recorded on the binding, not the one the connection now names', async () => {
+    // A binding verified under role A keeps A even after the admin saves role B
+    // The runtime resolver reads the binding, never the connection.
+    const ROLE_B = 'arn:aws:iam::555555555555:role/new-platform-role';
+    const sts = stsOk();
+    getProvider.mockImplementation(() => ({
+      getRepositoryAccess: async () => ({ canRead: true, canWrite: true }),
+    }));
+    const binding = {
+      status: 'active',
+      authType: 'codecommit-role',
+      provider: 'codecommit',
+      repo: REPO,
+      roleArn: ROLE,
+      externalId: EXTERNAL_ID,
+      credentialRef: `codecommit-role#${ROLE}#${EXTERNAL_ID}`,
+      actorName: 'AIDLC',
+      actorEmail: 'aidlc@example.com',
+      actorLogin: ROLE,
+    };
+    // The connection now names role B, but the resolver must ignore it.
+    const resolved = await resolveBindingCredential({
+      ddb: {},
+      ssm: ssmReturning(JSON.stringify({ roleArn: ROLE_B, region: 'eu-west-1' })),
+      secrets: {},
+      sts,
+      binding,
+      requiredAccess: 'write',
+      executionId: 'exec-1',
+    });
+    expect(resolved.token.accessKeyId).toBe('ASIA');
+    expect(sts.calls[0].input.RoleArn).toBe(ROLE);
+    expect(sts.calls[0].input.RoleArn).not.toBe(ROLE_B);
+  });
+
+  afterEach(() => {
+    process.env = env;
   });
 });
