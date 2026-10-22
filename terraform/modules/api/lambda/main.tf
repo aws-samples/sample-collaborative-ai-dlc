@@ -1528,6 +1528,8 @@ module "sprints_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -1645,6 +1647,8 @@ module "tasks_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_tasks.arn
@@ -1764,6 +1768,8 @@ module "questions_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_questions.arn
@@ -1801,6 +1807,8 @@ module "sprint_graph_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -2319,6 +2327,8 @@ module "timeline_events_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -2575,6 +2585,8 @@ module "migrate_tracker_fields_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -2613,6 +2625,8 @@ module "building_blocks_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.blocks.arn
@@ -2659,6 +2673,8 @@ module "seed_blocks_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.seed_blocks.arn
