@@ -3129,11 +3129,84 @@ compatibility while implementing the recovery direction below.
          action. Finally test Cancel and positive stop. No failed historical
          intent or delivered historical answer is replayed.
 
-      Deployment, provider/model behavior, browser behavior and EFS/NFS
-      replacement are still NOT RUN for this candidate. OpenCode delegated
-      dependency builds and Kiro managed-auth qualification remain explicitly
-      separate gaps. The next release decision depends on this finite live
-      evidence, not another aggregate unit-test count.
+      **First user-operated live acceptance IN PROGRESS (2026-10-22).**
+      Fresh intent `3a70749e-24ab-42c3-8ba2-592592fbf2c0` in the space above
+      was accepted at **14:26:46.726 UTC**. Read-only `solution-read` STS,
+      projected consistent DynamoDB reads, bounded content-free lifecycle
+      logs and associated runtime/Lambda metadata verified the following.
+      This observation does not qualify recovery, browser behavior or a
+      completed workflow.
+
+      - The execution pins `efs-workspace-v1`, Claude
+        `global.anthropic.claude-sonnet-5-5`, package version **2.11.1**,
+        package ID
+        `sha256:577eced0d4425aba7cd4fdaec100315363e104d28fa47f1aec141aac606dfb56`
+        and image
+        `sha256:748d1d3a9b64dcb704ad1d949fc26f6d5221f9a910de98fd6093aa71ba230ecf`.
+        The prior installed offline qualification used **2.11.0**; its
+        attestation is not evidence for this new package's workflow behavior.
+        No package or run configuration was changed during observation.
+      - Runtime
+        `native_7685d78d8db3019cbac0b79ad93732bf-1c4Svq5YUF`,
+        version **2**, endpoint `exec_c6790249389f56652b4a755f9e82d4ce`
+        is READY with EFS access point `fsap-0ed35309dc9c4207d` mounted at
+        `/mnt/native`, idle timeout **900 s**, lifetime **28,800 s**.
+        Attempt `939a60dc-751a-45fe-8ab5-6097621c5b6b`, runtime session
+        `e7366ff7-c5c0-4f01-adea-a2214b814b30`, epoch/writer **1/1**.
+      - The exact deployed digest is cached locally. A read-only,
+        network-disabled container verified installed Claude **2.1.296**
+        and matching hashes against `de8120d` for executor,
+        execution-prepare, execution-files, session-recovery-files,
+        runtime-server, native-recovery-mode and native-pending-input.
+        This is a seven-owner alignment check, not a claim to have rerun
+        installed qualification on the deployed image. Live API, authority,
+        execution-worker and credentials Lambda ZIP `CodeSha256` values
+        match retained local deployment ZIPs; their module hashes match the
+        four validated bundle hashes recorded above. The functions were
+        updated at **14:20:58–14:21:04 UTC**.
+      - Authority dispatch attempt **14:27:25.176** (**38.450 s** after
+        acceptance), runtime delivery confirmation **14:27:44.172**
+        (**18.996 s** later). Runtime preparation **14:27:44.046–53.517**
+        (**9.471 s**), including package verification **6.114 s** and
+        checkout **3.087 s**. Package installation started
+        **14:27:53.543**, completed **14:30:43.222** (**169.679 s**).
+        Project pinning took **21.239 s**, harness configuration **25.119 s**;
+        total installation/configuration was **216.126 s**. Harness launch
+        **14:31:29.859**, first output **14:31:33.892** (**4.033 s** later),
+        first useful output **14:32:19.594** (**49.735 s** after launch).
+        Acceptance-to-harness-launch was **283.133 s**; startup is distinct
+        from subsequent CLI/tool/provider work. Delivery confirmation
+        overlaps runtime preparation; these durations must not be added as
+        disjoint phases.
+      - At **14:30:54 UTC**, authority was RUNNING, turn **1**, revision
+        **248**, no failure/answer/publication/checkpoint recorded in the
+        projected fields. The independent output cursor was **3**
+        (writer **1**, event index **3**). A later bounded, drained log read
+        through **14:32:33 UTC** established launch and first useful output
+        above. No private checkpoint boundary was observed, but a completed
+        publication is still needed to qualify the new admission path.
+
+      Reproducible evidence scope: table
+      `collaborative-ai-dlc-native-runs-dev`, partition
+      `NATIVE#812cc362bb53ffa4ab58525d16c0eaca1dc1b39c3b11c82e97a8e01909675173`,
+      scalar projections of `EXECUTION`, `RUNTIME`, `OUTPUT_CURSOR`, and
+      paginated `EVENT#` rows. Runtime log group
+      `/aws/bedrock-agentcore/runtimes/native_7685d78d8db3019cbac0b79ad93732bf-1c4Svq5YUF-exec_c6790249389f56652b4a755f9e82d4ce`,
+      stream `2026/10/22/[runtime-logs]3a26e9f8-2e6f-4f6c-80a5-516c26a5c2d4`,
+      filtered by `type=native.lifecycle` and this execution ID. No raw
+      conversations, source or recovery bodies were read. Initial sandbox
+      DynamoDB connectivity and local Docker socket access failed; the same
+      authorized scoped reads succeeded outside the sandbox. No AWS IAM
+      denial or credential/profile change occurred.
+
+      The user should complete the first two question/reply rounds above
+      before the idle-expiry exercise. No assistant answer submission,
+      deployment, runtime invocation or run mutation occurred. EFS/NFS
+      replacement, browser behavior and end-to-end provider/workflow
+      acceptance remain pending. OpenCode delegated dependency builds and
+      Kiro managed-auth qualification remain separate gaps. The next release
+      decision depends on this finite live evidence, not another aggregate
+      unit-test count.
 
       **Historical first installed upstream proof PASS
       (2026-10-21).** Fresh fixture root
