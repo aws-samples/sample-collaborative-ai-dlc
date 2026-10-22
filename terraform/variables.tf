@@ -313,3 +313,20 @@ variable "instances_workspace_gib" {
     error_message = "instances_workspace_gib must be a positive whole number of GiB."
   }
 }
+
+variable "iam_role_path" {
+  description = "Path for every IAM role this deployment creates (e.g. /org/product/), for accounts that require one."
+  type        = string
+  default     = "/"
+
+  validation {
+    condition     = can(regex("^/([A-Za-z0-9+=,.@_-]+/)*$", var.iam_role_path))
+    error_message = "iam_role_path must start and end with / (e.g. /org/product/)."
+  }
+}
+
+variable "iam_permissions_boundary_arn" {
+  description = "Permissions boundary for every IAM role this deployment creates, for accounts that require one. Empty sets none."
+  type        = string
+  default     = ""
+}

@@ -51,6 +51,9 @@ module "sso_token_lambda" {
   source  = "terraform-aws-modules/lambda/aws"
   version = "~> 8.0"
 
+  role_path                 = var.iam_role_path
+  role_permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+
   function_name = "${var.project_name}-sso-token-${var.environment}"
   description   = "Authoritative enterprise SSO role mapping"
   handler       = "index.handler"

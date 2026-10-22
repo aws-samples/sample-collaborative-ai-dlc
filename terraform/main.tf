@@ -264,7 +264,9 @@ module "domain" {
 # This is a singleton per AWS account/region — both the REST API and WebSocket
 # API stages need it configured before they can enable access logging.
 resource "aws_iam_role" "api_gateway_cloudwatch" {
-  name = "${var.project_name}-apigw-cw-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-apigw-cw-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -311,6 +313,9 @@ module "waf" {
 # Auth (Cognito)
 module "auth" {
   source = "./modules/auth"
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id       = local.aws_sdk_ua_app_id
   project_name            = var.project_name
@@ -470,6 +475,9 @@ module "neptune" {
 # Lambda CRUD Functions
 module "lambda" {
   source = "./modules/api/lambda"
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id           = local.aws_sdk_ua_app_id
   project_name                = var.project_name
@@ -639,6 +647,9 @@ module "api" {
 module "realtime" {
   source = "./modules/realtime"
 
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
+
   aws_sdk_ua_app_id       = local.aws_sdk_ua_app_id
   project_name            = var.project_name
   environment             = var.environment
@@ -661,6 +672,9 @@ module "realtime" {
 # Yjs Server (ECS)
 module "yjs_server" {
   source = "./modules/realtime/yjs-server"
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id             = local.aws_sdk_ua_app_id
   project_name                  = var.project_name
@@ -692,6 +706,9 @@ module "yjs_server" {
 # See docs/v2-building-blocks.md (runtime) and docs/v2-agent.md.
 module "agentcore" {
   source = "./modules/compute/agentcore"
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id           = local.aws_sdk_ua_app_id
   project_name                = var.project_name
@@ -737,6 +754,9 @@ module "agentcore" {
 
 module "managed_environments" {
   source = "./modules/compute/managed-environments"
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id             = local.aws_sdk_ua_app_id
   project_name                  = var.project_name

@@ -391,7 +391,9 @@ resource "aws_dynamodb_table" "v2_executions" {
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "agentcore" {
-  name = "${var.project_name}-agentcore-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-agentcore-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
