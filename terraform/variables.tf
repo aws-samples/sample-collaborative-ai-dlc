@@ -236,9 +236,20 @@ variable "acm_certificate_arn" {
 }
 
 variable "route53_zone_id" {
-  description = "Route53 hosted zone ID in this account. When set, Terraform creates the A/AAAA alias records for app_domain plus app_domain_aliases and, if acm_certificate_arn is empty, the certificate validation records. Leave empty to manage DNS externally and use the dns_target output."
+  description = "Route53 hosted zone ID, in this account or, with dns_role_arn, another one. When set, Terraform creates the A/AAAA alias records for app_domain plus app_domain_aliases and, if acm_certificate_arn is empty, the certificate validation records. Leave empty to manage DNS externally and use the dns_target output."
   type        = string
   default     = ""
+}
+
+variable "dns_role_arn" {
+  description = "IAM role to assume for the Route53 records when route53_zone_id or auth_route53_zone_id is in another account. Empty uses the deployment account's credentials."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.dns_role_arn == "" || can(regex("^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$", var.dns_role_arn))
+    error_message = "dns_role_arn must be an IAM role ARN or empty."
+  }
 }
 
 # ---------------------------------------------------------------------------

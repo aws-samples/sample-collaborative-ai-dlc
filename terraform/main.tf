@@ -51,6 +51,29 @@ provider "aws" {
   }
 }
 
+# Route53 records for route53_zone_id and auth_route53_zone_id. Assumes
+# dns_role_arn when the hosted zones live in another account; otherwise it is
+# the deployment account's own credentials.
+provider "aws" {
+  alias  = "dns"
+  region = var.aws_region
+
+  dynamic "assume_role" {
+    for_each = var.dns_role_arn == "" ? [] : [var.dns_role_arn]
+    content {
+      role_arn     = assume_role.value
+      session_name = "${var.project_name}-${var.environment}-dns"
+    }
+  }
+
+  default_tags {
+    tags = {
+      Environment = var.environment
+      Project     = var.project_name
+    }
+  }
+}
+
 # Cloud Control provider (used only for the Bedrock AgentCore Runtime). Pin it to
 # the deployment region so the AgentCore application region matches the ECR image
 # region — otherwise awscc falls back to the profile/AWS_REGION default and a
@@ -249,6 +272,7 @@ module "domain" {
   providers = {
     aws           = aws
     aws.us_east_1 = aws.us_east_1
+    aws.dns       = aws.dns
   }
 
   project_name    = var.project_name
@@ -348,12 +372,14 @@ module "frontend" {
   web_acl_arn                    = module.waf.cloudfront_web_acl_arn
 }
 
-# Route53 alias records for the custom domain. Only created when the hosted zone
-# lives in this account; otherwise the dns_target and dns_target_hosted_zone_id
-# outputs carry everything an external DNS provider needs.
+# Route53 alias records for the custom domain. Only created when route53_zone_id
+# is set (in this account, or in another one through dns_role_arn); otherwise
+# the dns_target and dns_target_hosted_zone_id outputs carry everything an
+# external DNS provider needs.
 #
 # Both record types are required because the distribution has is_ipv6_enabled.
 resource "aws_route53_record" "app" {
+  provider = aws.dns
   for_each = var.route53_zone_id == "" ? {} : {
     for pair in setproduct(local.app_aliases, ["A", "AAAA"]) :
     "${pair[0]}-${pair[1]}" => { name = pair[0], type = pair[1] }
@@ -371,6 +397,7 @@ resource "aws_route53_record" "app" {
 }
 
 resource "aws_route53_record" "auth" {
+  provider = aws.dns
   for_each = var.auth_route53_zone_id == "" || var.auth_domain == "" ? toset([]) : toset(["A", "AAAA"])
 
   zone_id = var.auth_route53_zone_id

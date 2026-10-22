@@ -54,6 +54,7 @@ resource "aws_acm_certificate" "this" {
 }
 
 resource "aws_route53_record" "certificate_validation" {
+  provider = aws.dns
   for_each = local.validation_records
 
   zone_id = var.route53_zone_id
