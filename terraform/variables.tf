@@ -313,3 +313,9 @@ variable "instances_workspace_gib" {
     error_message = "instances_workspace_gib must be a positive whole number of GiB."
   }
 }
+
+variable "extra_tags" {
+  description = "Additional tags applied to every resource through the providers' default_tags (e.g. organisation-mandated cost allocation, backup or compliance tags). Environment and Project always win."
+  type        = map(string)
+  default     = {}
+}
