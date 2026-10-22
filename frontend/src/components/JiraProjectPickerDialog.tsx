@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { ApiError } from '@/services/api';
 import { trackersService, type ExternalProject } from '@/services/trackers';
 import { getTrackerProvider } from '@/lib/trackerProviders';
 import { cn } from '@/lib/utils';
@@ -18,61 +19,96 @@ interface Props {
   // Called once the user has confirmed a Jira project. The parent persists
   // the binding (so the dialog stays presentation-only).
   onConfirm: (chosen: ExternalProject) => Promise<void>;
+  // Omitted after returning from OAuth to prevent repeated redirects.
+  onAuthorize?: (signal: AbortSignal) => Promise<void>;
 }
 
 // Lists Jira projects accessible to the connected user and lets them pick
 // one to bind to the current collaborative project. Self-contained so the
 // fetch + radio-list state doesn't sprawl across ProjectSettings.
-export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props) {
+export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm, onAuthorize }: Props) {
   const meta = getTrackerProvider('jira-cloud');
   const [projects, setProjects] = useState<ExternalProject[]>([]);
   const [loading, setLoading] = useState(false);
   const [chosenKey, setChosenKey] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authorizing, setAuthorizing] = useState(false);
+  const request = useRef<AbortController | null>(null);
+
+  const handleError = useCallback(
+    async (err: unknown, signal: AbortSignal) => {
+      if (signal.aborted) return;
+      if (err instanceof ApiError && err.body?.reconnect === true && onAuthorize) {
+        setAuthorizing(true);
+        try {
+          await onAuthorize(signal);
+          return;
+        } catch (authError) {
+          if (signal.aborted) return;
+          setAuthorizing(false);
+          setError(authError instanceof Error ? authError.message : 'Failed to authorize Jira');
+          return;
+        }
+      }
+      setError(err instanceof Error ? err.message : 'Failed to load Jira projects');
+    },
+    [onAuthorize],
+  );
 
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
+    const controller = new AbortController();
+    request.current = controller;
+    const { signal } = controller;
     setProjects([]);
     setChosenKey(null);
     setError(null);
+    setAuthorizing(false);
+    setSaving(false);
     setLoading(true);
     trackersService
       .listExternalProjects(meta.id, meta.instance)
       .then((list) => {
-        if (cancelled) return;
+        if (signal.aborted) return;
         setProjects(list);
         if (list.length > 0) setChosenKey(list[0].key);
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Failed to list Jira projects');
+        return handleError(err, signal);
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!signal.aborted) setLoading(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [open, meta.id, meta.instance]);
+  }, [open, meta.id, meta.instance, handleError]);
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) request.current?.abort();
+    onOpenChange(nextOpen);
+  };
 
   const handleConfirm = async () => {
     const chosen = projects.find((p) => p.key === chosenKey);
-    if (!chosen) return;
+    const signal = request.current?.signal;
+    if (!chosen || !signal || signal.aborted) return;
     setSaving(true);
     try {
       await onConfirm(chosen);
-      onOpenChange(false);
+      if (!signal.aborted) onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add Jira project');
+      if (!signal.aborted) {
+        setError(err instanceof Error ? err.message : 'Failed to add Jira project');
+      }
     } finally {
-      setSaving(false);
+      if (!signal.aborted) setSaving(false);
     }
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Add Jira project</DialogTitle>
@@ -82,7 +118,9 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2 py-4 max-h-72 overflow-y-auto">
-          {loading ? (
+          {authorizing ? (
+            <p className="text-sm text-muted-foreground">Connecting to Jira…</p>
+          ) : loading ? (
             <p className="text-sm text-muted-foreground">Loading projects…</p>
           ) : error ? (
             <p className="text-sm text-destructive">{error}</p>
@@ -119,12 +157,16 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm }: Props
           <Button
             type="button"
             variant="outline"
-            onClick={() => onOpenChange(false)}
+            onClick={() => handleOpenChange(false)}
             disabled={saving}
           >
             Cancel
           </Button>
-          <Button type="button" onClick={handleConfirm} disabled={saving || !chosenKey}>
+          <Button
+            type="button"
+            onClick={handleConfirm}
+            disabled={saving || authorizing || !chosenKey}
+          >
             {saving ? 'Adding…' : 'Add'}
           </Button>
         </DialogFooter>
