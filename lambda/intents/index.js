@@ -3659,30 +3659,57 @@ export const handler = async (event, context) => {
       // relaunches the intent gated. The grant's provenance keeps who gave it and
       // gains who withdrew it. An intent without a grant writes nothing extra.
       const revokesAutonomy = meta.constructionGateAutonomy === 'autonomous';
-      const updated = await store.updateExecution({
-        executionId: intentId,
-        projectId,
-        status: 'CANCELLED',
-        fromStatus: meta.status,
-        repairRelaunch: null,
-        startedAt: meta.startedAt,
-        pendingHumanTaskId: null,
-        // A recorded answer whose callback failed is moot once the run ends.
-        resumeRequired: null,
-        completedAt: new Date().toISOString(),
-        ...(revokesAutonomy
-          ? {
-              constructionGateAutonomy: null,
-              constructionGateAutonomyGrant: {
-                ...meta.constructionGateAutonomyGrant,
-                revokedAt: new Date().toISOString(),
-                revokedBy: responder.sub,
-                revokedByName: responder.displayName || null,
-                revokedSource: 'cancel',
-              },
-            }
-          : {}),
-      });
+      const cancelFrom = (fromStatus, guard = {}) =>
+        store.updateExecution({
+          executionId: intentId,
+          projectId,
+          status: 'CANCELLED',
+          fromStatus,
+          ...guard,
+          repairRelaunch: null,
+          startedAt: meta.startedAt,
+          pendingHumanTaskId: null,
+          // A recorded answer whose callback failed is moot once the run ends.
+          resumeRequired: null,
+          completedAt: new Date().toISOString(),
+          ...(revokesAutonomy
+            ? {
+                constructionGateAutonomy: null,
+                constructionGateAutonomyGrant: {
+                  ...meta.constructionGateAutonomyGrant,
+                  revokedAt: new Date().toISOString(),
+                  revokedBy: responder.sub,
+                  revokedByName: responder.displayName || null,
+                  revokedSource: 'cancel',
+                },
+              }
+            : {}),
+        });
+      let updated;
+      try {
+        updated = await cancelFrom(meta.status);
+      } catch (err) {
+        if (err?.name !== 'ConditionalCheckFailedException') throw err;
+        // Waking the parked orchestrator ends its durable execution, so the watchdog
+        // can repair the same run to FAILED between our read and this write. FAILED
+        // is itself cancellable; any other change (a relaunch, a resume) is a conflict.
+        const current = await store.getExecution(intentId, { consistentRead: true });
+        if (
+          current?.status !== 'FAILED' ||
+          current.status === meta.status ||
+          (current.orchestratorRunId ?? null) !== (meta.orchestratorRunId ?? null)
+        )
+          return response(409, { error: `Intent is ${current?.status}, cannot cancel` });
+        try {
+          updated = await cancelFrom(
+            'FAILED',
+            meta.orchestratorRunId ? { ifOrchestratorRunId: meta.orchestratorRunId } : {},
+          );
+        } catch (retryErr) {
+          if (retryErr?.name !== 'ConditionalCheckFailedException') throw retryErr;
+          return response(409, { error: 'Intent changed while cancelling; retry' });
+        }
+      }
       await store
         .appendEvent({
           executionId: intentId,

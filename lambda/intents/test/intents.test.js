@@ -5741,6 +5741,56 @@ describe('POST /cancel', () => {
     });
   });
 
+  it('still cancels when the watchdog fails the woken run before the CANCELLED write', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    setStatus(intent.id, {
+      status: 'WAITING',
+      pendingHumanTaskId: 'h1',
+      orchestratorRunId: 'run-1',
+    });
+    // The woken orchestrator exits, its durable execution SUCCEEDS, and the watchdog
+    // repairs the same run WAITING → FAILED before cancel's own status CAS.
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).callsFake(async () => {
+      setStatus(intent.id, {
+        status: 'FAILED',
+        failureReason: 'durable_execution_succeeded',
+        pendingHumanTaskId: null,
+      });
+      return {};
+    });
+
+    const res = await cancel(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).status).toBe('CANCELLED');
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe('CANCELLED');
+  });
+
+  it.each([
+    ['a relaunch replaced the run', { status: 'FAILED', orchestratorRunId: 'run-2' }],
+    ['the run resumed', { status: 'RUNNING' }],
+  ])('409s instead of 500 when %s during cancel', async (_label, patch) => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    seedGate(intent.id, 'h1', { status: 'pending', callbackId: 'cb-h1' });
+    setStatus(intent.id, {
+      status: 'WAITING',
+      pendingHumanTaskId: 'h1',
+      orchestratorRunId: 'run-1',
+    });
+    lambdaMock.on(SendDurableExecutionCallbackSuccessCommand).callsFake(async () => {
+      setStatus(intent.id, patch);
+      return {};
+    });
+
+    const res = await cancel(sub, projectId, intent.id);
+    expect(res.statusCode).toBe(409);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe(patch.status);
+  });
+
   it.each(['RUNNING', 'DRAFT', 'SUCCEEDED', 'CANCELLED'])(
     '409s cancelling a %s run',
     async (status) => {
