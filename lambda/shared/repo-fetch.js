@@ -6,13 +6,14 @@
 // Mechanism: download the GitHub codeload tarball for the ref, gunzip + untar
 // in memory (no /tmp, no git binary), and collect every file under the repo's
 // `core/` directory keyed by its repo-relative path (e.g.
-// `core/agents/aidlc-product-agent.md`). Hard-fails on any network/extract
+// `core/agents/aidlc-product-agent.md`). A custom fork can instead be read from
+// a GitLab project through its archive API (see tarballUrl). Hard-fails on any network/extract
 // error — a partial or stale seed is worse than a clear failure the operator
 // retries.
 
 import zlib from 'node:zlib';
 import tar from 'tar-stream';
-import { assertGithubOwner, assertGithubRepo } from './aidlc-custom-source.js';
+import { assertGithubOwner, assertGithubRepo, isGitlabProjectPath } from './aidlc-custom-source.js';
 import { isCommitSha } from './aidlc-ref.js';
 
 const REPO_OWNER = 'awslabs';
@@ -22,7 +23,32 @@ const MAX_REPO_UNCOMPRESSED_BYTES = 250 * 1024 * 1024;
 const MAX_REPO_FILES = 5_000;
 const MAX_REPO_RETAINED_BYTES = 50 * 1024 * 1024;
 
+const DEFAULT_GITLAB_URL = 'https://gitlab.com';
+
 const isOfficialSource = (owner, repo) => owner === REPO_OWNER && repo === REPO_NAME;
+
+// The GitLab instance a `gitlab:` custom source is read from. HTTPS only, and
+// an origin only (no path, query, credentials), so the token is never sent in
+// clear and never ends up in a URL that error messages print.
+const gitlabBaseUrl = (value = DEFAULT_GITLAB_URL) => {
+  let url;
+  try {
+    url = new URL(String(value || DEFAULT_GITLAB_URL));
+  } catch {
+    throw new Error(`repo-fetch: GitLab URL "${String(value)}" is not a URL`);
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    (url.pathname !== '/' && url.pathname !== '')
+  ) {
+    throw new Error(`repo-fetch: GitLab URL must be an https origin, got "${String(value)}"`);
+  }
+  return url.origin;
+};
 
 // codeload serves a gzipped tarball for any ref (branch, tag, or full/short
 // SHA). The archive's top-level dir is `<repo>-<ref>/`, which we strip so keys
@@ -33,7 +59,37 @@ const isOfficialSource = (owner, repo) => owner === REPO_OWNER && repo === REPO_
 // extra rules: both halves must match the strict GitHub name grammar, and the
 // ref must be a full 40-hex commit SHA — a fork's branch or tag is mutable and
 // under third-party control, so it can never be a release identity.
-const tarballUrl = (ref, { owner = REPO_OWNER, repo = REPO_NAME } = {}) => {
+//
+// `provider: 'gitlab'` selects a GitLab project instead: `path` is the project
+// path (`group/subgroup/project`) and `baseUrl` the instance (https only). The
+// archive API serves `<project>-<sha>-<sha>/` as its top-level dir, which the
+// same strip handles. A GitLab source is always a custom source, so it is held
+// to the same exact-SHA rule.
+const tarballUrl = (
+  ref,
+  {
+    provider = 'github',
+    owner = REPO_OWNER,
+    repo = REPO_NAME,
+    path = null,
+    baseUrl = DEFAULT_GITLAB_URL,
+  } = {},
+) => {
+  if (provider === 'gitlab') {
+    if (!isGitlabProjectPath(path)) {
+      throw new Error(`repo-fetch: "${String(path)}" is not a valid GitLab project path`);
+    }
+    if (!isCommitSha(ref)) {
+      throw new Error(
+        `repo-fetch: a custom source (gitlab:${path}) requires a full 40-hex commit SHA, got "${String(ref)}"`,
+      );
+    }
+    const base = gitlabBaseUrl(baseUrl);
+    return `${base}/api/v4/projects/${encodeURIComponent(path)}/repository/archive.tar.gz?sha=${ref}`;
+  }
+  if (provider !== 'github') {
+    throw new Error(`repo-fetch: unknown source provider "${String(provider)}"`);
+  }
   assertGithubOwner(owner);
   assertGithubRepo(repo);
   if (!isOfficialSource(owner, repo) && !isCommitSha(ref)) {
@@ -148,12 +204,32 @@ const responseToBuffer = async (res, maxBytes) => {
   return buffer;
 };
 
+// `: <message>` from a GitLab error body, bounded and single-line.
+const gitlabErrorDetail = async (res) => {
+  if (typeof res.text !== 'function') return '';
+  const text = (await res.text()).slice(0, 2000);
+  let message = text;
+  try {
+    const body = JSON.parse(text);
+    message = body?.message?.error ?? body?.message ?? body?.error ?? text;
+    if (typeof message !== 'string') message = JSON.stringify(message);
+  } catch {
+    // Not JSON: keep the text.
+  }
+  message = message.replace(/\s+/g, ' ').trim().slice(0, 300);
+  return message ? `: ${message}` : '';
+};
+
 const fetchRepoFiles = async (
   ref,
   {
     prefixes,
+    provider = 'github',
     owner = REPO_OWNER,
     repo = REPO_NAME,
+    path = null,
+    baseUrl = DEFAULT_GITLAB_URL,
+    token = null,
     maxTarballBytes = MAX_REPO_TARBALL_BYTES,
     maxFiles = MAX_REPO_FILES,
     maxRetainedBytes = MAX_REPO_RETAINED_BYTES,
@@ -166,13 +242,35 @@ const fetchRepoFiles = async (
   if (!Array.isArray(prefixes) || prefixes.length === 0) {
     throw new Error('repo-fetch: at least one path prefix is required');
   }
-  const url = tarballUrl(ref, { owner, repo });
+  // A token only ever goes to a GitLab instance, never to codeload.
+  if (token && provider !== 'gitlab') {
+    throw new Error('repo-fetch: a source token is only supported for GitLab sources');
+  }
+  const url = tarballUrl(ref, { provider, owner, repo, path, baseUrl });
+  // GitLab's archive API answers 406 to a specific archive media type; it
+  // serves application/octet-stream to `*/*`.
+  const headers = {
+    'User-Agent': 'collaborative-ai-dlc',
+    Accept: provider === 'gitlab' ? '*/*' : 'application/x-gzip',
+  };
+  // Authorization (not GitLab's PRIVATE-TOKEN) because fetch drops it on a
+  // cross-origin redirect, so a redirect can never forward the token.
+  if (token) headers.Authorization = `Bearer ${token}`;
+  // Node's fetch sends `Sec-Fetch-Mode: cors` by default, and GitLab's archive
+  // API refuses that with 406 Not Acceptable. Node has no page origin, so
+  // `same-origin` restricts nothing here; it only changes the header.
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'collaborative-ai-dlc', Accept: 'application/x-gzip' },
+    headers,
     redirect: 'follow',
+    ...(provider === 'gitlab' ? { mode: 'same-origin' } : {}),
   });
   if (!res.ok) {
-    throw new Error(`repo-fetch: ${url} returned ${res.status} ${res.statusText}`);
+    // GitLab explains a refusal in a short JSON body (for example its archive
+    // rate limit, or a missing scope); codeload's body adds nothing.
+    const detail = provider === 'gitlab' ? await gitlabErrorDetail(res).catch(() => '') : '';
+    throw new Error(
+      `${`repo-fetch: ${url} returned ${res.status} ${res.statusText}`.trimEnd()}${detail}`,
+    );
   }
   const gzBuffer = await responseToBuffer(res, maxTarballBytes);
   const files = await extractFiles(gzBuffer, prefixes, {
@@ -189,12 +287,16 @@ const fetchRepoFiles = async (
 };
 
 // Downloads + extracts the repo's core/ files at `ref`. Throws on any failure.
-const fetchCoreFiles = async (ref, { owner = REPO_OWNER, repo = REPO_NAME } = {}) => {
-  const files = await fetchRepoFiles(ref, { prefixes: ['core/'], owner, repo });
+// `source` is `{ owner, repo }` for GitHub, or `{ provider: 'gitlab', path,
+// baseUrl, token }` for a GitLab project.
+const fetchCoreFiles = async (ref, source = {}) => {
+  const files = await fetchRepoFiles(ref, { ...source, prefixes: ['core/'] });
   return new Map([...files].map(([path, body]) => [path, body.toString('utf8')]));
 };
 
 export {
+  DEFAULT_GITLAB_URL,
+  gitlabBaseUrl,
   isOfficialSource,
   MAX_REPO_FILES,
   MAX_REPO_RETAINED_BYTES,

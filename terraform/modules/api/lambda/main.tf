@@ -1027,7 +1027,7 @@ resource "aws_iam_role_policy" "seed_blocks" {
   role = aws_iam_role.seed_blocks.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [
+    Statement = concat([
       {
         Effect = "Allow"
         Action = [
@@ -1053,7 +1053,13 @@ resource "aws_iam_role_policy" "seed_blocks" {
           "${var.artifacts_bucket_arn}/aidlc-releases/*",
         ]
       }
-    ]
+      ],
+      # Read the GitLab token for a private gitlab: custom fork release.
+      var.aidlc_custom_source_gitlab_token_secret_arn != "" ? [{
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [var.aidlc_custom_source_gitlab_token_secret_arn]
+    }] : [])
   })
 }
 
@@ -2675,6 +2681,10 @@ module "seed_blocks_lambda" {
     ARTIFACTS_BUCKET            = var.artifacts_bucket_name
     ENVIRONMENT                 = var.environment
     AIDLC_REPO_REF              = var.aidlc_repo_ref
+    # gitlab: custom fork releases (importRelease): the instance, and the
+    # secret holding a read token for private projects.
+    AIDLC_GITLAB_URL              = var.aidlc_custom_source_gitlab_url
+    AIDLC_GITLAB_TOKEN_SECRET_ARN = var.aidlc_custom_source_gitlab_token_secret_arn
   }
 
   depends_on = [aws_iam_role_policy_attachment.blocks_vpc]

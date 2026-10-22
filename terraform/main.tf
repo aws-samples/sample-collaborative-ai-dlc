@@ -485,6 +485,11 @@ module "lambda" {
   private_subnet_ids          = module.networking.private_subnet_ids
   neptune_endpoint            = module.neptune.cluster_endpoint
   neptune_cluster_resource_id = module.neptune.cluster_resource_id
+
+  # Custom AI-DLC fork releases kept in GitLab (seed-blocks importRelease).
+  aidlc_custom_source_gitlab_url              = var.aidlc_custom_source_gitlab_url
+  aidlc_custom_source_gitlab_token_secret_arn = var.aidlc_custom_source_gitlab_token_secret_arn
+
   dynamodb_table_arns = [
     module.dynamodb.sessions_table_arn,
     module.dynamodb.notifications_table_arn,

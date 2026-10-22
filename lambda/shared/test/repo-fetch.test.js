@@ -200,3 +200,93 @@ describe('custom fork sources', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 });
+
+// GitLab custom sources. The properties under test: the archive API URL is
+// built only from a validated project path and an exact SHA, the token travels
+// only in the Authorization header (never in the URL that errors print), and
+// a token is never sent to codeload.
+describe('GitLab custom sources', () => {
+  const SHA = '0123456789abcdef0123456789abcdef01234567';
+  const gitlab = (over = {}) => ({ provider: 'gitlab', path: 'acme/platform/aidlc-fork', ...over });
+
+  it('builds the project archive URL on gitlab.com by default', () => {
+    expect(tarballUrl(SHA, gitlab())).toBe(
+      `https://gitlab.com/api/v4/projects/acme%2Fplatform%2Faidlc-fork/repository/archive.tar.gz?sha=${SHA}`,
+    );
+  });
+  it('uses a self-managed instance origin', () => {
+    expect(tarballUrl(SHA, gitlab({ baseUrl: 'https://gitlab.example.com/' }))).toBe(
+      `https://gitlab.example.com/api/v4/projects/acme%2Fplatform%2Faidlc-fork/repository/archive.tar.gz?sha=${SHA}`,
+    );
+  });
+  it('refuses a non-https or non-origin instance URL', () => {
+    for (const baseUrl of [
+      'http://gitlab.example.com',
+      'https://user:pw@gitlab.example.com',
+      'https://gitlab.example.com/sub',
+      'https://gitlab.example.com/?x=1',
+      'not a url',
+    ]) {
+      expect(() => tarballUrl(SHA, gitlab({ baseUrl })), baseUrl).toThrow(/GitLab URL/);
+    }
+  });
+  it('refuses a mutable ref and an invalid project path', () => {
+    expect(() => tarballUrl('main', gitlab())).toThrow(/requires a full 40-hex commit SHA/);
+    expect(() => tarballUrl(SHA, gitlab({ path: 'acme/../x' }))).toThrow(
+      /not a valid GitLab project path/,
+    );
+    expect(() => tarballUrl(SHA, gitlab({ path: 'acme' }))).toThrow(
+      /not a valid GitLab project path/,
+    );
+    expect(() => tarballUrl(SHA, { provider: 'svn' })).toThrow(/unknown source provider/);
+  });
+  it('fetches core files with the token in the Authorization header only', async () => {
+    const tarball = await makeTarball(
+      { 'core/agents/a.md': '# fork agent', 'README.md': 'x' },
+      `aidlc-fork-${SHA}-${SHA}`,
+    );
+    mockFetchReturning(tarball);
+    const files = await fetchCoreFiles(SHA, gitlab({ token: 'glpat-secret' }));
+    expect([...files.keys()]).toEqual(['core/agents/a.md']);
+    const [url, init] = globalThis.fetch.mock.calls[0];
+    expect(url).not.toContain('glpat-secret');
+    expect(init.headers.Authorization).toBe('Bearer glpat-secret');
+    expect(init.headers).not.toHaveProperty('PRIVATE-TOKEN');
+    // GitLab's archive API refuses the default `Sec-Fetch-Mode: cors` (406) and
+    // a specific archive media type.
+    expect(init.mode).toBe('same-origin');
+    expect(init.headers.Accept).toBe('*/*');
+  });
+  it('sends no Authorization header for a public project', async () => {
+    mockFetchReturning(await makeTarball({ 'core/a.md': 'a' }, `fork-${SHA}-${SHA}`));
+    await fetchCoreFiles(SHA, gitlab());
+    expect(globalThis.fetch.mock.calls[0][1].headers).not.toHaveProperty('Authorization');
+  });
+  it("reports GitLab's own reason for a refusal", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      statusText: '',
+      text: async () =>
+        JSON.stringify({ message: { error: 'This archive has been requested too many times.' } }),
+    });
+    await expect(fetchCoreFiles(SHA, gitlab())).rejects.toThrow(
+      / returned 429: This archive has been requested too many times\.$/,
+    );
+  });
+  it('keeps the token out of the error when GitLab refuses', async () => {
+    mockFetchReturning(Buffer.alloc(0), false, 404);
+    const error = await fetchCoreFiles(SHA, gitlab({ token: 'glpat-secret' })).catch((e) => e);
+    expect(error.message).toMatch(
+      /^repo-fetch: https:\/\/gitlab\.com\/api\/v4\/projects\/.* returned 404/,
+    );
+    expect(error.message).not.toContain('glpat-secret');
+  });
+  it('never sends a token to codeload', async () => {
+    globalThis.fetch = vi.fn();
+    await expect(
+      fetchRepoFiles(SHA, { prefixes: ['core/'], owner: 'acme', repo: 'fork', token: 't' }),
+    ).rejects.toThrow(/only supported for GitLab sources/);
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+});
