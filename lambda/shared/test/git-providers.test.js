@@ -638,6 +638,36 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
     await expect(gl.listRepos({ token: 't', fetchImpl })).rejects.toThrow('403 Forbidden');
   });
 
+  it('listRepos searches every membership when given a search term', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '/projects?membership',
+        {
+          json: [
+            {
+              id: 7,
+              name: 'steering-docs',
+              path_with_namespace: 'org/emu/utilities/steering-docs',
+              visibility: 'private',
+              default_branch: 'main',
+            },
+          ],
+        },
+      ],
+    ]);
+    const repos = await gl.listRepos({ token: 't', fetchImpl }, { search: ' utilities/steering ' });
+    expect(repos.map((r) => r.fullName)).toEqual(['org/emu/utilities/steering-docs']);
+    expect(fetchImpl.calls).toHaveLength(1);
+    expect(fetchImpl.calls[0].url).toContain('&search=utilities%2Fsteering&search_namespaces=true');
+    expect(fetchImpl.calls[0].url).toContain('membership=true&min_access_level=30');
+  });
+
+  it('listRepos skips the call for a search term GitLab would ignore', async () => {
+    const fetchImpl = makeFetch([['/projects?membership', { json: [] }]]);
+    expect(await gl.listRepos({ token: 't', fetchImpl }, { search: 'st' })).toEqual([]);
+    expect(fetchImpl.calls).toHaveLength(0);
+  });
+
   describe('listRepos token refresh across parallel pages', () => {
     const fullPage = (n) =>
       Array.from({ length: 100 }, (_, i) => ({

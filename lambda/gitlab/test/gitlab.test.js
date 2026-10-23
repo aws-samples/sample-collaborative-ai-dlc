@@ -536,6 +536,22 @@ describe('gitlab handler', () => {
       ]);
     });
 
+    it('passes ?q= to GitLab as a namespace-aware project search', async () => {
+      mockGitConnection();
+      mockResolveGitToken();
+      const fetchMock = mockFetch([{ body: [] }]);
+
+      const handler = await loadHandler();
+      const res = await handler(
+        makeEvent('GET', '/gitlab/repos', { queryStringParameters: { q: 'emu steering' } }),
+      );
+
+      expect(res.statusCode).toBe(200);
+      const url = fetchMock.mock.calls[0][0];
+      expect(url).toContain('membership=true&min_access_level=30');
+      expect(url).toContain('&search=emu%20steering&search_namespaces=true');
+    });
+
     describe('token expiry while parallel pages are in flight', () => {
       const BINDINGS_TABLE = 'test-source-control-bindings';
       const fullPage = (n) =>
