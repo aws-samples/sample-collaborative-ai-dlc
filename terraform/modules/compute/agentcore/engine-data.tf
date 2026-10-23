@@ -8,13 +8,20 @@
 #
 # The engine's process-store, graph, catalog, owned-blob and realtime calls go
 # through it; provider review operations go to the source-control `runtime`
-# alias. The runtime role keeps its own permissions until the final strip.
+# alias. The runtime role keeps its own data permissions (and the unqualified
+# source-control function) until enforce_runtime_grants is also on: until then
+# the credential broker still serves runtimes started on the direct path.
 # ---------------------------------------------------------------------------
 
 locals {
   engine_data_enabled = var.enable_engine_data
-  engine_data_dir     = "${path.module}/../../../../lambda/engine-data"
-  artifacts_objects   = "${var.artifacts_bucket_arn}/"
+
+  # False only once every runtime is on the remote path: the runtime role then
+  # holds no Neptune, DynamoDB, S3, SSM or websocket access of its own, and
+  # reaches source-control only through the `runtime` alias.
+  runtime_direct_data_access = !(var.enable_engine_data && var.enforce_runtime_grants)
+  engine_data_dir            = "${path.module}/../../../../lambda/engine-data"
+  artifacts_objects          = "${var.artifacts_bucket_arn}/"
 
   # The S3 IAM grammar is looser than the handlers' key grammar; both apply.
   # HeadObject is authorized by s3:GetObject (GetObjectVersion when versioned).
