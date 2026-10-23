@@ -125,6 +125,18 @@ variable "docker_build_args" {
   sensitive   = true
 }
 
+variable "agentcore_image_tag" {
+  description = "Tag of a pre-built AgentCore image in its ECR repository (plus <tag>-amd64 when enable_instances_compute is true), built outside OpenTofu. Null builds it during apply."
+  type        = string
+  default     = null
+}
+
+variable "yjs_image_tag" {
+  description = "Tag of a pre-built yjs-server image in its ECR repository, built outside OpenTofu. Null builds it during apply."
+  type        = string
+  default     = null
+}
+
 # ---------------------------------------------------------------------------
 # AWS WAF (optional)
 # ---------------------------------------------------------------------------

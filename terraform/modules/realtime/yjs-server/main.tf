@@ -55,7 +55,18 @@ locals {
   yjs_files_exclude = setunion([for f in local.path_exclude : fileset(local.yjs_source_path, f)]...)
   yjs_files         = sort(setsubtract(local.yjs_files_include, local.yjs_files_exclude))
   yjs_files_sha     = sha1(join("", [for f in local.yjs_files : filesha1("${local.yjs_source_path}/${f}")]))
-  yjs_image_tag     = substr(local.yjs_files_sha, 0, 16)
+  # A pre-built image (var.image_tag) replaces the build below.
+  build_image   = var.image_tag == null
+  yjs_image_tag = local.build_image ? substr(local.yjs_files_sha, 0, 16) : var.image_tag
+  # Pre-built images deploy by digest, so a moved tag can't change a revision.
+  yjs_image_uri = local.build_image ? module.yjs_docker_build[0].image_uri : "${aws_ecr_repository.yjs_server.repository_url}@${data.aws_ecr_image.yjs_server[0].image_digest}"
+}
+
+data "aws_ecr_image" "yjs_server" {
+  count = local.build_image ? 0 : 1
+
+  repository_name = aws_ecr_repository.yjs_server.name
+  image_tag       = local.yjs_image_tag
 }
 
 # ECR Repository
@@ -90,7 +101,14 @@ resource "aws_ecr_lifecycle_policy" "yjs_server" {
 }
 
 # Docker build module
+moved {
+  from = module.yjs_docker_build
+  to   = module.yjs_docker_build[0]
+}
+
 module "yjs_docker_build" {
+  count = local.build_image ? 1 : 0
+
   source  = "terraform-aws-modules/lambda/aws//modules/docker-build"
   version = "~> 8.0"
 
@@ -208,7 +226,7 @@ resource "aws_ecs_task_definition" "yjs_server" {
 
   container_definitions = jsonencode([{
     name        = "yjs-server"
-    image       = module.yjs_docker_build.image_uri
+    image       = local.yjs_image_uri
     essential   = true
     stopTimeout = 120
     # ECS ignores image-only Docker HEALTHCHECK instructions. Register the

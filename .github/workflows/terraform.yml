@@ -74,6 +74,9 @@ jobs:
       - name: Yjs configuration tests (mock providers)
         run: terraform test -filter=tests/yjs.tftest.hcl
 
+      - name: AgentCore image build and pre-built image tests (mock providers)
+        run: terraform test -filter=tests/agentcore-image.tftest.hcl
+
       - name: Managed environments IAM and configuration tests (mock providers)
         run: terraform test -filter=tests/managed-environments.tftest.hcl
 
