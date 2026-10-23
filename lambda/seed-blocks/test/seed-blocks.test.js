@@ -9,6 +9,7 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { GetSecretValueCommand, SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { CORE_FILES } from '../../shared/test/fixtures/repo-files.js';
 import { buildFromFiles } from '../../shared/block-mappers.js';
 import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
@@ -629,5 +630,126 @@ describe('seed-blocks importRelease at the current importer revision', () => {
     }
     expect(fetchCoreFiles).not.toHaveBeenCalled();
     expect(s3Store.size).toBe(0);
+  });
+});
+
+// GitLab custom fork imports. The properties under test: the fork is fetched
+// from the configured GitLab instance at the pinned SHA, with the token read
+// from Secrets Manager only when a secret is configured, and it lands on its
+// own encoded custom/gitlab/ prefix.
+describe('seed-blocks importRelease GitLab custom mode', () => {
+  const FORK_SHA = '0123456789abcdef0123456789abcdef01234567';
+  const FORK_REPOSITORY = 'gitlab:acme/platform/aidlc-fork';
+  const forkPrefix = `aidlc-releases/v1/custom/gitlab/acme%2Fplatform%2Faidlc-fork/${FORK_SHA}/i${AIDLC_RELEASE_IMPORTER_REVISION}`;
+  const SECRET_ARN = 'arn:aws:secretsmanager:eu-west-1:111122223333:secret:gitlab-token-AbCdEf';
+  const custom = { repository: FORK_REPOSITORY, sha: FORK_SHA, baseProfile: RELEASE_PROFILE };
+  const secretsMock = mockClient(SecretsManagerClient);
+
+  beforeEach(() => {
+    fetchCoreFiles.mockImplementation(async () => releaseFiles());
+    secretsMock.reset();
+    delete process.env.AIDLC_GITLAB_URL;
+    delete process.env.AIDLC_GITLAB_TOKEN_SECRET_ARN;
+  });
+
+  it('fetches a public project from gitlab.com without reading a secret', async () => {
+    const result = await handler({ importRelease: true, custom, dryRun: true });
+    expect(fetchCoreFiles).toHaveBeenLastCalledWith(FORK_SHA, {
+      provider: 'gitlab',
+      path: 'acme/platform/aidlc-fork',
+      baseUrl: undefined,
+      token: null,
+    });
+    expect(secretsMock.calls()).toHaveLength(0);
+    expect(result).toMatchObject({
+      sourceRepository: FORK_REPOSITORY,
+      releaseId: `aidlc-custom:${FORK_REPOSITORY}@${FORK_SHA}`,
+      trustTier: 'T0',
+      manifestKey: `${forkPrefix}/manifest.json`,
+    });
+  });
+
+  it('reads the token from the configured secret and uses the configured instance', async () => {
+    process.env.AIDLC_GITLAB_URL = 'https://gitlab.example.com';
+    process.env.AIDLC_GITLAB_TOKEN_SECRET_ARN = SECRET_ARN;
+    secretsMock.on(GetSecretValueCommand).resolves({ SecretString: ' glpat-secret\n' });
+    await handler({ importRelease: true, custom, dryRun: true });
+    expect(secretsMock.commandCalls(GetSecretValueCommand)[0].args[0].input).toEqual({
+      SecretId: SECRET_ARN,
+    });
+    expect(fetchCoreFiles).toHaveBeenLastCalledWith(FORK_SHA, {
+      provider: 'gitlab',
+      path: 'acme/platform/aidlc-fork',
+      baseUrl: 'https://gitlab.example.com',
+      token: 'glpat-secret',
+    });
+  });
+
+  it('takes the token from a JSON secret that keeps it with its id and project', async () => {
+    process.env.AIDLC_GITLAB_TOKEN_SECRET_ARN = SECRET_ARN;
+    secretsMock.on(GetSecretValueCommand).resolves({
+      SecretString: JSON.stringify({
+        token: 'glpat-secret',
+        tokenId: '42',
+        gitlabUrl: 'https://gitlab.com',
+        projectId: '7',
+        groupId: '9',
+      }),
+    });
+    await handler({ importRelease: true, custom, dryRun: true });
+    expect(fetchCoreFiles).toHaveBeenLastCalledWith(FORK_SHA, {
+      provider: 'gitlab',
+      path: 'acme/platform/aidlc-fork',
+      baseUrl: undefined,
+      token: 'glpat-secret',
+    });
+  });
+
+  it('refuses a JSON secret without a token, without echoing its value', async () => {
+    process.env.AIDLC_GITLAB_TOKEN_SECRET_ARN = SECRET_ARN;
+    fetchCoreFiles.mockClear();
+    for (const [SecretString, message] of [
+      [JSON.stringify({ value: 'glpat-secret' }), /JSON without a string "token" field/],
+      [JSON.stringify({ token: 42 }), /JSON without a string "token" field/],
+      ['{glpat-secret', /is not valid JSON/],
+      [JSON.stringify({ token: '  ' }), /is empty/],
+    ]) {
+      secretsMock.on(GetSecretValueCommand).resolves({ SecretString });
+      const error = await handler({ importRelease: true, custom, dryRun: true }).catch((e) => e);
+      expect(error.message).toMatch(message);
+      expect(error.message).not.toContain('glpat-secret');
+    }
+    expect(fetchCoreFiles).not.toHaveBeenCalled();
+  });
+
+  it('refuses an empty token secret before fetching', async () => {
+    process.env.AIDLC_GITLAB_TOKEN_SECRET_ARN = SECRET_ARN;
+    secretsMock.on(GetSecretValueCommand).resolves({ SecretString: '  ' });
+    fetchCoreFiles.mockClear();
+    await expect(handler({ importRelease: true, custom, dryRun: true })).rejects.toThrow(
+      /GitLab token secret .* is empty/,
+    );
+    expect(fetchCoreFiles).not.toHaveBeenCalled();
+  });
+
+  it('publishes only under the encoded GitLab prefix', async () => {
+    const result = await handler({ importRelease: true, custom });
+    expect(result.status).toBe('published');
+    expect(s3Store.has(`${forkPrefix}/manifest.json`)).toBe(true);
+    expect(ddbMock.calls()).toHaveLength(0);
+  });
+
+  it('never reads a secret for a GitHub fork', async () => {
+    process.env.AIDLC_GITLAB_TOKEN_SECRET_ARN = SECRET_ARN;
+    await handler({
+      importRelease: true,
+      custom: { ...custom, repository: 'acme/aidlc-fork' },
+      dryRun: true,
+    });
+    expect(secretsMock.calls()).toHaveLength(0);
+    expect(fetchCoreFiles).toHaveBeenLastCalledWith(FORK_SHA, {
+      owner: 'acme',
+      repo: 'aidlc-fork',
+    });
   });
 });

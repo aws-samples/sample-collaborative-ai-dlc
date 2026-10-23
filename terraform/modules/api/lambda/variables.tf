@@ -100,6 +100,16 @@ variable "aidlc_repo_ref" {
   type        = string
 }
 
+variable "aidlc_custom_source_gitlab_url" {
+  description = "GitLab instance the seed-blocks lambda imports gitlab: custom fork releases from"
+  type        = string
+  default     = "https://gitlab.com"
+}
+variable "aidlc_custom_source_gitlab_token_secret_arn" {
+  description = "Optional Secrets Manager secret ARN holding a GitLab read_api token for private gitlab: custom fork releases"
+  type        = string
+  default     = ""
+}
 variable "aidlc_release_pinning" {
   description = "Whether new intents are pinned to a published immutable AI-DLC release (\"on\"/\"off\")"
   type        = string
