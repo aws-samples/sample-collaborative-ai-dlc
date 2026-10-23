@@ -208,10 +208,16 @@ const mapRepo = (r) => ({
 const REPO_PAGE_SIZE = 100;
 const REPO_MAX_PAGES = 10;
 
-const fetchRepoPage = async (ctx, page) => {
+// GitLab ignores search terms shorter than this and returns nothing.
+const MIN_REPO_SEARCH_LENGTH = 3;
+
+const fetchRepoPage = async (ctx, page, search) => {
+  // search_namespaces matches the group path too, so "emu steering" or
+  // "utilities/steering" find a project nested deep in a large group tree.
+  const searchParams = search ? `&search=${encodeURIComponent(search)}&search_namespaces=true` : '';
   const res = await glFetch(
     ctx,
-    `${API_BASE}/projects?membership=true&min_access_level=30&per_page=${REPO_PAGE_SIZE}&page=${page}&order_by=last_activity_at`,
+    `${API_BASE}/projects?membership=true&min_access_level=30&per_page=${REPO_PAGE_SIZE}&page=${page}&order_by=last_activity_at${searchParams}`,
   );
   const data = await res.json();
   if (!Array.isArray(data)) {
@@ -229,13 +235,17 @@ const fetchRepoPage = async (ctx, page) => {
 // is refreshed once for all parallel pages by glFetch (see refreshFor). A full GitLab project page takes ~5s,
 // so the remaining pages are fetched in parallel rather than in sequence.
 // GitLab omits X-Total-Pages above 10,000 results; then fetch up to the cap.
-const listRepos = async (ctx) => {
-  const first = await fetchRepoPage(ctx, 1);
+// The cap can hide projects in a large group tree, so the picker also passes
+// the typed search text, which GitLab filters across every membership.
+const listRepos = async (ctx, { search } = {}) => {
+  const term = String(search ?? '').trim();
+  if (term && term.length < MIN_REPO_SEARCH_LENGTH) return [];
+  const first = await fetchRepoPage(ctx, 1, term);
   if (first.repos.length < REPO_PAGE_SIZE) return first.repos;
   const lastPage = Math.min(first.totalPages ?? REPO_MAX_PAGES, REPO_MAX_PAGES);
   const pages = [];
   for (let page = 2; page <= lastPage; page += 1) pages.push(page);
-  const rest = await Promise.all(pages.map((page) => fetchRepoPage(ctx, page)));
+  const rest = await Promise.all(pages.map((page) => fetchRepoPage(ctx, page, term)));
   return [first, ...rest].flatMap((p) => p.repos);
 };
 
