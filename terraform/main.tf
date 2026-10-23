@@ -829,6 +829,8 @@ module "agentcore" {
   deletion_protection = var.deletion_protection
   enable_mcp_gateway  = var.enable_mcp_gateway
   enable_engine_data  = var.enable_engine_data
+  # With enable_engine_data, also strips the runtime role's direct data access.
+  enforce_runtime_grants = var.enforce_runtime_grants
 
   mcp_gateway_custom_targets = var.mcp_gateway_custom_targets
   runtime_mcp_credentials    = var.runtime_mcp_credentials
