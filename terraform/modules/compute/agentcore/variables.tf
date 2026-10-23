@@ -358,3 +358,9 @@ variable "runtime_mcp_credentials" {
     error_message = "runtime_mcp_credentials must be \"allow\" or \"gateway_only\"."
   }
 }
+
+variable "enforce_runtime_grants" {
+  description = "Whether the credential broker refuses the pre-engine-data runtime request shapes. With enable_engine_data, also removes the runtime role's direct Neptune, DynamoDB, S3, SSM and websocket access and its grant on the unqualified source-control function"
+  type        = bool
+  default     = false
+}
