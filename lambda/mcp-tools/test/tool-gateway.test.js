@@ -343,6 +343,19 @@ describe('MCP tools gateway target', () => {
     ['a superseded stage leg', { row: stageRow({ stageCallbackId: 'cb-new' }) }],
     ['a superseded orchestrator run', { row: stageRow({ orchestratorRunId: 'run-new' }) }],
     [
+      'a run retired on the execution while its stage row still names it',
+      {
+        execution: {
+          executionId: 'e-1',
+          projectId: 'p-1',
+          intentId: 'i-1',
+          status: 'WAITING',
+          orchestratorRunId: 'retired-1',
+        },
+        row: stageRow({ stageCallbackId: 'cb-old', orchestratorRunId: 'run-old' }),
+      },
+    ],
+    [
       'a session that names no leg',
       { row: stageRow({ stageCallbackId: 'cb-new' }), grantScope: stage, sessionLeg: {} },
     ],

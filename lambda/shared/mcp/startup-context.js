@@ -178,6 +178,15 @@ export const validateStartupContext = async ({
           throw new Error('MCP stage leg mismatch');
         }
       }
+      // Rewind and recompose retire the run on the execution before they reset
+      // its stage rows, so a stage row can still name the retired run.
+      if (
+        requireActive &&
+        execution.orchestratorRunId &&
+        execution.orchestratorRunId !== scope.orchestratorRunId
+      ) {
+        throw new Error('MCP execution run mismatch');
+      }
     }
   }
   const owned = await retryStartupRead(async () => {
