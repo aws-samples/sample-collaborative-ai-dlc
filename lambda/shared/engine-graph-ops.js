@@ -296,10 +296,8 @@ export const createEngineGraphOps = ({
   // from the head row) and exactly that head is resolved; without a key the
   // id must be unambiguous.
   const currentHead = async (artifactId, logicalKey = null) => {
-    const heads = (await graph().getIntentGraph({ includeContent: true })).filter(
-      (row) =>
-        row.id === artifactId &&
-        (logicalKey === null || artifactLogicalKeyFromRow(row, intentId) === logicalKey),
+    const heads = (await graph().getCurrentHeads({ id: artifactId })).filter(
+      (row) => logicalKey === null || artifactLogicalKeyFromRow(row, intentId) === logicalKey,
     );
     if (heads.length === 0) {
       throw new EngineGraphError(`artifact "${artifactId}" not found`, 'not_found');

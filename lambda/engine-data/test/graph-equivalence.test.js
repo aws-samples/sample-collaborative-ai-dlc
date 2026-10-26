@@ -13,6 +13,7 @@ import { createEngineGraphOps } from '../../shared/engine-graph-ops.js';
 import { createGraphManager } from '../../shared/mcp/graph-manager.js';
 import { createGraphWriter } from '../../shared/mcp/graph-writer.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
+import { readCurrentArtifactHeads } from '../../shared/artifact-versioning.js';
 import { createGraphGateway } from '../graph-gateway.js';
 
 const __ = gremlin.process.statics;
@@ -407,5 +408,105 @@ describe('local and remote graph operations are equivalent', () => {
     ]);
     expect(localGraph.vertices.length).toBeGreaterThan(10);
     expect(localGraph.edges.length).toBeGreaterThan(10);
+  });
+});
+
+// Counts, at the graph boundary, how many artifact bodies each traversal returns.
+const countingBodies = (g) => {
+  let bodies = 0;
+  const hasBody = (value) => {
+    if (value instanceof Map) return value.has('content') || [...value.values()].some(hasBody);
+    return Array.isArray(value) && value.some(hasBody);
+  };
+  const counted = new Proxy(g, {
+    get(target, key) {
+      const value = target[key];
+      if (key !== 'V') return typeof value === 'function' ? value.bind(target) : value;
+      return (...args) => {
+        const traversal = target.V(...args);
+        const toList = traversal.toList.bind(traversal);
+        traversal.toList = async () => {
+          const rows = await toList();
+          bodies += rows.filter(hasBody).length;
+          return rows;
+        };
+        return traversal;
+      };
+    },
+  });
+  return { g: counted, bodies: () => bodies };
+};
+
+describe('per-artifact engine reads', () => {
+  it('load only the named head body, whatever the size of the intent', async () => {
+    const g = partitionGraph('engine-data-head-reads');
+    await g.V().drop().next();
+    const scope = { ...OWN, stageInstanceId: 'si-1' };
+    const writer = createGraphWriter({ g, scope, clock: CLOCK });
+    await createEngineGraphOps({ g, scope: OWN, clock: CLOCK }).ensureIntent({
+      title: 'Big',
+    });
+    for (let i = 0; i < 12; i += 1) {
+      await writer.createArtifact({
+        artifactType: 'requirements',
+        id: `req-${i}`,
+        content: `# Requirements ${i}\n\n## Item\n\n${'x'.repeat(2000)}\n`,
+      });
+    }
+    const content = (await writer.getArtifact({ id: 'req-7' })).content;
+    const sourceHash = extractArtifactStructure({
+      artifactType: 'requirements',
+      artifactId: 'req-7',
+      content,
+    }).contentHash;
+
+    const counter = countingBodies(g);
+    const ops = createEngineGraphOps({ g: counter.g, scope, clock: CLOCK });
+    expect((await ops.getArtifactContent({ artifactId: 'req-7' })).content).toBe(content);
+    await ops.mirrorArtifactDerivations({ artifactId: 'req-7', sourceHash });
+    await ops.applyArtifactEnrichment({
+      artifactId: 'req-7',
+      gist: 'g',
+      claims: [],
+      sourceHash,
+    });
+    expect(counter.bodies()).toBe(3);
+    await expect(ops.getArtifactContent({ artifactId: 'missing' })).rejects.toMatchObject({
+      code: 'not_found',
+    });
+  });
+
+  it('do not return a head superseded between selecting it and reading its body', async () => {
+    const g = partitionGraph('engine-data-head-race');
+    await g.V().drop().next();
+    const scope = { ...OWN, stageInstanceId: 'si-1' };
+    await createEngineGraphOps({ g, scope: OWN, clock: CLOCK }).ensureIntent({ title: 'Race' });
+    await createGraphWriter({ g, scope, clock: CLOCK }).createArtifact({
+      artifactType: 'requirements',
+      id: 'req',
+      content: '# Requirements\n',
+    });
+    // A rewind archives the head after it was selected, before its body is read.
+    const racing = new Proxy(g, {
+      get(target, key) {
+        const value = target[key];
+        if (key !== 'V') return typeof value === 'function' ? value.bind(target) : value;
+        return (...ids) => {
+          const traversal = target.V(...ids);
+          if (ids.length === 0) return traversal;
+          const toList = traversal.toList.bind(traversal);
+          traversal.toList = async () => {
+            await target
+              .V(...ids)
+              .property('superseded_at', CLOCK())
+              .next();
+            return toList();
+          };
+          return traversal;
+        };
+      },
+    });
+    expect(await readCurrentArtifactHeads(g, 'i-1', 'req')).toHaveLength(1);
+    expect(await readCurrentArtifactHeads(racing, 'i-1', 'req')).toEqual([]);
   });
 });
