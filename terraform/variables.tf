@@ -135,6 +135,12 @@ variable "enable_waf" {
   default     = false
 }
 
+variable "waf_body_content_exempt_paths" {
+  description = "With enable_waf: URI path prefixes (for example \"/api/blocks/\") where the Common Rule Set body-content rules count instead of block, for routes that store markdown or scripts. They still block on every other path. Empty keeps today's behaviour."
+  type        = list(string)
+  default     = []
+}
+
 # ---------------------------------------------------------------------------
 # Authentication and enterprise federation
 # ---------------------------------------------------------------------------
