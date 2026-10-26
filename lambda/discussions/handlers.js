@@ -77,6 +77,7 @@ let issueGatewayGrant = gatewayGrantIssuerFromEnv();
 export const __setGatewayGrantIssuer = (issuer) => {
   issueGatewayGrant = issuer;
 };
+import { publishNotificationEvent } from '../shared/notification-events.js';
 
 const logger = new Logger({ persistentKeys: { component: 'discussions' } });
 
@@ -517,6 +518,22 @@ export const postMessage = async (event, res) => {
           ),
       );
 
+      // Notification event for integrations (best-effort, never throws).
+      if (scope.kind === 'intent') {
+        await publishNotificationEvent('discussion.message', {
+          projectId: scope.projectId,
+          intentId: scope.rootId,
+          discussionId,
+          entityType: getVal(discussion, 'entity_type'),
+          messageId,
+          authorId: caller.sub,
+          authorName: caller.displayName,
+          excerpt: content.slice(0, 1000),
+          mentions,
+          createdAt,
+        });
+      }
+
       // Auto-advance the author's read cursor — your own message is read.
       // Best-effort: a failure only leaves a stale badge.
       await upsertReadCursor(caller.sub, discussionId, scope.rootId, createdAt, messageId).catch(
@@ -940,6 +957,20 @@ export const updateDiscussion = async (event, res) => {
         .to('e')
         .next(),
     );
+  }
+
+  // Notification event for integrations (best-effort, never throws).
+  if (resolved && scope.kind === 'intent') {
+    await publishNotificationEvent('discussion.resolved', {
+      projectId: scope.projectId,
+      intentId: scope.rootId,
+      discussionId,
+      entityType: getVal(discussion, 'entity_type'),
+      resolvedById: caller.sub,
+      resolvedByName: caller.displayName,
+      resolutionSummary: resolutionSummary.slice(0, 1000),
+      resolvedAt: now,
+    });
   }
 
   await broadcastToScope(scope, {
