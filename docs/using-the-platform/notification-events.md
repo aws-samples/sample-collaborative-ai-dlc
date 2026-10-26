@@ -22,15 +22,22 @@ Publishing is best-effort:
 
 - It never fails or blocks the action that triggered it. Each publish gives up after two seconds, and a missing bus, missing permission or EventBridge error only logs a warning.
 - There's no retry, so a consumer that must not miss an event should reconcile against the platform's API.
-- `gate.pending` is published from a durable orchestrator step, so a replayed execution doesn't publish it twice. The others are published once per request.
+- An event is normally published once, but delivery is at least once: a retried step or request can publish it again. Deduplicate on `eventId`.
 
 ## Events
 
 Every event has `source` set to `notification_event_source` and `detail-type` set to the event name. Text fields are cut to 1,000 characters.
 
+Every event's detail also has:
+
+| Field           | Description                                                                |
+| --------------- | -------------------------------------------------------------------------- |
+| `schemaVersion` | `1`. Changes only for a breaking change; new fields can appear at any time |
+| `eventId`       | stable for the occurrence, for deduplication                               |
+
 ### `space.created`
 
-A space (project) was created.
+A space (project) was created. `eventId` is the space's id.
 
 | Field                           | Description                                                |
 | ------------------------------- | ---------------------------------------------------------- |
@@ -43,19 +50,22 @@ A space (project) was created.
 
 ### `gate.pending`
 
-An intent is waiting for a human at a gate.
+An intent is waiting for a human: an agent's question or checkpoint, or an engine gate such as stage validation or a walking skeleton review. `eventId` is the gate's `humanTaskId`.
 
-| Field                                  | Description                              |
-| -------------------------------------- | ---------------------------------------- |
-| `projectId`, `intentId`, `executionId` | where                                    |
-| `humanTaskId`                          | the gate's task id                       |
-| `stage`                                | the stage label                          |
-| `kind`                                 | the gate kind, or null                   |
-| `prompt`                               | the question shown to the human, or null |
+| Field                                  | Description                                                                                                                                                                      |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `projectId`, `intentId`, `executionId` | where                                                                                                                                                                            |
+| `humanTaskId`                          | the gate's task id                                                                                                                                                               |
+| `need`                                 | `answer` for an agent's question, `approval` for anything to sign off (checkpoints and engine gates)                                                                             |
+| `kind`                                 | the gate kind, for example `question`, `approval` or `validation`, or null                                                                                                       |
+| `stage`                                | the stage id (per-unit stages add `-u-<unit>`); for an engine gate with no stage, a label such as `Walking skeleton review`, `Batch review`, `Autonomy choice` or `Lane failure` |
+| `intentTitle`                          | the intent's title (up to 200 characters), or null                                                                                                                               |
+| `startedBy`                            | the user id that started the execution, or null                                                                                                                                  |
+| `prompt`                               | the question shown to the human (an agent question's first question), or null                                                                                                    |
 
 ### `discussion.message`
 
-A message was posted to an intent discussion.
+A message was posted to an intent discussion. `eventId` is the `messageId`.
 
 | Field                                                | Description                        |
 | ---------------------------------------------------- | ---------------------------------- |
@@ -68,7 +78,7 @@ A message was posted to an intent discussion.
 
 ### `discussion.resolved`
 
-An intent discussion was resolved.
+An intent discussion was resolved. `eventId` is `<discussionId>:<resolvedAt>`.
 
 | Field                                   | Description                        |
 | --------------------------------------- | ---------------------------------- |

@@ -13,6 +13,9 @@ import { Logger } from '@aws-lambda-powertools/logger';
 
 const logger = new Logger({ persistentKeys: { component: 'notification-events' } });
 
+// Every event's detail.schemaVersion. Bumped only for a breaking change.
+export const NOTIFICATION_EVENT_SCHEMA_VERSION = 1;
+
 const TIMEOUT_MS = 2000;
 const DEFAULT_SOURCE = 'collaborative-ai-dlc';
 
@@ -48,7 +51,7 @@ export const publishNotificationEvent = async (detailType, detail, deps = {}) =>
             EventBusName: bus,
             Source: source,
             DetailType: detailType,
-            Detail: JSON.stringify(detail),
+            Detail: JSON.stringify({ schemaVersion: NOTIFICATION_EVENT_SCHEMA_VERSION, ...detail }),
           },
         ],
       }),
@@ -75,4 +78,95 @@ export const resetNotificationEventClient = () => {
   clientPromise = undefined;
 };
 
-export default { publishNotificationEvent, resetNotificationEventClient };
+const PROMPT_CHARS = 1000;
+const TITLE_CHARS = 200;
+
+const clip = (text, limit) =>
+  typeof text === 'string' && text.trim() ? text.trim().slice(0, limit) : null;
+
+// A gate's question text. Engine gates carry `prompt`; agent questions and
+// checkpoint confirmations carry a `questions` JSON array instead.
+export const gatePromptText = (gate) => {
+  const prompt = clip(gate?.prompt, PROMPT_CHARS);
+  if (prompt) return prompt;
+  let questions = gate?.questions;
+  if (typeof questions === 'string') {
+    try {
+      questions = JSON.parse(questions);
+    } catch {
+      return null;
+    }
+  }
+  const first = Array.isArray(questions) ? questions[0] : null;
+  return clip(typeof first === 'string' ? first : (first?.text ?? first?.question), PROMPT_CHARS);
+};
+
+// What a gate needs from a human. A checkpoint confirmation is a `question`
+// row asking to approve a plan or summary, so it is an approval.
+export const gateNeed = (gate) =>
+  gate?.kind === 'question' && !gate?.detail?.checkpoint ? 'answer' : 'approval';
+
+// The gate.pending detail.
+export const buildGatePending = ({
+  gate,
+  meta,
+  projectId,
+  intentId,
+  executionId,
+  humanTaskId,
+  stage,
+}) => ({
+  eventId: humanTaskId,
+  projectId,
+  intentId,
+  executionId,
+  humanTaskId,
+  need: gateNeed(gate),
+  kind: gate?.kind ?? null,
+  stage: stage ?? null,
+  intentTitle: clip(meta?.title, TITLE_CHARS),
+  startedBy: meta?.startedBy ?? null,
+  prompt: gatePromptText(gate),
+});
+
+/**
+ * Publish gate.pending for a gate waiting on a human. Reads the gate row and
+ * execution META only when not passed in, and only with a bus configured.
+ * Never throws.
+ *
+ * @param {{ getHumanTask: Function, getExecution: Function }} store
+ * @param {{ gate?: object, meta?: object, projectId: string, intentId: string,
+ *   executionId: string, humanTaskId: string, stage?: string|null }} args
+ * @param {object} [deps] passed to publishNotificationEvent
+ */
+export const notifyGatePending = async (store, { gate, meta, ...ids }, deps) => {
+  if (!process.env.NOTIFICATION_EVENT_BUS) return false;
+  try {
+    const read = async (row, fn) => {
+      if (row) return row;
+      try {
+        return await fn();
+      } catch {
+        return null;
+      }
+    };
+    const [gateRow, metaRow] = await Promise.all([
+      read(gate, () => store.getHumanTask(ids.executionId, ids.humanTaskId)),
+      read(meta, () => store.getExecution(ids.executionId)),
+    ]);
+    return await publishNotificationEvent(
+      'gate.pending',
+      buildGatePending({ ...ids, gate: gateRow, meta: metaRow }),
+      deps,
+    );
+  } catch (err) {
+    logger.warn('gate notification failed', { error: err?.name || String(err) });
+    return false;
+  }
+};
+
+export default {
+  publishNotificationEvent,
+  resetNotificationEventClient,
+  notifyGatePending,
+};

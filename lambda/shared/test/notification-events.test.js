@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { publishNotificationEvent, resetNotificationEventClient } from '../notification-events.js';
+import {
+  buildGatePending,
+  gateNeed,
+  gatePromptText,
+  notifyGatePending,
+  publishNotificationEvent,
+  resetNotificationEventClient,
+} from '../notification-events.js';
 
 class FakePutEventsCommand {
   constructor(input) {
@@ -41,7 +48,7 @@ describe('publishNotificationEvent', () => {
         EventBusName: 'bus-1',
         Source: 'collaborative-ai-dlc',
         DetailType: 'discussion.message',
-        Detail: JSON.stringify({ projectId: 'p', messageId: 'm' }),
+        Detail: JSON.stringify({ schemaVersion: 1, projectId: 'p', messageId: 'm' }),
       },
     ]);
     expect(options.abortSignal).toBeInstanceOf(AbortSignal);
@@ -88,5 +95,145 @@ describe('publishNotificationEvent', () => {
     await expect(publishNotificationEvent('space.created', { projectId: 'p' })).resolves.toBe(true);
     expect(send.mock.calls[0][0].input.Entries[0].EventBusName).toBe('bus-1');
     send.mockRestore();
+  });
+});
+
+describe('gateNeed', () => {
+  it('an agent question needs an answer', () => {
+    expect(gateNeed({ kind: 'question' })).toBe('answer');
+  });
+
+  it('a checkpoint confirmation needs approval', () => {
+    expect(gateNeed({ kind: 'question', detail: { checkpoint: 'plan' } })).toBe('approval');
+  });
+
+  it.each(['approval', 'validation', undefined])('%s needs approval', (kind) => {
+    expect(gateNeed({ kind })).toBe('approval');
+  });
+});
+
+describe('gatePromptText', () => {
+  it('uses the prompt when there is one', () => {
+    expect(gatePromptText({ prompt: '  Approve the design?  ' })).toBe('Approve the design?');
+  });
+
+  it('falls back to the first entry of the questions JSON', () => {
+    const questions = JSON.stringify([{ text: 'Which database?' }, { text: 'Second' }]);
+    expect(gatePromptText({ prompt: null, questions })).toBe('Which database?');
+  });
+
+  it('accepts a parsed array and question or plain-string entries', () => {
+    expect(gatePromptText({ questions: [{ question: 'Q1' }] })).toBe('Q1');
+    expect(gatePromptText({ questions: ['Plain'] })).toBe('Plain');
+  });
+
+  it('returns null for missing or malformed text, and clips to 1000 characters', () => {
+    expect(gatePromptText({ questions: '{not json' })).toBeNull();
+    expect(gatePromptText(null)).toBeNull();
+    expect(gatePromptText({ prompt: 'x'.repeat(1500) })).toHaveLength(1000);
+  });
+});
+
+describe('buildGatePending', () => {
+  it('maps the gate row and execution META', () => {
+    expect(
+      buildGatePending({
+        gate: { kind: 'question', questions: JSON.stringify([{ text: 'Which DB?' }]) },
+        meta: { title: ` ${'t'.repeat(250)} `, startedBy: 'u1' },
+        projectId: 'p1',
+        intentId: 'i1',
+        executionId: 'i1',
+        humanTaskId: 'q-1',
+        stage: 'requirements-analysis',
+      }),
+    ).toEqual({
+      eventId: 'q-1',
+      projectId: 'p1',
+      intentId: 'i1',
+      executionId: 'i1',
+      humanTaskId: 'q-1',
+      need: 'answer',
+      kind: 'question',
+      stage: 'requirements-analysis',
+      intentTitle: 't'.repeat(200),
+      startedBy: 'u1',
+      prompt: 'Which DB?',
+    });
+  });
+
+  it('tolerates a missing gate and META', () => {
+    expect(buildGatePending({ humanTaskId: 'q-1' })).toMatchObject({
+      need: 'approval',
+      kind: null,
+      stage: null,
+      intentTitle: null,
+      startedBy: null,
+      prompt: null,
+    });
+  });
+});
+
+describe('notifyGatePending', () => {
+  beforeEach(() => vi.stubEnv('NOTIFICATION_EVENT_BUS', 'bus-1'));
+  afterEach(() => vi.unstubAllEnvs());
+
+  const ids = { projectId: 'p1', intentId: 'i1', executionId: 'i1', humanTaskId: 'q-1' };
+  const sent = (send) => JSON.parse(send.mock.calls[0][0].input.Entries[0].Detail);
+
+  it('does nothing, and reads nothing, without a bus', async () => {
+    vi.stubEnv('NOTIFICATION_EVENT_BUS', '');
+    const store = { getHumanTask: vi.fn(), getExecution: vi.fn() };
+    await expect(notifyGatePending(store, ids)).resolves.toBe(false);
+    expect(store.getHumanTask).not.toHaveBeenCalled();
+    expect(store.getExecution).not.toHaveBeenCalled();
+  });
+
+  it('reads the gate and META when not given them', async () => {
+    const store = {
+      getHumanTask: vi.fn(async () => ({ kind: 'question', questions: '[{"text":"Q?"}]' })),
+      getExecution: vi.fn(async () => ({ title: 'Portal', startedBy: 'u1' })),
+    };
+    const send = vi.fn(async () => ({ FailedEntryCount: 0 }));
+    await expect(
+      notifyGatePending(store, { ...ids, stage: 's1' }, { getClient: clientWith(send) }),
+    ).resolves.toBe(true);
+    expect(store.getHumanTask).toHaveBeenCalledWith('i1', 'q-1');
+    expect(sent(send)).toMatchObject({
+      schemaVersion: 1,
+      eventId: 'q-1',
+      need: 'answer',
+      stage: 's1',
+      intentTitle: 'Portal',
+      prompt: 'Q?',
+    });
+  });
+
+  it('uses the gate and META it is given without reading them', async () => {
+    const store = { getHumanTask: vi.fn(), getExecution: vi.fn() };
+    const send = vi.fn(async () => ({ FailedEntryCount: 0 }));
+    await notifyGatePending(
+      store,
+      { ...ids, gate: { kind: 'approval', prompt: 'Go?' }, meta: { title: 'T' } },
+      { getClient: clientWith(send) },
+    );
+    expect(store.getHumanTask).not.toHaveBeenCalled();
+    expect(store.getExecution).not.toHaveBeenCalled();
+    expect(sent(send)).toMatchObject({ need: 'approval', prompt: 'Go?', intentTitle: 'T' });
+  });
+
+  it('still publishes, and never throws, when the store fails', async () => {
+    const store = {
+      getHumanTask: vi.fn(async () => {
+        throw new Error('ddb down');
+      }),
+      getExecution: vi.fn(() => {
+        throw new Error('sync failure');
+      }),
+    };
+    const send = vi.fn(async () => ({ FailedEntryCount: 0 }));
+    await expect(notifyGatePending(store, ids, { getClient: clientWith(send) })).resolves.toBe(
+      true,
+    );
+    expect(sent(send)).toMatchObject({ humanTaskId: 'q-1', prompt: null });
   });
 });

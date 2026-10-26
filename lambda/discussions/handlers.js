@@ -523,6 +523,7 @@ export const postMessage = async (event, res) => {
         await publishNotificationEvent('discussion.message', {
           projectId: scope.projectId,
           intentId: scope.rootId,
+          eventId: messageId,
           discussionId,
           entityType: getVal(discussion, 'entity_type'),
           messageId,
@@ -962,6 +963,7 @@ export const updateDiscussion = async (event, res) => {
   // Notification event for integrations (best-effort, never throws).
   if (resolved && scope.kind === 'intent') {
     await publishNotificationEvent('discussion.resolved', {
+      eventId: `${discussionId}:${now}`,
       projectId: scope.projectId,
       intentId: scope.rootId,
       discussionId,

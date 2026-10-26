@@ -75,7 +75,7 @@ import {
   grantAutonomyOffered,
 } from '../shared/construction-autonomy.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
-import { publishNotificationEvent } from '../shared/notification-events.js';
+import { notifyGatePending } from '../shared/notification-events.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import {
   activePlanUnits,
@@ -1087,15 +1087,13 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           // so a replay doesn't notify twice; publishing never throws.
           if (process.env.NOTIFICATION_EVENT_BUS) {
             await ctxArg.step(`notify-gate-${humanTaskId}`, async () => {
-              const gate = await store.getHumanTask(executionId, humanTaskId).catch(() => null);
-              await publishNotificationEvent('gate.pending', {
+              await notifyGatePending(store, {
                 projectId,
                 intentId,
                 executionId,
                 humanTaskId,
                 stage: label,
-                kind: gate?.kind ?? null,
-                prompt: typeof gate?.prompt === 'string' ? gate.prompt.slice(0, 1000) : null,
+                meta: fresh ?? undefined,
               });
               return true;
             });
@@ -1754,6 +1752,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             : await awaitEngineGate(ctx, sectionToolkit, {
                 name: `validation-${stage.stageInstanceId ?? stage.stageId}-${round}`,
                 kind: 'validation',
+                stageLabel: stage.stageId,
                 stageInstanceId: stage.stageInstanceId ?? null,
                 prompt: [
                   validationPrompt({
