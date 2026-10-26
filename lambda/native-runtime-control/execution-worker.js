@@ -21,6 +21,7 @@ import {
 } from './execution-lifecycle.js';
 import { createHash } from 'node:crypto';
 import { nativeRuntimeFailureCode } from '../shared/native-execution-failure.js';
+import { nativeWorkspaceRecovery } from '../shared/native-recovery-mode.js';
 import gremlin from 'gremlin';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
@@ -512,7 +513,18 @@ export const createNativeExecutionSupervisor =
         error?.name === 'RuntimeClientError'
       ) {
         if (state.row.status === 'RECOVERING') return requireRecovery('RESTORE_FAILED');
-        if (state.row.dispatch && ['DISPATCHING', 'RUNNING'].includes(state.row.status))
+        // A confirmed workspace resume runs without a Start/Continue dispatch.
+        // Its current episode, turn and writer still identify in-flight work.
+        const resumedWorkspace =
+          state.row.status === 'RUNNING' &&
+          nativeWorkspaceRecovery(state.row.configuration) &&
+          state.row.workspaceResume?.id === state.row.lastRecoveryId &&
+          state.row.workspaceResume?.sequence === nativeTurnSequence(state.row) &&
+          state.row.workspaceResume?.writerGeneration === nativeWriterGeneration(state.row);
+        if (
+          resumedWorkspace ||
+          (state.row.dispatch && ['DISPATCHING', 'RUNNING'].includes(state.row.status))
+        )
           return requireRecovery('DELIVERY_UNCERTAIN');
         if (state.row.status === 'DISPATCHING' && error?.name === 'RuntimeClientError')
           return requireRecovery(

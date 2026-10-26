@@ -338,8 +338,11 @@ Terraform default or mutable image tag is insufficient.
 
 1. Start through the application and reach a real workflow question. Record its
    interaction and publication identifiers and any accepted answer's delivery
-   status. Let the waiting runtime expire, then observe recovery through the
-   application's ordinary status reads.
+   status. Let the runtime remain idle beyond its 900-second session timeout,
+   then submit the next real member answer through the application. Ordinary
+   application reads do not detect expiry or keep the runtime alive. The next
+   dispatch must detect the lost session before sending that answer to the
+   harness, retain its acceptance and expose recovery through normal status reads.
 2. In a separate intent, interrupt its runtime during an active tool after it has
    created unfinished edits and dependency links. Preserve its EFS workspace.
    Ordinary intent cancellation is a terminal user command and does not substitute
@@ -350,8 +353,12 @@ Terraform default or mutable image tag is insufficient.
    a different CLI session identity, with no concurrent predecessor writer.
 4. Verify AI-DLC reconciles the surviving edits and dependencies, runs the relevant
    build/tests, admits a new publication and reaches its next real question.
-   Previously accepted answers must retain their delivery state and history;
-   recovery itself must not replay an answer or approve a gate. Capture evidence
+   Previously accepted answers must retain their delivery classification and
+   history; recovery itself must not replay an answer or approve a gate. For the
+   expired waiting session, inspect the original revision's
+   `answer.resumeRetention.delivery: "undelivered"`, unchanged acceptance and
+   member, and absent delivery time/resulting publication. The current interaction's
+   generic delivery status alone cannot establish this history. Capture evidence
    that the turn used no private recovery capture, export, import or restore.
 5. Exercise missing and incorrectly bound workspaces using isolated qualification
    resources. The browser must show that resume is unavailable, with no replacement
@@ -362,10 +369,38 @@ Terraform default or mutable image tag is insufficient.
 API wrapper now run against the real public router, execution API and authority
 store in regression tests. A lost response preserves the confirmation and command
 identities and produces one authority transaction; denied membership produces no
-dispatch or state change. Both focused tests and all 1,384 native-runtime-control
-tests pass. Authentication, HTTP transport and AWS persistence use test fixtures;
-these results do not establish deployed browser, harness or EFS qualification.
-Deployment and every live scenario above remain pending, so NE-02 stays open.
+dispatch or state change. A further process-loss regression reproduced an
+acknowledged fresh-session resume becoming terminally failed if its runtime died
+before publication. The worker now recognizes the current resume episode, turn
+and writer as in-flight work and uses the existing fenced, confirmed-stop recovery
+path. The real HTTP/executor fixture reaches a third writer generation while
+preserving unfinished work and accepted-answer history without replay. All 1,398
+native-runtime-control tests pass, including stale ownership, cancellation and
+unconfirmed-stop cases. Fixture authentication, persistence and inert subprocesses
+do not establish deployed browser, harness or EFS qualification.
+
+**Dev qualification preparation, 2026-10-26:** deployment of `010ce5d5` was
+confirmed. Its frontend entry asset and API, authority and execution-worker
+archives match the local deployment artifacts byte for byte. The signed-in
+application imported the selected package and created a fresh qualification intent.
+The following pins were recorded before starting agent work:
+
+| Pin                     | Recorded value                                                              |
+| ----------------------- | --------------------------------------------------------------------------- |
+| Region                  | `us-east-1`                                                                 |
+| Harness                 | Claude Code `2.1.296`, verified in the exact image with networking disabled |
+| Effective model setting | `global.anthropic.claude-sonnet-5-5`, from the space override               |
+| Runtime image digest    | `sha256:ef179ee0335bffe0184b376abc9768306f4602952b26dc8c9ca7ca6c552068b9`   |
+| AI-DLC release          | `v2.11.1`                                                                   |
+| Methodology commit      | `895a35d86d20336d9b7bc4aedc9440e4a12c83ab`                                  |
+| Package identity        | `sha256:577eced0d4425aba7cd4fdaec100315363e104d28fa47f1aec141aac606dfb56`   |
+| Materialization         | `sha256:be88b2f8c1240dfb86ad4a75e9d3104931f65c35d789b572127028b0631d0386`   |
+| Application repository  | `JWThewes/flappy-bird` on GitHub; record the checked-out commit at Start    |
+
+The effective model setting differs from the platform fallback; qualification
+must verify the accepted execution captures the space's selection. The additional
+worker correction still needs deployment, and the live recovery scenarios remain
+pending. NE-02 stays open.
 
 ## Integration and simplification checklist
 

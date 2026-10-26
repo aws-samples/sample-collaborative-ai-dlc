@@ -34,7 +34,9 @@ it.each([
   'wrong-config',
   'unconfirmed-stop',
   'resume-owner-loss',
+  'resume-running-owner-loss',
 ])('confirmed workspace resume preserves work and never replays %s input', async (scenario) => {
+  const interruptRunningResume = scenario === 'resume-running-owner-loss';
   const f = executionFixture({ harness: 'claude', recoveryMode: NATIVE_WORKSPACE_RECOVERY });
   await f.start();
   const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-workspace-journey-')));
@@ -52,7 +54,9 @@ it.each([
       await fs.mkdir(dirname(session),{recursive:true,mode:0o700});
       await fs.appendFile(session,JSON.stringify({type:'user',sessionId:id,cwd:process.cwd()})+'\\n',{mode:0o600});
       await fs.appendFile('effects.jsonl',JSON.stringify({id,prompt})+'\\n',{mode:0o600});
+      if(process.argv[3]==='interrupt') await fs.writeFile('unfinished-resume.md','Interrupted resume work must survive.\\n');
       console.log(JSON.stringify({type:'system',subtype:'init',session_id:id}));
+      if(process.argv[3]==='interrupt') await new Promise(()=>setInterval(()=>{},1000));
       console.log(JSON.stringify({type:'result',subtype:'success',is_error:false,session_id:id,
         result:'Which current option?',stop_reason:'end_turn',terminal_reason:'completed'}));
     `,
@@ -95,6 +99,7 @@ it.each([
   const interrupted = new Promise((resolve) => {
     signalInterrupted = resolve;
   });
+  const resumedCommandController = new AbortController();
   const create = () =>
     createNativeExecutor({
       env,
@@ -164,10 +169,20 @@ it.each([
         lastHome = input.env.HOME;
         if (!input.args.includes('--resume')) nativeSession = randomUUID();
         modelTurns++;
+        const interrupt = interruptRunningResume && modelTurns === 2;
         const result = await runNativeCommand({
           ...input,
           command: process.execPath,
-          args: [script, nativeSession],
+          args: [script, nativeSession, interrupt ? 'interrupt' : 'complete'],
+          ...(interrupt
+            ? {
+                signal: AbortSignal.any([input.signal, resumedCommandController.signal]),
+                onStdoutChunk: async (chunk) => {
+                  await input.onStdoutChunk?.(chunk);
+                  signalInterrupted();
+                },
+              }
+            : {}),
         });
         if (modelTurns === 2 && ['delivered', 'uncertain'].includes(scenario)) {
           signalInterrupted();
@@ -210,7 +225,7 @@ it.each([
       },
     });
   };
-  let loseResumeAck = true;
+  let loseResumeAck = !interruptRunningResume;
   let loseAnswerAck = scenario === 'uncertain';
   const invocations = [];
   let lastRuntimeError;
@@ -230,7 +245,7 @@ it.each([
     invoke: async ({ execution, payload }) => {
       invocations.push(payload);
       const report = await (
-        scenario === 'resume-owner-loss'
+        scenario === 'resume-owner-loss' || interruptRunningResume
           ? invokeHttp({ execution, payload })
           : runtime[
               {
@@ -381,18 +396,80 @@ it.each([
       expect(modelTurns).toBe(priorModelTurns);
       return;
     }
-    const coldResume = scenario === 'resume-owner-loss';
+    if (interruptRunningResume) {
+      // Admit the native-resume acknowledgement before losing its runtime.
+      // No normal Start/Continue dispatch remains on this authority row.
+      await supervisor(f.identity);
+      await supervisor(f.identity);
+      await interrupted;
+      const running = f.row();
+      expect(running).toMatchObject({
+        status: 'RUNNING',
+        writerGeneration: 2,
+        publication: first,
+        workspaceResume: { id: request.recoveryId, sequence: 2, writerGeneration: 2 },
+      });
+      expect(running.dispatch).toBeUndefined();
+      expect(running.response).toBeUndefined();
+      // Stop the actual inert child, then discard the runtime and CLI home.
+      // This injects process loss without submitting a platform cancellation.
+      resumedCommandController.abort();
+      await runtime.settle();
+      await fs.rm(homes, { recursive: true });
+      runtime = create();
+      const cold = await invokeHttp({
+        execution: running,
+        payload: {
+          command: 'native-status',
+          ...executionIdentity(running),
+          writerGeneration: 2,
+        },
+      });
+      expect(cold).toMatchObject({
+        status: 'stopped_needs_review',
+        code: 'native_execution_existing_owner',
+        writerGeneration: 2,
+      });
+      expect(cold.sequence).toBeUndefined();
+      expect(await supervisor(f.identity)).toEqual({
+        pending: false,
+        status: 'RECOVERY_REQUIRED',
+        reason: 'DELIVERY_UNCERTAIN',
+      });
+      expect(f.row()).toMatchObject({
+        status: 'RECOVERY_REQUIRED',
+        recovery: { reason: 'DELIVERY_UNCERTAIN', canRecover: true },
+        publication: first,
+      });
+    }
+    const coldResume = scenario === 'resume-owner-loss' || interruptRunningResume;
     if (coldResume) {
       await settle('RECOVERY_REQUIRED');
-      expect(f.row().recovery.reason).toBe('RESTORE_FAILED');
+      expect(f.row().recovery.reason).toBe(
+        interruptRunningResume ? 'DELIVERY_UNCERTAIN' : 'RESTORE_FAILED',
+      );
       expect(f.row().recovery.canRecover).toBe(true);
       expect(f.row().stopConfirmation.writerGeneration).toBe(2);
       expect(f.row().publication).toEqual(first);
       expect(modelTurns).toBe(priorModelTurns + 1);
       // Neither a cold reissue nor the previous confirmation may launch work.
-      await expect(
-        api.recover(f.prepared, { ...request, confirmWorkspaceResume: true }, recheck),
-      ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CONFLICT' });
+      const pendingRecovery = f.row();
+      const previousConfirmation = api.recover(
+        f.prepared,
+        { ...request, confirmWorkspaceResume: true },
+        recheck,
+      );
+      if (interruptRunningResume) {
+        // The acknowledged episode deduplicates to the current blocked row.
+        await expect(previousConfirmation).resolves.toMatchObject({
+          execution: { status: 'RECOVERY_REQUIRED', recovery: pendingRecovery.recovery },
+        });
+      } else {
+        await expect(previousConfirmation).rejects.toMatchObject({
+          code: 'NATIVE_EXECUTION_CONFLICT',
+        });
+      }
+      expect(f.row()).toEqual(pendingRecovery);
       expect(modelTurns).toBe(priorModelTurns + 1);
       await api.recover(
         f.prepared,
@@ -415,6 +492,10 @@ it.each([
     expect(await fs.readFile(join(project, 'unfinished.md'), 'utf8')).toBe(
       'Unpublished work must survive.\n',
     );
+    if (interruptRunningResume)
+      expect(await fs.readFile(join(project, 'unfinished-resume.md'), 'utf8')).toBe(
+        'Interrupted resume work must survive.\n',
+      );
     const [original, alias] = await Promise.all(
       ['index.js', 'alias.js'].map((file) => fs.stat(join(project, 'node_modules/pkg', file))),
     );
@@ -431,7 +512,7 @@ it.each([
     expect(history.retained.delivery).toBe(coldResume ? 'undelivered' : scenario);
     expect(history.publication).toBeNull(); // Fresh resume did not consume the old answer.
     const resumes = invocations.filter((input) => input.command === 'native-resume');
-    expect(resumes.length).toBeGreaterThanOrEqual(2); // lost ACK, same action
+    expect(resumes.length).toBeGreaterThanOrEqual(2); // Lost ACK or another confirmed episode.
     expect(new Set(resumes.map((input) => input.recoveryId)).size).toBe(coldResume ? 2 : 1);
     expect(
       resumes.every((input) => !input.text && !input.checkpoint && !input.nativeSessionId),
