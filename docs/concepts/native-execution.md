@@ -379,28 +379,67 @@ native-runtime-control tests pass, including stale ownership, cancellation and
 unconfirmed-stop cases. Fixture authentication, persistence and inert subprocesses
 do not establish deployed browser, harness or EFS qualification.
 
-**Dev qualification preparation, 2026-10-26:** deployment of `010ce5d5` was
-confirmed. Its frontend entry asset and API, authority and execution-worker
-archives match the local deployment artifacts byte for byte. The signed-in
-application imported the selected package and created a fresh qualification intent.
-The following pins were recorded before starting agent work:
+The operator fixture is `scripts/native-recovery-qualification.mjs`. Its local
+`barrier-command` action prints a bounded, foreground Bash command for Claude to
+run after real implementation edits and dependency installation. The operator
+`stop` action verifies that this command is an active Claude child before stopping
+the exact accepted runtime session. Capture changed-file and dependency-link
+hashes before stopping, compare the changes with the preceding publication, and
+use `inspect --marker-sha256` after the resumed run publishes to compare retained
+evidence. An old marker alone does not prove an active interrupted tool.
+
+The `missing-project` and `wrong-project` actions require an isolated intent at a
+recoverable boundary with a confirmed predecessor stop. They preserve the
+original project in a nonce-scoped quarantine and stop their diagnostic session
+before returning; they do not modify authority records or delete EFS data. All
+operator actions require explicit account, region, resource and writer identities,
+and a separately authorized operator profile. `solution-read` is rejected.
+The 27 focused helper tests and all 300 release-script tests pass; these checks
+do not establish live fault qualification.
+
+**Dev qualification preparation, 2026-10-26:** deployment of `010ce5d5` and
+the subsequent `fbda6296` worker correction was confirmed. The frontend entry
+asset and deployed API, authority and execution-worker archives match their local
+deployment artifacts byte for byte; the worker correction keeps the same runtime
+image. The signed-in application imported the selected package, prepared a fresh
+qualification intent and accepted Start through the public API. The accepted
+execution matches the package, model and image pins recorded before Start:
 
 | Pin                     | Recorded value                                                              |
 | ----------------------- | --------------------------------------------------------------------------- |
 | Region                  | `us-east-1`                                                                 |
 | Harness                 | Claude Code `2.1.296`, verified in the exact image with networking disabled |
 | Effective model setting | `global.anthropic.claude-sonnet-5-5`, from the space override               |
+| Credential source       | Platform Bedrock credentials, captured by the accepted Start                |
 | Runtime image digest    | `sha256:ef179ee0335bffe0184b376abc9768306f4602952b26dc8c9ca7ca6c552068b9`   |
 | AI-DLC release          | `v2.11.1`                                                                   |
 | Methodology commit      | `895a35d86d20336d9b7bc4aedc9440e4a12c83ab`                                  |
 | Package identity        | `sha256:577eced0d4425aba7cd4fdaec100315363e104d28fa47f1aec141aac606dfb56`   |
 | Materialization         | `sha256:be88b2f8c1240dfb86ad4a75e9d3104931f65c35d789b572127028b0631d0386`   |
-| Application repository  | `JWThewes/flappy-bird` on GitHub; record the checked-out commit at Start    |
+| Application repository  | `JWThewes/flappy-bird` on GitHub                                            |
+| Application commit      | `d99d2511c43f07ff2451e7e13f5a8f45b16dfce2`                                  |
+| Application branch      | `ai-dlc/initial-game-1776942523258--task-project-scaffold`                  |
 
-The effective model setting differs from the platform fallback; qualification
-must verify the accepted execution captures the space's selection. The additional
-worker correction still needs deployment, and the live recovery scenarios remain
-pending. NE-02 stays open.
+The accepted execution captures the space's model selection, which differs from
+the platform fallback. Its runtime uses the prepared EFS access point and a
+dedicated execution endpoint. The first real AI-DLC question was published before
+the waiting-session expiry test. After more than 900 seconds of inactivity, a
+browser reply was accepted and the worker detected the lost session before
+dispatching it. The application exposed a confirmed predecessor stop and accepted
+the member's explicit fresh-session confirmation. Writer generation 2 reused the
+same execution, configuration and EFS binding, used a different CLI session, and
+admitted publication 2. History retained the original answer as undelivered with
+its identity, text, author and acceptance time unchanged, and no delivery time,
+resulting publication or approval. The observed recovery used no private checkpoint
+capture or restore.
+
+This is partial proof: publication 2 reported `next does not take --on-instruction
+where` from the pinned workflow's resume command and contained no workflow
+question. The argument-handling failure is under investigation; publication
+admission alone does not qualify workflow recovery. The interrupted-tool case is
+prepared but not started: the pinned application commit contains an empty Phaser
+scene, so its implementation/build/test fixture needs a source-baseline decision.
+The missing/wrong-workspace cases also remain unqualified. NE-02 stays open.
 
 ## Integration and simplification checklist
 
