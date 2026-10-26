@@ -28,6 +28,8 @@ import { type Project } from '@/services/projects';
 import { type Sprint } from '@/services/sprints';
 import { useProjectCache, useProjectSprintsCache } from '@/hooks/useProjectsCache';
 import { useIntent } from '@/contexts/IntentContext';
+import { BrandMark } from '@/components/layout/BrandMark';
+import { getBranding } from '@/lib/branding';
 
 interface AppHeaderProps {
   onToggleSidebar: () => void;
@@ -96,7 +98,10 @@ export function AppHeader({
         onClick={() => navigate('/dashboard')}
         className="flex items-center gap-1.5 shrink-0 group"
       >
-        <img src="/logo.svg" alt="AI-DLC" className="h-6 w-6" />
+        <BrandMark
+          wordmarkClassName="h-5"
+          fallback={<img src={getBranding().logo} alt={getBranding().name} className="h-6 w-6" />}
+        />
         <span className="text-sm font-semibold tracking-wide group-hover:text-foreground text-foreground/80 transition-colors">
           AI-DLC
         </span>
