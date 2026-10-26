@@ -347,3 +347,31 @@ variable "iam_permissions_boundary_arn" {
   type        = string
   default     = ""
 }
+
+variable "notification_events_enabled" {
+  description = "Create an EventBridge bus and publish best-effort notification events to it (discussion.message, discussion.resolved, gate.pending, space.created) for integrations such as chat notifications. See docs/using-the-platform/notification-events.md."
+  type        = bool
+  default     = false
+}
+
+variable "notification_event_bus_name" {
+  description = "With notification_events_enabled: the event bus name. Empty uses <project_name>-<environment>-events."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.notification_event_bus_name == "" || can(regex("^[A-Za-z0-9._-]{1,256}$", var.notification_event_bus_name))
+    error_message = "notification_event_bus_name must be empty or 1-256 characters of A-Z, a-z, 0-9, ., _ and -."
+  }
+}
+
+variable "notification_event_source" {
+  description = "With notification_events_enabled: the EventBridge source the events carry, for rule patterns."
+  type        = string
+  default     = "collaborative-ai-dlc"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9._-]{1,256}$", var.notification_event_source)) && !startswith(var.notification_event_source, "aws.")
+    error_message = "notification_event_source must be 1-256 characters of A-Z, a-z, 0-9, ., _ and -, and must not start with aws."
+  }
+}

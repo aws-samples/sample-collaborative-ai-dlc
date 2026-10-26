@@ -505,6 +505,10 @@ module "neptune" {
 module "lambda" {
   source = "./modules/api/lambda"
 
+  notification_events_enabled = var.notification_events_enabled
+  notification_event_bus_name = var.notification_event_bus_name
+  notification_event_source   = var.notification_event_source
+
   iam_role_path                = var.iam_role_path
   iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 

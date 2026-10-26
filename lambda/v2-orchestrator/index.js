@@ -72,6 +72,7 @@ import {
   grantAutonomyOffered,
 } from '../shared/construction-autonomy.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
+import { publishNotificationEvent } from '../shared/notification-events.js';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import { sdkTarget, stopSession as stopSharedSession } from '../shared/runtime-session.js';
 import {
@@ -1047,6 +1048,24 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           });
         }
         if (!answeredEarly) {
+          // Notification event: a human is needed. Only with a bus configured,
+          // so the durable step sequence is unchanged otherwise. A durable step,
+          // so a replay doesn't notify twice; publishing never throws.
+          if (process.env.NOTIFICATION_EVENT_BUS) {
+            await ctxArg.step(`notify-gate-${humanTaskId}`, async () => {
+              const gate = await store.getHumanTask(executionId, humanTaskId).catch(() => null);
+              await publishNotificationEvent('gate.pending', {
+                projectId,
+                intentId,
+                executionId,
+                humanTaskId,
+                stage: label,
+                kind: gate?.kind ?? null,
+                prompt: typeof gate?.prompt === 'string' ? gate.prompt.slice(0, 1000) : null,
+              });
+              return true;
+            });
+          }
           // D1 release-on-park: if no human answers within parkReleaseSeconds, free
           // the warm microVM compute (StopRuntimeSession) while we keep waiting —
           // for a lane, ITS OWN session is released, never a sibling's. Resume
