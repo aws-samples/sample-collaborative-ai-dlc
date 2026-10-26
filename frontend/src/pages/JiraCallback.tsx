@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { trackersService, type JiraPendingChoice } from '@/services/trackers';
 import { OAuthCallbackShell } from '@/components/OAuthCallbackShell';
@@ -52,17 +52,19 @@ export default function JiraCallback() {
       });
   }, [searchParams, navigate, meta.callbackPath, meta.displayName]);
 
+  const leave = useCallback(() => {
+    const returnTo = sessionStorage.getItem('oauth_return_to');
+    sessionStorage.removeItem('oauth_return_to');
+    // Jira connections originate in space settings. Avoid returning through
+    // browser history, which may lead back to Atlassian's consent screen.
+    navigate(returnTo?.startsWith('/space/') ? returnTo : '/dashboard', { replace: true });
+  }, [navigate]);
+
   useEffect(() => {
     if (status !== 'success') return;
-    const timer = setTimeout(() => {
-      const returnTo = sessionStorage.getItem('oauth_return_to');
-      sessionStorage.removeItem('oauth_return_to');
-      // Jira connections originate in space settings. Avoid returning through
-      // browser history, which may lead back to Atlassian's consent screen.
-      navigate(returnTo?.startsWith('/space/') ? returnTo : '/dashboard', { replace: true });
-    }, 1200);
+    const timer = setTimeout(leave, 1200);
     return () => clearTimeout(timer);
-  }, [status, navigate]);
+  }, [status, leave]);
 
   const handleConfirm = async () => {
     if (!choice || !chosenCloudId) return;
@@ -129,11 +131,7 @@ export default function JiraCallback() {
             ))}
           </div>
           <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => navigate(-1)}
-              className="px-4 py-2 border rounded text-sm"
-            >
+            <button type="button" onClick={leave} className="px-4 py-2 border rounded text-sm">
               Cancel
             </button>
             <button

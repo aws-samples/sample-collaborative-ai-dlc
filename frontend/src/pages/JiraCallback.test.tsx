@@ -64,6 +64,29 @@ describe('Jira authorization return', () => {
     expect(sessionStorage.getItem('oauth_return_to')).toBeNull();
   });
 
+  it.each([returnPath, null, '//example.com', 'https://example.com', '/account'])(
+    'cancels site selection and clears the saved return path: %s',
+    async (path) => {
+      if (path) sessionStorage.setItem('oauth_return_to', path);
+      await showCallback({
+        pendingChoice: {
+          ticket: 'example-ticket',
+          resources: [
+            { cloudId: 'site-1', name: 'Career Compass', host: 'example.atlassian.net' },
+            { cloudId: 'site-2', name: 'Other site', host: 'other.atlassian.net' },
+          ],
+        },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(navigate).toHaveBeenCalledExactlyOnceWith(
+        path === returnPath ? returnPath : '/dashboard',
+        { replace: true },
+      );
+      expect(sessionStorage.getItem('oauth_return_to')).toBeNull();
+      expect(trackersService.finalizeJiraConnection).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([null, '//example.com', 'https://example.com'])(
     'uses the dashboard for a missing or external return path: %s',
     async (path) => {

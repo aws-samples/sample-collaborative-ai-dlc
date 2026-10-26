@@ -96,6 +96,8 @@ In **Project Settings → Trackers**:
 
 Jira account authorization is shared across your spaces. **Add Jira project** refreshes expired access tokens automatically. If an administrator has changed the OAuth client ID, or your authorization has been revoked, this action starts Atlassian authorization and returns you to the same space with the project picker open. Atlassian may require consent or site selection.
 
+Cancelling Atlassian site selection returns you to the originating space and clears the saved OAuth return path. If that path is missing or invalid, you return to the dashboard.
+
 When using **Add Jira project**, connections created before the platform recorded their OAuth client ID require this authorization once per user, even if their access token has not expired. Existing issue and comment operations continue using and refreshing these older connections without requiring this migration. The new authorization records the issuing client ID for future reuse. Rotating only the client secret keeps the existing connection and uses the new secret on the next token refresh. Existing project bindings are preserved. An authorization already in progress when the app credentials change may need to be started again.
 
 You can also enable the matching git-issues tracker in one step at project creation by checking **Enable GitHub/GitLab issue integration**.
