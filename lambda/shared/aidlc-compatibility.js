@@ -268,6 +268,19 @@ const INVOKE_FAMILY_FIDELITY = Object.freeze([
   // ELEVEN are refused, each with an answer the annex gives BY NAME. They stay
   // `unsupported` in the fidelity report, which is what keeps 2.11 promotable
   // as `selectable` and never as `certified`.
+  // AI-DLC 2.11.1 adds a TWELFTH: build-and-test's cross-unit coverage gate
+  // runs `sensor-traceability --stage build-and-test` from the stage prose,
+  // asking for a sensor run on request. Its own entry, never the bare
+  // `sensor-<id>` family above: that one is a sensor block's declared command,
+  // which the platform's sensor plane runs at the stage's gate, while this one
+  // asks the AGENT to run a sensor and read its output, which no seam here does.
+  Object.freeze({
+    pattern: /^sensor-[a-z0-9-]+ --stage$/,
+    family: 'sensor-<id> --stage',
+    handling: 'unsupported',
+    annexed: true,
+    note: 'The platform runs a stage’s declared sensors itself, at the stage’s gate, and offers no way to run one on request. The agent writes the report the step asks for from the record it can read, labels it agent-derived rather than sensor-verified, and treats every element it cannot confirm as uncovered.',
+  }),
   Object.freeze({
     pattern: /^config set$/,
     family: 'config set',
