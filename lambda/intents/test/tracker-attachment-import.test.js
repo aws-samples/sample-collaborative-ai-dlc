@@ -25,10 +25,14 @@ describe('tracker import through intent attachments', () => {
     store = {
       getExecution: vi.fn(async () => structuredClone(meta)),
       updateExecution: vi.fn(async (input) => {
-        if (input.ifAttachmentRevision !== meta.attachmentRevision) {
+        if (
+          input.fromStatus !== meta.status ||
+          input.ifAttachmentRevision !== meta.attachmentRevision
+        ) {
           throw Object.assign(new Error('conflict'), { name: 'ConditionalCheckFailedException' });
         }
-        Object.assign(meta, input, { attachmentRevision: meta.attachmentRevision + 1 });
+        Object.assign(meta, input);
+        if (input.attachments !== undefined) meta.attachmentRevision += 1;
       }),
     };
     s3 = { send: vi.fn(async () => ({ VersionId: 'staged-v1' })) };
@@ -181,6 +185,7 @@ describe('tracker import through intent attachments', () => {
     ingest.mockRejectedValueOnce(new Error('copy failed'));
     expect((await importer.importOne(meta, 'user-1', 'asset-1')).status).toBe('failed');
     expect(meta.pendingAttachmentUploads).toEqual([]);
+    expect(meta.attachmentRevision).toBe(2);
   });
 
   it('keeps provider failures isolated from existing attachments', async () => {

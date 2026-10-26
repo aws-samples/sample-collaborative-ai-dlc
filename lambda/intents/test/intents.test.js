@@ -690,6 +690,109 @@ describe('tracker attachment import API', () => {
     expect((await request(sub, projectId, id)).statusCode).toBe(409);
     expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(before);
   });
+
+  it.each(['start', 'retry'])(
+    'releases concurrent failed imports without blocking %s or changing draft content',
+    async (nextAction) => {
+      vi.stubEnv('TRACKERS_FUNCTION', 'trackers-test');
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const { id } = JSON.parse((await createIntent(sub, projectId)).body);
+      const key = { pk: `EXEC#${id}`, sk: 'META' };
+      const metaKey = keyOf(key.pk, key.sk);
+      const meta = procStore.get(metaKey);
+      const committed = {
+        attachmentId: 'existing',
+        filename: 'notes.md',
+        mimeType: 'text/markdown',
+        size: 42,
+        s3Key: `intent-attachments/committed/${id}/existing.md`,
+        s3VersionId: 'existing-version',
+      };
+      meta.attachments = [committed];
+      meta.source = { bindingId: 'stored-binding', resourceId: '42', provider: 'github-issues' };
+      const prompt = meta.prompt;
+      lambdaMock.on(InvokeCommand, { FunctionName: 'trackers-test' }).resolves({
+        Payload: Buffer.from(
+          JSON.stringify({
+            status: 'downloaded',
+            filename: 'design.pdf',
+            mimeType: 'application/pdf',
+            size: 100,
+            versionId: 'download-version',
+            source: { url: 'https://github.com/user-attachments/files/123/design.pdf' },
+          }),
+        ),
+      });
+      const copiesReady = Promise.withResolvers();
+      const cleanupsReady = Promise.withResolvers();
+      let copyCount = 0;
+      const cleanupReads = [];
+      s3Mock.on(DeleteObjectCommand).resolves({});
+      s3Mock.on(CopyObjectCommand).callsFake(async () => {
+        copyCount += 1;
+        if (copyCount === 2) copiesReady.resolve();
+        await copiesReady.promise;
+        throw new Error('promotion copy failed');
+      });
+      ddbMock.on(GetCommand, { Key: key }).callsFake(async () => {
+        const snapshot = structuredClone(procStore.get(metaKey));
+        // Hold both cleanup reads at the same revision after both reservations exist.
+        if (copyCount === 2) {
+          cleanupReads.push(snapshot.attachmentRevision);
+          if (cleanupReads.length === 2) cleanupsReady.resolve();
+          await cleanupsReady.promise;
+        }
+        return { Item: snapshot };
+      });
+      const importFile = (attachmentId) =>
+        request(sub, projectId, id, {
+          httpMethod: 'POST',
+          body: JSON.stringify({ attachmentId }),
+        });
+
+      const results = await Promise.all(['asset-a', 'asset-b'].map(importFile));
+      expect(results.map((result) => result.statusCode)).toEqual([200, 200]);
+      expect(results.map((result) => JSON.parse(result.body).status)).toEqual(['failed', 'failed']);
+      expect(procStore.get(metaKey)).toMatchObject({
+        status: 'DRAFT',
+        attachmentRevision: 4,
+        pendingAttachmentUploads: [],
+        attachments: [committed],
+        prompt,
+      });
+      // The first cleanup invalidates the competing revision-2 write;
+      // the loser must reread revision 3 before removing its own reservation.
+      expect(cleanupReads).toEqual([2, 2, 3]);
+
+      if (nextAction === 'start') {
+        const started = await handler({
+          httpMethod: 'POST',
+          path: `/projects/${projectId}/intents/${id}/start`,
+          pathParameters: { projectId, intentId: id },
+          body: JSON.stringify({ agentCli: 'kiro' }),
+          ...claims(sub),
+        });
+        expect(started.statusCode).toBe(202);
+      } else {
+        s3Mock.on(CopyObjectCommand).resolves({ VersionId: 'copy-version' });
+        s3Mock.on(HeadObjectCommand).resolves({
+          ContentType: 'application/pdf',
+          ContentLength: 100,
+          VersionId: 'copy-version',
+        });
+        for (const attachmentId of ['asset-a', 'asset-b']) {
+          const retried = await importFile(attachmentId);
+          expect(retried.statusCode).toBe(200);
+          expect(JSON.parse(retried.body).status).toBe('imported');
+        }
+        expect(procStore.get(metaKey).attachments).toHaveLength(3);
+        expect(procStore.get(metaKey).attachments[0]).toEqual(committed);
+        expect(procStore.get(metaKey).pendingAttachmentUploads).toEqual([]);
+        expect(procStore.get(metaKey).prompt).toBe(prompt);
+      }
+    },
+  );
 });
 
 describe('POST /projects/{id}/intents/{intentId}/attachments/upload', () => {
