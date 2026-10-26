@@ -1,12 +1,14 @@
+import { loadMetaV1, finishSucceededV1 } from './fixtures/completion-v1-boundary.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { withDurableExecution } from '@aws/durable-execution-sdk-js';
 import {
   LocalDurableTestRunner,
   WaitingOperationStatus,
 } from '@aws/durable-execution-sdk-js-testing';
-import { __durableHandler } from '../index.js';
+import { __durableHandler } from './fixtures/completion-handler.js';
 import { awaitEngineGate } from '../section.js';
 import { awaitEngineGate as previousEngineGate } from './fixtures/engine-gate-before-recovery.js';
+import { loadMetaBeforeCompletion } from './fixtures/load-meta-before-completion.js';
 
 // ---------------------------------------------------------------------------
 // REAL replay coverage for the orchestrator's async stage flow (WP1).
@@ -292,6 +294,135 @@ const completeStage = async (runner, opName, result) => {
 };
 
 describe('orchestrator on the real durable runner (replay semantics)', () => {
+  it.each(['before', 'after'])(
+    'replays a frozen v1 checkpoint %s terminal success',
+    async (boundary) => {
+      const world = makeWorld({ stages: [{ stageId: 'a' }] });
+      let upgraded = false;
+      let finishCalls = 0;
+      const names = [];
+      const handler = withDurableExecution((event, ctx) => {
+        let loadedMeta;
+        let runId;
+        const wrapped = new Proxy(ctx, {
+          get: (target, key) =>
+            key === 'step'
+              ? async (name, fn, options) => {
+                  names.push(name);
+                  if (name === 'open-pr' && boundary === 'after') {
+                    const [pause] = await target.createCallback('test-after-v1-success');
+                    await pause;
+                  }
+                  const result = await target.step(
+                    name,
+                    !upgraded && name === 'load-meta'
+                      ? () => loadMetaV1(world.deps.store, event.executionId)
+                      : !upgraded && name === 'finish-succeeded'
+                        ? () => {
+                            finishCalls++;
+                            return finishSucceededV1({
+                              store: world.deps.store,
+                              executionId: event.executionId,
+                              projectId: loadedMeta.projectId,
+                              meta: loadedMeta,
+                              runId,
+                            });
+                          }
+                        : fn,
+                    options,
+                  );
+                  if (name === 'load-meta') loadedMeta = result;
+                  if (name === 'mint-run-id') runId = result.runId;
+                  return result;
+                }
+              : typeof target[key] === 'function'
+                ? target[key].bind(target)
+                : target[key],
+        });
+        return __durableHandler(event, wrapped, world.deps);
+      });
+      const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+      const completion = runner.run({
+        payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+      });
+      const stage = await runner
+        .getOperation('stage-cb-a')
+        .waitForData(WaitingOperationStatus.STARTED);
+      if (boundary === 'before') upgraded = true;
+      await stage.sendCallbackSuccess(JSON.stringify({ ok: true, state: 'SUCCEEDED' }));
+      if (boundary === 'after') {
+        const pause = await runner
+          .getOperation('test-after-v1-success')
+          .waitForData(WaitingOperationStatus.STARTED);
+        upgraded = true;
+        await pause.sendCallbackSuccess(JSON.stringify({ ok: true }));
+      }
+      const result = await completion;
+      expect(result.getResult()).toMatchObject({ ok: true });
+      expect(names).not.toContain('finish-completion-v2');
+      expect(world.statusWrites.filter((status) => status === 'SUCCEEDED')).toHaveLength(1);
+      expect(finishCalls).toBe(boundary === 'after' ? 1 : 0);
+      expect(world.statusWrites).not.toContain('FAILED');
+    },
+  );
+  it('resumes a frozen pre-fix load-meta checkpoint without silently upgrading completion policy', async () => {
+    const world = makeWorld({ stages: [{ stageId: 'a' }] });
+    let upgraded = false;
+    const loadedVersions = [];
+    let firstLoadCalls = 0;
+    let markSuspended;
+    const suspended = new Promise((resolve) => {
+      markSuspended = resolve;
+    });
+    const handler = withDurableExecution((event, ctx) => {
+      const wrapped = new Proxy(ctx, {
+        get: (target, key) =>
+          key === 'step'
+            ? async (name, fn, options) => {
+                const result = await target.step(
+                  name,
+                  !upgraded && name === 'load-meta'
+                    ? async () => {
+                        firstLoadCalls++;
+                        return loadMetaBeforeCompletion(world.deps.store, event.executionId);
+                      }
+                    : fn,
+                  options,
+                );
+                if (name === 'load-meta') loadedVersions.push(result.completionPolicyVersion ?? 0);
+                return result;
+              }
+            : typeof target[key] === 'function'
+              ? target[key].bind(target)
+              : target[key],
+      });
+      return __durableHandler(event, wrapped, world.deps);
+    });
+    const runner = new LocalDurableTestRunner({
+      handlerFunction: async (...input) => {
+        const result = await handler(...input);
+        if (result.Status === 'PENDING') {
+          upgraded = true;
+          markSuspended();
+        }
+        return result;
+      },
+    });
+    const completion = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    await suspended;
+    await completeStage(runner, 'stage-cb-a', { ok: true, state: 'SUCCEEDED' });
+    const execution = await completion;
+    expect(execution.getResult()).toMatchObject({ ok: true });
+    expect(execution.getInvocations().length).toBeGreaterThan(1);
+    expect(firstLoadCalls).toBe(1);
+    expect(new Set(loadedVersions)).toEqual(new Set([0]));
+    expect(world.invokes.filter((payload) => payload.command === 'run-stage-start')).toHaveLength(
+      1,
+    );
+  });
+
   it('resumes a stage gate after its unpark committed without a checkpoint', async () => {
     const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
     const meta = { ...META };

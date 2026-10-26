@@ -56,7 +56,7 @@ const STATE_LABEL: Record<DisplayState, string> = {
   PR_READY: 'Ready to merge',
   ADDRESSING_FEEDBACK: 'Fixing feedback',
   MERGING: 'Merging',
-  MERGED: 'Merged',
+  MERGED: 'Integrated',
   BLOCKED: 'Blocked',
   FAILED: 'Failed',
   WAITING_INPUT: 'Waiting for input',
@@ -402,6 +402,7 @@ function UnitCard({
 
 // ── Presentational board (pure — tested in isolation) ────────────────────────
 export interface UnitLaneBoardViewProps {
+  intentBranch?: string | null;
   unitPlan: IntentUnitPlan;
   units: IntentUnit[];
   /** Live transcript tail per unit slug (only running units need an entry). */
@@ -418,6 +419,7 @@ export interface UnitLaneBoardViewProps {
 }
 
 export function UnitLaneBoardView({
+  intentBranch,
   unitPlan,
   units,
   streamsBySlug,
@@ -449,10 +451,8 @@ export function UnitLaneBoardView({
   // lambda/shared/v2-process-store.js:1000), so counting over all detail.units
   // would report states for units that aren't on the board.
   const planSlugs = useMemo(() => {
-    const fromBatches = (unitPlan.batches ?? []).flat();
-    const slugs = fromBatches.length > 0 ? fromBatches : (unitPlan.units ?? []).map((u) => u.slug);
-    return new Set(slugs);
-  }, [unitPlan.batches, unitPlan.units]);
+    return new Set((unitPlan.units ?? []).map((u) => u.slug));
+  }, [unitPlan.units]);
 
   // State-count chips — only states actually present among plan units, in a
   // stable order.
@@ -480,6 +480,16 @@ export function UnitLaneBoardView({
   return (
     <Card>
       <CardHeader className="pb-3">
+        <p className="text-xs text-muted-foreground">
+          Integrated units are on the intent branch
+          {intentBranch ? (
+            <>
+              {' '}
+              <code>{intentBranch}</code>
+            </>
+          ) : null}
+          . The final pull request is reviewed and merged separately.
+        </p>
         <div className="flex flex-wrap items-center gap-2">
           <CardTitle className="text-sm">Units</CardTitle>
           <Badge variant="outline" className="text-[10px] text-muted-foreground">
@@ -708,6 +718,7 @@ export function UnitLaneBoard({
   return (
     <>
       <UnitLaneBoardView
+        intentBranch={detail?.intent.branch}
         unitPlan={unitPlan}
         units={units}
         streamsBySlug={streamsBySlug}

@@ -8,7 +8,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Logger } from '@aws-lambda-powertools/logger';
-import { __durableHandler } from '../index.js';
+import { __durableHandler } from './fixtures/completion-handler.js';
 
 const makeCtx = (over = {}) => {
   const stageCallbacks = new Map();

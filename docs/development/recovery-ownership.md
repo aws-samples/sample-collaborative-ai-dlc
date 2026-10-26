@@ -31,3 +31,33 @@ Storage must accept a write to persist FAILED state. During a complete outage th
 worker preserves its structured failure, while durable dispatch and callback
 reconciliation remain the recovery backstop. These guards protect process state;
 they do not undo provider requests or Git operations already in flight.
+
+## Completion boundaries
+
+New histories capture completion policy 2 in the existing `load-meta` result.
+The shared unit-completion evaluator validates the pinned, resolved workflow's
+expected sections, current-plan units, repository integration evidence and scoped
+human omissions. Section fan-in and final success use the same evaluator against
+persisted process state. Missing rows, unfinished work and partial integrations
+cannot pass; missing provenance, read failures and ambiguous legacy omissions
+remain unverified. Serial workflows and sections excluded by approved workflow
+scope/composition remain valid.
+
+Required integration writes are not best-effort. A lost response is reconciled
+from persisted state; an unrecorded integration stops the lane before dependent
+work can proceed. Final status and its completion receipt commit together under
+run, status, META revision and unit-plan conditions. Initial publication rechecks
+completion before opening a PR. These checks never rerun models or repair rows.
+Old marker-absent and completion-policy-1 histories retain their saved operation
+sequence and terminal step. Saved historical successes are never rewritten.
+
+A terminal success with unfinished or unverified work is shown honestly in the
+intent detail. Accepted omissions remain partial delivery, not execution defects.
+This release does not add automatic preservation-and-continuation recovery for
+finished incomplete intents. Existing orphan-lane/PR-review repair and ordinary
+rewind remain supported; rewind resets affected lanes, including integrated work,
+and clears omission receipts for the work explicitly being retried. Original
+answers and events remain historical. Preserve runtime and methodology pins.
+
+Deploy the runtime, orchestrator, intents API and frontend from the same release.
+No automatic production audit, status migration or runtime repinning is performed.

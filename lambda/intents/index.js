@@ -40,6 +40,12 @@ import {
   GRANT_AUTONOMY_OPTION,
   constructionAutonomyApplies,
 } from '../shared/construction-autonomy.js';
+import {
+  unitCompletion,
+  assessExecutionCompletion,
+  activePlanUnits,
+  hasUnitSkipDecision,
+} from '../shared/unit-completion.js';
 import { SessionReleaseHandoffError, stopSessions } from '../shared/runtime-session.js';
 import {
   composeSessionIdFor,
@@ -4246,7 +4252,7 @@ export const handler = async (event, context) => {
       });
     }
 
-    if (intentId && httpMethod === 'DELETE') {
+    if (intentId && httpMethod === 'DELETE' && path?.endsWith(`/intents/${intentId}`)) {
       const meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
@@ -4421,8 +4427,12 @@ export const handler = async (event, context) => {
         'ADDRESSING_FEEDBACK',
         'MERGING',
       ]);
-      const prUnits = (records.units ?? []).filter(
+      const activeUnits = records.unitPlan?.units?.length
+        ? activePlanUnits(records.unitPlan, records.units)
+        : (records.units ?? []);
+      const prUnits = activeUnits.filter(
         (unit) =>
+          !hasUnitSkipDecision(unit, records.unitPlan) &&
           activeReviewStates.has(unit.state) &&
           (records.unitPrs ?? []).some(
             (pr) =>
@@ -4465,8 +4475,11 @@ export const handler = async (event, context) => {
         'FAILED',
         'BLOCKED',
       ]);
-      const repairUnits = (records.units ?? []).filter(
-        (unit) => Number(unit.sectionIndex) === sectionIndex && repairableStates.has(unit.state),
+      const repairUnits = activeUnits.filter(
+        (unit) =>
+          Number(unit.sectionIndex) === sectionIndex &&
+          !hasUnitSkipDecision(unit, records.unitPlan) &&
+          repairableStates.has(unit.state),
       );
       const repairSlugs = [...new Set(repairUnits.map((unit) => unit.slug))];
       if (repairSlugs.length === 0) {
@@ -4984,18 +4997,30 @@ export const handler = async (event, context) => {
       // already superseded by the first cleanup step, with no action capable
       // of waking it. FAILED remains rewindable, so a repeated request can
       // safely finish an interrupted reset.
-      await store.updateExecution({
-        executionId: intentId,
-        projectId,
-        status: 'FAILED',
-        fromStatus: priorStatus,
-        startedAt: meta.startedAt,
-        pendingHumanTaskId: null,
-        resumeRequired: null,
-        failureReason: 'rewind_in_progress',
-        completedAt: null,
-        orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
-      });
+      try {
+        await store.updateExecution({
+          executionId: intentId,
+          projectId,
+          status: 'FAILED',
+          fromStatus: priorStatus,
+          startedAt: meta.startedAt,
+          pendingHumanTaskId: null,
+          resumeRequired: null,
+          failureReason: 'rewind_in_progress',
+          completedAt: null,
+          ifOrchestratorRunId: meta.orchestratorRunId,
+          orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+        });
+      } catch (error) {
+        if (error?.name === 'ConditionalCheckFailedException') {
+          return response(409, {
+            error:
+              'Execution changed while preparing rewind. Refresh and review the restart point again.',
+            code: 'execution_changed',
+          });
+        }
+        throw error;
+      }
       // Retire a parked run first so the woken orchestrator exits quietly (its
       // gate is superseded) instead of racing the relaunch.
       await retireParkedRun(intentId, `rewound to ${fromStageId}`);
@@ -5063,7 +5088,7 @@ export const handler = async (event, context) => {
               sectionIndex,
               slug,
               state: 'PENDING',
-              fields: { failureReason: null, blockedOn: null },
+              fields: { failureReason: null, blockedOn: null, completionSkip: null },
             })
             .catch((err) => logger.error('Unit lane reset failed', err, { sectionIndex, slug })),
         );
@@ -5306,11 +5331,23 @@ export const handler = async (event, context) => {
       });
 
       // Retire only after every affected artifact was durably snapshotted.
-      await store.updateExecution({
-        executionId: intentId,
-        fromStatus: meta.status,
-        orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
-      });
+      try {
+        await store.updateExecution({
+          executionId: intentId,
+          fromStatus: meta.status,
+          ifOrchestratorRunId: meta.orchestratorRunId,
+          orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+        });
+      } catch (error) {
+        if (error?.name === 'ConditionalCheckFailedException') {
+          return response(409, {
+            error:
+              'Execution changed while preparing recompose. Refresh and review the stage selection again.',
+            code: 'execution_changed',
+          });
+        }
+        throw error;
+      }
       await retireParkedRun(intentId, `recomposed from ${fromStage.stageId}`);
       await stopRuntimeSessions(intentId, meta);
       for (const stageInstanceId of resetIds) {
@@ -5470,6 +5507,9 @@ export const handler = async (event, context) => {
       if (!records.meta || records.meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
+      const completion = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(records.meta.status)
+        ? await assessExecutionCompletion({ records, loadPlan: intentMethodology.loadPlan })
+        : unitCompletion(records);
       const artifacts = await fetchArtifacts(g, intentId);
       const pullRequests = await fetchPullRequests(g, intentId);
       const stagesByInstance = new Map(
@@ -5541,6 +5581,7 @@ export const handler = async (event, context) => {
         // Unit lanes (docs/v2-parallel.md WP4): the promoted UNITPLAN snapshot
         // + the live UNIT lane rows, so the UI can render the lane board and
         // attribute per-unit stage instances. Both null/empty pre-promotion.
+        unitCompletion: completion,
         unitPlan: mapUnitPlan(records.unitPlan),
         units: (records.units ?? []).map(mapUnit),
         unitPrs: (records.unitPrs ?? []).map(mapUnitPr),

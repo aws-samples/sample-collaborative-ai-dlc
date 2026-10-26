@@ -7,7 +7,7 @@
 // and a failure to record a learning never costs the run its approval.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { __durableHandler } from '../index.js';
+import { __durableHandler } from './fixtures/completion-handler.js';
 import { buildEventRow } from '../../shared/v2-process-keys.js';
 
 // Timeline fixtures go through the SAME row builder the process store persists

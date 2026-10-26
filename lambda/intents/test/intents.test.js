@@ -1,3 +1,4 @@
+import { unitPlanIdentity } from '../../shared/unit-completion.js';
 import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -3142,6 +3143,51 @@ describe('POST /recompose — in-flight reshape', () => {
     expect(events.map((e) => e.eventType)).toContain('v2.execution.recomposed');
   });
 
+  it.each(['ownership race', 'storage failure'])(
+    'stops recompose after a retirement %s',
+    async (failure) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedRecomposeFixtures();
+      const intent = await seedRun(sub, projectId, {
+        metaOver: { orchestratorRunId: 'original-run' },
+        rows: [
+          { stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' },
+          { stageInstanceId: 'si-optional', stageId: 'optional', state: 'WAITING_FOR_HUMAN' },
+        ],
+      });
+      const pk = `EXEC#${intent.id}`;
+      seedGate(intent.id, 'keep-pending', { status: 'pending' });
+      if (failure === 'ownership race') {
+        archiveArtifactsSpy.mockImplementationOnce(async () => {
+          procStore.get(keyOf(pk, 'META')).orchestratorRunId = 'concurrent-run';
+          return [];
+        });
+      } else {
+        ddbMock
+          .on(UpdateCommand, {
+            Key: { pk, sk: 'META' },
+            ExpressionAttributeValues: { ':ifOrid': 'original-run' },
+          })
+          .rejects(new Error('storage unavailable'));
+      }
+      const result = await recomposeReq(sub, projectId, intent.id, {
+        composedGrid: { analyze: 'EXECUTE', optional: 'EXECUTE', build: 'SKIP' },
+      });
+      expect(result.statusCode).toBe(failure === 'ownership race' ? 409 : 500);
+      if (failure === 'ownership race')
+        expect(JSON.parse(result.body).code).toBe('execution_changed');
+      expect(procStore.get(keyOf(pk, 'HUMAN#keep-pending')).status).toBe('pending');
+      expect(procStore.get(keyOf(pk, 'STAGE#si-optional'))).toMatchObject({
+        state: 'WAITING_FOR_HUMAN',
+        attempt: 0,
+      });
+      expect(procStore.get(keyOf(pk, 'META')).composedGrid).toBeFalsy();
+      expect(agentcoreMock.commandCalls(StopRuntimeSessionCommand)).toHaveLength(0);
+      expect(orchestratorInvokes()).toHaveLength(0);
+    },
+  );
+
   it('freezes the past: a stage that ran cannot flip to SKIP', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -5593,6 +5639,20 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
       .next();
   };
 
+  it('does not dispatch unknown nested DELETE routes as intent deletion', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const result = await handler({
+      httpMethod: 'DELETE',
+      path: `/projects/${projectId}/intents/${intent.id}/unknown`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(result.statusCode).toBeGreaterThanOrEqual(400);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))).toBeTruthy();
+  });
+
   it('deletes a DRAFT intent (no Neptune anchor yet) — 204 and the META row is gone', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -6667,13 +6727,155 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       .next();
   };
 
-  const repair = (sub, projectId, intentId) =>
+  const repair = (sub, projectId, intentId, input = {}) =>
     handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intentId}/repair`,
       pathParameters: { projectId, intentId },
+      body: JSON.stringify(input),
       ...claims(sub),
     });
+
+  const falseSuccess = async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    setStatus(intent.id, {
+      status: 'SUCCEEDED',
+      orchestratorRunId: 'finished-run',
+      branch: 'aidlc/feature',
+    });
+    seedStageRow(intent.id, 'units-gen');
+    seedStageRow(intent.id, 'cg', 'foundation', 'SUCCEEDED', 1);
+    seedStageRow(intent.id, 'bt');
+    const pk = `EXEC#${intent.id}`;
+    procStore.set(keyOf(pk, 'UNITPLAN'), {
+      pk,
+      sk: 'UNITPLAN',
+      executionId: intent.id,
+      units: [
+        { slug: 'foundation', dependsOn: [] },
+        { slug: 'feature', dependsOn: ['foundation'] },
+      ],
+      batches: [['foundation'], ['feature']],
+      walkingSkeleton: 'feature',
+      autonomyMode: 'autonomous',
+    });
+    for (const [slug, state] of [
+      ['foundation', 'MERGED'],
+      ['feature', 'BLOCKED'],
+      ['old-plan-unit', 'PENDING'],
+    ]) {
+      procStore.set(keyOf(pk, `UNIT#S1#${slug}`), {
+        pk,
+        sk: `UNIT#S1#${slug}`,
+        type: 'Unit',
+        executionId: intent.id,
+        sectionIndex: 1,
+        slug,
+        state,
+        branch: `aidlc/feature--${slug}`,
+      });
+    }
+    await g
+      .addV('PullRequest')
+      .property('id', `pr-${intent.id}`)
+      .property('repository', 'owner/repo')
+      .property('pr_number', 533)
+      .property('pr_url', 'https://github.com/owner/repo/pull/533')
+      .property('branch', 'aidlc/feature')
+      .addE('HAS_PR')
+      .from_(gremlin.process.statics.V().has('Intent', 'id', intent.id))
+      .next();
+    sourceControlOperationHandler = (request) =>
+      request.operation === 'pr-status' ? { state: 'open', sourceBranch: 'aidlc/feature' } : null;
+    return { sub, projectId, intent, pk };
+  };
+
+  it.each(['ownership race', 'storage failure'])(
+    'stops rewind after a retirement %s',
+    async (failure) => {
+      const { sub, projectId, intent, pk } = await falseSuccess();
+      seedGate(intent.id, 'keep-pending', { status: 'pending' });
+      if (failure === 'ownership race') {
+        archiveArtifactsSpy.mockImplementationOnce(async () => {
+          procStore.get(keyOf(pk, 'META')).orchestratorRunId = 'concurrent-run';
+          return [];
+        });
+      } else {
+        ddbMock
+          .on(UpdateCommand, {
+            Key: { pk, sk: 'META' },
+            ExpressionAttributeValues: { ':ifOrid': 'finished-run' },
+          })
+          .rejects(new Error('storage unavailable'));
+      }
+      const result = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/rewind`,
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify({ fromStageId: 'cg' }),
+        ...claims(sub),
+      });
+      expect(result.statusCode).toBe(failure === 'ownership race' ? 409 : 500);
+      if (failure === 'ownership race')
+        expect(JSON.parse(result.body).code).toBe('execution_changed');
+      expect(procStore.get(keyOf(pk, 'HUMAN#keep-pending')).status).toBe('pending');
+      expect(procStore.get(keyOf(pk, `STAGE#${siOf('cg', 'foundation', 1)}`))).toMatchObject({
+        state: 'SUCCEEDED',
+        attempt: 0,
+      });
+      expect(procStore.get(keyOf(pk, 'UNIT#S1#foundation')).state).toBe('MERGED');
+      expect(agentcoreMock.commandCalls(StopRuntimeSessionCommand)).toHaveLength(0);
+      expect(orchestratorInvokes()).toHaveLength(0);
+    },
+  );
+
+  it('ordinary rewind explicitly clears a prior omission without changing the answered gate', async () => {
+    const { sub, projectId, intent, pk } = await falseSuccess();
+    procStore.get(keyOf(pk, 'UNIT#S1#feature')).completionSkip = {
+      humanTaskId: 'old-halt',
+      planIdentity: 'old-plan',
+    };
+    seedGate(intent.id, 'old-halt', { status: 'answered' });
+    procStore.get(keyOf(pk, 'HUMAN#old-halt')).answer = { decision: 'skip' };
+    const result = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/rewind`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ fromStageId: 'cg' }),
+      ...claims(sub),
+    });
+    expect(result.statusCode).toBe(202);
+    expect(procStore.get(keyOf(pk, 'UNIT#S1#feature'))).toMatchObject({
+      state: 'PENDING',
+      completionSkip: null,
+    });
+    expect(procStore.get(keyOf(pk, 'HUMAN#old-halt'))).toMatchObject({
+      status: 'answered',
+      answer: { decision: 'skip' },
+    });
+  });
+  it.each(['complete', 'partial', 'incomplete'])(
+    'keeps terminal %s work outside ordinary repair',
+    async (state) => {
+      const { sub, projectId, intent, pk } = await falseSuccess();
+      const unit = procStore.get(keyOf(pk, 'UNIT#S1#feature'));
+      if (state === 'complete') unit.state = 'MERGED';
+      if (state === 'partial')
+        unit.completionSkip = {
+          humanTaskId: 'accepted',
+          planIdentity: unitPlanIdentity(procStore.get(keyOf(pk, 'UNITPLAN'))),
+        };
+      const before = structuredClone([...procStore.entries()]);
+      for (const input of [{}, { preview: true }])
+        expect((await repair(sub, projectId, intent.id, input)).statusCode).toBe(409);
+      expect([...procStore.entries()]).toEqual(before);
+      expect(orchestratorInvokes()).toHaveLength(0);
+    },
+  );
 
   it('repairs orphaned parallel waits while preserving merged units', async () => {
     const sub = `u-${randomUUID()}`;
@@ -6966,6 +7168,7 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       status: 'RUNNING',
       durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:old',
     });
+    seedStageRow(intent.id, 'units-gen');
     seedStageRow(intent.id, 'cg', 'asset-containment', 'WAITING_FOR_HUMAN', 1);
     procStore.set(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#asset-containment'), {
       pk: `EXEC#${intent.id}`,
