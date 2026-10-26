@@ -39,6 +39,7 @@ import {
 import {
   qualificationProvider,
   localProviderInvocation,
+  qualificationPlanOfferCommand,
 } from './native-qualification-provider.mjs';
 import { qualifyKiro } from './native-qualification-kiro.mjs';
 import {
@@ -734,11 +735,13 @@ try {
           }
           turns++;
           phase = `workflow-turn-${turns}`;
+          const offerCommand = qualificationPlanOfferCommand(pkg.version);
           const command =
             turns === 1
               ? harness === 'opencode'
-                ? 'aidlc engine orchestrate next "Build a bounded qualification fixture"'
-                : 'aidlc engine orchestrate next "Build a bounded qualification fixture" > .native-control/engine-ask.json && node -e \'const fs=require("fs");const ask=JSON.parse(fs.readFileSync(".native-control/engine-ask.json"));fs.writeFileSync(".native-control/pending-question.json",JSON.stringify({version:3,ask}))\''
+                ? offerCommand
+                : offerCommand +
+                  ' > .native-control/engine-ask.json && node -e \'const fs=require("fs");const ask=JSON.parse(fs.readFileSync(".native-control/engine-ask.json"));fs.writeFileSync(".native-control/pending-question.json",JSON.stringify({version:3,ask}))\''
               : turns === 2
                 ? harness === 'opencode'
                   ? null
@@ -981,6 +984,7 @@ try {
         workspaceScans,
       });
       if (turn === 1) {
+        phase = 'workflow-question-verification';
         const ask =
           harness === 'opencode'
             ? provider.engineAsk()

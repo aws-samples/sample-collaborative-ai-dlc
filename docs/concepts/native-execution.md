@@ -3301,6 +3301,94 @@ compatibility while implementing the recovery direction below.
         through **14:32:33 UTC** established launch and first useful output
         above. No private checkpoint boundary was observed, but a completed
         publication is still needed to qualify the new admission path.
+      - The first publication was subsequently admitted at
+        **14:33:24.410 UTC**, lifecycle revision **438**:
+        `e0ec49d33d6b14626991e53bca6199b91e886c5300d1b6a409f0b1571fb280b7`,
+        sequence **1**. The consistent execution read at revision **449**
+        showed **AWAITING_USER**, no failure, no accepted answer and no
+        recovery checkpoint. This verifies one live public admission without
+        a private checkpoint, not fresh-session recovery.
+        Harness completion was **14:33:22.117** (**112.258 s** after launch);
+        public snapshot **118 ms**, files upload **369 ms**, interaction
+        upload **36 ms**, CLI completion to authority admission **2.293 s**.
+        Total start-to-admission was **397.684 s**. The CLI reported
+        `durationMs=92264`, `durationApiMs=16778`, `numTurns=4`; those are
+        harness-reported counters, not a complete attribution of inference,
+        tools or hooks.
+
+      **Question acceptance gap reproduced; local correction validated
+      (2026-10-26), installed and live qualification pending.**
+      The same completed turn logged `questionPresentation` with reason
+      `unsupported_ask`, declared version **3**, **2173 bytes**, SHA256
+      `b4c332cffe78c9075aa81a54c23cfca31ceee5d48c2386241b77d4b6fa8656cb`.
+      The user confirmed an explicit fallback notice and text box. Work was
+      preserved, but the selectable-question acceptance criterion failed.
+      The rejected sidecar was deleted after safe classification; its exact
+      ask type and shape were not retained. No private body read was used to
+      infer them.
+
+      Public 2.11.1 runtime archive SHA256
+      `9f213c8254e646123b3f4bcefe347a61c95c72fee9fda4bf9afab42ccb20f44a`
+      shows a concrete adapter incompatibility:
+      `runtime/claude/.claude/tools/aidlc-orchestrate.ts`'s
+      `scopeConfirmAskDirective` declares three labelled choices, including a
+      middle alternative-plan choice without a command because another input
+      is required. The 2.11.0 producer declared two choices. Native's
+      `askSpec` required exactly two command-bearing choices and rejected the
+      supported 2.11.1 shape. In a network-disabled container, the actual
+      2.11.1 `validateDirective` accepted the synthetic three-choice fixture
+      while the exact deployed `/opt/shared/native-pending-input.js` rejected
+      it. This establishes the compatibility defect independently; it does
+      not reconstruct the historical sidecar or prove which rejected branch
+      produced this particular live warning.
+
+      The correction preserves the engine's bounded explicit labels and
+      ordering, including choices that need another input, while checking any
+      supplied command against that ask's offered commands. No command enters
+      the browser or runs from a selection; the protected member answer still
+      carries the exact label and AI-DLC owns the next step. A plan choice
+      cannot become a stage approval. Legacy two-choice and compose-offer
+      forms remain supported; unsupported forks and malformed display data
+      remain explicitly degraded. Credential and path failures remain closed.
+      Additive lifecycle metadata records closed ask/route categories and
+      bounded supplied-choice/scope counts, without prompt, labels, commands
+      or arbitrary strings.
+
+      The previous installed qualification exercised an explicit `--scope`
+      creation plus the compose offer, using 2.11.0. It did not exercise the
+      new 2.11.1 proposed-plan question before protected admission. The
+      reusable qualification now accepts separately attested
+      2.11.0/2.11.1 fixture inputs and drives the actual installed Claude/engine
+      through that missing question. This changes test inputs, not production
+      workflow selection or CLI/dependency pins. A direct standalone engine
+      attempt in an empty synthetic workspace correctly stopped at its
+      missing-hook guard; that attempt is not counted as installed workflow
+      acceptance and the guard was not bypassed.
+
+      **Commit validation (Node 24.21.0).** The focused pending-input,
+      checkpoint-journey and execution-diagnostics suites pass **109 tests**.
+      The interaction-page suite passes **72 tests**, including all three
+      proposed-plan choices, the exact protected answer and duplicate-submit
+      suppression. The frontend build, targeted lint, formatting, secret scan
+      and JavaScript syntax checks pass. The full release-script suite passes
+      **263 of 264 tests** in this checkout: its release metadata check also
+      scans the nested `.worktrees/native-resume-confirmation/package.json`
+      and rejects that checkout's root version as a component version. The
+      same metadata test passes on a fresh export of the staged tracked
+      files. This is a checkout-layout failure, not a qualification result.
+      These are local contract checks;
+      the new 2.11.1 installed workflow/recovery path and live deployment are
+      **NOT RUN** in this commit-validation pass.
+
+      ```bash
+      npx vitest run --config vitest.native-foundation.config.js \
+        lambda/shared/test/native-pending-input.test.js \
+        lambda/native-runtime-control/test/checkpoint-journey.test.js \
+        lambda/native-runtime-control/test/execution-diagnostics.test.js
+      npm --prefix frontend test -- src/pages/NativeIntentPage.interaction.test.tsx
+      npm --prefix frontend run build
+      npm run test:release
+      ```
 
       Reproducible evidence scope: table
       `collaborative-ai-dlc-native-runs-dev`, partition
@@ -3315,8 +3403,9 @@ compatibility while implementing the recovery direction below.
       authorized scoped reads succeeded outside the sandbox. No AWS IAM
       denial or credential/profile change occurred.
 
-      The user should complete the first two question/reply rounds above
-      before the idle-expiry exercise. No assistant answer submission,
+      The user has been asked to leave the reference question unanswered
+      during investigation. Its admitted interaction and pinned runtime are
+      not rewritten by a local correction. No assistant answer submission,
       deployment, runtime invocation or run mutation occurred. EFS/NFS
       replacement, browser behavior and end-to-end provider/workflow
       acceptance remain pending. OpenCode delegated dependency builds and

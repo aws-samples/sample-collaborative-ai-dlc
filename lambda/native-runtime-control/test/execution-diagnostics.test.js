@@ -888,6 +888,10 @@ it('persists bounded presentation reason/hash/counts without raw fields or gette
       sha256: 'a'.repeat(64),
       suppliedQuestions: 6,
       suppliedOptions: 12,
+      askType: 'scope-confirm',
+      responseRoute: 'next',
+      suppliedChoices: 3,
+      suppliedScopeOptions: 11,
       prompt: CANARY,
       options: [CANARY],
       raw: CANARY,
@@ -898,15 +902,38 @@ it('persists bounded presentation reason/hash/counts without raw fields or gette
       sha256: 'a'.repeat(64),
       suppliedQuestions: 6,
       suppliedOptions: 12,
+      askType: 'scope-confirm',
+      responseRoute: 'next',
+      suppliedChoices: 3,
+      suppliedScopeOptions: 11,
     });
     expect(JSON.stringify(event)).not.toContain(CANARY);
     const hostile = Object.defineProperties(
       {},
-      { reason: { get: getter }, sha256: { get: getter }, bytes: { get: getter } },
+      {
+        reason: { get: getter },
+        sha256: { get: getter },
+        bytes: { get: getter },
+        askType: { get: getter },
+        responseRoute: { get: getter },
+        suppliedChoices: { get: getter },
+        suppliedScopeOptions: { get: getter },
+      },
     );
     expect(() => recordNativeBoundary({}, 'questionPresentation', 123, hostile)).not.toThrow();
     expect(getter).not.toHaveBeenCalled();
     expect(JSON.parse(info.mock.calls[1][0])).toEqual({
+      type: 'native.lifecycle',
+      boundary: 'questionPresentation',
+      at: 123,
+    });
+    recordNativeBoundary({}, 'questionPresentation', 123, {
+      askType: CANARY,
+      responseRoute: CANARY,
+      suppliedChoices: 514,
+      suppliedScopeOptions: -1,
+    });
+    expect(JSON.parse(info.mock.calls[2][0])).toEqual({
       type: 'native.lifecycle',
       boundary: 'questionPresentation',
       at: 123,

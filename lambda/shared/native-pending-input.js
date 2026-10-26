@@ -30,6 +30,7 @@ export const NATIVE_PENDING_INPUT_LIMITS = Object.freeze({
 
 // Protocol-fixed stage gate labels (pinned AI-DLC stage-protocol.md).
 export const NATIVE_GATE_LABELS = Object.freeze(['Approve', 'Request Changes']);
+export const NATIVE_TYPED_ASK_TYPES = Object.freeze(['compose-offer', 'scope-confirm']);
 const GATE_OPTIONAL_LABELS = new Set(['Accept as-is']);
 
 const fail = () => {
@@ -207,16 +208,29 @@ const askSpec = (spec) => {
       ...scopes.map((row) => ({ label: row.scope, description: row.stages })),
     ];
   } else if (ask.ask_type === 'scope-confirm') {
+    const offeredCommands = new Set([
+      ask.confirm_command,
+      ask.compose_command,
+      ...scopes.map((row) => row.command),
+    ]);
     if (
       !command(ask.confirm_command) ||
       !line(ask.proposed_scope, NATIVE_PENDING_INPUT_LIMITS.labelChars) ||
       !Array.isArray(ask.choices) ||
-      ask.choices.length !== 2 ||
-      ask.choices.some((choice) => !object(choice) || !command(choice.command)) ||
+      ask.choices.length < 2 ||
+      ask.choices.length > NATIVE_PENDING_INPUT_LIMITS.optionsMax ||
+      ask.choices.some(
+        (choice) =>
+          !object(choice) || (choice.command !== undefined && !offeredCommands.has(choice.command)),
+      ) ||
       ask.choices[0].command !== ask.confirm_command ||
-      ask.choices[1].command !== ask.compose_command
+      ask.choices.at(-1).command !== ask.compose_command
     )
       fail();
+    // The engine may offer a choice that asks for more input before it can
+    // name a command (2.11.1's alternative-plan branch). Preserve all explicit
+    // labels and their order. A member selects a label; the engine owns the
+    // subsequent question/command. Nothing here supplies a missing answer.
     options = ask.choices.map((choice) => ({ label: choice.label }));
   } else fail();
   return { version: 2, questions: [{ prompt: ask.question, header: null, options }] };

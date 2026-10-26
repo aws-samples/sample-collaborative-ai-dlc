@@ -202,7 +202,7 @@ export async function workspaceQualificationDriver({
     runtime = create();
     resumePending = true;
   };
-  const begin = async (prompt) => {
+  const begin = async (prompt, selection) => {
     if (resumePending) {
       if (f.row().status === 'AWAITING_USER') {
         // A waiting runtime is idle, not polled as a new workflow turn. The
@@ -233,6 +233,7 @@ export async function workspaceQualificationDriver({
         interactionId: question.id,
         contentSha256: question.contentSha256,
         text: prompt,
+        ...(selection ? { selection } : {}),
       };
       const reply = await api.respond(f.prepared, ACTOR, request, recheck);
       const duplicate = await api.respond(f.prepared, ACTOR, request, recheck);
@@ -242,10 +243,11 @@ export async function workspaceQualificationDriver({
     first = false;
   };
   return {
-    async turn(prompt, { interrupt = false } = {}) {
+    interaction: () => api.interaction(f.prepared, recheck),
+    async turn(prompt, { interrupt = false, selection } = {}) {
       const before = f.row().publication?.sequence ?? 0;
       const beforeTurns = cliTurns;
-      await begin(prompt);
+      await begin(prompt, selection);
       if (interrupt) {
         await supervisor(f.identity);
         const marker = join(project, '.native-control/interrupt-ready');

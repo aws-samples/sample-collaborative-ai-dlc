@@ -15,7 +15,10 @@ import {
 } from '../lambda/shared/native-pending-input.js';
 
 import { prepareQualificationPackage } from './native-qualification-package.mjs';
-import { sendClaudeResponse } from './native-qualification-provider.mjs';
+import {
+  sendClaudeResponse,
+  qualificationPlanOfferCommand,
+} from './native-qualification-provider.mjs';
 
 try {
   const adapter = await import(
@@ -37,9 +40,15 @@ try {
   let invocationStarted = 0;
   let requestSamples = [];
   const packageDirectory = process.env.NATIVE_QUALIFICATION_PACKAGE;
+  let workflowVersion;
   const engineEnv = {};
   if (packageDirectory) {
-    const { directory: pkg, tools } = await prepareQualificationPackage(root, packageDirectory);
+    const {
+      directory: pkg,
+      tools,
+      version,
+    } = await prepareQualificationPackage(root, packageDirectory);
+    workflowVersion = version;
     Object.assign(engineEnv, {
       PATH: `${tools}:${root}/bin:/opt/bun/bin:/usr/local/bin:/usr/bin:/bin`,
       AIDLC_INSTALL_ROOT: `${root}/data`,
@@ -68,7 +77,7 @@ try {
     };
     await run('package-installation', `${pkg}/aidlc-linux-arm64`, [
       'use',
-      '2.11.0',
+      version,
       '--from',
       pkg,
       '--offline',
@@ -77,7 +86,7 @@ try {
     await run('project-pin', `${root}/bin/aidlc`, [
       'config',
       '--pin',
-      '2.11.0',
+      version,
       '--project-dir',
       project,
       '--from',
@@ -92,7 +101,7 @@ try {
       '--project-dir',
       project,
       '--from',
-      `${root}/data/versions/2.11.0/runtime/claude`,
+      `${root}/data/versions/${version}/runtime/claude`,
       '--mcp',
       'none',
       '--yes',
@@ -140,8 +149,7 @@ try {
         id: 'tool-fixture-engine',
         name: 'Bash',
         input: {
-          command:
-            'aidlc engine orchestrate next "Build a bounded qualification fixture" > .native-control/engine-ask.json',
+          command: `${qualificationPlanOfferCommand(workflowVersion)} > .native-control/engine-ask.json`,
         },
       };
     } else if (turn === 2 && !toolSent) {
@@ -351,6 +359,17 @@ try {
         const ask = JSON.parse(
           await fs.readFile(`${project}/.native-control/engine-ask.json`, 'utf8'),
         );
+        console.log(
+          JSON.stringify({
+            probe: 'engine-question-contract',
+            kind: ['ask', 'print', 'error'].includes(ask.kind) ? ask.kind : 'other',
+            askType: ['compose-offer', 'scope-confirm'].includes(ask.ask_type)
+              ? ask.ask_type
+              : 'other',
+            hooksGuard: /hooks.*off|not running AI-DLC.s hooks/i.test(ask.message ?? ''),
+            messageBytes: Buffer.byteLength(ask.message ?? ''),
+          }),
+        );
         assert.equal(ask.kind, 'ask', `Expected typed intake ask, received ${ask.kind}`);
         assert.equal(ask.ask_type, 'compose-offer');
         const input = buildNativePendingInput({
@@ -369,7 +388,7 @@ try {
         assert.ok(ask.scope_commands.every((row) => row.command.includes('--request')));
         console.log(
           JSON.stringify({
-            workflow: '2.11.0',
+            workflow: workflowVersion,
             typedAsk: ask.ask_type,
             options: input.questions[0].options.length,
             provenanceVerified: true,

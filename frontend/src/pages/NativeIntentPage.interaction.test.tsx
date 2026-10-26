@@ -46,6 +46,8 @@ import NativeIntentPage from './NativeIntentPage';
 // Exercise the production producer as well as the rendered consumer.
 // @ts-expect-error The backend JS workspace intentionally has no frontend declarations.
 import { buildNativePendingInput } from '../../../lambda/shared/native-pending-input.js';
+// @ts-expect-error Shared synthetic protocol fixture has no frontend declarations.
+import { proposedPlanSpec } from '../../../lambda/shared/test/fixtures/native-plan-ask.js';
 
 const messages: NativeInteractionView['messages'] = [
   { type: 'text', text: 'Choose a workflow for these changes.' },
@@ -280,6 +282,34 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it('renders all proposed-plan choices and preserves one protected answer across duplicate submits', async () => {
+  const pendingInput = nativePendingInput(buildNativePendingInput({ spec: proposedPlanSpec }));
+  interaction = {
+    ...interaction,
+    pendingInput,
+    contentSha256: createHash('sha256')
+      .update(canonicalJson({ messages: interaction.messages, pendingInput }))
+      .digest('hex'),
+  };
+  renderPage();
+  const form = await screen.findByRole('form', { name: 'Workflow questions' });
+  for (const choice of proposedPlanSpec.ask.choices)
+    expect(within(form).getByText(choice.label)).toBeVisible();
+  expect(screen.queryByRole('textbox', { name: 'Reply to AI-DLC' })).not.toBeInTheDocument();
+  expect(within(form).getByRole('button', { name: 'Submit Answer' })).toBeDisabled();
+  fireEvent.click(within(form).getByText('Use a different plan'));
+  fireEvent.submit(form);
+  fireEvent.submit(form);
+  await screen.findByText('Reply accepted. Delivery pending.');
+  expect(transport.post).toHaveBeenCalledTimes(1);
+  expect(transport.post.mock.calls[0][1]).toMatchObject({
+    interactionId: interaction.id,
+    contentSha256: interaction.contentSha256,
+    text: 'Use a different plan',
+    selection: { answers: [{ selectedOptions: [1] }] },
+  });
 });
 
 it('renders every explicitly offered scope as a choice and submits its exact label once', async () => {

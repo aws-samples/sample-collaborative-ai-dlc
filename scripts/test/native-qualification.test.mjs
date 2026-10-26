@@ -99,6 +99,11 @@ test('explicit fixture preparation preserves nonempty cached inputs before any n
   try {
     await writeFile(join(directory, 'cached'), 'immutable fixture');
     await assert.rejects(prepareQualificationFixtures(directory), /empty directory/);
+    await assert.rejects(prepareQualificationFixtures(directory, '2.11.1'), /empty directory/);
+    await assert.rejects(
+      prepareQualificationFixtures(directory, 'unverified-release'),
+      /Unsupported qualification workflow version/,
+    );
     assert.equal(await readFile(join(directory, 'cached'), 'utf8'), 'immutable fixture');
     assert.equal(fetch.mock.callCount(), 0);
     await assert.rejects(verifyQualificationAssets(directory), { code: 'ENOENT' });

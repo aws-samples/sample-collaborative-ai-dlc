@@ -11,6 +11,7 @@ import { nativeInteractionReceipt } from '../../shared/native-interaction.js';
 import {
   buildNativePendingInput,
   NATIVE_PENDING_INPUT_LIMITS,
+  NATIVE_TYPED_ASK_TYPES,
 } from '../../shared/native-pending-input.js';
 import { NATIVE_RECOVERY_LIMITS } from '../../shared/native-recovery-checkpoint.js';
 import {
@@ -1195,6 +1196,22 @@ export const createNativeExecutor = ({
       reason: presentation?.reason ?? 'structured',
       bytes: rendered.bytes,
       ...(rendered.sha256 ? { sha256: rendered.sha256 } : {}),
+      ...(renderedSpec?.version === 3
+        ? {
+            askType: NATIVE_TYPED_ASK_TYPES.includes(renderedSpec.ask?.ask_type)
+              ? renderedSpec.ask.ask_type
+              : 'unknown',
+            responseRoute: ['next', 'command', 'claim'].includes(renderedSpec.ask?.response_route)
+              ? renderedSpec.ask.response_route
+              : 'unknown',
+            suppliedChoices: Array.isArray(renderedSpec.ask?.choices)
+              ? Math.min(renderedSpec.ask.choices.length, 513)
+              : 0,
+            suppliedScopeOptions: Array.isArray(renderedSpec.ask?.scope_commands)
+              ? Math.min(renderedSpec.ask.scope_commands.length, 513)
+              : 0,
+          }
+        : {}),
       declaredVersion:
         Number.isSafeInteger(renderedSpec?.version) &&
         renderedSpec.version >= 0 &&

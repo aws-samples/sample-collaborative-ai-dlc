@@ -11,7 +11,6 @@ import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { delimiter } from 'node:path';
 
-const releaseUrl = 'https://github.com/awslabs/aidlc-workflows/releases/download/v2.11.0';
 const assets = {
   'aidlc-linux-arm64': {
     bytes: 85969192,
@@ -38,6 +37,35 @@ const assets = {
     sha256: '65ca537f6ed8a47fd0e560c421baa1f6c1efb8b25fc200d8c5c02c0e92eb2b9c',
   },
 };
+// Explicit qualification inputs, not production package selection or CLI pins.
+// Retain the previously qualified release; newer selected workflow contracts
+// must be exercised with their own immutable, attested bytes.
+const releases = {
+  '2.11.0': assets,
+  '2.11.1': {
+    'aidlc-linux-arm64': {
+      bytes: 86559016,
+      sha256: '22ce3c19fc18da073b9a044a02e503f59dacdf062eba6207369723aefac388e6',
+    },
+    'aidlc-runtime-2.11.1.tar.gz': {
+      bytes: 22425646,
+      sha256: '9f213c8254e646123b3f4bcefe347a61c95c72fee9fda4bf9afab42ccb20f44a',
+    },
+    'version.json': {
+      bytes: 3702,
+      sha256: '573ad0dbcbf4232c5f59196e60a61e52009104f85afa90eb84ad2a078dca4f78',
+    },
+    'checksums.txt': {
+      bytes: 926,
+      sha256: '1ac520313eac451be34e5cfeade94c7f36add94f4c42fc11d4b7409900262140',
+    },
+    'aidlc-release.intoto.jsonl': {
+      bytes: 12906,
+      sha256: 'a8122dd90d05e74aca8c9dddb5b5b317d193719915b814305850333255a34e3d',
+    },
+    'trusted-root.jsonl': assets['trusted-root.jsonl'],
+  },
+};
 
 async function verifyPinnedFiles(directory, pins) {
   for (const [name, pin] of Object.entries(pins)) {
@@ -54,7 +82,24 @@ async function verifyPinnedFiles(directory, pins) {
   }
 }
 
-export const verifyQualificationAssets = (directory) => verifyPinnedFiles(directory, assets);
+export const verifyQualificationAssets = async (directory) => {
+  const binary = join(directory, 'aidlc-linux-arm64');
+  const stat = await fs.lstat(binary);
+  assert.ok(
+    stat.isFile() &&
+      Object.values(releases).some((pins) => pins['aidlc-linux-arm64'].bytes === stat.size),
+    'Exact public fixture size: aidlc-linux-arm64',
+  );
+  const hash = createHash('sha256')
+    .update(await fs.readFile(binary))
+    .digest('hex');
+  const version = Object.keys(releases).find(
+    (key) => releases[key]['aidlc-linux-arm64'].sha256 === hash,
+  );
+  assert.ok(version, 'Exact public fixture digest: aidlc-linux-arm64');
+  await verifyPinnedFiles(directory, releases[version]);
+  return version;
+};
 
 const opencodeLock = async () =>
   JSON.parse(
@@ -172,12 +217,12 @@ export async function verifyQualificationOpenCodeDependencies(project, homeConfi
 
 export async function prepareQualificationPackage(root, source) {
   assert.ok(source, 'The installed tier requires attested release assets');
-  await verifyQualificationAssets(source);
-  const directory = `${root}/packages/2.11.0`;
+  const version = await verifyQualificationAssets(source);
+  const directory = `${root}/packages/${version}`;
   const tools = `${root}/tools`;
   await fs.mkdir(directory, { mode: 0o700, recursive: true });
   await fs.mkdir(tools);
-  for (const name of Object.keys(assets).filter((name) => name !== 'trusted-root.jsonl'))
+  for (const name of Object.keys(releases[version]).filter((name) => name !== 'trusted-root.jsonl'))
     await fs.copyFile(join(source, name), join(directory, name));
   const binaryPath = `${directory}/aidlc-linux-arm64`;
   await fs.chmod(binaryPath, 0o700);
@@ -190,7 +235,7 @@ export async function prepareQualificationPackage(root, source) {
     `#!/bin/sh\nexec ${gh} "$@" --custom-trusted-root /assets/trusted-root.jsonl\n`,
     { mode: 0o700 },
   );
-  return { directory, binaryPath, tools, version: '2.11.0' };
+  return { directory, binaryPath, tools, version };
 }
 
 async function prepareOpenCodeCache(cache) {
@@ -237,9 +282,10 @@ async function prepareOpenCodeCache(cache) {
 // A failed fetch never leaves a file that can masquerade as a completed input.
 export async function downloadQualificationArtifact({ url, integrity, maxBytes, bytes }, path) {
   assert.ok(
-    /^https:\/\/(?:github\.com\/awslabs\/aidlc-workflows\/releases\/download\/v2\.11\.0\/|registry\.npmjs\.org\/)/.test(
-      url,
-    ),
+    url.startsWith('https://registry.npmjs.org/') ||
+      Object.keys(releases).some((version) =>
+        url.startsWith(`https://github.com/awslabs/aidlc-workflows/releases/download/v${version}/`),
+      ),
   );
   const [algorithm] = integrity.split('-');
   assert.ok(['sha256', 'sha512'].includes(algorithm));
@@ -356,12 +402,15 @@ async function prepareLinuxBindings(root) {
 }
 
 export async function verifyQualificationFixtures(root) {
-  await verifyQualificationAssets(join(root, 'assets'));
+  const version = await verifyQualificationAssets(join(root, 'assets'));
   await verifyOpenCodeCache(join(root, 'opencode-cache'), await opencodeLock());
   await verifyQualificationLinuxBindings(join(root, 'linux-node-modules'));
+  return version;
 }
 
-export async function prepareQualificationFixtures(directory) {
+export async function prepareQualificationFixtures(directory, version = '2.11.0') {
+  assert.ok(Object.hasOwn(releases, version), 'Unsupported qualification workflow version');
+  const releaseUrl = `https://github.com/awslabs/aidlc-workflows/releases/download/v${version}`;
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   assert.equal((await fs.lstat(directory)).isSymbolicLink(), false, 'Use a real fixture directory');
   assert.deepEqual(await fs.readdir(directory), [], 'Preparation requires an empty directory');
@@ -369,7 +418,7 @@ export async function prepareQualificationFixtures(directory) {
   try {
     const target = join(root, 'assets');
     await fs.mkdir(target);
-    for (const [name, pin] of Object.entries(assets)) {
+    for (const [name, pin] of Object.entries(releases[version])) {
       if (name === 'trusted-root.jsonl') {
         await fs.copyFile(
           new URL('./test/fixtures/native-qualification-trusted-root.jsonl', import.meta.url),
@@ -388,7 +437,9 @@ export async function prepareQualificationFixtures(directory) {
       }
     }
     await verifyQualificationAssets(target);
-    console.log(JSON.stringify({ preparation: 'public-release-assets', verifiedArtifacts: 6 }));
+    console.log(
+      JSON.stringify({ preparation: 'public-release-assets', version, verifiedArtifacts: 6 }),
+    );
     await prepareOpenCodeCache(join(root, 'opencode-cache'));
     console.log(JSON.stringify({ preparation: 'opencode-cache', verifiedArtifacts: 32 }));
     await prepareLinuxBindings(root);
@@ -403,13 +454,22 @@ export async function prepareQualificationFixtures(directory) {
 // Explicit preparation is the only path that fetches public fixtures. Offline
 // verification and ordinary qualification never fetch or pull an image.
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
-  assert.equal(process.argv.length, 4);
+  assert.ok(
+    process.argv.length === 4 ||
+      (process.argv.length === 6 &&
+        process.argv[2] === '--prepare-fixtures' &&
+        process.argv[4] === '--workflow'),
+    'Use --prepare-fixtures <empty-directory> [--workflow <pinned-version>]',
+  );
   const directory = resolve(process.argv[3]);
+  let version;
   if (process.argv[2] === '--prepare-opencode-cache') await prepareOpenCodeCache(directory);
-  else if (process.argv[2] === '--prepare-fixtures') await prepareQualificationFixtures(directory);
-  else {
+  else if (process.argv[2] === '--prepare-fixtures') {
+    version = process.argv[5] ?? '2.11.0';
+    await prepareQualificationFixtures(directory, version);
+  } else {
     assert.equal(process.argv[2], '--verify-fixtures');
-    await verifyQualificationFixtures(directory);
+    version = await verifyQualificationFixtures(directory);
   }
   console.log(
     JSON.stringify({
@@ -418,7 +478,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
       node: process.version,
       ...(process.argv[2] === '--prepare-opencode-cache'
         ? {}
-        : { aidlc: '2.11.0', linuxBinding: (await linuxBindingPin()).version }),
+        : { aidlc: version, linuxBinding: (await linuxBindingPin()).version }),
       opencode: '1.19.0',
       cachedPackages: 32,
     }),

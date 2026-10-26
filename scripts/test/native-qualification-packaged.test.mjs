@@ -1,11 +1,58 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { mkdir, mkdtemp, writeFile, readFile, readlink, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { qualificationOptions, installedDockerArgs } from '../native-qualification-options.mjs';
 import { stagePackagedQualification } from '../native-qualification-packaged.mjs';
-import { qualificationProvider } from '../native-qualification-provider.mjs';
+import {
+  qualificationProvider,
+  qualificationPlanOfferCommand,
+} from '../native-qualification-provider.mjs';
+
+test('scripted proposal preserves the engine request and cannot emit an ask after a missing request', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'native-proposal-contract-'));
+  const log = join(root, 'calls.jsonl');
+  try {
+    await writeFile(
+      join(root, 'aidlc'),
+      `#!${process.execPath}
+const fs=require('node:fs'),args=process.argv.slice(2);
+fs.appendFileSync(process.env.FIXTURE_CALLS,JSON.stringify(args)+'\\n');
+console.log(JSON.stringify(args.includes('--propose')
+  ? {kind:'ask',ask_type:'scope-confirm'}
+  : {kind:'print',message:process.env.FIXTURE_MISSING?'No request':'Run next --propose <plan> --request abcdef12'}));
+`,
+      { mode: 0o700 },
+    );
+    const description = `Quoted 'task' with \`literal\` and $(literal)`;
+    const command = qualificationPlanOfferCommand('2.11.1', 'bugfix', description);
+    const env = {
+      ...process.env,
+      PATH: `${root}:${dirname(process.execPath)}:${process.env.PATH}`,
+      FIXTURE_CALLS: log,
+    };
+    const result = spawnSync('/bin/sh', ['-c', command], { env, encoding: 'utf8' });
+    assert.equal(result.status, 0);
+    assert.equal(JSON.parse(result.stdout).kind, 'ask');
+    const calls = (await readFile(log, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(calls, [
+      ['engine', 'orchestrate', 'next', description],
+      ['engine', 'orchestrate', 'next', '--propose', 'bugfix', '--request', 'abcdef12'],
+    ]);
+    await writeFile(log, '');
+    const failed = spawnSync('/bin/sh', ['-c', command], {
+      env: { ...env, FIXTURE_MISSING: '1' },
+      encoding: 'utf8',
+    });
+    assert.notEqual(failed.status, 0);
+    assert.equal(failed.stdout, '');
+    assert.equal((await readFile(log, 'utf8')).trim().split('\n').length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('scripted Codex cannot turn a failed or still-running tool into a successful question', async () => {
   for (const output of [

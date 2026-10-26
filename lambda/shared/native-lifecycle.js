@@ -1,6 +1,6 @@
 // Fixed-schema timings only: no prompts, environment, filesystem paths,
 // credentials, session IDs or private transcripts enter lifecycle telemetry.
-import { NATIVE_PRESENTATION_REASONS } from './native-pending-input.js';
+import { NATIVE_PRESENTATION_REASONS, NATIVE_TYPED_ASK_TYPES } from './native-pending-input.js';
 import {
   nativeOutputDiagnostic,
   nativeSnapshotDiagnostic,
@@ -71,6 +71,30 @@ const own = (value, key) => {
     return undefined;
   }
 };
+const presentationFields = (counts) => {
+  const result = {};
+  for (const [key, values] of [
+    ['reason', [...NATIVE_PRESENTATION_REASONS, 'structured', 'unsafe_path', 'credential']],
+    ['askType', [...NATIVE_TYPED_ASK_TYPES, 'unknown']],
+    ['responseRoute', ['next', 'command', 'claim', 'unknown']],
+  ])
+    if (values.includes(own(counts, key))) result[key] = own(counts, key);
+  const sha256 = own(counts, 'sha256');
+  if (typeof sha256 === 'string' && /^[a-f0-9]{64}$/.test(sha256)) result.sha256 = sha256;
+  for (const key of [
+    'questions',
+    'options',
+    'suppliedQuestions',
+    'suppliedOptions',
+    'suppliedChoices',
+    'suppliedScopeOptions',
+    'declaredVersion',
+  ]) {
+    const value = own(counts, key);
+    if (Number.isSafeInteger(value) && value >= 0 && value <= 513) result[key] = value;
+  }
+  return result;
+};
 export const recordNativeBoundary = (identity, boundary, at = Date.now(), counts = {}) => {
   if (!BOUNDARIES.has(boundary) || !Number.isSafeInteger(at)) return;
   const event = { type: 'native.lifecycle', boundary, at };
@@ -86,29 +110,7 @@ export const recordNativeBoundary = (identity, boundary, at = Date.now(), counts
       )
         event[key] = own(counts, key);
   }
-  if (boundary === 'questionPresentation') {
-    if (
-      [...NATIVE_PRESENTATION_REASONS, 'structured', 'unsafe_path', 'credential'].includes(
-        own(counts, 'reason'),
-      )
-    )
-      event.reason = own(counts, 'reason');
-    const sha256 = own(counts, 'sha256');
-    if (typeof sha256 === 'string' && /^[a-f0-9]{64}$/.test(sha256)) event.sha256 = sha256;
-    for (const key of [
-      'questions',
-      'options',
-      'suppliedQuestions',
-      'suppliedOptions',
-      'declaredVersion',
-    ])
-      if (
-        Number.isSafeInteger(own(counts, key)) &&
-        own(counts, key) >= 0 &&
-        own(counts, key) <= 513
-      )
-        event[key] = own(counts, key);
-  }
+  if (boundary === 'questionPresentation') Object.assign(event, presentationFields(counts));
   for (const key of ['projectId', 'executionId', 'attemptId'])
     if (typeof own(identity, key) === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(own(identity, key)))
       event[key] = own(identity, key);

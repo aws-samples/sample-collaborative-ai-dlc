@@ -4,6 +4,32 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { performance } from 'node:perf_hooks';
 
+// Scripted conductor step only. 2.11.1 first saves the person's request and
+// asks the agent to propose a plan for that exact request. It is not a human
+// approval and must finish before the real human-facing choice is captured.
+export function qualificationPlanOfferCommand(
+  version,
+  plan = 'compose',
+  description = 'Build a bounded qualification fixture',
+) {
+  assert.ok(['2.11.0', '2.11.1'].includes(version));
+  assert.ok(['compose', 'bugfix'].includes(plan));
+  const code = [
+    'const {execFileSync}=require("node:child_process");',
+    `const args=["engine","orchestrate","next",${JSON.stringify(description)}];`,
+    ...(version === '2.11.1'
+      ? [
+          'const proposal=JSON.parse(execFileSync("aidlc",args,{encoding:"utf8"}));',
+          'if(proposal.kind!=="print")throw Error("Expected engine proposal step");',
+          'const request=proposal.message.match(/--request ([a-f0-9]{8})\\b/)?.[1];',
+          'if(!request)throw Error("Engine proposal request missing");',
+          `process.stdout.write(execFileSync("aidlc",["engine","orchestrate","next","--propose",${JSON.stringify(plan)},"--request",request]));`,
+        ]
+      : ['process.stdout.write(execFileSync("aidlc",args));']),
+  ].join('');
+  return `node -e '${code.replaceAll("'", "'\\''")}'`;
+}
+
 export function sendClaudeResponse(res, request, blocks, id) {
   const tool = blocks.some((block) => block.type === 'tool_use');
   const message = {

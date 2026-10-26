@@ -15,9 +15,11 @@ import {
 import {
   qualificationProvider,
   localProviderInvocation,
+  qualificationPlanOfferCommand,
 } from './native-qualification-provider.mjs';
 import { dependencyInstall } from './native-qualification-dependencies.mjs';
 import { workspaceQualificationDriver } from './native-workspace-qualification-driver.mjs';
+import { buildNativePendingInput } from '../lambda/shared/native-pending-input.js';
 
 const requirements =
   '# Counter requirements\n\n## Behavior\nFR-1: Increment an integer counter by one.\n\n' +
@@ -48,6 +50,7 @@ export async function qualifyClaudeWorkspaceProtocol({ composed = false } = {}) 
   let finishChild;
   const sessions = new Set();
   let driver;
+  let typedPlanOptions = 0;
   const provider = await qualificationProvider('claude', {
     requestLimit: composed ? 64 : 32,
     async claudeReply(request) {
@@ -187,12 +190,51 @@ export async function qualifyClaudeWorkspaceProtocol({ composed = false } = {}) 
       return read('stage');
     };
 
-    await turn('/aidlc --scope bugfix Fix the qualification counter', [
-      capture(
-        'create',
-        'aidlc engine orchestrate next --scope bugfix "Fix the qualification counter"',
-      ),
-    ]);
+    if (pkg.version === '2.11.1') {
+      // Exercise the actual new intake protocol rather than forcing --scope
+      // past the question. The real engine creates its request and choices;
+      // the scripted conductor only copies that display data into transport.
+      await turn('/aidlc Fix the qualification counter', [
+        capture(
+          'offer',
+          qualificationPlanOfferCommand(pkg.version, 'bugfix', 'Fix the qualification counter'),
+        ),
+        async () => {
+          const ask = await read('offer');
+          assert.equal(ask.kind, 'ask');
+          assert.equal(ask.ask_type, 'scope-confirm');
+          return write(
+            join(project, '.native-control/pending-question.json'),
+            JSON.stringify({ version: 3, ask }),
+          );
+        },
+      ]);
+      const ask = await read('offer');
+      const pending = buildNativePendingInput({ spec: { version: 3, ask } });
+      assert.ok(pending, 'The real engine question is usable in the native form');
+      assert.deepEqual(
+        pending.questions[0].options.map((option) => option.label),
+        ask.choices.map((choice) => choice.label),
+      );
+      typedPlanOptions = pending.questions[0].options.length;
+      assert.equal(typedPlanOptions, 3);
+      assert.equal(
+        ask.choices[1].command,
+        undefined,
+        'Alternative-plan choice needs another input',
+      );
+      if (driver) assert.deepEqual((await driver.interaction()).pendingInput, pending);
+      await turn(ask.choices[0].label, [capture('create', ask.confirm_command)], [], {
+        selection: { answers: [{ selectedOptions: [0] }] },
+      });
+    } else {
+      await turn('/aidlc --scope bugfix Fix the qualification counter', [
+        capture(
+          'create',
+          'aidlc engine orchestrate next --scope bugfix "Fix the qualification counter"',
+        ),
+      ]);
+    }
     // This pinned release emits the supported creation command in its print
     // directive. Only this synthetic fixture extracts its bounded request ID;
     // no production adapter parses prose or constructs a workflow state.
@@ -340,6 +382,7 @@ export async function qualifyClaudeWorkspaceProtocol({ composed = false } = {}) 
         harness: 'claude',
         status: 'PASS',
         packageVersion: pkg.version,
+        typedPlanOptions,
         sessions: sessions.size,
         oldHomeAbsent: true,
         realReviewCompleted: true,

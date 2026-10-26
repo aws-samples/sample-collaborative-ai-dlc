@@ -5,6 +5,7 @@ import {
   nativePendingInput,
   nativeSelection,
 } from '../native-pending-input.js';
+import { proposedPlanSpec } from './fixtures/native-plan-ask.js';
 
 const planChoiceText = [
   '**Plan Choice** — No ready-made plan clearly fits. How should I proceed?',
@@ -47,6 +48,43 @@ const approvalTurn = {
 };
 
 describe('native pending input display contract', () => {
+  it('preserves every explicit proposed-plan choice, including a choice needing more input', () => {
+    const input = buildNativePendingInput({
+      spec: proposedPlanSpec,
+      gate: { stage: 'requirements-analysis' },
+    });
+    expect(input?.questions[0].options.map((option) => option.label)).toEqual(
+      proposedPlanSpec.ask.choices.map((choice) => choice.label),
+    );
+    expect(input.kind).toBe('choice'); // Selecting a plan is not a stage approval.
+    expect(nativeAnswerText(input, { answers: [{ selectedOptions: [1] }] })).toBe(
+      'Use a different plan',
+    );
+    expect(JSON.stringify(input)).not.toContain('fixture-request');
+  });
+  it('uses the declared label for a follow-up choice without matching English prose', () => {
+    const spec = structuredClone(proposedPlanSpec);
+    spec.ask.choices[1].label = 'Compare the available plans';
+    const input = buildNativePendingInput({ spec });
+    expect(nativeAnswerText(input, { answers: [{ selectedOptions: [1] }] })).toBe(
+      'Compare the available plans',
+    );
+  });
+  it.each([
+    (ask) => (ask.choices[1].command = 'unoffered command'),
+    (ask) => (ask.choices[1].command = null),
+    (ask) => (ask.choices[0].command = ask.compose_command),
+    (ask) => (ask.choices.at(-1).command = ask.confirm_command),
+    (ask) => (ask.choices[1].label = ask.choices[0].label),
+    (ask) => (ask.choices[1].label = 'x'.repeat(161)),
+    (ask) =>
+      ask.choices.splice(1, 0, ...Array.from({ length: 14 }, (_, i) => ({ label: `q${i}` }))),
+    (ask) => (ask.ask_type = 'unadvertised-fork'),
+  ])('rejects unsupported or unbounded plan choice data without inventing a form', (change) => {
+    const spec = structuredClone(proposedPlanSpec);
+    change(spec.ask);
+    expect(buildNativePendingInput({ spec })).toBeNull();
+  });
   it.each(['', 'Different prose', '**Plan**', 'Summary\nOnly one label'])(
     'renders exact explicit definitions independently of prose: %s',
     (messagesText) => {

@@ -11,6 +11,8 @@ import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeRecoveryCheckpoints } from '../../shared/native-recovery-checkpoint.js';
 import { createNativeExecutionFence } from '../../shared/native-execution-fence.js';
 import { nativeAnswerText } from '../../shared/native-pending-input.js';
+import { NATIVE_WORKSPACE_RECOVERY } from '../../shared/native-recovery-mode.js';
+import { proposedPlanSpec } from '../../shared/test/fixtures/native-plan-ask.js';
 import { createNativeExecutionSupervisor } from '../execution-worker.js';
 import { createNativeExecutionDiagnostics } from '../execution-diagnostics.js';
 import { createNativeExecutionApi, nativeExecutionView } from '../execution-api.js';
@@ -26,6 +28,7 @@ it.each([
   { kind: 'complete', turns: 3 },
   { kind: 'form', turns: 3 },
   { kind: 'scope', turns: 3 },
+  { kind: 'scope-proposed', turns: 3, workspace: true },
   { kind: 'scope-query-loop', turns: 3 },
   { kind: 'scope-output-silent', turns: 3 },
   { kind: 'scope-output-markup', turns: 3 },
@@ -50,7 +53,11 @@ it.each([
   { kind: 'cancel', turns: 2 },
   { kind: 'capture', turns: 2, code: 'native_recovery_home_path_invalid', unconfirmed: true },
 ])('Claude checkpoint journey: %j', async (scenario) => {
-  const f = executionFixture({ harness: 'claude', model: 'fixture-sonnet' });
+  const f = executionFixture({
+    harness: 'claude',
+    model: 'fixture-sonnet',
+    ...(scenario.workspace ? { recoveryMode: NATIVE_WORKSPACE_RECOVERY } : {}),
+  });
   await f.start();
   const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-checkpoint-journey-')));
   const root = join(base, 'mount');
@@ -76,7 +83,7 @@ it.each([
       if(rows[0].sessionId!==id || rows[0].cwd!==process.cwd() ||
          rows.filter(x=>x.type==='fixture_turn').length!==turn-1) throw Error('session history changed');
       const expected=form
-        ? turn===2 ? scope ? 'classic' : '1. Q1: Small\\n2. Q2: Small, Large\\n3. Q3: Small\\n4. Q4: Small\\n5. Q5: Small\\n6. Constraints: Must work offline.' : ['form-invalid','form-absent','form-oversized','form-schema','form-unsupported'].includes(kind) ? 'answer-2' : 'Looks correct'
+        ? turn===2 ? scope ? kind==='scope-proposed' ? 'Use a different plan' : 'classic' : '1. Q1: Small\\n2. Q2: Small, Large\\n3. Q3: Small\\n4. Q4: Small\\n5. Q5: Small\\n6. Constraints: Must work offline.' : ['form-invalid','form-absent','form-oversized','form-schema','form-unsupported'].includes(kind) ? 'answer-2' : 'Looks correct'
         : 'answer-'+(turn-1);
       if(prompt!==expected) throw Error('answer changed or replayed');
       // Layout and shape observed in pinned Claude 2.1.257 persistAgentMetadata.
@@ -128,7 +135,7 @@ it.each([
         result='fixture-model-'; questions[0].header='token';
       }
       if(kind==='form-invalid-match' && turn===2) questions[0].options.push({label:'Unpublished choice'});
-      const spec = scope && turn===1
+      const spec = kind==='scope-proposed' && turn===1 ? ${JSON.stringify(proposedPlanSpec)} : scope && turn===1
         ? {version:3,ask:{kind:'ask',ask_type:'compose-offer',response_route:'next',question:'Choose the plan for this task.',
           compose_command:'aidlc engine orchestrate next compose --request fixture',
           scope_commands:plans.slice(1).map(scope=>({scope,command:'aidlc engine orchestrate next --scope '+scope+' --request fixture'}))}}
@@ -230,6 +237,9 @@ it.each([
   };
   const commands = [];
   let setupCommands = 0;
+  const privateRecovery = vi.fn(() => {
+    throw Error('Private checkpoint operation in workspace mode');
+  });
   const runtime = createNativeExecutor({
     env,
     root,
@@ -237,6 +247,14 @@ it.each([
     ...createNativeExecutionPorts({ env, s3 }),
     inspectMount: async () => ({}),
     inspectInitialization: async () => ({ ok: true }),
+    ...(scenario.workspace
+      ? {
+          captureRecovery: privateRecovery,
+          publishRecovery: privateRecovery,
+          loadRecovery: privateRecovery,
+          restoreRecovery: privateRecovery,
+        }
+      : {}),
     commandRunner: async (input) => {
       if (input.timeoutMs !== null) {
         setupCommands++;
@@ -288,7 +306,7 @@ it.each([
     return { confirmed: !scenario.unconfirmed, runtimeSessionId: execution.runtimeSessionId };
   });
   const invocations = [];
-  let loseAck = scenario.kind === 'form';
+  let loseAck = scenario.kind === 'form' || scenario.kind === 'scope-proposed';
   const diagnostics = [];
   const supervisor = createNativeExecutionSupervisor({
     store: observedStore,
@@ -360,7 +378,17 @@ it.each([
     await settle();
     expect(f.row().status).toBe('AWAITING_USER');
     const first = f.row();
-    expect(first.recoveryCheckpoint.sequence).toBe(1);
+    expect(first.recoveryCheckpoint?.sequence).toBe(scenario.workspace ? undefined : 1);
+    if (scenario.kind === 'scope-proposed')
+      expect((await runtime.settle()).presentation).toMatchObject({
+        reason: 'structured',
+        askType: 'scope-confirm',
+        responseRoute: 'next',
+        suppliedChoices: 3,
+        suppliedScopeOptions: 2,
+        questions: 1,
+        options: 3,
+      });
     expect(setupCommands).toBe(3);
     const progress = await runtime.activity({ ...executionIdentity(row), after: 0 });
     expect(
@@ -371,8 +399,12 @@ it.each([
       expect.arrayContaining([
         'Installing verified workflow package',
         'Saving workflow files',
-        'Saving recovery checkpoint',
-        'Checkpoint uploaded; awaiting publication verification',
+        ...(scenario.workspace
+          ? []
+          : [
+              'Saving recovery checkpoint',
+              'Checkpoint uploaded; awaiting publication verification',
+            ]),
       ]),
     );
     let previous = first;
@@ -382,6 +414,13 @@ it.each([
       const question = await api.interaction(f.prepared, recheck);
       const scope = scenario.kind.startsWith('scope');
       const form = question.pendingInput !== null;
+      if (scenario.kind === 'scope-proposed' && turn === 2) {
+        expect(question.pendingInput?.questions[0].options.map((option) => option.label)).toEqual(
+          proposedPlanSpec.ask.choices.map((choice) => choice.label),
+        );
+        expect(question.pendingInput.kind).toBe('choice');
+        expect(question.presentation).toBeUndefined();
+      }
       if (!scenario.kind.startsWith('form') && !scope)
         expect(question.messages).toEqual([{ type: 'text', text: `Question ${turn - 1}?` }]);
       if ((scenario.kind === 'form-invalid' || scenario.degraded) && turn === 3) {
@@ -396,7 +435,7 @@ it.each([
         ? {
             answers:
               turn === 2 && scope
-                ? [{ selectedOptions: [2] }]
+                ? [{ selectedOptions: [scenario.kind === 'scope-proposed' ? 1 : 2] }]
                 : turn === 2
                   ? [
                       { selectedOptions: [0] },
@@ -466,8 +505,12 @@ it.each([
         for (const [before, after] of [
           ['workspaceSnapshotStarted', 'workspaceSnapshotCompleted'],
           ['publicationStarted', 'publicationCompleted'],
-          ['checkpointCaptureStarted', 'checkpointCaptureCompleted'],
-          ['checkpointUploadStarted', 'checkpointUploadCompleted'],
+          ...(scenario.workspace
+            ? []
+            : [
+                ['checkpointCaptureStarted', 'checkpointCaptureCompleted'],
+                ['checkpointUploadStarted', 'checkpointUploadCompleted'],
+              ]),
         ])
           expect(completed.timings[after]).toBeGreaterThanOrEqual(completed.timings[before]);
       }
@@ -555,7 +598,7 @@ it.each([
         }
       } else if (scenario.kind !== 'cancel') {
         expect(f.row().status).toBe('AWAITING_USER');
-        expect(f.row().recoveryCheckpoint.sequence).toBe(turn);
+        expect(f.row().recoveryCheckpoint?.sequence).toBe(scenario.workspace ? undefined : turn);
         expect(f.row().publication.nativeSessionId).toBe(nativeSessionId);
         previous = f.row();
       }
@@ -582,12 +625,17 @@ it.each([
       });
     }
     // Only admitted bytes remain visible; checkpoint one remains independently readable.
-    const firstCheckpoint = await checkpoints.read(
-      executionIdentity(first),
-      first.recoveryCheckpoint,
-      { verifyFiles: true },
-    );
-    expect(firstCheckpoint.sequence).toBe(1);
+    if (scenario.workspace) {
+      expect(privateRecovery).not.toHaveBeenCalled();
+      expect(writes.some((key) => key.startsWith('native-recovery/'))).toBe(false);
+    } else {
+      const firstCheckpoint = await checkpoints.read(
+        executionIdentity(first),
+        first.recoveryCheckpoint,
+        { verifyFiles: true },
+      );
+      expect(firstCheckpoint.sequence).toBe(1);
+    }
     const visible = await api.publication(f.prepared, recheck);
     expect(visible.id).toBe(final.publication.id);
     const saved = visible.files.find((file) => file.path === 'work.txt');
@@ -606,7 +654,10 @@ it.each([
       scenario.code || scenario.kind === 'cancel' ? scenario.turns - 1 : scenario.turns,
     );
     if (scenario.kind === 'admission-ack') expect(lostAdmissionAck).toBe(true);
-    if (scenario.kind.startsWith('form') && !scenario.code) {
+    if (
+      (scenario.kind.startsWith('form') || scenario.kind === 'scope-proposed') &&
+      !scenario.code
+    ) {
       const finalQuestion = await api.interaction(f.prepared, recheck);
       expect(finalQuestion.pendingInput.kind).toBe('approval');
       expect(finalQuestion.pendingInput.stage).toBe('requirements-analysis');
