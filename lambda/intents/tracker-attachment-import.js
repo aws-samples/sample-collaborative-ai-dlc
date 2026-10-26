@@ -152,6 +152,7 @@ export const createTrackerAttachmentImporter = ({
             executionId: intentId,
             fromStatus: 'DRAFT',
             ifAttachmentRevision: Number(current.attachmentRevision || 0),
+            attachments: current.attachments || [],
             pendingAttachmentUploads: (current.pendingAttachmentUploads || []).filter(
               (file) => file.attachmentId !== attachmentId,
             ),
