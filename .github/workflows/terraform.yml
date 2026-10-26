@@ -92,5 +92,8 @@ jobs:
       - name: MCP Gateway interceptor and invocation isolation tests (mock providers)
         run: terraform test -filter=tests/mcp-gateway.tftest.hcl
 
+      - name: Neptune Streams parameter tests (mock providers)
+        run: terraform test -filter=tests/neptune-streams.tftest.hcl
+
       - name: Lambda packaging on clean runners (mock AWS)
         run: terraform test -filter=tests/lambda-packaging.tftest.hcl -parallelism=2
