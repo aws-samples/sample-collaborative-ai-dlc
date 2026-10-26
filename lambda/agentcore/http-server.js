@@ -77,6 +77,11 @@ import http from 'node:http';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { commandDefinition } from './command-registry.js';
 import { installProcessGroupShutdown } from './cli/spawn.js';
+<<<<<<< HEAD
+=======
+import { requestMetadataFor, withRequestMetadata } from './cli/request-metadata.js';
+import { loadRuntimeEnv } from './runtime-env.js';
+>>>>>>> 53cae4c6 (290)
 import { createCredentialSession } from './credential-session.js';
 import { accountCredentialInvocation } from './invocation-accounting.js';
 
@@ -111,6 +116,7 @@ export const dispatchInvocation = async ({
   handlers,
   busy,
   prepareInvocation = null,
+  loadRuntimeEnvironment = loadRuntimeEnv,
   now = () => new Date().toISOString(),
 }) => {
   const command = payload?.command;
@@ -135,9 +141,19 @@ export const dispatchInvocation = async ({
     const handlerPayload = { ...payload };
     delete handlerPayload.agentCredentialGrant;
     credentialSession = context.credentialSession ?? null;
+<<<<<<< HEAD
     const result = credentialSession
       ? await credentialSession.run(() => handler(handlerPayload, context))
       : await handler(handlerPayload, context);
+=======
+    // Bedrock request metadata for every CLI this command spawns, including its
+    // background job (cli/request-metadata.js).
+    const metadata = requestMetadataFor(handlerPayload, { projectId: context.projectId });
+    // Platform runtime env for the CLIs it spawns (runtime-env.js). Never throws.
+    await loadRuntimeEnvironment();
+    const run = () => withRequestMetadata(metadata, () => handler(handlerPayload, context));
+    const result = credentialSession ? await credentialSession.run(run) : await run();
+>>>>>>> 53cae4c6 (290)
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception. Log them

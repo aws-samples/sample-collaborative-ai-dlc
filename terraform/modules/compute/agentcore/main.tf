@@ -513,6 +513,14 @@ resource "aws_iam_role_policy" "agentcore" {
           ]
         },
         {
+          # Runtime env (runtime-env.js): every parameter directly under
+          # {prefix}/runtime-env is exported to the agent CLIs. Default aws/ssm
+          # key, as for the MCP secrets.
+          Effect   = "Allow"
+          Action   = ["ssm:GetParametersByPath"]
+          Resource = "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter${local.runtime_env_ssm_path}"
+        },
+        {
           # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
           # background job completes/heartbeats the durable callback the
           # orchestrator suspended on. ARN constructed from naming convention
@@ -739,6 +747,8 @@ resource "aws_security_group" "agentcore" {
 # ---------------------------------------------------------------------------
 
 locals {
+  runtime_env_ssm_path = "/${var.project_name}/${var.environment}/runtime-env"
+
   runtime_environment_variables = {
     AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
     V2_WORKSPACE_DIR              = "/mnt/workspace"
@@ -755,6 +765,7 @@ locals {
     CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
     SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
     MCP_SECRETS_SSM_PREFIX        = "/${var.project_name}/${var.environment}"
+    RUNTIME_ENV_SSM_PATH          = local.runtime_env_ssm_path
     RUNTIME_COMPATIBILITY_VERSION = "1"
     POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
