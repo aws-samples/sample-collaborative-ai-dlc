@@ -279,6 +279,10 @@ const REGISTRY = Object.freeze({
   decisions: {
     key: 'decisions',
     label: 'Decision',
+    // A decision log is written to from whichever stage a decision comes up
+    // in, so it keeps the stage that first created it. Derive it after every
+    // stage (derive-artifacts.js), not only after the creating one.
+    intentWide: true,
     doc: {
       description: 'Each design/architecture decision, one list entry per decision.',
       fields: [
@@ -402,6 +406,16 @@ const REGISTRY = Object.freeze({
   },
 });
 
+// Artifact types derived after every stage, whatever the stage declared or
+// created: types flagged intentWide in the registry.
+const INTENT_WIDE_ARTIFACT_TYPES = Object.freeze(
+  new Set(
+    Object.entries(REGISTRY)
+      .filter(([, spec]) => spec.intentWide)
+      .map(([type]) => type),
+  ),
+);
+
 // Check the fenced YAML block parses. Used by extractArtifactStructure and the
 // create_artifact write guard. Unregistered types have no block → valid.
 const validateStructuredBlock = ({ artifactType, content = '' } = {}) => {
@@ -446,6 +460,7 @@ const extractArtifactStructure = ({ artifactType, artifactId, content = '' } = {
 
 export {
   REGISTRY,
+  INTENT_WIDE_ARTIFACT_TYPES,
   extractArtifactStructure,
   validateStructuredBlock,
   extractCitations,
@@ -455,6 +470,7 @@ export {
 };
 export default {
   REGISTRY,
+  INTENT_WIDE_ARTIFACT_TYPES,
   extractArtifactStructure,
   validateStructuredBlock,
   extractCitations,
