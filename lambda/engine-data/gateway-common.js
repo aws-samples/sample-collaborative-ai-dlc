@@ -3,6 +3,7 @@
 // envelope.
 import { isTransactionConflict } from '../shared/v2-process-store.js';
 import { ENGINE_DATA_DENIED_ERROR } from '../shared/engine-data-ops.js';
+import { isGatewayGrantRunReplaced } from '../shared/gateway-grant.js';
 import { stageInstanceId } from '../shared/v2-execution-plan.js';
 
 const PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -65,6 +66,13 @@ export const grantStageInstanceId = (grant, meta) => {
     grant.unitSlug,
     grant.sectionIndex,
   );
+};
+
+// Rewind, recompose and lane repair replace the run on META before they reset
+// its stage rows, and not every write has a store-side run fence, so every
+// namespace refuses a stage grant of a replaced run.
+export const denyReplacedRun = (grant, meta) => {
+  if (isGatewayGrantRunReplaced(grant, meta)) deny('run_retired');
 };
 
 // A scope field the request supplies must equal the grant's signed value (null

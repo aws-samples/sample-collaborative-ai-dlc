@@ -36,6 +36,7 @@ import {
   MAX_RESPONSE_BYTES,
   denialResponse,
   deny,
+  denyReplacedRun,
   grantAudit,
   grantStageInstanceId,
   hasPrototypeKey,
@@ -110,6 +111,7 @@ const checkScope = async (store, authorized) => {
   if (meta && (meta.projectId !== grant.projectId || meta.intentId !== grant.intentId)) {
     deny('scope_mismatch');
   }
+  denyReplacedRun(grant, meta);
   if (grant.mode === 'stage') await bindStageGrant(store, authorized, meta);
 
   let stage = null;

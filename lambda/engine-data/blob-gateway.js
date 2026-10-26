@@ -7,7 +7,7 @@
 //   2. the op must be on the shared allowlist and its input must match the
 //      strict schema;
 //   3. the execution META (consistent read) must exist and belong to the
-//      grant's project and intent. There is deliberately no terminal or
+//      grant's project and intent, and still name a stage grant's run. There is deliberately no terminal or
 //      active-stage gate, as for store calls;
 //   4. the objects read are the ones META lists, at the exact keys the writing
 //      Lambdas use for the granted project (rules) or intent (attachments).
@@ -33,6 +33,7 @@ import {
   EngineDataAccessDenied,
   denialResponse,
   deny,
+  denyReplacedRun,
   grantAudit,
   hasPrototypeKey,
   issuePaths,
@@ -187,6 +188,7 @@ export const createBlobGateway = ({
     if (meta.projectId !== grant.projectId || meta.intentId !== grant.intentId) {
       deny('scope_mismatch');
     }
+    denyReplacedRun(grant, meta);
     return { grant, name, input: result.data, meta };
   };
 

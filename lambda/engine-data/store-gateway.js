@@ -11,7 +11,8 @@
 //   2. the op must be on the shared allowlist, and its positional arguments
 //      must match that method's schema;
 //   3. the execution the arguments name must be the grant's, and its META row
-//      (consistent read) must belong to the grant's project and intent;
+//      (consistent read) must belong to the grant's project and intent and,
+//      for a stage grant, still name the grant's run;
 //   4. ops whose arguments must agree with META are checked against it
 //      (a workflow checkpoint may only pin the custom rules META lists);
 //   5. every stage id that addresses a STAGE# row must resolve to a row of that
@@ -36,6 +37,7 @@ import {
   EngineDataAccessDenied,
   denialResponse,
   deny,
+  denyReplacedRun,
   grantAudit,
   grantStageInstanceId,
   hasPrototypeKey,
@@ -189,6 +191,7 @@ export const createStoreGateway = ({ verifyGrant, createStore, audit = () => {} 
     if (meta.projectId !== grant.projectId || meta.intentId !== grant.intentId) {
       deny('scope_mismatch');
     }
+    denyReplacedRun(grant, meta);
     const metaDenial = spec.checkMeta(args, meta, grant);
     if (metaDenial) deny(metaDenial);
     for (const stageInstanceId of new Set(spec.stageIds(args))) {

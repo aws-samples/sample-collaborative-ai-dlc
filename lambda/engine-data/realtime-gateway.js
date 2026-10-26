@@ -8,8 +8,9 @@
 //   2. the payload must match the closed event DTO and encode within 32 KiB;
 //   3. every ownership id the event carries must equal the grant's. The
 //      execution META (consistent read) must belong to the grant's project and
-//      intent; without META, a draft compose or a discussion falls back to the
-//      Neptune Intent anchor. An existing contradictory META always denies;
+//      intent (and still name a stage grant's run); without META, a draft
+//      compose or a discussion falls back to the Neptune Intent anchor. An
+//      existing contradictory META always denies;
 //   4. ids the event embeds resolve inside the granted scope: stages (or the
 //      Quorum edit behind a `qedit-` pane) in the execution, the compose row in
 //      the execution, the discussion message in the intent.
@@ -32,6 +33,7 @@ import {
   EngineDataAccessDenied,
   denialResponse,
   deny,
+  denyReplacedRun,
   grantAudit,
   hasPrototypeKey,
   issuePaths,
@@ -149,6 +151,7 @@ export const createRealtimeGateway = ({
     if (meta && (meta.projectId !== grant.projectId || meta.intentId !== grant.intentId)) {
       deny('scope_mismatch');
     }
+    denyReplacedRun(grant, meta);
     // Only a draft compose (an execution grant whose execution id is the
     // intent id) or a discussion runs before its intent has execution META.
     if (

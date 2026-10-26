@@ -162,6 +162,16 @@ export const gatewayScopeForCommand = (
   }
 };
 
+// True when a stage grant's run is no longer the execution's: rewind,
+// recompose and lane repair replace META's orchestratorRunId, and a grant
+// signed for the replaced run must stop acting. Grants without a run
+// (execution, conflict, discussion) and META without one are not compared.
+export const isGatewayGrantRunReplaced = (grant, meta) =>
+  grant?.mode === 'stage' &&
+  Boolean(grant.orchestratorRunId) &&
+  Boolean(meta?.orchestratorRunId) &&
+  meta.orchestratorRunId !== grant.orchestratorRunId;
+
 export const issueGatewayGrant = async (
   scopeInput,
   {
