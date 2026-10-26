@@ -1,10 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-// Static checks on the runtime role's Terraform, per rollout mode. The mode
-// local is `runtime_direct_data_access = !(enable_engine_data &&
-// enforce_runtime_grants)`; terraform/tests/agentcore-runtime-role.tftest.hcl
-// plans the same three modes with mock providers.
+// Static checks on the runtime role's Terraform that a plan cannot express.
+// terraform/tests/agentcore-runtime-role.tftest.hcl plans the three rollout
+// modes with mock providers and asserts the evaluated policies.
 const read = (file) =>
   readFile(
     new URL(`../../../terraform/modules/compute/agentcore/${file}`, import.meta.url),
@@ -12,57 +11,17 @@ const read = (file) =>
   );
 const block = (terraform, header) =>
   terraform.match(new RegExp(`^${header} \\{([\\s\\S]*?)^\\}`, 'm'))?.[1] ?? null;
-const DIRECT = 'local.runtime_direct_data_access';
-
-// The top-level arguments of the policy's `Statement = concat(...)`, comments
-// dropped, each classified as kept in every mode or only with direct access.
-const statementGroups = (policy) => {
-  const body = policy
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('#'))
-    .join('\n');
-  const start = body.indexOf('Statement = concat(') + 'Statement = concat('.length;
-  const groups = [];
-  let depth = 0;
-  let from = start;
-  for (let i = start; depth >= 0; i++) {
-    const ch = body[i];
-    if ('([{'.includes(ch)) depth++;
-    else if (')]}'.includes(ch)) depth--;
-    if ((ch === ',' && depth === 0) || depth < 0) {
-      const text = body.slice(from, i).trim();
-      if (text) groups.push(text);
-      from = i + 1;
-    }
-  }
-  return groups.map((text) => ({
-    text,
-    direct: text.startsWith(DIRECT) || text.endsWith(`if ${DIRECT}]`),
-  }));
-};
 const actionsOf = (text) =>
   [...text.matchAll(/Effect\s*= "(\w+)"[\s\S]*?Action\s*= \[([\s\S]*?)\]/g)].flatMap(
     ([, effect, list]) =>
       [...list.matchAll(/"([^"]+)"/g)].map(([, action]) => `${effect} ${action}`),
   );
 
-const DIRECT_DATA = /^Allow (neptune-db|dynamodb|s3|ssm|execute-api):/;
-
 describe('agentcore IAM role policy', () => {
-  it('keeps ConditionCheckItem for direct-path checkpoints and drops it once grants are enforced', async () => {
+  it('lets engine-data make the checkpoint ConditionCheck the enforced runtime no longer makes', async () => {
     // putWorkflowCheckpoint (lambda/shared/v2-process-store.js) issues a
     // TransactWriteCommand whose ConditionCheck on the execution META row maps
-    // to dynamodb:ConditionCheckItem. On the direct path the runtime role makes
-    // that call; with engine data the engine-data role does.
-    const policy = block(await read('main.tf'), 'resource "aws_iam_role_policy" "agentcore"');
-    const groups = statementGroups(policy);
-    expect(groups.filter((g) => g.direct).flatMap((g) => actionsOf(g.text))).toContain(
-      'Allow dynamodb:ConditionCheckItem',
-    );
-    expect(groups.filter((g) => !g.direct).flatMap((g) => actionsOf(g.text))).not.toContain(
-      'Allow dynamodb:ConditionCheckItem',
-    );
-
+    // to dynamodb:ConditionCheckItem.
     const engineData = block(
       await read('engine-data.tf'),
       'resource "aws_iam_role_policy" "engine_data"',
@@ -82,51 +41,8 @@ describe('agentcore IAM role policy', () => {
     );
   });
 
-  it('leaves the runtime role only its remote paths once grants are enforced', async () => {
-    const main = await read('main.tf');
-    const policy = block(main, 'resource "aws_iam_role_policy" "agentcore"');
-    const groups = statementGroups(policy);
-    // ECR pull, logs, the broker, durable callbacks and the AssumeRole deny stay.
-    expect(groups.filter((g) => !g.direct).flatMap((g) => actionsOf(g.text))).toEqual([
-      'Allow ecr:GetDownloadUrlForLayer',
-      'Allow ecr:BatchGetImage',
-      'Allow ecr:BatchCheckLayerAvailability',
-      'Allow ecr:GetAuthorizationToken',
-      'Allow lambda:InvokeFunction',
-      'Deny sts:AssumeRole',
-      'Allow logs:CreateLogStream',
-      'Allow logs:PutLogEvents',
-      'Allow logs:CreateLogGroup',
-      'Allow lambda:SendDurableExecutionCallbackSuccess',
-      'Allow lambda:SendDurableExecutionCallbackFailure',
-      'Allow lambda:SendDurableExecutionCallbackHeartbeat',
-    ]);
-    // Every direct data family is gated, and only those are.
-    const gated = groups.filter((g) => g.direct).flatMap((g) => actionsOf(g.text));
-    expect(gated.length).toBeGreaterThan(0);
-    expect(gated.every((action) => DIRECT_DATA.test(action))).toBe(true);
-    expect(new Set(gated.map((action) => action.split(/[ :]/)[1]))).toEqual(
-      new Set(['neptune-db', 'dynamodb', 's3', 'ssm', 'execute-api']),
-    );
-
-    // The invoke statement keeps the broker; the unqualified source-control
-    // function goes, leaving the `runtime` alias from invoke-engine-data.
-    expect(policy).toMatch(
-      /Resource = concat\(\s*\[local\.credential_broker_function_arn\],\s*local\.runtime_direct_data_access \? \[local\.source_control_function_arn\] : \[\],\s*\)/,
-    );
-    expect(policy.match(/source_control_function_arn/g)).toHaveLength(1);
-    const engineData = await read('engine-data.tf');
-    expect(
-      block(engineData, 'resource "aws_iam_role_policy" "agentcore_invoke_engine_data"'),
-    ).toMatch(
-      /Resource = \[\s*module\.engine_data_lambda\[0\]\.lambda_function_arn,\s*local\.source_control_runtime_alias_arn,\s*\]/,
-    );
-    expect(engineData).toContain(
-      'source_control_runtime_alias_arn = "${local.source_control_function_arn}:runtime"',
-    );
-
-    // The DynamoDB CMK grant follows the table access; mcp-tools and engine-data keep theirs.
-    const kms = block(main, 'module "dynamodb_kms_runtime_access"');
+  it('grants the DynamoDB key to the runtime only with direct access', async () => {
+    const kms = block(await read('main.tf'), 'module "dynamodb_kms_runtime_access"');
     expect(kms).toMatch(
       /role_names = merge\(local\.runtime_direct_data_access \? \{\s*agentcore = aws_iam_role\.agentcore\.name\s*\} : \{\}/,
     );
@@ -158,23 +74,5 @@ describe('agentcore IAM role policy', () => {
       expect(body).not.toContain('source_control_function_arn,');
       expect(body).not.toMatch(/function:\*|lambda:\*/);
     }
-  });
-
-  it('gives the enforced runtime no direct-client configuration', async () => {
-    const env = (await read('main.tf')).match(
-      /runtime_environment_variables = merge\(\{([\s\S]*?)\n\s*\}, local\.runtime_direct_data_access \? \{([\s\S]*?)\} : \{\}/,
-    );
-    expect(env).toBeTruthy();
-    const keys = (text) =>
-      [...text.matchAll(/^\s*([A-Z0-9_]+)\s*=/gm)].map(([, key]) => key).toSorted();
-    expect(keys(env[2])).toEqual([
-      'ARTIFACTS_BUCKET',
-      'BLOCKS_TABLE',
-      'CONNECTIONS_TABLE',
-      'MCP_SECRETS_SSM_PREFIX',
-      'NEPTUNE_ENDPOINT',
-      'WEBSOCKET_ENDPOINT',
-    ]);
-    expect(keys(env[1])).not.toEqual(expect.arrayContaining(['BLOCKS_TABLE']));
   });
 });

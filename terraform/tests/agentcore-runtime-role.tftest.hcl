@@ -150,6 +150,25 @@ run "enforced_grants_strip_direct_access" {
     error_message = "The enforced runtime role must hold no Neptune, DynamoDB, S3, SSM or websocket access."
   }
   assert {
+    condition = sort(distinct(flatten([
+      for s in jsondecode(aws_iam_role_policy.agentcore.policy).Statement : [for a in s.Action : "${s.Effect} ${a}"]
+      ]))) == tolist([
+      "Allow ecr:BatchCheckLayerAvailability",
+      "Allow ecr:BatchGetImage",
+      "Allow ecr:GetAuthorizationToken",
+      "Allow ecr:GetDownloadUrlForLayer",
+      "Allow lambda:InvokeFunction",
+      "Allow lambda:SendDurableExecutionCallbackFailure",
+      "Allow lambda:SendDurableExecutionCallbackHeartbeat",
+      "Allow lambda:SendDurableExecutionCallbackSuccess",
+      "Allow logs:CreateLogGroup",
+      "Allow logs:CreateLogStream",
+      "Allow logs:PutLogEvents",
+      "Deny sts:AssumeRole",
+    ])
+    error_message = "The enforced runtime role keeps only image pull, logs, durable callbacks, the broker and the AssumeRole deny."
+  }
+  assert {
     condition     = flatten([for s in jsondecode(aws_iam_role_policy.agentcore.policy).Statement : s.Resource if contains(s.Action, "lambda:InvokeFunction")]) == ["arn:aws:lambda:us-east-1:123456789012:function:test-credential-broker-test"]
     error_message = "The enforced runtime role invokes only the broker from its base policy."
   }
