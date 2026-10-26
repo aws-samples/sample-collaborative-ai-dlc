@@ -19,6 +19,7 @@ import {
   projectedEnvironmentImageSize,
 } from './catalog-recipe.js';
 import { queryAll, scanAll } from './registry.js';
+import { readDefaultEnvironment, writeDefaultEnvironment } from '../shared/environment-default.js';
 
 const environmentPk = (environmentId) => `ENV#${environmentId}`;
 const environmentKey = (environmentId) => ({ pk: environmentPk(environmentId), sk: 'META' });
@@ -867,9 +868,16 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
   };
 
+  // Default environment for new spaces (shared/environment-default.js).
+  const getDefaultEnvironment = () => readDefaultEnvironment({ ddb, tableName: table() });
+  const setDefaultEnvironment = ({ environmentId, actor }) =>
+    writeDefaultEnvironment({ ddb, tableName: table(), environmentId, actor, now: now() });
+
   return {
     getEnvironment,
     getRevision,
+    getDefaultEnvironment,
+    setDefaultEnvironment,
     listEnvironments,
     listRevisions,
     createEnvironment,

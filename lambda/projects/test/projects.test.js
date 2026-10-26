@@ -778,6 +778,52 @@ describe('GET/PUT /projects/:id/environment', () => {
     ...claims(sub),
   });
 
+  const withRegistryTable = async (operation) => {
+    const previousTable = process.env.ENVIRONMENT_REGISTRY_TABLE;
+    process.env.ENVIRONMENT_REGISTRY_TABLE = 'environment-registry-test';
+    try {
+      return await operation();
+    } finally {
+      if (previousTable === undefined) delete process.env.ENVIRONMENT_REGISTRY_TABLE;
+      else process.env.ENVIRONMENT_REGISTRY_TABLE = previousTable;
+    }
+  };
+
+  const setDefaultEnvironment = (environmentId) =>
+    environmentRegistryItems.set('SETTINGS#ENVIRONMENTS|DEFAULT', {
+      pk: 'SETTINGS#ENVIRONMENTS',
+      sk: 'DEFAULT',
+      environmentId,
+    });
+
+  it('creates new spaces in the default environment', async () => {
+    installPublishedEnvironment();
+    setDefaultEnvironment('polyglot');
+    await withRegistryTable(async () => {
+      const ownerSub = `u-${randomUUID()}`;
+      const created = await createProject(ownerSub);
+      expect(created.environmentId).toBe('polyglot');
+      const fetched = await handler(event('GET', created.id, ownerSub));
+      expect(JSON.parse(fetched.body)).toMatchObject({
+        environmentId: 'polyglot',
+        revision: { revisionId: 'r-7' },
+      });
+    });
+  });
+
+  it('creates new spaces in Standard when the default is no longer published', async () => {
+    installPublishedEnvironment();
+    environmentRegistryItems.set('ENV#polyglot|META', {
+      ...environmentRegistryItems.get('ENV#polyglot|META'),
+      status: 'RETIRED',
+    });
+    setDefaultEnvironment('polyglot');
+    await withRegistryTable(async () => {
+      const created = await createProject(`u-${randomUUID()}`);
+      expect(created.environmentId).toBe('standard');
+    });
+  });
+
   it('lets an owner assign a published environment and read it back', async () => {
     const ownerSub = `u-${randomUUID()}`;
     const { id } = await createProject(ownerSub);

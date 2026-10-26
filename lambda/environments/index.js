@@ -37,6 +37,7 @@ import {
   assertBuildAdmissible,
 } from './compute-model.js';
 import { runtimeBackendFor } from './runtime-backends/index.js';
+import { STANDARD_ENVIRONMENT_ID } from '../shared/environment-default.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -406,6 +407,45 @@ export const createHandler = ({
         return response(200, capabilities());
       }
 
+      // Default environment for new spaces. Unset means Standard.
+      if (tail.length === 1 && environmentId === 'default') {
+        const denied = requirePlatformAdmin(event);
+        if (denied)
+          return response(denied.statusCode, {
+            error: denied.error,
+            code: denied.code,
+          });
+        if (event.httpMethod === 'GET') {
+          const current = await store.getDefaultEnvironment();
+          return response(200, {
+            environmentId: current?.environmentId ?? STANDARD_ENVIRONMENT_ID,
+            updatedAt: current?.updatedAt ?? null,
+            updatedBy: current?.updatedBy ?? null,
+          });
+        }
+        if (event.httpMethod === 'PUT') {
+          const requested = String(parseBody(event).environmentId ?? '').trim();
+          if (!requested) return response(400, { error: 'environmentId is required' });
+          if (requested !== STANDARD_ENVIRONMENT_ID) {
+            const candidate = await store.getEnvironment(requested);
+            if (!candidate) return response(404, { error: 'Environment not found' });
+            if (candidate.status === 'RETIRED' || !candidate.publishedRevisionId) {
+              return response(409, {
+                error: 'Only a published environment can be the default for new spaces',
+                code: 'ENVIRONMENT_NOT_PUBLISHED',
+              });
+            }
+          }
+          const saved = await store.setDefaultEnvironment({ environmentId: requested, actor });
+          return response(200, {
+            environmentId: requested,
+            updatedAt: saved?.updatedAt ?? null,
+            updatedBy: saved?.updatedBy ?? null,
+          });
+        }
+        return response(405, { error: 'Method not allowed' });
+      }
+
       if (event.httpMethod === 'POST' && tail.length === 0) {
         const denied = requirePlatformAdmin(event);
         if (denied)
@@ -416,7 +456,7 @@ export const createHandler = ({
         const data = parseBody(event);
         if (!data.name?.trim()) return response(400, { error: 'name is required' });
         const id = normalizeEnvironmentId(data.environmentId || data.name);
-        if (id === 'rebuild' || id === 'capabilities') {
+        if (id === 'rebuild' || id === 'capabilities' || id === 'default') {
           return response(400, { error: 'environmentId is reserved by the platform' });
         }
         const baseEnvironmentId = data.baseEnvironmentId || 'standard';
@@ -789,6 +829,13 @@ export const createHandler = ({
         if (['BUILDING', 'VERIFYING'].includes(environment.status)) {
           return response(409, {
             error: 'Wait for active environment validation to finish before retiring',
+          });
+        }
+        if ((await store.getDefaultEnvironment())?.environmentId === environmentId) {
+          return response(409, {
+            error:
+              'This environment is the default for new spaces; choose another default before retiring it',
+            code: 'DEFAULT_ENVIRONMENT',
           });
         }
         const retired = await store.updateEnvironment(environmentId, {

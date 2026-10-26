@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, Boxes, Plus, RotateCw, Search, TriangleAlert } from 'lucide-react';
+import { Archive, Boxes, Plus, RotateCw, Search, Star, TriangleAlert } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -124,12 +124,23 @@ export function EnvironmentRegistry() {
   const [filter, setFilter] = useState<EnvironmentFilter>('all');
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [capabilities, setCapabilities] = useState<EnvironmentCapabilities | null>(null);
+  // Default environment for new spaces; null until loaded (or if unavailable).
+  const [defaultEnvironmentId, setDefaultEnvironmentId] = useState<string | null>(null);
   const loadedEnvironmentId = useRef<string | null>(null);
 
   const setFormAndBaseline = useCallback((next: EnvironmentForm) => {
     setForm(next);
     setSavedFormFingerprint(formFingerprint(next));
   }, []);
+
+  const loadDefault = useCallback(
+    () =>
+      environmentsService
+        .getDefault()
+        .then((value) => setDefaultEnvironmentId(value.environmentId))
+        .catch(() => setDefaultEnvironmentId(null)),
+    [],
+  );
 
   const loadList = useCallback(async (preferredId?: string) => {
     const values = await environmentsService.list();
@@ -199,7 +210,8 @@ export function EnvironmentRegistry() {
       .capabilities()
       .then(setCapabilities)
       .catch(() => setCapabilities(null));
-  }, [loadList]);
+    void loadDefault();
+  }, [loadDefault, loadList]);
 
   useEffect(() => {
     if (!selectedId || creating) return;
@@ -307,7 +319,7 @@ export function EnvironmentRegistry() {
     setError(null);
     try {
       await action();
-      await loadList(preferredId ?? undefined);
+      await Promise.all([loadList(preferredId ?? undefined), loadDefault()]);
       if (preferredId) await loadDetail(preferredId, { preferCurrent, preserveForm });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Environment action failed');
@@ -375,6 +387,20 @@ export function EnvironmentRegistry() {
     });
   };
 
+  const requestSetDefault = (environment: ManagedEnvironment) =>
+    setConfirmation({
+      title: `Use ${environment.name} for new spaces?`,
+      description:
+        'New spaces start in this environment. Existing spaces keep their environment, and space owners can still change it.',
+      actionLabel: 'Set as default',
+      onConfirm: () =>
+        void run(
+          'set-default',
+          () => environmentsService.setDefault(environment.environmentId),
+          environment.environmentId,
+        ),
+    });
+
   const requestRetire = (environment: ManagedEnvironment) =>
     setConfirmation({
       title: `Retire ${environment.name}?`,
@@ -407,6 +433,13 @@ export function EnvironmentRegistry() {
     });
 
   const environment = detail?.environment ?? null;
+  const isDefault = Boolean(environment) && environment?.environmentId === defaultEnvironmentId;
+  // Only known once the default has loaded, so the action never offers a no-op.
+  const canBeDefault =
+    Boolean(environment?.publishedRevisionId) &&
+    environment?.status !== 'RETIRED' &&
+    defaultEnvironmentId !== null &&
+    !isDefault;
   const revisionWorkspace =
     environment && detail ? (
       <EnvironmentRevisionWorkspace
@@ -519,7 +552,15 @@ export function EnvironmentRegistry() {
                   >
                     <div className="flex items-start justify-between gap-2">
                       <span className="min-w-0">
-                        <span className="block truncate text-xs font-semibold">{item.name}</span>
+                        <span className="flex items-center gap-1 truncate text-xs font-semibold">
+                          {item.name}
+                          {item.environmentId === defaultEnvironmentId && (
+                            <Star
+                              className="h-3 w-3 shrink-0 fill-amber-400 text-amber-500"
+                              aria-label="Default for new spaces"
+                            />
+                          )}
+                        </span>
                         <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
                           {item.environmentId}
                         </span>
@@ -607,6 +648,12 @@ export function EnvironmentRegistry() {
                           <h3 className="text-base font-semibold">{environment.name}</h3>
                           <StatusBadge status={environment.status} />
                           <ComputeBadge compute={environment.compute} />
+                          {isDefault && (
+                            <Badge variant="outline" className="gap-1 text-[10px]">
+                              <Star className="h-3 w-3 fill-amber-400 text-amber-500" />
+                              Default for new spaces
+                            </Badge>
+                          )}
                         </div>
                         <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
                           <span className="font-mono text-[10px]">{environment.environmentId}</span>
@@ -643,12 +690,29 @@ export function EnvironmentRegistry() {
                               Rebuild on latest base
                             </Button>
                           )}
+                        {canBeDefault && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="gap-1.5"
+                            disabled={Boolean(busy)}
+                            onClick={() => requestSetDefault(environment)}
+                          >
+                            <Star className="h-3.5 w-3.5" />
+                            Set as default
+                          </Button>
+                        )}
                         {environment.environmentId !== 'standard' && (
                           <Button
                             size="sm"
                             variant="ghost"
                             className="gap-1.5 text-destructive"
-                            disabled={Boolean(busy)}
+                            disabled={Boolean(busy) || isDefault}
+                            title={
+                              isDefault
+                                ? 'Set another default for new spaces before retiring this environment'
+                                : undefined
+                            }
                             onClick={() => requestRetire(environment)}
                           >
                             <Archive className="h-3.5 w-3.5" />
