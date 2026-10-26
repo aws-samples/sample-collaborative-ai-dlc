@@ -47,6 +47,23 @@ variable "backup_retention_period" {
   }
 }
 
+variable "streams_enabled" {
+  description = "Enable Neptune Streams in the cluster parameter group"
+  type        = bool
+  default     = false
+}
+
+variable "streams_expiry_days" {
+  description = "Days Neptune keeps stream records (1-90)"
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.streams_expiry_days >= 1 && var.streams_expiry_days <= 90 && floor(var.streams_expiry_days) == var.streams_expiry_days
+    error_message = "streams_expiry_days must be a whole number of days between 1 and 90."
+  }
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)
