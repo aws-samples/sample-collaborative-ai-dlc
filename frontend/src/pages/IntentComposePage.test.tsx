@@ -603,6 +603,38 @@ describe('IntentComposePage', () => {
     expect(screen.getByTestId('start-intent')).toBeDisabled();
   });
 
+  it('greys out a CLI the platform admin disabled', async () => {
+    getProjectCapabilities.mockResolvedValue({
+      available: ['kiro'],
+      disabledClis: ['codex'],
+      runtimeClis: [
+        {
+          cli: 'kiro',
+          installed: true,
+          authed: true,
+          available: true,
+          enabled: true,
+          credentialSource: 'platform',
+        },
+        {
+          cli: 'codex',
+          installed: true,
+          authed: true,
+          available: false,
+          enabled: false,
+          credentialSource: 'platform',
+        },
+      ],
+      credentialSources: { bedrock: 'platform', kiro: 'platform' },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('disabled by admin')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('agent-cli-codex')).toBeDisabled());
+    expect(screen.getByTestId('agent-cli-kiro')).toBeEnabled();
+  });
+
   it('applying a matched proposal writes the scope into the shared draft and clears any grid', async () => {
     const user = userEvent.setup();
     listComposes.mockResolvedValue({

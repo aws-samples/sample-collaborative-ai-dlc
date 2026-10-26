@@ -588,6 +588,37 @@ describe('PUT /projects/:id', () => {
     });
   });
 
+  it('rejects recommending an admin-disabled CLI but keeps an existing recommendation', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    ssmParams.set('/collab/dev/disabled-clis', '["codex","kiro"]');
+    try {
+      const update = (agentCli) =>
+        handler({
+          httpMethod: 'PUT',
+          pathParameters: { projectId: id },
+          body: JSON.stringify({ agentCli }),
+          ...claims(sub),
+        });
+
+      const denied = await update('codex');
+      expect(denied.statusCode).toBe(400);
+      expect(JSON.parse(denied.body).code).toBe('agent_cli_disabled');
+
+      // The project already recommends kiro (the default); re-saving it is not a new selection.
+      expect((await update('kiro')).statusCode).toBe(200);
+      expect((await update('claude')).statusCode).toBe(200);
+      const fetched = await handler({
+        httpMethod: 'GET',
+        pathParameters: { projectId: id },
+        ...claims(sub),
+      });
+      expect(JSON.parse(fetched.body).agentCli).toBe('claude');
+    } finally {
+      ssmParams.delete('/collab/dev/disabled-clis');
+    }
+  });
+
   it('persists cliModels overrides', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub, {

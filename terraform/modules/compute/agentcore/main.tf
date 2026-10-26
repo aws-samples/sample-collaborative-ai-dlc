@@ -674,6 +674,24 @@ resource "aws_ssm_parameter" "compose_llm_bypass" {
   tags = var.tags
 }
 
+# Agent CLIs disabled platform-wide — a JSON array of CLI ids (kiro, claude,
+# opencode, codex). A disabled CLI cannot be selected for a new intent, a DRAFT
+# compose/assist, or as a space's recommended CLI; runs that already pinned it
+# are unaffected. Seeded from var.disabled_clis (empty = all enabled), then
+# managed by the Admin UI at runtime.
+resource "aws_ssm_parameter" "disabled_clis" {
+  name        = "/${var.project_name}/${var.environment}/disabled-clis"
+  description = "Agent CLIs disabled for selection (JSON array, Admin UI managed)"
+  type        = "String"
+  value       = jsonencode(var.disabled_clis)
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
 # Kiro API key — stored as SecureString; set via Admin UI.
 # Created with a placeholder; the driver treats "placeholder" as "not configured".
 resource "aws_ssm_parameter" "kiro_api_key" {

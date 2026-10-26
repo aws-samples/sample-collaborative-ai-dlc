@@ -3229,12 +3229,15 @@ export const handler = async (event, context) => {
             code: 'agent_cli_required',
           });
         }
-        const resolved = await resolveSelectedAgentCredential({
-          projectId,
-          userId: sub,
-          agentCli: selectedAgentCli,
-          runtimeCapabilities: meta.environment,
-        });
+        const resolved = await resolveSelectedAgentCredential(
+          {
+            projectId,
+            userId: sub,
+            agentCli: selectedAgentCli,
+            runtimeCapabilities: meta.environment,
+          },
+          { ssm },
+        );
         if (resolved.error) {
           return response(resolved.error.statusCode, resolved.error.body);
         }
@@ -3667,12 +3670,15 @@ export const handler = async (event, context) => {
             code: 'agent_cli_required',
           });
         }
-        const resolved = await resolveSelectedAgentCredential({
-          projectId,
-          userId: sub,
-          agentCli: requestedCli,
-          runtimeCapabilities: meta.environment,
-        });
+        const resolved = await resolveSelectedAgentCredential(
+          {
+            projectId,
+            userId: sub,
+            agentCli: requestedCli,
+            runtimeCapabilities: meta.environment,
+          },
+          { ssm },
+        );
         if (resolved.error) {
           return response(resolved.error.statusCode, resolved.error.body);
         }

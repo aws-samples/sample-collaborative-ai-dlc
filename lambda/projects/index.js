@@ -6,6 +6,11 @@ import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  AGENT_CLI_IDS,
+  agentCliDisabledError,
+  readDisabledClis,
+} from '../shared/agent-cli-availability.js';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
@@ -1717,11 +1722,24 @@ export const handler = async (event, context) => {
             .next();
         }
         if (data.agentCli) {
-          const validClis = ['kiro', 'claude', 'opencode', 'codex'];
-          if (!validClis.includes(data.agentCli)) {
+          if (!AGENT_CLI_IDS.includes(data.agentCli)) {
             return response(400, {
-              error: `Invalid agentCli value. Must be one of: ${validClis.join(', ')}`,
+              error: `Invalid agentCli value. Must be one of: ${AGENT_CLI_IDS.join(', ')}`,
             });
+          }
+          // Changing the recommendation to a CLI the platform admin disabled is
+          // rejected; leaving an already-recommended CLI in place is not.
+          const currentCli = await g.V().has('Project', 'id', projectId).values('agent_cli').next();
+          // Matches the read path's legacy default for projects without agent_cli.
+          if ((currentCli.value || 'kiro') !== data.agentCli) {
+            const disabledClis = await readDisabledClis(
+              ssm,
+              process.env.AGENT_SETTINGS_SSM_PREFIX || '',
+            );
+            if (disabledClis.includes(data.agentCli)) {
+              const disabledError = agentCliDisabledError(data.agentCli);
+              return response(disabledError.statusCode, disabledError.body);
+            }
           }
           await g
             .V()

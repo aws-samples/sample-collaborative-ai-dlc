@@ -766,6 +766,7 @@ module "agentcore" {
   # failing every stage with cli_nonzero_exit. Let kiro resolve the model.
   kiro_model          = "auto"
   codex_model         = var.codex_model
+  disabled_clis       = var.disabled_clis
   kms_key_arn         = var.kms_key_arn
   deletion_protection = var.deletion_protection
 

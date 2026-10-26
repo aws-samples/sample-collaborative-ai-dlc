@@ -3483,6 +3483,24 @@ describe('POST /start', () => {
     expect(JSON.parse(res.body).code).toBe('agent_cli_required');
   });
 
+  it('rejects a CLI the platform admin disabled without mutating the DRAFT', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const key = keyOf(`EXEC#${intent.id}`, 'META');
+    const before = { ...procStore.get(key) };
+    ssmMock
+      .on(GetParameterCommand, { Name: '/collab/dev/disabled-clis' })
+      .resolves({ Parameter: { Value: '["kiro"]' } });
+
+    const res = await start(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('agent_cli_disabled');
+    expect(procStore.get(key)).toEqual(before);
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+
   it('returns typed SOURCE_CONTROL_NOT_READY before mutating intent state', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

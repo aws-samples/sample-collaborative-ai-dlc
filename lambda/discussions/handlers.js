@@ -648,12 +648,15 @@ export const assistDiscussion = async (event, res) => {
     if (!credentialProvider) {
       return { requestedCli: null, credentialBinding: null };
     }
-    const selected = await resolveSelectedAgentCredential({
-      projectId: auth.projectId,
-      userId: caller.sub,
-      agentCli: requestedCli,
-      runtimeCapabilities: execution?.environment,
-    });
+    const selected = await resolveSelectedAgentCredential(
+      {
+        projectId: auth.projectId,
+        userId: caller.sub,
+        agentCli: requestedCli,
+        runtimeCapabilities: execution?.environment,
+      },
+      { ssm },
+    );
     if (selected.error)
       throw Object.assign(new Error(selected.error.body.error), { code: selected.error.body.code });
     return {
@@ -734,7 +737,9 @@ export const assistDiscussion = async (event, res) => {
     } catch (err) {
       logger.error('discussion assist invoke failed', err);
       return await failMessage(
-        err?.code === 'agent_credential_required' ? `Reason: ${err.message}` : '',
+        err?.code === 'agent_credential_required' || err?.code === 'agent_cli_disabled'
+          ? `Reason: ${err.message}`
+          : '',
       );
     }
     return null;

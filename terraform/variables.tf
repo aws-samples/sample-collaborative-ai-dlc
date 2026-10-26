@@ -96,9 +96,25 @@ variable "bedrock_region" {
 }
 
 variable "codex_model" {
-  description = "Default Codex-on-Bedrock model id (exact openai.* id, e.g. openai.gpt-5.5) seeded into the cli-models SSM parameter (empty = none)"
+  description = "Default Codex-on-Bedrock model id (exact openai.* id, e.g. openai.gpt-5.5) seeded into the cli-models SSM parameter (empty = no pinned default). This only pins a model; it does not enable or select the Codex CLI — use disabled_clis or Admin → Agents to control which CLIs are selectable."
   type        = string
   default     = "openai.gpt-5.5"
+}
+
+variable "disabled_clis" {
+  description = "Agent CLIs (kiro, claude, opencode, codex) that cannot be selected for new intents. Seeds the disabled-clis SSM parameter on first apply only; afterwards platform admins manage it in Admin → Agents. Empty = every CLI enabled."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for cli in var.disabled_clis : contains(["kiro", "claude", "opencode", "codex"], cli)])
+    error_message = "disabled_clis may only contain kiro, claude, opencode, or codex."
+  }
+
+  validation {
+    condition     = length(distinct(var.disabled_clis)) < 4
+    error_message = "At least one agent CLI must stay enabled."
+  }
 }
 
 variable "aidlc_repo_ref" {

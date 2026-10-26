@@ -891,8 +891,12 @@ function IntentComposePageContent() {
                     AGENT_CLI_METADATA[cli].credentialProvider
                   ] ??
                   null;
-                const unavailableReason =
-                  status?.installed === false
+                const disabledByAdmin =
+                  status?.enabled === false ||
+                  (agentCapabilities?.disabledClis ?? []).includes(cli);
+                const unavailableReason = disabledByAdmin
+                  ? 'disabled by admin'
+                  : status?.installed === false
                     ? 'not installed'
                     : status?.authed === false || !source
                       ? 'no credential'

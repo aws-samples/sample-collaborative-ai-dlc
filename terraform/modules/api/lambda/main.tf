@@ -498,6 +498,8 @@ resource "aws_iam_role_policy" "agents_orchestrator" {
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/pr-strategy",
           # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
+          # Agent CLIs disabled platform-wide (Admin UI toggle).
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/disabled-clis",
           # Global custom MCP servers injected into every agent session (merged
           # with project-level entries at intent-create).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
@@ -725,6 +727,13 @@ resource "aws_iam_role_policy" "neptune_artifacts" {
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",
         ]
+      },
+      # Admin disabled-CLI set: a space cannot recommend a CLI the platform
+      # admin switched off.
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = ["arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/disabled-clis"]
       },
       # Project teardown deletes the two Space credential SecureStrings. Keep
       # this delete-only so the Projects Lambda cannot read or rotate values.
@@ -2421,6 +2430,9 @@ resource "aws_iam_role_policy" "discussions" {
         Resource = [
           var.realtime_doc_secret_param_arn,
           var.agent_credential_grant_secret_param_arn,
+          # Agent CLIs disabled platform-wide — enforced for DRAFT assists that
+          # select a CLI; assists on a started intent use its pinned CLI.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/disabled-clis",
         ]
       },
       {
@@ -2935,6 +2947,9 @@ resource "aws_iam_role_policy" "intents" {
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/pr-strategy",
           # Composer LLM-bypass toggle (deterministic keyword match vs always-LLM).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/compose-llm-bypass",
+          # Agent CLIs disabled platform-wide — enforced when an intent selects
+          # its CLI (start / DRAFT compose); pinned runs are unaffected.
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/disabled-clis",
           # Global custom MCP servers default (merged under the project's custom
           # MCP servers at intent create, snapshotted onto the execution META).
           "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/custom-mcp-servers",

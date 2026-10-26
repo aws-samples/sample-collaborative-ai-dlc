@@ -55,6 +55,8 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   });
   const [modelOptions, setModelOptions] = useState<Partial<Record<AgentCli, AgentModel[]>>>({});
   const [runtimeClis, setRuntimeClis] = useState<RuntimeCliStatus[] | null>(null);
+  // CLIs a platform admin disabled — they can't become the recommendation.
+  const [disabledClis, setDisabledClis] = useState<AgentCli[]>([]);
   const [globalCliModels, setGlobalCliModels] = useState<CliModels>({});
   // Names of the globally-provided MCP servers (shown for reference in the
   // project MCP editor; the config/secrets are not exposed to project admins).
@@ -101,6 +103,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
         setAvailableCliNames(c.available);
         if (c.runtimeModelOverride) setRuntimeModelOverride(c.runtimeModelOverride);
         if (c.runtimeClis) setRuntimeClis(c.runtimeClis);
+        setDisabledClis(c.disabledClis ?? []);
         if (c.models) setModelOptions(c.models);
       })
       .catch(() => {
@@ -175,7 +178,10 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
     if (runtimeClis) return runtimeClis.find((c) => c.cli === cli)?.installed ?? false;
     return availableCliNames.includes(cli);
   };
+  const isCliDisabledByAdmin = (cli: AgentCli): boolean =>
+    disabledClis.includes(cli) || runtimeClis?.find((c) => c.cli === cli)?.enabled === false;
   const cliUnavailableReason = (cli: AgentCli): string | null => {
+    if (isCliDisabledByAdmin(cli)) return 'disabled by admin';
     const rt = runtimeClis?.find((c) => c.cli === cli);
     if (!rt) return isCliAvailable(cli) ? null : 'not available';
     if (rt.available) return null;
@@ -290,7 +296,9 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
               const unavailableReason = cliUnavailableReason(key);
               const isSelected = editAgentCli === key;
               const isCurrent = project.agentCli === key;
-              const isSelectable = (isInstalled || isCurrent) && canEdit && !savingCli;
+              const isDisabledByAdmin = isCliDisabledByAdmin(key);
+              const isSelectable =
+                ((isInstalled && !isDisabledByAdmin) || isCurrent) && canEdit && !savingCli;
               return (
                 <button
                   key={key}
