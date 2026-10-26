@@ -466,13 +466,73 @@ const markdownToAdf = (body) => {
 
 const escapeJqlString = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-const buildJql = (projectKey, { state, q }) => {
+// Characters Jira's text search treats as syntax. Stripped from the
+// prefix-match term only; the plain `text ~` term keeps the user's input.
+const TEXT_SEARCH_SYNTAX = /[+\-&|!(){}[\]^~*?\\:"/]/g;
+
+// Matches an issue key such as ARC-1341 (Jira keys start with a letter).
+const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
+
+// Search terms. `text ~` matches whole words only, so "auth" never found
+// "authentication" and part-typed words found nothing. A trailing-wildcard
+// summary match covers what the user is still typing.
+const buildSearchClause = (q) => {
+  const raw = q.trim();
+  const clauses = [`text ~ "${escapeJqlString(raw)}"`];
+  const words = raw.replace(TEXT_SEARCH_SYNTAX, ' ').split(/\s+/).filter(Boolean);
+  if (words.length > 0) clauses.push(`summary ~ "${escapeJqlString(`${words.join(' ')}*`)}"`);
+  return `(${clauses.join(' OR ')})`;
+};
+
+const buildJql = (projectKey, { state, q, types }) => {
   const parts = [`project = "${escapeJqlString(projectKey)}"`];
   if (state === 'closed') parts.push('statusCategory = Done');
   else if (state !== 'all') parts.push('statusCategory != Done');
-  if (q && q.trim()) parts.push(`text ~ "${escapeJqlString(q.trim())}"`);
-  return parts.join(' AND ');
+  if (types && types.length > 0) {
+    parts.push(`issuetype in (${types.map((t) => `"${escapeJqlString(t)}"`).join(', ')})`);
+  }
+  if (q && q.trim()) parts.push(buildSearchClause(q));
+  // Without an order Jira returns key order, oldest first, so the tickets
+  // people are working on sat pages deep behind the scroll box.
+  return `${parts.join(' AND ')} ORDER BY updated DESC`;
 };
+
+// Issue types are per project, and JQL rejects the whole query if it names a
+// type the site doesn't have. Requested types are matched against the
+// project's own, case-insensitively; cached so paging doesn't refetch them.
+const ISSUE_TYPE_TTL_MS = 10 * 60 * 1000;
+const issueTypeCache = new Map();
+
+const projectIssueTypes = async (ctx, projectKey) => {
+  const cacheKey = `${ctx.baseUrl}|${projectKey}`;
+  const hit = issueTypeCache.get(cacheKey);
+  if (hit && hit.expiresAt > Date.now()) return hit.names;
+  const r = await jiraFetch(ctx, `/rest/api/3/project/${encodeURIComponent(projectKey)}`);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new ProviderError(r.status, data.errorMessages?.[0] || 'Failed to load Jira issue types');
+  }
+  const names = (Array.isArray(data.issueTypes) ? data.issueTypes : [])
+    .map((t) => t?.name)
+    .filter((n) => typeof n === 'string' && n);
+  issueTypeCache.set(cacheKey, { names, expiresAt: Date.now() + ISSUE_TYPE_TTL_MS });
+  return names;
+};
+
+const parseTypes = (raw) =>
+  typeof raw === 'string'
+    ? [
+        ...new Set(
+          raw
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean),
+        ),
+      ].slice(0, 10)
+    : [];
+
+// Issue fields every list call asks for.
+const ISSUE_LIST_FIELDS = 'summary,status,labels,reporter,created,updated,description,issuetype';
 
 const DEFAULT_PER_PAGE = 30;
 const MAX_PER_PAGE = 100;
@@ -559,6 +619,21 @@ const listExternalProjects = async ({ ddb, ssm, secrets, userId }) => {
   return projects.slice(0, PROJECT_MAX_RESULTS);
 };
 
+// The issue with this key, if it is in the bound project and passes the
+// list's state and type filters; otherwise null.
+const findIssueByKey = async (ctx, projectKey, key, { state, types }) => {
+  const params = new URLSearchParams({ fields: `${ISSUE_LIST_FIELDS},project` });
+  const r = await jiraFetch(ctx, `/rest/api/3/issue/${encodeURIComponent(key)}?${params}`);
+  if (!r.ok) return null;
+  const data = await r.json().catch(() => null);
+  if (!data || data.fields?.project?.key !== projectKey) return null;
+  const issue = mapIssueToTrackerIssue(data, ctx.siteHost);
+  if (state === 'open' && issue.state !== 'open') return null;
+  if (state === 'closed' && issue.state !== 'closed') return null;
+  if (types.length > 0 && !types.includes(issue.entityType)) return null;
+  return issue;
+};
+
 const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) => {
   if (!projectKey) {
     throw new ProviderError(400, 'Invalid externalProjectKey for jira-cloud');
@@ -576,9 +651,35 @@ const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) 
   // generator can drive paging without knowing it's cursor-based; the
   // user-visible `page` is still incremented in the generator and is just
   // a counter on this side.
-  const jql = buildJql(projectKey, { state, q: opts.q });
-  const fields = 'summary,status,labels,reporter,created,updated,description,issuetype';
-  const params = new URLSearchParams({ jql, maxResults: String(perPage), fields });
+  const hasPrev = page > 1;
+  const empty = {
+    items: [],
+    page,
+    perPage,
+    hasNext: false,
+    hasPrev,
+    totalCount: 0,
+    nextPageToken: null,
+  };
+
+  let types = [];
+  const requestedTypes = parseTypes(opts.type);
+  if (requestedTypes.length > 0) {
+    const known = await projectIssueTypes(ctx, projectKey);
+    const byLower = new Map(known.map((n) => [n.toLowerCase(), n]));
+    types = requestedTypes.map((t) => byLower.get(t.toLowerCase())).filter(Boolean);
+    // The project has none of the requested types (say, Ideas in a software
+    // project): that is an empty list, not a JQL error.
+    if (types.length === 0) return empty;
+  }
+
+  const q = typeof opts.q === 'string' ? opts.q.trim() : '';
+  const jql = buildJql(projectKey, { state, q, types });
+  const params = new URLSearchParams({
+    jql,
+    maxResults: String(perPage),
+    fields: ISSUE_LIST_FIELDS,
+  });
   if (pageToken) params.set('nextPageToken', pageToken);
   const url = `/rest/api/3/search/jql?${params.toString()}`;
 
@@ -589,10 +690,18 @@ const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) 
   }
 
   const rawItems = Array.isArray(data.issues) ? data.issues : [];
-  const items = rawItems.map((i) => mapIssueToTrackerIssue(i, ctx.siteHost));
+  let items = rawItems.map((i) => mapIssueToTrackerIssue(i, ctx.siteHost));
+
+  // Typing a key (ARC-1341) should find that issue. Text search doesn't index
+  // keys, and `key = X` fails the whole JQL query when X doesn't exist, so
+  // look it up directly and put it first. Only on the first page.
+  if (!pageToken && ISSUE_KEY.test(q)) {
+    const exact = await findIssueByKey(ctx, projectKey, q.toUpperCase(), { state, types });
+    if (exact) items = [exact, ...items.filter((i) => i.resourceId !== exact.resourceId)];
+  }
+
   const nextPageToken = typeof data.nextPageToken === 'string' ? data.nextPageToken : null;
   const hasNext = data.isLast === true ? false : !!nextPageToken;
-  const hasPrev = page > 1;
 
   return { items, page, perPage, hasNext, hasPrev, totalCount: null, nextPageToken };
 };

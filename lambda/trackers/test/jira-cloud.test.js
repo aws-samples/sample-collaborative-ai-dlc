@@ -319,6 +319,93 @@ describe('jira-cloud — provider methods', () => {
       expect(url).toContain('text ~ "foo\\" OR bar"');
     });
 
+    const jqlOf = (call) => new URL(call[0]).searchParams.get('jql');
+
+    it('orders by most recently updated', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'PROJ', {});
+      expect(jqlOf(fetchMock.mock.calls[0])).toBe(
+        'project = "PROJ" AND statusCategory != Done ORDER BY updated DESC',
+      );
+    });
+
+    it('lists every state with state=all', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'PROJ', { state: 'all' });
+      expect(jqlOf(fetchMock.mock.calls[0])).not.toContain('statusCategory');
+    });
+
+    it('adds a prefix match on summary so part-typed words match', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'PROJ', { q: 'auth (sso' });
+      expect(jqlOf(fetchMock.mock.calls[0])).toContain(
+        '(text ~ "auth (sso" OR summary ~ "auth sso*")',
+      );
+    });
+
+    it('puts an exact key match first and skips it from the search results', async () => {
+      const exact = issueFixture({ key: 'PROJ-7' });
+      exact.fields.project = { key: 'PROJ' };
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({
+            issues: [issueFixture({ key: 'PROJ-9' }), issueFixture({ key: 'PROJ-7' })],
+            isLast: true,
+          }),
+        )
+        .mockResolvedValueOnce(okResponse(exact));
+      const page = await jiraProvider.listIssues(ctx(), 'PROJ', { q: 'proj-7' });
+      expect(page.items.map((i) => i.resourceId)).toEqual(['PROJ-7', 'PROJ-9']);
+      expect(fetchMock.mock.calls[1][0]).toContain('/rest/api/3/issue/PROJ-7?');
+    });
+
+    it('ignores a key match from another project', async () => {
+      const other = issueFixture({ key: 'OTHER-7' });
+      other.fields.project = { key: 'OTHER' };
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }))
+        .mockResolvedValueOnce(okResponse(other));
+      const page = await jiraProvider.listIssues(ctx(), 'PROJ', { q: 'OTHER-7' });
+      expect(page.items).toEqual([]);
+    });
+
+    it('ignores a key that does not exist', async () => {
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }))
+        .mockResolvedValueOnce(errResponse(404, { errorMessages: ['Issue does not exist'] }));
+      const page = await jiraProvider.listIssues(ctx(), 'PROJ', { q: 'PROJ-99999' });
+      expect(page.items).toEqual([]);
+    });
+
+    it('filters by issue type, using the names the project actually has', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({ issueTypes: [{ name: 'Epic' }, { name: 'Story' }, { name: 'Bug' }] }),
+        )
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'TYPES1', { type: 'epic,STORY,Idea' });
+      expect(fetchMock.mock.calls[0][0]).toContain('/rest/api/3/project/TYPES1');
+      expect(jqlOf(fetchMock.mock.calls[1])).toContain('issuetype in ("Epic", "Story")');
+    });
+
+    it('returns an empty page when the project has none of the requested types', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ issueTypes: [{ name: 'Task' }] }));
+      const page = await jiraProvider.listIssues(ctx(), 'TYPES2', { type: 'Idea' });
+      expect(page).toMatchObject({ items: [], hasNext: false });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+
+    it('caches project issue types across pages', async () => {
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ issueTypes: [{ name: 'Idea' }] }))
+        .mockResolvedValueOnce(okResponse({ issues: [], nextPageToken: 'c2' }))
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'TYPES3', { type: 'Idea' });
+      await jiraProvider.listIssues(ctx(), 'TYPES3', { type: 'Idea', pageToken: 'c2' });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(jqlOf(fetchMock.mock.calls[2])).toContain('issuetype in ("Idea")');
+    });
+
     it('forwards an opaque pageToken cursor when provided', async () => {
       fetchMock.mockResolvedValueOnce(okResponse({ issues: [], nextPageToken: 'cursor-2' }));
       const result = await jiraProvider.listIssues(ctx(), 'PROJ', { pageToken: 'cursor-1' });
