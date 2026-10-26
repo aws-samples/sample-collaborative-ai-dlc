@@ -1657,6 +1657,7 @@ export const handler = async (event, context) => {
 
         // Notification event for integrations (best-effort, never throws).
         await publishNotificationEvent('space.created', {
+          eventId: id,
           projectId: id,
           name: data.name,
           createdById: userId,
