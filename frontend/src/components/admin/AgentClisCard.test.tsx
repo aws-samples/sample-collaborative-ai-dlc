@@ -49,4 +49,15 @@ describe('AgentClisCard', () => {
     expect(screen.getByRole('switch', { name: 'Codex' })).not.toBeChecked();
     expect(screen.getByText(/at least one CLI must stay enabled/)).toBeInTheDocument();
   });
+
+  it('blocks saving when the stored settings fail to load', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    getSettings.mockRejectedValue(new Error('network'));
+    render(<AgentClisCard />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Couldn.t load/);
+    expect(screen.getByRole('switch', { name: 'Codex' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Save Agent CLIs' })).toBeDisabled();
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
 });

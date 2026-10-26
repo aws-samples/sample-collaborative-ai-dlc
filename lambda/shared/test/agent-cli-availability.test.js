@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import {
+  defaultAgentCli,
   normalizeDisabledClis,
   parseDisabledClis,
   readDisabledClis,
@@ -31,6 +32,14 @@ describe('normalizeDisabledClis', () => {
     const all = normalizeDisabledClis(['kiro', 'claude', 'opencode', 'codex']);
     expect(all.valid).toBe(false);
     expect(all.issues).toEqual(['At least one agent CLI must stay enabled']);
+  });
+});
+
+describe('defaultAgentCli', () => {
+  it('prefers Kiro, else the first enabled CLI', () => {
+    expect(defaultAgentCli([])).toBe('kiro');
+    expect(defaultAgentCli(['kiro'])).toBe('claude');
+    expect(defaultAgentCli(['kiro', 'claude'])).toBe('opencode');
   });
 });
 

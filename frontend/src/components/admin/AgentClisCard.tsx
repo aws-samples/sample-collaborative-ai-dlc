@@ -25,6 +25,9 @@ export function AgentClisCard() {
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState<SaveResult>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Without the stored list, saving would overwrite it with whatever the
+  // form shows (everything enabled), so a failed load blocks saving.
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     agentsService
@@ -34,7 +37,10 @@ export function AgentClisCard() {
         setSavedDisabled(value);
         setDisabled(value);
       })
-      .catch((e) => console.error('Failed to load agent settings:', e))
+      .catch((e) => {
+        console.error('Failed to load agent settings:', e);
+        setLoadFailed(true);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -94,7 +100,7 @@ export function AgentClisCard() {
                   <Switch
                     id={id}
                     checked={enabled}
-                    disabled={saving || isLastEnabled}
+                    disabled={saving || loadFailed || isLastEnabled}
                     onCheckedChange={(checked) => toggle(cli, checked)}
                   />
                 </div>
@@ -105,9 +111,14 @@ export function AgentClisCard() {
             Disabled CLIs can&apos;t be selected when starting or composing an intent, or as a
             space&apos;s recommended CLI. Intents that already started keep their CLI.
           </p>
+          {loadFailed && (
+            <p role="alert" className="text-[11px] text-destructive">
+              Couldn&apos;t load the current CLI settings. Reload the page before saving.
+            </p>
+          )}
           <SaveStatusButton
             onClick={save}
-            disabled={sameSet(disabled, savedDisabled)}
+            disabled={loadFailed || sameSet(disabled, savedDisabled)}
             saving={saving}
             label="Save Agent CLIs"
             result={saveResult}

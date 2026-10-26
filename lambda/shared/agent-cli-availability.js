@@ -79,6 +79,12 @@ export async function readDisabledClis(ssm, prefix) {
   }
 }
 
+// The default recommended CLI for a new space: Kiro unless disabled, else the
+// first enabled CLI in canonical order. Writes validate that at least one CLI
+// stays enabled; the 'kiro' fallback only covers a hand-edited parameter.
+export const defaultAgentCli = (disabledClis = []) =>
+  AGENT_CLI_IDS.find((cli) => !disabledClis.includes(cli)) ?? 'kiro';
+
 export const agentCliDisabledError = (agentCli) => ({
   statusCode: 400,
   body: {

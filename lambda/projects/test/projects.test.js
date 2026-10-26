@@ -588,6 +588,25 @@ describe('PUT /projects/:id', () => {
     });
   });
 
+  it('defaults a new space to the first enabled CLI and rejects a disabled one', async () => {
+    const sub = `u-${randomUUID()}`;
+    ssmParams.set('/collab/dev/disabled-clis', '["kiro"]');
+    try {
+      const created = await createProject(sub);
+      expect(created.agentCli).toBe('claude');
+
+      const denied = await handler({
+        httpMethod: 'POST',
+        body: JSON.stringify({ name: 'P', gitRepo: 'r', agentCli: 'kiro' }),
+        ...claims(sub),
+      });
+      expect(denied.statusCode).toBe(400);
+      expect(JSON.parse(denied.body).code).toBe('agent_cli_disabled');
+    } finally {
+      ssmParams.delete('/collab/dev/disabled-clis');
+    }
+  });
+
   it('rejects recommending an admin-disabled CLI but keeps an existing recommendation', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub);
