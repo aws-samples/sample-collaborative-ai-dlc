@@ -69,19 +69,20 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
       .finally(() => setFetching(false));
   }, [provider, repoSource]);
 
-  // GitLab caps the unfiltered list (large group trees exceed it), so a typed
-  // search is also sent to GitLab and the matches are merged into the list.
-  // Merging, rather than replacing, keeps earlier selections resolvable.
-  const serverSearch = repoSource === 'oauth' && provider === 'gitlab';
+  // Providers that cap the unfiltered list (GitLab: large group trees exceed
+  // it) expose `searchRepos`; a typed search is sent there and the matches are
+  // merged into the list. Merging, rather than replacing, keeps earlier
+  // selections resolvable.
+  const searchRepos =
+    repoSource === 'oauth' ? getGitProviderService(provider).searchRepos : undefined;
   const [searching, setSearching] = useState(false);
   useEffect(() => {
     const term = search.trim();
-    if (!serverSearch || term.length < MIN_SERVER_SEARCH_LENGTH) return;
+    if (!searchRepos || term.length < MIN_SERVER_SEARCH_LENGTH) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       setSearching(true);
-      getGitProviderService(provider)
-        .listRepos(term)
+      searchRepos(term)
         .then((matches) => {
           if (cancelled) return;
           setFetched((current) => {
@@ -101,7 +102,7 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
       clearTimeout(timer);
       setSearching(false);
     };
-  }, [search, serverSearch, provider]);
+  }, [search, searchRepos]);
 
   const excludeSet = useMemo(() => new Set(props.exclude ?? []), [props.exclude]);
 

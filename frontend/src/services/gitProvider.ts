@@ -172,8 +172,10 @@ export interface GitComment {
 export interface GitProviderService {
   getAuthUrl: () => Promise<{ url: string }>;
   getStatus: () => Promise<GitProviderStatus>;
-  // `search` is honoured only by providers that search server-side (GitLab).
-  listRepos: (search?: string) => Promise<GitRepo[]>;
+  listRepos: () => Promise<GitRepo[]>;
+  // Implemented only by providers that can search server-side (GitLab), for
+  // projects the capped `listRepos` result leaves out.
+  searchRepos?: (q: string) => Promise<GitRepo[]>;
   disconnect: () => Promise<unknown>;
 }
 
@@ -199,10 +201,10 @@ export const githubService: GitProviderService = {
 export const gitlabService: GitProviderService = {
   getAuthUrl: () => api.get<{ url: string }>('/gitlab/auth'),
   getStatus: () => api.get<GitProviderStatus>('/gitlab/status'),
+  listRepos: () => api.get<GitRepo[]>('/gitlab/repos'),
   // The unfiltered list is capped server-side, so the picker also sends its
   // search text for GitLab to match across every project the user can push to.
-  listRepos: (search?: string) =>
-    api.get<GitRepo[]>(search ? `/gitlab/repos?q=${encodeURIComponent(search)}` : '/gitlab/repos'),
+  searchRepos: (q: string) => api.get<GitRepo[]>(`/gitlab/repos?q=${encodeURIComponent(q)}`),
   disconnect: () => api.delete('/gitlab/disconnect'),
 };
 
