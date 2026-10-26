@@ -15,7 +15,10 @@ const DRAINED_STATUSES = new Set(['CREATED', 'RUNNING', 'WAITING']);
 // Detecting its arrival on the runtime, rather than the creation of a
 // resource, also catches a retry after an apply that failed before the runtime
 // was updated.
-const ACTIVATIONS = [{ flag: 'enable_mcp_gateway', variable: 'AIDLC_MCP_GATEWAY_URL' }];
+const ACTIVATIONS = [
+  { flag: 'enable_mcp_gateway', variable: 'AIDLC_MCP_GATEWAY_URL' },
+  { flag: 'enable_engine_data', variable: 'ENGINE_DATA_FUNCTION' },
+];
 
 const isRuntime = (change) =>
   change.mode === 'managed' &&

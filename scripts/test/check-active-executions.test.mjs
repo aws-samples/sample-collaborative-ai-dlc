@@ -96,6 +96,19 @@ test('a retry after an apply that created the Gateway but not the runtime change
   );
 });
 
+test('turning engine-data on later is an activation of its own', () => {
+  const gateway = { ...BASE_ENV, ...GATEWAY_ENV };
+  const engineData = { ...gateway, ENGINE_DATA_FUNCTION: 'test-engine-data' };
+  assert.deepEqual(activatedFlags(plan(table(), runtime({ before: gateway, after: engineData }))), [
+    'enable_engine_data',
+  ]);
+  assert.deepEqual(activatedFlags(plan(table(), runtime({ after: engineData }))), [
+    'enable_mcp_gateway',
+    'enable_engine_data',
+  ]);
+  assert.deepEqual(activatedFlags(plan(table(), runtime({ before: engineData }))), []);
+});
+
 test('reads the existing process table from the plan, not a fresh one', () => {
   assert.deepEqual(existingExecutionsTable(plan(table())), {
     name: 'test-v2-executions',
