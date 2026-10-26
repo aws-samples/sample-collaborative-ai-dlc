@@ -325,6 +325,48 @@ For shared deployment and validation procedures, see [Setup](../getting-started/
 and [Testing](../development/testing.md). The checklist below distinguishes an
 implemented capability from proof that it works through the deployed user path.
 
+### First-path EFS resume qualification
+
+NE-02 uses separate fresh qualification intents in the existing dev-enabled space,
+with AI-DLC 2.11.1, Claude Code and a connected GitHub application repository.
+Deploy the same candidate's frontend, authority, workers and runtime before
+testing. Record the candidate commit and deployed versions, exact Bedrock model,
+credential source, region, immutable runtime-image digest, harness version,
+package/materialization identifiers and application source commit. Verify these
+against the accepted execution configuration before exercising recovery; a
+Terraform default or mutable image tag is insufficient.
+
+1. Start through the application and reach a real workflow question. Record its
+   interaction and publication identifiers and any accepted answer's delivery
+   status. Let the waiting runtime expire, then observe recovery through the
+   application's ordinary status reads.
+2. In a separate intent, interrupt its runtime during an active tool after it has
+   created unfinished edits and dependency links. Preserve its EFS workspace.
+   Ordinary intent cancellation is a terminal user command and does not substitute
+   for unexpected runtime loss in this scenario.
+3. For both cases, require confirmed predecessor stop and a member's **Resume in
+   a fresh session** action through the browser. Trace the accepted public request
+   to the authority, worker and runtime. Confirm the same workspace identity and
+   a different CLI session identity, with no concurrent predecessor writer.
+4. Verify AI-DLC reconciles the surviving edits and dependencies, runs the relevant
+   build/tests, admits a new publication and reaches its next real question.
+   Previously accepted answers must retain their delivery state and history;
+   recovery itself must not replay an answer or approve a gate. Capture evidence
+   that the turn used no private recovery capture, export, import or restore.
+5. Exercise missing and incorrectly bound workspaces using isolated qualification
+   resources. The browser must show that resume is unavailable, with no replacement
+   workspace, model turn or admitted publication. Preserve existing dev workspaces
+   and earlier failed intents.
+
+**Local readiness, 2026-10-26:** the frontend recovery service and authenticated
+API wrapper now run against the real public router, execution API and authority
+store in regression tests. A lost response preserves the confirmation and command
+identities and produces one authority transaction; denied membership produces no
+dispatch or state change. Both focused tests and all 1,384 native-runtime-control
+tests pass. Authentication, HTTP transport and AWS persistence use test fixtures;
+these results do not establish deployed browser, harness or EFS qualification.
+Deployment and every live scenario above remain pending, so NE-02 stays open.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item

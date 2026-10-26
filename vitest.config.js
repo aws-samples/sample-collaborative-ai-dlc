@@ -19,6 +19,13 @@ const globalSetup = [
 export default defineConfig({
   test: {
     projects: lambdas.map((name) => ({
+      ...(name === 'native-runtime-control'
+        ? {
+            resolve: {
+              alias: { '@': fileURLToPath(new URL('./frontend/src', import.meta.url)) },
+            },
+          }
+        : {}),
       test: {
         name,
         root: fileURLToPath(new URL(name, lambdaRoot)),

@@ -5,6 +5,9 @@ import { fileURLToPath } from 'node:url';
 // services from the full repository test configuration. The HTTP suite still
 // uses real loopback sockets. This does not qualify deployed native execution.
 export default defineConfig({
+  resolve: {
+    alias: { '@': fileURLToPath(new URL('./frontend/src', import.meta.url)) },
+  },
   test: {
     root: fileURLToPath(new URL('.', import.meta.url)),
     include: [
