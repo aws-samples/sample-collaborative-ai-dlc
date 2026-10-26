@@ -5,7 +5,8 @@
 export interface Branding {
   /** Alt text for the logo and wordmark. */
   name: string;
-  /** Header icon, shown when there is no wordmark. */
+  /** The app's mark: the header icon when there is no wordmark, the Spaces
+   * page header and, unless `favicon` is set, the browser tab icon. */
   logo: string;
   /** Header and sign-in wordmark (light theme). Replaces the icon when set. */
   wordmark?: string;
@@ -13,7 +14,7 @@ export interface Branding {
   wordmarkDark?: string;
   /** Extra stylesheet loaded after the app's own CSS. */
   stylesheet?: string;
-  /** Browser tab icon. */
+  /** Browser tab icon. Defaults to a custom `logo`. */
   favicon?: string;
   /** Document title. */
   title?: string;
@@ -25,13 +26,14 @@ const setting = (value: unknown): string | undefined =>
 /** Read at call time so tests can stub the environment. */
 export const getBranding = (): Branding => {
   const env = import.meta.env;
+  const logo = setting(env.VITE_BRAND_LOGO);
   return {
     name: setting(env.VITE_BRAND_NAME) ?? 'AI-DLC',
-    logo: setting(env.VITE_BRAND_LOGO) ?? '/logo.svg',
+    logo: logo ?? '/logo.svg',
     wordmark: setting(env.VITE_BRAND_WORDMARK),
     wordmarkDark: setting(env.VITE_BRAND_WORDMARK_DARK),
     stylesheet: setting(env.VITE_BRAND_STYLESHEET),
-    favicon: setting(env.VITE_BRAND_FAVICON),
+    favicon: setting(env.VITE_BRAND_FAVICON) ?? logo,
     title: setting(env.VITE_BRAND_TITLE),
   };
 };

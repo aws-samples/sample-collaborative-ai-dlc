@@ -18,6 +18,16 @@ describe('getBranding', () => {
     });
   });
 
+  it('uses a custom logo as the favicon unless one is set', () => {
+    vi.stubEnv('VITE_BRAND_LOGO', '/branding/logo.svg');
+    expect(getBranding()).toMatchObject({
+      logo: '/branding/logo.svg',
+      favicon: '/branding/logo.svg',
+    });
+    vi.stubEnv('VITE_BRAND_FAVICON', '/branding/icon.png');
+    expect(getBranding().favicon).toBe('/branding/icon.png');
+  });
+
   it('reads trimmed VITE_BRAND_* settings and ignores blank ones', () => {
     vi.stubEnv('VITE_BRAND_NAME', ' Example Corp ');
     vi.stubEnv('VITE_BRAND_WORDMARK', '/branding/wordmark.svg');

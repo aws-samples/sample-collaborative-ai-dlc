@@ -671,22 +671,22 @@ A deployment can carry its own logo, wordmark, colours and fonts without changin
 1. Put the assets in a folder outside the repository, for example `brand/` holding `brand.css`, `logo.svg`, `wordmark.svg`, `wordmark-dark.svg` and any fonts. Set `AIDLC_BRANDING_DIR` to it, and `deploy-frontend.sh` copies it to `/branding/` in the site.
 2. Point the build at the files with these variables, exported when you run `deploy-frontend.sh`:
 
-| Variable                   | Effect                                                             | Default           |
-| -------------------------- | ------------------------------------------------------------------ | ----------------- |
-| `VITE_BRAND_STYLESHEET`    | stylesheet loaded after the app's own CSS, before the first paint  | none              |
-| `VITE_BRAND_WORDMARK`      | wordmark in the header and on the sign-in card, replacing the icon | none              |
-| `VITE_BRAND_WORDMARK_DARK` | wordmark for the dark theme                                        | the wordmark      |
-| `VITE_BRAND_LOGO`          | header icon when there is no wordmark                              | `/logo.svg`       |
-| `VITE_BRAND_NAME`          | alt text for the logo and wordmark                                 | `AI-DLC`          |
-| `VITE_BRAND_FAVICON`       | browser tab icon                                                   | `/logo.svg`       |
-| `VITE_BRAND_TITLE`         | browser tab title                                                  | the default title |
+| Variable                   | Effect                                                                                          | Default           |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | ----------------- |
+| `VITE_BRAND_STYLESHEET`    | stylesheet loaded after the app's own CSS, before the first paint                               | none              |
+| `VITE_BRAND_WORDMARK`      | wordmark in the header and on the sign-in card, replacing the icon                              | none              |
+| `VITE_BRAND_WORDMARK_DARK` | wordmark for the dark theme                                                                     | the wordmark      |
+| `VITE_BRAND_LOGO`          | the app's mark: header icon when there is no wordmark, the Spaces page header, and the tab icon | `/logo.svg`       |
+| `VITE_BRAND_NAME`          | alt text for the logo and wordmark                                                              | `AI-DLC`          |
+| `VITE_BRAND_FAVICON`       | browser tab icon                                                                                | the logo          |
+| `VITE_BRAND_TITLE`         | browser tab title                                                                               | the default title |
 
 ```bash
 export AIDLC_BRANDING_DIR="$PWD/../brand"
 export VITE_BRAND_STYLESHEET=/branding/brand.css
 export VITE_BRAND_WORDMARK=/branding/wordmark.svg
 export VITE_BRAND_WORDMARK_DARK=/branding/wordmark-dark.svg
-export VITE_BRAND_FAVICON=/branding/logo.svg
+export VITE_BRAND_LOGO=/branding/logo.svg
 export VITE_BRAND_NAME="Example Corp"
 ./scripts/deploy-frontend.sh dev
 ```
