@@ -611,6 +611,24 @@ describe('stage grants act only as their own stage', () => {
       actor: 'a',
     });
 
+  it('stops a stage grant once its run was retired on the execution', async () => {
+    const ran = {
+      ...STAGE,
+      orchestratorRunId: 'run-old',
+      stageCallbackId: 'cb-1',
+    };
+    const withRun = (orchestratorRunId) => ({
+      createStore: () => ({
+        ...pinned.createStore(),
+        getExecution: async () => ({ ...meta(OWN), orchestratorRunId }),
+      }),
+    });
+    expect((await call(ran, 'getIntentGraph', {}, {}, withRun('run-old'))).ok).toBe(true);
+    expect((await call(ran, 'getIntentGraph', {}, {}, withRun('retired-1'))).error.code).toBe(
+      'run_retired',
+    );
+  });
+
   it('reads the whole execution, but only through its own stage selector', async () => {
     expect((await stageCall('getIntentGraph')).ok).toBe(true);
     expect((await stageCall('getLearningRules', {}, { stageInstanceId: OWN_SI })).ok).toBe(true);

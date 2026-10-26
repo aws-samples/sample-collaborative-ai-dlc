@@ -110,6 +110,16 @@ const checkScope = async (store, authorized) => {
   if (meta && (meta.projectId !== grant.projectId || meta.intentId !== grant.intentId)) {
     deny('scope_mismatch');
   }
+  // Rewind and recompose retire the run on the execution before they reset its
+  // stage rows; graph writes have no store-side fence, so check the run here.
+  if (
+    grant.mode === 'stage' &&
+    grant.orchestratorRunId &&
+    meta?.orchestratorRunId &&
+    meta.orchestratorRunId !== grant.orchestratorRunId
+  ) {
+    deny('run_retired');
+  }
   if (grant.mode === 'stage') await bindStageGrant(store, authorized, meta);
 
   let stage = null;
