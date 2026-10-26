@@ -1206,6 +1206,7 @@ module "source_control_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID                  = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT        = tostring(var.powertools_log_event)
@@ -1361,6 +1362,7 @@ module "credential_broker_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID                   = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
@@ -1413,6 +1415,7 @@ module "credential_metadata_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -1457,6 +1460,7 @@ module "projects_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID              = var.aws_sdk_ua_app_id
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     ENVIRONMENT                    = var.environment
     CORS_ALLOWED_ORIGINS           = var.cors_allowed_origins
@@ -1514,6 +1518,7 @@ module "users_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME       = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
@@ -1543,6 +1548,8 @@ module "sprints_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -1551,6 +1558,7 @@ module "sprints_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -1590,6 +1598,7 @@ module "requirements_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -1629,6 +1638,7 @@ module "user_stories_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -1657,6 +1667,8 @@ module "tasks_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_tasks.arn
@@ -1665,6 +1677,7 @@ module "tasks_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -1704,6 +1717,7 @@ module "code_files_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -1743,6 +1757,7 @@ module "reviews_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -1773,6 +1788,8 @@ module "questions_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_questions.arn
@@ -1781,6 +1798,7 @@ module "questions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -1809,6 +1827,8 @@ module "sprint_graph_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -1817,6 +1837,7 @@ module "sprint_graph_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -1856,6 +1877,7 @@ module "general_info_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -1895,6 +1917,7 @@ module "github_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID                  = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT        = tostring(var.powertools_log_event)
@@ -1984,6 +2007,9 @@ module "gitlab_lambda" {
   handler       = "index.handler"
   runtime       = "nodejs24.x"
   timeout       = 30
+  # The repo picker parses up to 10 pages of full GitLab project objects at
+  # once; the 128 MB default already peaks at ~120 MB on one page.
+  memory_size = 512
 
   source_path = [
     {
@@ -2005,6 +2031,7 @@ module "gitlab_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID              = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
@@ -2114,6 +2141,7 @@ module "bitbucket_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID              = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
@@ -2221,6 +2249,7 @@ module "codecommit_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID              = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
@@ -2262,6 +2291,7 @@ module "trackers_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID              = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME        = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL           = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT    = tostring(var.powertools_log_event)
@@ -2328,6 +2358,8 @@ module "timeline_events_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -2336,6 +2368,7 @@ module "timeline_events_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -2473,6 +2506,7 @@ module "discussions_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID                   = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)
@@ -2582,6 +2616,7 @@ module "cognito_users_lambda" {
   vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -2621,6 +2656,7 @@ module "purge_neptune_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -2653,6 +2689,8 @@ module "migrate_tracker_fields_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.neptune_reader.arn
@@ -2661,6 +2699,7 @@ module "migrate_tracker_fields_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -2690,6 +2729,8 @@ module "building_blocks_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.blocks.arn
@@ -2698,6 +2739,7 @@ module "building_blocks_lambda" {
   vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -2735,6 +2777,8 @@ module "seed_blocks_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.seed_blocks.arn
@@ -2743,6 +2787,7 @@ module "seed_blocks_lambda" {
   vpc_security_group_ids = local.enable_public_egress ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -2791,6 +2836,7 @@ module "workflows_lambda" {
   vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -2893,6 +2939,8 @@ resource "aws_iam_role_policy" "intents" {
       {
         # v2 process table: read/write execution state + GSI1 list. Delete /
         # BatchWrite drain the whole EXEC#<id> partition on intent delete.
+        # ConditionCheckItem: gate answers fence run/stage ownership with
+        # ConditionCheck entries inside TransactWriteItems.
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
@@ -2903,6 +2951,7 @@ resource "aws_iam_role_policy" "intents" {
           "dynamodb:DeleteItem",
           "dynamodb:BatchWriteItem",
           "dynamodb:TransactWriteItems",
+          "dynamodb:ConditionCheckItem",
         ]
         Resource = [
           var.v2_executions_table_arn,
@@ -3129,6 +3178,7 @@ module "intents_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME       = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
@@ -3205,6 +3255,7 @@ module "intent_pin_lookup_lambda" {
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID           = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME     = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL        = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT = tostring(var.powertools_log_event)
@@ -3465,6 +3516,7 @@ module "v2_orchestrator_lambda" {
   vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID                   = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT         = tostring(var.powertools_log_event)

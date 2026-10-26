@@ -218,6 +218,17 @@ test('optional WAF protects CloudFront, API Gateway, and Cognito', () => {
   );
   assert.match(moduleBlock(root, 'auth'), /waf_enabled\s+= var\.enable_waf/);
   assert.match(moduleBlock(root, 'api'), /waf_enabled\s+= var\.enable_waf/);
+  assert.match(
+    moduleBlock(root, 'waf'),
+    /cloudfront_origin_secret\s+= module\.frontend\.cloudfront_origin_secret/,
+  );
+  assert.match(moduleBlock(root, 'api'), /web_acl_arn\s+= module\.waf\.regional_web_acl_arn/);
+  assert.match(moduleBlock(root, 'auth'), /web_acl_arn\s+= module\.waf\.regional_web_acl_arn/);
+  assert.equal(
+    [...waf.matchAll(/^resource "aws_wafv2_web_acl" "/gm)].length,
+    2,
+    'WAF must retain only the CloudFront ACL and shared regional ACL',
+  );
 
   const frontend = read('terraform/modules/frontend/main.tf');
   assert.match(
@@ -226,6 +237,10 @@ test('optional WAF protects CloudFront, API Gateway, and Cognito', () => {
   );
 
   const api = read('terraform/modules/api/main.tf');
+  assert.match(
+    api,
+    /resource "aws_api_gateway_resource" "api" \{[\s\S]*?parent_id\s+= aws_api_gateway_rest_api\.main\.root_resource_id[\s\S]*?path_part\s+= "api"/,
+  );
   assert.match(
     api,
     /resource "aws_wafv2_web_acl_association" "stage"[\s\S]*?count = var\.waf_enabled \? 1 : 0[\s\S]*?aws_api_gateway_stage\.main\.arn/,
@@ -305,8 +320,14 @@ test('teardown covers every protected data store and cannot automate production'
         .filter(({ body }) => body.includes('deletion_protection_enabled'))
         .map(({ name }) => `${moduleAddress}.aws_dynamodb_table.${name}`),
     )
-    .concat('module.neptune.aws_neptune_cluster.main')
+    .concat(
+      'module.neptune.aws_neptune_cluster.main',
+      ...resourceBlocks(read('terraform/modules/auth/main.tf'), 'aws_cognito_user_pool')
+        .filter(({ body }) => body.includes('deletion_protection'))
+        .map(({ name }) => `module.auth.aws_cognito_user_pool.${name}`),
+    )
     .toSorted();
+  assert.ok(protectedResources.includes('module.auth.aws_cognito_user_pool.main'));
 
   const destroy = read('scripts/destroy.sh');
   const teardownTargets = [...destroy.matchAll(/^\s+-target=([^\s]+)$/gm)]

@@ -25,6 +25,7 @@ mock_provider "aws" {
 mock_provider "random" {}
 
 variables {
+  aws_sdk_ua_app_id             = "Collaborative_AI-DLC-test"
   project_name                  = "auth-domain-test"
   environment                   = "test"
   powertools_service_name       = "auth-domain-test"

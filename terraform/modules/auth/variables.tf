@@ -1,3 +1,8 @@
+variable "aws_sdk_ua_app_id" {
+  description = "Application identifier appended by AWS SDKs to the User-Agent header"
+  type        = string
+}
+
 variable "project_name" {
   description = "Name of the project"
   type        = string
@@ -106,4 +111,10 @@ variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)
   default     = {}
+}
+
+variable "deletion_protection" {
+  description = "Enable Cognito user pool deletion protection. Federated and local identities (and every workspace keyed by their sub) cannot be restored once the pool is deleted."
+  type        = bool
+  default     = false
 }

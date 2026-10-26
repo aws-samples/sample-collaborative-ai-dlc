@@ -102,6 +102,14 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then arch=x86_64 sha="$UV_SHA256_AMD64"; els
     && uv --version | grep -F "uv ${UV_VERSION}" \
     && rm -rf "/tmp/uv-${arch}-unknown-linux-gnu" /tmp/uv.tar.gz
 
+# MarkItDown — agents can extract PDF, DOCX, and XLSX content on demand with
+# one CLI. Keep its format dependencies isolated from system Python and omit
+# the optional cloud, audio, and other document converters.
+ARG MARKITDOWN_VERSION=0.1.8
+RUN uv venv --python /usr/bin/python3 /opt/markitdown \
+    && uv pip install --python /opt/markitdown/bin/python --no-cache "markitdown[pdf,docx,xlsx]==${MARKITDOWN_VERSION}" \
+    && ln -s /opt/markitdown/bin/markitdown /usr/local/bin/markitdown
+
 # Pre-create the application directories before COPY --chmod writes into them.
 # Otherwise BuildKit may apply a file's 0644 mode to an auto-created parent,
 # making /opt/agentcore non-traversable. Create the local workspace fallback and

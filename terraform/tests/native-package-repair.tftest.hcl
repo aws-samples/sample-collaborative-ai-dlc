@@ -7,6 +7,7 @@ mock_provider "aws" {
   mock_resource "aws_sqs_queue" { defaults = { arn = "arn:aws:sqs:us-east-1:123456789012:test", url = "https://sqs.us-east-1.amazonaws.com/123456789012/test" } }
 }
 variables {
+  aws_sdk_ua_app_id                        = "Collaborative_AI-DLC-test"
   agent_credential_grant_secret_param_arn  = "arn:aws:dynamodb:us-east-1:123456789012:table/test"
   agent_credential_grant_secret_param_name = "test"
   agentcore_runtime_arn                    = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/test"

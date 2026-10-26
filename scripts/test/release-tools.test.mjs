@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { stubPublicEcr } from './helpers/public-ecr.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const installer = join(root, 'scripts/install.sh');
@@ -122,26 +123,24 @@ test('release and main deployments use isolated protected environments and GitHu
     /TF_PROJECT_NAME: \$\{\{ inputs\.terraform_project_name \|\| 'collaborative-ai-dlc' \}\}/,
   );
   assert.match(deployment, /printf 'project_name  = %s\\n'/);
-  assert.match(deployment, /TF_RECREATE_MISSING_LAMBDA_PACKAGE: 'false'/);
+  assert.doesNotMatch(deployment, /TF_RECREATE_MISSING_LAMBDA_PACKAGE/);
   assert.match(deployment, /role-to-assume: \$\{\{ vars\.AWS_ROLE_ARN \}\}/);
   assert.match(deployment, /TF_STATE_BUCKET: \$\{\{ vars\.TF_STATE_BUCKET \}\}/);
   assert.match(deployment, /docker\/setup-qemu-action@[0-9a-f]{40}/);
   assert.match(deployment, /platforms: arm64/);
-  assert.match(deployment, /python3 "\$package_script" build --timestamp 0/);
   assert.match(deployment, /AUTH_DOMAIN: \$\{\{ secrets\.AUTH_DOMAIN \}\}/);
   assert.match(deployment, /AUTH_MODE: \$\{\{ vars\.AUTH_MODE \}\}/);
   assert.match(deployment, /SSO_CONFIG: \$\{\{ secrets\.SSO_CONFIG \}\}/);
   assert.match(deployment, /printf 'auth_domain {10}= %s\\n'/);
   assert.match(deployment, /node scripts\/sso-config\.mjs "\$sso_input" "\$AUTH_MODE"/);
   assert.match(deployment, /\$TF_ENVIRONMENT\.sso\.tfvars\.json/);
-  assert.match(deployment, /AIDLC_SKIP_NPM_CI: '1'/);
   assert.match(deployment, /deploy-terraform\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /deploy-frontend\.sh "\$TF_ENVIRONMENT"/);
   assert.match(deployment, /case "\$DEPLOY_REF_TYPE" in/);
   assert.match(deployment, /release-tag\)/);
   assert.match(deployment, /commit\)/);
   assert.match(deployment, /git merge-base --is-ancestor "\$deploy_commit" "\$main_commit"/);
-  assert.equal(deployment.match(/--phase plan/g)?.length, 2);
+  assert.doesNotMatch(deployment, /--phase|package\.py|require-lambda-packages/);
   assert.doesNotMatch(deployment, /inputs\.apply|plan-only/);
   assert.doesNotMatch(deployment, /AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/);
   assert.ok(
@@ -155,13 +154,9 @@ test('release and main deployments use isolated protected environments and GitHu
     'ARM64 emulation must be configured before Terraform builds the AgentCore image',
   );
   assert.ok(
-    deployment.indexOf('- name: Prepare Lambda package plans') <
-      deployment.indexOf('- name: Build Lambda packages') &&
-      deployment.indexOf('- name: Build Lambda packages') <
-        deployment.indexOf('- name: Plan infrastructure') &&
-      deployment.indexOf('- name: Plan infrastructure') <
-        deployment.indexOf('- name: Apply infrastructure'),
-    'Lambda packages must be built before the final saved plan is applied',
+    deployment.indexOf('- name: Deploy infrastructure') <
+      deployment.indexOf('- name: Deploy frontend'),
+    'frontend deployment must follow the infrastructure script',
   );
 });
 
@@ -497,6 +492,71 @@ test('Terraform teardown preparation only permits existing-resource protection u
   }
 });
 
+test('Terraform teardown preparation disables Cognito user pool protection only', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-teardown-cognito-'));
+  const address = 'module.auth.aws_cognito_user_pool.main';
+  const pool = (deletionProtection, extra = {}) => ({
+    deletion_protection: deletionProtection,
+    name: 'aidlc-dev-user-pool',
+    mfa_configuration: 'OFF',
+    ...extra,
+  });
+  const planWith = (name, change) => {
+    const path = join(dir, `${name}.json`);
+    writeJson(path, {
+      resource_changes: [{ address, type: 'aws_cognito_user_pool', change }],
+    });
+    return path;
+  };
+
+  const disable = planWith('disable', {
+    actions: ['update'],
+    before: pool('ACTIVE'),
+    after: pool('INACTIVE'),
+  });
+  // Already INACTIVE: Terraform plans a no-op, which needs no preparation.
+  const alreadyInactive = planWith('already-inactive', {
+    actions: ['no-op'],
+    before: pool('INACTIVE'),
+    after: pool('INACTIVE'),
+  });
+  for (const plan of [disable, alreadyInactive]) {
+    const accepted = run('node', [inspector, plan, '--deletion-protection-only']);
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.match(accepted.stdout, /deletion-protection-only check passed/);
+  }
+
+  const unsafe = [
+    planWith('unrelated-update', {
+      actions: ['update'],
+      before: pool('ACTIVE'),
+      after: pool('INACTIVE', { mfa_configuration: 'ON' }),
+    }),
+    planWith('enable', {
+      actions: ['update'],
+      before: pool('INACTIVE'),
+      after: pool('ACTIVE'),
+    }),
+    planWith('boolean-value', {
+      actions: ['update'],
+      before: pool(true),
+      after: pool(false),
+    }),
+    planWith('replace', {
+      actions: ['delete', 'create'],
+      before: pool('ACTIVE'),
+      after: pool('INACTIVE'),
+    }),
+    planWith('delete', { actions: ['delete'], before: pool('ACTIVE'), after: null }),
+    planWith('create', { actions: ['create'], before: null, after: pool('INACTIVE') }),
+  ];
+  for (const plan of unsafe) {
+    const rejected = run('node', [inspector, plan, '--deletion-protection-only']);
+    assert.equal(rejected.status, 1, plan);
+    assert.match(rejected.stderr, /changes other than disabling deletion protection/);
+  }
+});
+
 test('standalone Terraform deployment ends with the application URL', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-summary-'));
   const bin = join(dir, 'bin');
@@ -558,12 +618,14 @@ exec '${process.execPath}' "$@"
     { mode: 0o755 },
   );
 
+  stubPublicEcr(bin);
   const deployed = run(
     'bash',
     [deployTerraform, 'summary', '--plan-file', join(dir, 'summary.tfplan')],
     {
       env: {
         PATH: `${bin}:${process.env.PATH}`,
+        DOCKER_CONFIG: join(dir, 'docker'),
         AIDLC_CONFIG_DIR: join(dir, 'config'),
         AIDLC_SKIP_NPM_CI: '1',
       },
@@ -664,9 +726,11 @@ exec '${process.execPath}' "$@"
     { mode: 0o755 },
   );
 
+  stubPublicEcr(bin);
   return {
     env: {
       PATH: `${bin}:${process.env.PATH}`,
+      DOCKER_CONFIG: join(dir, 'docker'),
       AIDLC_CONFIG_DIR: join(dir, 'config'),
       AIDLC_SKIP_NPM_CI: '1',
       AIDLC_TERRAFORM_LOG: terraformLog,
@@ -685,6 +749,29 @@ exec '${process.execPath}' "$@"
     planFile: join(dir, 'summary.tfplan'),
   };
 };
+
+test('standalone all/apply fails Public ECR authentication before Terraform or retired-task mutations', (t) => {
+  for (const phase of ['all', 'apply']) {
+    const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-ecr-denied-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const { env, terraformLog, awsLog, planFile } = standaloneDeployEnv(dir);
+    writeFileSync(planFile, 'saved plan');
+    const result = run(
+      'bash',
+      [deployTerraform, 'summary', '--phase', phase, '--plan-file', planFile],
+      {
+        env: { ...env, ECR_TEST_LOGIN_FAIL: '1' },
+      },
+    );
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /ecr-public:GetAuthorizationToken and sts:GetServiceBearerToken in us-east-1/,
+    );
+    assert.ok(!existsSync(terraformLog));
+    assert.ok(!existsSync(awsLog));
+  }
+});
 
 test('standalone deployment forwards --var overrides to terraform plan', () => {
   const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-var-'));
@@ -1048,6 +1135,63 @@ exit 0
     commands,
     /destroy .*local-test\.tfvars -var=deletion_protection=false -auto-approve/,
   );
+  // The user pool is not in this state (partial teardown), so it is not targeted.
+  assert.doesNotMatch(commands, /aws_cognito_user_pool/);
+});
+
+test('standalone destroy disables user pool protection when the pool is in state', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-destroy-cognito-'));
+  const bin = join(dir, 'bin');
+  const config = join(dir, 'config/environments');
+  const terraformLog = join(dir, 'terraform.log');
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(config, { recursive: true });
+  writeFileSync(join(config, 'local-test.tfvars'), 'environment = "local-test"\n');
+  writeFileSync(
+    join(config, 'local-test.s3.tfbackend'),
+    'bucket = "local-test-state"\nkey = "state"\n',
+  );
+  writeFileSync(
+    join(bin, 'terraform'),
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> "$TERRAFORM_LOG"
+case "$*" in
+  *" console "*) printf 'false\\n' ;;
+  *" state pull"*) printf '{"version":4}\\n' ;;
+  *" state list"*)
+    printf '%s\\n' \\
+      module.auth.aws_cognito_user_pool.main \\
+      module.neptune.aws_neptune_cluster.main
+    ;;
+  *" plan "*)
+    for arg in "$@"; do
+      [[ "$arg" == -out=* ]] && : > "\${arg#-out=}"
+    done
+    ;;
+  *" show -json "*) printf '{"resource_changes":[]}\\n' ;;
+esac
+exit 0
+`,
+    { mode: 0o755 },
+  );
+
+  const destroyed = run('bash', [destroyTerraform, 'local-test', '--yes'], {
+    env: {
+      PATH: `${bin}:${process.env.PATH}`,
+      AIDLC_CONFIG_DIR: join(dir, 'config'),
+      AIDLC_BACKUP_DIR: join(dir, 'backups'),
+      TERRAFORM_LOG: terraformLog,
+    },
+  });
+
+  assert.equal(destroyed.status, 0, destroyed.stderr);
+  const commands = readFileSync(terraformLog, 'utf8');
+  assert.match(
+    commands,
+    /plan .*-var=deletion_protection=false .*module\.auth\.aws_cognito_user_pool\.main .*module\.neptune\.aws_neptune_cluster\.main -out=.*teardown-preparation\.tfplan/,
+  );
+  // Protection is cleared before the destroy runs.
+  assert.ok(commands.indexOf('apply -auto-approve') < commands.indexOf('destroy '), commands);
 });
 
 test('standalone destroy refuses production even when confirmation is bypassed', () => {

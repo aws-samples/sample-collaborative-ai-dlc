@@ -542,6 +542,27 @@ describe('a parked checkpoint is delivered to the agent as a decision, not a Q&A
     }
   });
 
+  it('reads the gate UI answer shape by resolving the option index on the gate', () => {
+    const questions = JSON.stringify([
+      { type: 'single', options: [{ label: 'Looks correct' }, { label: 'Request changes' }] },
+    ]);
+    const approved = formatResumeAnswer({
+      detail: { checkpoint: 'summary-confirmation' },
+      questions,
+      answer: { answers: [{ selectedOptions: [0] }] },
+    });
+    expect(approved).toContain('"Looks correct"');
+    expect(approved).toContain('authorization is recorded');
+
+    const rejected = formatResumeAnswer({
+      detail: { checkpoint: 'summary-confirmation' },
+      questions,
+      answer: { answers: [{ selectedOptions: [1], freeText: 'split the aggregate' }] },
+    });
+    expect(rejected).toContain('"Request changes" — nothing is authorized yet');
+    expect(rejected).toContain('What they want changed: split the aggregate');
+  });
+
   it('leaves an ordinary question and a validation gate exactly as before', () => {
     // The checkpoint branch must not capture the two shapes that already worked.
     expect(

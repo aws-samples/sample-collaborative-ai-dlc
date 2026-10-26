@@ -21,6 +21,7 @@
 // what keeps the gate prompt byte-identical for those runs.
 
 import { isQuestionChannelOutput } from './aidlc-capabilities.js';
+import { resolveSensorVerdict } from './sensor-verdict.js';
 import { eventTypeOf } from './v2-process-keys.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
@@ -36,11 +37,13 @@ const FINDING_CODES = Object.freeze([
   'summary_confirmation_missing',
   'summary_confirmation_stale',
   'plan_approval_missing',
+  'plan_approval_off',
   'ensemble_evidence_unavailable',
   'persona_contribution_missing',
   'pipeline_link_incomplete',
   'ensemble_integration_missing',
   'stage_budget_exhausted',
+  'review_not_ready',
   'review_advisory_findings',
   'review_dissent_maintained',
   'sensor_gate_blocking',
@@ -237,6 +240,10 @@ const sensorGateFindings = ({ sensorVerdicts = [], receipts = [], attempt = 0 } 
     const integrityFailure = isReleaseIntegrityFailure(verdict);
     if (!integrityFailure && overridden.has(verdict?.sensorId)) continue;
     if (!integrityFailure && verdict?.detail?.notApplicable === true) continue;
+    // A `script` sensor reports per matching file, so its reason lives one level
+    // down; resolve it once so a script verdict is explained on the same terms as
+    // a graph one.
+    const effective = resolveSensorVerdict(verdict);
     const blocking = integrityFailure || verdict?.severity === 'blocking';
     const overridable = blocking && !integrityFailure;
     const onArtifact = verdict.detail?.artifact ? ` on ${verdict.detail.artifact}` : '';
@@ -250,9 +257,12 @@ const sensorGateFindings = ({ sensorVerdicts = [], receipts = [], attempt = 0 } 
         detail: {
           sensorId: verdict.sensorId,
           result: verdict.result,
-          reason: verdict.detail?.reason ?? null,
+          reason: effective.reason,
           ...(integrityFailure ? { releaseIntegrityFailure: true } : {}),
         },
+        // The sensor's own words, rendered as a quote (the only field a renderer
+        // shows verbatim) — without it the human decides on a bare "→ FAIL".
+        quote: effective.reason,
         overridable,
         ...(overridable ? { receiptKind: 'sensor-override' } : {}),
         remediation: integrityFailure
@@ -285,6 +295,13 @@ const evaluateGatePreconditions = ({
   // Approved inputs whose content changed since their producing stage was
   // approved (change control). Empty/null when the check did not run.
   changedInputs = [],
+  // True only when THIS gate is eligible to be waived by a construction autonomy
+  // grant. It is what makes a terminal adversarial NOT-READY block: with no human
+  // at the gate, an unresolved reviewer objection would otherwise be approved by
+  // the machine. A gated stage keeps the advisory contract — the verdict is
+  // surfaced as an advisory finding and `approve` stays on offer — so an intent
+  // that never opted in sees no change in what it may answer.
+  autonomyGoverned = false,
 } = {}) => {
   if (!policy) return { ok: true, findings: [] };
 
@@ -371,6 +388,39 @@ const evaluateGatePreconditions = ({
         }),
       );
     }
+  } else if (policy.planApprovalWithheld) {
+    // The stage WOULD have asked for a plan approval and did not, because a
+    // setting says so. Advisory by construction: nothing is wrong, but the human
+    // approving this stage is approving work no plan gate preceded, and the
+    // notice has to say WHY so the absence is explicable rather than mysterious.
+    // Only this stage carries it — the plan marks the stage that lost the gate,
+    // not every stage of the run.
+    //
+    // Two cases, and they are exhaustive: a stored value equal to the authored
+    // default is impossible, so `scope-default` is emitted only when the
+    // current scope really does turn the gate off, and `intent` only when the
+    // intent really differs from it. Neither sentence can be made false by a
+    // later scope change. Attribution is deliberately absent from both: a name
+    // frozen into a pinned plan is what made a historical default
+    // misattributable, and the intent timeline is where WHO lives. The timeline
+    // names the member whose SAVE stored the change, which is the chooser in the
+    // normal case and a peer whose autosave carried it otherwise, so the notice
+    // says exactly that rather than promising more than the record holds.
+    const { source, scope } = policy.planApprovalWithheld;
+    const named = scope ? `**${scope}**` : 'selected';
+    const remediation =
+      source === 'intent'
+        ? `Plan Approval was turned off for this intent by a project member before the run started; the ${named} scope's own default leaves it on. The intent timeline records which member's save stored it and when. It can only be changed before a run starts, never mid-run.`
+        : `Plan Approval is off because the pinned AI-DLC release's ${named} scope turns it off by default — no project member changed it. It can only be changed by a project member on the intent before it starts, never mid-run.`;
+    findings.push(
+      finding({
+        code: 'plan_approval_off',
+        severity: 'advisory',
+        title: 'Plan Approval is off for this intent; the build proceeded without a plan approval',
+        detail: { stageInstanceId: stage?.stageInstanceId ?? null, source, scope: scope ?? null },
+        remediation,
+      }),
+    );
   }
 
   // The ensemble's evidence channel could not be read (the receipt history for
@@ -508,17 +558,25 @@ const evaluateGatePreconditions = ({
   // Any reviewer verdict that is not READY is decision support at the gate. An
   // ADVISORY reviewer ran once by design; an ADVERSARIAL one reaches the gate only
   // when its repair loop ended without READY, so the human decides with the
-  // reviewer's unresolved objection in view instead of approving into silence. A
-  // DTO with no `advisory` flag at all is read as advisory.
+  // reviewer's unresolved objection in view instead of approving into silence. On
+  // a gate autonomy may waive there is no human to decide, so the adversarial
+  // objection BLOCKS there, overridably. A DTO with no `advisory` flag at all is
+  // read as advisory.
   if (reviewVerdict && reviewVerdict.verdict !== 'READY') {
     const kind = reviewVerdict.advisory === false ? 'Adversarial' : 'Advisory';
+    const adversarialBlock = reviewVerdict.advisory === false && autonomyGoverned;
     findings.push(
       finding({
-        code: 'review_advisory_findings',
-        severity: 'advisory',
-        title: `${kind} review (${reviewVerdict.reviewerAgent ?? 'reviewer'}): ${reviewVerdict.verdict ?? 'NOT-READY'}`,
+        code: adversarialBlock ? 'review_not_ready' : 'review_advisory_findings',
+        severity: adversarialBlock ? 'blocking' : 'advisory',
+        title: adversarialBlock
+          ? `Adversarial review (${reviewVerdict.reviewerAgent ?? 'reviewer'}) did not reach READY (${reviewVerdict.verdict ?? 'NOT-READY'})`
+          : `${kind} review (${reviewVerdict.reviewerAgent ?? 'reviewer'}): ${reviewVerdict.verdict ?? 'NOT-READY'}`,
         detail: { findings: reviewVerdict.findings ?? null },
-        remediation: `The ${kind.toLowerCase()} reviewer does not block; decide with its findings in view.`,
+        ...(adversarialBlock ? { overridable: true, receiptKind: 'stage-approval' } : {}),
+        remediation: adversarialBlock
+          ? 'Request changes to run the stage again, or override to accept the reviewer’s unresolved objection on the record.'
+          : `The ${kind.toLowerCase()} reviewer does not block; decide with its findings in view.`,
       }),
     );
   }

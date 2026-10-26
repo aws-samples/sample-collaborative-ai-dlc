@@ -280,7 +280,7 @@ export function RepositoriesTab({ project, canEdit, reload }: Props) {
           }
         }}
       >
-        <DialogContent className="sm:max-w-lg">
+        <DialogContent className="sm:max-w-2xl">
           <form
             onSubmit={(e) => {
               e.preventDefault();

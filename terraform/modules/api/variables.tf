@@ -1,3 +1,8 @@
+variable "aws_sdk_ua_app_id" {
+  description = "Application identifier appended by AWS SDKs to the User-Agent header"
+  type        = string
+}
+
 variable "project_name" {
   description = "Name of the project"
   type        = string
@@ -336,19 +341,6 @@ variable "cors_allowed_origins" {
   description = "Comma-separated list of allowed CORS origins (e.g. https://d3c2j...cloudfront.net,http://localhost:5173)"
   type        = string
   default     = "*"
-}
-
-variable "cloudfront_origin_secret" {
-  description = "Shared secret that CloudFront injects as the X-Origin-Verify header. When non-empty, a REST API resource policy is attached that denies every request whose X-Origin-Verify header does not equal this value, so the API Gateway invoke URL is only reachable via the CloudFront distribution."
-  type        = string
-  default     = ""
-  sensitive   = true
-}
-
-variable "enable_cloudfront_origin_policy" {
-  description = "Whether to attach a CloudFront origin-verify resource policy to the API Gateway. Separate from the secret so the value is known at plan time."
-  type        = bool
-  default     = false
 }
 
 variable "api_gateway_account_id" {

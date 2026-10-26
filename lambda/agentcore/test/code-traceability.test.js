@@ -102,6 +102,10 @@ describe('collectCodeTraceabilityBatches', () => {
     expect(commit).toMatchObject({
       committed: true,
       files: ['records/u1/traceability.json', 'src/index.ts'],
+      provenance: {
+        state: 'known',
+        files: ['records/u1/traceability.json', 'src/index.ts'],
+      },
     });
 
     const [batch] = await collectCodeTraceabilityBatches({
@@ -246,125 +250,162 @@ describe('collectCodeTraceabilityBatches — multi-repo layout', () => {
   // Layout MUST match workspace.js#repoTargetDir: multi-repo lays each repo out
   // under <workspaceDir>/<owner>/<repo> (the full "owner/repo" url), single-repo
   // clones straight into <workspaceDir>. Proven by init-ws.test.js:743.
-  it('resolves files under <ws>/<owner>/<repo> for each repo in a multi-repo run', async () => {
-    const root = await workspace();
-    await put(root, 'acme/api/src/handler.ts', 'export const h = 1;\n');
-    await put(root, 'acme/web/src/App.tsx', 'export const App = () => null;\n');
-    const multiGit = {
-      ok: true,
-      committed: true,
-      results: [
-        {
-          repo: 'acme/api',
-          committed: true,
-          pushed: true,
-          sha: 'a'.repeat(40),
-          files: ['src/handler.ts'],
-        },
-        {
-          repo: 'acme/web',
-          committed: true,
-          pushed: true,
-          sha: 'b'.repeat(40),
-          files: ['src/App.tsx'],
-        },
-      ],
-    };
-    const batches = await collectCodeTraceabilityBatches({
-      gitResult: multiGit,
-      repos: ['acme/api', 'acme/web'],
-      workspaceDir: root,
-      stageId: 'code-generation',
-      stageInstanceId: 'si-code',
-      unitSlug: 'u1',
-    });
-    expect(batches.map((b) => b.repository).toSorted()).toEqual(['acme/api', 'acme/web']);
-    const api = batches.find((b) => b.repository === 'acme/api');
-    const web = batches.find((b) => b.repository === 'acme/web');
-    expect(api.files.map((f) => f.filePath)).toEqual(['src/handler.ts']);
-    expect(web.files.map((f) => f.filePath)).toEqual(['src/App.tsx']);
-    // Wrong layout (bare name) would resolve zero files — guard against regression.
-    expect(api.files.length + web.files.length).toBe(2);
-  });
+  it.each(['legacy', 'workspace', 'rehydrated'])(
+    'resolves files under <ws>/<owner>/<repo> for %s Git results',
+    async (format) => {
+      const root = await workspace();
+      await put(root, 'acme/api/src/handler.ts', 'export const h = 1;\n');
+      await put(root, 'acme/web/src/App.tsx', 'export const App = () => null;\n');
+      const multiGit = {
+        ok: true,
+        committed: true,
+        results: [
+          {
+            repo: 'acme/api',
+            committed: true,
+            pushed: true,
+            sha: 'a'.repeat(40),
+            files: ['src/handler.ts'],
+          },
+          {
+            repo: 'acme/web',
+            committed: true,
+            pushed: true,
+            sha: 'b'.repeat(40),
+            files: ['src/App.tsx'],
+          },
+        ],
+      };
+      if (format !== 'legacy') {
+        for (const change of multiGit.results) {
+          change.provenance = {
+            state: 'known',
+            files: change.files.map((file) => `${change.repo}/${file}`),
+          };
+          if (format === 'workspace') change.files = change.provenance.files;
+        }
+      }
+      const batches = await collectCodeTraceabilityBatches({
+        gitResult: multiGit,
+        repos: ['acme/api', 'acme/web'],
+        workspaceDir: root,
+        stageId: 'code-generation',
+        stageInstanceId: 'si-code',
+        unitSlug: 'u1',
+      });
+      expect(batches.map((b) => b.repository).toSorted()).toEqual(['acme/api', 'acme/web']);
+      const api = batches.find((b) => b.repository === 'acme/api');
+      const web = batches.find((b) => b.repository === 'acme/web');
+      expect(api.files.map((f) => f.filePath)).toEqual(['src/handler.ts']);
+      expect(web.files.map((f) => f.filePath)).toEqual(['src/App.tsx']);
+      // Wrong layout (bare name) would resolve zero files — guard against regression.
+      expect(api.files.length + web.files.length).toBe(2);
+    },
+  );
 });
 
 describe('collectCodeTraceabilityBatches — CodeCommit multi-repo layout', () => {
   // Same layout as the checkout (repo-paths.js#repoTargetDir): a CodeCommit
   // ARN is not a path, so joining it onto the workspace resolved nothing.
-  it('collects changed files and their evidence for same-name CodeCommit repositories in two regions', async () => {
-    const west1 = 'arn:aws:codecommit:eu-west-1:123456789012:app';
-    const west2 = 'arn:aws:codecommit:eu-west-2:123456789012:app';
-    const root = await workspace();
-    const doc = (target, id) =>
-      JSON.stringify({
-        stage: 'code-generation',
-        unit: 'u1',
-        coverage: [{ id, status: 'OK', target }],
+  it.each(['legacy', 'provenance'])(
+    'collects %s files and evidence for same-name CodeCommit repositories in two regions',
+    async (format) => {
+      const west1 = 'arn:aws:codecommit:eu-west-1:123456789012:app';
+      const west2 = 'arn:aws:codecommit:eu-west-2:123456789012:app';
+      const root = await workspace();
+      const doc = (target, id) =>
+        JSON.stringify({
+          stage: 'code-generation',
+          unit: 'u1',
+          coverage: [{ id, status: 'OK', target }],
+        });
+      await put(root, 'codecommit/aws/eu-west-1/123456789012/app/src/one.js', 'export {};\n');
+      await put(
+        root,
+        'codecommit/aws/eu-west-1/123456789012/app/traceability.json',
+        doc('src/one.js', 'AC1.1'),
+      );
+      await put(root, 'codecommit/aws/eu-west-2/123456789012/app/src/two.js', 'export {};\n');
+      await put(
+        root,
+        'codecommit/aws/eu-west-2/123456789012/app/traceability.json',
+        doc('src/two.js', 'AC2.1'),
+      );
+      const batches = await collectCodeTraceabilityBatches({
+        gitResult: {
+          ok: true,
+          committed: true,
+          results: [
+            {
+              repo: west1,
+              committed: true,
+              sha: 'a'.repeat(40),
+              files: ['src/one.js', 'traceability.json'],
+              ...(format === 'provenance'
+                ? {
+                    provenance: {
+                      state: 'known',
+                      files: [
+                        'codecommit/aws/eu-west-1/123456789012/app/src/one.js',
+                        'codecommit/aws/eu-west-1/123456789012/app/traceability.json',
+                      ],
+                    },
+                  }
+                : {}),
+            },
+            {
+              repo: west2,
+              committed: true,
+              sha: 'b'.repeat(40),
+              files: ['src/two.js', 'traceability.json'],
+              ...(format === 'provenance'
+                ? {
+                    provenance: {
+                      state: 'known',
+                      files: [
+                        'codecommit/aws/eu-west-2/123456789012/app/src/two.js',
+                        'codecommit/aws/eu-west-2/123456789012/app/traceability.json',
+                      ],
+                    },
+                  }
+                : {}),
+            },
+          ],
+        },
+        repos: [west1, west2],
+        workspaceDir: root,
+        stageId: 'code-generation',
+        stageInstanceId: 'si-code',
+        unitSlug: 'u1',
       });
-    await put(root, 'codecommit/aws/eu-west-1/123456789012/app/src/one.js', 'export {};\n');
-    await put(
-      root,
-      'codecommit/aws/eu-west-1/123456789012/app/traceability.json',
-      doc('src/one.js', 'AC1.1'),
-    );
-    await put(root, 'codecommit/aws/eu-west-2/123456789012/app/src/two.js', 'export {};\n');
-    await put(
-      root,
-      'codecommit/aws/eu-west-2/123456789012/app/traceability.json',
-      doc('src/two.js', 'AC2.1'),
-    );
-    const batches = await collectCodeTraceabilityBatches({
-      gitResult: {
-        ok: true,
-        committed: true,
-        results: [
-          {
-            repo: west1,
-            committed: true,
-            sha: 'a'.repeat(40),
-            files: ['src/one.js', 'traceability.json'],
-          },
-          {
-            repo: west2,
-            committed: true,
-            sha: 'b'.repeat(40),
-            files: ['src/two.js', 'traceability.json'],
-          },
-        ],
-      },
-      repos: [west1, west2],
-      workspaceDir: root,
-      stageId: 'code-generation',
-      stageInstanceId: 'si-code',
-      unitSlug: 'u1',
-    });
-    // The batch keeps the ARN as repository identity; only the disk path
-    // changed. Each repository's evidence comes from its own checkout.
-    expect(
-      batches.map((b) => [
-        b.repository,
-        b.traceabilityStatus,
-        b.files.map((f) => [f.filePath, f.evidenceIds]),
-      ]),
-    ).toEqual([
-      [
-        west1,
-        'valid',
+      // The batch keeps the ARN as repository identity; only the disk path
+      // changed. Each repository's evidence comes from its own checkout.
+      expect(
+        batches.map((b) => [
+          b.repository,
+          b.traceabilityStatus,
+          b.files.map((f) => [f.filePath, f.evidenceIds]),
+        ]),
+      ).toEqual([
         [
-          ['src/one.js', ['AC1.1']],
-          ['traceability.json', []],
+          west1,
+          'valid',
+          [
+            ['src/one.js', ['AC1.1']],
+            ['traceability.json', []],
+          ],
         ],
-      ],
-      [
-        west2,
-        'valid',
         [
-          ['src/two.js', ['AC2.1']],
-          ['traceability.json', []],
+          west2,
+          'valid',
+          [
+            ['src/two.js', ['AC2.1']],
+            ['traceability.json', []],
+          ],
         ],
-      ],
-    ]);
-  });
+      ]);
+    },
+  );
 });
 
 describe('loadProducedTraceability — size cap', () => {

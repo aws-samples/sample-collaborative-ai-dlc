@@ -65,7 +65,7 @@ jobs:
       - name: Test Cognito domain provisioning and cutover
         run: terraform test -filter=tests/auth-domain.tftest.hcl
 
-      - name: Test WAF request size overrides
+      - name: Test WAF origin verification and request size overrides
         run: terraform test -filter=tests/waf.tftest.hcl
 
       - name: Verify SSO plan output privacy
@@ -79,3 +79,6 @@ jobs:
 
       - name: Managed environments IAM and configuration tests (mock providers)
         run: terraform test -filter=tests/managed-environments.tftest.hcl
+
+      - name: Lambda packaging on clean runners (mock AWS)
+        run: terraform test -filter=tests/lambda-packaging.tftest.hcl -parallelism=2

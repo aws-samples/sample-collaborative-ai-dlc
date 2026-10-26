@@ -1,0 +1,51 @@
+{
+  "_comment": "The verbatim YAML frontmatter of every core/scopes/** file of AI-DLC 2.11.0 (awslabs/aidlc-workflows at sourceSha), with each file’s Git blob SHA-1 so its provenance can be rechecked against the upstream tree. Bodies are omitted: the scope settings this platform maps all live in the frontmatter. A test reassembles each file as frontmatter plus a placeholder body and sends it through the real mappers.",
+  "sourceRepository": "awslabs/aidlc-workflows",
+  "sourceSha": "6a378b53c0a4fe0641ed7d8de8dfff94264d5b6a",
+  "scopes": {
+    "core/scopes/aidlc-bugfix.md": {
+      "blobSha1": "e94f41a22a1bb3b89e0770bf71c1d36c3678c6ee",
+      "frontmatter": "name: bugfix\ndepth: Minimal\nkeywords:\n  - fix\n  - bug\n  - broken\n  - bugfix\ndescription: Fix a specific bug\nskeleton: off\nexisting_code: true\nrunner: true\nreview_cap: advisory\nguard_policy: off\nsensors: on\nlearnings: off\nsummary_confirmation: off\nplan_approval: on\ncollaborators: off"
+    },
+    "core/scopes/aidlc-classic.md": {
+      "blobSha1": "5eeb2a16f29e268ff2a693045e2dc4d280035a95",
+      "frontmatter": "name: classic\ndepth: Standard\nkeywords: []\ndescription: \"V1-style ceremony through Inception and Construction - the implicit default\"\nskeleton: off\nreview_cap: advisory\nguard_policy: off\nsensors: on\nlearnings: on\nsummary_confirmation: off\nplan_approval: on\ncollaborators: off"
+    },
+    "core/scopes/aidlc-enterprise.md": {
+      "blobSha1": "318cbfc257e3b8dddc277286fdd1842178341554",
+      "frontmatter": "name: enterprise\ndepth: Comprehensive\nkeywords: []\ndescription: Regulated enterprise feature, full audit trail\nskeleton: on\nguard_policy: strict\nsensors: on\nlearnings: on\nsummary_confirmation: on\nplan_approval: on\ncollaborators: on"
+    },
+    "core/scopes/aidlc-express.md": {
+      "blobSha1": "ae0a33c3360c32eea142ce881cd8582e8c2eba81",
+      "frontmatter": "name: express\ndepth: Minimal\nkeywords:\n  - express\n  - lightweight\ndescription: \"Lightest run: requirements to deploy, no design pass, no reviewers\"\nskeleton: off\nrunner: true\nreview_cap: none\nguard_policy: off\nsensors: off\nlearnings: off\nsummary_confirmation: off\nplan_approval: off\ncollaborators: off"
+    },
+    "core/scopes/aidlc-feature.md": {
+      "blobSha1": "d06a423e9d7332581f8956b8d34ea9a75cdd2d8a",
+      "frontmatter": "name: feature\ndepth: Standard\nkeywords: []\ndescription: Full lifecycle for new features, practical depth\nskeleton: on\nrunner: true\nguard_policy: off\nsensors: on\nlearnings: on\nsummary_confirmation: on\nplan_approval: on\ncollaborators: off"
+    },
+    "core/scopes/aidlc-infra.md": {
+      "blobSha1": "34a4c923b802e22ed3342ebbe8abfc02615e46d0",
+      "frontmatter": "name: infra\ndepth: Standard\nkeywords:\n  - infrastructure\n  - deploy\n  - infra\ndescription: Infrastructure changes\nskeleton: on\nguard_policy: off\nsensors: on\nlearnings: on\nsummary_confirmation: on\nplan_approval: on\ncollaborators: off"
+    },
+    "core/scopes/aidlc-mvp.md": {
+      "blobSha1": "8960bc27e01e4df009168ef8fcbd7480d18f70c6",
+      "frontmatter": "name: mvp\ndepth: Standard\nkeywords:\n  - mvp\n  - minimum viable\ndescription: Skip operations, ship the core\nskeleton: on\nrunner: true\nguard_policy: off\nsensors: on\nlearnings: on\nsummary_confirmation: on\nplan_approval: on\ncollaborators: off"
+    },
+    "core/scopes/aidlc-poc.md": {
+      "blobSha1": "30ece741dca237bfc6596609b4d96cda140581f3",
+      "frontmatter": "name: poc\ndepth: Minimal\nkeywords:\n  - proof of concept\n  - prototype\n  - poc\n  - spike\ndescription: Prove feasibility fast\nskeleton: on\nreview_cap: advisory\nguard_policy: off\nsensors: on\nlearnings: on\nsummary_confirmation: on\nplan_approval: off\ncollaborators: off"
+    },
+    "core/scopes/aidlc-refactor.md": {
+      "blobSha1": "8daf1334a1420aa0307fd9ba3867175809c87928",
+      "frontmatter": "name: refactor\ndepth: Minimal\nkeywords:\n  - refactor\n  - clean up\n  - simplify\ndescription: Clean up existing code\nskeleton: off\nexisting_code: true\nguard_policy: off\nsensors: on\nlearnings: on\nsummary_confirmation: on\nplan_approval: on\ncollaborators: off"
+    },
+    "core/scopes/aidlc-security-patch.md": {
+      "blobSha1": "2af97d91079471e649d13e96c5e15b1fd3382bc8",
+      "frontmatter": "name: security-patch\ndepth: Minimal\nkeywords:\n  - security\n  - CVE\n  - vulnerability\n  - patch\ndescription: CVE response\nskeleton: off\nexisting_code: true\nrunner: true\nguard_policy: off\nsensors: on\nlearnings: on\nsummary_confirmation: on\nplan_approval: on\ncollaborators: off"
+    },
+    "core/scopes/aidlc-workshop.md": {
+      "blobSha1": "36eeab25b96a751383e2797db0953d133a1b541a",
+      "frontmatter": "name: workshop\ndepth: Standard\ntestStrategy: Minimal\nkeywords:\n  - workshop\n  - lab\n  - training\ndescription: Facilitated group session with mandatory gates\nskeleton: on\nreview_cap: advisory\nguard_policy: off\nsensors: on\nlearnings: on\nsummary_confirmation: on\nplan_approval: on\ncollaborators: off"
+    }
+  }
+}

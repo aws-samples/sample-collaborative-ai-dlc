@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 
-import { accessSync, constants, readFileSync, statSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 
 const planPath = process.argv[2];
 if (!planPath) {
   console.error(
-    'Usage: inspect-terraform-plan.mjs <terraform-plan.json> [--deletion-protection-only|--require-lambda-packages]',
+    'Usage: inspect-terraform-plan.mjs <terraform-plan.json> [--deletion-protection-only]',
   );
   process.exit(2);
 }
@@ -14,8 +14,7 @@ if (!planPath) {
 const plan = JSON.parse(readFileSync(planPath, 'utf8'));
 const mode = process.argv[3];
 const deletionProtectionOnly = mode === '--deletion-protection-only';
-const requireLambdaPackages = mode === '--require-lambda-packages';
-if (mode && !deletionProtectionOnly && !requireLambdaPackages) {
+if (mode && !deletionProtectionOnly) {
   console.error(`Unknown plan inspection mode: ${mode}`);
   process.exit(2);
 }
@@ -45,20 +44,27 @@ const deletesPinnedRuntimeImage = (change) =>
   change.address.startsWith('module.agentcore.') &&
   change.change?.before?.keep_remotely !== true;
 
-const protectionAttribute = (change) => {
-  if (change.type === 'aws_dynamodb_table') return 'deletion_protection_enabled';
-  if (change.type === 'aws_neptune_cluster') return 'deletion_protection';
-  return undefined;
+// Attribute and enabled/disabled values per resource type. Cognito uses an
+// ACTIVE/INACTIVE string rather than a boolean.
+const protectionSettings = {
+  aws_dynamodb_table: { attribute: 'deletion_protection_enabled', enabled: true, disabled: false },
+  aws_neptune_cluster: { attribute: 'deletion_protection', enabled: true, disabled: false },
+  aws_cognito_user_pool: {
+    attribute: 'deletion_protection',
+    enabled: 'ACTIVE',
+    disabled: 'INACTIVE',
+  },
 };
 
 const onlyDisablesDeletionProtection = (change) => {
   if (!isDeepStrictEqual(change.change?.actions, ['update'])) return false;
 
-  const attribute = protectionAttribute(change);
-  if (!attribute) return false;
+  const settings = protectionSettings[change.type];
+  if (!settings) return false;
+  const { attribute, enabled, disabled } = settings;
   const before = structuredClone(change.change.before);
   const after = structuredClone(change.change.after);
-  if (before?.[attribute] !== true || after?.[attribute] !== false) return false;
+  if (before?.[attribute] !== enabled || after?.[attribute] !== disabled) return false;
   delete before[attribute];
   delete after[attribute];
   return isDeepStrictEqual(before, after);
@@ -133,56 +139,3 @@ if (rejected.length) {
 }
 
 console.log('Terraform plan destruction check passed.');
-
-if (requireLambdaPackages) {
-  // Match the AWS provider's needsFunctionCodeUpdate inputs. Configuration-only
-  // updates do not read the local ZIP; creates, replacements and code updates do.
-  const codeAttributes = [
-    'filename',
-    'code_sha256',
-    'source_code_hash',
-    's3_bucket',
-    's3_key',
-    's3_object_version',
-    'source_kms_key_arn',
-    'image_uri',
-    'architectures',
-  ];
-  const hasUnknownValue = (value) =>
-    value === true ||
-    (value !== null && typeof value === 'object' && Object.values(value).some(hasUnknownValue));
-  const unavailable = [];
-  let checked = 0;
-  for (const resource of plan.resource_changes || []) {
-    if (resource.type !== 'aws_lambda_function' || resource.mode === 'data') continue;
-    const { actions = [], before, after, after_unknown: unknown = {} } = resource.change ?? {};
-    const needsArchive =
-      actions.includes('create') ||
-      (actions.includes('update') &&
-        codeAttributes.some(
-          (key) => hasUnknownValue(unknown[key]) || !isDeepStrictEqual(before?.[key], after?.[key]),
-        ));
-    if (!needsArchive) continue;
-    if (unknown.filename) {
-      unavailable.push(`${resource.address}: local package filename is not known in the plan`);
-      continue;
-    }
-    // S3 and container-image delivery have no local filename to check.
-    if (!after?.filename) continue;
-    try {
-      const file = statSync(after.filename);
-      if (!file.isFile() || file.size === 0) throw new Error('archive is empty or not a file');
-      accessSync(after.filename, constants.R_OK);
-      checked += 1;
-    } catch (error) {
-      unavailable.push(`${resource.address}: ${after.filename} (${error.message})`);
-    }
-  }
-  if (unavailable.length) {
-    console.error('Refusing Terraform apply: required local Lambda packages are unavailable:');
-    for (const message of unavailable) console.error(`  - ${message}`);
-    console.error('Build the Lambda packages and regenerate the final saved plan before applying.');
-    process.exit(1);
-  }
-  console.log(`Terraform Lambda package check passed (${checked} local archives).`);
-}

@@ -389,6 +389,7 @@ module "control_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = merge({
+    AWS_SDK_UA_APP_ID               = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT     = tostring(var.powertools_log_event)
@@ -653,6 +654,7 @@ module "status_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = merge({
+    AWS_SDK_UA_APP_ID               = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME         = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL            = var.powertools_log_level
     ENVIRONMENT_REGISTRY_TABLE      = var.registry_table_name
@@ -956,6 +958,7 @@ module "tool_control_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
     POWERTOOLS_LOGGER_LOG_EVENT   = tostring(var.powertools_log_event)
@@ -1085,6 +1088,7 @@ module "tool_status_lambda" {
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID          = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME    = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL       = var.powertools_log_level
     ENVIRONMENT_REGISTRY_TABLE = var.registry_table_name

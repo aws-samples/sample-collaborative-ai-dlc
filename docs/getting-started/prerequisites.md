@@ -28,6 +28,7 @@ To deploy AIDLC Collaborative to AWS, install the following additional tools. Fo
 | --------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------- |
 | [Terraform](https://developer.hashicorp.com/terraform/install)                                                        | 1.7 or later        | Infrastructure provisioning                                                           |
 | [AWS Command Line Interface (AWS CLI)](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) | v2                  | AWS resource management and credential handling                                       |
+| curl                                                                                                                  | HTTPS support       | Authenticated Public ECR base-image manifest preflight                                |
 | [Docker](https://docs.docker.com/get-docker/) (default)                                                               | 20.10 or later      | Lambda packaging and container builds; alternatives use the override documented below |
 | [Amazon ECR credential helper](https://github.com/awslabs/amazon-ecr-credential-helper)                               | Available on `PATH` | Resolve registry credentials when Terraform plans and applies                         |
 
@@ -146,6 +147,49 @@ The credential name is `bedrock-bearer-token` or `kiro-api-key`. An unset platfo
 AIDLC Collaborative infrastructure still requires valid AWS credentials for deployment and AWS resource management. Agent CLI model calls do not use ambient AWS credentials; they use the effective Kiro or Bedrock key selected through the hierarchy above.
 
 Without an effective agent credential, users can still browse the application and edit draft intents, but credential-backed AI composition, Quorum assists, and intent start are unavailable.
+
+### Public ECR permissions for container builds
+
+The deployment identity needs the following additional permissions to pull the
+pinned AgentCore and Yjs base images with authentication. Private ECR push
+permissions alone do not grant Public ECR access. Add these statements to the
+deployment policy; runtime application roles do not need them:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "ecr-public:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "sts:GetServiceBearerToken",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "sts:AWSServiceName": "ecr-public.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
+```
+
+Public ECR authentication uses **`us-east-1`**, including when deploying the
+application in another Region. Region restrictions in deployment policies or
+organization policies must permit this token request. Tokens last 12 hours.
+See AWS's [authentication guide](https://docs.aws.amazon.com/AmazonECR/latest/public/public-registry-auth.html)
+and [GetAuthorizationToken permissions](https://docs.aws.amazon.com/AmazonECRPublic/latest/APIReference/API_GetAuthorizationToken.html).
+
+Automatic Public ECR authentication applies to the updated deployment script and
+reusable deployment workflow. Managed installations of older tagged releases still
+use their bundled deployment scripts and do not receive this authentication
+automatically. On paths using this authentication, a failure stops deployment
+before apply or retired-task changes. Keep BuildKit enabled: the locked provider's
+legacy builder does not forward this auth session.
 
 ### KMS permissions for infrastructure encryption
 

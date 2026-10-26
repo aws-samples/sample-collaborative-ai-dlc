@@ -117,12 +117,20 @@
   },
   "complexityExceptions": {
     "lambda/agentcore/commands/run-stage.js:/runStageAttempt:1": {
-      "maximum": 252,
-      "reason": "Inherited unchanged from main 860cdc60 (recovery ownership and CLI integration). Preserve stage side-effect ordering during this merge; further complexity growth remains blocked."
+      "maximum": 254,
+      "reason": "Inherited unchanged from main 1a5f8ae8; the merge-base score was 252. Preserve stage side-effect ordering during this merge; further complexity growth remains blocked."
+    },
+    "lambda/intents/index.js:/handler:1": {
+      "maximum": 557,
+      "reason": "Main 1a5f8ae8 adds 44 to the merge-base score of 507; the existing native branch adds 6. Preserve the native backend boundary and the upstream settings and gate contracts; further complexity growth remains blocked."
     },
     "lambda/shared/v2-process-store.js:/createProcessStore/updateExecution:1": {
-      "maximum": 72,
-      "reason": "Inherited unchanged from main 860cdc60. Preserve atomic run/stage ownership conditions during this merge; further complexity growth remains blocked."
+      "maximum": 81,
+      "reason": "Inherited unchanged from main 1a5f8ae8; the merge-base score was 72. Preserve atomic run/stage ownership conditions during this merge; further complexity growth remains blocked."
+    },
+    "lambda/v2-orchestrator/index.js:/handler:1": {
+      "maximum": 98,
+      "reason": "Main 1a5f8ae8 adds 7 to the merge-base score of 89; the existing native branch adds 2. Preserve durable replay names/order and gate recovery during this merge; further complexity growth remains blocked."
     },
     "lambda/v2-orchestrator/index.js:/handler/executeStage:1": {
       "maximum": 23,

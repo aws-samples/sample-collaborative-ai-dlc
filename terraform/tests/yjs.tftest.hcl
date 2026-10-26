@@ -28,6 +28,7 @@ mock_provider "aws" {
 mock_provider "docker" {}
 
 variables {
+  aws_sdk_ua_app_id             = "Collaborative_AI-DLC-test"
   project_name                  = "test"
   environment                   = "prod"
   aws_region                    = "us-east-1"
@@ -46,6 +47,13 @@ variables {
 
 run "standalone_defaults" {
   command = plan
+  assert {
+    condition = contains(jsondecode(aws_ecs_task_definition.yjs_server.container_definitions)[0].environment, {
+      name  = "AWS_SDK_UA_APP_ID"
+      value = var.aws_sdk_ua_app_id
+    })
+    error_message = "The Yjs container must receive the release application ID for AWS SDK requests."
+  }
   module {
     source = "./modules/realtime/yjs-server"
   }

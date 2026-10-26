@@ -85,6 +85,14 @@ enable_waf = true
 ```
 
 The ACLs use the AWS-managed Common Rule Set, Known Bad Inputs, and Amazon IP Reputation rule groups.
+With `enable_waf = true`, the shared regional ACL also blocks application REST API requests with a missing or incorrect `X-Origin-Verify` header, including direct requests with a valid Cognito JWT. The rule checks URL-decoded paths containing `/api`, which covers every application REST route with or without the stage prefix. Cognito's supported login and token paths do not match this condition, so they do not require the header. CloudFront injects the generated secret for every request to the REST API origin, including OPTIONS preflight and OAuth callbacks. A correct header continues through the managed rules and existing authentication and application authorization checks.
+
+This retains two ACLs: one for CloudFront and one shared by API Gateway and Cognito. The origin check adds one WAF rule (currently $1/month, prorated hourly), with no additional ACL or managed rule groups. New REST routes must remain under `/api` or the rule's path scope must be updated.
+
+With `enable_waf = false` (the default), no WAF ACLs or origin-header restriction are enforced. Direct REST API requests remain available with the existing authentication and authorization controls. The WebSocket API is unaffected by the REST API origin check.
+
+This is a secret-based access restriction: the REST API endpoint remains public, and anyone who obtains the secret can satisfy the origin check. Keep Terraform state and access to the CloudFront/WAF configuration restricted. The secret is not included in the frontend bundle. WAF request sampling is disabled and WAF request logging is not configured; if you enable WAF logging separately, redact the `x-origin-verify` header.
+
 Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
 A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
 
@@ -190,7 +198,7 @@ Keep `environment`, `project_name` and `aws_region` in the tfvars. The retired-v
 
 !!! warning "A production environment must be named exactly `prod`"
 
-    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger Yjs collaboration containers, immutable ECR repositories, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, DynamoDB and Neptune deletion protection, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run.
+    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger Yjs collaboration containers, immutable ECR repositories, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, DynamoDB, Neptune and Cognito user pool deletion protection, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run.
 
     A near-miss name such as `production`, `prd`, or `prod-us` is treated as **non-production**: the hardening is silently disabled and the buckets become force-destroyable. Name the production environment `prod` and nothing else.
 
@@ -354,6 +362,51 @@ authentication inventory on both fresh installs and upgrades. This idempotent
 step also runs with `--skip-seed`; a failure fails deployment. If you apply
 Terraform directly, follow the [inventory initialization instructions](../development/agent-authentication-foundation.md#scoped-reviews)
 before saving personal or space credentials.
+
+### Public ECR base-image authentication
+
+Container builds use the existing digest-pinned Public ECR Node images.
+`deploy-terraform.sh` automatically runs `scripts/with-public-ecr-auth.mjs`
+for `--phase all` and `--phase apply`; a separate plan does not request a token.
+The wrapper requests a fresh token in `us-east-1` using the current deployment
+identity, so that identity needs the
+[Public ECR permissions](prerequisites.md#public-ecr-permissions-for-container-builds).
+
+The wrapper creates a temporary Docker config with restrictive permissions and
+passes its directory as `DOCKER_CONFIG` for the deployment subprocess. The
+locked Terraform Docker provider's Buildx path reads this config for its
+BuildKit auth session, covering AgentCore ARM64, optional AgentCore AMD64, and
+Yjs AMD64. Terraform's existing private ECR `registry_auth` still handles image
+pushes. Existing Docker contexts, proxy settings and other registry helpers are
+retained; only Public ECR uses the fresh token. The caller's Docker config is
+unchanged. The temporary config is removed on completion, failure, SIGINT or
+SIGTERM; a forced kill or host loss can bypass cleanup, so use an ephemeral
+runner or clean abandoned `aidlc-public-ecr-*` temporary directories.
+
+Before running the deployment command, the wrapper checks authenticated GET
+access to the exact manifests named in both Dockerfiles. This catches missing
+permissions, expired/invalid authentication and manifest-access failures before
+apply. It does **not** download or verify every layer, validate platform
+execution, warm the builder cache, or prove connectivity from a separate builder.
+It does not retry Terraform apply.
+
+For direct Terraform use, wrap the saved-plan apply explicitly:
+
+```bash
+node scripts/with-public-ecr-auth.mjs "$PWD" -- \
+  terraform -chdir=terraform apply /tmp/aidlc-dev.tfplan
+```
+
+AWS documents a separate unauthenticated data allowance; a `429 Data limit
+exceeded` response is not necessarily a short burst of requests. Authentication
+removes reliance on anonymous pulls but cannot guarantee freedom from account
+or service limits. If authenticated pulls still encounter limits, record which
+identity and build failed, check the applicable
+[Public ECR quotas](https://docs.aws.amazon.com/AmazonECR/latest/public/public-service-quotas.html),
+and evaluate a separately approved private ECR mirror or pull-through cache.
+That requires repository/cache permissions, lifecycle and cost decisions, and
+verification of the pinned image digests for each architecture. This deployment
+does not provision a mirror or fall back to anonymous Docker Hub pulls.
 
 ### Bootstrap the first platform administrator
 

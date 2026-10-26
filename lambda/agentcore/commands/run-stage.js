@@ -95,18 +95,22 @@ import {
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
-import { workspaceRelativePath } from '../repo-paths.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
-import { CHECKPOINTS, chosenLabel } from '../mcp/process-bridge.js';
+import { CHECKPOINTS, answerFreeText, chosenLabel } from '../mcp/process-bridge.js';
 import { LOOP_BACK_OPTION, parseChoice } from '../../shared/gate-answer.js';
 import { ingestStageCodeTraceability as defaultIngestStageCodeTraceability } from '../code-traceability.js';
 import { createSensorRunner, isReleaseDependencyError } from '../sensor-runner.js';
+import {
+  createReleaseScriptClosureReader,
+  releaseOwnedSensorPredicate,
+} from '../release-script-closure.js';
 import {
   evaluateGatePreconditions,
   mergeFindings,
   sensorGateFindings,
 } from '../../shared/gate-preconditions.js';
+import { resolveSensorVerdict } from '../../shared/sensor-verdict.js';
 import {
   archiveArtifactsForStages as defaultArchiveArtifactsForStages,
   readCurrentArtifactHeadHashes as defaultReadArtifactHeadHashes,
@@ -119,7 +123,12 @@ import {
   UNIT_FOR_EACH,
 } from '../../shared/v2-execution-plan.js';
 import { humanTaskMatchesOwner, isHumanTaskAnswerStatus } from '../../shared/v2-process-keys.js';
+import { policyValueUninterpreted } from '../../shared/aidlc-capabilities.js';
 import { credentialProviderForCli } from '../../shared/agent-auth-contracts.js';
+import {
+  mergeChangedFileProvenance,
+  unknownChangedFileProvenance,
+} from '../../shared/changed-file-provenance.js';
 import { eventTypeOf } from '../../shared/v2-process-keys.js';
 import { pruneOutputArtifactsForUnit } from '../../shared/unit-kind-pruning.js';
 
@@ -255,6 +264,8 @@ const resolveStage = ({
   stageId,
   skipStageIds = [],
   composedGrid = null,
+  policyScope = null,
+  intentSettings = null,
 }) => {
   const { valid, errors, plan } = buildExecutionPlan({
     workflow,
@@ -262,6 +273,8 @@ const resolveStage = ({
     library,
     ...(skipStageIds.length ? { skipStageIds } : {}),
     ...(composedGrid ? { composedGrid } : {}),
+    ...(policyScope ? { policyScope } : {}),
+    ...(intentSettings ? { intentSettings } : {}),
   });
   if (!valid) return { error: 'plan_invalid', detail: errors };
   const stage = plan.stages.find((s) => s.stageId === stageId);
@@ -477,6 +490,11 @@ const buildReviewerPrompt = ({
     persona: reviewerPersona,
     knowledge,
     role: 'reviewer',
+    stageId: stage.stageId,
+    // The reviewer's MCP role carries neither checkpoint tool and no
+    // `ask_question`; `composePersonaPrompt` caps the annex on that surface
+    // itself, so this passes only the policy the rest of the row reads.
+    policy: stage.policy ?? null,
   });
 
 const latestReviewerVerdict = async ({ store, executionId, stageInstanceId, reviewerAgent }) => {
@@ -541,7 +559,10 @@ const runReviewer = async ({
   const dispatch = await dispatchPersona({
     role: 'reviewer',
     stageId: stage.stageId,
-    personaScope: { agentRef: reviewerAgent },
+    // The stage's resolved policy travels with the reviewer too: the annex's
+    // checkpoint mapping is capped by the reviewer role's own tool surface, and
+    // the policy is what decides the rest of the row.
+    personaScope: { agentRef: reviewerAgent, policy: stage.policy ?? null },
     agentBlock: reviewerBlock,
     persona: reviewerPersona,
     knowledge,
@@ -614,9 +635,13 @@ const runReviewer = async ({
 // activity-feed note (the full structured detail is on the SensorRun row for the
 // drill-down). Handles the shapes the evaluators emit: missing artifacts
 // (`artifacts[].reason`), unreferenced upstreams (`unreferenced[]`), a bare
-// `reason`, or an `error`. Returns '' when there is nothing terse worth adding.
-const summarizeSensorDetail = (detail) => {
+// `reason`, or an `error`. A `script` sensor's detail is a per-file aggregate, so
+// the shared resolver reads the bounded reason of the entry that explains the
+// result; nothing else from a script's own output reaches the note. Returns ''
+// when there is nothing terse worth adding.
+const summarizeSensorDetail = ({ result, detail }) => {
   if (!detail || typeof detail !== 'object') return '';
+  const { reason, error } = resolveSensorVerdict({ result, detail });
   const missing = Array.isArray(detail.artifacts)
     ? detail.artifacts.filter((a) => a?.reason === 'not found in graph').map((a) => a.artifact)
     : [];
@@ -624,10 +649,24 @@ const summarizeSensorDetail = (detail) => {
   if (Array.isArray(detail.unreferenced) && detail.unreferenced.length) {
     return ` — unreferenced: ${detail.unreferenced.join(', ')}`;
   }
-  if (detail.error) return ` — ${detail.error}`;
-  if (detail.reason) return ` — ${detail.reason}`;
+  if (error) return ` — ${error}`;
+  if (reason) return ` — ${reason}`;
   return '';
 };
+
+// A stage can safely scope sensors only when every repository reported known
+// provenance. One unknown repository widens the whole workspace scan because a
+// failed Git collection may hide a relevant path in any sensor's match set.
+const changedFileProvenanceFromGitResults = (results = []) =>
+  results.length === 0
+    ? unknownChangedFileProvenance('no_repository_results')
+    : mergeChangedFileProvenance(
+        results.map((result) => ({
+          source: result.repo ?? 'unknown repository',
+          provenance:
+            result.provenance ?? unknownChangedFileProvenance('missing_repository_provenance'),
+        })),
+      );
 
 // Run the stage's deterministic sensors. Records a SensorRun verdict +
 // broadcasts an `agent.note` per sensor, and returns
@@ -648,12 +687,15 @@ const runStageSensors = async ({
   openGraph,
   loadBlockScript,
   workspaceDir,
+  changedFileProvenance = unknownChangedFileProvenance('not_provided'),
   env,
   spawnFn,
   store,
   publish,
   changedFiles = null,
   planes = null,
+  remainingStageMs = null,
+  loadScriptClosure = null,
 }) => {
   let graph = null;
   let gConn = null;
@@ -675,12 +717,15 @@ const runStageSensors = async ({
       executionId,
       loadBlockScript,
       workspaceDir,
+      changedFileProvenance,
       env,
       spawnFn,
       store,
       publish,
       changedFiles,
       planes,
+      remainingStageMs,
+      loadScriptClosure,
     });
   } finally {
     await closeGraphSource(gConn);
@@ -717,12 +762,15 @@ const runSensorsWithGraph = async ({
   executionId,
   loadBlockScript,
   workspaceDir,
+  changedFileProvenance = unknownChangedFileProvenance('not_provided'),
   env,
   spawnFn,
   store,
   publish,
   changedFiles = null,
   planes = null,
+  remainingStageMs = null,
+  loadScriptClosure = null,
 }) => {
   const runner = createSensorRunner({
     graph,
@@ -735,6 +783,9 @@ const runSensorsWithGraph = async ({
     substitutions: {},
     spawnFn,
     childEnv: env,
+    changedFileProvenance,
+    remainingStageMs,
+    loadScriptClosure,
   });
 
   const verdicts = await runner.runStageSensors({
@@ -787,7 +838,7 @@ const runSensorsWithGraph = async ({
           actor: 'agentcore',
           summary: `Sensor ${v.sensorId} (${v.severity}) → ${v.result}${
             v.held ? ' — blocking' : ''
-          }${summarizeSensorDetail(v.detail)}`,
+          }${summarizeSensorDetail(v)}`,
         })
         .catch(() => {});
     }
@@ -1120,18 +1171,6 @@ const workAtRiskFailure = (gitResult) => {
   return { code: uncommitted ? 'git_commit_failed' : 'push_failed', detail };
 };
 
-// Whether a git result names every file it changed. A partial list is worse
-// than none: a consumer of `changedFiles: []` cannot tell "nothing changed" from
-// "the engine could not say". True only when the engine succeeded, reported at
-// least one repo, and every repo reported an explicit `files` array or a clean
-// commit.
-const gitReportsAllFiles = (gitResult) =>
-  Boolean(gitResult?.ok) &&
-  (gitResult?.results ?? []).length > 0 &&
-  gitResult.results.every(
-    (gitChange) => Array.isArray(gitChange.files) || gitChange.reason === 'clean',
-  );
-
 // The post-agent sensor pass. Release mode splits the sensors into a write pass
 // here (narrowed to the attempt's changed files) and a gate pass after the
 // reviewer. An unpinned run has no gate pass, so it keeps the single pass over
@@ -1305,10 +1344,11 @@ const formatResumeAnswer = (gate, stageId) => {
   const checkpoint = gate?.detail?.checkpoint ?? null;
   if (checkpoint) {
     // The same label parser and labels the bridge uses to decide whether a
-    // receipt is written, so this message never contradicts the receipt.
-    const label = chosenLabel(a);
+    // receipt is written, so this message never contradicts the receipt. It also
+    // reads the gate UI's `answers[]` shape (option indices into `gate.questions`).
+    const label = chosenLabel(gate);
     const approved = label === CHECKPOINTS[checkpoint]?.approve;
-    const free = typeof a === 'string' ? '' : (a?.freeText ?? a?.feedback ?? '');
+    const free = answerFreeText(a);
     if (approved) {
       return (
         `The human answered the ${checkpoint} checkpoint: "${label}".` +
@@ -1631,6 +1671,17 @@ const runStageAttempt = async (
     // every dispatch for the same plan-parity reason as the skip overlay: the
     // grid — not the scope name — is the projection this run executes.
     composedGrid = null,
+    // Per-intent AI-DLC settings (shared/intent-aidlc-settings.js), forwarded by
+    // the orchestrator on every dispatch for the same plan-parity reason: the
+    // member's recorded choices are part of the projection, so resolving the
+    // stage without them would run it under the scope defaults while the walk
+    // gated on the choices.
+    intentSettings = null,
+    // The stock scope a composed grid runs on, forwarded for the same reason: a
+    // grid's own `scope` names no SCOPE block, so resolving the stage without
+    // the recorded base scope materializes NO policy while the walk resolved
+    // the base scope's.
+    policyScope = null,
     requestedCli,
     cliModels = {},
     // Tier-model config (shared/tier-models.js flat-row shape), snapshotted on
@@ -1935,7 +1986,15 @@ const runStageAttempt = async (
   if (!loaded.workflow || !loaded.library)
     return fail(null, 'workflow_not_found', `${workflowId}@${workflowVersion}`);
 
-  const probe = resolveStage({ ...loaded, scope: { scope }, stageId, skipStageIds, composedGrid });
+  const probe = resolveStage({
+    ...loaded,
+    scope: { scope },
+    stageId,
+    skipStageIds,
+    composedGrid,
+    policyScope,
+    intentSettings,
+  });
   if (probe.error) return fail(null, probe.error, JSON.stringify(probe.detail));
 
   const memory = await readProjectMemory({
@@ -1950,6 +2009,14 @@ const runStageAttempt = async (
     library: loaded.library,
     learningRules: memory.learningRules,
   });
+  // Null in legacy mode, where a sensor script is one self-contained object.
+  // Bound to the resolved library's provenance: the release publishes a closure
+  // for its OWN sensors only, so a user-tenant SENSOR overlay keeps the
+  // existing user-script path.
+  const loadScriptClosure = createReleaseScriptClosureReader({
+    methodologyRelease,
+    releaseOwnsSensor: releaseOwnedSensorPredicate(library.sensorsById),
+  });
 
   const resolved = resolveStage({
     workflow,
@@ -1958,6 +2025,8 @@ const runStageAttempt = async (
     stageId,
     skipStageIds,
     composedGrid,
+    policyScope,
+    intentSettings,
   });
   if (resolved.error) return fail(null, resolved.error, JSON.stringify(resolved.detail));
   const { plan } = resolved;
@@ -2072,8 +2141,9 @@ const runStageAttempt = async (
   }
 
   // Release-authored scope policy can silently REMOVE verification (a reviewer, a
-  // sensor list). Record what it took away so an operator reading the timeline
-  // can see why a stage ran without the checks its stage block declares.
+  // sensor list, a stage's support personas). Record what it took away so an
+  // operator reading the timeline can see why a stage ran without the checks its
+  // stage block declares.
   const policyEffect = (plan.policyEffects ?? []).find((effect) => effect.stageId === stageId);
   if (policyEffect) {
     await store
@@ -2089,6 +2159,10 @@ const runStageAttempt = async (
         }${
           policyEffect.removedSensors.length
             ? `, sensors removed: ${policyEffect.removedSensors.join(', ')}`
+            : ''
+        }${
+          (policyEffect.withdrawnSupportAgents ?? []).length
+            ? `, support personas withdrawn: ${policyEffect.withdrawnSupportAgents.join(', ')}`
             : ''
         }`,
       })
@@ -2614,6 +2688,19 @@ const runStageAttempt = async (
   let changedInputs = [];
   let changeControlFindings = [];
   let changeControlMessage = '';
+  // Three outcomes and no fourth means a FOURTH VALUE has nowhere to go: it
+  // would fall through every branch below and run the stage with no comparison
+  // at all — the one outcome this section exists to prevent. The plan refuses
+  // such a value from a user overlay, so arriving here means a release the
+  // promotion guard holds; fail the stage rather than run it as the absence of
+  // change control.
+  if (policyValueUninterpreted('changeControl', stage.policy?.changeControl)) {
+    return fail(
+      stageInstanceId,
+      'change_control_uninterpreted',
+      `scope declares change_control "${stage.policy.changeControl}", which this platform does not interpret`,
+    );
+  }
   if (stage.policy?.changeControl && openGraph) {
     const ccRow = await store.getStage(executionId, stageInstanceId).catch(() => null);
     const ccAttempt = Number(ccRow?.attempt ?? priorStageRow?.attempt ?? 0);
@@ -3840,6 +3927,8 @@ const runStageAttempt = async (
         repos,
         workspaceDir,
         branch,
+        baseBranch,
+        baseBranches,
         gitProvider,
         repoProviders,
         projectId,
@@ -4159,6 +4248,8 @@ const runStageAttempt = async (
     repos,
     workspaceDir,
     branch,
+    baseBranch,
+    baseBranches,
     gitProvider,
     repoProviders,
     projectId,
@@ -4417,6 +4508,48 @@ const runStageAttempt = async (
     );
   }
 
+  let completedGitResult = gitResult;
+  let completedGitError = null;
+  let attemptProvenance = mergeChangedFileProvenance(
+    [leadDraftGit, gitResult].filter(Boolean).map((attemptGit) => ({
+      provenance: changedFileProvenanceFromGitResults(attemptGit.results),
+    })),
+  );
+  let changedFileProvenance = attemptProvenance;
+  let changedFiles = changedFileProvenance.state === 'known' ? changedFileProvenance.files : null;
+  let recoveredCommitRefs = null;
+  // Lead drafts, parked legs and repair turns belong to this same stage attempt.
+  // Recover their full delta before each sensor plane and returning feedback.
+  // A failed recovery remains unknown instead of exposing a partial file list.
+  const refreshCompletedGitResult = async () => {
+    const refsKey = JSON.stringify(stageCodeCommitRefs);
+    if (
+      (carriedCodeCommitRefs.length > 0 || leadDraftGit?.committed || repairCommitted) &&
+      refsKey !== recoveredCommitRefs
+    ) {
+      recoveredCommitRefs = refsKey;
+      try {
+        completedGitResult = await gitResultForCommitRefs({
+          commitRefs: stageCodeCommitRefs,
+          repos,
+          workspaceDir,
+        });
+        completedGitError = null;
+      } catch (error) {
+        completedGitError = error;
+      }
+    }
+    changedFileProvenance = mergeChangedFileProvenance([
+      { provenance: attemptProvenance },
+      {
+        provenance: completedGitError
+          ? unknownChangedFileProvenance('git_commit_refs_failed', completedGitError.message)
+          : changedFileProvenanceFromGitResults(completedGitResult.results),
+      },
+    ]);
+    changedFiles = changedFileProvenance.state === 'known' ? changedFileProvenance.files : null;
+  };
+
   // The lead repair turn: re-enter the SAME conversation with one deterministic
   // message and commit whatever it rewrote. Hoisted out of the checkpoint ladder
   // because the adversarial reviewer loop needs the identical machinery between
@@ -4474,6 +4607,8 @@ const runStageAttempt = async (
           repos,
           workspaceDir,
           branch,
+          baseBranch,
+          baseBranches,
           gitProvider,
           repoProviders,
           projectId,
@@ -4487,6 +4622,10 @@ const runStageAttempt = async (
           committed: false,
           results: [{ repo: '-', reason: 'engine_crashed', detail: error?.message }],
         }));
+        attemptProvenance = mergeChangedFileProvenance([
+          { provenance: attemptProvenance },
+          { provenance: changedFileProvenanceFromGitResults(repairGit.results) },
+        ]);
         const refsBefore = stageCodeCommitRefs.length;
         stageCodeCommitRefs = mergeCodeCommitRefs(stageCodeCommitRefs, repairGit);
         if (stageCodeCommitRefs.length > refsBefore) repairCommitted = true;
@@ -4546,6 +4685,8 @@ const runStageAttempt = async (
     stageFindings = mergeFindings(stageFindings, ladder.findings);
   }
 
+  await refreshCompletedGitResult();
+
   // 6. Deterministic sensors, WRITE plane — the verification axis that runs
   // AFTER the agent and BEFORE the reviewer. Graph sensors evaluate the produced
   // artifacts' content in-process; script sensors spawn against the workspace
@@ -4558,39 +4699,6 @@ const runStageAttempt = async (
   // The list is the authored sensors PLUS the platform-injected ones (see
   // withPlatformSensors) — hence the gate checks the merged list.
   if (withPlatformSensors(stage).length > 0) {
-    // `fire_on: write` sensors inspect only what THIS attempt changed, so the
-    // list must be TRUSTWORTHY or absent: a partial list silently narrows the
-    // sweep and turns a real finding into "no files match". It is therefore null
-    // unless the git engine succeeded, reported at least one repo, and every repo
-    // reported an explicit `files` array (a clean commit counts as none). Paths are projected from repo-relative
-    // (git's space) into workspace-relative (the sensor glob's space).
-    // The attempt's files, not only this leg's: a stage that parked on a
-    // checkpoint committed its first leg already, and checkpoint repair turns
-    // commit on their own. When either happened, the list is rebuilt from the
-    // attempt's commit references.
-    const sweepsWrites = withPlatformSensors(stage).some((sensor) => sensor.fireOn === 'write');
-    const attemptGitResult =
-      sweepsWrites && (carriedCodeCommitRefs.length > 0 || repairCommitted)
-        ? await gitResultForCommitRefs({
-            commitRefs: stageCodeCommitRefs,
-            repos,
-            workspaceDir,
-          }).catch(() => null)
-        : gitResult;
-    const multiRepo = repos.length > 1;
-    const attemptChangedFiles = gitReportsAllFiles(attemptGitResult)
-      ? [
-          ...new Set(
-            attemptGitResult.results.flatMap((gitChange) =>
-              (gitChange.files ?? [])
-                .map((file) =>
-                  workspaceRelativePath({ repo: gitChange.repo, file, multi: multiRepo }),
-                )
-                .filter(Boolean),
-            ),
-          ),
-        ].toSorted()
-      : null;
     const writePlane = await runStageSensors({
       stage,
       stageInstanceId,
@@ -4601,12 +4709,19 @@ const runStageAttempt = async (
       intentId,
       openGraph,
       loadBlockScript: loadScript,
+      loadScriptClosure,
       workspaceDir,
+      changedFileProvenance,
       env,
       spawnFn,
       store,
       publish,
-      ...postAgentSensorPass({ methodologyRelease, attemptChangedFiles }),
+      // Budget enforcement follows authored release policy, like repair turns.
+      // Policy-free catalogs (including 2.3.3) keep their legacy sensor budget.
+      ...(methodologyRelease && stage.policy
+        ? { remainingStageMs: () => stageDeadlineMs - nowMs() }
+        : {}),
+      ...postAgentSensorPass({ methodologyRelease, attemptChangedFiles: changedFiles }),
     }).catch(() => null);
     if (writePlane?.held) {
       return fail(stageInstanceId, 'sensor_blocked', writePlane.held);
@@ -4821,6 +4936,8 @@ const runStageAttempt = async (
     }
   }
 
+  await refreshCompletedGitResult();
+
   // 6b. Deterministic sensors, GATE plane. `fire_on: gate` fires
   // once per existing declared deliverable as the stage opens its gate, so it
   // runs HERE — after the reviewer loop has finished rewriting artifacts — and
@@ -4852,12 +4969,15 @@ const runStageAttempt = async (
         intentId,
         openGraph,
         loadBlockScript: loadScript,
+        loadScriptClosure,
         workspaceDir,
         env,
         spawnFn,
         store,
         publish,
         planes: ['gate'],
+        changedFileProvenance,
+        ...(stage.policy ? { remainingStageMs: () => stageDeadlineMs - nowMs() } : {}),
       });
     } catch (error) {
       gatePlaneError = error?.message ?? String(error);
@@ -4932,15 +5052,8 @@ const runStageAttempt = async (
   // evidence edges on top. Projection is intentionally best-effort: missing or
   // malformed evidence and Neptune outages must not turn successful
   // implementation work into an execution failure.
-  let completedGitResult = gitResult;
   try {
-    if (carriedCodeCommitRefs.length > 0 || repairCommitted) {
-      completedGitResult = await gitResultForCommitRefs({
-        commitRefs: stageCodeCommitRefs,
-        repos,
-        workspaceDir,
-      });
-    }
+    if (completedGitError) throw completedGitError;
     const projected = await ingestStageCodeTraceability({
       openGraph,
       scope: {
@@ -5047,16 +5160,6 @@ const runStageAttempt = async (
     sectionIndex,
     state: 'SUCCEEDED',
   });
-  // Same trustworthiness rule as the `fire_on: write` sensor feed above: a
-  // partial list is worse than none, because a downstream consumer reading
-  // `changedFiles: []` cannot tell "this stage changed nothing" from "the git
-  // engine could not say". Null unless the engine succeeded, reported at least
-  // one repo, and every repo reported an explicit `files` array or a clean commit.
-  const changedFiles = gitReportsAllFiles(completedGitResult)
-    ? [
-        ...new Set(completedGitResult.results.flatMap((gitChange) => gitChange.files ?? [])),
-      ].toSorted()
-    : null;
   const commitSha =
     completedGitResult.results.find((gitChange) => gitChange.committed && gitChange.sha)?.sha ??
     null;
@@ -5092,6 +5195,7 @@ const runStageAttempt = async (
     unitSlug,
     sectionIndex,
     cli,
+    changedFileProvenance,
     changedFiles,
     commitSha,
     verification:
@@ -5170,6 +5274,7 @@ export const __test = {
   isBenignKiroEmptyCompletion,
   buildReviewerPrompt,
   renderReviewerReadScope,
+  changedFileProvenanceFromGitResults,
   runCheckpointLadder,
   SHARED_CONTRACT_ARTIFACTS,
   changedApprovedInputs,

@@ -30,10 +30,10 @@ provider "aws" {
   region = var.aws_region
 
   default_tags {
-    tags = {
+    tags = merge(var.extra_tags, {
       Environment = var.environment
       Project     = var.project_name
-    }
+    })
   }
 }
 
@@ -42,6 +42,29 @@ provider "aws" {
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"
+
+  default_tags {
+    tags = merge(var.extra_tags, {
+      Environment = var.environment
+      Project     = var.project_name
+    })
+  }
+}
+
+# Route53 records for route53_zone_id and auth_route53_zone_id. Assumes
+# dns_role_arn when the hosted zones live in another account; otherwise it is
+# the deployment account's own credentials.
+provider "aws" {
+  alias  = "dns"
+  region = var.aws_region
+
+  dynamic "assume_role" {
+    for_each = var.dns_role_arn == "" ? [] : [var.dns_role_arn]
+    content {
+      role_arn     = assume_role.value
+      session_name = "${var.project_name}-${var.environment}-dns"
+    }
+  }
 
   default_tags {
     tags = {
@@ -65,6 +88,13 @@ locals {
   partition               = data.aws_partition.current.partition
   dns_suffix              = data.aws_partition.current.dns_suffix
   powertools_service_name = "collaborative-aidlc"
+
+  # Use the existing application release version as the SDK application ID.
+  # Powertools appends ~43 chars to AWS_SDK_UA_APP_ID at import unless the value
+  # already contains "/PTEnv/", which would exceed the SDK's 50-char limit and
+  # log a warning on every SDK call. Remove the suffix once Powertools leaves room.
+  # See https://github.com/aws-powertools/powertools-lambda-typescript/issues/5815
+  aws_sdk_ua_app_id = "Collaborative_AI-DLC-${jsondecode(file("${path.module}/../package.json")).version}/PTEnv/"
 
   # Bedrock inference may live outside the deployment region (regional API keys
   # or model access). The runtime CLIs and the model picker share this value.
@@ -242,6 +272,7 @@ module "domain" {
   providers = {
     aws           = aws
     aws.us_east_1 = aws.us_east_1
+    aws.dns       = aws.dns
   }
 
   project_name    = var.project_name
@@ -295,15 +326,19 @@ module "waf" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  enabled      = var.enable_waf
-  project_name = var.project_name
-  environment  = var.environment
+  enabled                  = var.enable_waf
+  project_name             = var.project_name
+  environment              = var.environment
+  cloudfront_origin_secret = module.frontend.cloudfront_origin_secret
 }
 
 # Auth (Cognito)
 module "auth" {
   source = "./modules/auth"
 
+  deletion_protection = var.deletion_protection
+
+  aws_sdk_ua_app_id       = local.aws_sdk_ua_app_id
   project_name            = var.project_name
   environment             = var.environment
   powertools_service_name = local.powertools_service_name
@@ -339,12 +374,14 @@ module "frontend" {
   web_acl_arn                    = module.waf.cloudfront_web_acl_arn
 }
 
-# Route53 alias records for the custom domain. Only created when the hosted zone
-# lives in this account; otherwise the dns_target and dns_target_hosted_zone_id
-# outputs carry everything an external DNS provider needs.
+# Route53 alias records for the custom domain. Only created when route53_zone_id
+# is set (in this account, or in another one through dns_role_arn); otherwise
+# the dns_target and dns_target_hosted_zone_id outputs carry everything an
+# external DNS provider needs.
 #
 # Both record types are required because the distribution has is_ipv6_enabled.
 resource "aws_route53_record" "app" {
+  provider = aws.dns
   for_each = var.route53_zone_id == "" ? {} : {
     for pair in setproduct(local.app_aliases, ["A", "AAAA"]) :
     "${pair[0]}-${pair[1]}" => { name = pair[0], type = pair[1] }
@@ -362,6 +399,7 @@ resource "aws_route53_record" "app" {
 }
 
 resource "aws_route53_record" "auth" {
+  provider = aws.dns
   for_each = var.auth_route53_zone_id == "" || var.auth_domain == "" ? toset([]) : toset(["A", "AAAA"])
 
   zone_id = var.auth_route53_zone_id
@@ -466,6 +504,7 @@ module "lambda" {
   native_preparation_enabled = var.native_services_enabled
   source                     = "./modules/api/lambda"
 
+  aws_sdk_ua_app_id           = local.aws_sdk_ua_app_id
   project_name                = var.project_name
   environment                 = var.environment
   powertools_service_name     = local.powertools_service_name
@@ -571,9 +610,8 @@ module "lambda" {
 module "api" {
   source = "./modules/api"
 
-
-  v2_executions_table_name = module.agentcore.v2_executions_table_name
-
+  aws_sdk_ua_app_id                        = local.aws_sdk_ua_app_id
+  credential_broker_role_arn               = module.lambda.credential_broker_role_arn
   project_name                             = var.project_name
   environment                              = var.environment
   powertools_service_name                  = local.powertools_service_name
@@ -645,14 +683,13 @@ module "api" {
   agentcore_runtime_arn                    = module.agentcore.runtime_arn
   bedrock_region                           = local.bedrock_region
   agent_credential_grant_secret_param_name = aws_ssm_parameter.agent_credential_grant_secret.name
+  v2_executions_table_name                 = module.agentcore.v2_executions_table_name
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   runtime_compatibility_version            = module.agentcore.runtime_compatibility_version
   private_subnet_ids                       = module.networking.private_subnet_ids
   lambda_security_group_ids                = [module.lambda.lambda_security_group_id]
   neptune_endpoint                         = module.neptune.cluster_endpoint
   cors_allowed_origins                     = local.cors_allowed_origins
-  cloudfront_origin_secret                 = module.frontend.cloudfront_origin_secret
-  enable_cloudfront_origin_policy          = false
   # Pass a non-deprecated attribute (the account's CloudWatch role ARN, not the
   # deprecated `.id`). The value itself is unused — the api module interpolates it
   # into the stage description to create an implicit dependency so the stage waits
@@ -664,6 +701,7 @@ module "api" {
 module "realtime" {
   source = "./modules/realtime"
 
+  aws_sdk_ua_app_id       = local.aws_sdk_ua_app_id
   project_name            = var.project_name
   environment             = var.environment
   powertools_service_name = local.powertools_service_name
@@ -686,6 +724,7 @@ module "realtime" {
 module "yjs_server" {
   source = "./modules/realtime/yjs-server"
 
+  aws_sdk_ua_app_id             = local.aws_sdk_ua_app_id
   project_name                  = var.project_name
   environment                   = var.environment
   powertools_service_name       = local.powertools_service_name
@@ -716,6 +755,7 @@ module "yjs_server" {
 module "agentcore" {
   source = "./modules/compute/agentcore"
 
+  aws_sdk_ua_app_id               = local.aws_sdk_ua_app_id
   project_name                    = var.project_name
   environment                     = var.environment
   powertools_service_name         = local.powertools_service_name
@@ -762,6 +802,7 @@ module "agentcore" {
 module "managed_environments" {
   source = "./modules/compute/managed-environments"
 
+  aws_sdk_ua_app_id             = local.aws_sdk_ua_app_id
   project_name                  = var.project_name
   environment                   = var.environment
   powertools_service_name       = local.powertools_service_name

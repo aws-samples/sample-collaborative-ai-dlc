@@ -23,7 +23,13 @@ import { getDriver } from './cli/drivers.js';
 import { runChild } from './cli/spawn.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './cli/opencode-store.js';
 import { resolveStageModel } from './model-resolver.js';
-import { neutralizeTokens } from './stage-materializer.js';
+import {
+  hasInvokeToken,
+  invokeDialectAnnex,
+  invokesCheckpointLog,
+  neutralizeTokens,
+} from './stage-materializer.js';
+import { CHECKPOINT_TOOLS, toolsForRole } from './mcp/server.js';
 
 // Package-manager caches use container-local /tmp; the working tree stays on the
 // session mount so cache growth cannot consume space needed for durable changes.
@@ -43,19 +49,83 @@ const mcpRoleFor = (role) => (role === 'reviewer' ? 'reviewer' : 'author');
 
 const roleLabel = (role) => role.charAt(0).toUpperCase() + role.slice(1);
 
+// What the session's MCP ROLE can actually do — asked of `toolsForRole`, the
+// function that really registers the tools, rather than restated here. A role
+// whose surface has no checkpoint tool even with a policy that demands both, and
+// no `ask_question`, must never be told to call one, whatever the caller passed:
+// the reviewer role is exactly that case, and its live dispatch used the
+// defaults rather than the helper that knew better.
+const CHECKPOINT_DEMANDING_POLICY = Object.freeze({
+  summaryConfirmation: 'required',
+  planApproval: 'required',
+});
+
+const roleToolFacts = (mcpRole, stageId, policy, checkpointOwner, canAsk) => {
+  const withEveryCheckpoint = toolsForRole(mcpRole, stageId, CHECKPOINT_DEMANDING_POLICY, {
+    checkpointOwner: true,
+    canAsk: true,
+  });
+  const owns =
+    checkpointOwner && CHECKPOINT_TOOLS.every((tool) => withEveryCheckpoint.includes(tool));
+  return {
+    checkpointOwner: owns,
+    canAsk:
+      canAsk &&
+      toolsForRole(mcpRole, stageId, policy, { checkpointOwner: owns, canAsk }).includes(
+        'ask_question',
+      ),
+  };
+};
+
 // The ONLY place `persona` / `knowledge` reach the rendered prompt: a fixed
 // tail appended after the caller's `brief`. `buildReviewerPrompt`
 // (run-stage.js) renders this EXACT tail for the reviewer today — kept here,
 // shared, so it is byte-identical and every future persona role renders it
 // the same way instead of re-deriving it.
-export const composePersonaPrompt = ({ brief, persona, knowledge, role }) =>
-  [
+//
+// It is also where the {{INVOKE}} dialect annex reaches a SECONDARY session. A
+// release instructs the agent from bodies every session receives — a persona and
+// the knowledge of its agent are rendered into the lead prompt, the reviewer
+// brief and every ensemble persona brief (`loadMethodologyKnowledge`,
+// commands/run-stage.js) — so a prompt built here that carries an engine command
+// must carry its answer too, or the promotion guard would have marked that
+// command answered in a session that never saw the answer
+// (`shared/annex-reach.js`). The annex's form follows this role's MCP surface.
+export const composePersonaPrompt = ({
+  brief,
+  persona,
+  knowledge,
+  role,
+  stageId = null,
+  // The same facts the MCP session is built from. They are CAPPED by the role's
+  // real tool surface here, so a caller that passes nothing cannot make the
+  // annex advertise a tool this session does not have.
+  policy = null,
+  checkpointOwner = true,
+  canAsk = true,
+}) => {
+  const mcpRole = mcpRoleFor(role);
+  const facts = roleToolFacts(mcpRole, stageId, policy, checkpointOwner, canAsk);
+  return [
     brief,
     '',
     `## ${roleLabel(role)} role`,
     neutralizeTokens(persona) || `(no ${role} persona supplied)`,
     knowledge ? `\n## Reference knowledge\n${neutralizeTokens(knowledge)}` : '',
+    ...(hasInvokeToken(persona, knowledge)
+      ? [
+          '',
+          invokeDialectAnnex({
+            readOnly: mcpRole === 'reviewer',
+            policy,
+            checkpointOwner: facts.checkpointOwner,
+            canAsk: facts.canAsk,
+            checkpointLogInvoked: invokesCheckpointLog(persona, knowledge),
+          }),
+        ]
+      : []),
   ].join('\n');
+};
 
 // Spawn one persona's headless CLI session and run it to completion.
 //
@@ -107,7 +177,21 @@ export const dispatchPersona = async ({
   maxTurns = agentBlock?.maxTurns ?? null,
 }) => {
   const mcpRole = mcpRoleFor(role);
-  const { agentRef, policy = null, checkpointOwner = true, canAsk = true } = personaScope ?? {};
+  const {
+    agentRef,
+    policy = null,
+    checkpointOwner: ownerRequested = true,
+    canAsk: askRequested = true,
+  } = personaScope ?? {};
+  // Capped by what this MCP role really registers, so the prompt built below and
+  // the trusted scope the MCP session reads cannot disagree.
+  const { checkpointOwner, canAsk } = roleToolFacts(
+    mcpRole,
+    stageId,
+    policy,
+    ownerRequested,
+    askRequested,
+  );
   try {
     const driver = getDriver(cli);
     const model = resolveStageModel({ cliModels, tierModels, agentBlock, cli, env });
@@ -136,7 +220,16 @@ export const dispatchPersona = async ({
       ...(canAsk === false ? { canAsk: false } : {}),
       model,
     };
-    const prompt = composePersonaPrompt({ brief, persona, knowledge, role });
+    const prompt = composePersonaPrompt({
+      brief,
+      persona,
+      knowledge,
+      role,
+      stageId,
+      policy,
+      checkpointOwner,
+      canAsk,
+    });
     const mcpKwargs =
       cli === 'kiro'
         ? {

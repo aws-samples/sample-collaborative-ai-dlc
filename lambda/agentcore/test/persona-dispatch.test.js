@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { dispatchPersona, composePersonaPrompt } from '../persona-dispatch.js';
+import { INVOKE_DIALECT_ANNEX } from '../stage-materializer.js';
+import { __test as runStageInternals } from '../commands/run-stage.js';
+import { toolsForRole } from '../mcp/server.js';
 
 // A child mock that resolves 'close' with exit code 0 and records whatever was
 // piped to stdin — every driver here (claude/kiro/opencode) delivers its prompt
@@ -370,5 +373,226 @@ describe('dispatchPersona — the trusted scope of a dispatched persona', () => 
       },
     });
     expect(scopes[0]).toMatchObject({ canAsk: false });
+  });
+});
+
+// A secondary session receives the same authored bodies as the lead: the
+// reviewer brief and every ensemble persona brief render a persona and the
+// reference knowledge (commands/run-stage.js buildReviewerPrompt,
+// loadMethodologyKnowledge). The promotion guard may only call an engine command
+// answered if EVERY prompt rendering that body carries the answer, so this tail
+// is the secondary-session half of that claim.
+describe('composePersonaPrompt — the dialect annex in a secondary session', () => {
+  const INSTRUCTING = 'Obtain the branch with `{{INVOKE}} engine worktree info --slug current`.';
+
+  it('answers an engine command the persona or the knowledge instructs', () => {
+    for (const part of ['persona', 'knowledge']) {
+      for (const role of ['support', 'link', 'integrator']) {
+        const prompt = composePersonaPrompt({
+          brief: 'b',
+          persona: 'p',
+          knowledge: 'k',
+          role,
+          [part]: INSTRUCTING,
+        });
+
+        expect(prompt, `${role}/${part}`).toContain(INVOKE_DIALECT_ANNEX);
+        expect(prompt, `${role}/${part}`).not.toContain('{{INVOKE}}');
+        // An author role HAS the tools the annex names, so it gets the annex
+        // verbatim; the read-only redirection would be wrong for it.
+        expect(prompt, `${role}/${part}`).not.toContain('**You are a read-only session.**');
+      }
+    }
+  });
+
+  // Every answer in the annex names an author tool (`emit_stage_note`,
+  // `send_output`). The reviewer's MCP role may only `submit_review`, so the
+  // rows stay verbatim and a preamble redirects the recording channel; handing
+  // it the annex unchanged would instruct a tool it was never registered for.
+  it('redirects the recording channel for the read-only reviewer role', () => {
+    const prompt = composePersonaPrompt({
+      brief: 'b',
+      persona: 'p',
+      knowledge: INSTRUCTING,
+      role: 'reviewer',
+    });
+
+    expect(prompt).toContain(INVOKE_DIALECT_ANNEX);
+    expect(prompt).toContain('**You are a read-only session.**');
+    expect(prompt).toContain('`submit_review`');
+  });
+
+  it('leaves a brief whose bodies instruct nothing unchanged', () => {
+    for (const role of ['reviewer', 'support']) {
+      const prompt = composePersonaPrompt({
+        brief: 'b',
+        persona: 'You are the designer.',
+        knowledge: 'Prefer composition over inheritance.',
+        role,
+      });
+
+      expect(prompt, role).not.toContain(INVOKE_DIALECT_ANNEX);
+      expect(prompt, role).not.toContain('read-only session');
+    }
+  });
+
+  // `engine log answer` / `engine log decision` are mapped onto `ask_question`
+  // and `confirm_summary`, and tool registration withholds BOTH from a session
+  // that does not own the stage's checkpoint and withholds `confirm_summary`
+  // wherever the policy asks for no summary confirmation. Advertising them
+  // regardless told a session to call a tool it was deliberately never
+  // registered for — the same mismatch already fixed for `learnings: off`.
+  describe('the checkpoint mapping follows the session that receives it', () => {
+    const CHECKPOINT_KNOWLEDGE = 'Log the answer: `{{INVOKE}} engine log answer --question q`.';
+    const VERBATIM_ROW = 'Ask with `ask_question`, confirm with `confirm_summary`';
+
+    const promptFor = (overrides) =>
+      composePersonaPrompt({
+        brief: 'b',
+        persona: 'p',
+        knowledge: CHECKPOINT_KNOWLEDGE,
+        role: 'support',
+        ...overrides,
+      });
+
+    it('keeps the mapping verbatim for the session that has both tools', () => {
+      const prompt = promptFor({ policy: { summaryConfirmation: 'required' } });
+
+      expect(prompt).toContain(VERBATIM_ROW);
+    });
+
+    it('withdraws the confirmation where the policy asks for none', () => {
+      const prompt = promptFor({ policy: { summaryConfirmation: 'none' } });
+
+      expect(prompt).not.toContain(VERBATIM_ROW);
+      expect(prompt).toContain('no `confirm_summary` tool exists for this session');
+      expect(prompt).toContain('Ask with `ask_question`');
+      // The refusal half of the row is untouched in every form.
+      expect(prompt).toContain('The protected checkpoints are **unavailable**');
+    });
+
+    it('defers to the owning session for a support that cannot ask', () => {
+      for (const overrides of [
+        { policy: { summaryConfirmation: 'required' }, canAsk: false },
+        { policy: { summaryConfirmation: 'required' }, checkpointOwner: false },
+      ]) {
+        const prompt = promptFor(overrides);
+
+        expect(prompt).not.toContain(VERBATIM_ROW);
+        expect(prompt).toContain('cannot raise either checkpoint in this session');
+        expect(prompt).toContain('defer to the owning session');
+      }
+    });
+
+    it('defers for the reviewer, which has neither tool', () => {
+      const prompt = composePersonaPrompt({
+        brief: 'b',
+        persona: 'p',
+        knowledge: CHECKPOINT_KNOWLEDGE,
+        role: 'reviewer',
+        policy: { summaryConfirmation: 'required' },
+        checkpointOwner: false,
+        canAsk: false,
+      });
+
+      expect(prompt).toContain('**You are a read-only session.**');
+      expect(prompt).not.toContain(VERBATIM_ROW);
+      expect(prompt).toContain('cannot raise either checkpoint in this session');
+    });
+
+    // And a release that never invokes these commands reads the row as inert
+    // prose, so its prompt keeps the annex verbatim — which is what leaves every
+    // older pinned release's prompt byte-for-byte unchanged.
+    it('leaves the annex verbatim for a release that invokes neither command', () => {
+      const prompt = composePersonaPrompt({
+        brief: 'b',
+        persona: 'p',
+        knowledge: INSTRUCTING,
+        role: 'support',
+        policy: { summaryConfirmation: 'none' },
+        canAsk: false,
+        checkpointOwner: false,
+      });
+
+      expect(prompt).toContain(INVOKE_DIALECT_ANNEX);
+    });
+  });
+
+  // The LIVE reviewer path is `runReviewer` → `dispatchPersona`, which composes
+  // the prompt itself. A helper that passes the right flags proves nothing about
+  // that path: the dispatcher defaulted checkpoint ownership and `ask_question`
+  // to true, so the reviewer's own prompt told it to call a tool MCP never
+  // registers for its role.
+  it('refuses the checkpoints in the prompt the live reviewer dispatch builds', async () => {
+    const capture = {};
+    const scopes = [];
+    const res = await dispatchPersona({
+      ...baseDeps({ stageId: 'design' }),
+      role: 'reviewer',
+      personaScope: { agentRef: 'aidlc-architecture-reviewer-agent' },
+      agentBlock: { modelOverride: null },
+      persona: 'You are the independent reviewer.',
+      knowledge: 'Log the answer: `{{INVOKE}} engine log answer --question q`.',
+      brief: 'Clean-room review brief.',
+      spawnFn: capturingSpawn(capture),
+      materializeMcpConfig: async ({ scope }) => {
+        scopes.push(scope);
+        return '/ws/.aidlc/mcp.json';
+      },
+    });
+
+    expect(res.ok).toBe(true);
+    const prompt = capture.stdin ?? capture.args.join(' ');
+    expect(prompt).toContain('**You cannot raise either checkpoint in this session**');
+    expect(prompt).not.toContain('Ask with `ask_question`');
+    // And the trusted scope agrees with the prompt, so the tools MCP registers
+    // for this role are the tools the prompt names.
+    expect(scopes[0]).toMatchObject({ role: 'reviewer', checkpointOwner: false, canAsk: false });
+    expect(
+      toolsForRole('reviewer', 'design', null, { checkpointOwner: false, canAsk: false }),
+    ).not.toContain('ask_question');
+  });
+
+  // An author session keeps everything it had: the role owns the checkpoints,
+  // so only the resolved policy decides whether a confirmation exists.
+  it('keeps the checkpoint mapping of an author-role dispatch', async () => {
+    const capture = {};
+    await dispatchPersona({
+      ...baseDeps({ stageId: 'design' }),
+      role: 'support',
+      personaScope: {
+        agentRef: 'aidlc-design-agent',
+        policy: { summaryConfirmation: 'required' },
+      },
+      agentBlock: { modelOverride: null },
+      persona: 'p',
+      knowledge: 'Log the answer: `{{INVOKE}} engine log answer --question q`.',
+      brief: 'b',
+      spawnFn: capturingSpawn(capture),
+    });
+
+    const prompt = capture.stdin ?? capture.args.join(' ');
+    expect(prompt).toContain('Ask with `ask_question`, confirm with `confirm_summary`');
+    expect(prompt).not.toContain('**You cannot raise either checkpoint in this session**');
+  });
+
+  it('answers it in the real reviewer prompt the runtime builds', () => {
+    const prompt = runStageInternals.buildReviewerPrompt({
+      stage: {
+        stageId: 'functional-design',
+        phase: 'inception',
+        outputArtifacts: [{ artifact: 'business-logic-model' }],
+        inputArtifacts: [{ artifact: 'requirements' }],
+        reviewer: { artifact: 'business-logic-model' },
+      },
+      reviewerAgent: 'aidlc-architecture-reviewer-agent',
+      reviewerPersona: 'You are the independent reviewer.',
+      knowledge: INSTRUCTING,
+      round: 1,
+    });
+
+    expect(prompt).toContain(INVOKE_DIALECT_ANNEX);
+    expect(prompt).toContain('**You are a read-only session.**');
+    expect(prompt).not.toContain('{{INVOKE}}');
   });
 });

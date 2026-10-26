@@ -574,39 +574,41 @@ describe('seed-blocks importRelease at the current importer revision', () => {
   });
 
   it('publishes at the asserted current revision with the mapper fingerprint recorded', async () => {
+    expect(AIDLC_RELEASE_IMPORTER_REVISION).toBe(3);
     const result = await handler({
       importRelease: true,
       profile: RELEASE_PROFILE,
       importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
     });
 
-    expect(AIDLC_RELEASE_IMPORTER_REVISION).toBe(2);
     expect(result).toMatchObject({
       status: 'published',
-      importerRevision: 2,
-      manifestKey: `${prefixAt(2)}/manifest.json`,
-      catalogKey: `${prefixAt(2)}/catalog.json`,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      manifestKey: `${prefixAt(AIDLC_RELEASE_IMPORTER_REVISION)}/manifest.json`,
+      catalogKey: `${prefixAt(AIDLC_RELEASE_IMPORTER_REVISION)}/catalog.json`,
       mapperFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    const manifest = JSON.parse(String(s3Store.get(`${prefixAt(2)}/manifest.json`)));
+    const manifest = JSON.parse(
+      String(s3Store.get(`${prefixAt(AIDLC_RELEASE_IMPORTER_REVISION)}/manifest.json`)),
+    );
     expect(manifest.mapperFingerprint).toBe(result.mapperFingerprint);
     expect(ddbMock.calls()).toHaveLength(0);
   });
 
-  it('leaves an already-published revision-1 closure byte-identical and is idempotent at i2', async () => {
+  it('leaves an already-published revision-1 closure byte-identical and is idempotent at the current revision', async () => {
     s3Store.set(legacyManifestKey, '{"legacy":"manifest"}\n');
     s3Store.set(legacyCatalogKey, '{"legacy":"catalog"}\n');
 
     const first = await handler({
       importRelease: true,
       profile: RELEASE_PROFILE,
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
     });
     const keys = [...s3Store.keys()].toSorted();
     const again = await handler({
       importRelease: true,
       profile: RELEASE_PROFILE,
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
     });
 
     expect(first.status).toBe('published');
@@ -618,10 +620,12 @@ describe('seed-blocks importRelease at the current importer revision', () => {
 
   it('refuses a payload asserting any other importer revision, before fetching anything', async () => {
     fetchCoreFiles.mockClear();
-    for (const importerRevision of [1, 3, '2']) {
+    for (const importerRevision of [1, AIDLC_RELEASE_IMPORTER_REVISION + 1, '3']) {
       await expect(
         handler({ importRelease: true, profile: RELEASE_PROFILE, importerRevision }),
-      ).rejects.toThrow(/publishes importer revision 2/);
+      ).rejects.toThrow(
+        new RegExp(`publishes importer revision ${AIDLC_RELEASE_IMPORTER_REVISION}`),
+      );
     }
     expect(fetchCoreFiles).not.toHaveBeenCalled();
     expect(s3Store.size).toBe(0);

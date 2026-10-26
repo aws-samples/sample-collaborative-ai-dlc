@@ -29,6 +29,7 @@ import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
 // capability cannot be declared handled without the code that handles it.
 export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
   'agent.max-turns@v1',
+  'policy.project-type.default@v1',
   'prompt.learnings@v1',
 ]);
 
@@ -66,6 +67,113 @@ const invokeAnnexPath = path.join(
 );
 export const INVOKE_DIALECT_ANNEX = readFileSync(invokeAnnexPath, 'utf8').trimEnd();
 
+// Every answer in the annex names an AUTHOR tool as the channel that replaces
+// the engine command — `emit_stage_note` for a recommendation, `send_output` for
+// the closing summary. A read-only persona session (the reviewer's MCP role,
+// which may only `submit_review`) has neither, so handing it the annex verbatim
+// would instruct it to call a tool it was never registered for. The rows stay
+// VERBATIM — a release's annexed command is answered by the same text in every
+// session, which is what makes the guard's annex claim checkable — and this
+// preamble redirects only the recording channel to the one that role has.
+const READ_ONLY_RECORDING_PREAMBLE = [
+  '> **You are a read-only session.** Every answer below that says to record',
+  '> something with `emit_stage_note`, or to end with a `send_output` summary,',
+  '> names a tool you do not have. Put that content in your `submit_review`',
+  '> findings instead, naming the command and what could not be performed. Every',
+  '> refusal below — never run the engine, never claim you ran it, never invent a',
+  '> value it would have produced — applies to you unchanged.',
+].join('\n');
+
+// `engine log answer` / `engine log decision` are mapped onto an ordinary
+// question and a summary confirmation, and BOTH of those tools are conditional:
+// `confirm_summary` exists only where the resolved policy asks for a summary
+// confirmation, and neither exists in a session that does not own the stage's
+// checkpoint (a dispatched support with no answer path, a reviewer). Advertising
+// them unconditionally is the same policy/annex mismatch already fixed for
+// `learnings: off` in the MCP annex: it tells a session to call a tool that was
+// deliberately never registered for it.
+//
+// The refusals in the row are untouched — the protected checkpoints stay
+// unavailable in every session — and only the substitute changes, so a release's
+// answer is still the same answer everywhere it is deliverable.
+const CHECKPOINT_ANNEX_ROW = /^- `engine log answer …` \/ `engine log decision …`: .*$/m;
+// Whether the bodies in THIS prompt actually invoke the two commands the row
+// maps. A release that never invokes them reads the row as inert prose, so
+// leaving it verbatim is what keeps the prompt of every release before these
+// commands existed byte-for-byte unchanged.
+const CHECKPOINT_LOG_INVOKE = /\{\{INVOKE\}\}\s+engine\s+log\s+(answer|decision)\b/;
+export const invokesCheckpointLog = (...parts) =>
+  parts.some((part) => typeof part === 'string' && CHECKPOINT_LOG_INVOKE.test(part));
+// A session with NO platform tools at all. The composer's one-shot invocation
+// supplies no MCP configuration, so every answer that names a tool names one it
+// cannot call: its only channel is the JSON proposal it returns, and it raises
+// no checkpoint and changes no state. Carrying the annex is not the same as
+// being able to perform it.
+const TOOLLESS_RECORDING_PREAMBLE = [
+  '> **You have no platform tools in this session.** Every answer below that',
+  '> says to record something with a note tool, to ask or confirm with a',
+  '> checkpoint tool, to request an approval, or to end with an output summary',
+  '> names a tool you cannot call. Your only channel is the JSON proposal you',
+  '> return: put that content in its `rationale`, naming the command and what',
+  '> could not be performed. You raise no checkpoint and you change no state.',
+  '> Every refusal below — never run the engine, never claim you ran it, never',
+  '> invent a value it would have produced — applies to you unchanged.',
+].join('\n');
+
+// Every answer in the annex whose channel is a platform tool, rewritten for a
+// session that has none. The proposal's own fields are the channel.
+const TOOLLESS_SUBSTITUTIONS = Object.freeze([
+  [/`emit_stage_note`/g, 'the `rationale` of the proposal you return'],
+  [/your `send_output` summary/g, 'the `rationale` of the proposal you return'],
+  [/`submit_review`/g, 'the `rationale` of the proposal you return'],
+  [/`request_plan_approval`/g, 'a plan-approval tool this session does not have'],
+]);
+
+const checkpointRowFor = ({ policy, checkpointOwner, canAsk, toolless = false }) => {
+  const confirms =
+    checkpointOwner &&
+    (policy?.summaryConfirmation === 'required' || policy?.summaryConfirmation === 'if-present');
+  const asks = checkpointOwner && canAsk;
+  if (asks && confirms) return null;
+  const substitute = toolless
+    ? '**You cannot raise either checkpoint in this session**: it registers no tools at all. Put the question or decision you would have put to the human in the `rationale` of the proposal you return, and say plainly that a person must take it on the intent.'
+    : asks
+      ? "Ask with `ask_question`, which records the human's exact words. There is **no summary confirmation** in this run: no `confirm_summary` tool exists for this session, so do not instruct one — put what you would have confirmed in your output."
+      : "**You cannot raise either checkpoint in this session**: the stage's own session owns them, and neither `ask_question` nor `confirm_summary` is registered here. Say that the checkpoint cannot be raised from this session, record the question or decision you would have put to the human, and defer to the owning session.";
+  return `- \`engine log answer …\` / \`engine log decision …\`: **An ordinary question and a summary confirmation only.** ${substitute} The protected checkpoints are **unavailable**: this runtime mints no plan-approval fingerprint or receipt and holds no approved verification command. For those, say the checkpoint cannot be recorded here, record what you would have asked, and never invent a receipt, an answer id or an approval.`;
+};
+
+// The dialect annex for ONE prompt, in the form the session receiving it can
+// actually perform. `readOnly` is the caller's MCP role, not a release property:
+// the answers are the same, the channel that carries them is not. `policy`,
+// `checkpointOwner` and `canAsk` are the same three facts `toolsForRole` reads,
+// so the prompt and the tool surface cannot disagree.
+export const invokeDialectAnnex = ({
+  readOnly = false,
+  // A session that registers no platform tools at all (the composer). Its
+  // answers are rewritten onto the proposal it returns, because a channel it
+  // cannot open is not an answer.
+  toolless = false,
+  policy = null,
+  checkpointOwner = !readOnly && !toolless,
+  canAsk = !readOnly && !toolless,
+  // Only a prompt whose own bodies invoke `engine log answer` / `log decision`
+  // has its mapping adapted; every other prompt keeps the annex verbatim.
+  checkpointLogInvoked = false,
+} = {}) => {
+  const row = checkpointLogInvoked
+    ? checkpointRowFor({ policy, checkpointOwner, canAsk, toolless })
+    : null;
+  let annex = row ? INVOKE_DIALECT_ANNEX.replace(CHECKPOINT_ANNEX_ROW, row) : INVOKE_DIALECT_ANNEX;
+  if (toolless) {
+    for (const [pattern, replacement] of TOOLLESS_SUBSTITUTIONS) {
+      annex = annex.replace(pattern, replacement);
+    }
+    return `${TOOLLESS_RECORDING_PREAMBLE}\n\n${annex}`;
+  }
+  return readOnly ? `${READ_ONLY_RECORDING_PREAMBLE}\n\n${annex}` : annex;
+};
+
 // Upstream bodies carry a literal `{{HARNESS_DIR}}` token (substituted only at
 // upstream's own dist build, which we bypass by fetching core/ raw). We neutralize
 // it at the PROMPT layer — the seeded block body stays verbatim — so the agent
@@ -99,8 +207,33 @@ export const OUTPUT_CONTRACT = [
   '- Do exactly THIS stage. Do not start other stages or invent status.',
 ].join('\n');
 
-const renderWorkspaceDetectionContract = (stageId) => {
+// The classification stage has two shapes, and which one it gets is the whole
+// point of the project-type setting. With no decided type the agent scans and
+// classifies. With one — a scope default or a member's explicit choice for this
+// intent, true OR false — the decision WINS: the stage records the decided value
+// instead of scanning, because a scan that contradicted it would silently
+// overrule the decision and upstream's own mid-run reclassification transaction
+// is refused by name in the annex.
+const renderWorkspaceDetectionContract = (stageId, policy = null) => {
   if (stageId !== 'workspace-detection') return '';
+  const decided = policy?.existingCode;
+  if (decided != null) {
+    const type = decided === true ? 'brownfield' : 'greenfield';
+    const origin =
+      policy.existingCodeChoice?.source === 'intent'
+        ? 'chosen for this intent by a project member'
+        : "the AI-DLC scope's own setting";
+    return [
+      '## Workspace classification contract',
+      '',
+      `The project type for this run is already decided: **${type}** (${origin}).`,
+      `Call \`record_project_type\` exactly once with \`${type}\`. Do NOT re-classify`,
+      'the workspace against that decision; if what you find disagrees, say so in',
+      'your summary and let a human rewind rather than overruling the choice.',
+      'Do this before `send_output`; the structured value is required by later',
+      'workflow stages and native workspace exports.',
+    ].join('\n');
+  }
   return [
     '## Workspace classification contract',
     '',
@@ -238,6 +371,22 @@ export const renderScopePolicy = (policy) => {
       '  human can reopen the affected checkpoint.',
     );
   }
+  // `true` and `false` are both decisions; only absence says nothing. An
+  // explicit Greenfield choice has to reach the agent, or a member's answer to
+  // "is there existing code?" would change no prompt at all.
+  if (policy.existingCode === true) {
+    lines.push(
+      '- **Project type: BROWNFIELD.** This run works on an existing codebase:',
+      '  read what is already there before proposing anything new, and keep the',
+      '  conventions you find.',
+    );
+  } else if (policy.existingCode === false) {
+    lines.push(
+      '- **Project type: GREENFIELD.** This run starts from nothing: there is no',
+      '  existing codebase to respect, so do not look for prior conventions to',
+      '  follow and do not report their absence as a problem.',
+    );
+  }
   if (policy.skeleton === 'on') {
     lines.push(
       '- **Walking skeleton is ON.** For the first construction work, deliver the',
@@ -305,7 +454,7 @@ export const buildStagePrompt = ({
   // worded once-per-workflow) so the agent reads its lane boundary first.
   const unitScope = renderUnitScope(unit);
   if (unitScope) sections.push('', unitScope);
-  const workspaceDetectionContract = renderWorkspaceDetectionContract(stage.stageId);
+  const workspaceDetectionContract = renderWorkspaceDetectionContract(stage.stageId, stage.policy);
   if (workspaceDetectionContract) sections.push('', workspaceDetectionContract);
   const scopePolicy = renderScopePolicy(stage.policy);
   if (scopePolicy) sections.push('', scopePolicy);
@@ -339,13 +488,23 @@ export const buildStagePrompt = ({
     );
   }
   sections.push('', OUTPUT_CONTRACT);
-  // The dialect annex is gated on the two parts that actually INSTRUCT the agent
-  // to run engine commands: the stage body and the conductor doctrine. Personas,
-  // knowledge, and compiled context are neutralized above but only ever MENTION
-  // the token, so gating on them would append a large annex for an incidental
-  // reference.
-  if (hasInvokeToken(stageBody, conductor)) {
-    sections.push('', INVOKE_DIALECT_ANNEX);
+  // The dialect annex is gated on the parts a release authors to INSTRUCT the
+  // agent: the stage body, the conductor doctrine, the persona and the reference
+  // knowledge. `shared/annex-reach.js` keeps that set and the promotion guard's
+  // one definition, so the guard never counts a command answered in a session
+  // this prompt leaves without the answer. The compiled context is runtime data
+  // the platform assembles, not authored release content, so it is neutralized
+  // above but never gated on.
+  if (hasInvokeToken(stageBody, conductor, agentPersona, knowledge)) {
+    // The stage's own session: it owns the checkpoints and can ask, so only the
+    // resolved policy decides whether a summary confirmation exists.
+    sections.push(
+      '',
+      invokeDialectAnnex({
+        policy: stage.policy,
+        checkpointLogInvoked: invokesCheckpointLog(stageBody, conductor, agentPersona, knowledge),
+      }),
+    );
   }
   return sections.join('\n');
 };

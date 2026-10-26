@@ -466,21 +466,67 @@ export function GraphCanvas({
     };
   };
 
+  // ---- Wheel / pinch zoom ----
+  // React attaches onWheel as a passive listener, so preventDefault() there is
+  // ignored and a trackpad pinch (a wheel event with ctrlKey set) zoomed the
+  // whole page along with the graph. Register native non-passive listeners
+  // instead so the graph alone handles the gesture.
+  const hasError = !!error;
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const onWheel = (e: WheelEvent) => {
+      const svg = svgRef.current;
+      const overCanvas = !!svg && e.target instanceof Node && svg.contains(e.target);
+      // Over overlays (panels, minimap) let ordinary scrolling through, but a
+      // pinch must never zoom the page while the pointer is on the graph area.
+      // A pinch cannot be told apart from Ctrl+wheel, so that is blocked too.
+      if (!overCanvas) {
+        if (e.ctrlKey) e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      if (!e.ctrlKey && e.deltaY === 0) return; // horizontal scroll: nothing to zoom
+      // A pinch emits many small deltas, so scale proportionally to them (the
+      // clamp keeps Ctrl+mouse-wheel notches near 10%); other wheel events keep
+      // the fixed step.
+      const factor = e.ctrlKey
+        ? Math.exp(Math.max(-10, Math.min(e.deltaY, 10)) * 0.01)
+        : e.deltaY > 0
+          ? 1.08
+          : 0.92;
+      const rect = svg.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const rx = (e.clientX - rect.left) / rect.width;
+      const ry = (e.clientY - rect.top) / rect.height;
+      setViewBox((v) => {
+        const newW = Math.max(300, Math.min(v.width * factor, 12000));
+        const newH = v.height * (newW / v.width);
+        const mx = v.x + rx * v.width;
+        const my = v.y + ry * v.height;
+        return { x: mx - rx * newW, y: my - ry * newH, width: newW, height: newH };
+      });
+    };
+
+    // Safari also fires non-standard gesture events for a pinch; cancel them
+    // so it does not apply its own page zoom. (They do not zoom the graph.)
+    const preventGesture = (e: Event) => e.preventDefault();
+
+    container.addEventListener('wheel', onWheel, { passive: false });
+    container.addEventListener('gesturestart', preventGesture);
+    container.addEventListener('gesturechange', preventGesture);
+    container.addEventListener('gestureend', preventGesture);
+    return () => {
+      container.removeEventListener('wheel', onWheel);
+      container.removeEventListener('gesturestart', preventGesture);
+      container.removeEventListener('gesturechange', preventGesture);
+      container.removeEventListener('gestureend', preventGesture);
+    };
+    // The container is not rendered in the error state, so re-attach once it is.
+  }, [hasError]);
+
   // ---- Interaction handlers ----
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    const factor = e.deltaY > 0 ? 1.08 : 0.92;
-    const mouse = svgToWorld(e.clientX, e.clientY);
-    const newW = Math.max(300, Math.min(viewBox.width * factor, 12000));
-    const actual = newW / viewBox.width;
-    const newH = viewBox.height * actual;
-    setViewBox({
-      x: mouse.x - ((mouse.x - viewBox.x) / viewBox.width) * newW,
-      y: mouse.y - ((mouse.y - viewBox.y) / viewBox.height) * newH,
-      width: newW,
-      height: newH,
-    });
-  };
 
   const handleMouseDown = (e: React.MouseEvent, nodeId?: string) => {
     if (nodeId) {
@@ -843,7 +889,6 @@ export function GraphCanvas({
                 )}
                 style={{ opacity: settled ? 1 : 0 }}
                 viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}
-                onWheel={handleWheel}
                 onMouseDown={(e) => handleMouseDown(e)}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}

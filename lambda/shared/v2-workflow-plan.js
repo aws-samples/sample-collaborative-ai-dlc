@@ -262,12 +262,14 @@ const loadReleaseExecutionPlan = async ({
   scope,
   skipStageIds,
   composedGrid,
+  policyScope,
   strict,
+  intentSettings,
   methodologyPins,
 }) => {
   let resolved;
   try {
-    const closure = await loadReleaseClosure({ s3, bucket, methodologyRelease });
+    const closure = await loadReleaseClosure({ s3, bucket, methodologyRelease, ddb, tableName });
     resolved = await resolveMethodologyLibrary({
       closure,
       ddb,
@@ -300,7 +302,9 @@ const loadReleaseExecutionPlan = async ({
     library: resolved.library,
     skipStageIds,
     composedGrid,
+    policyScope,
     strict,
+    intentSettings,
   });
   return {
     ...result,
@@ -318,7 +322,15 @@ const loadExecutionPlan = async ({
   scope,
   skipStageIds = null,
   composedGrid = null,
+  // The stock scope a composed grid runs on, carrying its policy and the
+  // settings a member may choose (see buildExecutionPlan). Release mode only:
+  // a legacy plan resolves no policy at all.
+  policyScope = null,
   strict = false,
+  // Per-intent AI-DLC settings (shared/intent-aidlc-settings.js). Only a
+  // release-pinned plan can resolve a policy, so only that branch forwards
+  // them; a legacy plan is unchanged.
+  intentSettings = null,
   methodologyPins = null,
   methodologyRelease = null,
   s3 = null,
@@ -336,7 +348,9 @@ const loadExecutionPlan = async ({
       scope,
       skipStageIds,
       composedGrid,
+      policyScope,
       strict,
+      intentSettings,
       methodologyPins,
     });
   }
@@ -453,7 +467,7 @@ const loadWorkflowScopes = async ({
 }) => {
   if (methodologyRelease) {
     try {
-      const closure = await loadReleaseClosure({ s3, bucket, methodologyRelease });
+      const closure = await loadReleaseClosure({ s3, bucket, methodologyRelease, ddb, tableName });
       const { workflow } = await resolveReleaseWorkflow({
         closure,
         ddb,

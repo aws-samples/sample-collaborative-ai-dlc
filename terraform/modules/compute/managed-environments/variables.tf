@@ -1,3 +1,8 @@
+variable "aws_sdk_ua_app_id" {
+  description = "Application identifier appended by AWS SDKs to the User-Agent header"
+  type        = string
+}
+
 variable "project_name" {
   description = "Project name used in resource names"
   type        = string

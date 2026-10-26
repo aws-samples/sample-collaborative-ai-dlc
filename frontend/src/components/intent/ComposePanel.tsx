@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { intentsService, type ComposeSession } from '@/services/intents';
+import { CHOOSABLE_SCOPE_SETTINGS, type AidlcSettingValue } from '@/lib/aidlcSettings';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -17,11 +18,39 @@ interface Props {
   intentId: string;
   agentCli: AgentCli | null;
   disabled?: boolean;
-  /** Human accepts the proposal — write it into the shared draft selection. */
-  onApply: (proposal: NonNullable<ComposeSession['proposal']>) => void;
+  /**
+   * Human accepts the proposal — write it into the shared draft selection. The
+   * settings scope the proposal was validated against rides along with that
+   * scope's authored defaults, so the accepted values are written for the
+   * scope that really authors them and normalized against its own defaults.
+   */
+  onApply: (
+    proposal: NonNullable<ComposeSession['proposal']>,
+    settingsScope: string | null,
+    settingsAuthored: Record<string, AidlcSettingValue> | null,
+  ) => void;
 }
 
 const POLL_MS = 2500;
+
+// The settings a proposal carries, in the methodology's own words. Guard Policy
+// and two of the scope settings are choices a person can make for one intent
+// here; the rest are shown as what the plan follows, so a proposed value is
+// never silently absent from what the member reads before accepting.
+const proposedSettingRows = (proposal: NonNullable<ComposeSession['proposal']>) => {
+  const rows: { name: string; value: string; choosable: boolean }[] = [];
+  if (proposal.guardPolicy != null) {
+    rows.push({ name: 'guard_policy', value: String(proposal.guardPolicy), choosable: true });
+  }
+  for (const [name, value] of Object.entries(proposal.scopeSettings ?? {})) {
+    rows.push({
+      name,
+      value: String(value),
+      choosable: Object.hasOwn(CHOOSABLE_SCOPE_SETTINGS, name),
+    });
+  }
+  return rows;
+};
 
 const summaryLine = (s: NonNullable<ComposeSession['validation']>['summary']) => {
   if (!s) return null;
@@ -209,6 +238,29 @@ export function ComposePanel({ projectId, intentId, agentCli, disabled, onApply 
               {summaryLine(latest.validation.summary)}
             </p>
           )}
+          {proposedSettingRows(latest.proposal).length > 0 && (
+            <div className="space-y-1" data-testid="proposal-settings">
+              <p className="text-xs font-medium">Proposed AI-DLC settings</p>
+              <ul className="text-xs text-muted-foreground space-y-0.5">
+                {proposedSettingRows(latest.proposal).map((row) => (
+                  <li key={row.name}>
+                    <span className="text-foreground">
+                      {row.name}: {row.value}
+                    </span>
+                    {row.choosable
+                      ? ' — applied to this intent when you accept'
+                      : ' — kept as the scope sets it; this setting is not per-intent here'}
+                  </li>
+                ))}
+              </ul>
+              {latest.proposal.baseScope && (
+                <p className="text-xs text-muted-foreground">
+                  Base scope: {latest.proposal.baseScope}
+                  {latest.proposal.creationDepth ? ` · depth ${latest.proposal.creationDepth}` : ''}
+                </p>
+              )}
+            </div>
+          )}
           {latest.proposal.rationale.length > 0 && (
             <ul className="text-xs text-muted-foreground list-disc pl-4 space-y-0.5">
               {latest.proposal.rationale.slice(0, 8).map((r, i) => (
@@ -234,7 +286,14 @@ export function ComposePanel({ projectId, intentId, agentCli, disabled, onApply 
               size="sm"
               onClick={() => {
                 if (disabled) return;
-                onApply(latest.proposal!);
+                // Apply is a local, synchronous, total operation: the card is
+                // Applied because the transaction committed, not because a
+                // request was started.
+                onApply(
+                  latest.proposal!,
+                  latest.settingsScope ?? null,
+                  latest.settingsAuthored ?? null,
+                );
                 setAppliedId(latest.composeId);
               }}
               disabled={disabled || appliedId === latest.composeId}

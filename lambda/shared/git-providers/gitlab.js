@@ -44,6 +44,25 @@ const apiHeaders = (token, extra = {}) => ({
   ...extra,
 });
 
+// GitLab refresh tokens are single-use, so concurrent requests sharing a ctx
+// must not each spend it. Refresh at most once per rejected access token:
+// - a 401 for a token ctx has already replaced retries with the current token;
+// - a 401 while (or after) that token's refresh runs shares its outcome, so a
+//   genuine rejection is reported, and its bindings invalidated, only once.
+const refreshFor = (ctx, rejectedToken) => {
+  if (ctx.token !== rejectedToken) return Promise.resolve(ctx.token);
+  if (ctx.refreshing?.from !== rejectedToken) {
+    const promise = Promise.resolve()
+      .then(() => ctx.onRefresh())
+      .then((newToken) => {
+        ctx.token = newToken;
+        return newToken;
+      });
+    ctx.refreshing = { from: rejectedToken, promise };
+  }
+  return ctx.refreshing.promise;
+};
+
 // ctx = { token, fetchImpl?, onRefresh? }
 //   onRefresh: async () => newAccessToken  — supplied by the handler to refresh
 //   an expired GitLab token (persisting to SSM/DDB) and mutate ctx.token.
@@ -53,11 +72,11 @@ const glFetch = async (ctx, url, options = {}) => {
     ...options,
     headers: { ...apiHeaders(token), ...options.headers },
   });
-  const res = await doFetch(url, withAuth(ctx.token));
+  const sentToken = ctx.token;
+  const res = await doFetch(url, withAuth(sentToken));
   if (res.status === 401 && typeof ctx.onRefresh === 'function') {
     try {
-      const newToken = await ctx.onRefresh();
-      ctx.token = newToken;
+      const newToken = await refreshFor(ctx, sentToken);
       return doFetch(url, withAuth(newToken));
     } catch (e) {
       logger.error('token refresh failed, returning original 401', e, { url });
@@ -183,16 +202,41 @@ const mapRepo = (r) => ({
   defaultBranch: r.default_branch,
 });
 
-const listRepos = async (ctx) => {
+// The picker filters this list client-side, so it must hold every project the
+// caller can push to, not just the first page. Pages are capped so a user in
+// a very large instance still answers inside the API Gateway 29s limit.
+const REPO_PAGE_SIZE = 100;
+const REPO_MAX_PAGES = 10;
+
+const fetchRepoPage = async (ctx, page) => {
   const res = await glFetch(
     ctx,
-    `${API_BASE}/projects?membership=true&min_access_level=30&per_page=100&order_by=last_activity_at`,
+    `${API_BASE}/projects?membership=true&min_access_level=30&per_page=${REPO_PAGE_SIZE}&page=${page}&order_by=last_activity_at`,
   );
-  const repos = await res.json();
-  if (!Array.isArray(repos)) {
-    throw new ProviderError(400, repos.message || repos.error || 'Failed to fetch projects');
+  const data = await res.json();
+  if (!Array.isArray(data)) {
+    throw new ProviderError(400, data?.message || data?.error || 'Failed to fetch projects');
   }
-  return repos.map(mapRepo);
+  // Map straight away: a full project object is ~7KB, the mapped one ~100B.
+  return {
+    repos: data.map(mapRepo),
+    totalPages: Number(res.headers?.get?.('x-total-pages')) || null,
+  };
+};
+
+// Page 1 goes first and alone: its X-Total-Pages header bounds the rest, and
+// it settles a token that had already expired. A token that expires mid-list
+// is refreshed once for all parallel pages by glFetch (see refreshFor). A full GitLab project page takes ~5s,
+// so the remaining pages are fetched in parallel rather than in sequence.
+// GitLab omits X-Total-Pages above 10,000 results; then fetch up to the cap.
+const listRepos = async (ctx) => {
+  const first = await fetchRepoPage(ctx, 1);
+  if (first.repos.length < REPO_PAGE_SIZE) return first.repos;
+  const lastPage = Math.min(first.totalPages ?? REPO_MAX_PAGES, REPO_MAX_PAGES);
+  const pages = [];
+  for (let page = 2; page <= lastPage; page += 1) pages.push(page);
+  const rest = await Promise.all(pages.map((page) => fetchRepoPage(ctx, page)));
+  return [first, ...rest].flatMap((p) => p.repos);
 };
 
 const listBranches = async (ctx, repoId) => {

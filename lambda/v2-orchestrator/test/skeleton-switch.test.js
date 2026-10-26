@@ -226,3 +226,39 @@ describe('skeleton: off — the ceremony is skipped, the work is not', () => {
     expect(skipped.summary).toContain('a');
   });
 });
+
+describe('an answered section gate on an unpinned intent', () => {
+  it('retires when the intent is cancelled between the answer and the resume', async () => {
+    // The skeleton gate is a section gate. A cancel accepted while META still
+    // reads WAITING makes its un-park fail, so the remaining lane never runs.
+    const world = makeWorld(null);
+    let meta = { ...META };
+    world.deps.store.getExecution = async () => ({ ...meta });
+    world.deps.store.updateExecution = async (args) => {
+      if (args.fromStatus && meta.status !== args.fromStatus) {
+        throw Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' });
+      }
+      if (args.status !== undefined) meta = { ...meta, status: args.status };
+      if (args.orchestratorRunId !== undefined) {
+        meta = { ...meta, orchestratorRunId: args.orchestratorRunId };
+      }
+      return { ...meta };
+    };
+    // The cancel lands once the answer is on the row, before the run re-reads it.
+    world.deps.store.getHumanTask = async (_e, id) => {
+      const gate = world.gates.get(id) ?? null;
+      if (id.startsWith('eg-skeleton-s1') && gate?.status === 'answered') {
+        meta = { ...meta, status: 'CANCELLED' };
+      }
+      return gate;
+    };
+    const run = startRun(world);
+    await answerEngineGate(world, 'eg-validation-si-gen');
+    await answerEngineGate(world, 'eg-skeleton-s1');
+    const execution = await run;
+
+    expect(execution.getResult()).toMatchObject({ ok: false, reason: 'retired' });
+    expect(world.laneOrder).toEqual(['a']);
+    expect(meta.status).toBe('CANCELLED');
+  });
+});

@@ -19,22 +19,13 @@
 
 import { GetObjectCommand } from '@aws-sdk/client-s3';
 import { GetCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
-import { blockPk, sha256, versionSk } from './blocks.js';
+import { blockPk, RELEASE_LIBRARY_TYPES, sha256, versionSk } from './blocks.js';
 import { bodyToString, bodyToStringWithin, isNotFound } from './methodology-catalog.js';
 import { DEFAULT_TENANT, SYSTEM_TENANT } from './tenant.js';
 import { canonicalJson } from './workflow-checkpoint.js';
 import { workflowPk, workflowVersionPrefix } from './workflows.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION, readReleaseManifest } from './aidlc-release.js';
-
-const LIBRARY_TYPES = Object.freeze({
-  STAGE: 'stagesById',
-  AGENT: 'agentsById',
-  SENSOR: 'sensorsById',
-  RULE: 'rulesById',
-  ARTIFACT: 'artifactsById',
-  KNOWLEDGE: 'knowledgeById',
-  SCOPE: 'scopesById',
-});
+import { getRelease } from './release-registry.js';
 
 // Immutable closures are safe to memoize for the life of a warm Lambda. The
 // bound keeps a long-lived container from pinning every release ever resolved.
@@ -200,6 +191,8 @@ const loadReleaseClosure = async ({
   s3,
   bucket,
   methodologyRelease,
+  ddb = null,
+  tableName = null,
   cache = releaseClosureCache,
 }) => {
   if (!methodologyRelease?.sourceSha || !methodologyRelease?.closureDigest) {
@@ -218,6 +211,32 @@ const loadReleaseClosure = async ({
   const cached = readCachedClosure(cache, cacheKey);
   if (cached) return cached;
 
+  // A fork's pin names it as one, so its manifest is read from the fork's own
+  // custom prefix; the reader asserts that the bytes there describe that fork.
+  const forkPin = methodologyRelease.custom === true;
+  // A fork becomes runnable only through an admin promotion, which the registry
+  // records. A fork pin is honoured only while that record says so; without a
+  // registry to ask, it is refused. Promotion is never revoked, so a closure
+  // cached after this check stays valid.
+  if (forkPin) {
+    const record =
+      ddb && tableName
+        ? await getRelease({ ddb, tableName, releaseId: methodologyRelease.releaseId })
+        : null;
+    if (record?.runnable !== true) {
+      throw new ReleaseResolverError(
+        'release_not_runnable',
+        `release-resolver: fork ${String(methodologyRelease.releaseId)} has not been promoted and must not execute`,
+        {
+          details: {
+            releaseId: methodologyRelease.releaseId ?? null,
+            sourceRepository: methodologyRelease.sourceRepository ?? null,
+            custom: true,
+          },
+        },
+      );
+    }
+  }
   const manifest = await readReleaseManifest({
     s3,
     bucket,
@@ -225,6 +244,7 @@ const loadReleaseClosure = async ({
     importerRevision: Number(
       methodologyRelease.importerRevision ?? AIDLC_RELEASE_IMPORTER_REVISION,
     ),
+    ...(forkPin ? { custom: true, sourceRepository: methodologyRelease.sourceRepository } : {}),
   });
   if (!manifest) {
     throw new ReleaseResolverError(
@@ -233,13 +253,14 @@ const loadReleaseClosure = async ({
       { details: { sourceSha: methodologyRelease.sourceSha } },
     );
   }
-  // Defense in depth. The registry already refuses to make a T0/custom release
-  // selectable, but selection and execution are separate surfaces: a pin can
-  // also arrive from a hand-edited META row, a restored backup, or a future
-  // code path. Runnability is re-decided here from the manifest's own
-  // provenance, so untrusted methodology can be imported and inspected but
-  // never executed until sandboxed execution and IAM isolation exist.
-  if (manifest.trustTier === 'T0' || manifest.custom === true) {
+  // Defense in depth. The registry stamps a fork pin only for a fork an admin
+  // promoted through the fidelity guard, but selection and execution are
+  // separate surfaces: a pin can also arrive from a hand-edited META row, a
+  // restored backup, or a future code path. So a custom or T0 manifest executes
+  // only through a pin that names it as a fork and was read from that fork's
+  // own prefix; under an official pin (even with the bytes copied onto the
+  // official key) it is refused.
+  if (!forkPin && (manifest.trustTier === 'T0' || manifest.custom === true)) {
     throw new ReleaseResolverError(
       'release_not_runnable',
       `release-resolver: release ${manifest.releaseId} is import-only (trustTier ${String(manifest.trustTier)}) and must never execute`,
@@ -304,7 +325,7 @@ const getUserBlock = async ({ ddb, tableName, tenantId, type, blockId, version }
 const loadUserOverlay = async ({ ddb, tableName, methodologyPins }) => {
   const requests = [];
   for (const [type, pins] of Object.entries(methodologyPins ?? {})) {
-    if (!LIBRARY_TYPES[type]) continue;
+    if (!RELEASE_LIBRARY_TYPES[type]) continue;
     for (const [blockId, pin] of Object.entries(pins ?? {})) {
       if (!pin || pin.tenantId === SYSTEM_TENANT) continue;
       const version = positiveVersion(pin.version);
@@ -495,7 +516,7 @@ const resolveMethodologyLibrary = async ({
   const overlay = await loadUserOverlay({ ddb, tableName, methodologyPins });
   const blocksByType = {};
   const library = {};
-  for (const [type, libraryKey] of Object.entries(LIBRARY_TYPES)) {
+  for (const [type, libraryKey] of Object.entries(RELEASE_LIBRARY_TYPES)) {
     const merged = { ...keyById(closure.blocksByType?.[type]), ...overlay[type] };
     library[libraryKey] = merged;
     blocksByType[type] = Object.values(merged);

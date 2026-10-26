@@ -99,6 +99,7 @@ jobs:
       name: ${{ inputs.github_environment || 'demo-release' }}
     env:
       ACM_CERTIFICATE_ARN: ${{ secrets.ACM_CERTIFICATE_ARN }}
+      AIDLC_RELEASE_PINNING: ${{ vars.AIDLC_RELEASE_PINNING }}
       APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
       APP_DOMAIN_ALIASES: ${{ secrets.APP_DOMAIN_ALIASES }}
       AUTH_CERTIFICATE_ARN: ${{ secrets.AUTH_CERTIFICATE_ARN }}
@@ -121,9 +122,6 @@ jobs:
       TF_PROJECT_NAME: ${{ inputs.terraform_project_name || 'collaborative-ai-dlc' }}
       TF_INPUT: 'false'
       TF_IN_AUTOMATION: 'true'
-      # Clean runners do not have archives recorded in remote Terraform state.
-      # Do not turn that expected absence into timestamp-driven Lambda rebuilds.
-      TF_RECREATE_MISSING_LAMBDA_PACKAGE: 'false'
       TF_STATE_BUCKET: ${{ fromJSON(needs.resolve-backend.outputs.backend).bucket }}
       TF_STATE_KEY: ${{ fromJSON(needs.resolve-backend.outputs.backend).key }}
       TF_STATE_REGION: ${{ fromJSON(needs.resolve-backend.outputs.backend).region }}
@@ -225,18 +223,19 @@ jobs:
           echo "Verified $DEPLOY_REF resolves to main commit $deploy_commit."
           echo "DEPLOY_COMMIT=$deploy_commit" >> "$GITHUB_ENV"
 
-      - name: Load workflow plan validator
+      - name: Load release build authentication
+        if: ${{ (inputs.ref_type || 'release-tag') == 'release-tag' }}
         env:
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
           set -euo pipefail
-          # The selected release may predate the validation modes used here.
-          # Fetch the executing workflow's commit without changing deployment sources.
+          # Older release scripts predate Public ECR authentication. Keep their
+          # sources intact and load only the executing workflow's auth helper.
           git fetch --no-tags origin "$WORKFLOW_SHA"
-          validator_dir="$RUNNER_TEMP/aidlc-plan-validator"
-          mkdir -p "$validator_dir"
-          git show "$WORKFLOW_SHA:scripts/inspect-terraform-plan.mjs" \
-            > "$validator_dir/inspect-terraform-plan.mjs"
+          auth_dir="$RUNNER_TEMP/aidlc-build-auth"
+          mkdir -p "$auth_dir"
+          git show "$WORKFLOW_SHA:scripts/with-public-ecr-auth.mjs" \
+            > "$auth_dir/with-public-ecr-auth.mjs"
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
@@ -387,6 +386,11 @@ jobs:
               >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
           fi
 
+          if [[ -n "$AIDLC_RELEASE_PINNING" ]]; then
+            printf 'aidlc_release_pinning = %s\n' "$(hcl_string "$AIDLC_RELEASE_PINNING")" \
+              >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
+          fi
+
           if [[ -n "$APP_DOMAIN" ]]; then
             {
               printf 'app_domain          = %s\n' "$(hcl_string "$APP_DOMAIN")"
@@ -407,9 +411,8 @@ jobs:
             } >> "$config_dir/environments/$TF_ENVIRONMENT.tfvars"
           fi
 
-          # deploy-terraform.sh adds this file to every plan, so the draft and
-          # final plans see the same providers. It contains Secrets Manager
-          # ARNs, never OIDC client secrets.
+          # deploy-terraform.sh includes this provider var-file in the plan.
+          # It contains Secrets Manager ARNs, never OIDC client secrets.
           if [[ -n "$SSO_CONFIG" ]]; then
             sso_input="$config_dir/sso-config.json"
             printf '%s' "$SSO_CONFIG" > "$sso_input"
@@ -436,84 +439,14 @@ jobs:
           echo "AIDLC_CONFIG_DIR=$config_dir" >> "$GITHUB_ENV"
           echo "AIDLC_PLAN_FILE=$plan_file" >> "$GITHUB_ENV"
 
-      - name: Prepare Lambda package plans
+      - name: Deploy infrastructure
         run: |
-          ./scripts/deploy-terraform.sh "$TF_ENVIRONMENT" \
-            --phase plan \
-            --plan-file "$AIDLC_PLAN_FILE"
-
-      - name: Build Lambda packages
-        run: |
-          set -euo pipefail
-
-          package_script="$(
-            find "$PWD/terraform/.terraform/modules" \
-              -type f -name package.py -print -quit
-          )"
-          if [[ -z "$package_script" ]]; then
-            echo "Lambda module package.py was not found after Terraform init." >&2
-            exit 1
+          if [[ "$DEPLOY_REF_TYPE" == release-tag ]]; then
+            node "$RUNNER_TEMP/aidlc-build-auth/with-public-ecr-auth.mjs" "$PWD" -- \
+              ./scripts/deploy-terraform.sh "$TF_ENVIRONMENT" --plan-file "$AIDLC_PLAN_FILE"
+          else
+            ./scripts/deploy-terraform.sh "$TF_ENVIRONMENT" --plan-file "$AIDLC_PLAN_FILE"
           fi
-
-          found_package_plan=false
-          while IFS= read -r -d '' package_plan; do
-            found_package_plan=true
-            relative_plan="${package_plan#"$PWD/terraform/"}"
-            echo "Building Lambda package from $relative_plan"
-            (
-              cd terraform
-              python3 "$package_script" build --timestamp 0 "$relative_plan"
-            )
-
-            package_file="$(
-              node -e '
-                const fs = require("node:fs");
-                const plan = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-                process.stdout.write(plan.filename);
-              ' "$package_plan"
-            )"
-            if [[ ! -s "terraform/$package_file" ]]; then
-              echo "Lambda package was not created: terraform/$package_file" >&2
-              exit 1
-            fi
-          done < <(find "$PWD/terraform/builds" -type f -name '*.plan.json' -print0)
-
-          if [[ "$found_package_plan" == false ]]; then
-            echo "Terraform did not generate any Lambda package plans." >&2
-            exit 1
-          fi
-
-          # The package content hash includes the source directory. Remove
-          # generated bundles so the final plan hashes the clean release source
-          # and resolves to the ZIP files built above.
-          find lambda -mindepth 2 -maxdepth 2 -type d -name .build \
-            -prune -exec rm -rf -- {} +
-          rm -f "$AIDLC_PLAN_FILE"
-
-      - name: Plan infrastructure
-        env:
-          AIDLC_SKIP_NPM_CI: '1'
-        run: |
-          ./scripts/deploy-terraform.sh "$TF_ENVIRONMENT" \
-            --phase plan \
-            --plan-file "$AIDLC_PLAN_FILE"
-
-      - name: Apply infrastructure
-        run: |
-          set -euo pipefail
-          # Inspect the final plan: a newly resolved filename must already exist
-          # before apply can modify any resources.
-          plan_json="$(mktemp "$RUNNER_TEMP/aidlc-packages.XXXXXX")"
-          trap 'rm -f "$plan_json"' EXIT
-          terraform -chdir=terraform show -json "$AIDLC_PLAN_FILE" > "$plan_json"
-          (
-            cd terraform
-            node "$RUNNER_TEMP/aidlc-plan-validator/inspect-terraform-plan.mjs" \
-              "$plan_json" --require-lambda-packages
-          )
-          ./scripts/deploy-terraform.sh "$TF_ENVIRONMENT" \
-            --phase apply \
-            --plan-file "$AIDLC_PLAN_FILE"
 
       - name: Deploy frontend
         run: ./scripts/deploy-frontend.sh "$TF_ENVIRONMENT"

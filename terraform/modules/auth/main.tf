@@ -74,6 +74,7 @@ module "sso_token_lambda" {
   attach_network_policy  = local.all_lambdas_in_vpc
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
     SSO_ROLE_CONFIG         = jsonencode(local.role_config)
@@ -93,6 +94,8 @@ resource "aws_lambda_permission" "allow_cognito_sso_token" {
 # Cognito User Pool
 resource "aws_cognito_user_pool" "main" {
   name = "${var.project_name}-${var.environment}-user-pool"
+
+  deletion_protection = var.deletion_protection ? "ACTIVE" : "INACTIVE"
 
   # Email sign-in configuration (use email as username)
   username_attributes = ["email"]
@@ -215,12 +218,16 @@ resource "aws_cognito_identity_provider" "main" {
   provider_name = each.key
   provider_type = upper(var.sso_providers[each.key].type) == "OIDC" ? "OIDC" : "SAML"
 
+  # Cognito adds attributes_url_add_attributes and the username -> sub mapping
+  # to every OIDC provider itself. Set both to the values Cognito uses, or
+  # every plan offers to remove them.
   provider_details = lower(var.sso_providers[each.key].type) == "oidc" ? {
-    attributes_request_method = "GET"
-    authorize_scopes          = join(" ", var.sso_providers[each.key].scopes)
-    client_id                 = var.sso_providers[each.key].client_id
-    client_secret             = data.aws_secretsmanager_secret_version.oidc_client_secret[each.key].secret_string
-    oidc_issuer               = var.sso_providers[each.key].issuer_url
+    attributes_request_method     = "GET"
+    attributes_url_add_attributes = "false"
+    authorize_scopes              = join(" ", var.sso_providers[each.key].scopes)
+    client_id                     = var.sso_providers[each.key].client_id
+    client_secret                 = data.aws_secretsmanager_secret_version.oidc_client_secret[each.key].secret_string
+    oidc_issuer                   = var.sso_providers[each.key].issuer_url
     } : merge(
     var.sso_providers[each.key].metadata_url != "" ? { MetadataURL = var.sso_providers[each.key].metadata_url } : {},
     var.sso_providers[each.key].metadata_xml != "" ? { MetadataFile = var.sso_providers[each.key].metadata_xml } : {},
@@ -231,6 +238,7 @@ resource "aws_cognito_identity_provider" "main" {
     { email = var.sso_providers[each.key].email_claim },
     var.sso_providers[each.key].name_claim != "" ? { name = var.sso_providers[each.key].name_claim } : {},
     var.sso_providers[each.key].role_claim != "" ? { "custom:sso_roles" = var.sso_providers[each.key].role_claim } : {},
+    lower(var.sso_providers[each.key].type) == "oidc" ? { username = "sub" } : {},
   )
 }
 

@@ -18,6 +18,13 @@ import { useDiscussions } from '@/components/discussion/DiscussionProvider';
 import { CollaborativeTextarea } from '@/components/CollaborativeTextarea';
 import { ComposePanel } from '@/components/intent/ComposePanel';
 import { executionCapabilityReason } from '@/lib/executionCapabilities';
+import { AidlcSettingsPanel } from '@/components/AidlcSettingsPanel';
+import {
+  aidlcSettingsFromComposeProposal,
+  AIDLC_SETTING_LABELS,
+  normalizeAidlcSettings,
+  type AidlcSettingValue,
+} from '@/lib/aidlcSettings';
 import { StageGridEditor } from '@/components/intent/StageGridEditor';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -61,6 +68,9 @@ const ATTACHMENT_TYPES: Record<string, string> = {
   md: 'text/markdown',
   csv: 'text/csv',
   html: 'text/html',
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   png: 'image/png',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
@@ -209,8 +219,8 @@ function IntentComposePageContent() {
     if (!projectId || !intentId || !draftReady || !files?.length) return;
     setAttachmentError(null);
     const selected = [...files];
-    if (attachments.length + selected.length > 5) {
-      setAttachmentError('Attach up to five files.');
+    if (attachments.length + selected.length > 50) {
+      setAttachmentError('Attach up to 50 files.');
       return;
     }
     const invalid = selected.find(
@@ -424,6 +434,45 @@ function IntentComposePageContent() {
   // (the selected scope already fully describes the run).
   const [showGridEditor, setShowGridEditor] = useState(false);
 
+  // The AI-DLC settings the previewed scope AUTHORS. Null for an unpinned intent
+  // and for every release before 2.11, which is what keeps the chooser hidden
+  // for them rather than showing an empty box. Declared here because the
+  // selection handlers below read it.
+  const [authoredSettings, setAuthoredSettings] = useState<Record<
+    string,
+    AidlcSettingValue
+  > | null>(null);
+  // Whether the pinned catalog authors the per-intent settings at all, which is
+  // also the only case in which a base scope resolves a policy.
+  //
+  // This is the PREVIEWED SELECTION's answer, so it is null while a preview is
+  // in flight, after a preview error, and for any stock scope whose plan
+  // authors nothing. It may therefore gate what the page SHOWS, but never what
+  // it RECORDS: the server and the compose job answer the same question from
+  // the catalog, so a selection-shaped answer would drop a base — and with it
+  // the whole policy — in exactly those three windows.
+  const settingsAware = authoredSettings !== null;
+
+  // The base scope a customization of the CURRENT selection runs on.
+  //
+  // A selection that already has a grid keeps the base recorded with it: the
+  // base belongs to the grid, and reading `policyScope` without one would adopt
+  // a value an older bundle left in the shared document after clearing the grid
+  // — a feature-derived grid would then run Classic's policy.
+  //
+  // A stock selection records its own scope, on EVERY release: the plan,
+  // validate-grid and the save all ignore a base on a catalog that authors no
+  // scope policy, so there is nothing to lose by recording it and a whole
+  // policy to lose by waiting for a preview to say whether it matters. A
+  // selection that is already a customization has a display LABEL for a scope,
+  // not a scope, and recording that would record a base no catalog can resolve.
+  const customizationBaseScope =
+    (draft.composedGrid
+      ? draft.policyScope
+      : scope && scopeOptions.includes(scope)
+        ? scope
+        : null) ?? null;
+
   const toggleGridStage = (stageId: string) => {
     if (gridBlocked || !draftReady || lockedStageIds.has(stageId)) return;
     // First customization materializes the scope's projection into a composed
@@ -433,7 +482,11 @@ function IntentComposePageContent() {
     const base: Record<string, 'EXECUTE' | 'SKIP'> = { ...effectiveGrid };
     for (const id of lockedStageIds) base[id] = 'EXECUTE';
     base[stageId] = base[stageId] === 'EXECUTE' ? 'SKIP' : 'EXECUTE';
-    draft.setComposedGrid(base);
+    // Customizing the stages does not change the methodology the run follows,
+    // so the scope the grid was built from stays its policy context — the
+    // display label alone names no scope block, which would withdraw the whole
+    // policy and every settable switch on the first stage toggle.
+    draft.setComposedGrid(base, customizationBaseScope);
     if (skipSelections.size) draft.setSkipStageIds(null);
     if (!draft.composedGrid && scope) {
       // Label the customization after its origin so provenance stays readable.
@@ -448,24 +501,84 @@ function IntentComposePageContent() {
     draft.setSkipStageIds(null);
   };
 
-  const applyProposal = (proposal: NonNullable<ComposeSession['proposal']>) => {
+  // Accepting a composed plan is ONE local transaction: the scope, the grid,
+  // the base scope its policy comes from and the settings it proposed all land
+  // together, and the whole selection reaches the server in one body under one
+  // CAS. There is no asynchronous result to inspect and nothing partial to
+  // recover from.
+  const applyProposal = (
+    proposal: NonNullable<ComposeSession['proposal']>,
+    settingsScope: string | null,
+    settingsAuthored: Record<string, AidlcSettingValue> | null,
+  ) => {
     if (composeBlocked || !draftReady) return;
+    // Only a catalog that authors these settings can store one, so a value a
+    // model volunteered on an older pin is not written into the selection — it
+    // would be dropped by the save and would change the request shape of a
+    // draft that has no settings at all.
+    //
+    // A settings scope on the proposal PROVES the catalog is settings-aware:
+    // the compose job records one only there. That is the catalog's own answer,
+    // so it stands in for a preview that has not landed, failed, or described a
+    // scope that authors nothing — without it, accepting a proposal in any of
+    // those windows dropped every value the job had already validated.
+    const catalogSettingsAware = settingsAware || settingsScope !== null;
+    const proposed = catalogSettingsAware ? aidlcSettingsFromComposeProposal(proposal) : {};
+    // Only overrides are stored. The proposal was validated against the
+    // authored defaults of its settings scope, recorded beside it, so its
+    // values are normalized against exactly those before they enter the shared
+    // document: a value equal to that scope's default is not kept as a choice
+    // that would become an override of a later scope's own default, and a real
+    // override of it is kept whatever selection the page is previewing, or
+    // whether a preview has landed at all.
+    //
+    // A proposal recorded before those defaults were carries only its settings
+    // scope. For it, the current preview's defaults are used when they describe
+    // the same selection and base scope; otherwise its values are written as
+    // proposed and the preview of the new selection prunes them.
+    const selectionUnchanged =
+      proposal.mode === 'matched'
+        ? proposal.scope === scope && !draft.composedGrid
+        : proposal.scope === scope &&
+          (settingsScope ?? proposal.baseScope ?? customizationBaseScope) === draft.policyScope &&
+          JSON.stringify(proposal.grid ?? null) === JSON.stringify(draft.composedGrid ?? null);
+    const authoredForApply = settingsAuthored ?? (selectionUnchanged ? authoredSettings : null);
+    const aidlcSettings = authoredForApply
+      ? normalizeAidlcSettings({ settings: proposed, authored: authoredForApply }).value
+      : Object.keys(proposed).length > 0
+        ? proposed
+        : null;
     if (proposal.mode === 'matched') {
-      resetGridToScope(proposal.scope);
-    } else if (proposal.grid) {
-      draft.setScope(proposal.scope);
-      draft.setComposedGrid(proposal.grid);
-      setShowGridEditor(true);
+      draft.applyComposedSelection({ scope: proposal.scope, aidlcSettings });
+      return;
     }
+    if (!proposal.grid) return;
+    // The composer names the stock scope its grid runs on and the proposal was
+    // validated against it. A proposal that omits the optional member keeps the
+    // base scope this selection ALREADY runs on, or the stock scope it is
+    // replacing — never a display label, which names no scope block and would
+    // resolve nothing.
+    draft.applyComposedSelection({
+      scope: proposal.scope,
+      composedGrid: proposal.grid,
+      policyScope: catalogSettingsAware
+        ? (settingsScope ?? proposal.baseScope ?? customizationBaseScope)
+        : null,
+      aidlcSettings,
+    });
+    setShowGridEditor(true);
   };
 
   // Run-shape preview: authoritative counts for the current selection,
   // re-fetched whenever the shared selection changes (keyed on the serialized
   // selection so a peer's grid edit re-previews too).
   const [summary, setSummary] = useState<ScopeSummary | null>(null);
+  // The settings the new selection does not offer, named so the team is told
+  // which choice it withdrew rather than seeing a control quietly disappear.
+  const [withdrawnSettings, setWithdrawnSettings] = useState<string[]>([]);
   const [previewNote, setPreviewNote] = useState<string | null>(null);
   const [previewErrors, setPreviewErrors] = useState<string[]>([]);
-  const gridKey = JSON.stringify(draft.composedGrid ?? null);
+  const gridKey = JSON.stringify([draft.composedGrid ?? null, draft.policyScope ?? null]);
   const skipsKey = JSON.stringify([...skipSelections].toSorted());
   useEffect(() => {
     if (!workflowId || !scope || !intentReady) return;
@@ -475,6 +588,7 @@ function IntentComposePageContent() {
       ? workflowsService.validateGrid(workflowId, {
           composedGrid: draft.composedGrid,
           scope,
+          ...(draft.policyScope ? { policyScope: draft.policyScope } : {}),
           skipStageIds: skips.length ? skips : undefined,
           version: workflowVersion,
           release: releaseId,
@@ -494,6 +608,18 @@ function IntentComposePageContent() {
       .then((preview) => {
         if (cancelled) return;
         setSummary(preview.plan?.summary ?? null);
+        const authored = preview.plan?.aidlcSettingsAuthored ?? null;
+        setAuthoredSettings(authored);
+        // The selection decides which settings EXIST, so the overrides are
+        // pruned against the authored map of the selection now in force,
+        // through the same rule the API runs on the saved payload. Done here
+        // because this is where the authored map for the current selection
+        // arrives; a selection that authors the same settings prunes nothing
+        // and writes nothing to the document.
+        if (draftReady) {
+          const dropped = draft.pruneAidlcSettings(authored);
+          setWithdrawnSettings(dropped.map((key) => AIDLC_SETTING_LABELS[key] ?? key));
+        }
         setPreviewErrors(
           preview.valid ? [] : (preview.errors ?? []).map((e) => e.message).slice(0, 6),
         );
@@ -508,6 +634,7 @@ function IntentComposePageContent() {
       .catch(() => {
         if (!cancelled) {
           setSummary(null);
+          setAuthoredSettings(null);
           setPreviewNote(null);
           setPreviewErrors([]);
         }
@@ -669,7 +796,7 @@ function IntentComposePageContent() {
                 type="file"
                 className="hidden"
                 data-testid="attachment-picker"
-                accept=".txt,.md,.csv,.html,.png,.jpg,.jpeg,.webp,.svg"
+                accept=".txt,.md,.csv,.html,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.svg"
                 multiple
                 disabled={!draftReady || starting || uploadProgress !== null}
                 onChange={(event) => handleAttachmentPick(event.target.files)}
@@ -679,7 +806,7 @@ function IntentComposePageContent() {
                 variant="outline"
                 size="sm"
                 disabled={
-                  !draftReady || starting || uploadProgress !== null || attachments.length >= 5
+                  !draftReady || starting || uploadProgress !== null || attachments.length >= 50
                 }
                 onClick={() => attachmentInput.current?.click()}
               >
@@ -687,6 +814,10 @@ function IntentComposePageContent() {
                 Attach files
               </Button>
             </div>
+            <p className="text-xs text-muted-foreground">
+              PDF, DOCX, XLSX, text, Markdown, CSV, HTML, or images (PNG, JPEG, WebP, SVG). Up to 50
+              files, 5 MB each, 25 MB total.
+            </p>
             {uploadProgress !== null && (
               <div
                 className="h-1.5 overflow-hidden rounded bg-muted"
@@ -884,6 +1015,19 @@ function IntentComposePageContent() {
               )}
             </div>
           </div>
+
+          <AidlcSettingsPanel
+            authored={authoredSettings}
+            chosen={draft.aidlcSettings}
+            disabled={starting || !draftReady}
+            onChange={draft.setAidlcSetting}
+          />
+          {withdrawnSettings.length > 0 && (
+            <p className="text-xs text-amber-600" data-testid="aidlc-settings-dropped">
+              This selection does not offer {withdrawnSettings.join(', ')}, so the choice recorded
+              for it was removed and the run follows the scope&rsquo;s defaults.
+            </p>
+          )}
 
           {gridStages.length > 0 && (
             <div className="space-y-2">

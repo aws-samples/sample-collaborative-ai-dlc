@@ -445,6 +445,15 @@ function PlatformIntentView() {
               </Badge>
             )}
             <MethodologyReleaseBadge release={intent.methodologyRelease ?? null} />
+            {intent.constructionGateAutonomy === 'autonomous' && (
+              <Badge
+                variant="outline"
+                className="text-[10px] shrink-0"
+                data-testid="construction-autonomy-badge"
+              >
+                Autonomous construction
+              </Badge>
+            )}
             {isActive && (
               <span
                 className="h-1.5 w-1.5 rounded-full bg-agent-running animate-pulse shrink-0"

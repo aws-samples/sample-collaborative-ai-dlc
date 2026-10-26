@@ -71,6 +71,27 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     trustTier: 'T1',
     currentPlatformBaseline: false,
   }),
+  // 2.11.0 promotes exactly like 2.8.2 and 2.9.0: an admin may make it
+  // `selectable`, and `certified` if they decide to. It invokes engine commands
+  // this runtime answers without reproducing — the same answered-not-reproduced
+  // situation those two releases are already in — and what it supports,
+  // approximates and refuses is published in
+  // docs/concepts/aidlc-release-compatibility.md, which is the table the
+  // administrator holds when they make that call. No intermediate release
+  // (2.10.0) is admitted — an unknown profile stays `release_profile_unknown`.
+  'v2.11.0': Object.freeze({
+    id: 'v2.11.0',
+    releaseId: 'aidlc:6a378b53c0a4fe0641ed7d8de8dfff94264d5b6a',
+    fixtureDigest: '4a77093efb88810b0b4f93dde19c8cb9afe0c2c0955d3946dd1160592f0dc60b',
+    label: 'AI-DLC 2.11.0',
+    upstreamVersion: '2.11.0',
+    upstreamRef: '6a378b53c0a4fe0641ed7d8de8dfff94264d5b6a',
+    upstreamChannel: 'stable',
+    compatibilityStatus: 'candidate',
+    frontmatterDialect: 'invoke-template-v1',
+    trustTier: 'T1',
+    currentPlatformBaseline: false,
+  }),
 });
 
 const profileFor = (profileIdOrRef) => {
@@ -99,9 +120,11 @@ const CUSTOM_BASE_PROFILE_IDS = Object.freeze(Object.keys(AIDLC_COMPATIBILITY_PR
  * closed means a custom fork can be analyzed and imported by passing this
  * object explicitly, while no id lookup anywhere can ever resurface it.
  *
- * The result is always T0 and `custom: true`, which is what makes it
- * permanently non-runnable (see release-registry `profileIsRunnable` and the
- * release-resolver `release_not_runnable` guard).
+ * The result is always T0 and `custom: true`, so the fork is registered
+ * non-runnable (release-registry `profileIsRunnable`). It becomes runnable only
+ * when an admin promotes it and the same fidelity guard as an official release
+ * accepts it, and its closure then resolves only through a pin that names it as
+ * a fork (release-resolver `release_not_runnable`).
  */
 const customProfile = ({ repository, sha, baseProfileId }) => {
   const { owner, repo, repository: slug } = parseRepositorySlug(repository);

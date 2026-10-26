@@ -636,24 +636,56 @@ prompt_admin() {
     fi
 }
 
+# Validate a password against the Cognito user pool policy defined in
+# terraform/modules/auth/main.tf (minimum_length 12; requires lowercase,
+# uppercase, numbers, and symbols). Keep these rules in sync with that policy.
+validate_password() {
+    local p="$1"
+    [[ ${#p} -ge 12 ]] \
+        && [[ "$p" == *[[:lower:]]* ]] \
+        && [[ "$p" == *[[:upper:]]* ]] \
+        && [[ "$p" == *[[:digit:]]* ]] \
+        && [[ "$p" == *[^[:alnum:]]* ]]
+}
+
+password_policy_hint() {
+    echo "Permanent Cognito password must be at least 12 characters and include" >&2
+    echo "lowercase, uppercase, a number, and a symbol." >&2
+}
+
 prompt_password() {
     if [[ -n "${AIDLC_ADMIN_PASSWORD:-}" ]]; then
         ADMIN_PASSWORD="$AIDLC_ADMIN_PASSWORD"
+        if ! validate_password "$ADMIN_PASSWORD"; then
+            echo "AIDLC_ADMIN_PASSWORD does not meet the Cognito password policy." >&2
+            password_policy_hint
+            exit 1
+        fi
         return
     fi
     if [[ ! -t 0 ]]; then
         echo "Administrator password required; set AIDLC_ADMIN_PASSWORD for automation." >&2
         exit 1
     fi
+    # Surface the policy up front and validate locally so a non-compliant
+    # password is caught here rather than after `terraform apply`, when
+    # Cognito would otherwise reject it and force a full re-run.
+    password_policy_hint
     local verify
-    read -r -s -p "Permanent Cognito password: " ADMIN_PASSWORD
-    printf '\n'
-    read -r -s -p "Confirm permanent Cognito password: " verify
-    printf '\n'
-    if [[ "$ADMIN_PASSWORD" != "$verify" ]]; then
-        echo "Passwords do not match." >&2
-        exit 1
-    fi
+    while true; do
+        read -r -s -p "Permanent Cognito password: " ADMIN_PASSWORD
+        printf '\n'
+        if ! validate_password "$ADMIN_PASSWORD"; then
+            echo "Password does not meet the policy; please try again." >&2
+            continue
+        fi
+        read -r -s -p "Confirm permanent Cognito password: " verify
+        printf '\n'
+        if [[ "$ADMIN_PASSWORD" == "$verify" ]]; then
+            break
+        fi
+        echo "Passwords do not match; please try again." >&2
+    done
 }
 
 select_version() {

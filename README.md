@@ -304,6 +304,13 @@ cp terraform/environments/dev.tfvars.example terraform/environments/dev.tfvars
 ./scripts/deploy-terraform.sh dev --phase apply --plan-file /tmp/aidlc-dev.tfplan
 ```
 
+Apply automatically authenticates Public ECR base-image pulls using the deployment
+identity in `us-east-1`, including for stacks in other Regions. Grant the
+[Public ECR token permissions](docs/getting-started/prerequisites.md#public-ecr-permissions-for-container-builds)
+alongside private ECR push permissions. An authenticated manifest check runs
+before resource changes; see [base-image authentication](docs/getting-started/setup.md#public-ecr-base-image-authentication)
+for its limits and direct Terraform usage.
+
 The plan is rejected in both phases if it would destroy a Cognito user pool, Neptune cluster, S3 bucket, or DynamoDB table.
 
 If an apply fails after completing some resources, create and review a new plan

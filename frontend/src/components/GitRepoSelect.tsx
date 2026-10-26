@@ -121,7 +121,7 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
                   onChange={() => toggle(repo)}
                   className="rounded border-gray-300"
                 />
-                <span className="text-sm truncate flex-1" title={repo.fullName}>
+                <span className="text-sm flex-1 min-w-0 wrap-anywhere" title={repo.fullName}>
                   {repoDisplayName(provider, repo.fullName)}
                 </span>
                 {repo.private && <span className="text-xs text-gray-400">🔒</span>}

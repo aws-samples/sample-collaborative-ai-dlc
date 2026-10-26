@@ -3,7 +3,7 @@
 // earlier leg that parked. All of them must reach the same durability rule, the
 // same commit references, and the write-plane sensor sweep.
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import nodePath from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -144,7 +144,11 @@ const args = () => ({
   repos: [REPO],
 });
 
-const clean = { ok: true, committed: false, results: [{ repo: REPO, reason: 'clean', files: [] }] };
+const clean = {
+  ok: true,
+  committed: false,
+  results: [{ repo: REPO, reason: 'clean', files: [], provenance: { state: 'known', files: [] } }],
+};
 
 describe('repair-turn commits', () => {
   it('fails the stage when the repair turn commit could not be pushed', async () => {
@@ -184,7 +188,14 @@ describe('repair-turn commits', () => {
         ok: true,
         committed: true,
         results: [
-          { repo: REPO, committed: true, pushed: true, sha: repairSha, files: ['src/repair.ts'] },
+          {
+            repo: REPO,
+            committed: true,
+            pushed: true,
+            sha: repairSha,
+            files: ['src/repair.ts'],
+            provenance: { state: 'known', files: ['src/repair.ts'] },
+          },
         ],
       });
     const gitResultForCommitRefs = vi.fn(async ({ commitRefs }) => ({
@@ -196,6 +207,7 @@ describe('repair-turn commits', () => {
         pushed: true,
         sha: ref.sha,
         files: ['src/repair.ts'],
+        provenance: { state: 'known', files: ['src/repair.ts'] },
       })),
     }));
     const store = recordingStore();
@@ -225,7 +237,16 @@ describe('repair-turn commit evidence', () => {
   const repairPush = (sha) => ({
     ok: true,
     committed: true,
-    results: [{ repo: REPO, committed: true, pushed: true, sha, files: ['src/repair.ts'] }],
+    results: [
+      {
+        repo: REPO,
+        committed: true,
+        pushed: true,
+        sha,
+        files: ['src/repair.ts'],
+        provenance: { state: 'known', files: ['src/repair.ts'] },
+      },
+    ],
   });
 
   const gitEvents = (store) =>
@@ -334,6 +355,8 @@ describe('write-plane sweep over the whole attempt', () => {
   };
 
   it('includes files committed by an earlier leg of the attempt', async () => {
+    await mkdir(nodePath.join(workspaceDir, 'src'));
+    await writeFile(nodePath.join(workspaceDir, 'src/a.ts'), 'export {};');
     const carriedSha = 'd'.repeat(40);
     const store = recordingStore({
       stageRow: { attempt: 0, pendingCodeCommitRefs: [{ repo: REPO, sha: carriedSha }] },
@@ -342,7 +365,14 @@ describe('write-plane sweep over the whole attempt', () => {
       ok: true,
       committed: true,
       results: [
-        { repo: REPO, committed: true, pushed: true, sha: carriedSha, files: ['src/a.ts'] },
+        {
+          repo: REPO,
+          committed: true,
+          pushed: true,
+          sha: carriedSha,
+          files: ['src/a.ts'],
+          provenance: { state: 'known', files: ['src/a.ts'] },
+        },
       ],
     }));
 

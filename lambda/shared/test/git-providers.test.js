@@ -22,7 +22,7 @@ const makeFetch = (handlers) => {
           status: r.status ?? 200,
           json: async () => r.json,
           text: async () => (typeof r.text === 'string' ? r.text : JSON.stringify(r.json ?? '')),
-          headers: { get: () => null },
+          headers: { get: (name) => r.headers?.[name.toLowerCase()] ?? null },
         };
       }
     }
@@ -547,6 +547,223 @@ describe('gitlab provider — repo browse + MR + token refresh', () => {
     expect(repos).toEqual([
       { id: 9, name: 'p', fullName: 'g/p', private: true, defaultBranch: 'main' },
     ]);
+  });
+
+  it('listRepos follows pages until a short page', async () => {
+    const project = (n) => ({
+      id: n,
+      name: `p${n}`,
+      path_with_namespace: `g/p${n}`,
+      visibility: 'private',
+      default_branch: 'main',
+    });
+    const fetchImpl = makeFetch([
+      [
+        '&page=1&',
+        {
+          json: Array.from({ length: 100 }, (_, i) => project(i)),
+          headers: { 'x-total-pages': '2' },
+        },
+      ],
+      ['&page=2&', { json: [project(100), project(101)], headers: { 'x-total-pages': '2' } }],
+    ]);
+    const repos = await gl.listRepos({ token: 't', fetchImpl });
+    expect(repos).toHaveLength(102);
+    expect(repos.at(-1).fullName).toBe('g/p101');
+    expect(fetchImpl.calls).toHaveLength(2);
+  });
+
+  it('listRepos makes one call when the first page is short', async () => {
+    const fetchImpl = makeFetch([
+      [
+        '&page=1&',
+        { json: [{ id: 1, name: 'a', path_with_namespace: 'g/a', visibility: 'public' }] },
+      ],
+    ]);
+    const repos = await gl.listRepos({ token: 't', fetchImpl });
+    expect(repos).toEqual([
+      { id: 1, name: 'a', fullName: 'g/a', private: false, defaultBranch: undefined },
+    ]);
+    expect(fetchImpl.calls).toHaveLength(1);
+  });
+
+  it('listRepos fetches the remaining pages in parallel and keeps page order', async () => {
+    const page = (n) =>
+      Array.from({ length: 100 }, (_, i) => ({
+        id: n * 100 + i,
+        name: `p${n}-${i}`,
+        path_with_namespace: `g/p${n}-${i}`,
+        visibility: 'private',
+      }));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const fetchImpl = async (url) => {
+      const n = Number(new URL(url).searchParams.get('page'));
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Later pages answer first, so order must come from the page number.
+      await new Promise((r) => setTimeout(r, (5 - n) * 5));
+      inFlight -= 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => page(n),
+        headers: { get: (name) => (name.toLowerCase() === 'x-total-pages' ? '4' : null) },
+      };
+    };
+    const repos = await gl.listRepos({ token: 't', fetchImpl });
+    expect(repos).toHaveLength(400);
+    expect(repos[0].fullName).toBe('g/p1-0');
+    expect(repos.at(-1).fullName).toBe('g/p4-99');
+    expect(maxInFlight).toBe(3);
+  });
+
+  it('listRepos stops at the page cap', async () => {
+    const full = Array.from({ length: 100 }, (_, i) => ({
+      id: i,
+      name: `p${i}`,
+      path_with_namespace: `g/p${i}`,
+      visibility: 'private',
+    }));
+    const fetchImpl = makeFetch([['/projects?membership', { json: full }]]);
+    const repos = await gl.listRepos({ token: 't', fetchImpl });
+    expect(fetchImpl.calls).toHaveLength(10);
+    expect(repos).toHaveLength(1000);
+  });
+
+  it('listRepos surfaces a GitLab error body', async () => {
+    const fetchImpl = makeFetch([
+      ['/projects?membership', { status: 403, json: { message: '403 Forbidden' } }],
+    ]);
+    await expect(gl.listRepos({ token: 't', fetchImpl })).rejects.toThrow('403 Forbidden');
+  });
+
+  describe('listRepos token refresh across parallel pages', () => {
+    const fullPage = (n) =>
+      Array.from({ length: 100 }, (_, i) => ({
+        id: n * 100 + i,
+        name: `p${n}-${i}`,
+        path_with_namespace: `g/p${n}-${i}`,
+        visibility: 'private',
+      }));
+    // GitLab double: accepts only `validTokens`, reports `totalPages`, and
+    // answers each page after `delays[page]` ms so tests can order 401s.
+    const gitlabDouble = ({ validTokens, totalPages = 3, delays = {} }) => {
+      const calls = [];
+      const fetchImpl = async (url, options) => {
+        const page = Number(new URL(url).searchParams.get('page'));
+        const token = options.headers.Authorization.replace('Bearer ', '');
+        calls.push({ page, token });
+        if (delays[page]) await new Promise((r) => setTimeout(r, delays[page]));
+        if (!validTokens().includes(token)) {
+          return { ok: false, status: 401, json: async () => ({ message: '401 Unauthorized' }) };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => fullPage(page),
+          headers: { get: (h) => (h === 'x-total-pages' ? String(totalPages) : null) },
+        };
+      };
+      return { fetchImpl, calls };
+    };
+    const expectOrdered = (repos, pages = 3) => {
+      expect(repos).toHaveLength(pages * 100);
+      expect(repos.map((r) => r.id)).toEqual(
+        Array.from({ length: pages * 100 }, (_, i) => i + 100),
+      );
+    };
+
+    it('refreshes once when the token has expired before page 1', async () => {
+      let valid = [];
+      const onRefresh = vi.fn(async () => {
+        valid = ['NEW'];
+        return 'NEW';
+      });
+      const { fetchImpl } = gitlabDouble({ validTokens: () => valid });
+      const ctx = { token: 'OLD', fetchImpl, onRefresh };
+      expectOrdered(await gl.listRepos(ctx));
+      expect(onRefresh).toHaveBeenCalledOnce();
+      expect(ctx.token).toBe('NEW');
+    });
+
+    it('refreshes once when the token expires between page 1 and the parallel pages', async () => {
+      let valid = ['OLD'];
+      const { fetchImpl, calls } = gitlabDouble({ validTokens: () => valid });
+      // Page 1 succeeds with OLD, then the token expires before pages 2..3.
+      const wrapped = async (url, options) => {
+        const res = await fetchImpl(url, options);
+        if (calls.length === 1) valid = [];
+        return res;
+      };
+      const onRefresh = vi.fn(async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        valid = ['NEW'];
+        return 'NEW';
+      });
+      const ctx = { token: 'OLD', fetchImpl: wrapped, onRefresh };
+      expectOrdered(await gl.listRepos(ctx));
+      expect(onRefresh).toHaveBeenCalledOnce();
+      expect(
+        calls
+          .filter((c) => c.token === 'NEW')
+          .map((c) => c.page)
+          .sort(),
+      ).toEqual([2, 3]);
+    });
+
+    it('retries a late old-token 401 with the replacement token instead of refreshing again', async () => {
+      let valid = ['OLD'];
+      // Page 3's 401 for OLD arrives well after page 2's refresh completed.
+      const { fetchImpl, calls } = gitlabDouble({ validTokens: () => valid, delays: { 3: 30 } });
+      const wrapped = async (url, options) => {
+        if (calls.length === 1) valid = [];
+        return fetchImpl(url, options);
+      };
+      const onRefresh = vi.fn(async () => {
+        valid = ['NEW'];
+        return 'NEW';
+      });
+      const ctx = { token: 'OLD', fetchImpl: wrapped, onRefresh };
+      expectOrdered(await gl.listRepos(ctx));
+      expect(onRefresh).toHaveBeenCalledOnce();
+      expect(calls.filter((c) => c.page === 3).map((c) => c.token)).toEqual(['OLD', 'NEW']);
+    });
+
+    it('reports a genuine refresh rejection once and fails the listing', async () => {
+      let valid = ['OLD'];
+      const { fetchImpl, calls } = gitlabDouble({ validTokens: () => valid });
+      const wrapped = async (url, options) => {
+        const res = await fetchImpl(url, options);
+        if (calls.length === 1) valid = [];
+        return res;
+      };
+      const onRefresh = vi.fn(async () => {
+        throw new ProviderError(400, 'invalid_grant');
+      });
+      const ctx = { token: 'OLD', fetchImpl: wrapped, onRefresh };
+      await expect(gl.listRepos(ctx)).rejects.toThrow('401 Unauthorized');
+      expect(onRefresh).toHaveBeenCalledOnce();
+      expect(ctx.token).toBe('OLD');
+    });
+
+    it('refreshes again when a replacement token later expires too', async () => {
+      let n = 0;
+      const onRefresh = vi.fn(async () => `T${++n}`);
+      let valid = [];
+      const fetchImpl = async (_url, options) => {
+        const token = options.headers.Authorization.replace('Bearer ', '');
+        if (!valid.includes(token)) return { ok: false, status: 401, json: async () => ({}) };
+        return { ok: true, status: 200, json: async () => [{ name: 'main' }] };
+      };
+      const ctx = { token: 'OLD', fetchImpl, onRefresh };
+      valid = ['T1'];
+      await gl.listBranches(ctx, 'g/p');
+      valid = ['T2'];
+      await gl.listBranches(ctx, 'g/p');
+      expect(onRefresh).toHaveBeenCalledTimes(2);
+      expect(ctx.token).toBe('T2');
+    });
   });
 
   it('glFetch refreshes the token once on 401 and retries', async () => {

@@ -7,6 +7,7 @@ set -euo pipefail
 export AWS_PAGER=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEPLOY_ARGS=("$@")
 TF_DIR="$SCRIPT_DIR/../terraform"
 ENVIRONMENT="dev"
 PHASE="all"
@@ -292,6 +293,13 @@ if ! command -v docker-credential-ecr-login >/dev/null 2>&1; then
     echo "Install the Amazon ECR credential helper (macOS: brew install docker-credential-helper-ecr; Debian/Ubuntu: sudo apt install amazon-ecr-credential-helper)." >&2
     echo "Terraform uses it at plan and apply time; no docker login or Docker config changes are needed." >&2
     exit 1
+fi
+
+# Keep the token alive through apply (and refresh it for a separately saved plan).
+# The shared workflow also wraps older release scripts that predate this guard.
+if [[ "$PHASE" != "plan" && "${AIDLC_PUBLIC_ECR_AUTH_WRAPPED:-0}" != "1" ]]; then
+    exec node "$SCRIPT_DIR/with-public-ecr-auth.mjs" "$SCRIPT_DIR/.." -- \
+        bash "$SCRIPT_DIR/deploy-terraform.sh" ${DEPLOY_ARGS[@]+"${DEPLOY_ARGS[@]}"}
 fi
 
 if [[ "$PHASE" == "plan" || "$PHASE" == "all" ]]; then

@@ -53,6 +53,25 @@ before creating the intent. Reassigning the project or publishing a newer
 revision afterward does not change an existing intent's image, runtime, or
 endpoint. See [Managed tools and environments](managed-environments.md#select-an-environment-for-a-project).
 
+### Reference attachments
+
+While composing a draft, choose **Attach files** to provide reference material
+for the agents. Supported formats are PDF, DOCX, XLSX, TXT, Markdown, CSV,
+HTML, PNG, JPEG, WebP, and SVG. You can attach up to **50 files**, each at most
+**5 MB**, with **25 MB** combined (limits use 1 MB = 1,048,576 bytes).
+
+The original files are made available read-only in the agent workspace.
+Agents decide when to read them; the platform does not automatically convert
+them. For PDF, DOCX, and XLSX, the runtime includes MarkItDown to extract text
+and tables. This does not include OCR for scanned PDFs or guarantee extraction
+of images, charts, or visual layout. Attach important visuals separately as
+images and explain their relevance in the prompt.
+
+MarkItDown requires an updated runtime image. For custom environments created
+before it was included, an administrator must rebuild on the updated Standard
+base and publish the new revision before you create the intent. Existing
+intents keep their pinned environment.
+
 ## Intent lifecycle
 
 | State       | Meaning                                                              |

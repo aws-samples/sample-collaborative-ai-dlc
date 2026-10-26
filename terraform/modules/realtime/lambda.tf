@@ -9,6 +9,14 @@ locals {
   realtime_partition  = data.aws_partition.realtime.partition
   realtime_dns_suffix = data.aws_partition.realtime.dns_suffix
   all_lambdas_in_vpc  = var.lambda_vpc_scope == "all"
+  # ws-connection bundles lambda/shared/** via esbuild, but the lambda module
+  # only hashes its own source_path. Fold the shared tree into hash_extra so a
+  # shared-file change rebuilds the package (same as modules/api/lambda).
+  shared_dir = "${path.module}/../../../lambda/shared"
+  shared_sources_hash = sha256(join("", [
+    for f in sort(fileset(local.shared_dir, "**/*.{js,mjs,cjs,json}")) :
+    filesha256("${local.shared_dir}/${f}")
+  ]))
 }
 
 # IAM Role for Lambda functions
@@ -96,6 +104,8 @@ module "connection_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.lambda.arn
@@ -104,6 +114,7 @@ module "connection_lambda" {
   vpc_security_group_ids = local.all_lambdas_in_vpc ? var.vpc_security_group_ids : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
     CONNECTIONS_TABLE       = var.connections_table_name
@@ -141,6 +152,7 @@ module "message_lambda" {
   vpc_security_group_ids = local.all_lambdas_in_vpc ? var.vpc_security_group_ids : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
     CONNECTIONS_TABLE       = var.connections_table_name
@@ -176,6 +188,7 @@ module "authorizer_lambda" {
   vpc_security_group_ids = local.all_lambdas_in_vpc ? var.vpc_security_group_ids : null
 
   environment_variables = {
+    AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
     COGNITO_USER_POOL_ID    = var.cognito_user_pool_id

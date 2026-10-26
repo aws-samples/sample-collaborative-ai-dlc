@@ -18,6 +18,7 @@ mock_provider "aws" {
 }
 
 variables {
+  aws_sdk_ua_app_id             = "Collaborative_AI-DLC-test"
   project_name                  = "test"
   environment                   = "test"
   powertools_service_name       = "test"

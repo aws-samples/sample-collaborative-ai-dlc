@@ -21,13 +21,21 @@ or changes an existing intent.
 ## Profile identity and trust
 
 The built-in profiles are pinned to exact upstream commit SHAs. The allowlist
-includes the current 2.3.3 baseline and the 2.6.18, 2.7.0, 2.8.2, and 2.9.0
-catalogs. A custom fork receives a synthesized profile with its own source
+includes the current 2.3.3 baseline and the 2.6.18, 2.7.0, 2.8.2, 2.9.0, and
+2.11.0 catalogs. No intermediate release is onboarded: 2.10.0 is not on the
+allowlist and registering it is refused as an unknown profile. A custom fork receives a synthesized profile with its own source
 identity; an unknown tag or branch is not treated as an official release.
 
 All official profiles use the same source trust tier. Trust establishes whether
 the imported source may run; it does not certify that the platform reproduces
 every semantic in that source.
+
+A custom fork names the official profile whose frontmatter dialect it uses (for
+example `v2.9.0`); that base grants no trust. It is recorded `T0` and
+import-only, and it may author its own stages, scopes, agents and sensors. It
+becomes runnable only through the explicit admin promotion described under
+[Registry, promotion, and channels](#registry-promotion-and-channels), which
+applies the same fidelity guard as an official release.
 
 ## Immutable storage and import
 
@@ -133,16 +141,155 @@ because it requires concurrent sessions.
 
 The 2.3.3 baseline remains promotable. The 2.6.18, 2.7.0, 2.8.2, and 2.9.0
 fixtures have runtime handlers for their authored persona modes and for the
-build-and-test loop-back, so with this layer 2.6.18 through 2.9.0 become
-promotable: `PROTOCOL:build-and-test-loopback` is no longer `unsupported`, which
-is the gap that made the release-promotion guard refuse them. Their
+build-and-test loop-back, so `PROTOCOL:build-and-test-loopback` is no longer
+`unsupported` — the gap that made the release-promotion guard refuse them. Their
 compatibility classification remains field-driven and reflects the supported
 runtime semantics rather than profile-version exceptions.
+
+Those fixtures carry no bodies, so they do not show one more condition. From
+2.8.2 on, a release's prompts invoke the upstream engine CLI as
+`{{INVOKE}} engine <command>`, and the guard reads those invocations out of the
+published closure as `BODY:{{INVOKE}}` gaps. It reads them only from what
+reaches a prompt: the bodies of the blocks a release library resolves (stages,
+agents, sensors, rules, artifacts, knowledge, scopes) and the conductor. The
+engine's own sources, hooks and protocols, and the SKILL and TEMPLATE bodies,
+ship in the closure and quote engine commands too, but no prompt renders them,
+so they are not read as gaps. The 2.6.18 and 2.7.0 prompts invoke no engine
+command.
+
+No engine binary exists here. The stage, persona and compose prompts neutralize
+the token and append the engine-command annex, a closed list that tells the
+agent, per command, what to do instead. A prompt carries the annex when a part
+the release authors to INSTRUCT the agent carries the token: the stage body, the
+conductor, the persona or the reference knowledge in a stage prompt; the persona
+or the reference knowledge in a reviewer or ensemble brief; the composer persona
+or its knowledge in the compose prompt. `lambda/shared/annex-reach.js` is the one
+definition those builders and the promotion guard share. A command the annex
+answers does not hold promotion when EVERY block whose body carries it is one of
+those: bodies are content-addressed, so one object can be the body of several
+blocks, and coverage for a stage is not coverage for a rule that shares the same
+text.
+
+| Command                                                                                                   | Handling               | What the platform does                                                                                                                                                                                                                                                                                                  |
+| --------------------------------------------------------------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `orchestrate report`                                                                                      | unsupported, answered  | Records stage lifecycle itself from the turn ending.                                                                                                                                                                                                                                                                    |
+| `recompose --add`, `state set-construction-iteration`, `state practices-event`, `state practices-promote` | unsupported, answered  | The agent records a recommendation for the human instead of performing the action.                                                                                                                                                                                                                                      |
+| `graph ars`                                                                                               | unsupported, answered  | No composite is computed or shown. Upstream's score is advisory and nothing routes on it; the agent justifies each EXECUTE/SKIP with evidence and never presents a score.                                                                                                                                               |
+| `gen scope-table`, `gen stage-table`                                                                      | approximated, answered | Read-only reporting the prompt already carries.                                                                                                                                                                                                                                                                         |
+| `workspace detect`, `workspace codekb`, `workspace codekb-scope-diff`                                     | approximated, answered | Read-only reporting. The compose prompt carries the workspace signals the platform detected; a stage reads the compiled context and its working tree. No scope-diff identifier is minted.                                                                                                                               |
+| `worktree`, `worktree create`, `worktree merge`, `worktree info`                                          | approximated, answered | A per-unit lane runs on a unit branch the platform creates from the intent branch and checks out before the stage; any other stage runs on the intent branch. The platform merges each unit branch into the intent branch with `--no-ff` after the unit, and the intent branch reaches `main` through its pull request. |
+| `graph validate-grid`                                                                                     | approximated, answered | The plan resolver re-validates every compose proposal (strictly when in flight). Not reproduced: the validator summary, `nearest_stock`, the keyword collision check.                                                                                                                                                   |
+
+Any other command, including other subcommands or flags of these families and a
+family name on its own (`state`, `orchestrate --next`), gets only the annex's
+catch-all (say it is unavailable, never improvise), which leaves the
+authored step unperformed, so it still holds promotion. So does an answered
+command — including an approximated one, whose platform substitute the agent
+only learns from the annex — found in a body whose prompt carries no annex, such
+as a rule or a scope. One such consumer is enough: the verdict is the same
+whether that body is shared with a stage or authored separately. With these,
+2.8.2 and 2.9.0 author nothing this build cannot honour and are promotable. The admin tab lists
+exactly what a given import still holds on. A gap list stored by a build that
+read other files is re-read from the closure the next time it is listed or
+promoted.
 
 `readyForCertification` is derived from the current compatibility report. It is
 not a version allowlist, and the report's Boolean is not treated as durable
 authorization by itself: the release-promotion guard stores the authored
 fidelity gaps and reevaluates them against the handlers in the running build.
+
+2.11.0 promotes exactly as 2.8.2 and 2.9.0 do: an admin may make it
+`selectable`, and `certified` — and so eligible for the `stable` channel — if
+they decide to. The engine commands below are answered, not reproduced, which is
+the same situation 2.8.2 and 2.9.0 are already in; whether that is a claim worth
+making is the administrator's call, taken with the table below in hand.
+
+### AI-DLC 2.11.0: handled, approximated, refused
+
+2.11.0 renames Change Control to **Guard Policy** (adding a third value, `off`)
+and adds **Plan Approval**, **collaborators** and **`existing_code`** as scope
+settings. All four are mapped by the importer, resolved onto the per-stage
+policy, and choosable per intent by a project member before the run starts.
+Guard Policy `off` means no change-control reopen; **it never removes a human
+approval gate**, and that invariant is asserted for every 2.11 scope and stage.
+
+| 2.11 behaviour                                               | Disposition                     | What the platform does                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------ | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Guard Policy `strict` / `relaxed`                            | approximated                    | The existing change-control gate, unchanged.                                                                                                                                                                                                                                                                                                          |
+| Guard Policy `off`                                           | approximated                    | No reopen and no change-control prose. Upstream's `off` also lowers execution fences this platform never had, and its per-fence `Guards Off`/`Guards On` overrides and kill-switch chain are **refused** — there is no per-fence surface.                                                                                                             |
+| Plan Approval `on`                                           | approximated                    | The existing outcome-gate approximation.                                                                                                                                                                                                                                                                                                              |
+| Plan Approval `off`                                          | approximated                    | No plan gate is offered and the completion ladder requires no plan receipt. The stage's own approval gate is untouched, and the gate carries a notice naming whose choice it was.                                                                                                                                                                     |
+| collaborators `off`                                          | native                          | One session: the lead agent produces every declared output. Each withdrawn persona is named on the plan's policy effects.                                                                                                                                                                                                                             |
+| collaborators `on`                                           | approximated                    | The existing per-persona blind sessions.                                                                                                                                                                                                                                                                                                              |
+| `existing_code`                                              | approximated                    | Becomes the default project type, overridable by a human, and stated in the prompt. Mid-run reclassification is **refused** (see `orchestrate next`).                                                                                                                                                                                                 |
+| `sensors`, `learnings`, `summary_confirmation`, `review_cap` | as before                       | Already mapped; only their 2.11 defaults changed. `review_cap` stays a scope ceiling and raising it per intent is refused.                                                                                                                                                                                                                            |
+| The composer's settings proposal                             | handled                         | `guardPolicy`, the six `scopeSettings`, `baseScope` and `creationDepth` are parsed and kept; a member accepts them on the compose page and the provenance is recorded. A proposed `settingsChanges` (a change to work in flight) is refused by name.                                                                                                  |
+| `engine audit append-raw`                                    | approximated                    | The note is bound to `emit_stage_note`. No upstream audit shard or taxonomy event is written, and the agent may not claim one was.                                                                                                                                                                                                                    |
+| `engine config get`                                          | approximated                    | The effective settings and their source are rendered into the prompt. The annex forbids reading a settings, environment or shell file to find them.                                                                                                                                                                                                   |
+| `engine now`                                                 | approximated                    | The platform's own event stamps are in the prompt; a timestamp it cannot supply is omitted and said to be unavailable, never fabricated.                                                                                                                                                                                                              |
+| `engine config set`                                          | refused                         | Settings belong to the intent and only a human changes them, before the run starts; afterwards the API answers `settings_locked`. The agent records the request.                                                                                                                                                                                      |
+| `engine log answer`, `engine log decision`                   | refused (protected checkpoints) | Ordinary questions and summary confirmations bind to `ask_question` / `confirm_summary` where the session has them; where the policy or checkpoint ownership withholds one, the annex says so and defers to the stage's own session. The plan-approval receipt and the approved verification command have no store here and are named as unavailable. |
+| `engine orchestrate next`                                    | refused                         | No rescan, no Reverse Engineering re-insertion, no return to the interrupted stage. The agent records a `RECOMMENDED PROJECT TYPE CHANGE` and a human rewinds and recomposes.                                                                                                                                                                         |
+| `engine state set-construction-execution`                    | refused                         | Construction scheduling is platform state; the agent records the intended value.                                                                                                                                                                                                                                                                      |
+| `engine state set-construction-verification-command`         | refused                         | No approved-command store; the command is a recommendation, never executable authority.                                                                                                                                                                                                                                                               |
+| `engine testing-posture restore`                             | refused                         | No approved-bundle restore; the agent says it is unavailable and names what was lost.                                                                                                                                                                                                                                                                 |
+| `engine worktree list` / `discard` / `restore` / `purge`     | refused                         | No parked-attempt store. Lanes are branches the platform creates and merges; the agent parks, deletes, restores and purges nothing and never substitutes git.                                                                                                                                                                                         |
+| `testing-posture fingerprint --reapprove`                    | retired upstream                | This platform never ran it, and no adapter here revives the retired route.                                                                                                                                                                                                                                                                            |
+| `doctor`                                                     | refused                         | No source-boundary diagnostic runs here. The agent reports the failure through its own output and never emits `VALID`/`INVALID`.                                                                                                                                                                                                                      |
+| `workspace codekb-scope-diff --check`                        | refused                         | No publication validator runs here. The missing prerequisite is named; no verdict is produced.                                                                                                                                                                                                                                                        |
+
+Every name the guard honours carries a row in the annex, asserted verbatim by
+test, and honouring a name requires proof that the answer REACHES the session
+that receives the command. Two reaches are distinguished, because the answers
+differ in what they need:
+
+- A **refusal** that names a platform channel (record the request, put it in the
+  findings) is honoured only where the session receiving the annex also owns
+  that channel. A command instructed only from a reviewer's or a support
+  persona's knowledge keeps holding promotion.
+- An **approximation** whose answer the receiving session performs itself —
+  omit an unavailable timestamp, read the settings out of the prompt, record a
+  note — is honoured wherever a prompt carries the annex at all, which includes
+  that reviewer and support knowledge. A body no prompt builder annexes, such as
+  a persona, carries no answer for anyone: `engine now` moved into a persona
+  body holds promotion with the command named, which is how a fork is kept from
+  inheriting a reach claim the official bodies earned.
+
+The checkpoint mapping is rendered for the session that receives it: tool
+registration withholds `confirm_summary` where the policy asks for no summary
+confirmation and withholds both checkpoint tools from a session that owns no
+checkpoint, so the annex offers only what that session has and otherwise says
+the checkpoint cannot be raised there and must be deferred to the stage's own
+session.
+
+2.11.0's sensors run as the release declares them, with one bounded
+difference:
+
+- **Document-sensor routing and script closures.** 2.11 authors its document
+  sensors against an output path and splits their scripts across sibling
+  modules. The runner spawns each script on the flag its input schema declares
+  and writes the script's pinned import closure beside it before spawning, so
+  the traceability, type-check, claim-sources and linter sensors analyse their
+  input instead of failing at import. A closure or import the release store
+  cannot read is a release-integrity failure: no script is launched and the
+  stage is held.
+- **Code-sensor budgets.** 2.11 authors 1,200 seconds for the code sensors. The
+  runner honours an authored budget up to its 600-second ceiling and within the
+  stage deadline, and records which of the two bounded the run, so a sensor cut
+  at the ceiling is reported as such. This is the remaining difference: a code
+  sensor that needs more than 600 seconds is cut shorter than the release asks.
+- **The timestamp-heading exemption.** 2.11 widens its record sensors to the
+  knowledge base and exempts a one-line timestamp record from the heading
+  floor, and the runner honours that exemption for a catalog that authors it.
+  Earlier releases do not, so such a record still reports two missing headings
+  there.
+
+What these green tests do **not** prove, stated so the support claim stays
+bounded: real model behaviour under the truncated composer knowledge; live human
+reply, approval, edit and restore flows; reviewer and support prompts in a real
+run; a real ESLint or tsc subprocess in the container image; per-Unit checkpoints
+and reopen with finished work retained; and production-equivalent dependency
+packaging.
 
 ## Registry, promotion, and channels
 
@@ -166,11 +313,59 @@ registry row and re-reads bounded, digest-checked catalog objects. An upgrade
 that adds behavior the running build cannot honor is refused before new intents
 can select it.
 
+A custom fork is promoted the same way. Registration records it `T0`,
+import-only and invisible, with its fidelity gaps and the unhonoured subset on
+the record. Promoting it to `selectable` or `certified` runs the guard above
+over the fork's own closure: if every behavior it authors has a runtime handler,
+the record becomes runnable and can then be made visible, pointed at by a
+channel, and pinned by new intents; otherwise the promotion is refused with
+`release_capability_unhandled` and the record stays import-only. Nothing else
+makes a fork runnable, and a fork registered by an earlier build is in the same
+state until it is promoted. A fork's intents pin a closure that names the fork,
+and the runtime reads that closure only from the fork's own storage prefix; a
+custom closure is never executed under an official pin. The runtime also reads
+the fork's release record before it loads the closure and refuses the pin with
+`release_not_runnable` unless the record is runnable, so a fork pin written by
+hand or restored from a backup does not run a fork that was never promoted.
+
+Promoting a fork is a trust decision. Earlier builds kept every fork
+import-only until sandboxed execution and IAM isolation existed; this build lets
+an admin promote one, and neither of those exists yet. A promoted fork's sensor
+scripts, and the `command` each sensor declares (a `runtime: sh` command runs
+through `sh -c`), run in the agent runtime with the runtime's own role and no
+separate sandbox. That is how a user's script sensor runs too, but the blast
+radius is wider: a user's sensor runs only in that user's intents, while a
+promoted fork is offered to every project in the deployment. Only a platform
+admin can promote a fork, the guard refuses a fork that authors behavior this
+build has no handler for, and promotion is not revoked once granted. Promote
+only a fork whose sources you would run as your own sensors in every project.
+
 Because the registry reevaluates content evidence against the current handler
 registry, adding a handler can make an existing import promotable without
 changing its source bytes, importer revision, or closure digest. The registry
 API exposes both the original fidelity gaps and the subset this build still
 cannot honour; the admin screen explains a refused promotion.
+
+### Enable pinning and promote a release
+
+A deployment of this build can run 2.8.2, 2.9.0, 2.11.0 or an admin-promoted
+fork as follows. Every step is explicit; none happens on its own.
+
+1. Turn release pinning on. In the Terraform variables for the deployment, set
+   `aidlc_release_pinning = "on"` and apply. The demo deployment workflow reads
+   it from the optional `AIDLC_RELEASE_PINNING` GitHub environment variable.
+2. Publish the release bytes with the seed-blocks `importRelease` mode, for an
+   allowlisted profile or for a custom fork pinned to an exact SHA.
+3. In the admin AI-DLC releases tab, register the published release. Check its
+   unhonoured values: a release with any cannot be promoted, and the list says
+   which behavior this build is missing.
+4. Set its support state to `selectable` (or `certified`), then make it
+   visible. Each step re-checks the release against this build.
+5. Optionally point a channel at it. `stable` makes it the default for new
+   intents; it requires `certified` unless the release is the platform baseline.
+
+Existing intents keep the release they were created with. To stop offering a
+release, follow [Roll back a channel](#roll-back-a-channel).
 
 ## Selection and rollback
 
@@ -251,6 +446,45 @@ stage fails with a rewind-eligible reason.
 - `AGENT.maxTurns` maps to the native OpenCode turn limit; it remains inert on
   CLIs that expose no equivalent.
 
+### Per-intent AI-DLC settings
+
+A scope's Guard Policy, Plan Approval, collaborators and project type can be
+overridden for ONE intent. The settings are ordinary draft selection state: they
+travel in the same `PATCH /projects/{projectId}/intents/{intentId}` body as
+`scope` and `composedGrid`, under the same draft-revision CAS, and are flushed by
+the same barrier Start already awaits. There is no separate route and no second
+write path.
+
+- Only the settings the pinned release's chosen scope AUTHORS are offered
+  (`plan.aidlcSettingsAuthored`). A release that authors none — unpinned, 2.3.3,
+  2.8.2, 2.9.0 — offers nothing, stores nothing and resolves exactly the policy
+  it resolved before.
+- Only DELTAS from that scope's default are stored. A value equal to the default
+  is not an override, so it is not persisted; the consequence is that an explicit
+  choice which happens to equal the default is not retained across a later scope
+  change, the same semantics `composedGrid` already has relative to `scope`.
+- The settings are only ever validated against a selection that arrived in the
+  same request: a body carrying settings without `scope` or `composedGrid` is
+  refused with `400 selection_required_with_settings`.
+- A setting the new selection does not author is dropped and named in the
+  response, so the UI can say which choice a scope change withdrew. A value
+  outside the capability registry's own value set, or of the wrong authored type,
+  is refused with `400 aidlc_setting_invalid`.
+- Settings are DRAFT-only. A write once the run has started answers
+  `409 settings_locked`, which is the platform's half of the dialect annex's
+  refusal of a mid-run settings change. No MCP tool can write one.
+- Each changed key appends one `v2.intent.settings.changed` timeline event naming
+  the authenticated member whose write changed it. The append is best-effort
+  after persistence, like the other event appends.
+- The recorded overrides reach the run, not only the draft: the orchestrator
+  walk, every stage and resume dispatch and both of AgentCore's own stage
+  resolutions project them through one shared contract
+  (`shared/intent-methodology.js`).
+- A stage that would have asked for a plan approval and did not carries an
+  advisory gate notice saying whether the pinned release's named scope turns Plan
+  Approval off by default or the intent turned it off before the run started. The
+  notice names nobody; attribution is on the intent timeline.
+
 ### Build-and-test loop-back
 
 Releases that ship the construction protocol (2.6.18 and later) let
@@ -288,6 +522,74 @@ An answered gate whose durable callback failed to resume can be retried through
 the intent's Resume action. Callback-consumption markers and answered gate state
 prevent a duplicate resume; an expired callback transitions the intent to a
 rewind-recoverable `FAILED` state rather than leaving it indefinitely `WAITING`.
+
+### Construction autonomy
+
+Releases that ship the construction protocol also carry `Construction Autonomy
+Mode`: the human's standing permission to complete the remaining construction
+stage gates without stopping. The capability is classified `native` — the grant,
+its two-value vocabulary, the first-stage carve-out and the halt-and-ask set are
+all reproduced.
+
+- The grant is per-intent and two-valued. Absent and `gated` both read as gated;
+  only `autonomous` waives anything. It is frozen onto the intent at create by
+  the human creating it, or escalated later by an explicit human answer: the
+  `grant-autonomy` option, offered at the one construction gate that always stays
+  human. The answer API rejects it on a gate that does not offer it. The
+  release listing reports `constructionAutonomy` for each release, read from
+  the record's stored protocol evidence, so the create page offers the opt-in
+  only for a selected release that has it. The non-admin listing never
+  re-verifies a closure, so a record whose stored evidence predates the
+  protocol entries lists `false` there until an admin listing or a promotion
+  re-verifies and caches it. The opt-in is then hidden, never wrongly offered,
+  and creating an intent still decides from the release's closure.
+- Once given, the grant holds for the rest of the intent, rewinds included,
+  until the intent is cancelled. Cancelling clears it and records who withdrew
+  it and when on the grant's provenance, so a rewind after a cancel relaunches
+  the intent gated. Cancel is only accepted while the intent is parked or
+  failed: a waived gate never parks, so an autonomous run can be cancelled once
+  it halts at a human gate, a question or a failure. Every gate with a finding
+  still halts and asks.
+- It lives on its own META attribute, `constructionGateAutonomy`. The
+  per-section unit-lane ladder keeps `constructionAutonomyMode`: that question
+  asks only about parallel lane batching, and reading it here would waive gates
+  the human was never asked about.
+- A waived gate is never opened. The approved answer is synthesized and the run
+  takes the ordinary approval path, so the durable record is the ordinary
+  attempt-scoped `stage-approval` receipt, carrying `autonomous: true` and the
+  protocol's marker input. The `v2.gate.auto_approved` timeline event is
+  best-effort telemetry on top of that receipt, never the record itself. The
+  grant's own provenance — who, when, and whether at create or at a gate — is
+  durable too, as `constructionGateAutonomyGrant`.
+- The halt-and-ask set is reproduced in full: the plan's first non-skipped
+  construction stage with a sequential gate, every Code Generation Plan
+  Approval, every fan-out approval, a stage failure, a blocking gate sensor,
+  and a loop-back recommendation (offered, at the bound, or with no code
+  generation to go back to) all still open a human gate. So does a gate
+  with learning candidates waiting for the learnings ritual, and a gate whose
+  stage outputs the runner could not observe: "no finding" is only read as
+  clean when the outputs were actually checked. On an intent with a grant, each
+  construction gate re-reads the intent before deciding, so a deleted intent, a
+  cancelled run, or a run taken over by another orchestrator (a rewind relaunch)
+  stops the walk instead of approving. An intent without a grant, and every gate
+  outside construction, skips that read and keeps its durable history.
+- Two deviations, both stricter than upstream: the gate-precondition evaluation
+  runs in full on a waived gate, so ANY finding (advisory included) opens the
+  human gate; and a terminal adversarial `NOT-READY` blocks a waived gate instead
+  of being auto-approved. On a gate the grant does not cover, that same verdict
+  stays an advisory finding and `approve` remains on offer, exactly as before.
+- Residual: the grant governs only the once-per-workflow sequential gates.
+  Per-unit stages inside a parallel section keep their own ceremony — the
+  walking-skeleton gate and the section autonomy ladder — so a scope with a unit
+  DAG still batches its lane approvals there. In those scopes the gate that
+  always stays human is the first sequential construction gate after the lanes
+  (for example build-and-test), and that is where `grant-autonomy` is offered.
+  Non-construction phases are untouched.
+- Residual: a waived gate judges the stage's evidence, not its test results. A
+  build-and-test stage that succeeds with failing tests but raises no finding
+  and records no loop-back recommendation has clean evidence, so an autonomous
+  intent approves it. A blocking results sensor is what turns those failures
+  into a halt.
 
 ## Persona sessions
 
@@ -343,9 +645,8 @@ defaults to `off`. There is no separate switch for them: to stop running
 persona sessions, do not pin intents to a release that declares these modes.
 
 `agent-team` remains explicitly unimplemented. Build-and-Test loop-back is a
-separate runtime behavior; persona sessions do not add a loop-back gate option,
-and the releases that declare it (2.6.18 through 2.9.0) stay unpromotable until
-that handler lands.
+separate runtime behavior with its own handler; persona sessions do not add a
+loop-back gate option.
 
 ### Verification
 

@@ -6,7 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -14,188 +14,26 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { stubPublicEcr } from './helpers/public-ecr.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const inspector = join(root, 'scripts/inspect-terraform-plan.mjs');
 const workflow = readFileSync(join(root, '.github/workflows/deploy-demo.yml'), 'utf8');
-
-const workflowStepSource = (name) =>
-  workflow.split(`      - name: ${name}\n`)[1]?.split('\n      - ')[0];
-
-const workflowStep = (name) => {
-  const run = workflowStepSource(name)?.split('        run: |\n')[1];
-  assert.ok(run, `Missing executable workflow step: ${name}`);
-  return run.replace(/^          /gm, '');
+const stepSource = (name) => workflow.split(`      - name: ${name}\n`)[1]?.split('\n      - ')[0];
+const step = (name) => {
+  const source = stepSource(name);
+  assert.ok(source, `Missing workflow step: ${name}`);
+  const block = source.split('        run: |\n')[1];
+  return block ? block.replace(/^          /gm, '') : source.split('        run: ')[1].trim();
 };
-
-const fixture = (t) => {
-  const directory = mkdtempSync(join(tmpdir(), 'aidlc packages '));
+const write = (path, value) => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, value, { mode: 0o755 });
+};
+const temporary = (t) => {
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'aidlc deployment ')));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  for (const path of ['terraform/builds', 'terraform/.terraform/modules/lambda', 'lambda', 'tmp']) {
-    mkdirSync(join(directory, path), { recursive: true });
-  }
   return directory;
 };
-
-const writeJson = (path, value) => {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(value));
-};
-
-const runStep = (name, directory, env = {}) =>
-  spawnSync('bash', ['-c', workflowStep(name)], {
-    cwd: directory,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      AIDLC_PLAN_FILE: join(directory, 'saved.tfplan'),
-      TF_ENVIRONMENT: 'prod',
-      RUNNER_TEMP: join(directory, 'tmp'),
-      ...env,
-    },
-  });
-
-const prepareBuilder = (directory) =>
-  writeFileSync(
-    join(directory, 'terraform/.terraform/modules/lambda/package.py'),
-    `import json, pathlib, sys
-plan = json.loads(pathlib.Path(sys.argv[-1]).read_text())
-if plan.get("fail"):
-    sys.exit("fixture build failed")
-if not plan.get("omit"):
-    path = pathlib.Path(plan["filename"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"fixture archive")
-`,
-  );
-
-test('workflow builds root and nested Lambda plans with duplicate basenames and spaces', (t) => {
-  const directory = fixture(t);
-  prepareBuilder(directory);
-  const directories = [
-    'builds',
-    'builds/managed-environments/environment-control',
-    'builds/managed-environments/environment-status',
-    'builds/managed-environments/tool-control',
-    'builds/managed-environments/tool-status',
-    'builds/path with spaces',
-  ];
-  for (const path of directories) {
-    writeJson(join(directory, 'terraform', path, 'same.plan.json'), {
-      filename: `${path}/same.zip`,
-    });
-  }
-  const result = runStep('Build Lambda packages', directory);
-  assert.equal(result.status, 0, result.stderr);
-  for (const path of directories) {
-    assert.ok(existsSync(join(directory, 'terraform', path, 'same.zip')), path);
-  }
-});
-
-test('workflow rejects missing plans, failed builds, and builders that omit the archive', (t) => {
-  for (const plan of [null, { fail: true }, { omit: true }]) {
-    const directory = fixture(t);
-    prepareBuilder(directory);
-    if (plan) {
-      writeJson(join(directory, 'terraform/builds/nested/test.plan.json'), {
-        filename: 'builds/nested/test.zip',
-        ...plan,
-      });
-    }
-    const result = runStep('Build Lambda packages', directory);
-    assert.notEqual(result.status, 0);
-    assert.match(
-      result.stderr,
-      /did not generate any Lambda package plans|fixture build failed|Lambda package was not created/,
-    );
-  }
-});
-
-const lambda = (actions, before, after, afterUnknown = {}) => ({
-  address: 'module.tools.aws_lambda_function.control',
-  mode: 'managed',
-  type: 'aws_lambda_function',
-  change: { actions, before, after, after_unknown: afterUnknown },
-});
-
-const inspect = (directory, changes) => {
-  const planPath = join(directory, 'plan.json');
-  writeJson(planPath, { resource_changes: changes });
-  return spawnSync(process.execPath, [inspector, planPath, '--require-lambda-packages'], {
-    cwd: join(directory, 'terraform'),
-    encoding: 'utf8',
-  });
-};
-
-test('archive check permits remote sources and updates that do not upload local code', (t) => {
-  const directory = fixture(t);
-  writeFileSync(join(directory, 'terraform/builds/ready.zip'), 'archive');
-  const old = { filename: 'builds/unavailable.zip', timeout: 3, source_code_hash: 'unchanged' };
-  const result = inspect(directory, [
-    lambda(['create'], null, { filename: 'builds/ready.zip' }),
-    lambda(['no-op'], old, old),
-    lambda(['delete'], old, null),
-    lambda(['update'], old, { ...old, timeout: 30 }),
-    lambda(
-      ['update'],
-      { ...old, architectures: ['arm64'] },
-      { ...old, architectures: ['arm64'], timeout: 30 },
-      { architectures: [false] },
-    ),
-    lambda(['create'], null, { filename: null, s3_bucket: 'packages', s3_key: 'code.zip' }),
-    lambda(['create'], null, { filename: null, package_type: 'Image', image_uri: 'image:tag' }),
-  ]);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /passed \(1 local archives\)/);
-});
-
-test('archive check requires local packages for creates, replacements and code updates', (t) => {
-  const directory = fixture(t);
-  const before = { filename: 'builds/old.zip' };
-  const cases = [
-    lambda(['create'], null, before),
-    lambda(['delete', 'create'], before, before),
-    lambda(['create', 'delete'], before, before),
-    lambda(['update'], before, { filename: 'builds/new.zip' }),
-    ...['source_code_hash', 'code_sha256', 'source_kms_key_arn', 'architectures'].map((key) =>
-      lambda(['update'], { ...before, [key]: 'old' }, { ...before, [key]: 'new' }),
-    ),
-    lambda(['update'], before, before, { source_code_hash: true }),
-    lambda(['update'], before, before, { architectures: [true] }),
-  ];
-  for (const resource of cases) {
-    const result = inspect(directory, [resource]);
-    assert.equal(result.status, 1, JSON.stringify(resource));
-    assert.match(result.stderr, /required local Lambda packages are unavailable/);
-  }
-});
-
-test('archive check refuses unresolved filenames, empty archives and directories', (t) => {
-  const directory = fixture(t);
-  writeFileSync(join(directory, 'terraform/builds/empty.zip'), '');
-  for (const filename of ['builds/empty.zip', 'builds']) {
-    const result = inspect(directory, [lambda(['create'], null, { filename })]);
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /empty or not a file/);
-  }
-  const result = inspect(directory, [lambda(['create'], null, {}, { filename: true })]);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /filename is not known/);
-});
-
-test('archive check retains the protected-resource destruction guard', (t) => {
-  const directory = fixture(t);
-  const result = inspect(directory, [
-    {
-      type: 'aws_dynamodb_table',
-      address: 'aws_dynamodb_table.executions',
-      change: { actions: ['delete'] },
-    },
-  ]);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /protected persistent resources would be destroyed/);
-});
-
 const git = (directory, ...args) =>
   execFileSync('git', args, {
     cwd: directory,
@@ -203,157 +41,290 @@ const git = (directory, ...args) =>
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
 
-const olderReleaseDeployment = (t) => {
-  const directory = fixture(t);
-  const origin = fixture(t);
-  const relativeInspector = 'scripts/inspect-terraform-plan.mjs';
-  mkdirSync(join(origin, 'scripts'));
-  // Snapshot from v2.2.0 (bc988d0eaaca752d9add2d67b2c861841a363227).
-  copyFileSync(
-    join(root, 'scripts/test/fixtures/inspect-terraform-plan-v2.2.0.mjs'),
-    join(origin, relativeInspector),
-  );
-  writeFileSync(
-    join(origin, 'scripts/deploy-terraform.sh'),
-    '#!/bin/bash\nset -eu\n[[ "$1" == prod && "$2" == --phase && "$3" == apply && "$4" == --plan-file && "$5" == "$AIDLC_PLAN_FILE" ]]\ntouch "$RUNNER_TEMP/applied"\n',
-    { mode: 0o755 },
-  );
-  git(origin, 'init', '-b', 'main');
-  git(origin, 'config', 'user.name', 'Deployment test');
-  git(origin, 'config', 'user.email', 'deployment-test@example.com');
-  const commit = (message) => {
-    git(origin, 'add', 'scripts');
-    git(origin, '-c', 'commit.gpgsign=false', 'commit', '-m', message);
-    return git(origin, 'rev-parse', 'HEAD');
-  };
-  const releaseSha = commit('Older release');
-  git(origin, '-c', 'tag.gpgsign=false', 'tag', '-a', 'v2.2.0', '-m', 'Older release');
-
-  // Reproduce checkout's selected ref and complete history using a local origin.
-  const checkout = workflow.split('      - uses: actions/checkout@')[1]?.split('\n      - ')[0];
-  assert.match(checkout, /fetch-depth: 0/);
-  assert.match(checkout, /ref: \$\{\{ inputs\.ref \}\}/);
-  git(directory, 'init');
-  git(directory, 'remote', 'add', 'origin', origin);
-  git(directory, 'fetch', 'origin');
-  git(directory, 'checkout', '--detach', 'v2.2.0');
-
-  // The loader must fetch the workflow commit, even if not already present.
-  copyFileSync(inspector, join(origin, relativeInspector));
-  const workflowSha = commit('Workflow with package validation');
-  // A newer main must not supply the validator.
-  writeFileSync(join(origin, relativeInspector), 'throw new Error("Loaded mutable main");\n');
-  commit('Newer main');
-  assert.match(
-    workflowStepSource('Load workflow plan validator'),
-    /WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/,
-  );
-  assert.ok(
-    workflow.indexOf('- name: Verify deployment ref') <
-      workflow.indexOf('- name: Load workflow plan validator') &&
-      workflow.indexOf('- name: Load workflow plan validator') <
-        workflow.indexOf('- name: Configure AWS credentials'),
-  );
-
-  mkdirSync(join(directory, 'bin'));
-  writeFileSync(
-    join(directory, 'bin/terraform'),
-    '#!/bin/bash\nset -eu\n[[ "$1" == -chdir=terraform && "$2" == show && "$3" == -json && "$4" == "$AIDLC_PLAN_FILE" ]]\ncat "$MOCK_PLAN_JSON"\n',
-    { mode: 0o755 },
-  );
-  const finalPlan = join(directory, 'final-plan.json');
-  const env = {
-    PATH: `${join(directory, 'bin')}:${process.env.PATH}`,
-    MOCK_PLAN_JSON: finalPlan,
-    WORKFLOW_SHA: workflowSha,
-    // The triggering/deployment SHA is deliberately different from the workflow.
-    GITHUB_SHA: releaseSha,
-    DEPLOY_REF: 'v2.2.0',
-  };
-  return { directory, finalPlan, env, releaseSha, relativeInspector };
-};
-
-const loadValidator = ({ directory, env, releaseSha, relativeInspector }) => {
-  const result = runStep('Load workflow plan validator', directory, env);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(git(directory, 'rev-parse', 'HEAD'), releaseSha);
-  assert.equal(git(directory, 'status', '--porcelain', '--untracked-files=no'), '');
-  assert.equal(
-    readFileSync(join(directory, relativeInspector), 'utf8'),
-    readFileSync(join(root, 'scripts/test/fixtures/inspect-terraform-plan-v2.2.0.mjs'), 'utf8'),
-  );
-};
-
-test('updated workflow accepts an empty plan when deploying an older release inspector', (t) => {
-  const deployment = olderReleaseDeployment(t);
-  const { directory, finalPlan, env, relativeInspector } = deployment;
-  writeJson(finalPlan, { resource_changes: [] });
-  const oldInspector = spawnSync(
-    process.execPath,
-    [join(directory, relativeInspector), finalPlan, '--require-lambda-packages'],
-    { encoding: 'utf8' },
-  );
-  assert.equal(oldInspector.status, 2);
-  assert.match(oldInspector.stderr, /Unknown plan inspection mode/);
-
-  loadValidator(deployment);
-  const result = runStep('Apply infrastructure', directory, env);
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Lambda package check passed \(0 local archives\)/);
-  assert.ok(existsSync(join(directory, 'tmp/applied')));
-});
-
-test('older release deployment checks the final archive before apply from its Terraform root', (t) => {
-  const deployment = olderReleaseDeployment(t);
-  const { directory, finalPlan, env } = deployment;
-  loadValidator(deployment);
-  writeJson(finalPlan, {
-    resource_changes: [
-      lambda(
-        ['update'],
-        { filename: 'builds/draft.zip' },
-        { filename: 'builds/path with spaces/final.zip' },
-      ),
-    ],
-  });
-  writeFileSync(join(directory, 'terraform/builds/draft.zip'), 'draft archive');
-  const archive = join(directory, 'terraform/builds/path with spaces/final.zip');
-  mkdirSync(dirname(archive), { recursive: true });
-  for (const state of ['missing', 'empty', 'directory']) {
-    if (state === 'empty') writeFileSync(archive, '');
-    if (state === 'directory') {
-      rmSync(archive);
-      mkdirSync(archive);
-    }
-    const rejected = runStep('Apply infrastructure', directory, env);
-    assert.equal(rejected.status, 1, rejected.stderr);
-    assert.match(rejected.stderr, /builds\/path with spaces\/final\.zip/);
-    assert.deepEqual(readdirSync(join(directory, 'tmp')), ['aidlc-plan-validator']);
+const deploymentFixture = (t) => {
+  const directory = temporary(t);
+  for (const path of ['terraform', 'frontend', 'bin', 'tmp']) {
+    mkdirSync(join(directory, path));
   }
+  for (const file of [
+    'scripts/deploy-terraform.sh',
+    'scripts/deploy-frontend.sh',
+    'scripts/generate-env.sh',
+    'scripts/inspect-terraform-plan.mjs',
+    'scripts/with-public-ecr-auth.mjs',
+    'scripts/docker-proxy-build-args.mjs',
+    'lambda/agentcore/Dockerfile',
+    'lambda/yjs-server/Dockerfile',
+  ]) {
+    write(join(directory, file), readFileSync(join(root, file)));
+  }
+  write(
+    join(directory, 'config/environments/prod.tfvars'),
+    'environment = "prod"\nproject_name = "test"\naws_region = "eu-central-1"\n',
+  );
+  write(
+    join(directory, 'config/environments/prod.s3.tfbackend'),
+    'bucket = "test-state"\nkey = "main"\n',
+  );
+  const env = {
+    ...process.env,
+    PATH: `${join(directory, 'bin')}:${process.env.PATH}`,
+    AIDLC_CONFIG_DIR: join(directory, 'config'),
+    AIDLC_PLAN_FILE: join(directory, 'tmp/saved.tfplan'),
+    RUNNER_TEMP: join(directory, 'tmp'),
+    TF_ENVIRONMENT: 'prod',
+    TF_INPUT: 'false',
+    TF_IN_AUTOMATION: 'true',
+    TF_VAR_docker_build_args: '{}',
+    DEPLOY_REF_TYPE: 'commit',
+    DOCKER_CONFIG: join(directory, 'docker'),
+    DOCKER_BUILDKIT: '1',
+    ECR_TEST_LOG: join(directory, 'auth-events'),
+    EVENTS: join(directory, 'events'),
+    PLAN_JSON: join(directory, 'plan.json'),
+  };
+  delete env.TF_RECREATE_MISSING_LAMBDA_PACKAGE;
+  delete env.AIDLC_SKIP_NPM_CI;
+  delete env.AIDLC_PUBLIC_ECR_AUTH_WRAPPED;
+  write(
+    env.PLAN_JSON,
+    JSON.stringify({
+      resource_changes: [
+        {
+          address: 'module.lambda.module.workflows_lambda.aws_lambda_function.this[0]',
+          type: 'aws_lambda_function',
+          change: {
+            actions: ['update'],
+            before: { filename: 'builds/old.zip' },
+            after: {},
+            // Real Terraform reproduction: a module-wide dependency defers archive_prepare.
+            after_unknown: { filename: true, source_code_hash: true },
+          },
+        },
+      ],
+    }),
+  );
+  write(
+    join(directory, 'bin/terraform'),
+    `#!${process.execPath}
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+let args = process.argv.slice(2);
+if (args[0].startsWith('-chdir=')) process.chdir(args.shift().slice(7));
+const command = args[0];
+assert.equal(process.cwd(), ${JSON.stringify(join(directory, 'terraform'))});
+if (command === 'output') {
+  assert.ok(fs.existsSync(${JSON.stringify(join(directory, 'applied'))}));
+  const outputs = { environment: 'prod', aws_region: 'eu-central-1',
+    user_pool_id: 'test-pool', user_pool_client_id: 'test-client', auth_mode: 'local',
+    application_url: 'https://test.example.invalid', application_domain: 'test.example.invalid',
+    s3_bucket_name: 'test-frontend', cloudfront_distribution_id: 'test-distribution',
+    v2_executions_table_name: 'test-inventory', seed_blocks_lambda_name: 'test-seed', sso_providers: '[]' };
+  process.stdout.write(outputs[args.at(-1)] || '');
+  process.exit(0);
+}
+fs.appendFileSync(process.env.EVENTS, command + '\\n');
+assert.notEqual(process.env.TF_RECREATE_MISSING_LAMBDA_PACKAGE, 'false');
+assert.equal(process.env.TF_INPUT, 'false');
+const config = JSON.parse(fs.readFileSync(process.env.DOCKER_CONFIG + '/config.json'));
+assert.ok(config.auths['public.ecr.aws'].auth);
+if (process.env.FAIL_PHASE === command) process.exit(42);
+if (command === 'init') assert.ok(args.includes('-backend-config=' + process.env.AIDLC_CONFIG_DIR + '/environments/prod.s3.tfbackend'));
+else if (command === 'plan') {
+  assert.ok(args.includes('-var-file=' + process.env.AIDLC_CONFIG_DIR + '/environments/prod.tfvars'));
+  assert.ok(args.includes('-out=' + process.env.AIDLC_PLAN_FILE));
+  fs.writeFileSync(process.env.AIDLC_PLAN_FILE, 'saved plan');
+} else if (command === 'show') {
+  assert.deepEqual(args.slice(1), ['-json', process.env.AIDLC_PLAN_FILE]);
+  process.stdout.write(fs.readFileSync(process.env.PLAN_JSON));
+} else if (command === 'apply') {
+  assert.deepEqual(args.slice(1), [process.env.AIDLC_PLAN_FILE]);
+  assert.equal(fs.readFileSync(args[1], 'utf8'), 'saved plan');
+  fs.writeFileSync(${JSON.stringify(join(directory, 'applied'))}, 'applied');
+} else process.exit(98);
+`,
+  );
+  write(
+    join(directory, 'bin/npm'),
+    `#!/bin/bash
+set -eu
+if [[ "$*" == 'ci --ignore-scripts' ]]; then
+  [[ "$PWD" == */frontend ]] && echo frontend-ci >> "$EVENTS" || echo root-ci >> "$EVENTS"
+elif [[ "$PWD" == */frontend && "$*" == 'run build' ]]; then
+  [[ -f .env ]]
+  echo frontend-build >> "$EVENTS"
+  mkdir -p dist/assets
+else exit 98
+fi
+`,
+  );
+  write(
+    join(directory, 'bin/node'),
+    `#!/bin/bash
+if [[ "$1" == */initialize-agent-auth-inventory.mjs ]]; then
+  echo inventory >> "$EVENTS"
+  exit 0
+fi
+exec '${process.execPath}' "$@"
+`,
+  );
+  write(
+    join(directory, 'bin/aws'),
+    `#!/bin/bash
+set -eu
+case "$1 $2" in
+  'ecs describe-clusters') echo None ;;
+  'lambda invoke') echo seed >> "$EVENTS"; echo None ;;
+  's3 sync') [[ -d "$3" ]]; echo "upload $4" >> "$EVENTS" ;;
+  'cloudfront create-invalidation') echo invalidate >> "$EVENTS" ;;
+  *) exit 98 ;;
+esac
+`,
+  );
+  stubPublicEcr(join(directory, 'bin'));
+  return { directory, env };
+};
+const run = ({ directory, env }, source, extraEnv = {}) =>
+  spawnSync('bash', ['-e', '-c', source], {
+    cwd: directory,
+    encoding: 'utf8',
+    env: { ...env, ...extraEnv },
+  });
+const deploy = (fixture, env) =>
+  run(fixture, `${step('Deploy infrastructure')}\n${step('Deploy frontend')}`, env);
+const events = ({ env }) =>
+  existsSync(env.EVENTS) ? readFileSync(env.EVENTS, 'utf8').trim().split('\n') : [];
 
-  rmSync(archive, { recursive: true });
-  writeFileSync(archive, 'final archive');
-  const ready = runStep('Apply infrastructure', directory, env);
-  assert.equal(ready.status, 0, ready.stderr);
-  assert.match(ready.stdout, /Lambda package check passed \(1 local archives\)/);
-  assert.deepEqual(readdirSync(join(directory, 'tmp')), ['aidlc-plan-validator', 'applied']);
+test('MAIN runs one saved plan/apply through the scripts and hands outputs to the frontend', (t) => {
+  const fixture = deploymentFixture(t);
+  const result = deploy(fixture);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(events(fixture), [
+    'root-ci',
+    'init',
+    'plan',
+    'show',
+    'apply',
+    'inventory',
+    'seed',
+    'frontend-ci',
+    'frontend-build',
+    'upload s3://test-frontend/assets/',
+    'upload s3://test-frontend',
+    'invalidate',
+  ]);
+  assert.match(
+    readFileSync(join(fixture.directory, 'frontend/.env'), 'utf8'),
+    /VITE_API_BASE_URL="https:\/\/test.example.invalid\/api"/,
+  );
+  assert.equal(existsSync(fixture.env.AIDLC_PLAN_FILE), false);
+  assert.equal(
+    readFileSync(fixture.env.ECR_TEST_LOG, 'utf8')
+      .split('\n')
+      .filter((line) => line === 'login').length,
+    1,
+  );
 });
 
-test('older release deployment still rejects protected-resource destruction before apply', (t) => {
-  const deployment = olderReleaseDeployment(t);
-  const { directory, finalPlan, env } = deployment;
-  loadValidator(deployment);
-  writeJson(finalPlan, {
-    resource_changes: [
-      {
-        type: 'aws_dynamodb_table',
-        address: 'aws_dynamodb_table.executions',
-        change: { actions: ['delete'] },
-      },
-    ],
-  });
-  const result = runStep('Apply infrastructure', directory, env);
+test('plan/apply failures stop the two-command deployment before frontend publication', (t) => {
+  for (const phase of ['plan', 'apply']) {
+    const fixture = deploymentFixture(t);
+    const result = deploy(fixture, { FAIL_PHASE: phase });
+    assert.equal(result.status, 42, result.stderr);
+    assert.equal(events(fixture).at(-1), phase);
+    assert.equal(existsSync(join(fixture.directory, 'frontend/.env')), false);
+  }
+});
+
+test('the script retains protected-resource destruction rejection before apply', (t) => {
+  const fixture = deploymentFixture(t);
+  write(
+    fixture.env.PLAN_JSON,
+    JSON.stringify({
+      resource_changes: [
+        {
+          type: 'aws_dynamodb_table',
+          address: 'aws_dynamodb_table.executions',
+          change: { actions: ['delete'] },
+        },
+      ],
+    }),
+  );
+  const result = deploy(fixture);
   assert.equal(result.status, 1);
   assert.match(result.stderr, /protected persistent resources would be destroyed/);
-  assert.deepEqual(readdirSync(join(directory, 'tmp')), ['aidlc-plan-validator']);
+  assert.equal(events(fixture).includes('apply'), false);
+});
+
+const olderRelease = (t) => {
+  const fixture = deploymentFixture(t);
+  const { directory, env } = fixture;
+  const origin = temporary(t);
+  const relativeInspector = 'scripts/inspect-terraform-plan.mjs';
+  const deployPath = join(directory, 'scripts/deploy-terraform.sh');
+  // Emulate a release that has the ordinary destruction guard but no auth wrapper.
+  write(
+    deployPath,
+    readFileSync(deployPath, 'utf8').replace(/if \[\[ "\$PHASE" != "plan" &&[\s\S]*?\nfi\n/, ''),
+  );
+  rmSync(join(directory, 'scripts/with-public-ecr-auth.mjs'));
+  copyFileSync(
+    join(root, 'scripts/test/fixtures/inspect-terraform-plan-v2.2.0.mjs'),
+    join(directory, relativeInspector),
+  );
+  git(directory, 'init', '-b', 'main');
+  git(directory, 'config', 'user.name', 'Deployment test');
+  git(directory, 'config', 'user.email', 'deployment-test@example.com');
+  const commit = (cwd, message) => {
+    git(cwd, 'add', 'scripts', 'lambda');
+    git(cwd, '-c', 'commit.gpgsign=false', 'commit', '-m', message);
+    return git(cwd, 'rev-parse', 'HEAD');
+  };
+  const releaseSha = commit(directory, 'Older release');
+  git(origin, 'clone', '--bare', directory, '.');
+  git(directory, 'remote', 'add', 'origin', origin);
+  write(
+    join(directory, 'scripts/with-public-ecr-auth.mjs'),
+    readFileSync(join(root, 'scripts/with-public-ecr-auth.mjs')),
+  );
+  const workflowSha = commit(directory, 'Workflow auth helper');
+  write(
+    join(directory, 'scripts/with-public-ecr-auth.mjs'),
+    'throw new Error("Loaded mutable main");\n',
+  );
+  commit(directory, 'Newer main');
+  git(directory, 'push', 'origin', 'main');
+  git(directory, 'checkout', '--detach', releaseSha);
+  env.WORKFLOW_SHA = workflowSha;
+  env.DEPLOY_REF_TYPE = 'release-tag';
+  env.GITHUB_SHA = releaseSha;
+  assert.match(
+    stepSource('Load release build authentication'),
+    /WORKFLOW_SHA: \$\{\{ github\.workflow_sha \}\}/,
+  );
+  assert.match(stepSource('Load release build authentication'), /if: .*release-tag/);
+  const loaded = run(fixture, step('Load release build authentication'));
+  assert.equal(loaded.status, 0, loaded.stderr);
+  assert.equal(git(directory, 'rev-parse', 'HEAD'), releaseSha);
+  assert.equal(git(directory, 'status', '--porcelain', '--untracked-files=no'), '');
+  assert.equal(existsSync(join(directory, 'scripts/with-public-ecr-auth.mjs')), false);
+  return fixture;
+};
+
+test('older releases use immutable workflow auth and their own ordinary plan inspector', (t) => {
+  const fixture = olderRelease(t);
+  const result = deploy(fixture);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(events(fixture).filter((event) => event === 'plan').length, 1);
+  assert.equal(events(fixture).at(-1), 'invalidate');
+});
+
+test('older release auth failure stops before planning or applying', (t) => {
+  for (const failure of [{ ECR_TEST_LOGIN_FAIL: '1' }, { ECR_TEST_HTTP_STATUS: '429' }]) {
+    const fixture = olderRelease(t);
+    const result = deploy(fixture, failure);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Public ECR (login failed|manifest check failed)/);
+    assert.deepEqual(events(fixture), []);
+  }
 });

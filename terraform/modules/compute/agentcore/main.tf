@@ -37,6 +37,8 @@ terraform {
 }
 
 provider "docker" {
+  # Private ECR push auth. Buildx source pulls instead read DOCKER_CONFIG, set
+  # by scripts/with-public-ecr-auth.mjs for both ARM64 and optional AMD64 builds.
   # Support for Podman via DOCKER_HOST environment variable (e.g., unix:///path/to/podman.sock)
   # If DOCKER_HOST is not set, defaults to the standard Docker socket
   registry_auth {
@@ -769,6 +771,7 @@ resource "aws_security_group" "agentcore" {
 
 locals {
   runtime_environment_variables = {
+    AWS_SDK_UA_APP_ID                = var.aws_sdk_ua_app_id
     DISCUSSION_RESULT_FUNCTION       = "arn:${data.aws_partition.current.partition}:lambda:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:function:${var.project_name}-discussion-result-${var.environment}"
     V2_WORKSPACE_DIR                 = "/mnt/workspace"
     V2_PROCESS_TABLE                 = aws_dynamodb_table.v2_executions.name

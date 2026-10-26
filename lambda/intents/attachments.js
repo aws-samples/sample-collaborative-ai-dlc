@@ -7,9 +7,9 @@ import { Logger } from '@aws-lambda-powertools/logger';
 
 const logger = new Logger({ persistentKeys: { component: 'intent-attachments' } });
 
-export const MAX_ATTACHMENTS = 5;
+export const MAX_ATTACHMENTS = 50;
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB
-export const MAX_ATTACHMENT_TOTAL_BYTES = MAX_ATTACHMENTS * MAX_ATTACHMENT_BYTES;
+export const MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024; // 25MB across all files
 export const ATTACHMENT_UPLOAD_TTL_SECONDS = 300;
 
 const attachmentTypes = new Map([
@@ -17,12 +17,14 @@ const attachmentTypes = new Map([
   ['.md', 'text/markdown'],
   ['.csv', 'text/csv'],
   ['.html', 'text/html'],
+  ['.pdf', 'application/pdf'],
+  ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
   ['.png', 'image/png'],
   ['.jpg', 'image/jpeg'],
   ['.jpeg', 'image/jpeg'],
   ['.webp', 'image/webp'],
   ['.svg', 'image/svg+xml'],
-  // TODO: docx, pdf, xslx (requires additional libraries and compute to transform into md)
 ]);
 
 // Builds the short-lived upload object's intent-scoped staging key.
