@@ -20,8 +20,8 @@ locals {
     filesha256("${path.module}/../../../../lambda/shared/${f}")
   ]))
   gateway_grant_signer_role_arns = [
-    "arn:${local.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-v2-orchestrator-${var.environment}",
-    "arn:${local.partition}:iam::${data.aws_caller_identity.current.account_id}:role/${var.project_name}-discussions-${var.environment}",
+    "arn:${local.partition}:iam::${data.aws_caller_identity.current.account_id}:role${var.iam_role_path}${var.project_name}-v2-orchestrator-${var.environment}",
+    "arn:${local.partition}:iam::${data.aws_caller_identity.current.account_id}:role${var.iam_role_path}${var.project_name}-discussions-${var.environment}",
   ]
   mcp_gateway_tools_json = file("${local.mcp_tools_dir}/gateway-tools.json")
   mcp_gateway_headers    = ["x-aidlc-grant", "x-aidlc-session"]
@@ -115,7 +115,9 @@ resource "aws_security_group" "mcp_tools" {
 resource "aws_iam_role" "mcp_tools" {
   count = local.mcp_gateway_enabled ? 1 : 0
 
-  name = "${var.project_name}-mcp-tools-${var.environment}"
+  name                 = "${var.project_name}-mcp-tools-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -242,7 +244,9 @@ module "mcp_tools_lambda" {
 resource "aws_iam_role" "mcp_gateway" {
   count = local.mcp_gateway_enabled ? 1 : 0
 
-  name = "${var.project_name}-mcp-gateway-${var.environment}"
+  name                 = "${var.project_name}-mcp-gateway-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
