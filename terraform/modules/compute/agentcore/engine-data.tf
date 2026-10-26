@@ -63,7 +63,9 @@ resource "terraform_data" "engine_data_requires_gateway" {
 resource "aws_iam_role" "engine_data" {
   count = local.engine_data_enabled ? 1 : 0
 
-  name = "${var.project_name}-engine-data-${var.environment}"
+  name                 = "${var.project_name}-engine-data-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
