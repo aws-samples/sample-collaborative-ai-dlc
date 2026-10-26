@@ -488,9 +488,12 @@ export const createNativeRuntimeApi = ({
           } else if (recover) {
             if (
               !record(body) ||
-              Object.keys(body).length !== 2 ||
+              Object.keys(body).some(
+                (key) => !['requestId', 'recoveryId', 'confirmWorkspaceResume'].includes(key),
+              ) ||
               !matches(body.requestId, UUID_V4) ||
-              !matches(body.recoveryId, UUID_V4)
+              !matches(body.recoveryId, UUID_V4) ||
+              (body.confirmWorkspaceResume !== undefined && body.confirmWorkspaceResume !== true)
             )
               return invalid();
             input = body;

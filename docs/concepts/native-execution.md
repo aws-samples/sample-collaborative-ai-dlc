@@ -2815,6 +2815,122 @@ not close the remaining live stability or latency work. Keep each simplification
 independently reviewable; preserve execution authority and retained-run
 compatibility while implementing the recovery direction below.
 
+- [ ] **Live recovery blocker — `3a70749e` confirmation rejected by the REST
+      request validator (2026-10-26); local correction validated, deployment
+      and successful live continuation pending.** The user returned after
+      several days, submitted a reply and could not resume. After a hard
+      refresh, the confirmation dialog appeared, but confirming did not start
+      recovery. The deployed authority's HTTP router accepts only two recovery
+      request fields. The new frontend correctly sends a third field,
+      `confirmWorkspaceResume: true`, which the execution store requires for
+      `efs-workspace-v1`. The router rejects that request with HTTP 400 before
+      calling the recovery owner. This is a public API integration defect;
+      AI-DLC's fresh-session recovery and EFS reuse have not been reached.
+
+      **Observed live state.** Consistent scalar-projected reads of execution
+      `3a70749e-24ab-42c3-8ba2-592592fbf2c0` in project
+      `22371643-2db5-42a4-a571-e47fc35745f5`, partition
+      `NATIVE#812cc362bb53ffa4ab58525d16c0eaca1dc1b39c3b11c82e97a8e01909675173`
+      in `collaborative-ai-dlc-native-runs-dev`, and its committed `EVENT#`
+      history show seven admitted publications on October 22. Publication 7
+      was admitted at **15:00:17.065 UTC**, ID
+      `f7d5227535499eb694b5a893c88acb017dc72bc6a26f463be4f9c0c5ffee8bcf`.
+      The new reply was accepted **October 26, 07:51:13.373 UTC**, command
+      `4413ddb5-c3ac-43af-b1f3-8c89fd456cee`, turn 8. At **07:51:18.881 UTC**
+      authority recorded `RECOVERY_REQUIRED / SESSION_LOST` and confirmed the
+      predecessor stopped. Revision **1654** retains writer **1**, epoch **1**,
+      `response.deliveryStatus: pending`, no dispatch or `workspaceResume`,
+      and recovery episode `16e8b168-44e9-45b2-828a-b73f1cd13468` with
+      `canRecover: true`. No recovery-requested event or successor exists.
+      The saved reply has not been dispatched; it must remain in history and
+      must not be automatically replayed.
+
+      The run pins `efs-workspace-v1`, AI-DLC **2.11.1** and image
+      `sha256:748d1d3a9b64dcb704ad1d949fc26f6d5221f9a910de98fd6093aa71ba230ecf`.
+      Runtime `native_7685d78d8db3019cbac0b79ad93732bf-1c4Svq5YUF`, version **2**,
+      is READY with the same image and EFS access point
+      `fsap-0ed35309dc9c4207d` at `/mnt/native`. AWS reports that access point
+      available with its original per-run root. No EFS mount or file-content
+      inspection was performed, so access-point availability is not a checksum
+      attestation of the workspace. The configured idle timeout is **900 s**
+      and maximum runtime-session lifetime **28,800 s**; several days of waiting
+      exceed those limits. `SESSION_LOST` is observed; a particular AWS
+      termination mechanism was not independently observed. There is no private
+      checkpoint on this execution and no snapshot-export error.
+
+      **Deployed alignment and local reproduction.** The current authority
+      Lambda `collaborative-ai-dlc-native-runs-dev-authority` reports CodeSha256
+      `VRShORd/Mt4WSC00iHQauecsDvXBv84v5Wzsv39uX1o=`, last modified
+      **2026-10-22 14:21:04 UTC**. Its hash matches retained deployment ZIP
+      `terraform/builds/b07bee8017f5d6597f01d5da26316f0a94cf6240b2c5e52e067dfb0a7cf645bc.zip`;
+      `authority.mjs` SHA-256 is
+      `ba07fb0bbd6bfa7bec9fd08bf5378bc67e816720f3c80c06d50e75309e9f8730`.
+      That bundle contains the exact two-field rejection in `api.js`.
+      The public page currently serves `index-CgjyK8DH.js` and
+      `IntentView-DQ_E-5eU.js`, including the fresh-session dialog. An isolated
+      Chromium probe of those deployed modules and CSS, using synthetic state
+      and blocking every application API request, opens a visible dialog and
+      sends no action before confirmation. This is component/browser evidence,
+      not a signed-in production recovery. The user's hard-refresh observation
+      confirms the dialog can now be reached; the earlier missing-dialog cause
+      is not established.
+
+      **Correction and validation.** `lambda/native-runtime-control/api.js`
+      now accepts the optional literal-true confirmation field and passes it
+      unchanged to the existing recovery owner. Unknown fields and false,
+      null or string confirmations remain rejected. Membership checks,
+      explicit EFS-mode confirmation, legacy-mode validation, episode
+      deduplication and writer/stop authority remain with their existing
+      owners. No runtime-image or recovery-policy change is needed for this fix.
+      The REST-boundary regression returned **400 instead of 202** before the
+      correction; **82 other tests passed** in that before-run. The corrected,
+      isolated checkout passes **138 tests** across `api.test.js`,
+      `execution-api.test.js`, `execution-recovery.test.js` and
+      `workspace-resume-journey.test.js`, including the existing real local
+      runtime HTTP recovery journey. Repeat with Node 24:
+
+      ```bash
+      npx vitest run --config vitest.native-foundation.config.js \
+        lambda/native-runtime-control/test/api.test.js \
+        lambda/native-runtime-control/test/execution-api.test.js \
+        lambda/native-runtime-control/test/execution-recovery.test.js \
+        lambda/native-runtime-control/test/workspace-resume-journey.test.js
+      ```
+
+      The earlier installed and HTTP recovery qualifications called
+      `createNativeExecutionApi().recover` below the public REST router.
+      Frontend interaction tests mocked the HTTP response. Neither covered
+      the incompatible request schema; the new REST regression closes that
+      specific gap. Those earlier results do not prove a browser can complete
+      the deployed confirmation path.
+      The isolated authority bundle build, targeted formatting/lint/secret
+      checks, `git diff --check` and the documentation build also passed.
+
+      The correction is isolated on `fix/native-resume-confirmation` from
+      `8e5015b`, preserving unfinished 2.11.1 question/qualification changes in
+      the original checkout. All AWS calls used reverified `solution-read`,
+      account **746558295630**, region **us-east-1**, with explicit scalar
+      projections or associated resource metadata. No private bodies,
+      credentials, model invocation, answer submission or cloud mutation.
+      After deploying the authority correction, the user can confirm the
+      current episode again. Acceptance still requires an admitted successor,
+      the same EFS binding, a new CLI session, upstream workflow/gate
+      reconciliation and a new publication without replaying the saved reply.
+
+      **Deployment-branch correction (2026-10-26).** The user deployed the
+      working branch `feat/native-aidlc-execution`, but the fix had been left
+      only in `47db033` on `fix/native-resume-confirmation`. A read-only
+      follow-up verified that the authority deployment at **08:47:40 UTC**,
+      CodeSha256 `b59LIzEesF4bQxz9p0PFWJowpaSMhD/br0kAKBw4ytw=`, still
+      contained the two-field REST validator. The downloaded ZIP matched
+      that hash. The execution remained `RECOVERY_REQUIRED`, recoverable,
+      with its saved reply pending. The correction and regression tests are
+      now applied to the working branch, preserving its unrelated ongoing
+      edits. All **138 focused tests** pass there under Node **24.21.0**;
+      the authority build and targeted static checks also pass. The authority
+      must be redeployed from this corrected working branch before retrying
+      confirmation; live continuation remains unverified.
+
 - [ ] **Active goal — prove AI-DLC recovery on the surviving EFS workspace
       and remove mandatory exact recovery snapshots (2026-10-21).** User:
       “Ok let’s prove that with the goal to remove snapshots. Record that in

@@ -78,6 +78,49 @@ describe('native execution REST boundary', () => {
     graph: vi.fn(async () => ({ publicationId: 'committed', nodes: [], edges: [] })),
     status: vi.fn(async () => ({ executionAvailable: true, execution: null })),
   });
+  it.each([{}, { confirmWorkspaceResume: true }])(
+    'passes recovery confirmation through the REST boundary after membership checks %j',
+    async (confirmation) => {
+      const recover = vi.fn(async () => ({
+        executionAvailable: true,
+        execution: { status: 'RECOVERING' },
+      }));
+      const f = makeApi({ execution: { ...execution(), recover } });
+      await f.store.create(createInput());
+      const input = { requestId: OTHER, recoveryId: IDENTITY.executionId, ...confirmation };
+      const resume = route('recover', { body: JSON.stringify(input) });
+      expect((await f.api(resume)).statusCode).toBe(202);
+      expect(recover).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ projectId: PROJECT }),
+        input,
+        expect.any(Function),
+      );
+      f.membership.mockResolvedValue(null);
+      expect((await f.api(resume)).statusCode).toBe(403);
+      expect(recover).toHaveBeenCalledTimes(1);
+    },
+  );
+  it.each([
+    { confirmWorkspaceResume: false },
+    { confirmWorkspaceResume: 'true' },
+    { confirmWorkspaceResume: null },
+    { confirmWorkspaceResume: true, actorId: ACTOR },
+  ])('rejects malformed recovery confirmation before dispatch %j', async (confirmation) => {
+    const recover = vi.fn();
+    const f = makeApi({ execution: { ...execution(), recover } });
+    const result = await f.api(
+      route('recover', {
+        body: JSON.stringify({
+          requestId: OTHER,
+          recoveryId: IDENTITY.executionId,
+          ...confirmation,
+        }),
+      }),
+    );
+    expect(result.statusCode).toBe(400);
+    expect(recover).not.toHaveBeenCalled();
+    noWork(f);
+  });
   it('accepts independent output/event cursors only after membership and rejects malformed cursors', async () => {
     const outputs = vi.fn(async () => ({
       outputs: [],
