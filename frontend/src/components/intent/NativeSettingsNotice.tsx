@@ -3,6 +3,14 @@ export function NativeSettingsNotice() {
   return (
     <div className="space-y-2 text-sm text-muted-foreground">
       <p>
+        The release target is AI-DLC 2.11.1 with Claude Code, Codex, OpenCode and Kiro. Complete
+        deployed qualification is still pending for every harness.
+      </p>
+      <p>
+        Current requests use a written prompt and one connected GitHub, GitLab or Bitbucket
+        repository. Attachments and tracker imports are planned for this release.
+      </p>
+      <p>
         Native uses the selected package and harness in a dedicated runtime. Platform managed
         environments, custom MCP servers and uploaded custom rules do not apply. Instructions and
         configuration in the pinned repository and package remain part of the workspace.
@@ -14,9 +22,6 @@ export function NativeSettingsNotice() {
         allowed. With no model selection, the harness default does not pin an exact model.
       </p>
       <p>Native graph enrichment and optional debug archives are off.</p>
-      <p>
-        Harness availability does not establish live qualification for every model or package fork.
-      </p>
     </div>
   );
 }

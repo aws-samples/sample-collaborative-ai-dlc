@@ -225,8 +225,8 @@ function NativeDraftForm({
         </Link>
         <h1 className="text-xl font-semibold">New native intent</h1>
         <p className="text-sm text-muted-foreground">
-          Create a draft and prepare its isolated workspace. Starting the agent is a separate
-          action; answers and approvals are not enabled in this pilot.
+          Create a draft and prepare its isolated workspace. You can correct the request before
+          Start. The selected methodology determines the workflow questions and approvals.
         </p>
         {error && (
           <p role="alert" className="text-sm text-destructive">

@@ -231,6 +231,47 @@ CLI availability, package import and local adapter tests do not establish a
 qualified deployed combination. Release support must name the tested package,
 harness, model, provider and image.
 
+### Selected release contract
+
+The initial serial release targets **AI-DLC 2.11.1**, **all four harnesses** and
+**all three application repository providers** below. These scope decisions were
+confirmed on 2026-10-26. Each advertised combination must pass qualification
+before release; Kiro is a required row even while its qualification is blocked.
+
+| Scope              | Initial release requirement                                                                                                                                                                                                                                       |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Methodology        | AI-DLC 2.11.1, imported from the authorized methodology source and pinned to verified package bytes and materialization. Other versions and forks require their own qualification before being advertised.                                                        |
+| Claude Code        | AWS Bedrock with the resolved project/platform model selection captured at Start.                                                                                                                                                                                 |
+| Codex              | AWS Bedrock with the resolved OpenAI model selection captured at Start.                                                                                                                                                                                           |
+| OpenCode           | AWS Bedrock with the resolved model selection captured at Start.                                                                                                                                                                                                  |
+| Kiro               | Kiro's managed provider with the captured supported model selector. Its actual workflow and EFS resume journey must be qualified before release.                                                                                                                  |
+| Application source | GitHub.com, GitLab.com and Bitbucket Cloud; one connected repository per execution, with its exact source commit captured.                                                                                                                                        |
+| Inputs             | Written requests, attachments and tracker imports. Attachments and tracker imports are release requirements implemented under NE-09; current native requests accept the written prompt and repository/package content.                                            |
+| Settings and tools | Existing model selection and credential-scope resolution, plus repository/package instructions and tools in the dedicated native runtime. Platform-managed environments, custom MCP server selections and uploaded custom rules are outside this initial release. |
+| Advanced features  | Graph enrichment, optional debug archives, artifact edit/apply, Quorum edits, parallel units, per-unit delivery, multiple repositories and cross-engine migration are outside this release.                                                                       |
+
+The first application acceptance path is **AI-DLC 2.11.1 → Claude Code → GitHub**,
+using the existing dev configuration. Record the actual resolved Bedrock model,
+credential source, region, harness version, package/materialization identifiers,
+application commit and immutable execution-image digest before qualification.
+Use that combination first for the recovery proof in NE-02 and the complete
+journey in NE-19. Those records identify the tested combination; a settings
+default or model placeholder is not evidence of which model executed it.
+
+Every additional release row must likewise identify its model/provider selection
+and execution image. Qualification of one model does not qualify every model
+accepted by that harness. An unset or automatic selector must be recorded as
+provider routing, not described as an immutable underlying model version.
+The other harness/provider rows remain required until their evidence is complete;
+passing the first path does not remove them from the release scope.
+
+The shared native settings notice appears during draft creation and in the
+Intent configuration view. It describes this target and the current input limits
+without enabling unfinished input paths or claiming deployed qualification.
+The normal **New intent** backend/default decision remains part of NE-08.
+
+### Current implementation
+
 | Area                        | Current behavior and limit                                                                                                                                                                                                                                                                          |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Coding harnesses            | Adapters exist for Claude Code, Codex, OpenCode and Kiro. Installed local workflow/recovery journeys have been demonstrated for Claude, Codex and OpenCode. Kiro's supported deterministic provider input remains a qualification gap. None of these facts establishes a complete deployed release. |
@@ -293,13 +334,18 @@ Work starts with the EFS path and removal of obsolete recovery support, then
 closes the product journey and release acceptance. No item requires compatibility
 with previous native development executions.
 
-- [ ] **NE-01 — Define the release support contract.** Name the supported packages,
+- [x] **NE-01 — Define the release support contract.** Name the supported packages,
       harness/model combinations, application providers, inputs and settings for
       the serial journey. Select one complete combination for the first end-to-end
       acceptance, then qualify every combination advertised for release. **Done
       when:** creation, configuration and documentation agree on what is supported;
       optional and advanced features have an explicit scope rather than an open-ended
-      prerequisite for release.
+      prerequisite for release. **Completed 2026-10-26:** the selected contract above
+      records all four harnesses, all three application providers, required attachment
+      and tracker inputs, and the first acceptance path. Creation and configuration
+      share the same notice about current support and release requirements. The 206 focused creation,
+      configuration and Intent tests, frontend build, lint, formatting and secret
+      checks pass. Deployed qualification remains open in the items below.
 - [ ] **NE-02 — Prove EFS resume through the actual application.** Deploy the matching
       recovery-confirmation API correction and exercise browser → public REST API →
       authority → worker → runtime. Cover waiting-session expiry and an interrupted
@@ -350,12 +396,15 @@ with previous native development executions.
       create, correct and start a native request without discovering a separate
       settings-only path, and competing or uncertain requests keep one identity.
 - [ ] **NE-09 — Integrate supported inputs, settings and tools.** Implement the selected
-      attachment/tracker input scope and source selection; capture the inputs and
+      attachment and tracker-import scope and source selection; capture the inputs and
       effective configuration at Start. Connect supported environment/tool settings
       through their existing owners, and explain intentionally unsupported settings
       consistently. **Done when:** displayed options match actual runtime behavior,
       later edits cannot retarget admitted work, and attachment/source credentials
-      and access checks follow the existing platform boundaries.
+      and access checks follow the existing platform boundaries. **Selected scope:**
+      attachments and tracker imports are required; platform-managed environments,
+      custom MCP server selections and uploaded custom rules are excluded from the
+      initial release.
 - [ ] **NE-10 — Align public file handling and usable results.** Resolve the mismatch
       for credential-shaped files such as `.env` and `.npmrc`, retaining safe templates
       without exposing secrets. Use one explicit public-file policy across capture,
