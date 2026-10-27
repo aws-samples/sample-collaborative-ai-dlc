@@ -109,8 +109,12 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const iteratorRef = useRef<AsyncGenerator<IssuePageResult> | null>(null);
-  const iteratorBindingRef = useRef<string | null>(null);
+  // The current request and the binding it is for. A response from any other
+  // iterator is superseded and dropped.
+  const requestRef = useRef<{
+    iter: AsyncGenerator<IssuePageResult>;
+    bindingId: string;
+  } | null>(null);
 
   // A new binding starts at the top level with no type filter.
   useEffect(() => {
@@ -128,6 +132,14 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
     return !!t && !t.subtask && t.hierarchyLevel >= 0;
   };
   const drillLabel = isDiscovery ? 'Linked items' : 'Children';
+  // The type and search that found the parent would hide its children
+  // (type=Epic AND parent=PROJ-5 is empty), so they are cleared.
+  const drillInto = (issue: TrackerIssue) => {
+    setTrail([...trail, { resourceId: issue.resourceId, title: issue.title }]);
+    setJiraType('');
+    setSearchInput('');
+    setDebouncedQuery('');
+  };
 
   const chrome = useMemo(() => {
     if (!binding) return null;
@@ -145,34 +157,42 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
   }, [searchInput]);
 
   const pullNextPage = useCallback(
-    async (iter: AsyncGenerator<IssuePageResult>, append: boolean) => {
+    async (
+      request: { iter: AsyncGenerator<IssuePageResult>; bindingId: string },
+      append: boolean,
+    ) => {
+      const current = () => requestRef.current === request;
       if (append) setLoadingMore(true);
       else {
         setLoading(true);
         setError(null);
       }
       try {
-        const { value, done } = await iter.next();
+        const { value, done } = await request.iter.next();
+        if (!current()) return;
         if (done || !value) {
           setHasNext(false);
           return;
         }
         setIssues((prev) => (append ? [...prev, ...value.items] : value.items));
         setHasNext(!value.done);
-        if (value.issueTypes && iteratorBindingRef.current) {
+        if (value.issueTypes) {
           setProjectInfo({
-            bindingId: iteratorBindingRef.current,
+            bindingId: request.bindingId,
             issueTypes: value.issueTypes,
             projectTypeKey: value.projectTypeKey ?? null,
           });
         }
       } catch (err) {
+        if (!current()) return;
         setError(formatError(err));
         if (!append) setIssues([]);
         setHasNext(false);
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
+        if (current()) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
     },
     [],
@@ -190,14 +210,14 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
       abortController.signal,
       isJira ? { type: effectiveType, parent: effectiveParent, withTypes: true } : {},
     );
-    iteratorRef.current = iter;
-    iteratorBindingRef.current = binding.id;
+    const request = { iter, bindingId: binding.id };
+    requestRef.current = request;
     setIssues([]);
     setHasNext(false);
-    pullNextPage(iter, false);
+    pullNextPage(request, false);
     return () => {
       abortController.abort();
-      iteratorRef.current = null;
+      if (requestRef.current === request) requestRef.current = null;
     };
   }, [
     project.id,
@@ -211,8 +231,8 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
   ]);
 
   const loadMore = useCallback(() => {
-    if (loading || loadingMore || !hasNext || !iteratorRef.current) return;
-    pullNextPage(iteratorRef.current, true);
+    if (loading || loadingMore || !hasNext || !requestRef.current) return;
+    pullNextPage(requestRef.current, true);
   }, [loading, loadingMore, hasNext, pullNextPage]);
 
   useEffect(() => {
@@ -444,9 +464,7 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
                   {canDrill(issue) && (
                     <button
                       type="button"
-                      onClick={() =>
-                        setTrail([...trail, { resourceId: issue.resourceId, title: issue.title }])
-                      }
+                      onClick={() => drillInto(issue)}
                       className="shrink-0 px-2.5 border-l text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 rounded-r-md flex flex-col items-center justify-center gap-0.5"
                       aria-label={`${drillLabel} of ${issue.resourceId}`}
                       title={`${drillLabel} of ${issue.resourceId}`}

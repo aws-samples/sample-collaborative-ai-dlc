@@ -633,6 +633,7 @@ describe('jira-cloud — provider methods', () => {
       await jiraProvider.listIssues(ctx(), 'SW1', { parent: 'sw1-10', q: 'SW1-11' });
       const jql = jqlOf(fetchMock.mock.calls[1]);
       expect(jql).toContain('parent = "SW1-10"');
+      expect(jql).toContain('project = "SW1"');
       // A key typed while browsing children doesn't trigger the direct lookup.
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
@@ -641,8 +642,11 @@ describe('jira-cloud — provider methods', () => {
       fetchMock
         .mockResolvedValueOnce(projectMeta('product_discovery', [{ name: 'Idea' }]))
         .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
-      await jiraProvider.listIssues(ctx(), 'JPD1', { parent: 'JPD1-3' });
-      expect(jqlOf(fetchMock.mock.calls[1])).toContain('issue in linkedIssues("JPD1-3")');
+      await jiraProvider.listIssues(ctx(), 'JPD1', { parent: 'JPD1-3', state: 'all' });
+      const jql = jqlOf(fetchMock.mock.calls[1]);
+      expect(jql).toContain('issue in linkedIssues("JPD1-3")');
+      // Delivery work linked to an idea usually sits in another project.
+      expect(jql).not.toContain('project =');
     });
 
     it('rejects a malformed parent key', async () => {

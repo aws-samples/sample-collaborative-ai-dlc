@@ -253,6 +253,8 @@ export const trackersService = {
         pageToken,
         filters,
       );
+      // Aborted while the request was in flight: the caller has moved on.
+      if (signal?.aborted) return;
       hasNext = result.hasNext;
       pageToken = result.nextPageToken ?? null;
       page++;

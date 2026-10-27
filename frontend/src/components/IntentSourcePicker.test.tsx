@@ -143,6 +143,84 @@ describe('IntentSourcePicker', () => {
     await waitFor(() => expect(lastRequest()[2]).toMatchObject({ parent: 'IDEAS-1' }));
   });
 
+  it('clears the type and search that found a parent when opening its children', async () => {
+    listIssuePages.mockImplementation(pageOf([issue('PROJ-5', 'Epic')], SOFTWARE_TYPES));
+    renderPicker('jira-cloud');
+
+    const select = await screen.findByRole('combobox', { name: 'Issue type' });
+    await waitFor(() =>
+      expect(within(select).getByRole('option', { name: 'Epic' })).toBeInTheDocument(),
+    );
+    await userEvent.selectOptions(select, 'Epic');
+    const search = screen.getByRole('textbox', { name: /Search/ });
+    await userEvent.type(search, 'PROJ-5');
+    await waitFor(() =>
+      expect(lastRequest()).toEqual(['open', 'PROJ-5', { type: 'Epic', withTypes: true }]),
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Children of PROJ-5' }));
+    await waitFor(() =>
+      expect(lastRequest()).toEqual(['open', undefined, { parent: 'PROJ-5', withTypes: true }]),
+    );
+    expect(select).toHaveValue('');
+    expect(search).toHaveValue('');
+  });
+
+  it('ignores a late response from a tracker that is no longer selected', async () => {
+    let releaseSoftware: () => void = () => {};
+    const softwareHeld = new Promise<void>((resolve) => {
+      releaseSoftware = resolve;
+    });
+    listIssuePages.mockImplementation((_projectId: string, bindingId: string) =>
+      bindingId === 'b1'
+        ? (async function* () {
+            await softwareHeld;
+            yield {
+              items: [issue('PROJ-1', 'Epic')],
+              totalCount: null,
+              done: true,
+              issueTypes: SOFTWARE_TYPES,
+              projectTypeKey: 'software',
+            };
+          })()
+        : pageOf(
+            [issue('IDEAS-1', 'Idea')],
+            [{ name: 'Idea', iconUrl: null, hierarchyLevel: 0, subtask: false }],
+            'product_discovery',
+          )(),
+    );
+    render(
+      <IntentSourcePicker
+        project={
+          {
+            id: 'p1',
+            trackers: [
+              binding('jira-cloud'),
+              { ...binding('jira-cloud'), id: 'b2', externalProjectKey: 'IDEAS' },
+            ],
+          } as unknown as Project
+        }
+        selected={null}
+        onSelect={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(listIssuePages).toHaveBeenCalledOnce());
+
+    await userEvent.click(screen.getByRole('button', { name: /IDEAS/ }));
+    expect(
+      await screen.findByRole('button', { name: 'Linked items of IDEAS-1' }),
+    ).toBeInTheDocument();
+
+    releaseSoftware();
+    await softwareHeld;
+    // Give the superseded request a chance to land.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText(/PROJ-1/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Linked items of IDEAS-1' })).toBeInTheDocument();
+    const select = screen.getByRole('combobox', { name: 'Issue type' });
+    expect(within(select).queryByRole('option', { name: 'Epic' })).not.toBeInTheDocument();
+  });
+
   it('shows no Jira-only filters for other trackers', async () => {
     listIssuePages.mockImplementation(pageOf([issue('1', 'Issue')]));
     renderPicker('github-issues');

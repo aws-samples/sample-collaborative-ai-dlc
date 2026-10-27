@@ -503,16 +503,21 @@ const buildSearchClause = (q) => {
 };
 
 // Children of an issue. Software projects use the parent field (Initiative >
-// Epic > Story > Sub-task). Product Discovery items are joined by issue links
-// (an idea and the work items that deliver it), so there it is the linked items.
-const childrenClause = (parentKey, projectTypeKey) =>
-  projectTypeKey === 'product_discovery'
-    ? `issue in linkedIssues("${escapeJqlString(parentKey)}")`
-    : `parent = "${escapeJqlString(parentKey)}"`;
+// Epic > Story > Sub-task), within the bound project. Product Discovery items
+// are joined by issue links (an idea and the work items that deliver it), and
+// that delivery work usually sits in other projects, so linked items are not
+// limited to the bound project; Jira still applies the user's permissions.
+const scopeClauses = (projectKey, parentKey, projectTypeKey) => {
+  const project = `project = "${escapeJqlString(projectKey)}"`;
+  if (!parentKey) return [project];
+  if (projectTypeKey === 'product_discovery') {
+    return [`issue in linkedIssues("${escapeJqlString(parentKey)}")`];
+  }
+  return [project, `parent = "${escapeJqlString(parentKey)}"`];
+};
 
 const buildJql = (projectKey, { state, q, types, parentKey, projectTypeKey }) => {
-  const parts = [`project = "${escapeJqlString(projectKey)}"`];
-  if (parentKey) parts.push(childrenClause(parentKey, projectTypeKey));
+  const parts = scopeClauses(projectKey, parentKey, projectTypeKey);
   if (state === 'closed') parts.push('statusCategory = Done');
   else if (state !== 'all') parts.push('statusCategory != Done');
   if (types && types.length > 0) {
