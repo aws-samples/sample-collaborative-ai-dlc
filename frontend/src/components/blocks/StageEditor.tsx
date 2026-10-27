@@ -40,6 +40,9 @@ export interface ReferenceOption {
   id: string;
   label: string;
   description?: string;
+  // Where the block comes from ('library', 'SYSTEM', or a release label), shown
+  // beside the option when the pickers mix sources.
+  source?: string;
 }
 
 export interface StageReferenceOptions {
@@ -499,21 +502,29 @@ function ChipPicker({
       <div className="rounded-md border bg-background p-2">
         <div className="mb-2 flex min-h-7 flex-wrap gap-1">
           {values.length === 0 && <span className="text-xs text-muted-foreground">None</span>}
-          {values.map((item) => (
-            <Badge key={item} variant="secondary" className="gap-1">
-              {options.find((option) => option.id === item)?.label ?? item}
-              {!disabled && (
-                <button
-                  type="button"
-                  className="rounded-full hover:text-destructive"
-                  onClick={() => remove(item)}
-                  aria-label={`Remove ${item}`}
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              )}
-            </Badge>
-          ))}
+          {values.map((item) => {
+            const option = options.find((candidate) => candidate.id === item);
+            return (
+              <Badge
+                key={item}
+                variant="secondary"
+                className="gap-1"
+                title={option?.source ? `${item} · ${option.source}` : item}
+              >
+                {option?.label ?? item}
+                {!disabled && (
+                  <button
+                    type="button"
+                    className="rounded-full hover:text-destructive"
+                    onClick={() => remove(item)}
+                    aria-label={`Remove ${item}`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </Badge>
+            );
+          })}
         </div>
         {!disabled && (
           <div className="relative flex gap-2">
@@ -550,6 +561,11 @@ function ChipPicker({
                   >
                     <span className="font-medium">{option.label}</span>
                     <span className="ml-2 text-muted-foreground">{option.id}</span>
+                    {option.source && (
+                      <span className="ml-2 rounded border px-1 text-[10px] text-muted-foreground">
+                        {option.source}
+                      </span>
+                    )}
                   </button>
                 ))}
               </div>

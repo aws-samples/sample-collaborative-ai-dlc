@@ -11,6 +11,7 @@ import {
   GitFork,
   ListChecks,
   Milestone,
+  Package,
   RefreshCw,
   TriangleAlert,
   X,
@@ -26,6 +27,7 @@ import {
 } from '@/services/aidlcReleases';
 import { ApiError } from '@/services/api';
 import { SettingsCard } from '@/components/settings/SettingsCard';
+import { ReleaseContentsDialog } from '@/components/releases/ReleaseContentsDialog';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -122,6 +124,8 @@ export function AidlcReleasesTab() {
     release: AidlcRelease;
     importerRevision: number;
   } | null>(null);
+  // The release whose catalog the read-only contents view shows (issue #607).
+  const [contentsReleaseId, setContentsReleaseId] = useState<string | null>(null);
 
   const refetch = useCallback(async () => {
     const [releasesRes, channelsRes, profilesRes] = await Promise.all([
@@ -504,12 +508,25 @@ export function AidlcReleasesTab() {
                       </span>
                     )}
                   </div>
-                  <p className="font-mono text-[11px] text-muted-foreground break-all">
-                    {release.releaseId}
-                    {release.closureDigest
-                      ? ` · closure ${release.closureDigest.slice(0, 12)}…`
-                      : ''}
-                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="min-w-0 flex-1 font-mono text-[11px] text-muted-foreground break-all">
+                      {release.releaseId}
+                      {release.closureDigest
+                        ? ` · closure ${release.closureDigest.slice(0, 12)}…`
+                        : ''}
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 shrink-0 gap-1.5 text-xs"
+                      onClick={() => setContentsReleaseId(release.releaseId)}
+                      aria-label={`View contents of ${releaseLabel(release)}`}
+                    >
+                      <Package className="h-3 w-3" />
+                      Contents
+                    </Button>
+                  </div>
                   {release.importerStale && currentImporterRevision !== null && (
                     <div
                       className="flex flex-wrap items-start gap-2 rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-600 dark:text-amber-400"
@@ -900,6 +917,13 @@ export function AidlcReleasesTab() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {contentsReleaseId && (
+        <ReleaseContentsDialog
+          releaseId={contentsReleaseId}
+          onClose={() => setContentsReleaseId(null)}
+        />
+      )}
     </div>
   );
 }
