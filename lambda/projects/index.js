@@ -32,6 +32,7 @@ import {
   isEnvironmentResolutionError,
   resolvePublishedEnvironment,
 } from '../shared/environment-snapshot.js';
+import { resolveDefaultEnvironmentId } from '../shared/environment-default.js';
 import { requirePlatformAdmin } from '../shared/authz.js';
 import { runTrackerMigration } from '../shared/tracker-migration.js';
 import { getGitConnection } from '../shared/git-connection-store.js';
@@ -1594,6 +1595,20 @@ export const handler = async (event, context) => {
           stageSkipping: skipValidation.value,
         };
 
+        // The platform's default environment for new spaces; Standard if unset
+        // or no longer published (shared/environment-default.js).
+        const environmentId = await resolveDefaultEnvironmentId({
+          ddb,
+          tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
+          fallback: { compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1' },
+          onFallback: (error, configured) =>
+            logger.warn('Default environment unavailable; new space uses Standard', {
+              environmentId: configured,
+              code: error?.code,
+              error: error?.message,
+            }),
+        });
+
         // Create the project vertex with creator tracking
         const createV = g
           .addV('Project')
@@ -1618,7 +1633,7 @@ export const handler = async (event, context) => {
           .property('max_parallel_units', String(v2Settings.maxParallelUnits))
           .property('pr_strategy', v2Settings.prStrategy)
           .property('stage_skipping', v2Settings.stageSkipping)
-          .property('environment_id', 'standard');
+          .property('environment_id', environmentId);
         await createV.next();
 
         // Create Repository vertices and HAS_REPO edges. Normalize so at most
@@ -1685,7 +1700,7 @@ export const handler = async (event, context) => {
           createdAt,
           updatedAt: createdAt,
           repos: reposOut,
-          environmentId: 'standard',
+          environmentId,
           ...v2Settings,
         });
       }

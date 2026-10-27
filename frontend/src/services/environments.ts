@@ -174,6 +174,13 @@ export interface EnvironmentRevision {
   publishedAt?: string | null;
 }
 
+// Platform default for new spaces; `standard` when unset.
+export interface DefaultEnvironment {
+  environmentId: string;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
 export interface EnvironmentDetail {
   environment: ManagedEnvironment;
   revisions: EnvironmentRevision[];
@@ -322,6 +329,9 @@ export const environmentsService = {
   list: (publishedOnly = false) =>
     api.get<ManagedEnvironment[]>(`/environments${publishedOnly ? '?published=true' : ''}`),
   capabilities: () => api.get<EnvironmentCapabilities>('/environments/capabilities'),
+  getDefault: () => api.get<DefaultEnvironment>('/environments/settings/default'),
+  setDefault: (environmentId: string) =>
+    api.put<DefaultEnvironment>('/environments/settings/default', { environmentId }),
   get: (environmentId: string) => api.get<EnvironmentDetail>(environmentPath(environmentId)),
   create: (input: {
     environmentId?: string;
