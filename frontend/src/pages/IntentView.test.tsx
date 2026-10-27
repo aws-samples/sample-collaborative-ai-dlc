@@ -347,6 +347,55 @@ describe('IntentView', () => {
     expect(rewind).not.toHaveBeenCalled();
   });
 
+  it('does not call a claimed run stalled while its workspace is still initializing', async () => {
+    // An orchestrator claimed the run 10 minutes ago and is still cloning a
+    // large repository: CREATED is expected, and a restart would race the clone.
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'CREATED',
+        updatedAt: tenMinutesAgo,
+        orchestratorStartedAt: tenMinutesAgo,
+      }),
+    );
+
+    renderAt();
+
+    expect((await screen.findAllByText('My intent')).length).toBeGreaterThan(0);
+    expect(screen.queryByText('Run stalled — never started')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Restart workflow' })).toBeNull();
+  });
+
+  it('calls an unclaimed CREATED hand-off stalled after two minutes', async () => {
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'CREATED',
+        updatedAt: new Date(Date.now() - 3 * 60_000).toISOString(),
+        orchestratorStartedAt: null,
+      }),
+    );
+
+    renderAt();
+
+    expect(await screen.findByText('Run stalled — never started')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Restart workflow' })).toBeTruthy();
+  });
+
+  it('calls a claimed run stalled once the init callback window has passed', async () => {
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
+    get.mockResolvedValue(
+      baseDetail({
+        status: 'CREATED',
+        updatedAt: threeHoursAgo,
+        orchestratorStartedAt: threeHoursAgo,
+      }),
+    );
+
+    renderAt();
+
+    expect(await screen.findByText('Run stalled — never started')).toBeTruthy();
+  });
+
   it('renders one QuestionEditor for the active gate (exclusive expansion)', async () => {
     get.mockResolvedValue({
       ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1' }),

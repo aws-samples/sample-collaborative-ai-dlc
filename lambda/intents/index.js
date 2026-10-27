@@ -1421,6 +1421,10 @@ const mapIntent = (meta) => ({
   createdAt: meta.startedAt ?? null,
   updatedAt: meta.updatedAt ?? null,
   completedAt: meta.completedAt ?? null,
+  // Set when an orchestrator run claims the execution (cleared on relaunch).
+  // Lets the client tell a long workspace initialization from a hand-off that
+  // never reached an orchestrator.
+  orchestratorStartedAt: meta.orchestratorStartedAt ?? null,
 });
 
 const NATIVE_EXPORT_HARNESSES = new Set(['claude', 'codex', 'kiro', 'kiro-ide', 'opencode']);
