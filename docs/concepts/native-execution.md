@@ -649,6 +649,165 @@ validation results are under `.native-evidence/ne02-2026-10-27-live/`;
 `waiting-blocker.json` retains the exact unanswered source-baseline question.
 NE-02 remains unchecked; NE-03 must wait for the remaining live proof.
 
+**Approved game fixture and fresh qualification, 2026-10-27:** the user resolved
+the source-baseline decision: build a minimal game and tests on the pinned empty
+scaffold. The approved scope is one playable Phaser scene with simple shapes,
+flap controls, obstacles/collision, score, game-over/restart, and keyboard-accessible
+pause/resume through `P` and a visible control. Pause must preserve the run and
+score. Add the smallest suitable package/build/test setup, deterministic gameplay
+and pause/resume/restart tests, controls documentation and an actual browser
+playability check. Keep Phaser **3.60.0**, the version in the scaffold. Application
+changes belong to the native workspaces and their publications; no GitHub push
+or PR delivery is requested.
+
+Fresh requests explicitly acknowledge the intentionally empty baseline. The
+earlier waiting and intake intents remain unchanged. This stage uses the deployed
+implementation `526837eb8394735e6b365bdfbcda249af84c5e3f`, with documentation
+head `cb0392871097f006e30d15696801ff154d313ffe`. Each new Start was checked against
+the same immutable runtime image, AI-DLC 2.11.1 package/materialization, Claude
+model and platform Bedrock scope recorded above. All four executions resolved
+the approved application branch to
+`d99d2511c43f07ff2451e7e13f5a8f45b16dfce2`; scoped AWS reads verified their separate
+runtime endpoints, EFS bindings and 900-second idle timeouts.
+
+| Scenario                          | Fresh native intent                    |
+| --------------------------------- | -------------------------------------- |
+| Created-workflow waiting recovery | `5dcf330b-1ce8-47c5-972b-9bd5d4b9315b` |
+| Interrupted active tool           | `26b5b329-9c15-421d-9fc6-69f11a714c43` |
+| Missing EFS project               | `f3cc998d-e457-4e4c-948c-985a2da1eb39` |
+| Incorrectly bound EFS project     | `33ab1cb2-8f74-4c41-aff2-71c27b3cb8fe` |
+
+Each express plan was explicitly selected through the application, preserving
+its six approval gates. Current stage evidence is recorded separately under
+`.native-evidence/ne02-2026-10-27-game/`; `accepted-pin-comparison.json` records
+the four accepted-configuration/resource comparisons. The previous
+`.native-evidence/ne02-2026-10-27-live/` evidence remains unchanged.
+
+The created-workflow waiting recovery **passes its recovery checks**. The
+requirements approval question in publication
+`c07099e6b6da43642e489c8b6a9dcc62ddaab94032b1c9a674572a864282b8ac`
+was left idle for **974.635 seconds** after the recorded baseline, with no runtime
+keepalives. The actual browser approval was accepted at
+`2026-10-27T13:03:02.818Z` as answer
+`c6e9fd82-7448-4660-90bb-e31ff00cdcd3`. Dispatch detected session loss before
+delivery, observed a created workflow in EFS, and confirmed the predecessor stop
+at `2026-10-27T13:03:05.951Z`. The member then explicitly confirmed
+**Resume in a fresh session** through the browser.
+
+Writer generation **2** retained binding
+`750fc226-5c11-4ca7-84e7-c0d685e0bc72`, EFS access point
+`fsap-03451764da3b9a46d`, configuration and runtime target. CLI identity changed
+from `28b1b8dc-7f1e-4c55-b088-6368d45715fd` to
+`f741550b-167a-4a6d-8f59-d2a6e07c380c`. New publication
+`6c12d45367e9dcf153d587e1270e4a1c7b7ea6225201918da9624fdf848dd0f7`
+contains the real requirements approval question. The active pointers, committed
+intent registry, initialized state, answered requirements questions and
+requirements document all survived byte-for-byte; the requirements gate
+remained open.
+
+The original revision's answer retained its ID, actor, acceptance time and bytes
+both before and after the new publication. Its
+`answer.resumeRetention.delivery` is **`undelivered`**, with no delivery
+timestamp, resulting publication or recorded approval. The recovery request
+contained only its request ID, recovery ID and explicit workspace-resume
+confirmation. Lifecycle evidence and metadata-only listing of the exact attempt's
+private recovery prefix show no checkpoint capture, export, import or restore.
+The original answer was not replayed. After reviewing the surviving requirements,
+the member submitted a distinct approval of the new question at
+`2026-10-27T13:08:09.818Z`; this starts implementation without treating recovery
+confirmation as consent. `waiting-created-recovery-proof.json` and the original
+answer history captures record this proof.
+
+After that distinct approval, the native harness implemented the game in its
+workspace. Member-visible tool results record **17 passing tests** in
+`tests/rules.test.js` and a successful **Vite 7.3.7 production build** (10 modules,
+4.83 seconds). An initial score-boundary test failed; the harness adjusted its
+setup and reran all 17 tests. Its Chromium playability attempt could not launch
+because the runtime lacks `libglib-2.0.so.0`. These are actual native test/build
+results, but the final application files have not passed publication review,
+and an actual browser playability check remains **NOT RUN**.
+
+The implementation turn then **failed publication** with
+`native_execution_output_result`. Its content-free diagnostic records
+`result_mismatch` at result record **176**, with **3** assistant text blocks and
+**1** observed query boundary. The runtime rejected the result at
+`2026-10-27T13:22:19.217Z`; runtime stop was confirmed at
+`2026-10-27T13:24:36.775Z`. Publication
+`6c12d45367e9dcf153d587e1270e4a1c7b7ea6225201918da9624fdf848dd0f7`
+remains the last admitted revision. It contains the recovered requirements
+question, not the game result. The failed execution and its history are preserved.
+`waiting-native-validation-observed.json`, `waiting-game-output-rejection.json`
+and `waiting-output-rejection-lifecycle.json` record these separate boundaries.
+
+Inspection of static executable code in the exact deployed Claude 2.1.296 image
+shows that its engine can queue completed parent-query results while background
+work runs, then emit those results in order after later assistant messages.
+An inert fixture of that producer sequence reproduces the deployed parser's
+`result_mismatch`: it compared every result only with the latest response.
+This identifies a supported sequence the parser rejected; it does not claim
+that private live transcript bodies were read or reconstructed.
+
+The bounded runtime correction validates deferred results against ordered
+assistant responses from the current invocation. The final observed response
+must still have a successful terminal result before publication; failed,
+incomplete, reversed, duplicate terminal and foreign-session results remain rejected.
+The existing text/query limits, credential checks and silent-notification
+handling remain enforced. Executor-level tests cover both successful publication
+and refusal when a later result is absent or failed, without private checkpoint
+operations. This correction requires a newly built runtime image and fresh
+deployed qualification; its local tests do not establish a live pass.
+
+The interrupted-tool workflow followed its approved qualification procedure:
+install real dependencies, leave genuine game edits unfinished, then enter the
+existing helper's foreground barrier before the separately executed scoped stop.
+The native harness installed Phaser **3.60.0** and wrote a deterministic game
+core with **15 passing tests**. Input routing, the Phaser scene and final
+build/browser validation were still unfinished. The **150-second** barrier
+expired normally without an operator stop. Publication
+`9ce6bb50f85c87557daa12ce8601e5f63556747d116be53adcad57c2cdbbef86`
+preserves that partial work and asks whether to retry with a fresh nonce or
+finish implementation. This question remains unanswered, and the old stop
+command is stale. No interruption, dependency-link retention or fresh-session
+reconciliation is claimed. A retry needs a new live foreground barrier with
+genuine unpublished work; the helper requires at least **45 seconds** remaining
+when it inspects the barrier.
+
+The two isolated workspace-negative cases have created workflows and confirmed
+predecessor stops after natural expiry. Their prepared commands remain scoped
+to the exact intent, attempt, writer and nonce in `missing-operator-command.json`
+and `wrong-operator-command.json`. The user chose to execute these helpers, which
+quarantine each original project and stop their diagnostic session. No operator
+profile was authorized for the agent; `solution-read` remains read-only.
+Their result files and subsequent browser rejection still need verification.
+
+| NE-02 check at this stage                                                      | Status                                                                                      |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| Deployed candidate/configuration/image alignment                               | **PASS** for deployed `526837eb`; the parser correction is not deployed.                    |
+| Temporary Kiro unavailability and intake-expiry rejection                      | **PASS**, retained from the preceding deployment stage.                                     |
+| Created-workflow waiting expiry, fresh CLI, preserved answer and next question | **PASS**, with the exact identities and retention evidence above.                           |
+| Native game tests and production build after resume                            | **PASS** for the observed commands; final source/publication review remains open.           |
+| Game result publication                                                        | **FAIL**, with a locally reproduced parser correction awaiting deployment.                  |
+| Actual game browser playability                                                | **NOT RUN**; native Chromium could not launch and no game result was admitted for download. |
+| Interrupted active tool and retained dependency links                          | **BLOCKED**; the barrier expired without the separately executed stop.                      |
+| Missing/wrong EFS workspace rejection                                          | **BLOCKED** pending the user-run helper results and browser checks.                         |
+
+**Local correction validation, Node 24.21.0:** the 163 focused parser/executor
+tests pass. The full AgentCore project passes **3,165 tests**, with **10 skipped**
+for Bun-dependent and Linux-only coverage on this host. All **43** controller
+caller checks pass; the nine-test workspace journey file was rerun with
+loopback access after the sandbox denied two local HTTP listeners. The 22 native
+wiring tests, six architecture tests, architecture check, dependency check,
+lint, formatting, secret scan and documentation build pass. Lint reports
+82 warnings and the dependency check reports 17 warnings, with no errors.
+The full backend and frontend suites were not repeated for this runtime-only
+correction. Logs and source hashes are recorded in this stage's
+`repair-validation.json` and `repair-image-source.json`; the latter identifies
+the new image's expected source-derived tag, not a deployed digest.
+
+NE-02 remains unchecked. Preserve these runs and deploy the runtime correction
+before starting a fresh, matching positive proof. NE-03 and full Kiro
+qualification remain in their existing sequence.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item

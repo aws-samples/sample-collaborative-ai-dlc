@@ -47,6 +47,10 @@ const claudeResultText = (text) =>
     '',
   );
 const CLAUDE_SILENT_RESPONSE = 'No response requested.';
+const claudeResponseMatches = (response, result) =>
+  [response.text, response.lastBlock].some(
+    (text) => text === result || claudeResultText(text) === result,
+  );
 const leaf = true;
 const projection = {
   type: leaf,
@@ -266,13 +270,17 @@ export const createNativeTurnOutput = ({
   let started = false;
   let bytes = 0;
   let ended = false;
-  let claudeFinalText = null;
   let claudeQueryStart = 0;
   let claudeQueries = 1;
+  let claudeResultCount = 0;
+  let claudeMatchedResponse = -1;
+  let claudeLastResult = null;
+  let claudeSilentResults = 0;
+  let claudeTrailingSilent = 0;
+  const claudeResponses = [];
   let records = 0;
   let recordType = 'none';
   let resultBytes = 0;
-  let claudeLastBlock = null;
   const messages = [];
   const ids = new Set();
   const secrets = forbiddenBytes
@@ -296,13 +304,39 @@ export const createNativeTurnOutput = ({
       invalid('session');
     session = value;
   };
+  const recordClaudeResponse = (start) => {
+    const parts = messages.slice(start);
+    claudeResponses.push({
+      text: parts.map((message) => message.text).join(''),
+      lastBlock: parts.at(-1).text,
+      silent: parts.length === 1 && parts[0].text === CLAUDE_SILENT_RESPONSE,
+    });
+  };
+  const sealClaudeBatch = () => {
+    for (let n = 0; n < claudeTrailingSilent; n++) bytes -= Buffer.byteLength(messages.pop().text);
+    claudeTrailingSilent = 0;
+  };
   const afterCompleted = (event) => {
+    // The installed engine can hold successful parent results while background
+    // work runs, then drain them FIFO after later parent responses. Each result
+    // must match a distinct response in order; EOF still requires the last one.
+    if (
+      harness === 'claude' &&
+      event.type === 'result' &&
+      [undefined, null].includes(event.parent_tool_use_id)
+    ) {
+      if (completed && event.result !== '' && claudeMatchedResponse === claudeResponses.length - 1)
+        invalid('terminal');
+      completeClaudeQuery(event);
+      return;
+    }
     // Claude 2.1.296 may consume a completed background-agent notification
     // in another parent query before this same CLI process exits. A new
     // same-session init explicitly starts that query; every query must still
     // end successfully. Never treat an earlier result as the final stop.
     if (
       harness === 'claude' &&
+      completed &&
       event.type === 'system' &&
       event.subtype === 'init' &&
       event.session_id === session &&
@@ -310,10 +344,14 @@ export const createNativeTurnOutput = ({
       [undefined, false].includes(event.prevent_continuation)
     ) {
       if (++claudeQueries > 32) invalid('limit', 'query_limit');
+      sealClaudeBatch();
       completed = false;
-      claudeFinalText = null;
-      claudeLastBlock = null;
       claudeQueryStart = messages.length;
+      claudeResultCount = 0;
+      claudeMatchedResponse = -1;
+      claudeLastResult = null;
+      claudeSilentResults = 0;
+      claudeResponses.length = 0;
       return;
     }
     const informational =
@@ -343,27 +381,51 @@ export const createNativeTurnOutput = ({
     resultBytes = typeof event.result === 'string' ? Buffer.byteLength(event.result) : 0;
     if (typeof event.result !== 'string' || resultBytes > LIMIT) invalid('result', 'result_shape');
     if (secrets.some((secret) => event.result.includes(secret))) invalid('credential');
+    if (claudeResultCount++ > 0 && ++claudeQueries > 32) invalid('limit', 'query_limit');
     if (event.result.length === 0) {
       // A background notification can start a second parent query which
       // completes without another response. Only retain work from an
       // already completed query in THIS invocation, never a prior checkpoint.
-      const silent =
-        claudeQueryStart > 0 &&
-        event.terminal_reason === 'completed' &&
-        event.stop_reason === 'end_turn' &&
-        (messages.length === claudeQueryStart ||
-          (messages.length === claudeQueryStart + 1 && claudeFinalText === CLAUDE_SILENT_RESPONSE));
-      if (!silent) invalid('result', 'result_empty');
-      for (const message of messages.splice(claudeQueryStart))
-        bytes -= Buffer.byteLength(message.text);
-    } else if (messages.length === claudeQueryStart) add(event.result);
-    else if (
-      ![claudeFinalText, claudeLastBlock].some(
-        (text) => text === event.result || claudeResultText(text) === event.result,
+      if (
+        !(claudeQueryStart > 0 || claudeLastResult) ||
+        event.terminal_reason !== 'completed' ||
+        event.stop_reason !== 'end_turn'
       )
-    )
-      invalid('result', 'result_mismatch');
-    completed = true;
+        invalid('result', 'result_empty');
+      claudeSilentResults++;
+      let last = claudeResponses.length - 1;
+      while (last >= 0 && claudeResponses[last].silent) last--;
+      const trailing = claudeResponses.length - 1 - last;
+      completed =
+        trailing <= claudeSilentResults &&
+        (last < 0
+          ? claudeQueryStart > 0
+          : claudeLastResult !== null &&
+            last > claudeLastResult.after &&
+            claudeResponseMatches(claudeResponses[last], claudeLastResult.text));
+      claudeTrailingSilent = completed ? trailing : 0;
+      return;
+    }
+    claudeSilentResults = 0;
+    claudeTrailingSilent = 0;
+    if (!claudeResponses.length) {
+      if (claudeResultCount !== 1) invalid('result', 'result_mismatch');
+      const start = messages.length;
+      add(event.result);
+      recordClaudeResponse(start);
+    }
+    const after = claudeMatchedResponse;
+    // Keep the earliest possible match so identical question text in separate
+    // queries remains distinguishable. Completion also requires a possible
+    // match at the final response, never merely an earlier successful result.
+    claudeMatchedResponse = claudeResponses.findIndex(
+      (response, index) => index > after && claudeResponseMatches(response, event.result),
+    );
+    if (claudeMatchedResponse < 0) invalid('result', 'result_mismatch');
+    claudeLastResult = { text: event.result, after };
+    completed =
+      claudeResponses.length - 1 > after &&
+      claudeResponseMatches(claudeResponses.at(-1), event.result);
   };
   const parser = createProjectionParser((event) => {
     records++;
@@ -382,7 +444,7 @@ export const createNativeTurnOutput = ({
       event.part?.sessionId,
     ])
       observeSession(value);
-    if (completed) {
+    if (completed || (harness === 'claude' && claudeResultCount > 0)) {
       afterCompleted(event);
       return;
     }
@@ -418,11 +480,7 @@ export const createNativeTurnOutput = ({
           if (part.type === 'text') add(part.text);
         }
         if (messages.length > start) {
-          claudeFinalText = messages
-            .slice(start)
-            .map((message) => message.text)
-            .join('');
-          claudeLastBlock = messages.at(-1).text;
+          recordClaudeResponse(start);
         }
       }
       if (event.type === 'result') completeClaudeQuery(event);
@@ -502,6 +560,7 @@ export const createNativeTurnOutput = ({
         parser.write(decode(undefined, false));
         parser.end();
         if (!completed || !session) invalid('incomplete');
+        if (harness === 'claude') sealClaudeBatch();
         if (!messages.some((message) => message.text.trim())) invalid('text', 'no_visible_text');
         let normalized;
         try {

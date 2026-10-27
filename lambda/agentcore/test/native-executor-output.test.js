@@ -414,6 +414,89 @@ describe('Claude 2.1.296 query loop within one invocation', () => {
     ])
       expect(() => collect(events, { harness: 'claude', nativeSessionId: session })).toThrow();
   });
+  // The installed 2.1.296 engine queues result frames while background tasks
+  // remain, then drains them FIFO after subsequent parent-query messages.
+  // Executable SHA-256: f1f6e96e0d8342b9dbf41d7e88255397a6a52ce3d8736ad6a4c6b59c9b62fefa.
+  // These inert protocol fixtures contain no live request or transcript text.
+  const queued = (texts, results = texts) => [
+    claude()[0],
+    ...texts.map((text) => claude(text)[1]),
+    notification,
+    ...results.map((text) => claude(text)[2]),
+  ];
+  it('drains deferred parent results in order and retains the final real question', () => {
+    const texts = ['Preparing the implementation.', 'Review the game?', 'Review the test results?'];
+    expect(collect(queued(texts, texts.slice(1)), { harness: 'claude' }, 1)).toEqual({
+      nativeSessionId: session,
+      messages: texts.map((text) => ({ type: 'text', text })),
+    });
+  });
+  it('handles repeated response text without requiring results for intermediate messages', () => {
+    for (const results of [['Review?'], ['Review?', 'Review?']])
+      expect(
+        collect(queued(['Review?', 'Review?'], results), { harness: 'claude' }).messages,
+      ).toEqual([
+        { type: 'text', text: 'Review?' },
+        { type: 'text', text: 'Review?' },
+      ]);
+  });
+  it('requires the final observed response to have its own completed result', () => {
+    expect(() =>
+      collect(queued(['Earlier question?', 'Current question?'], ['Earlier question?']), {
+        harness: 'claude',
+      }),
+    ).toThrow('output_incomplete');
+    for (const changes of [
+      { is_error: true },
+      { subtype: 'error_during_execution' },
+      { terminal_reason: 'aborted_tools' },
+      { stop_reason: 'tool_use' },
+      { result: 'Unobserved question?' },
+      { parent_tool_use_id: 'child-only-result' },
+      { session_id: 'different-session' },
+    ]) {
+      const events = queued(['Earlier question?', 'Current question?']);
+      events[events.length - 1] = { ...events.at(-1), ...changes };
+      expect(() => collect(events, { harness: 'claude' })).toThrow();
+    }
+  });
+  it('rejects reversed or duplicated results and text after a partial result drain', () => {
+    for (const events of [
+      queued(
+        ['Earlier question?', 'Current question?'],
+        ['Current question?', 'Earlier question?'],
+      ),
+      queued(['Review?'], ['Review?', 'Review?']),
+      [...queued(['Earlier?', 'Current?'], ['Earlier?']), claude('Unfinished later text')[1]],
+      [...queued(['Earlier?', 'Current?'], ['Earlier?']), ...claude('Replacement?')],
+    ])
+      expect(() => collect(events, { harness: 'claude' })).toThrow();
+  });
+  it('retains a validated queued response through a completed silent notification', () => {
+    for (const texts of [['Current question?'], ['Current question?', 'No response requested.']]) {
+      const events = [...queued(texts, ['Current question?']), silent()[2]];
+      expect(collect(events, { harness: 'claude' }).messages).toEqual([
+        { type: 'text', text: 'Current question?' },
+      ]);
+    }
+    expect(() =>
+      collect([...queued(['Earlier?', 'Current?'], ['Earlier?']), silent()[2]], {
+        harness: 'claude',
+      }),
+    ).toThrow();
+  });
+  it('bounds queued results and permits a subsequent explicitly initialized query', () => {
+    const texts = Array.from({ length: 32 }, (_, i) => `Question ${i}?`);
+    expect(collect(queued(texts), { harness: 'claude' }).messages).toHaveLength(32);
+    expect(() => collect(queued([...texts, 'Excess query?']), { harness: 'claude' })).toThrow(
+      'output_limit',
+    );
+    expect(
+      collect([...queued(['Earlier?', 'Current?']), ...claude('Next question?')], {
+        harness: 'claude',
+      }).messages,
+    ).toEqual(['Earlier?', 'Current?', 'Next question?'].map((text) => ({ type: 'text', text })));
+  });
   it('compares the pinned terminal projection while preserving all assistant display bytes', () => {
     const raw = '<cc-memory filenames="fixture.md">Summary</cc-memory>\nQuestion?';
     const events = claude(raw);

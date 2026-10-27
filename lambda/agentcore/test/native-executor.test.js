@@ -472,6 +472,106 @@ describe('native first-turn executor', () => {
     },
   );
 
+  it.each(['completed', 'missing', 'failed'])(
+    'publishes a deferred Claude query batch only with a completed final result: %s',
+    async (terminal) => {
+      const request = payload();
+      request.schemaVersion = 2;
+      request.writerGeneration = 1;
+      request.configuration.harness = 'claude';
+      request.configuration.model = 'us.anthropic.configured';
+      request.configuration.recoveryMode = NATIVE_WORKSPACE_RECOVERY;
+      request.configuration.packageVersion = '2.11.1';
+      const { executor, ports } = make({
+        request,
+        ports: { captureRecovery: vi.fn(), publishRecovery: vi.fn() },
+      });
+      const prepare = ports.prepare.getMockImplementation();
+      ports.prepare.mockImplementation(async (input) => {
+        const prepared = await prepare(input);
+        await fs.mkdir(join(input.project, '.claude'), { mode: 0o700 });
+        await fs.writeFile(
+          join(input.project, '.claude/settings.json'),
+          JSON.stringify({
+            hooks: {
+              SessionEnd: [
+                { hooks: [{ type: 'command', command: 'aidlc engine hook session-end' }] },
+              ],
+            },
+          }),
+        );
+        return prepared;
+      });
+      const texts = ['Implementation ready.', 'Review the game?', 'Review the tested game?'];
+      ports.commandRunner.mockImplementation(async (input) => {
+        if (input.timeoutMs !== null) return cleanCommand;
+        for (const [path, content] of Object.entries(nativeFiles)) {
+          await fs.mkdir(join(root, 'project', path, '..'), { recursive: true, mode: 0o700 });
+          await fs.writeFile(join(root, 'project', path), content);
+        }
+        await fs.writeFile(
+          join(root, 'project/.native-control/pending-question.json'),
+          JSON.stringify({
+            version: 1,
+            questions: [
+              {
+                prompt: texts[2],
+                options: [{ label: 'Approve' }, { label: 'Request Changes' }],
+              },
+            ],
+          }),
+        );
+        const emit = (event) =>
+          input.onStdoutChunk(
+            Buffer.from(`${JSON.stringify({ ...event, session_id: 'native-session' })}\n`),
+          );
+        const result = (text, is_error = false) => ({
+          type: 'result',
+          subtype: is_error ? 'error_during_execution' : 'success',
+          is_error,
+          result: text,
+          terminal_reason: 'completed',
+          stop_reason: 'end_turn',
+        });
+        emit({ type: 'system', subtype: 'init' });
+        for (const text of texts)
+          emit({
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'text', text }] },
+          });
+        emit({ type: 'system', subtype: 'task_notification' });
+        emit(result(texts[1]));
+        expect(ports.publish).not.toHaveBeenCalled();
+        expect(ports.publishInteraction).not.toHaveBeenCalled();
+        if (terminal !== 'missing') emit(result(texts[2], terminal === 'failed'));
+        return cleanCommand;
+      });
+      await executor.start(request);
+      const report = await executor.settle();
+      if (terminal === 'completed') {
+        expect(report).toMatchObject({
+          status: 'publication_ready',
+          nativeSessionId: 'native-session',
+        });
+        expect(ports.publish).toHaveBeenCalledOnce();
+        expect(ports.publishInteraction).toHaveBeenCalledOnce();
+        expect(ports.publishInteraction.mock.calls[0][0]).toMatchObject({
+          messages: texts.map((text) => ({ type: 'text', text })),
+          pendingInput: { questions: [{ prompt: texts[2] }] },
+        });
+      } else {
+        expect(report).toMatchObject({
+          status: 'failed',
+          code: `native_execution_output_${terminal === 'missing' ? 'incomplete' : 'failed'}`,
+        });
+        expect(ports.publish).not.toHaveBeenCalled();
+        expect(ports.publishInteraction).not.toHaveBeenCalled();
+      }
+      expect(ports.captureRecovery).not.toHaveBeenCalled();
+      expect(ports.publishRecovery).not.toHaveBeenCalled();
+    },
+  );
+
   it('declines a Kiro model turn while its separate instruction channel is unqualified', async () => {
     const request = payload();
     request.configuration.harness = 'kiro';
