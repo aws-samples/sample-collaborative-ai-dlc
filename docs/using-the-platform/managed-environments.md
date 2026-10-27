@@ -498,7 +498,48 @@ Open **Admin -> Environments -> Environments** and choose **New environment**.
 
 Environment variables and build commands cannot replace protected runtime
 behavior, inject secrets, change the runtime user, entrypoint, command, port,
-or health contract, or overwrite protected platform variables.
+or health contract, or overwrite protected platform variables. For a secret,
+or a value that should change without a rebuild, use
+[runtime variables](#runtime-variables-for-every-agent).
+
+### Runtime variables for every agent
+
+A deployment can give every agent CLI (Claude Code, Codex, Kiro, OpenCode),
+and the shell tools and MCP servers it starts, platform-wide environment
+variables such as an internal API key or a package-registry token. They are not
+part of an environment image, so they need no rebuild.
+
+Create one SSM parameter per variable directly under the deployment's
+runtime-env path, named after the variable. Use `SecureString` for secrets:
+
+```bash
+aws ssm put-parameter \
+  --name "/<project_name>/<environment>/runtime-env/INTERNAL_API_TOKEN" \
+  --type SecureString \
+  --value "<value>"
+```
+
+`<project_name>` and `<environment>` are the Terraform variables of the same
+names. The AgentCore role can read only this path. SecureStrings encrypted with
+the default `aws/ssm` key work as they are; a customer managed key also needs
+`kms:Decrypt` for that role.
+
+How the values are applied:
+
+- Only parameters directly under the path are read; nested paths are ignored.
+  Names must match `[A-Za-z_][A-Za-z0-9_]*`.
+- Names the runtime controls are skipped and logged: `PATH`, `HOME` and the
+  other safe ambient variables, AWS and model credentials, and the names
+  reserved for MCP servers.
+- A variable an invocation sets itself takes precedence.
+- Values are refreshed before each agent command, at most once a minute, so a
+  new or rotated value reaches the next stage without a deploy. If SSM can't be
+  read, the last values are kept and the read is retried after 10 seconds.
+- Sensors don't receive the values.
+
+Every agent in every space can read every value. Store only what all agents
+may use; a value for one space's MCP servers belongs in that space's MCP
+secrets instead.
 
 ### Compute types: microVMs and Instances
 
