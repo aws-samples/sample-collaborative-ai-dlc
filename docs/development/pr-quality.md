@@ -3,7 +3,7 @@
 CI updates one PR comment with cognitive-complexity, dependency counts, and branch-coverage changes
 for source files changed between the merge base and PR commit. Findings are advisory: functions above 15 appear
 when complexity or coverage worsens, or when the function is new/unmatched.
-Unchanged debt is omitted; improvements appear separately.
+Unchanged debt is omitted; improvements appear in the same table.
 
 ## Reading the table
 
@@ -24,15 +24,17 @@ More than 10 depending files raises an existing warning one level, capped at pur
 when coverage is below 50% or regresses. Green improvements stay green.
 These are review heuristics; use the numbers to judge each finding.
 
-**Unknown** means coverage is missing or incompatible.
+**—** marks unavailable coverage; **unknown** marks unavailable backend dependency counts.
 **n/a** means no branch outcomes or frontend dependency counts; **\*** marks coverage from failing/incomplete tests.
 Coverage comparisons allow Node minor/patch differences within the same major; Vitest, provider, and configuration must match.
 **New or unmatched** means no reliable previous function match—not necessarily new code.
-The comment shows up to 20 findings and 20 improvements; artifacts contain all results.
+The table is sorted 🟣 → 🔴 → 🟠 → 🟢 before showing up to 20 functions; artifacts contain all results.
+Coverage diagnostics stay in the artifacts; the comment shows one notice if measurements are unavailable or incomplete.
 
 ## CI
 
 Backend and frontend suites run independently at both revisions when their source, tests, or configuration change.
+Tools come from the workflow's merge commit so older PR branches need not contain them; tests still use the exact base and PR revisions.
 Docs-only and Terraform-only PRs skip coverage. Frontend-only PRs skip the backend suite.
 Each `coverage-base-*` / `coverage-pr-*` artifact contains the requested suites' measurements.
 Dependency analysis failures leave only those counts unknown. Partial reruns reuse artifacts only when their producers

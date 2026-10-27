@@ -133,20 +133,137 @@ test('Markdown keeps the table and a compact two-line legend', () => {
     improvements: [row(50, 40, 10)],
   };
   const markdown = renderComparison(report);
+  assert.match(markdown, /Automated quality report using code complexity and test coverage/);
+  assert.match(
+    markdown,
+    /Review 🟣 and 🔴 items first: consider simplifying the code, improving test coverage, or both/,
+  );
   assert.match(markdown, /\| 🟣 \| lambda\/demo\/index.js/);
   assert.match(markdown, /\| 🟢 \| lambda\/demo\/index.js/);
   assert.doesNotMatch(markdown, /\| Signal \|/);
+  assert.doesNotMatch(markdown, /## Complexity improvements/);
+  assert.equal(markdown.match(/\| File \/ function \|/g).length, 1);
   assert.doesNotMatch(markdown, /Merge base|a{40}|b{40}/);
   assert.ok(
     markdown.endsWith(
       '🟢 Improving · 🟠 Needs attention · 🔴 High risk · 🟣 Highest risk\n\n' +
-        'unknown = unavailable · n/a = not applicable · \\* = incomplete tests\n',
+        '— = unavailable · n/a = not applicable · \\* = incomplete tests\n',
     ),
   );
   assert.ok(markdown.length < 1500, 'A two-row report should stay brief');
   assert.match(markdown, /\| Depending files \|/);
   assert.match(markdown, /\| 12 \|/);
   assert.match(markdown, /\| unknown \|/);
+});
+
+test('tables prioritize purple, red, orange, green before truncation and preserve ties', () => {
+  const orange = { ...row(50, 51, 0), function: 'orange' };
+  const red = { ...row(50, 60, 0), function: 'red' };
+  const purple = { ...row(50, 60, -10), function: 'purple' };
+  const green = { ...row(50, 40, 0), function: 'green' };
+  const rows = [orange, red, purple, { ...red, function: 'red-tie' }];
+  const report = { files: [], analyzer: { threshold: 15 }, findings: rows, improvements: [green] };
+  const markdown = renderComparison(report);
+  const rendered = markdown.split('\n').filter((line) => /^\| [🟣🔴🟠🟢]/u.test(line));
+  assert.deepEqual(
+    rendered.map((line) => line.split(' | ')[0]),
+    ['| 🟣', '| 🔴', '| 🔴', '| 🟠', '| 🟢'],
+  );
+  assert.match(rendered[1], /— red \|/);
+  assert.match(rendered[2], /— red-tie \|/);
+  assert.equal(rows[0], orange, 'Rendering must not reorder the report data');
+  const capped = renderComparison({
+    ...report,
+    findings: [...Array.from({ length: 20 }, () => ({ ...orange })), purple],
+    improvements: [],
+  });
+  assert.match(
+    capped.split('\n').find((line) => line.startsWith('| 🟣')),
+    /— purple \|/,
+  );
+  assert.match(capped, /Showing 20 of 21/);
+});
+
+test('an improvement with a coverage regression is shown once with its warning color', () => {
+  const change = { ...row(50, 49, -10), function: 'mixed' };
+  const markdown = renderComparison({
+    files: [],
+    analyzer: { threshold: 15 },
+    findings: [{ ...change, kind: 'coverage-decreased' }],
+    improvements: [{ ...change, kind: 'improved' }],
+  });
+  assert.equal(markdown.match(/— mixed \|/g).length, 1);
+  assert.doesNotMatch(markdown, /Highlighted functions/);
+  assert.match(markdown, /\| 🟠 \|/);
+});
+
+test('missing coverage is explained once without repeated diagnostics or unknown arrows', () => {
+  const missing = {
+    ...row(26, 24, null),
+    dependentFiles: 1,
+    coverage: { before: { status: 'unknown' }, after: { status: 'unknown' }, change: null },
+  };
+  const report = {
+    files: [],
+    analyzer: { threshold: 15 },
+    findings: [],
+    improvements: [missing],
+    coverageNotes: [
+      'Merge-base coverage: unknown (no report supplied).',
+      'PR coverage: unknown (no report supplied).',
+    ],
+  };
+  const markdown = renderComparison(report);
+  assert.doesNotMatch(markdown, /Highlighted functions|no report supplied|unknown|\? → \?/);
+  assert.equal(markdown.match(/Some coverage data is unavailable or incomplete/g).length, 1);
+  assert.match(markdown, /\| 🟢 \|[^\n]*\| — \| — \| — \| 1 \|/);
+  const measured = { status: 'measured', percent: 75, uncovered: 1 };
+  const oneSide = renderComparison({
+    ...report,
+    improvements: [
+      {
+        ...missing,
+        coverage: { ...missing.coverage, after: measured },
+      },
+    ],
+  });
+  assert.match(oneSide, /— → 75.0%/);
+  assert.match(oneSide, /— → 1/);
+  const complete = renderComparison({
+    ...report,
+    coverageNotes: [],
+    improvements: [
+      {
+        ...missing,
+        coverage: { before: measured, after: measured, change: { percentagePoints: 0 } },
+      },
+    ],
+  });
+  assert.doesNotMatch(complete, /coverage data is unavailable|no report supplied/);
+});
+
+test('a measured finding does not hide failed coverage in another changed scope', () => {
+  const measured = { status: 'measured', percent: 75, uncovered: 1 };
+  const report = {
+    files: [{ path: 'lambda/demo/index.js' }, { path: 'frontend/src/view.tsx' }],
+    analyzer: { threshold: 15 },
+    findings: [
+      {
+        ...row(26, 27, 0),
+        coverage: { before: measured, after: measured, change: { percentagePoints: 0 } },
+      },
+    ],
+    improvements: [],
+    coverageNotes: ['Frontend PR coverage: unknown (no report supplied).'],
+  };
+  assert.match(renderComparison(report), /Some coverage data is unavailable or incomplete/);
+  const frontendOnly = renderComparison({
+    ...report,
+    files: [{ path: 'frontend/src/view.tsx' }],
+    findings: [{ ...report.findings[0], path: 'frontend/src/view.tsx' }],
+    coverageNotes: ['PR coverage: unknown (no report supplied).'],
+  });
+  assert.doesNotMatch(frontendOnly, /coverage data is unavailable/);
 });
 
 test('frontend depending files are n/a, while unavailable backend counts remain unknown', () => {

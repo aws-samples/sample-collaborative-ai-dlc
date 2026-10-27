@@ -158,7 +158,7 @@ test('compares against merge base, not target tip, and reports only relevant cha
     encoding: 'utf8',
   });
   assert.equal(cli.status, 0, cli.stderr);
-  assert.match(cli.stdout, /3 new\/unmatched or worsening/);
+  assert.equal(cli.stdout.match(/\| File \/ function \|/g).length, 1);
   const saved = JSON.parse(readFileSync(join(repo.cwd, 'reports/complexity/comparison.json')));
   assert.deepEqual(saved, report);
   assert.equal(
@@ -193,14 +193,17 @@ test('compares against merge base, not target tip, and reports only relevant cha
     dependencies.files.find((file) => file.path === 'frontend/src/new.ts').reason,
     'Backend only',
   );
-  assert.match(cli.stdout, /unknown \(no report supplied\)/);
+  assert.match(cli.stdout, /Some coverage data is unavailable or incomplete/);
   const skipped = spawnSync(process.execPath, [script, '--base', 'main', '--coverage-not-needed'], {
     cwd: repo.cwd,
     encoding: 'utf8',
   });
   assert.equal(skipped.status, 0, skipped.stderr);
-  assert.match(skipped.stdout, /coverage: not needed for this change/);
-  assert.match(skipped.stdout, /Frontend PR coverage: unknown \(no report supplied\)/);
+  assert.doesNotMatch(skipped.stdout, /Merge-base coverage|PR coverage|no report supplied/);
+  const skippedData = JSON.parse(
+    readFileSync(join(repo.cwd, 'reports/complexity/comparison.json')),
+  );
+  assert.ok(skippedData.coverageNotes.some((note) => note.includes('not needed for this change')));
 });
 
 test('recognizes unchanged moved functions and shifted callbacks without guessing changed callbacks', async () => {
@@ -563,10 +566,7 @@ test('coverage regressions only report files changed by the PR and reject mismat
   assert.equal(partial.findings[0].coverage.change.percentagePoints, -100);
   assert.equal(partial.findings[0].coverage.after.partial, true);
   assert.match(renderComparison(partial), /100.0% → 0.0%\*/);
-  assert.match(
-    renderComparison(partial),
-    /PR coverage: measured with failing or interrupted tests/,
-  );
+  assert.match(renderComparison(partial), /Some coverage data is unavailable or incomplete/);
   prCoverage.status = 'complete';
   for (const [key, value] of [
     ['node', '22.22.0'],
@@ -591,7 +591,8 @@ test('coverage regressions only report files changed by the PR and reject mismat
   });
   assert.equal(unavailable.files.length, 1);
   assert.equal(unavailable.findings.length, 0);
-  assert.match(renderComparison(unavailable), /PR coverage: unknown.*failed/);
+  assert.match(unavailable.coverageNotes.join('\n'), /PR coverage: unknown.*failed/);
+  assert.match(renderComparison(unavailable), /Some coverage data is unavailable or incomplete/);
 });
 
 test('frontend coverage stays independent of backend instrumentation and failures', async (t) => {

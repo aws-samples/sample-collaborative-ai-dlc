@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -162,7 +162,8 @@ test('replaces stale results with an explicit unavailable message on malformed o
     if (contents.schemaVersion) await rm(f.reportPath);
     await publishComplexityComment(f);
     assert.equal(f.writes.length, 1);
-    assert.match(f.writes[0].body, /Report unavailable/);
+    assert.match(f.writes[0].body, /Quality report unavailable — see CI logs\./);
+    assert.doesNotMatch(f.writes[0].body, /clean result/);
     assert.doesNotMatch(f.writes[0].body, /0 new\/unmatched/);
   }
 });
@@ -206,7 +207,7 @@ test('bounds the rendered comment even when escaping expands long artifact strin
   const data = report();
   data.findings = Array.from({ length: 20 }, () => ({
     ...data.findings[0],
-    path: '&'.repeat(500),
+    path: '~'.repeat(500),
   }));
   data.improvements = data.findings;
   const f = await fixture(t, data);
@@ -394,7 +395,7 @@ test('both workflow paths download selected producer artifacts and call the shar
     assert.equal(checkout.with['persist-credentials'], false);
     if (file === 'pr-quality-comment.yml') assert.equal(checkout.with.ref, undefined);
     else {
-      assert.equal(checkout.with.ref, '${{ github.event.pull_request.head.sha }}');
+      assert.equal(checkout.with.ref, '${{ github.sha }}');
       const uploads = workflow.jobs.report.steps
         .filter((step) => step.uses?.startsWith('actions/upload-artifact@'))
         .map((step) => [step.with.name, step.with.path]);
@@ -404,6 +405,88 @@ test('both workflow paths download selected producer artifacts and call the shar
         ['dependencies-${{ github.run_attempt }}', 'reports/complexity/dependencies.*'],
       ]);
     }
+  }
+});
+
+test('workflow tools support PR heads that predate them without measuring the merge commit', async (t) => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'quality-old-pr-')));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const source = join(cwd, 'source');
+  await mkdir(source);
+  const git = (...args) =>
+    execFileSync('git', args, {
+      cwd: source,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  git('init', '-q');
+  git('config', 'user.name', 'Test');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'commit.gpgsign', 'false');
+  await writeFile(join(source, 'app.js'), 'export const value = 1;\n');
+  git('add', '.');
+  git('commit', '-qm', 'common ancestor');
+  const baseSha = git('rev-parse', 'HEAD');
+  git('checkout', '-qb', 'old-pr');
+  await writeFile(join(source, 'app.js'), 'export const value = 2;\n');
+  git('commit', '-qam', 'PR change before quality tooling');
+  const headSha = git('rev-parse', 'HEAD');
+  git('checkout', '-qb', 'target', baseSha);
+  await mkdir(join(source, 'scripts'));
+  const scripts = [
+    'publish-complexity-comment.mjs',
+    'complexity-report.mjs',
+    'complexity-coverage.mjs',
+  ];
+  for (const name of scripts) {
+    await writeFile(
+      join(source, 'scripts', name),
+      readFileSync(new URL(`../${name}`, import.meta.url)),
+    );
+  }
+  git('add', '.');
+  git('commit', '-qm', 'add quality tools');
+  git('merge', '--no-ff', 'old-pr', '-qm', 'synthetic PR merge');
+  const mergeSha = git('rev-parse', 'HEAD');
+  assert.equal(git('ls-tree', headSha, 'scripts/'), '');
+
+  const workflow = yaml.load(
+    readFileSync(new URL('../../.github/workflows/pr-quality.yml', import.meta.url), 'utf8'),
+  );
+  for (const jobName of ['coverage', 'comment', 'report']) {
+    const checkout = workflow.jobs[jobName].steps.find((step) =>
+      step.uses?.startsWith('actions/checkout@'),
+    );
+    assert.equal(checkout.with.ref, '${{ github.sha }}', jobName);
+  }
+  const sourceCheckout = workflow.jobs.coverage.steps.find((step) => step.with?.path === 'source');
+  assert.equal(
+    sourceCheckout.with.ref,
+    "${{ matrix.revision == 'base' && needs.revisions.outputs.merge-base || github.event.pull_request.head.sha }}",
+  );
+  const compare = workflow.jobs.report.steps.find(
+    (step) => step.name === 'Compare complexity and coverage',
+  );
+  assert.equal(compare.env.PR_SHA, '${{ github.event.pull_request.head.sha }}');
+  assert.match(compare.run, /--pr "\$PR_SHA"/);
+
+  const tooling = join(cwd, 'tooling', 'scripts');
+  await mkdir(tooling, { recursive: true });
+  for (const name of scripts) {
+    await writeFile(join(tooling, name), git('show', `${mergeSha}:scripts/${name}`));
+  }
+  execFileSync(process.execPath, [join(tooling, 'publish-complexity-comment.mjs')]);
+  for (const revision of [baseSha, headSha]) {
+    git('checkout', '-q', '--detach', revision);
+    const output = join(cwd, 'coverage.json');
+    execFileSync(process.execPath, [
+      join(tooling, 'complexity-coverage.mjs'),
+      '--cwd',
+      source,
+      '--output',
+      output,
+    ]);
+    assert.equal(JSON.parse(readFileSync(output)).revision, revision);
   }
 });
 

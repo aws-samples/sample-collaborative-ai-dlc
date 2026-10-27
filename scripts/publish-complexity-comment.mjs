@@ -182,7 +182,7 @@ export async function publishComplexityComment({
     )
       continue;
     const url = `https://github.com/${repo.owner}/${repo.repo}/actions/runs/${run.id}`;
-    let content = `# Complexity and test coverage\n\nReport unavailable for \`${pr.head.sha}\`. Check the CI run; this is not a clean result.`;
+    let content = '# Complexity and test coverage\n\nQuality report unavailable — see CI logs.';
     if (report) {
       let sameBase = report.baseRef === pr.base.ref;
       if (sameBase) {

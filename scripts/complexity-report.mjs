@@ -5,6 +5,8 @@ const cell = (value) =>
     .slice(0, 500)
     .replace(/[&<>|`\r\n@[\]\\!*_~]/g, (character) => `&#${character.charCodeAt(0)};`);
 const signed = (value) => `${value > 0 ? '+' : ''}${value}`;
+const iconOrder = ['🟣', '🔴', '🟠', '🟢'];
+const rowKey = (row) => JSON.stringify([row.path, row.line, row.function, row.before, row.after]);
 const uncovered = (value) => (value?.status === 'measured' ? value.uncovered : '?');
 const percent = (coverage) =>
   coverage?.status !== 'measured'
@@ -54,17 +56,29 @@ export function changeIcon(row) {
 }
 
 function renderRows(rows) {
+  const ordered = rows.toSorted(
+    (a, b) => iconOrder.indexOf(changeIcon(a)) - iconOrder.indexOf(changeIcon(b)),
+  );
   return [
     '| | File / function | Complexity | Δ | Branch coverage | Δ | Uncovered branches | Depending files |',
     '| --- | --- | ---: | ---: | --- | ---: | ---: | ---: |',
-    ...rows.slice(0, 20).map((row) => {
+    ...ordered.slice(0, 20).map((row) => {
       const { before, after, change } = row.coverage ?? {};
-      const coverage = `${percent(before)} → ${percent(after)}`;
+      const measuredBefore = before?.status === 'measured';
+      const measuredAfter = after?.status === 'measured';
+      const coverage =
+        measuredBefore || measuredAfter
+          ? `${measuredBefore ? percent(before) : '—'} → ${measuredAfter ? percent(after) : '—'}`
+          : '—';
+      const branches =
+        measuredBefore || measuredAfter
+          ? `${measuredBefore ? before.uncovered : '—'} → ${measuredAfter ? after.uncovered : '—'}`
+          : '—';
       const delta = change?.percentagePoints;
       const dependents = row.path.startsWith('frontend/')
         ? 'n/a'
         : (row.dependentFiles ?? 'unknown');
-      return `| ${changeIcon(row)} | ${cell(`${row.path}:${row.line} — ${row.function}`)} | ${row.before ?? '—'} → ${row.after} | ${row.delta === null ? '—' : signed(row.delta)} | ${coverage} | ${delta == null ? '—' : signed(Number(delta.toFixed(1)))} | ${uncovered(before)} → ${uncovered(after)} | ${dependents} |`;
+      return `| ${changeIcon(row)} | ${cell(`${row.path}:${row.line} — ${row.function}`)} | ${row.before ?? '—'} → ${row.after} | ${row.delta === null ? '—' : signed(row.delta)} | ${coverage} | ${delta == null ? '—' : signed(Number(delta.toFixed(1)))} | ${branches} | ${dependents} |`;
     }),
     ...(rows.length > 20
       ? [`\nShowing 20 of ${rows.length}; the JSON report contains every result.`]
@@ -73,29 +87,51 @@ function renderRows(rows) {
 }
 
 export function renderComparison(report) {
+  const findings = new Set(report.findings.map(rowKey));
+  // A complexity improvement can also be a coverage regression; show it once.
+  const rows = [
+    ...report.findings,
+    ...report.improvements.filter((row) => !findings.has(rowKey(row))),
+  ];
   const lines = [
     '# Complexity and test coverage',
     '',
-    `Analyzed ${report.files.length} source files changed by this PR. Advisory threshold: ${report.analyzer.threshold}.`,
+    'Automated quality report using code complexity and test coverage to highlight potential hot spots in this PR.',
+    'Review 🟣 and 🔴 items first: consider simplifying the code, improving test coverage, or both. This report is advisory.',
     '',
-    `${report.findings.length} new/unmatched or worsening functions above the threshold.`,
+    `Analyzed ${report.files.length} source files changed by this PR. Advisory threshold: ${report.analyzer.threshold}.`,
   ];
-  for (const note of report.coverageNotes ?? []) lines.push('', cell(note));
-  if (report.dependencyNote) lines.push('', cell(report.dependencyNote));
-  if (report.findings.length) lines.push('', renderRows(report.findings));
-  if (report.improvements.length) {
+  const paths = [...report.files, ...rows]
+    .map((entry) => entry?.path)
+    .filter((path) => typeof path === 'string');
+  const incompleteCoverage =
+    rows.some(
+      (row) =>
+        (row.before !== null && row.coverage?.before?.status !== 'measured') ||
+        row.coverage?.after?.status !== 'measured' ||
+        row.coverage?.before?.partial ||
+        row.coverage?.after?.partial,
+    ) ||
+    report.coverageNotes?.some(
+      (note) =>
+        /unknown|failing|interrupted/.test(note) &&
+        paths.some((path) =>
+          path.startsWith(note.startsWith('Frontend ') ? 'frontend/' : 'lambda/'),
+        ),
+    );
+  if (incompleteCoverage) {
     lines.push(
       '',
-      `## Complexity improvements (${report.improvements.length})`,
-      '',
-      renderRows(report.improvements),
+      'Some coverage data is unavailable or incomplete; see the report artifacts for details.',
     );
   }
+  if (report.dependencyNote) lines.push('', cell(report.dependencyNote));
+  if (rows.length) lines.push('', renderRows(rows));
   lines.push(
     '',
     '🟢 Improving · 🟠 Needs attention · 🔴 High risk · 🟣 Highest risk',
     '',
-    'unknown = unavailable · n/a = not applicable · \\* = incomplete tests',
+    '— = unavailable · n/a = not applicable · \\* = incomplete tests',
     '',
   );
   return lines.join('\n');
