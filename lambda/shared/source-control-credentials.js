@@ -191,6 +191,17 @@ const verifyCodeCommitRoleBinding = async ({ ssm, sts, repo, selection = {} }) =
       code: 'INVALID_REPOSITORY',
     });
   }
+  // The connection is one region: discovery lists only that region, so a
+  // bind or rebind must not reach past it even when the AWS role allows more.
+  // Checked before STS, so a mismatch assumes nothing and writes nothing.
+  // Runtime resolution keeps the stored binding region (existing bindings stay
+  // pinned until an explicit rebind).
+  if (target.region !== connection.region) {
+    throw Object.assign(
+      new Error(`CodeCommit repositories must be in the connection region (${connection.region})`),
+      { code: 'CODECOMMIT_REGION_MISMATCH' },
+    );
+  }
   const accountId = roleAccountId(roleArn);
   // Prove the whole chain once, with the write-scoped session policy the
   // engine will use: trust policy + external ID + tenant role policy + the
