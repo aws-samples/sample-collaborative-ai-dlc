@@ -496,7 +496,9 @@ describe('workspace checkout (mocked git runner)', () => {
       runner,
       ensureDir: noMkdir,
     });
-    expect(cmds[0]).toBe('git clone https://github.com/acme/api.git /ws');
+    expect(cmds[0]).toBe(
+      'git clone --depth 1 --no-single-branch https://github.com/acme/api.git /ws',
+    );
     expect(environments[0]).toMatchObject({
       GIT_ASKPASS: '/tmp/test-askpass',
       AIDLC_GIT_PASSWORD: TEST_SECRET,
@@ -541,9 +543,43 @@ describe('workspace checkout (mocked git runner)', () => {
       removeDir: async (dir) => removed.push(dir),
     });
     expect(result).toMatchObject({ cloned: false, branchOk: false });
-    expect(cmds).toEqual(['git clone https://github.com/acme/new.git /ws']);
-    expect(removed).toEqual(['/ws']);
+    // The shallow clone failed, so one full clone was tried before giving up.
+    expect(cmds).toEqual([
+      'git clone --depth 1 --no-single-branch https://github.com/acme/new.git /ws',
+      'git clone https://github.com/acme/new.git /ws',
+    ]);
+    expect(removed).toEqual(['/ws', '/ws']);
     expect(cmds.some((command) => command.startsWith('git init'))).toBe(false);
+  });
+
+  it('falls back to a full clone when the server refuses a shallow one', async () => {
+    const cmds = [];
+    const environments = [];
+    const removed = [];
+    const runner = async (command, args, options = {}) => {
+      cmds.push([command, ...args].join(' '));
+      if (args[0] === 'clone') environments.push(options.env ?? {});
+      if (args[0] === 'clone' && args.includes('--depth')) return { code: 128 };
+      return { code: 0 };
+    };
+    const result = await checkoutRepo({
+      repo: 'acme/api',
+      branch: 'feat/x',
+      targetDir: '/ws',
+      runner,
+      ensureDir: noMkdir,
+      removeDir: async (dir) => removed.push(dir),
+    });
+    expect(result).toMatchObject({ cloned: true, branchOk: true });
+    expect(cmds.slice(0, 2)).toEqual([
+      'git clone --depth 1 --no-single-branch https://github.com/acme/api.git /ws',
+      'git clone https://github.com/acme/api.git /ws',
+    ]);
+    // The partial shallow attempt is cleared before the full clone, and both
+    // attempts run inside the same credential scope.
+    expect(removed).toEqual(['/ws']);
+    expect(environments).toHaveLength(2);
+    for (const env of environments) expect(env).toMatchObject({ GIT_ASKPASS: '/tmp/test-askpass' });
   });
 
   it('scrubs with the provider-correct clean URL for gitlab', async () => {
@@ -579,7 +615,9 @@ describe('workspace checkout (mocked git runner)', () => {
       runner,
       ensureDir: noMkdir,
     });
-    expect(cmds[0]).toBe('git clone https://gitlab.com/group/proj.git /ws');
+    expect(cmds[0]).toBe(
+      'git clone --depth 1 --no-single-branch https://gitlab.com/group/proj.git /ws',
+    );
     expect(environments[0].AIDLC_GIT_USERNAME).toBe('oauth2');
     expect(environments[0].AIDLC_GIT_PASSWORD).toBe(TEST_SECRET);
   });
@@ -596,7 +634,9 @@ describe('workspace checkout (mocked git runner)', () => {
       runner,
       ensureDir: noMkdir,
     });
-    expect(cmds[0]).toBe('git clone https://github.com/acme/api.git /ws');
+    expect(cmds[0]).toBe(
+      'git clone --depth 1 --no-single-branch https://github.com/acme/api.git /ws',
+    );
   });
 
   it('creates the branch when checkout fails', async () => {
@@ -759,7 +799,7 @@ describe('workspace checkout (mocked git runner)', () => {
   it('lays multi-repo out under <ws>/<owner>/<repo>', async () => {
     const targets = [];
     const runner = async (command, args) => {
-      if (args[0] === 'clone') targets.push(args[2]);
+      if (args[0] === 'clone') targets.push(args.at(-1));
       return { code: 0 };
     };
     await checkoutRepos({
@@ -775,7 +815,7 @@ describe('workspace checkout (mocked git runner)', () => {
   it('threads gitProvider through to each clean repo clone URL', async () => {
     const cloneUrls = [];
     const runner = async (command, args) => {
-      if (args[0] === 'clone') cloneUrls.push(args[1]);
+      if (args[0] === 'clone') cloneUrls.push(args.at(-2));
       return { code: 0 };
     };
     await checkoutRepos({
@@ -1054,7 +1094,7 @@ describe('ensureWorkspaceSource (self-heal a wiped checkout)', () => {
   const cloneRunner = () => {
     const targets = [];
     const runner = async (command, args) => {
-      if (args[0] === 'clone') targets.push(args[2]);
+      if (args[0] === 'clone') targets.push(args.at(-1));
       return { code: 0 };
     };
     return { targets, runner };

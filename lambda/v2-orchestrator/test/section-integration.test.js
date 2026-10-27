@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import { mkdtemp, rm, writeFile, readFile, readdir, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { withDurableExecution } from '@aws/durable-execution-sdk-js';
 import {
   LocalDurableTestRunner,
@@ -67,11 +68,16 @@ const initRemote = async () => {
 
 // Real clone from the file:// remote, scrubbed like workspace.js, checked out
 // on the requested branch (stands in for checkoutRepo's provider-URL clone).
+// Shallow, like checkoutRepo: git ignores --depth for a plain path, so the
+// remote is given as a URL.
 const realCheckoutRepo =
   (remote) =>
   async ({ branch, targetDir }) => {
     await mkdir(targetDir, { recursive: true });
-    const clone = await git(['clone', remote, targetDir], root);
+    const clone = await git(
+      ['clone', '--depth', '1', '--no-single-branch', pathToFileURL(remote).href, targetDir],
+      root,
+    );
     if (clone.exitCode !== 0) return { cloned: false };
     await git(['remote', 'set-url', 'origin', 'https://github.com/o/r.git'], targetDir);
     await fetchOrigin({ dir: targetDir, repo: 'o/r', urls: URLS(remote) });
@@ -314,10 +320,13 @@ const startRun = (world) => {
   return world.runner.run({ payload: { action: 'start', intentId: 'i1', executionId: 'i1' } });
 };
 
-// Fresh clone of the remote's intent branch for end-state assertions.
+// Fresh clone of the remote's intent branch for end-state assertions. A full
+// clone: the assertions read the remote's whole merge history, which the
+// engine's own shallow clones don't carry.
 const verifyClone = async (remote) => {
   const dir = path.join(root, 'verify');
-  await realCheckoutRepo(remote)({ branch: 'aidlc/i1', targetDir: dir });
+  const clone = await git(['clone', '--branch', 'aidlc/i1', remote, dir], root);
+  expect(clone.exitCode).toBe(0);
   return dir;
 };
 

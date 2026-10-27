@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { initLane, mergeLane, reconcileLane, refreshIntentWorkspace } from '../commands/lane.js';
 import { runGit, fetchOrigin } from '../git-engine.js';
+import { SHALLOW_CLONE_ARGS } from '../workspace.js';
+import { pathToFileURL } from 'node:url';
 
 // WP5 lane commands against REAL git (local bare remotes via the urls seam) —
 // proving the lane lifecycle end to end: clone → unit branch off intent HEAD →
@@ -52,12 +54,13 @@ const spyStore = () => {
 };
 
 // A checkoutRepo stub backed by a real clone from the file:// remote — mirrors
-// workspace.js behavior without provider URLs.
+// workspace.js behavior without provider URLs, including its shallow clone
+// (git ignores --depth for a plain path, so the remote is given as a URL).
 const realCheckoutRepo =
   (remote) =>
   async ({ branch, targetDir }) => {
     await mkdir(targetDir, { recursive: true });
-    const clone = await git(['clone', remote, targetDir], root);
+    const clone = await git([...SHALLOW_CLONE_ARGS, pathToFileURL(remote).href, targetDir], root);
     if (clone.exitCode !== 0) return { cloned: false };
     await git(['remote', 'set-url', 'origin', 'https://github.com/o/r.git'], targetDir);
     // fetch through the seam then checkout the requested branch.

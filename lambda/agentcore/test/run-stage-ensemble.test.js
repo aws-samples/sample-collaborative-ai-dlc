@@ -787,6 +787,11 @@ describe('runStage — ensemble lead-draft provenance', () => {
           commitRefs: [{ repo: 'acme/api', sha: 'a'.repeat(40) }],
           repos: ['acme/api'],
           workspaceDir,
+          // Credential context so a re-cloned shallow checkout can deepen.
+          projectId: 'p1',
+          executionId: 'e1',
+          gitProvider: undefined,
+          repoProviders: null,
         });
         expect.soft(inspectedFiles).toEqual(['src/lead.ts']);
         const expectedProvenance =
