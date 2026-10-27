@@ -349,7 +349,7 @@ describe('verifyCodeCommitRoleBinding (platform connection, #531)', () => {
 
   it('binds only in the connection region, even when the role allows more (review #578)', async () => {
     // One role that AWS would let reach both regions: the connection region
-    // binds, the other is refused before STS, so nothing is assumed or written.
+    // binds, the other is refused before STS (no write: see the handler test).
     const connectionSsm = ssmReturning(JSON.stringify({ roleArn: ROLE, region: 'eu-west-1' }));
     const okSts = stsOk();
     const bound = await verifyCodeCommitRoleBinding({
@@ -373,6 +373,8 @@ describe('verifyCodeCommitRoleBinding (platform connection, #531)', () => {
     expect(deniedSts.calls).toHaveLength(0);
   });
 
+  // Guard, not proof of the fix: runtime never read the connection region.
+  // It pins that the region check stays a bind-time check only.
   it('resolveBindingCredential keeps a binding pinned to its stored region after the connection region changes', async () => {
     const sts = stsOk();
     const binding = {
