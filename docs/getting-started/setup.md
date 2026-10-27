@@ -96,6 +96,26 @@ This is a secret-based access restriction: the REST API endpoint remains public,
 Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
 A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
 
+#### Body-content exemptions for authoring routes
+
+Four Common Rule Set rules inspect the request body: `GenericLFI_BODY`, `CrossSiteScripting_BODY`, `GenericRFI_BODY` and `EC2MetaDataSSRF_BODY`. Ordinary methodology content matches them: relative links such as `../templates/foo.md`, HTML comments and tags, and URLs in documentation. With `enable_waf = true`, saving such a building block, or loading a methodology through the API, fails with a 403 from CloudFront.
+
+To let those routes through while keeping the rules everywhere else, list their path prefixes:
+
+```hcl
+enable_waf                    = true
+waf_body_content_exempt_paths = ["/api/blocks/"]
+```
+
+When the list is not empty, both ACLs count the four rules instead of blocking them, and add two rules after the Common Rule Set:
+
+- `BodyContentPathTraversal` blocks a match on any path that contains `..` after URL decoding, so an exempt prefix can't be used to reach another route.
+- `BodyContentOutsideExemptPaths` blocks a match on any path outside the listed prefixes. On the regional ACL the API Gateway stage prefix (`/<stage>/api/...`) is allowed as well.
+
+Prefixes must be absolute paths ending in `/`, using only `A-Za-z0-9._~/-`, and must not contain `..`. Exempt only routes that need it; block writes already require the `platform-admin` group. The two rules add to the ACLs' monthly rule charge.
+
+With the list empty (the default), both ACLs are unchanged.
+
 ### Custom domain
 
 Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.
