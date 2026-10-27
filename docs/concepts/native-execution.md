@@ -549,13 +549,105 @@ apply that same `--plan-file` path with `--phase apply --skip-seed`. Reusing an 
 image or deploying only backend archives cannot validate the transport and
 pre-spawn recovery corrections.
 
-Live acceptance remains pending for created-workflow waiting-session expiry,
+At this candidate handoff, live acceptance remained pending for created-workflow waiting-session expiry,
 interruption during an active tool with retained edits/dependencies and real
 build/tests, the next genuine workflow question, visible intake rejection,
 missing/wrong EFS workspace rejection, and exact deployed/configuration/image
 alignment. The application fixture choice is still pending separately and does
 not block this local candidate. Do not start NE-03 until the actual NE-02 live
 proof passes.
+
+**Dev deployment and live qualification, 2026-10-27:** the user deployed
+`526837eb8394735e6b365bdfbcda249af84c5e3f` with
+`scripts/deploy-terraform.sh dev --phase all --skip-seed` and
+`scripts/deploy-frontend.sh dev`. Scoped reads using `solution-read` verified
+account `746558295630`, region `us-east-1`, the served frontend entry and all
+521 assets, all nine native Lambda archives and bundled entrypoints, and the
+five authority aliases at version **15** against the candidate bytes. The
+browser's loaded chunks were included in that comparison.
+
+The deployed runtime image is
+`sha256:074c50086bee10ca4d086fa3df0a9f87251a684bfa34df6ec67cf08cd65f6eeb`,
+with source-derived tag `cc2d6c57451852b2`. All five changed runtime production
+files match the candidate inside that exact image. Its installed harness is
+**Claude Code 2.1.296**, with image Node **24.19.0**. That image inspection used
+disabled networking and no model calls; the fresh browser executions below
+made the authorized real model calls.
+
+Both fresh Claude Starts captured **AI-DLC 2.11.1**,
+`global.anthropic.claude-sonnet-5-5` from the space override, platform Bedrock
+credentials, `efs-workspace-v1`, and the verified image digest. The fresh
+package job is `ae854a6a-c445-464d-b08f-0f5451af857e`, with package
+`sha256:577eced0d4425aba7cd4fdaec100315363e104d28fa47f1aec141aac606dfb56`
+and materialization
+`sha256:be88b2f8c1240dfb86ad4a75e9d3104931f65c35d789b572127028b0631d0386`.
+The current methodology source binding and imported package provenance match
+the accepted configurations. The connected application uses GitHub OAuth for
+`JWThewes/flappy-bird`; both executions resolved branch
+`ai-dlc/initial-game-1776942523258--task-project-scaffold` to
+`d99d2511c43f07ff2451e7e13f5a8f45b16dfce2`. Their actual runtime version,
+endpoint, 900-second idle timeout and EFS access-point/mount configurations
+match their accepted authority records.
+
+The temporary Kiro behavior **passes deployed checks**. Creation visibly
+disables Kiro and explains its temporary unavailability. Fresh Kiro draft
+`a09241ef-2f80-4de2-ba00-0597f930c116` was created and prepared through the
+public API to exercise bypass of that UI. Its configuration explains the
+restriction, Start is disabled, and a valid direct Start request returned
+**409 `NATIVE_EXECUTION_KIRO_UNAVAILABLE`**. A consistent authority read
+confirmed no execution record. This exercised no Kiro model work and does
+not qualify Kiro for release.
+
+The waiting scenario is **blocked on the pending application fixture decision**.
+Fresh intent `a3603caa-8c60-4d8e-ba0f-18605f92e773` published
+`8c29e19314bcfcca1e902c22963c9d919bfd8524ddca6ce14c52ebae795715e1`
+from CLI session `6a89dea9-a923-417e-b57c-2788651ea74a`. Its actual question
+asks how to handle the missing source baseline: `index.html` contains an
+empty Phaser scene, with no bird, pipes, score, flap/restart inputs,
+`package.json` or test tooling. The reply remains unanswered. No plan was
+selected and no created workflow was verified, so this is not a created-workflow
+recovery proof. The separate fixture choice must be resolved before continuing it.
+
+Fresh intake intent `616beab2-4f20-4e7d-b988-35aab343eea1` reached the
+initial express-plan offer, with publication
+`655d9c5fc9c41240ad88c8d353dfa11b00d26bd0703d85da24f0aa02907c6221`
+and CLI session `b9753320-74ee-4985-bc6c-370b572deccc`. Its natural-expiry
+intake rejection **passes**. After **954.585 seconds** from the recorded idle
+baseline, the member submitted the existing instruction to keep the source
+baseline decision open, selecting no plan option. The browser received **202**.
+Dispatch detected the lost session before sending the reply to the harness.
+Current EFS state reported `workflowResumeState: "not_created"`; the authority
+recorded `INTAKE_UNAVAILABLE`, `canRecover: false`, and confirmed predecessor
+stop at `2026-10-27T10:14:26.689Z`.
+
+The browser visibly explains that AI-DLC 2.11.1 requires a created workflow
+and offers no fresh-session resume action. A valid direct recovery request
+using the current recovery ID and `confirmWorkspaceResume: true` returned
+**409 `NATIVE_EXECUTION_CONFLICT`**, leaving the authority revision unchanged.
+The original publication's API and actual browser history preserve answer
+`8f3a7e1f-77e1-481f-a473-dddace526048`, its author, exact bytes and acceptance
+time `2026-10-27T10:14:23.222Z`. Its original `deliveryStatus: "pending"` is
+unchanged, with no delivery time, resulting publication or recorded approval.
+The same EFS binding, configuration, writer generation **1** and original
+publication remain. Scoped lifecycle evidence shows only the initial CLI
+launch, no continuation/resume dispatch, and no private checkpoint capture
+or restore.
+
+| Remaining NE-02 proof                                                      | Status and prerequisite                                                                                         |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Created-workflow waiting expiry, fresh CLI and next real workflow question | **BLOCKED** on the pending application fixture decision; the source-baseline question remains unanswered.       |
+| Post-resume `answer.resumeRetention.delivery: "undelivered"`               | **NOT RUN**; intake denial preserves the answer but admits no resume episode.                                   |
+| Active-tool interruption, retained edits/dependencies and real build/tests | **BLOCKED** on the fixture decision and separately authorized operator credentials or user execution.           |
+| Missing/wrong EFS workspace rejection                                      | **BLOCKED** on isolated, recoverable created-workflow resources and operator authorization; no faults were run. |
+
+No operator fault, deployment or change to historical intents was performed
+during this stage. No implementation correction was needed, and the candidate's
+backend/frontend suites were not repeated. Redacted evidence and documentation
+validation results are under `.native-evidence/ne02-2026-10-27-live/`;
+`pin-comparison.json` records the deployment/configuration comparisons,
+`intake-recovery-proof.json` records the completed negative proof, and
+`waiting-blocker.json` retains the exact unanswered source-baseline question.
+NE-02 remains unchecked; NE-03 must wait for the remaining live proof.
 
 ## Integration and simplification checklist
 
