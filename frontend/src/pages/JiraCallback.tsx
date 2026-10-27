@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { trackersService, type JiraPendingChoice } from '@/services/trackers';
 import { OAuthCallbackShell } from '@/components/OAuthCallbackShell';
@@ -17,6 +17,15 @@ export default function JiraCallback() {
   const [chosenCloudId, setChosenCloudId] = useState<string | null>(null);
 
   const meta = getTrackerProvider('jira-cloud');
+
+  // Consume the saved return path once so no exit (including the error state)
+  // leaves it behind for a later OAuth flow. `??=` keeps the value when
+  // StrictMode re-runs this effect.
+  const returnToRef = useRef<string | null>(null);
+  useEffect(() => {
+    returnToRef.current ??= sessionStorage.getItem('oauth_return_to');
+    sessionStorage.removeItem('oauth_return_to');
+  }, []);
 
   useEffect(() => {
     const code = searchParams.get('code');
@@ -53,8 +62,7 @@ export default function JiraCallback() {
   }, [searchParams, navigate, meta.callbackPath, meta.displayName]);
 
   const leave = useCallback(() => {
-    const returnTo = sessionStorage.getItem('oauth_return_to');
-    sessionStorage.removeItem('oauth_return_to');
+    const returnTo = returnToRef.current;
     // Jira connections originate in space settings. Avoid returning through
     // browser history, which may lead back to Atlassian's consent screen.
     navigate(returnTo?.startsWith('/space/') ? returnTo : '/dashboard', { replace: true });

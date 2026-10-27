@@ -103,5 +103,19 @@ describe('Jira authorization return', () => {
     expect(screen.getByText('Authorization failed')).toBeInTheDocument();
     await act(async () => vi.advanceTimersByTime(5000));
     expect(navigate).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('oauth_return_to')).toBeNull();
+  });
+
+  it('clears the saved return path when the authorization code is missing', async () => {
+    sessionStorage.setItem('oauth_return_to', returnPath);
+    await act(async () => {
+      render(
+        <MemoryRouter initialEntries={['/trackers/callback/jira-cloud?error=access_denied']}>
+          <JiraCallback />
+        </MemoryRouter>,
+      );
+    });
+    expect(screen.getByText('Missing authorization code')).toBeInTheDocument();
+    expect(sessionStorage.getItem('oauth_return_to')).toBeNull();
   });
 });
