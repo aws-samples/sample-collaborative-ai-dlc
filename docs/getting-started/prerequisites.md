@@ -74,16 +74,18 @@ export DOCKER_HOST="unix://$HOME/.rd/docker.sock"
 
     Finch does not expose a Docker Engine API socket by default, so there is no socket for `DOCKER_HOST` to use and the Terraform image build cannot run. The same applies to daemonless/CLI-only build tools such as Buildah, nerdctl, Kaniko, and BuildKit. Use Docker, Podman, or another socket-based runtime from the table above.
 
-You must also have an AWS account with permissions to manage the following services.
+You must also have an AWS account with permissions to manage the following services. Services marked _(optional)_ are only needed when the matching feature is enabled. For the resources created in each service and the services called only at runtime, see [AWS services](../concepts/aws-services.md).
 
-| Category      | Services                                                                                                                    |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| Compute       | AWS Lambda, Amazon ECS with Fargate (Yjs collaboration server), Amazon Bedrock AgentCore (agent runtime)                    |
-| Networking    | Amazon VPC, Amazon API Gateway (REST and WebSocket), Amazon CloudFront, Elastic Load Balancing                              |
-| Storage       | Amazon S3, Amazon DynamoDB, Amazon Neptune                                                                                  |
-| Security      | Amazon Cognito, AWS Identity and Access Management (IAM), AWS KMS, AWS Secrets Manager, AWS Systems Manager Parameter Store |
-| Integration   | Amazon Elastic Container Registry (Amazon ECR)                                                                              |
-| Observability | Amazon CloudWatch Logs                                                                                                      |
+| Category      | Services                                                                                                                                                                                |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Compute       | AWS Lambda, Amazon ECS with Fargate (Yjs collaboration server), Application Auto Scaling, Amazon Bedrock AgentCore (agent runtime), AWS CodeBuild (managed environment images)          |
+| Networking    | Amazon VPC, Amazon API Gateway (REST and WebSocket), Amazon CloudFront, Elastic Load Balancing, Amazon Route 53 _(optional)_                                                            |
+| Storage       | Amazon S3, Amazon DynamoDB, Amazon Neptune                                                                                                                                              |
+| Security      | Amazon Cognito, AWS Identity and Access Management (IAM), AWS KMS, AWS Secrets Manager, AWS Systems Manager Parameter Store, AWS WAF _(optional)_, AWS Certificate Manager _(optional)_ |
+| Integration   | Amazon Elastic Container Registry (Amazon ECR), Amazon EventBridge, Amazon SQS                                                                                                          |
+| Observability | Amazon CloudWatch (Logs and alarms)                                                                                                                                                     |
+
+At runtime the application also calls Amazon Inspector (managed environment image scan results), the AWS Price List API (Bedrock cost estimates), and Amazon Bedrock (model discovery). If service control policies restrict these services, allow them in the deployment Region.
 
 ## Optional tools
 

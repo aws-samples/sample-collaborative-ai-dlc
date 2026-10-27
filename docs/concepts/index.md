@@ -104,6 +104,7 @@ You start an intent by writing a prompt (or importing a tracker issue), reviewin
 Read about how it works in detail:
 
 - [Architecture](architecture.md) — system-level component overview
+- [AWS services](aws-services.md) — every AWS service the platform provisions or calls
 - [Data model](data-model.md) — knowledge graph, execution state, and workflow library
 - [Workflows and building blocks](workflows-and-blocks.md) — how the methodology is composed
 - [AI-DLC release compatibility](aidlc-release-compatibility.md) — release identity, support and trust tiers, release-pinned execution, and the operator runbook for enabling, rolling back and verifying release coexistence
