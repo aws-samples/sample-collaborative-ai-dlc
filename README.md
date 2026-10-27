@@ -465,7 +465,7 @@ npm run complexity          # advisory warnings for function scores above 15
 npm run complexity:compare  # compare origin/main's merge base with HEAD
 ```
 
-CI combines complexity changes, backend branch coverage, and importer counts in one PR comment,
+CI combines complexity changes, backend/frontend branch coverage, and importer counts in one PR comment,
 helping reviewers find new or worsening complex functions and coverage regressions.
 These signals are advisory. See [PR quality reports](docs/development/pr-quality.md)
 for coverage details, thresholds, matching limits, and CI behavior.

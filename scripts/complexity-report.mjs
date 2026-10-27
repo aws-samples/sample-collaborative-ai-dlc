@@ -24,12 +24,13 @@ function currentRiskIcon(row) {
 
 function complexityCoverageIcon(row) {
   const coverageDelta = row.coverage?.change?.percentagePoints;
-  if (row.before == null || row.delta == null || coverageDelta == null) return currentRiskIcon(row);
+  if (row.before == null || row.delta == null) return currentRiskIcon(row);
 
   // Normalize the two different units before balancing mixed changes.
-  // The five-point floor keeps tiny complexity changes from looking drastic.
-  const complexityWorsening = row.delta / Math.max(5, row.before * 0.2);
-  const coverageWorsening = -coverageDelta / 10;
+  // Frontend changes use a higher floor before flagging a large regression.
+  const floor = row.path.startsWith('frontend/') ? 10 : 5;
+  const complexityWorsening = row.delta / Math.max(floor, row.before * 0.2);
+  const coverageWorsening = -(coverageDelta ?? 0) / 10;
   if (
     complexityWorsening <= 0 &&
     coverageWorsening <= 0 &&
@@ -60,7 +61,10 @@ function renderRows(rows) {
       const { before, after, change } = row.coverage ?? {};
       const coverage = `${percent(before)} → ${percent(after)}`;
       const delta = change?.percentagePoints;
-      return `| ${changeIcon(row)} | ${cell(`${row.path}:${row.line} — ${row.function}`)} | ${row.before ?? '—'} → ${row.after} | ${row.delta === null ? '—' : signed(row.delta)} | ${coverage} | ${delta == null ? '—' : signed(Number(delta.toFixed(1)))} | ${uncovered(before)} → ${uncovered(after)} | ${row.dependentFiles ?? 'unknown'} |`;
+      const dependents = row.path.startsWith('frontend/')
+        ? 'n/a'
+        : (row.dependentFiles ?? 'unknown');
+      return `| ${changeIcon(row)} | ${cell(`${row.path}:${row.line} — ${row.function}`)} | ${row.before ?? '—'} → ${row.after} | ${row.delta === null ? '—' : signed(row.delta)} | ${coverage} | ${delta == null ? '—' : signed(Number(delta.toFixed(1)))} | ${uncovered(before)} → ${uncovered(after)} | ${dependents} |`;
     }),
     ...(rows.length > 20
       ? [`\nShowing 20 of ${rows.length}; the JSON report contains every result.`]
@@ -91,7 +95,7 @@ export function renderComparison(report) {
     '',
     '🟢 Improving · 🟠 Needs attention · 🔴 High risk · 🟣 Highest risk',
     '',
-    'unknown = unavailable · n/a = no branches · \\* = incomplete tests',
+    'unknown = unavailable · n/a = not applicable · \\* = incomplete tests',
     '',
   );
   return lines.join('\n');

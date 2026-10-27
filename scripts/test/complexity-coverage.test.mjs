@@ -6,9 +6,79 @@ import { resolve, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { analyzeSource } from '../complexity-analysis.mjs';
-import { attachCoverage, collectCoverage } from '../complexity-coverage.mjs';
+import { attachCoverage, collectCoverage, sourceHash } from '../complexity-coverage.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
+
+test('collects real frontend TSX coverage with repository paths and frontend instrumentation', async (t) => {
+  const cwd = await mkdtemp(join(tmpdir(), 'complexity-frontend-v8-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await mkdir(join(cwd, 'frontend/src'), { recursive: true });
+  await symlink(resolve(root, 'node_modules'), join(cwd, 'frontend/node_modules'));
+  await writeFile(join(cwd, 'frontend/package.json'), '{"type":"module"}');
+  await writeFile(
+    join(cwd, 'frontend/vitest.config.ts'),
+    `export default { test: {
+    include: ['src/sample.test.ts'], coverage: { provider: 'v8', reporter: ['json'], include: ['src/**/*.tsx'] }
+  } };`,
+  );
+  const source = 'export function view(value: boolean) { if (value) return 1; return 0; }';
+  await writeFile(join(cwd, 'frontend/src/view.tsx'), source);
+  await writeFile(
+    join(cwd, 'frontend/src/sample.test.ts'),
+    `
+    import { test, expect } from 'vitest';
+    import { view } from './view';
+    test('one branch', () => { expect(view(true)).toBe(1); });
+  `,
+  );
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+  git('init', '-q');
+  git('add', 'frontend/package.json', 'frontend/vitest.config.ts', 'frontend/src');
+  git(
+    '-c',
+    'user.name=Test',
+    '-c',
+    'user.email=test@example.com',
+    '-c',
+    'core.hooksPath=/dev/null',
+    '-c',
+    'commit.gpgsign=false',
+    'commit',
+    '-qm',
+    'fixture',
+  );
+  execFileSync(
+    process.execPath,
+    [join(root, 'node_modules/vitest/vitest.mjs'), 'run', '--coverage'],
+    {
+      cwd: join(cwd, 'frontend'),
+      stdio: 'pipe',
+      timeout: 60000,
+    },
+  );
+  const snapshot = await collectCoverage({
+    cwd,
+    scope: 'frontend',
+    successful: true,
+    input: join(cwd, 'frontend/coverage/coverage-final.json'),
+  });
+  assert.equal(snapshot.revision, git('rev-parse', 'HEAD'));
+  assert.equal(snapshot.status, 'complete');
+  assert.deepEqual(Object.keys(snapshot.files), ['frontend/src/view.tsx']);
+  const measured = attachCoverage(
+    await analyzeSource(root, 'frontend/src/view.tsx', source),
+    source,
+    snapshot.files['frontend/src/view.tsx'],
+    snapshot,
+    snapshot.revision,
+  );
+  assert.equal(measured[0].coverage.percent, 50);
+  assert.equal(
+    snapshot.instrumenter.config,
+    sourceHash(await readFile(join(cwd, 'frontend/vitest.config.ts'))),
+  );
+});
 
 test('collects real Vitest/V8 outcomes and binds them to source and revision', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'complexity-v8-'));

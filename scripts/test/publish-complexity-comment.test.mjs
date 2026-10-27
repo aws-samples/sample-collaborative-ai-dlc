@@ -407,7 +407,7 @@ test('both workflow paths download selected producer artifacts and call the shar
   }
 });
 
-test('workflow skips backend suites for docs, Terraform and frontend but detects backend inputs', async (t) => {
+test('workflow selects backend and frontend coverage independently', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'quality-paths-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const git = (...args) =>
@@ -430,19 +430,24 @@ test('workflow skips backend suites for docs, Terraform and frontend but detects
     readFileSync(new URL('../../.github/workflows/pr-quality.yml', import.meta.url), 'utf8'),
   );
   const script = workflow.jobs.revisions.steps.find((step) => step.id === 'refs').run;
-  assert.equal(workflow.jobs.coverage.if, "needs.revisions.outputs.coverage-needed == 'true'");
-  for (const [path, expected] of [
-    ['docs/guide.md', false],
-    ['terraform/main.tf', false],
-    ['frontend/src/index.ts', false],
-    ['lambda/intents/index.js', true],
-    ['test/setup.js', true],
-    ['package-lock.json', true],
-    ['vitest.config.js', true],
-    ['eslint.complexity.config.mjs', true],
-    ['scripts/complexity-coverage.mjs', true],
-    ['scripts/test/compare-complexity.test.mjs', true],
-    ['.github/workflows/pr-quality.yml', true],
+  assert.equal(
+    workflow.jobs.coverage.if,
+    "needs.revisions.outputs.coverage-needed == 'true' || needs.revisions.outputs.frontend-needed == 'true'",
+  );
+  for (const [path, expected, frontend] of [
+    ['docs/guide.md', false, false],
+    ['terraform/main.tf', false, false],
+    ['frontend/src/index.ts', false, true],
+    ['frontend/package-lock.json', false, true],
+    ['frontend/vitest.config.ts', false, true],
+    ['lambda/intents/index.js', true, false],
+    ['test/setup.js', true, false],
+    ['package-lock.json', true, true],
+    ['vitest.config.js', true, false],
+    ['eslint.complexity.config.mjs', true, true],
+    ['scripts/complexity-coverage.mjs', true, true],
+    ['scripts/test/compare-complexity.test.mjs', true, true],
+    ['.github/workflows/pr-quality.yml', true, true],
   ]) {
     git('checkout', '-q', '--detach', baseSha);
     await mkdir(dirname(join(cwd, path)), { recursive: true });
@@ -472,5 +477,6 @@ test('workflow skips backend suites for docs, Terraform and frontend but detects
       },
     });
     assert.match(readFileSync(output, 'utf8'), new RegExp(`coverage-needed=${expected}\n`), path);
+    assert.match(readFileSync(output, 'utf8'), new RegExp(`frontend-needed=${frontend}\n`), path);
   }
 });

@@ -63,7 +63,8 @@ export function coverageRegressed(before, after) {
   return change !== null && (change.percentagePoints < 0 || change.uncovered > 0);
 }
 
-export async function collectCoverage({ cwd, input, successful }) {
+export async function collectCoverage({ cwd, input, successful, scope = 'backend' }) {
+  if (!['backend', 'frontend'].includes(scope)) throw new Error('Invalid coverage scope');
   cwd = await realpath(cwd);
   const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
   const snapshot = { schemaVersion: 1, revision, status: 'unavailable', files: {} };
@@ -75,16 +76,24 @@ export async function collectCoverage({ cwd, input, successful }) {
     if (!successful && error.code === 'ENOENT') return snapshot;
     throw error;
   }
-  const require = createRequire(resolve(cwd, 'package.json'));
+  const frontend = scope === 'frontend';
+  const require = createRequire(resolve(cwd, frontend ? 'frontend/package.json' : 'package.json'));
   snapshot.instrumenter = {
     node: process.versions.node,
     vitest: require('vitest/package.json').version,
     provider: require('@vitest/coverage-v8/package.json').version,
-    config: sourceHash(await readFile(resolve(cwd, 'vitest.config.js'))),
+    config: sourceHash(
+      await readFile(resolve(cwd, frontend ? 'frontend/vitest.config.ts' : 'vitest.config.js')),
+    ),
   };
   for (const [path, coverage] of Object.entries(raw)) {
     const name = relative(cwd, path).split('\\').join('/');
-    if (name.startsWith('../') || isAbsolute(name) || !name.startsWith('lambda/')) continue;
+    if (
+      name.startsWith('../') ||
+      isAbsolute(name) ||
+      !name.startsWith(frontend ? 'frontend/src/' : 'lambda/')
+    )
+      continue;
     const branches = [];
     for (const [id, branch] of Object.entries(coverage.branchMap)) {
       branch.locations.forEach((_location, index) => {
@@ -113,6 +122,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       input: { type: 'string' },
       output: { type: 'string' },
       successful: { type: 'boolean', default: false },
+      scope: { type: 'string', default: 'backend' },
     },
   });
   try {
@@ -120,6 +130,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       cwd: resolve(values.cwd),
       input: values.input,
       successful: values.successful,
+      scope: values.scope,
     });
     await writeFile(values.output, `${JSON.stringify(snapshot)}\n`);
   } catch (error) {

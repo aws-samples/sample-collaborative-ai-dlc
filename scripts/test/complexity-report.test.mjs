@@ -74,6 +74,18 @@ test('a five-point floor avoids exaggerating tiny complexity increases', () => {
   assert.equal(changeIcon(row(0, 5, -10)), '🟣');
 });
 
+test('frontend complexity uses a ten-point floor and still accounts for coverage', () => {
+  const frontend = (before, after, delta) => ({
+    ...row(before, after, delta),
+    path: 'frontend/src/view.tsx',
+  });
+  assert.equal(changeIcon(frontend(11, 16, null)), '🟠');
+  assert.equal(changeIcon(frontend(11, 21, null)), '🔴');
+  assert.equal(changeIcon(frontend(11, 16, 0)), '🟠');
+  assert.equal(changeIcon(frontend(11, 16, -10)), '🔴');
+  assert.equal(changeIcon(frontend(11, 21, -10)), '🟣');
+});
+
 test('missing comparisons use current complexity, with strict threshold boundaries', () => {
   for (const [score, icon] of [
     [15, '🟢'],
@@ -87,6 +99,14 @@ test('missing comparisons use current complexity, with strict threshold boundari
   }
   assert.equal(changeIcon(row(50, 70, null)), '🔴');
   assert.equal(changeIcon({ ...row(50, 70, -20), coverage: undefined }), '🔴');
+});
+
+test('missing coverage preserves the complexity delta instead of escalating existing debt', () => {
+  assert.equal(changeIcon(row(167, 168, null)), '🟠');
+  assert.equal(changeIcon({ ...row(167, 168, null), coverage: undefined }), '🟠');
+  assert.equal(changeIcon(row(168, 167, null)), '🟢');
+  assert.equal(changeIcon(row(167, 210, null)), '🔴');
+  assert.equal(changeIcon(row(null, 168, null)), '🟣');
 });
 
 test('low measured PR coverage escalates current risk, but unknown and branchless coverage do not', () => {
@@ -120,13 +140,29 @@ test('Markdown keeps the table and a compact two-line legend', () => {
   assert.ok(
     markdown.endsWith(
       '🟢 Improving · 🟠 Needs attention · 🔴 High risk · 🟣 Highest risk\n\n' +
-        'unknown = unavailable · n/a = no branches · \\* = incomplete tests\n',
+        'unknown = unavailable · n/a = not applicable · \\* = incomplete tests\n',
     ),
   );
   assert.ok(markdown.length < 1500, 'A two-row report should stay brief');
   assert.match(markdown, /\| Depending files \|/);
   assert.match(markdown, /\| 12 \|/);
   assert.match(markdown, /\| unknown \|/);
+});
+
+test('frontend depending files are n/a, while unavailable backend counts remain unknown', () => {
+  const markdown = renderComparison({
+    files: [],
+    analyzer: { threshold: 15 },
+    findings: [
+      { ...row(167, 168, null), path: 'frontend/src/example.tsx', dependentFiles: null },
+      { ...row(167, 168, null), path: 'lambda/missing.js', dependentFiles: null },
+      { ...row(167, 168, null), path: 'lambda/entry.js', dependentFiles: 0 },
+    ],
+    improvements: [],
+  });
+  assert.match(markdown, /\| 🟠 \| frontend\/src\/example.tsx[^\n]*\| n\/a \|/);
+  assert.match(markdown, /lambda\/missing.js[^\n]*\| unknown \|/);
+  assert.match(markdown, /lambda\/entry.js[^\n]*\| 0 \|/);
 });
 
 test('high usage amplifies coverage risk one level, but preserves green improvements', () => {
