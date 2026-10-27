@@ -2772,7 +2772,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
 
     expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
     expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
-      fidelityEvidenceRevision: 6,
+      fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION,
     });
   });
 
@@ -2780,7 +2780,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
     await registerRelease(registerArgs(CANDIDATE_PROFILE));
 
     expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
-      fidelityEvidenceRevision: 6,
+      fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION,
     });
   });
 
@@ -3030,7 +3030,7 @@ describe('promotion of a record whose evidence predates the unmapped-field block
 
     expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
     expect(rows.get(key).fidelityGaps).not.toContainEqual(STALE_GAP);
-    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: 6 });
+    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION });
   });
 
   it('reports the recomputed answer when an admin lists it', async () => {
@@ -3041,7 +3041,7 @@ describe('promotion of a record whose evidence predates the unmapped-field block
     const listed = releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
     expect(listed.unhonouredValues).toEqual([]);
     expect(listed.fidelityGaps).not.toContainEqual(STALE_GAP);
-    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: 6 });
+    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION });
   });
 });
 
@@ -3088,7 +3088,70 @@ describe('promotion of a record whose evidence predates the 2.11 command classif
 
     expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
     expect(rows.get(key).fidelityGaps).not.toContainEqual(row.fidelityGaps[0]);
-    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: 6 });
+    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION });
+  });
+});
+
+// A 2.11.1 record registered before `sensor-<id> --stage` was classified: that
+// build stored the bare command as an unknown, unannexed family, at revision 6.
+// Its list looked current, so promotion trusted it and refused the release
+// forever — the bug the revision bump fixes.
+describe('promotion of a 2.11.1 record whose evidence predates the sensor-on-request classification', () => {
+  const PROFILE = 'v2.11.1';
+  const STALE_GAP = Object.freeze({
+    blockType: 'BODY',
+    field: '{{INVOKE}}',
+    value: 'engine sensor-traceability --stage',
+  });
+  const bundle211 = buildReleaseBundle({
+    profileId: PROFILE,
+    files: filesWithInvokeLines(PROFILE),
+  });
+  const releaseId211 = bundle211.manifest.releaseId;
+
+  const registeredByThePreviousBuild = async () => {
+    installFakes();
+    await publishReleaseBundle({ s3, bucket: BUCKET, bundle: bundle211 });
+    await registerRelease(registerArgs(PROFILE));
+    const key = keyOf(`AIDLC_RELEASE#${releaseId211}`, 'META');
+    const row = {
+      ...rows.get(key),
+      fidelityGaps: [
+        ...rows.get(key).fidelityGaps.filter((gap) => gap.value !== 'engine sensor-<id> --stage'),
+        STALE_GAP,
+      ],
+      fidelityEvidenceRevision: 6,
+    };
+    rows.set(key, row);
+    return { key, row };
+  };
+
+  it('is stale, so neither the listing nor promotion trusts that list', async () => {
+    const { key } = await registeredByThePreviousBuild();
+
+    expect(FIDELITY_EVIDENCE_REVISION).toBeGreaterThan(6);
+    const listed = (await listReleases({ ...registryArgs(), s3, bucket: BUCKET })).find(
+      (release) => release.releaseId === releaseId211,
+    );
+    expect(listed.unhonouredValues).toEqual([]);
+    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION });
+  });
+
+  it('promotes once the closure is re-evaluated', async () => {
+    const { key, row } = await registeredByThePreviousBuild();
+
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: releaseId211,
+      expectedRevision: row.revision,
+      patch: { supportState: 'certified' },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'certified', unhonouredValues: [] });
+    expect(rows.get(key).fidelityGaps.map((gap) => gap.value)).not.toContain(STALE_GAP.value);
   });
 });
 
@@ -3232,7 +3295,7 @@ describe('admin listing of a record registered before protocol evidence existed'
     const second = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
 
     const listed = first.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
-    expect(cached.fidelityEvidenceRevision).toBe(6);
+    expect(cached.fidelityEvidenceRevision).toBe(FIDELITY_EVIDENCE_REVISION);
     expect(cached.fidelityGaps).toEqual(listed.fidelityGaps);
     expect(cached.fidelityGaps).not.toEqual(legacy.fidelityGaps);
     // Evidence is derived from an immutable closure, never a decision, so the
