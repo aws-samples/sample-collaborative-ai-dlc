@@ -194,6 +194,12 @@ export async function publishComplexityComment({
         });
         sameBase = comparison.merge_base_commit.sha === report.mergeBase;
       }
+      if (sameBase && report.files.length === 0) {
+        if (existing) {
+          await github.rest.issues.deleteComment({ ...repo, comment_id: existing.id });
+        }
+        continue;
+      }
       content = sameBase
         ? renderComparison(report)
         : `# Complexity and test coverage\n\nThe target branch or merge base changed. Push an updated branch to generate a fresh comparison for \`${pr.head.sha}\`.`;

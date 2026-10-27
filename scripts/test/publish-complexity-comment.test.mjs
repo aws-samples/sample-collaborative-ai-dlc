@@ -22,7 +22,7 @@ const report = () => ({
   mergeBase: base,
   pr: prSha,
   analyzer: { threshold: 15 },
-  files: [],
+  files: [{ path: 'lambda/<img>@maintainers|evil.js' }],
   coverageNotes: [],
   improvements: [],
   findings: [
@@ -89,6 +89,7 @@ async function fixture(t, contents = report()) {
         listComments,
         createComment: async (input) => writes.push({ action: 'create', ...input }),
         updateComment: async (input) => writes.push({ action: 'update', ...input }),
+        deleteComment: async (input) => writes.push({ action: 'delete', ...input }),
       },
     },
   };
@@ -233,6 +234,43 @@ for (const [name, createFixture] of [
   ['same repository', sameRepositoryFixture],
   ['fork', fixture],
 ]) {
+  test(`${name}: no analyzed files skips publication and removes only the previous bot report`, async (t) => {
+    const f = await createFixture(t);
+    await writeFile(
+      f.reportPath,
+      JSON.stringify({ ...report(), files: [], findings: [], improvements: [] }),
+    );
+    f.comments.push({ id: 1, user: { login: 'human', type: 'User' }, body: commentMarker });
+    await publishComplexityComment(f);
+    assert.deepEqual(f.writes, []);
+    const previous = {
+      id: 2,
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+      body: `${commentMarker}\n<!-- quality-run:122:1 -->`,
+    };
+    f.comments.push(previous);
+    await publishComplexityComment(f);
+    assert.deepEqual(f.writes, [
+      { action: 'delete', owner: 'example', repo: 'project', comment_id: 2 },
+    ]);
+    f.writes.length = 0;
+    previous.body = `${commentMarker}\n<!-- quality-run:123:2 -->`;
+    await publishComplexityComment(f);
+    assert.deepEqual(f.writes, [], 'An older run cannot remove a newer report');
+    previous.body = `${commentMarker}\n<!-- quality-run:122:1 -->`;
+    f.pr.head.sha = 'c'.repeat(40);
+    await publishComplexityComment(f);
+    assert.deepEqual(f.writes, [], 'A stale PR revision cannot remove a report');
+  });
+
+  test(`${name}: analyzed files without findings still produce a report`, async (t) => {
+    const f = await createFixture(t);
+    await writeFile(f.reportPath, JSON.stringify({ ...report(), findings: [], improvements: [] }));
+    await publishComplexityComment(f);
+    assert.equal(f.writes[0].action, 'create');
+    assert.match(f.writes[0].body, /Analyzed 1 source files/);
+  });
+
   test(`${name}: posts validated JSON through the shared publisher`, async (t) => {
     const f = await createFixture(t);
     await publishComplexityComment(f);
