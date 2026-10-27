@@ -225,6 +225,27 @@ describe('merge-lane', () => {
     ]);
   });
 
+  it('writes a conventional merge commit with the Jira key when ENGINE_COMMIT_STYLE is conventional', async () => {
+    const remote = await initRemote();
+    await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'auth code\n');
+    const ws = await intentWorkspace(remote);
+    const store = {
+      ...spyStore(),
+      getExecution: async () => ({
+        source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+      }),
+    };
+    const res = await mergeLane(basePayload(ws), {
+      ...deps(remote, store),
+      env: { ENGINE_COMMIT_STYLE: 'conventional' },
+    });
+    expect(res.ok).toBe(true);
+    const msg = await git(['log', '-1', '--format=%B', 'aidlc/i1'], ws);
+    expect(msg.stdout.trim()).toBe(
+      'chore(aidlc): merge auth lane [ABC-12]\n\nAIDLC-Unit: auth\nAIDLC-Execution: e1',
+    );
+  });
+
   it('a payload gitAuthor makes the merge commit authored by the user, committed by the engine', async () => {
     const remote = await initRemote();
     await commitOnRemote(remote, 'aidlc/i1--s1-unit-auth', 'auth.txt', 'auth code\n');

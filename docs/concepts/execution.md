@@ -61,6 +61,7 @@ Git is deterministic and owned by the engine — **the agent never runs git and 
 
 - On start, the engine clones the project's repositories, creates the intent branch `aidlc/<title-slug>` (a readable slug derived from the intent title) off each repository's base branch, and mounts the checkout as the agent's working directory.
 - The engine commits and pushes after **every** stage exit — success, park, or failure — so no work is ever lost to a session expiry.
+- Engine commits are titled `aidlc(<stage>): <execution>` by default. Set the Terraform variable `engine_commit_style = "conventional"` for repositories that lint commit messages: commits are then titled as [Conventional Commits](https://www.conventionalcommits.org/) (`chore(aidlc): code-generation stage for billing [ABC-12]`), with the Jira issue key appended when the intent was started from a Jira Cloud issue, the intent title in the body, and the stage, unit and execution as `AIDLC-Stage`, `AIDLC-Unit` and `AIDLC-Execution` trailers. The setting reaches managed environments through a new revision.
 - Credentials are injected only inside the engine's push/fetch windows and scrubbed from the checkout otherwise. In GitHub App mode, pushes use installation tokens instead of user tokens.
 - Parallel lanes work on section-specific per-unit branches (`aidlc/<intent-slug>--s<k>-unit-<slug>`).
 - With **Intent PR**, the engine merges completed lanes into the intent branch with serialized `--no-ff` merges in dependency-safe order.

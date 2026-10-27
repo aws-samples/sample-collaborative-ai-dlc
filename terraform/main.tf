@@ -758,6 +758,7 @@ module "agentcore" {
   websocket_endpoint          = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
   websocket_execution_arn     = module.realtime.websocket_execution_arn
   aidlc_repo_ref              = var.aidlc_repo_ref
+  engine_commit_style         = var.engine_commit_style
   bedrock_model               = var.bedrock_model
   bedrock_region              = local.bedrock_region
   # The kiro-cli build shipped in the agentcore image only accepts the "auto"

@@ -95,6 +95,7 @@ import {
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
+import { createEngineCommitMessages } from '../commit-message.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { CHECKPOINTS, answerFreeText, chosenLabel } from '../mcp/process-bridge.js';
@@ -1818,6 +1819,11 @@ const runStageAttempt = async (
     processUptimeMs = () => process.uptime() * 1000,
   } = deps;
   let store = processStore;
+  const engineCommitMessage = createEngineCommitMessages({
+    store: processStore,
+    executionId,
+    env,
+  });
 
   const now = () => clock();
   const stageStartedAtMs = nowMs();
@@ -3934,9 +3940,7 @@ const runStageAttempt = async (
         projectId,
         executionId,
         author: gitAuthor,
-        message: unitSlug
-          ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (lead draft)`
-          : `aidlc(${stageId}): ${executionId} (lead draft)`,
+        message: await engineCommitMessage({ stageId, unitSlug, label: 'lead draft' }),
       }).catch((error) => ({
         ok: false,
         committed: false,
@@ -4257,9 +4261,7 @@ const runStageAttempt = async (
     author: gitAuthor,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.
-    message: unitSlug
-      ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
-      : `aidlc(${stageId}): ${executionId}`,
+    message: await engineCommitMessage({ stageId, unitSlug }),
   });
   // Every commit of this attempt: carried from a parked leg, this leg's, and the
   // repair turns' (added by runRepairTurn below).
@@ -4614,9 +4616,7 @@ const runStageAttempt = async (
           projectId,
           executionId,
           author: gitAuthor,
-          message: unitSlug
-            ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (${label})`
-            : `aidlc(${stageId}): ${executionId} (${label})`,
+          message: await engineCommitMessage({ stageId, unitSlug, label }),
         }).catch((error) => ({
           ok: false,
           committed: false,

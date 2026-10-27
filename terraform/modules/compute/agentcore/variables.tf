@@ -107,6 +107,12 @@ variable "aidlc_repo_ref" {
   type        = string
 }
 
+variable "engine_commit_style" {
+  description = "Message style of the engine's commits: \"aidlc\" or \"conventional\""
+  type        = string
+  default     = "aidlc"
+}
+
 variable "bedrock_model" {
   description = "Default Bedrock inference profile id for stage agents"
   type        = string

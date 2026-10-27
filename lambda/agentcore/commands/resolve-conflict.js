@@ -52,6 +52,7 @@ import {
 import { withOpenCodeStore as defaultWithOpenCodeStore } from '../cli/opencode-store.js';
 import { cleanupCodexHome as defaultCleanupCodexHome } from '../cli/codex-store.js';
 import { repoUrl, repoProvider } from '../../shared/repo-provider.js';
+import { createEngineCommitMessages } from '../commit-message.js';
 
 const logger = new Logger({
   persistentKeys: { component: 'agentcore', module: 'resolve-conflict' },
@@ -165,7 +166,10 @@ const resolveConflictImplementation = async (
 
   const multi = repos.length > 1;
   const dirFor = (url) => repoTargetDir({ url, workspaceDir, multi });
-  const mergeMessage = `aidlc(conflict-resolution): ${unitSlug} — ${executionId}`;
+  const mergeMessage = await createEngineCommitMessages({ store, executionId, env })({
+    kind: 'conflict-resolution',
+    unitSlug,
+  });
 
   // ── 1. ENGINE: begin the reverse merges, collecting real conflicts ────────
   const conflictedByRepo = [];
