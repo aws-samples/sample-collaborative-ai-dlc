@@ -57,7 +57,11 @@ describe('controller-owned native cancellation fence', () => {
     const { fence } = make();
     const recoveryId = '55555555-5555-4555-8555-555555555555';
     await fence.ensureActive(identity);
-    await fence.suspend(identity, { writerGeneration: 1, recoveryId });
+    await fence.suspend(identity, {
+      writerGeneration: 1,
+      recoveryId,
+      workflowResumeState: 'created',
+    });
     const input = {
       writerGeneration: 2,
       recoveryId,
@@ -83,7 +87,11 @@ describe('controller-owned native cancellation fence', () => {
     const { fence, objects } = make();
     const recoveryId = '55555555-5555-4555-8555-555555555555';
     await fence.ensureActive(identity);
-    await fence.suspend(identity, { writerGeneration: 1, recoveryId });
+    await fence.suspend(identity, {
+      writerGeneration: 1,
+      recoveryId,
+      workflowResumeState: 'created',
+    });
     await fence.activate(identity, {
       writerGeneration: 2,
       recoveryId,
@@ -108,6 +116,84 @@ describe('controller-owned native cancellation fence', () => {
       code: 'NATIVE_EXECUTION_CANCELLED',
     });
     expect((await fence.read(identity)).state).toBe('CANCELLED');
+  });
+  it('retains creation proof only for its exact fenced writer and episode', async () => {
+    const { fence } = make();
+    const recoveryId = '55555555-5555-4555-8555-555555555555';
+    await fence.ensureActive(identity);
+    const stopped = {
+      writerGeneration: 1,
+      recoveryId,
+      reason: 'SESSION_LOST',
+      workflowResumeState: 'created',
+    };
+    await fence.suspend(identity, stopped);
+    expect(await fence.read(identity)).toMatchObject({ state: 'FENCED', ...stopped });
+    expect(await fence.suspend(identity, stopped)).toMatchObject(stopped);
+    await expect(
+      fence.suspend(identity, { ...stopped, workflowResumeState: 'not_created' }),
+    ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_FENCE_CONFLICT' });
+    await expect(
+      fence.suspend(identity, { ...stopped, writerGeneration: 2 }),
+    ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_FENCE_CONFLICT' });
+    const active = await fence.activate(identity, {
+      writerGeneration: 2,
+      recoveryId,
+      checkpointId: null,
+      recoveryMode: 'efs-workspace-v1',
+    });
+    expect(active.workflowResumeState).toBeUndefined();
+    await fence.suspend(identity, {
+      writerGeneration: 2,
+      recoveryId: '66666666-6666-4666-8666-666666666666',
+      reason: 'WORKFLOW_STATE_UNAVAILABLE',
+      workflowResumeState: 'unavailable',
+    });
+    expect((await fence.read(identity)).workflowResumeState).toBe('unavailable');
+    await fence.cancel(identity);
+    expect((await fence.read(identity)).workflowResumeState).toBeUndefined();
+  });
+
+  it.each([undefined, 'not_created', 'unavailable'])(
+    'reads a stopped writer with proof %s without admitting workspace recovery',
+    async (workflowResumeState) => {
+      const { fence } = make();
+      const recoveryId = '55555555-5555-4555-8555-555555555555';
+      await fence.ensureActive(identity);
+      await fence.suspend(identity, {
+        writerGeneration: 1,
+        recoveryId,
+        ...(workflowResumeState === undefined ? {} : { workflowResumeState }),
+      });
+      expect((await fence.read(identity)).state).toBe('FENCED');
+      await expect(
+        fence.activate(identity, {
+          writerGeneration: 2,
+          recoveryId,
+          checkpointId: null,
+          recoveryMode: 'efs-workspace-v1',
+        }),
+      ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_FENCE_CONFLICT' });
+    },
+  );
+
+  it.each(
+    ['invalid', null, true, {}, [], ['created']].map((workflowResumeState) => ({
+      workflowResumeState,
+    })),
+  )('rejects malformed protected workflow evidence %j', async ({ workflowResumeState }) => {
+    const { fence, objects } = make();
+    const recoveryId = '55555555-5555-4555-8555-555555555555';
+    await fence.ensureActive(identity);
+    await expect(
+      fence.suspend(identity, { writerGeneration: 1, recoveryId, workflowResumeState }),
+    ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_FENCE_INVALID' });
+    await fence.suspend(identity, { writerGeneration: 1, recoveryId });
+    const stored = objects.get(nativeExecutionFenceKey(identity));
+    stored.body = Buffer.from(JSON.stringify({ ...JSON.parse(stored.body), workflowResumeState }));
+    await expect(fence.read(identity)).rejects.toMatchObject({
+      code: 'NATIVE_EXECUTION_FENCE_INVALID',
+    });
   });
   it('can cancel before any dispatch created the ACTIVE fence', async () => {
     const { fence } = make();

@@ -17,16 +17,18 @@ import {
   createNativeExecutionSupervisor,
   invokeNativeExecutionRuntime,
 } from '../execution-worker.js';
-import { createNativeExecutionApi } from '../execution-api.js';
+import { createNativeExecutionApi, nativeExecutionView } from '../execution-api.js';
 import { executionIdentity } from '../execution-runtime.js';
 import { executionFixture } from './execution-fixtures.js';
 import { memoryNativeObjects } from './memory-objects.js';
 import { ACTOR } from './fixtures.js';
+import { writeCreatedWorkflow } from './fixtures/created-workflow.js';
 
 // Production authority, fence, executor, public snapshot/upload and interaction
 // path. The subprocess is explicitly inert; installed AI-DLC gate recovery is
 // proved by native-workspace-protocol-qualification.mjs, not fabricated here.
 it.each([
+  'intake',
   'undelivered',
   'delivered',
   'uncertain',
@@ -35,9 +37,13 @@ it.each([
   'unconfirmed-stop',
   'resume-owner-loss',
   'resume-running-owner-loss',
-])('confirmed workspace resume preserves work and never replays %s input', async (scenario) => {
+])('workspace recovery preserves work and never replays %s input', async (scenario) => {
   const interruptRunningResume = scenario === 'resume-running-owner-loss';
-  const f = executionFixture({ harness: 'claude', recoveryMode: NATIVE_WORKSPACE_RECOVERY });
+  const f = executionFixture({
+    harness: 'claude',
+    recoveryMode: NATIVE_WORKSPACE_RECOVERY,
+    packageVersion: '2.11.1',
+  });
   await f.start();
   const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-workspace-journey-')));
   const root = join(base, 'mount');
@@ -120,9 +126,14 @@ it.each([
         pkg = {
           directory,
           binaryPath: join(directory, 'aidlc'),
-          version: '2.9.0',
+          version: '2.11.1',
           packageId: f.configuration.packageId,
         };
+        await fs.mkdir(join(project, 'aidlc/spaces/default/intents'), {
+          recursive: true,
+          mode: 0o700,
+        });
+        await fs.writeFile(join(project, 'aidlc/active-space'), 'default\n', { mode: 0o600 });
         await fs.mkdir(join(project, '.claude'), { mode: 0o700 });
         await fs.writeFile(
           join(project, '.claude/settings.json'),
@@ -341,6 +352,9 @@ it.each([
       await runtime.settle();
     }
     const priorModelTurns = modelTurns;
+    // Creation can follow the published intake question. The runtime must
+    // observe these surviving files, not infer intake from publication one.
+    if (scenario !== 'intake') await writeCreatedWorkflow(project);
     await fs.writeFile(join(project, 'unfinished.md'), 'Unpublished work must survive.\n');
     await fs.rm(homes, { recursive: true });
     runtime = create();
@@ -357,6 +371,35 @@ it.each([
     }
     await settle('RECOVERY_REQUIRED');
     expect(f.row().stopConfirmation.writerGeneration).toBe(1);
+    if (scenario === 'intake') {
+      expect(nativeExecutionView(f.row()).recovery).toMatchObject({
+        reason: 'INTAKE_UNAVAILABLE',
+        canRecover: false,
+        workflowResumeState: 'not_created',
+      });
+      expect(f.row().publication).toEqual(first);
+      expect(await f.store.response(f.row(), reply.interactionId)).toMatchObject({
+        commandId: accepted.response.id,
+        text: reply.text,
+        requestId: reply.requestId,
+        actorId: ACTOR,
+      });
+      await expect(
+        api.recover(
+          f.prepared,
+          {
+            requestId: randomUUID(),
+            recoveryId: f.row().recovery.id,
+            confirmWorkspaceResume: true,
+          },
+          recheck,
+        ),
+      ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CONFLICT' });
+      expect(modelTurns).toBe(priorModelTurns);
+      expect(invocations.some((input) => input.command === 'native-resume')).toBe(false);
+      expect((await fence.read(firstIdentity)).state).toBe('FENCED');
+      return;
+    }
     expect(f.row().recovery.canRecover).toBe(true);
     expect(f.row().publication).toEqual(first);
     const request = { requestId: randomUUID(), recoveryId: f.row().recovery.id };
@@ -524,7 +567,7 @@ it.each([
     expect(effects.filter((event) => event.prompt === reply.text)).toHaveLength(
       scenario === 'undelivered' || coldResume ? 0 : 1,
     );
-    expect(effects.at(-1).prompt).toContain('/aidlc --resume');
+    expect(effects.at(-1).prompt).toBe('/aidlc --resume');
     expect(effects.at(-1).prompt).not.toContain(reply.text);
     await api.respond(f.prepared, ACTOR, reply, recheck);
     await supervisor(f.identity);

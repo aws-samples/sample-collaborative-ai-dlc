@@ -78,7 +78,11 @@ describe('protected native discovery and public summaries', () => {
   it('preserves capability GET and uses one bounded descending Query for list GET', async () => {
     const f = fixture();
     const capabilities = await f.api(event('capabilities'));
-    expect(json(capabilities)).toEqual({ preparationEnabled: true, executionEnabled: false });
+    expect(json(capabilities)).toEqual({
+      preparationEnabled: true,
+      executionEnabled: false,
+      unavailableHarnesses: { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
+    });
     expect(f.ddb.send).not.toHaveBeenCalled();
     const response = await f.api(listEvent());
     expect(response.statusCode).toBe(200);

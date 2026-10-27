@@ -110,6 +110,12 @@ export const statusOwnerErrors = new Set([
   'native_execution_local_record_invalid',
   'native_execution_cancelled',
 ]);
+export const workflowRecoveryFailure = (code) =>
+  code === 'native_execution_workflow_not_created'
+    ? 'INTAKE_UNAVAILABLE'
+    : code === 'native_execution_workflow_state_unavailable'
+      ? 'WORKFLOW_STATE_UNAVAILABLE'
+      : null;
 // Transport provenance is local controller state, never an agent-supplied
 // property or a diagnostic logger result. Keep the original thrown error and
 // any structured rejection separate from the unreadable-response category.
@@ -244,6 +250,45 @@ const recoveryPayload = async (row, draft, credentials) => {
   };
 };
 
+// Interpret an owned runtime response only after the caller checks its identity.
+// Fresh workspace sessions and retained exact-checkpoint sessions have distinct
+// admission evidence; neither can reconstruct a lost acknowledgement.
+const completeNativeRecovery = async ({ state, report, store, requireRecovery, yieldPending }) => {
+  const recovery = state.row.recovery;
+  if (nativeWorkspaceRecovery(state.row.configuration)) {
+    const unavailableWorkflow = workflowRecoveryFailure(report.code);
+    if (unavailableWorkflow) return requireRecovery(unavailableWorkflow);
+    if (
+      report.status === 'stopped_needs_review' &&
+      report.code === 'native_execution_existing_owner' &&
+      report.accepted === false &&
+      report.duplicate === true &&
+      report.recoveryId === recovery.id
+    )
+      return requireRecovery('RESTORE_FAILED', {
+        workflowResumeState: report.workflowResumeState,
+      });
+    if (report.recoveryId !== recovery.id || !admitted(state.row, report))
+      return requireRecovery('RESTORE_FAILED');
+  } else {
+    if (
+      report.recoveryId !== recovery.id ||
+      report.checkpointId !== state.row.recoveryCheckpoint.id ||
+      report.sequence !== state.row.publication.sequence
+    )
+      return requireRecovery('RESTORE_FAILED');
+    if (report.status === 'recovering' && report.recovered === false) return yieldPending();
+    if (
+      report.status !== 'recovery_ready' ||
+      report.recovered !== false ||
+      report.nativeSessionId !== state.row.publication.nativeSessionId
+    )
+      return requireRecovery('RESTORE_FAILED');
+  }
+  state.row = await store.recovered({ row: state.row });
+  return yieldPending();
+};
+
 export const reconcileNativeRecovery = async ({
   state,
   draft,
@@ -261,6 +306,12 @@ export const reconcileNativeRecovery = async ({
 }) => {
   const recovery = state.row.recovery;
   const workspace = nativeWorkspaceRecovery(state.row.configuration);
+  if (workspace && recovery.workflowResumeState !== 'created')
+    return requireRecovery(
+      recovery.workflowResumeState === 'not_created'
+        ? 'INTAKE_UNAVAILABLE'
+        : 'WORKFLOW_STATE_UNAVAILABLE',
+    );
   try {
     if (!workspace)
       await verifyCheckpoint(
@@ -278,6 +329,7 @@ export const reconcileNativeRecovery = async ({
       writerGeneration: recovery.previousGeneration,
       recoveryId: recovery.id,
       reason: recovery.reason,
+      ...(workspace ? { workflowResumeState: recovery.workflowResumeState } : {}),
     });
     await check();
     // Same AWS session IDs are reusable. A stable per-episode stop token
@@ -310,6 +362,10 @@ export const reconcileNativeRecovery = async ({
     phase = 'status';
     report = workspace || ack.status === 'recovery_ready' ? ack : await status();
   } catch (error) {
+    const unavailableWorkflow =
+      workflowRecoveryFailure(error?.code) ??
+      workflowRecoveryFailure(runtimeReadFailures.get(error)?.runtimeCode);
+    if (workspace && unavailableWorkflow) return requireRecovery(unavailableWorkflow);
     if (
       workspace &&
       [error?.code, runtimeReadFailures.get(error)?.runtimeCode].includes(
@@ -336,27 +392,7 @@ export const reconcileNativeRecovery = async ({
   }
   await check();
   checkReportIdentity(state.row, report);
-  if (workspace) {
-    if (report.recoveryId !== recovery.id || !admitted(state.row, report))
-      return requireRecovery('RESTORE_FAILED');
-    state.row = await store.recovered({ row: state.row });
-    return yieldPending();
-  }
-  if (
-    report.recoveryId !== recovery.id ||
-    report.checkpointId !== state.row.recoveryCheckpoint.id ||
-    report.sequence !== state.row.publication.sequence
-  )
-    return requireRecovery('RESTORE_FAILED');
-  if (report.status === 'recovering' && report.recovered === false) return yieldPending();
-  if (
-    report.status !== 'recovery_ready' ||
-    report.recovered !== false ||
-    report.nativeSessionId !== state.row.publication.nativeSessionId
-  )
-    return requireRecovery('RESTORE_FAILED');
-  state.row = await store.recovered({ row: state.row });
-  return yieldPending();
+  return completeNativeRecovery({ state, report, store, requireRecovery, yieldPending });
 };
 
 export const reconcileNativeDispatch = async ({

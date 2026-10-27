@@ -87,6 +87,7 @@ describe('native REST host and SQS boundary', () => {
     expect(JSON.parse(response.body)).toEqual({
       preparationEnabled: true,
       executionEnabled: false,
+      unavailableHarnesses: { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
     });
     expect(f.openConnection).toHaveBeenCalledTimes(1);
     expect(f.membershipSnapshot).toHaveBeenCalledWith(expect.anything(), PROJECT, ACTOR);

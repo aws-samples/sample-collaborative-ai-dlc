@@ -10,12 +10,15 @@ import {
   NATIVE_CODEX_MAX_THREADS,
   nativeExecutionInvocation,
   nativeFirstTurnPrompt,
+  nativeTransportInstructions,
+  nativeWorkspaceResumePrompt,
 } from '../native/executor.js';
 import { runNativeCommand } from '../native/command-runner.js';
 import { inspectNativeInitialization } from '../native/initialization-evidence.js';
 import { nativePublicationScope } from '../../shared/native-publication.js';
-import { kiroPromptHash } from '../native/kiro-prompt.js';
 import { nativeAnswerText } from '../../shared/native-pending-input.js';
+import { NATIVE_WORKSPACE_RECOVERY } from '../../shared/native-recovery-mode.js';
+import createdWorkflow from './fixtures/native-created-workflow-2.11.1.json' with { type: 'json' };
 
 const projectId = randomUUID();
 const executionId = randomUUID();
@@ -92,9 +95,14 @@ beforeEach(async () => {
     console.log(JSON.stringify({type:'turn.started'}));
     if (mode === 'wait') { setInterval(() => {}, 1000); }
     else {
-      for (const [path, bytes] of Object.entries(${JSON.stringify(nativeFiles)})) {
-        await mkdir(dirname(path), {recursive:true, mode:0o700});
-        await writeFile(path, bytes);
+      if (mode === 'intake') {
+        await mkdir('aidlc/spaces/default/intents/.aidlc-engine', {recursive:true, mode:0o700});
+        await writeFile('aidlc/active-space', 'default\\n');
+      } else {
+        for (const [path, bytes] of Object.entries(${JSON.stringify(nativeFiles)})) {
+          await mkdir(dirname(path), {recursive:true, mode:0o700});
+          await writeFile(path, bytes);
+        }
       }
       if (mode === 'secret') await writeFile('leaked.txt', process.env.AWS_BEARER_TOKEN_BEDROCK);
       if (mode === 'overflow') {
@@ -137,7 +145,7 @@ const make = (options = {}) => {
       package: {
         directory,
         binaryPath: join(directory, 'aidlc'),
-        version: '2.9.0',
+        version: request.configuration.packageVersion,
         packageId: `sha256:${'b'.repeat(64)}`,
       },
       repositoryCommit: request.configuration.repository.commit,
@@ -308,7 +316,7 @@ describe('native first-turn executor', () => {
     ...changes,
   });
 
-  it.each(['codex', 'claude', 'opencode', 'kiro'])(
+  it.each(['codex', 'claude', 'opencode'])(
     'captures plan choices and gate replies in three serial %s turns without duplicate effects',
     async (harness) => {
       const request = payload();
@@ -316,7 +324,6 @@ describe('native first-turn executor', () => {
       request.configuration.model = {
         claude: 'us.anthropic.configured',
         codex: 'openai.configured',
-        kiro: 'configured-kiro-model',
         opencode: 'amazon-bedrock/us.anthropic.configured',
       }[harness];
       let turns = 0;
@@ -366,20 +373,7 @@ describe('native first-turn executor', () => {
             { type: 'text', sessionID: 'native-session', part: { type: 'text', text } },
             { type: 'step_finish', sessionID: 'native-session', part: { reason: 'stop' } },
           ];
-        return [
-          {
-            schemaVersion: 1,
-            transport: 'kiro-acp',
-            ok: true,
-            sessionId: 'native-session',
-            modelVerified: true,
-            stopReason: 'end_turn',
-            text,
-            historyMode: 'latest-turn',
-            priorPromptObserved: true,
-            priorAssistantObserved: true,
-          },
-        ];
+        throw new Error('Unexpected harness fixture');
       };
       const { executor, ports } = make({ request });
       const prepare = ports.prepare.getMockImplementation();
@@ -398,24 +392,11 @@ describe('native first-turn executor', () => {
             }),
           );
         }
-        if (harness === 'kiro') {
-          await fs.mkdir(join(input.project, '.kiro/skills/aidlc'), {
-            recursive: true,
-            mode: 0o700,
-          });
-          await fs.writeFile(
-            join(input.project, '.kiro/skills/aidlc/SKILL.md'),
-            'Native skill\n$ARGUMENTS\n',
-            { mode: 0o600 },
-          );
-          result.authEnv = { KIRO_API_KEY: 'inert-kiro-key' };
-        }
         return result;
       });
       ports.prepareContinuation.mockImplementation(async ({ payload: dispatch }) => ({
         authEnv: {
-          [harness === 'kiro' ? 'KIRO_API_KEY' : 'AWS_BEARER_TOKEN_BEDROCK']:
-            dispatch.credentials.model.value,
+          AWS_BEARER_TOKEN_BEDROCK: dispatch.credentials.model.value,
         },
       }));
       ports.commandRunner.mockImplementation(async (input) => {
@@ -478,15 +459,9 @@ describe('native first-turn executor', () => {
         codex: 'resume',
         claude: '--resume',
         opencode: '--session',
-        kiro: '--resume-id',
       }[harness];
       expect(resume.args[resume.args.indexOf(flag) + 1]).toBe('native-session');
-      if (harness === 'kiro') {
-        expect(resume.args[resume.args.indexOf('--prior-user-prompt-sha256') + 1]).toBe(
-          kiroPromptHash(secondReply.text),
-        );
-        expect(resume.args).toContain('latest-turn');
-      } else expect(resume.stdin).toBe('Request Changes\n\nKeep offline support.');
+      expect(resume.stdin).toBe('Request Changes\n\nKeep offline support.');
       for (const [command] of ports.commandRunner.mock.calls.filter(
         ([c]) => c.timeoutMs === null,
       )) {
@@ -496,6 +471,27 @@ describe('native first-turn executor', () => {
       expect(ports.publishInteraction.mock.calls[2][0].pendingInput).toBeNull();
     },
   );
+
+  it('declines a Kiro model turn while its separate instruction channel is unqualified', async () => {
+    const request = payload();
+    request.configuration.harness = 'kiro';
+    const { executor, ports } = make({ request });
+    const prepare = ports.prepare.getMockImplementation();
+    ports.prepare.mockImplementation(async (input) => ({
+      ...(await prepare(input)),
+      authEnv: { KIRO_API_KEY: 'inert-kiro-key' },
+    }));
+    await executor.start(request);
+    expect(await executor.settle()).toMatchObject({
+      status: 'failed',
+      code: 'native_execution_transport_kiro_unqualified',
+    });
+    expect(ports.commandRunner.mock.calls.filter(([input]) => input.timeoutMs === null)).toEqual(
+      [],
+    );
+    expect(ports.publish).not.toHaveBeenCalled();
+    expect(ports.publishInteraction).not.toHaveBeenCalled();
+  });
 
   it('rejects noninitial sequence and cancels an idle published owner before any continuation', async () => {
     const { executor, request, ports } = make();
@@ -981,6 +977,13 @@ describe('native first-turn executor', () => {
     expect(model.env).not.toHaveProperty('AIDLC_UNATTENDED');
     expect(model.env.CODEX_HOME).toContain(homeRoot);
     expect(model.env.AIDLC_INSTALL_ROOT).toBe(join(root, 'machine/data'));
+    const guidance = await fs.readFile(join(model.env.CODEX_HOME, 'AGENTS.md'), 'utf8');
+    expect(guidance).toBe(nativeTransportInstructions(request.configuration));
+    expect(guidance).not.toContain(payload().configuration.prompt);
+    expect(guidance).not.toContain('known-model-credential');
+    expect(ports.publish.mock.calls[0][0].files.some((file) => file.path === 'AGENTS.md')).toBe(
+      false,
+    );
     expect(
       ports.commandRunner.mock.calls
         .slice(0, 3)
@@ -1187,26 +1190,58 @@ describe('native invocation and first-wait classification', () => {
     ['claude', '/aidlc'],
     ['kiro', '/aidlc'],
     ['opencode', '/aidlc'],
-  ])('preserves the exact request and transport annex with the %s marker', (harness, marker) => {
+  ])('preserves only the exact request with the %s marker', (harness, marker) => {
     const request = '\uFEFF  # Fix the pipes\r\n\r\n$literal `text` — keep trailing space  \n';
     const prompt = nativeFirstTurnPrompt({ harness, request });
-    expect(prompt.startsWith(`${marker} ${request}\n\nPlatform transport instruction:`)).toBe(true);
-    expect(prompt).toContain('Guide me through the current workflow step');
-    expect(prompt).toContain('together in one form');
-    expect(prompt).toContain('--on-instruction where supported');
-    expect(prompt).toContain(
+    expect(prompt).toBe(`${marker} ${request}`);
+    expect(nativeWorkspaceResumePrompt({ harness })).toBe(`${marker} --resume`);
+    expect(prompt).not.toContain('Platform transport instruction');
+  });
+
+  it('keeps transport, grouped forms and human gates outside the recorded human message', () => {
+    const instructions = nativeTransportInstructions();
+    expect(instructions).toContain('together in one form');
+    expect(instructions).toContain(
       'ALL unanswered questions already available at the CURRENT workflow step',
     );
-    expect(prompt).toContain('Do not invent a plan list');
-    expect(prompt).toContain('"version":2');
-    expect(prompt).toContain('a required summary confirmation or approval');
-    expect(prompt).toContain('This preference grants no autonomy');
-    expect(prompt).toContain('Do not approve a gate, answer on behalf of the user');
-    expect(prompt).toContain('compose_command, scope_commands or choices');
-    expect(prompt).toContain('Do not reconstruct those commands');
-    expect(prompt).toContain('ordinary npm installs, local file: dependencies and builds');
-    expect(prompt).toContain('retained exactly in private recovery');
-    expect(prompt).toContain('Do not skip required dependencies or tests');
+    expect(instructions).toContain('Do not invent a plan list');
+    expect(instructions).toContain('"version":2');
+    expect(instructions).toContain('a required summary confirmation or approval');
+    expect(instructions).toContain('This rendering guidance grants no autonomy');
+    expect(instructions).toContain('Do not approve a gate, answer on behalf of the user');
+    expect(instructions).toContain('compose_command, scope_commands or choices');
+    expect(instructions).toContain('Do not reconstruct those commands');
+    expect(instructions).toContain('ordinary npm installs, local file: dependencies and builds');
+    expect(instructions).toContain('retained exactly in private recovery');
+    expect(instructions).toContain('Do not skip required dependencies or tests');
+    expect(instructions).toContain('normal interaction-mode question');
+    expect(instructions).toContain('Never record these platform instructions as words spoken');
+    expect(instructions).not.toContain('--on-instruction');
+    expect(nativeTransportInstructions({ recoveryMode: NATIVE_WORKSPACE_RECOVERY })).toContain(
+      'no exact private CLI backup is required',
+    );
+  });
+
+  it('passes Claude transport as additive system context on first turns and continuations', () => {
+    for (const nativeSessionId of [null, 'retained-cli-session']) {
+      const prompt = nativeSessionId ? 'My actual answer.' : '/aidlc --resume';
+      const instructions = nativeTransportInstructions({
+        recoveryMode: NATIVE_WORKSPACE_RECOVERY,
+      });
+      const invocation = nativeExecutionInvocation({
+        harness: 'claude',
+        project: '/mnt/native/project',
+        prompt,
+        nativeSessionId,
+        systemPrompt: instructions,
+      });
+      expect(invocation.stdin).toBe(prompt);
+      expect(invocation.args[invocation.args.indexOf('--append-system-prompt') + 1]).toBe(
+        instructions,
+      );
+      expect(invocation.stdin).not.toContain('Platform transport');
+      expect(invocation.args).not.toContain('--system-prompt');
+    }
   });
   it.each([undefined, null, '', 'CODEX', 'unknown', ['codex'], {}])(
     'refuses an unsupported prompt harness: %j',
@@ -1404,5 +1439,189 @@ describe('native cold recovery', () => {
       code: 'native_execution_recovery_failed',
       recoveryFailureCode: 'native_execution_initialization_failed',
     });
+  });
+});
+
+describe('created-workflow requirement for EFS fresh sessions', () => {
+  const imageDigest = `sha256:${'7'.repeat(64)}`;
+  const writeCreatedWorkflow = async () => {
+    for (const [path, content] of Object.entries(createdWorkflow.files)) {
+      await fs.mkdir(join(root, 'project', path, '..'), { recursive: true, mode: 0o700 });
+      await fs.writeFile(join(root, 'project', path), content);
+    }
+  };
+  const workspaceFixture = async () => {
+    const request = payload();
+    request.schemaVersion = 2;
+    request.writerGeneration = 1;
+    request.configuration.recoveryMode = NATIVE_WORKSPACE_RECOVERY;
+    request.configuration.packageVersion = '2.11.1';
+    const runtimeEnv = { ...env, NATIVE_EXECUTION_IMAGE_DIGEST: imageDigest };
+    const first = make({ request, mode: 'intake', ports: { env: runtimeEnv } });
+    await first.executor.start(request);
+    const head = await first.executor.settle();
+    expect(head.status).toBe('publication_ready');
+    const input = {
+      ...request,
+      command: 'native-resume',
+      writerGeneration: 2,
+      sequence: 2,
+      recoveryId: randomUUID(),
+      imageDigest,
+      credentials: { model: { provider: 'bedrock', value: 'new-model-credential' } },
+    };
+    const successor = make({
+      request: input,
+      mode: 'intake',
+      ports: {
+        env: runtimeEnv,
+        assertRecoveryAdmission: vi.fn(async () => {}),
+        prepareRecovery: vi.fn(async () => ({
+          package: {
+            directory: join(root, 'packages'),
+            binaryPath: join(root, 'packages/aidlc'),
+            version: request.configuration.packageVersion,
+            packageId: `sha256:${'b'.repeat(64)}`,
+          },
+        })),
+      },
+    });
+    return { first, head, input, successor };
+  };
+
+  it('reports intake from the surviving workspace without trusting a saved created hint', async () => {
+    const { first, successor } = await workspaceFixture();
+    const path = join(root, '.native-control/first-turn/status.json');
+    const status = JSON.parse(await fs.readFile(path, 'utf8'));
+    await fs.writeFile(path, JSON.stringify({ ...status, workflowResumeState: 'created' }));
+    expect(await successor.executor.status(first.request)).toMatchObject({
+      status: 'publication_ready',
+      recovered: true,
+      workflowResumeState: 'not_created',
+    });
+    expect(successor.ports.commandRunner).not.toHaveBeenCalled();
+    expect(successor.ports.prepareRecovery).not.toHaveBeenCalled();
+  });
+
+  it('observes creation after the published intake, including a missing last status file', async () => {
+    const { first, successor, head } = await workspaceFixture();
+    expect(
+      first.ports.publish.mock.calls[0][0].files.some((file) =>
+        file.path.endsWith('/intents.json'),
+      ),
+    ).toBe(false);
+    await writeCreatedWorkflow();
+    expect(await successor.executor.status(first.request)).toMatchObject({
+      receipt: head.receipt,
+      workflowResumeState: 'created',
+    });
+    await fs.rm(join(root, '.native-control/first-turn/status.json'));
+    expect(await successor.executor.status(first.request)).toMatchObject({
+      status: 'stopped_needs_review',
+      workflowResumeState: 'created',
+    });
+    expect(successor.ports.commandRunner).not.toHaveBeenCalled();
+  });
+
+  it('does not accept valid workflow files in a substituted project directory', async () => {
+    const { first, successor } = await workspaceFixture();
+    await writeCreatedWorkflow();
+    await fs.rename(join(root, 'project'), join(root, 'original-project'));
+    await fs.mkdir(join(root, 'project'), { mode: 0o700 });
+    await writeCreatedWorkflow();
+    expect(await successor.executor.status(first.request)).toMatchObject({
+      workflowResumeState: 'unavailable',
+    });
+    expect(successor.ports.commandRunner).not.toHaveBeenCalled();
+  });
+
+  it.each(['intake', 'corrupt-state'])(
+    'rejects direct resume of %s before claiming a new owner or preparing a model',
+    async (phase) => {
+      const { input, successor, first, head } = await workspaceFixture();
+      if (phase === 'corrupt-state') {
+        await writeCreatedWorkflow();
+        await fs.writeFile(
+          join(root, 'project/aidlc/spaces/default/intents/intents.json'),
+          '{"unfinished":',
+        );
+      }
+      const before = await fs.readFile(join(root, '.native-control/first-turn/status.json'));
+      await expect(successor.executor.resume(input)).rejects.toMatchObject({
+        code:
+          phase === 'intake'
+            ? 'native_execution_workflow_not_created'
+            : 'native_execution_workflow_state_unavailable',
+      });
+      expect(successor.ports.assertRecoveryAdmission).toHaveBeenCalledOnce();
+      expect(successor.ports.prepareRecovery).not.toHaveBeenCalled();
+      expect(successor.ports.prepareContinuation).not.toHaveBeenCalled();
+      expect(successor.ports.commandRunner).not.toHaveBeenCalled();
+      expect(successor.ports.publish).not.toHaveBeenCalled();
+      expect(await fs.readFile(join(root, '.native-control/first-turn/status.json'))).toEqual(
+        before,
+      );
+      expect(await first.executor.status(first.request)).toMatchObject({ receipt: head.receipt });
+      expect((await fs.readdir(join(root, '.native-control'))).toSorted()).toEqual([
+        'first-turn',
+        'workspace.json',
+      ]);
+    },
+  );
+
+  it('resumes a created workflow with the literal entrypoint and preserves unfinished work', async () => {
+    const { input, successor } = await workspaceFixture();
+    await writeCreatedWorkflow();
+    const unfinished = join(root, 'project/src/unpublished.js');
+    await fs.writeFile(unfinished, 'export const unfinished = true;\n');
+    const statePath = join(
+      root,
+      'project/aidlc/spaces/default/intents/261026-observer-fixture/aidlc-state.md',
+    );
+    const stateBefore = await fs.readFile(statePath);
+    expect(await successor.executor.resume(input)).toMatchObject({
+      accepted: true,
+      writerGeneration: 2,
+    });
+    expect(await successor.executor.settle()).toMatchObject({
+      status: 'publication_ready',
+      sequence: 2,
+    });
+    const calls = successor.ports.commandRunner.mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0].stdin).toBe('$aidlc --resume');
+    expect(calls[0][0].args).not.toContain('resume');
+    expect(await fs.readFile(statePath)).toEqual(stateBefore);
+    expect(await fs.readFile(unfinished, 'utf8')).toBe('export const unfinished = true;\n');
+    expect(successor.ports.prepare).not.toHaveBeenCalled();
+    const cold = make({ request: input, ports: successor.ports });
+    expect(await cold.executor.resume(input)).toMatchObject({
+      writerGeneration: 2,
+      recoveryId: input.recoveryId,
+      status: 'stopped_needs_review',
+      code: 'native_execution_existing_owner',
+      accepted: false,
+      duplicate: true,
+      workflowResumeState: 'created',
+    });
+    expect(successor.ports.commandRunner).toHaveBeenCalledOnce();
+    expect(successor.ports.prepareRecovery).toHaveBeenCalledOnce();
+  });
+
+  it('rechecks state changed during preparation before starting the fresh CLI', async () => {
+    const { input, successor } = await workspaceFixture();
+    await writeCreatedWorkflow();
+    const prepare = successor.ports.prepareRecovery.getMockImplementation();
+    successor.ports.prepareRecovery.mockImplementation(async (options) => {
+      await fs.rm(join(root, 'project/aidlc/spaces/default/intents/active-intent'));
+      return prepare(options);
+    });
+    expect(await successor.executor.resume(input)).toMatchObject({ accepted: true });
+    expect(await successor.executor.settle()).toMatchObject({
+      status: 'failed',
+      code: 'native_execution_workflow_state_unavailable',
+    });
+    expect(successor.ports.commandRunner).not.toHaveBeenCalled();
+    expect(successor.ports.publish).not.toHaveBeenCalled();
   });
 });

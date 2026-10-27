@@ -26,6 +26,7 @@ import {
 import { NativeIntentContent } from '@/components/intent/NativeIntentContent';
 import { NativePromptEditor } from '@/components/intent/NativePromptEditor';
 import { currentSessionEpoch } from '@/services/sessionExpiry';
+import { nativeStartUnavailableMessages } from '@/services/nativeIntents';
 import { useNativeListingVersion } from '@/hooks/useNativeIntents';
 import type { useNativeActivity } from '@/contexts/adapters/nativeActivity';
 import {
@@ -129,8 +130,7 @@ export function NativeWorkspaceView({
                     ? 'Opening a fresh CLI session on the surviving workspace. AI-DLC will reconcile its work and required questions.'
                     : 'Restoring the saved AI-DLC session. You can leave this page and return to the same link.'
                   : intent.execution.status === 'RECOVERY_REQUIRED'
-                    ? intent.execution.recoveryMode === 'efs-workspace-v1' &&
-                      intent.execution.recovery?.canRecover
+                    ? intent.execution.recoveryMode === 'efs-workspace-v1' && canRecover(intent)
                       ? 'The previous runtime is stopped. Confirm a fresh session to resume AI-DLC on the surviving workspace. Earlier answers remain in history and will not be sent again.'
                       : intent.execution.recovery
                         ? recoveryMessages[intent.execution.recovery.reason]
@@ -166,7 +166,9 @@ export function NativeWorkspaceView({
             )}
             {!intent.execution && intent.executionAvailable !== true && (
               <p className="text-sm text-muted-foreground">
-                Agent execution is not enabled for this draft.
+                {intent.startUnavailableReason
+                  ? nativeStartUnavailableMessages[intent.startUnavailableReason]
+                  : 'Agent execution is not enabled for this draft.'}
               </p>
             )}
             <div className="flex flex-wrap gap-2">

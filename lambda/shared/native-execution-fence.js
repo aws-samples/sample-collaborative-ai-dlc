@@ -17,7 +17,10 @@ const REASONS = [
   'CHECKPOINT_UNAVAILABLE',
   'DELIVERY_UNCERTAIN',
   'WORKSPACE_UNAVAILABLE',
+  'INTAKE_UNAVAILABLE',
+  'WORKFLOW_STATE_UNAVAILABLE',
 ];
+const WORKFLOW_RESUME_STATES = ['created', 'not_created', 'unavailable'];
 const integer = (value) => Number.isSafeInteger(value) && value >= 1;
 const generation = (record) => record.writerGeneration ?? 1;
 const precondition = (error) =>
@@ -94,6 +97,14 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
         if (!['ACTIVE', 'CANCELLED'].includes(record.state)) fail();
       } else if ([2, 3].includes(record.schemaVersion)) {
         fields.push('writerGeneration', 'recoveryId', 'checkpointId', 'reason');
+        if (Object.hasOwn(record, 'workflowResumeState')) {
+          fields.push('workflowResumeState');
+          if (
+            record.state !== 'FENCED' ||
+            !WORKFLOW_RESUME_STATES.includes(record.workflowResumeState)
+          )
+            fail();
+        }
         if (record.schemaVersion === 3) {
           fields.push('recoveryMode');
           if (record.recoveryMode !== NATIVE_WORKSPACE_RECOVERY) fail();
@@ -219,12 +230,16 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
             },
       );
     },
-    async suspend(identity, { writerGeneration, recoveryId, reason = 'SESSION_LOST' }) {
+    async suspend(
+      identity,
+      { writerGeneration, recoveryId, reason = 'SESSION_LOST', workflowResumeState },
+    ) {
       if (
         !integer(writerGeneration) ||
         typeof recoveryId !== 'string' ||
         !UUID.test(recoveryId) ||
-        !REASONS.includes(reason)
+        !REASONS.includes(reason) ||
+        (workflowResumeState !== undefined && !WORKFLOW_RESUME_STATES.includes(workflowResumeState))
       )
         fail();
       return transition(identity, (record) => {
@@ -232,7 +247,8 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
         if (!record || generation(record) !== writerGeneration) conflict();
         if (record.state === 'FENCED') {
           if (record.recoveryId === recoveryId) {
-            if (record.reason !== reason) conflict();
+            if (record.reason !== reason || record.workflowResumeState !== workflowResumeState)
+              conflict();
             return null;
           }
           // Only the controller can start another stopped-writer episode.
@@ -246,6 +262,7 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
           recoveryId,
           checkpointId: null,
           reason,
+          ...(workflowResumeState === undefined ? {} : { workflowResumeState }),
           ...(record.recoveryMode ? { recoveryMode: record.recoveryMode } : {}),
         };
       });
@@ -277,6 +294,8 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
           record?.state !== 'FENCED' ||
           record.writerGeneration !== writerGeneration - 1 ||
           record.recoveryId !== recoveryId ||
+          (workspace && record.workflowResumeState !== 'created') ||
+          (!workspace && record.workflowResumeState !== undefined) ||
           (record.recoveryMode !== undefined && record.recoveryMode !== recoveryMode)
         )
           conflict();

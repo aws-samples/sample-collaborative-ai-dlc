@@ -354,7 +354,33 @@ const RECOVERY_REASONS = [
   'CHECKPOINT_UNAVAILABLE',
   'DELIVERY_UNCERTAIN',
   'WORKSPACE_UNAVAILABLE',
+  'INTAKE_UNAVAILABLE',
+  'WORKFLOW_STATE_UNAVAILABLE',
 ];
+const WORKFLOW_RESUME_STATES = ['created', 'not_created', 'unavailable'];
+const UNAVAILABLE_WORKSPACE_REASONS = [
+  'WORKSPACE_UNAVAILABLE',
+  'INTAKE_UNAVAILABLE',
+  'WORKFLOW_STATE_UNAVAILABLE',
+];
+export const nativeRecoveryAvailable = (row) =>
+  row.recovery?.canRecover === true &&
+  (!nativeWorkspaceRecovery(row.configuration) ||
+    (row.recovery.workflowResumeState === 'created' &&
+      !UNAVAILABLE_WORKSPACE_REASONS.includes(row.recovery.reason)));
+export const nativeRecoveryReason = (row) => {
+  const recovery = row.recovery;
+  if (
+    !recovery ||
+    !nativeWorkspaceRecovery(row.configuration) ||
+    recovery.workflowResumeState === 'created' ||
+    UNAVAILABLE_WORKSPACE_REASONS.includes(recovery.reason)
+  )
+    return recovery?.reason;
+  return recovery.workflowResumeState === 'not_created'
+    ? 'INTAKE_UNAVAILABLE'
+    : 'WORKFLOW_STATE_UNAVAILABLE';
+};
 const recoveryCheckpointValue = (value) => {
   shape(value, ['id', 'sequence', 'manifest']);
   shape(value.manifest, ['key', 'versionId', 'sha256', 'bytes']);
@@ -563,6 +589,47 @@ const validateWorkspaceResume = (row) => {
     );
   }
 };
+const validateRecovery = (row) => {
+  if (!Object.hasOwn(row, 'recovery')) {
+    check(!['RECOVERING', 'RECOVERY_REQUIRED'].includes(row.status));
+    return;
+  }
+  shape(
+    row.recovery,
+    ['id', 'reason', 'canRecover'],
+    ['phase', 'previousGeneration', 'writerGeneration', 'checkpointId', 'workflowResumeState'],
+  );
+  check(matches(row.recovery.id, UUID) && RECOVERY_REASONS.includes(row.recovery.reason));
+  check(typeof row.recovery.canRecover === 'boolean');
+  if (Object.hasOwn(row.recovery, 'workflowResumeState')) {
+    check(
+      nativeWorkspaceRecovery(row.configuration) &&
+        WORKFLOW_RESUME_STATES.includes(row.recovery.workflowResumeState) &&
+        (!row.recovery.canRecover || nativeRecoveryAvailable(row)),
+    );
+  }
+  if (row.status === 'RECOVERING') {
+    check(
+      hasRecoveryBoundary(row) &&
+        !row.recovery.canRecover &&
+        ['FENCING', 'RESTORING'].includes(row.recovery.phase) &&
+        integer(row.recovery.previousGeneration, 1) &&
+        row.recovery.writerGeneration === row.recovery.previousGeneration + 1 &&
+        validRecoveryCheckpoint(row) &&
+        nativeWriterGeneration(row) ===
+          (row.recovery.phase === 'FENCING'
+            ? row.recovery.previousGeneration
+            : row.recovery.writerGeneration),
+    );
+  } else {
+    check(
+      ['RECOVERY_REQUIRED', 'CANCEL_REQUESTED', 'CANCELLED'].includes(row.status) &&
+        Object.keys(row.recovery).length ===
+          (Object.hasOwn(row.recovery, 'workflowResumeState') ? 4 : 3) &&
+        (!row.recovery.canRecover || canConfirmRecovery(row)),
+    );
+  }
+};
 const validate = (row, expectedScope) => {
   shape(row, ROW_FIELDS, ROW_OPTIONAL);
   const rowScope = scope(row.scope);
@@ -744,35 +811,7 @@ const validate = (row, expectedScope) => {
         ].includes(row.status),
     );
   }
-  if (Object.hasOwn(row, 'recovery')) {
-    shape(
-      row.recovery,
-      ['id', 'reason', 'canRecover'],
-      ['phase', 'previousGeneration', 'writerGeneration', 'checkpointId'],
-    );
-    check(matches(row.recovery.id, UUID) && RECOVERY_REASONS.includes(row.recovery.reason));
-    check(typeof row.recovery.canRecover === 'boolean');
-    if (row.status === 'RECOVERING') {
-      check(
-        hasRecoveryBoundary(row) &&
-          !row.recovery.canRecover &&
-          ['FENCING', 'RESTORING'].includes(row.recovery.phase) &&
-          integer(row.recovery.previousGeneration, 1) &&
-          row.recovery.writerGeneration === row.recovery.previousGeneration + 1 &&
-          validRecoveryCheckpoint(row) &&
-          nativeWriterGeneration(row) ===
-            (row.recovery.phase === 'FENCING'
-              ? row.recovery.previousGeneration
-              : row.recovery.writerGeneration),
-      );
-    } else {
-      check(
-        ['RECOVERY_REQUIRED', 'CANCEL_REQUESTED', 'CANCELLED'].includes(row.status) &&
-          Object.keys(row.recovery).length === 3 &&
-          (!row.recovery.canRecover || canConfirmRecovery(row)),
-      );
-    }
-  } else check(!['RECOVERING', 'RECOVERY_REQUIRED'].includes(row.status));
+  validateRecovery(row);
   if (Object.hasOwn(row, 'lastRecoveryId')) check(matches(row.lastRecoveryId, UUID));
   validateWorkspaceResume(row);
   check(Buffer.byteLength(JSON.stringify(row)) <= MAX_ROW_BYTES);
@@ -1471,28 +1510,42 @@ export const createNativeExecutionStore = ({
       return commit(row, next);
     },
     async recoveryRequired(input) {
-      shape(input, ['row', 'reason'], ['recoveryId', 'stoppedSessionId']);
+      shape(input, ['row', 'reason'], ['recoveryId', 'stoppedSessionId', 'workflowResumeState']);
       check(RECOVERY_REASONS.includes(input.reason));
       if (Object.hasOwn(input, 'recoveryId')) check(matches(input.recoveryId, UUID));
       const row = await owned(input.row);
+      const workspace = nativeWorkspaceRecovery(row.configuration);
+      if (Object.hasOwn(input, 'workflowResumeState'))
+        check(workspace && WORKFLOW_RESUME_STATES.includes(input.workflowResumeState));
+      const workflowResumeState = input.workflowResumeState ?? 'unavailable';
       if (!['DISPATCHING', 'RUNNING', 'RECOVERING'].includes(row.status)) fail('CONFLICT');
-      return commit(
-        row,
-        unlease({
-          ...row,
-          status: 'RECOVERY_REQUIRED',
-          ...(Object.hasOwn(input, 'stoppedSessionId')
-            ? { stopConfirmation: stopConfirmation(row, input.stoppedSessionId) }
-            : {}),
-          recovery: {
-            id: input.recoveryId ?? randomUUID(),
-            reason: input.reason,
-            canRecover: nativeWorkspaceRecovery(row.configuration)
-              ? Object.hasOwn(input, 'stoppedSessionId') && input.reason !== 'WORKSPACE_UNAVAILABLE'
-              : input.reason === 'RESTORE_FAILED' && recoverableBoundary(row),
-          },
-        }),
-      );
+      const next = unlease({
+        ...row,
+        status: 'RECOVERY_REQUIRED',
+        ...(Object.hasOwn(input, 'stoppedSessionId')
+          ? { stopConfirmation: stopConfirmation(row, input.stoppedSessionId) }
+          : {}),
+        recovery: {
+          id: input.recoveryId ?? randomUUID(),
+          reason: input.reason,
+          canRecover: workspace
+            ? Object.hasOwn(input, 'stoppedSessionId') &&
+              workflowResumeState === 'created' &&
+              !UNAVAILABLE_WORKSPACE_REASONS.includes(input.reason)
+            : input.reason === 'RESTORE_FAILED' && recoverableBoundary(row),
+          ...(workspace ? { workflowResumeState } : {}),
+        },
+      });
+      // An abandoned FENCING episode has not admitted its proposed successor.
+      // Keep existing writer pointers and immutable answer-retention history,
+      // but do not leave a future writer attached to the new stopped episode.
+      if (
+        workspace &&
+        row.recovery?.phase === 'FENCING' &&
+        row.workspaceResume?.writerGeneration > nativeWriterGeneration(row)
+      )
+        delete next.workspaceResume;
+      return commit(row, next);
     },
     async recover(input) {
       shape(input, ['projectId', 'executionId', 'bindingId', 'request']);
@@ -1524,7 +1577,7 @@ export const createNativeExecutionStore = ({
         if (
           row.status !== 'RECOVERY_REQUIRED' ||
           row.recovery.id !== input.request.recoveryId ||
-          !row.recovery.canRecover ||
+          !nativeRecoveryAvailable(row) ||
           (workspace
             ? row.stopConfirmation?.writerGeneration !== nativeWriterGeneration(row)
             : !recoverableBoundary(row))
@@ -1540,7 +1593,9 @@ export const createNativeExecutionStore = ({
             phase: 'FENCING',
             previousGeneration: nativeWriterGeneration(row),
             writerGeneration: nativeWriterGeneration(row) + 1,
-            ...(workspace ? {} : { checkpointId: row.recoveryCheckpoint.id }),
+            ...(workspace
+              ? { workflowResumeState: row.recovery.workflowResumeState }
+              : { checkpointId: row.recoveryCheckpoint.id }),
           },
         });
         if (workspace) {
@@ -1585,6 +1640,9 @@ export const createNativeExecutionStore = ({
             id: row.recovery.id,
             reason: row.recovery.reason,
             canRecover: false,
+            ...(row.recovery.workflowResumeState
+              ? { workflowResumeState: row.recovery.workflowResumeState }
+              : {}),
           };
         try {
           return await commit(row, next, 'cancel');

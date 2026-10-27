@@ -77,12 +77,15 @@ const recoveryReasons = [
   'CHECKPOINT_UNAVAILABLE',
   'DELIVERY_UNCERTAIN',
   'WORKSPACE_UNAVAILABLE',
+  'INTAKE_UNAVAILABLE',
+  'WORKFLOW_STATE_UNAVAILABLE',
 ] as const;
 
 export interface NativeRecovery {
   id: string;
   reason: (typeof recoveryReasons)[number];
   canRecover: boolean;
+  workflowResumeState?: 'created' | 'not_created' | 'unavailable';
 }
 
 export interface NativeRecoveryRequest {
@@ -254,6 +257,42 @@ export interface NativePromptRequest {
   expectedRevision: number;
   prompt: string;
 }
+export const nativeStartUnavailableMessages = {
+  NATIVE_EXECUTION_KIRO_UNAVAILABLE:
+    'Kiro is temporarily unavailable for new native executions while AI-DLC input and authentication qualification is pending. Choose Claude Code, Codex or OpenCode.',
+} as const;
+export type NativeStartUnavailableReason = keyof typeof nativeStartUnavailableMessages;
+export interface NativeCapabilities {
+  preparationEnabled: boolean;
+  executionEnabled: boolean;
+  unavailableHarnesses: Partial<Record<WorkflowPackageHarness, NativeStartUnavailableReason>>;
+}
+
+async function capabilities(projectId: string): Promise<NativeCapabilities> {
+  const result = await api.get<unknown>(path(projectId));
+  // An older controller cannot qualify the newly separated instruction path.
+  const unavailable = record(result)
+    ? result.unavailableHarnesses === undefined
+      ? { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' }
+      : result.unavailableHarnesses
+    : null;
+  if (
+    !record(result) ||
+    typeof result.preparationEnabled !== 'boolean' ||
+    typeof result.executionEnabled !== 'boolean' ||
+    !record(unavailable) ||
+    Object.entries(unavailable).some(
+      ([harness, reason]) => harness !== 'kiro' || reason !== 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+    )
+  )
+    return { preparationEnabled: false, executionEnabled: false, unavailableHarnesses: {} };
+  return {
+    preparationEnabled: result.preparationEnabled,
+    executionEnabled: result.executionEnabled,
+    unavailableHarnesses: { ...unavailable },
+  };
+}
+
 export const nativePromptValid = (prompt: string) =>
   Boolean(prompt.trim()) &&
   encoder.encode(prompt).length <= 65536 &&
@@ -279,12 +318,13 @@ export interface NativeIntent {
   updatedAt: string;
   // Optional only for compatibility with the preparation-only API.
   executionAvailable?: boolean;
+  startUnavailableReason?: NativeStartUnavailableReason;
   execution?: NativeExecution | null;
 }
 
 export type NativeIntentSummary = Omit<
   NativeIntent,
-  'prompt' | 'promptRevision' | 'executionAvailable' | 'execution'
+  'prompt' | 'promptRevision' | 'executionAvailable' | 'startUnavailableReason' | 'execution'
 >;
 export interface NativeIntentPage {
   items: NativeIntentSummary[];
@@ -358,7 +398,12 @@ function view(value: unknown, projectId: string, intentId: string): NativeIntent
     typeof value.prompt !== 'string' ||
     (value.promptRevision !== undefined &&
       (!Number.isSafeInteger(value.promptRevision) || Number(value.promptRevision) < 0)) ||
-    (value.executionAvailable !== undefined && typeof value.executionAvailable !== 'boolean')
+    (value.executionAvailable !== undefined && typeof value.executionAvailable !== 'boolean') ||
+    (value.startUnavailableReason !== undefined &&
+      (value.startUnavailableReason !== 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' ||
+        item.harness !== 'kiro' ||
+        value.executionAvailable !== false ||
+        value.execution != null))
   ) {
     throw new Error('The native intent status could not be verified.');
   }
@@ -368,6 +413,9 @@ function view(value: unknown, projectId: string, intentId: string): NativeIntent
     ...(value.promptRevision !== undefined ? { promptRevision: Number(value.promptRevision) } : {}),
     ...(value.executionAvailable !== undefined
       ? { executionAvailable: value.executionAvailable }
+      : {}),
+    ...(value.startUnavailableReason !== undefined
+      ? { startUnavailableReason: value.startUnavailableReason as NativeStartUnavailableReason }
       : {}),
     ...(value.execution !== undefined ? { execution: execution(value.execution) } : {}),
   };
@@ -474,6 +522,10 @@ function execution(value: unknown): NativeExecution | null {
       !validId(candidate.id) ||
       !recoveryReasons.includes(candidate.reason as NativeRecovery['reason']) ||
       typeof candidate.canRecover !== 'boolean' ||
+      (candidate.workflowResumeState !== undefined &&
+        (value.recoveryMode !== 'efs-workspace-v1' ||
+          typeof candidate.workflowResumeState !== 'string' ||
+          !['created', 'not_created', 'unavailable'].includes(candidate.workflowResumeState))) ||
       (candidate.canRecover && value.status !== 'RECOVERY_REQUIRED')
     )
       throw new Error('The native recovery status could not be verified.');
@@ -481,7 +533,32 @@ function execution(value: unknown): NativeExecution | null {
       id: candidate.id,
       reason: candidate.reason as NativeRecovery['reason'],
       canRecover: candidate.canRecover,
+      ...(candidate.workflowResumeState !== undefined
+        ? {
+            workflowResumeState:
+              candidate.workflowResumeState as NativeRecovery['workflowResumeState'],
+          }
+        : {}),
     };
+    if (value.recoveryMode === 'efs-workspace-v1') {
+      if (
+        recovery.workflowResumeState !== 'created' ||
+        ['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(
+          recovery.reason,
+        )
+      )
+        recovery.canRecover = false;
+      if (
+        recovery.workflowResumeState !== 'created' &&
+        !['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(
+          recovery.reason,
+        )
+      )
+        recovery.reason =
+          recovery.workflowResumeState === 'not_created'
+            ? 'INTAKE_UNAVAILABLE'
+            : 'WORKFLOW_STATE_UNAVAILABLE';
+    }
   }
   return {
     status: value.status as NativeExecution['status'],
@@ -875,13 +952,9 @@ export const nativeIntentsService = {
     });
     return { items, nextCursor: value.nextCursor as string | null };
   },
+  capabilities,
   async canPrepare(projectId: string): Promise<boolean> {
-    const result = await api.get<unknown>(path(projectId));
-    return (
-      record(result) &&
-      result.preparationEnabled === true &&
-      typeof result.executionEnabled === 'boolean'
-    );
+    return (await capabilities(projectId)).preparationEnabled;
   },
   async create(projectId: string, request: NativeDraftRequest): Promise<NativeIntent> {
     return view(await api.post(path(projectId), request), projectId, request.intentId);

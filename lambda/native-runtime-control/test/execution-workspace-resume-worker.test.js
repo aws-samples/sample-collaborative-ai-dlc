@@ -19,6 +19,7 @@ const fixture = async ({ generation = 2 } = {}) => {
     const stopped = await f.store.recoveryRequired({
       row: claimed.row,
       reason: 'DELIVERY_UNCERTAIN',
+      workflowResumeState: 'created',
       stoppedSessionId: claimed.row.runtimeSessionId,
     });
     await f.store.recover({
@@ -59,6 +60,7 @@ const fixture = async ({ generation = 2 } = {}) => {
       writerGeneration: nativeWriterGeneration(execution),
       status: 'stopped_needs_review',
       code: 'native_execution_existing_owner',
+      workflowResumeState: 'created',
     })),
     stop: vi.fn(async ({ execution }) => ({
       confirmed: true,
@@ -100,6 +102,7 @@ describe('interrupted acknowledged workspace resume', () => {
       writerGeneration: 2,
       recoveryId: f.row().recovery.id,
       reason: 'DELIVERY_UNCERTAIN',
+      workflowResumeState: 'created',
     });
     expect(f.ports.fence.cancel).not.toHaveBeenCalled();
     expect(f.ports.fence.activate).not.toHaveBeenCalled();

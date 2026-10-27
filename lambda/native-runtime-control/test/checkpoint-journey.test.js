@@ -104,8 +104,9 @@ it.each([
     if(kind==='snapshot' && turn===3) await fs.symlink('work.txt','unsafe-link');
     let result='Question '+turn+'?';
     if(form) {
-      if(turn===1 && (!prompt.includes('together in one form') ||
-        !prompt.includes('--on-instruction where supported'))) throw Error('native question mode missing');
+      const transport=process.argv[5];
+      if(turn===1 && (!transport.includes('together in one form') ||
+        prompt.includes('Native UI'))) throw Error('native question transport missing');
       const dir='aidlc/spaces/default/intents/fixture';
       await fs.mkdir(dir,{recursive:true});
       await fs.writeFile('aidlc/active-space','default\\n');
@@ -267,7 +268,13 @@ it.each([
       const result = await runNativeCommand({
         ...input,
         command: process.execPath,
-        args: [script, nativeSessionId, String(turns), scenario.kind],
+        args: [
+          script,
+          nativeSessionId,
+          String(turns),
+          scenario.kind,
+          input.args[input.args.indexOf('--append-system-prompt') + 1],
+        ],
       });
       commands.push(result);
       return result;

@@ -7,6 +7,7 @@ import { NativePreparationLink } from '@/components/intent/NativePreparationLink
 import { notifySessionExpired, resetSessionExpiry } from '@/services/sessionExpiry';
 
 const canPrepare = vi.fn();
+const capabilities = vi.fn();
 const create = vi.fn();
 const get = vi.fn();
 const list = vi.fn();
@@ -15,6 +16,7 @@ vi.mock('@/services/nativeIntents', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/services/nativeIntents')>()),
   nativeIntentsService: {
     canPrepare: (...a: unknown[]) => canPrepare(...a),
+    capabilities: (...a: unknown[]) => capabilities(...a),
     create: (...a: unknown[]) => create(...a),
     get: (...a: unknown[]) => get(...a),
   },
@@ -69,6 +71,11 @@ beforeEach(() => {
   vi.resetAllMocks();
   resetSessionExpiry();
   canPrepare.mockResolvedValue(true);
+  capabilities.mockResolvedValue({
+    preparationEnabled: true,
+    executionEnabled: true,
+    unavailableHarnesses: { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
+  });
   list.mockResolvedValue([
     { sourceId, revision, repository: 'awslabs/aidlc-workflows', status: 'active' },
   ]);
@@ -102,6 +109,7 @@ it.each([false, true])(
       .spyOn(api, 'get')
       .mockResolvedValue({ preparationEnabled: true, executionEnabled });
     canPrepare.mockImplementation(nativeIntentsService.canPrepare);
+    capabilities.mockImplementation(nativeIntentsService.capabilities);
     create.mockImplementation((_project, request) => Promise.resolve({ id: request.intentId }));
     const user = userEvent.setup();
     render(
@@ -145,12 +153,19 @@ it.each([false, true])(
   },
 );
 
-it('offers all four harnesses, requires explicit creation, and never prepares automatically', async () => {
+it('shows Kiro as temporarily unavailable before creation and leaves the other harnesses selectable', async () => {
   renderPage();
   const select = await screen.findByRole('combobox', { name: 'Coding harness' });
   expect(select).toHaveValue('codex');
-  for (const name of ['Claude Code', 'Codex', 'Kiro', 'OpenCode'])
-    expect(screen.getByRole('option', { name })).toBeInTheDocument();
+  for (const name of ['Claude Code', 'Codex', 'OpenCode'])
+    expect(screen.getByRole('option', { name })).toBeEnabled();
+  expect(screen.getByRole('option', { name: 'Kiro (temporarily unavailable)' })).toBeDisabled();
+  expect(
+    screen.getByText(/Kiro is temporarily unavailable for new native executions while/),
+  ).toBeVisible();
+  expect(select).toHaveAccessibleDescription(/AI-DLC input and authentication qualification/);
+  fireEvent.change(select, { target: { value: 'kiro' } });
+  expect(select).toHaveValue('codex');
   expect(create).not.toHaveBeenCalled();
   expect(screen.getByRole('button', { name: 'Create native draft' })).toBeDisabled();
 });
@@ -162,7 +177,7 @@ it('retries the same immutable draft after a lost response', async () => {
   const user = userEvent.setup();
   renderPage();
   await user.type(await screen.findByRole('textbox', { name: 'Title' }), 'Flappy bird');
-  await user.selectOptions(screen.getByRole('combobox', { name: 'Coding harness' }), 'kiro');
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Coding harness' }), 'claude');
   await user.click(screen.getByRole('button', { name: 'Create native draft' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Response lost');
   expect(screen.getByRole('textbox', { name: 'Title' })).toBeDisabled();
@@ -174,7 +189,7 @@ it('retries the same immutable draft after a lost response', async () => {
     sourceId,
     packageJobId: jobId,
     bindingRevision: revision,
-    harness: 'kiro',
+    harness: 'claude',
   });
 });
 
@@ -239,12 +254,12 @@ it.each([
       screen.getByRole('textbox', { name: 'What would you like to build?' }),
       'A game',
     );
-    await user.selectOptions(screen.getByRole('combobox'), 'kiro');
+    await user.selectOptions(screen.getByRole('combobox'), 'claude');
     await user.click(screen.getByRole('button', { name: 'Create native draft' }));
     await screen.findByText('Native workspace status');
     expect(create.mock.calls[1]).toEqual([
       'project-1',
-      { ...original, title: 'Corrected title', prompt: 'A game', harness: 'kiro' },
+      { ...original, title: 'Corrected title', prompt: 'A game', harness: 'claude' },
     ]);
     expect(create.mock.calls[0][1]).toEqual(original);
   },
@@ -394,7 +409,12 @@ it('does not create a replacement draft when recovery is temporarily unavailable
 it.each(['disabled', 'source-changed', 'package-not-ready'])(
   'blocks creation for %s',
   async (scenario) => {
-    if (scenario === 'disabled') canPrepare.mockResolvedValue(false);
+    if (scenario === 'disabled')
+      capabilities.mockResolvedValue({
+        preparationEnabled: false,
+        executionEnabled: false,
+        unavailableHarnesses: { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
+      });
     if (scenario === 'source-changed')
       list.mockResolvedValue([{ sourceId, revision: 'changed', status: 'active' }]);
     if (scenario === 'package-not-ready') getPackageImport.mockResolvedValue({ state: 'RUNNING' });

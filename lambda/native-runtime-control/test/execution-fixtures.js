@@ -30,6 +30,7 @@ export const executionFixture = ({
   harness = 'codex',
   model = 'openai.example',
   recoveryMode,
+  packageVersion = '2.9.0',
 } = {}) => {
   const prepared = {
     ...nativeRuntimeBindingKey(IDENTITY),
@@ -41,7 +42,7 @@ export const executionFixture = ({
     version: 7,
     requestFingerprint: `sha256:${'d'.repeat(64)}`,
     request: { ...request(), harness },
-    candidate: candidate(),
+    candidate: candidate({ version: packageVersion }),
     archiveReceipt: receipt(),
     imageUri: IMAGE.uri,
     imageDigest: IMAGE.digest,

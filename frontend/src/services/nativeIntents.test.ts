@@ -176,6 +176,75 @@ describe('native draft rejection boundary', () => {
   );
 });
 describe('native intent response boundary', () => {
+  it.each([undefined, { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' }])(
+    'decodes temporary Kiro availability and keeps an older controller conservative: %j',
+    async (unavailableHarnesses) => {
+      get.mockResolvedValue({
+        preparationEnabled: true,
+        executionEnabled: true,
+        ...(unavailableHarnesses === undefined ? {} : { unavailableHarnesses }),
+      });
+      expect(await nativeIntentsService.capabilities('project-1')).toEqual({
+        preparationEnabled: true,
+        executionEnabled: true,
+        unavailableHarnesses: { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
+      });
+      expect(post).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    null,
+    [],
+    ['kiro'],
+    { kiro: true },
+    { kiro: ['NATIVE_EXECUTION_KIRO_UNAVAILABLE'] },
+    { kiro: 'private or unknown reason' },
+    { claude: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
+  ])('keeps malformed harness capabilities closed: %j', async (unavailableHarnesses) => {
+    get.mockResolvedValue({
+      preparationEnabled: true,
+      executionEnabled: true,
+      unavailableHarnesses,
+    });
+    expect((await nativeIntentsService.capabilities('project-1')).preparationEnabled).toBe(false);
+    expect(await nativeIntentsService.canPrepare('project-1')).toBe(false);
+  });
+  it('preserves the fixed Start unavailability reason without exposing backend messages', async () => {
+    get.mockResolvedValue({
+      ...draft,
+      status: 'READY',
+      executionAvailable: false,
+      execution: null,
+      startUnavailableReason: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+      unavailableMessage: 'private backend detail',
+    });
+    const result = await nativeIntentsService.get('project-1', 'run-1');
+    expect(result).toMatchObject({
+      harness: 'kiro',
+      executionAvailable: false,
+      startUnavailableReason: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+      execution: null,
+    });
+    expect(result).not.toHaveProperty('unavailableMessage');
+  });
+  it.each([
+    { startUnavailableReason: ['NATIVE_EXECUTION_KIRO_UNAVAILABLE'] },
+    { startUnavailableReason: 'private backend detail' },
+    { startUnavailableReason: null },
+    { executionAvailable: true },
+    { harness: 'claude' },
+  ])('rejects malformed or contradictory Start availability: %j', async (patch) => {
+    get.mockResolvedValue({
+      ...draft,
+      executionAvailable: false,
+      execution: null,
+      startUnavailableReason: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+      ...patch,
+    });
+    await expect(nativeIntentsService.get('project-1', 'run-1')).rejects.toThrow(
+      'The native intent status could not be verified.',
+    );
+  });
   it.each([
     null,
     true,
@@ -375,7 +444,14 @@ describe('native execution and committed publication boundary', () => {
   });
   it('excludes execution detail and capabilities from discovery summaries', async () => {
     get.mockResolvedValue({
-      items: [{ ...draft, executionAvailable: true, execution }],
+      items: [
+        {
+          ...draft,
+          executionAvailable: true,
+          startUnavailableReason: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+          execution,
+        },
+      ],
       nextCursor: null,
     });
     const { prompt: _prompt, ...expected } = draft;

@@ -60,6 +60,10 @@ export const recoveryMessages: Record<NativeRecovery['reason'], string> = {
     'The last command may have executed. Inspect work and export its exact results; this command cannot be replayed through recovery.',
   WORKSPACE_UNAVAILABLE:
     'The surviving workspace or its binding could not be verified. Resume is blocked; published work and accepted answers remain available.',
+  INTAKE_UNAVAILABLE:
+    'Intake recovery is unavailable. AI-DLC 2.11.1 can resume only after a workflow has been created. Published work and accepted answers remain available.',
+  WORKFLOW_STATE_UNAVAILABLE:
+    'Recovery is unavailable because an existing workflow could not be verified. Published work and accepted answers remain available.',
 };
 export const imageBlocked = (intent: NativeIntent) =>
   ['revoked', 'unapproved', 'unavailable'].includes(intent.execution?.imageStatus ?? '');
@@ -70,7 +74,11 @@ export const canRecover = (intent: NativeIntent) =>
   intent.execution.revision !== undefined &&
   intent.execution.recovery?.canRecover === true &&
   (intent.execution.recoveryMode !== 'efs-workspace-v1' ||
-    intent.execution.stopStatus?.state === 'confirmed');
+    (intent.execution.stopStatus?.state === 'confirmed' &&
+      intent.execution.recovery.workflowResumeState === 'created' &&
+      !['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(
+        intent.execution.recovery.reason,
+      )));
 // Fixed public responses from lambda/native-runtime-control/api.js. Never
 // render arbitrary ApiError.message/body text, even for a recognized code.
 const nativeActionErrors: Record<string, readonly [number, string]> = {
@@ -91,6 +99,10 @@ const nativeActionErrors: Record<string, readonly [number, string]> = {
   native_package_job_invalid: [409, 'Package import state is invalid'],
   native_package_job_unavailable: [503, 'Package import service unavailable'],
   NATIVE_EXECUTION_DISABLED: [503, 'Native execution is disabled'],
+  NATIVE_EXECUTION_KIRO_UNAVAILABLE: [
+    409,
+    'Kiro is temporarily unavailable for new native executions while AI-DLC input and authentication qualification is pending. Choose Claude Code, Codex or OpenCode.',
+  ],
   NATIVE_EXECUTION_INVALID: [400, 'Invalid native execution request'],
   NATIVE_EXECUTION_CONFLICT: [409, 'Native execution changed; refresh its status'],
   NATIVE_EXECUTION_UNAVAILABLE: [503, 'Native execution is unavailable; retry the same request'],

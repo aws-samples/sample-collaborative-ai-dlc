@@ -284,6 +284,69 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it('explains a prepared Kiro draft restriction before Start and in its configuration through the real decoder', async () => {
+  intent = {
+    ...initial,
+    harness: 'kiro',
+    executionAvailable: false,
+    startUnavailableReason: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+    execution: null,
+  };
+  renderPage();
+  const start = await screen.findByRole('button', { name: 'Start agent' });
+  expect(start).toBeDisabled();
+  expect(
+    screen.getByText(/Kiro is temporarily unavailable for new native executions while/),
+  ).toBeVisible();
+  await userEvent.click(start);
+  expect(transport.post).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole('button', { name: 'Intent actions' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Intent configuration' }));
+  const configuration = screen.getByRole('dialog', { name: 'Intent configuration' });
+  expect(within(configuration).getByText('Kiro')).toBeVisible();
+  expect(
+    within(configuration).getByText(/Kiro is temporarily unavailable.*required for release/),
+  ).toBeVisible();
+  expect(transport.post).not.toHaveBeenCalled();
+});
+
+it('keeps retained Kiro work and captured configuration readable while new Kiro Starts are unavailable', async () => {
+  intent = { ...initial, harness: 'kiro' };
+  interaction = { ...interaction, harness: 'kiro' };
+  renderPage();
+  await loaded();
+  expect(screen.getByRole('region', { name: 'Published AI-DLC response' })).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Intent actions' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Intent configuration' }));
+  const configuration = screen.getByRole('dialog', { name: 'Intent configuration' });
+  expect(within(configuration).getByText('Kiro')).toBeVisible();
+  expect(within(configuration).getByText('selected-model')).toBeVisible();
+  expect(within(configuration).getByText('abc123')).toBeVisible();
+  expect(transport.post).not.toHaveBeenCalled();
+});
+
+it('shows only the fixed Kiro rejection if a stale enabled draft reaches Start', async () => {
+  intent = { ...initial, harness: 'kiro', execution: null };
+  transport.post.mockRejectedValueOnce(
+    new ApiError(409, 'private provider response', {
+      code: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+      error:
+        'Kiro is temporarily unavailable for new native executions while AI-DLC input and authentication qualification is pending. Choose Claude Code, Codex or OpenCode.',
+      message: 'private provider response',
+    }),
+  );
+  renderPage();
+  await screen.findByRole('button', { name: 'Start agent' });
+  await click('Start agent');
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    /Kiro is temporarily unavailable.*AI-DLC input and authentication qualification/,
+  );
+  expect(document.body.textContent).not.toContain('private provider response');
+  expect(transport.post).toHaveBeenCalledTimes(1);
+  expect(transport.post.mock.calls[0][0]).toBe('/projects/project-1/native-intents/run-1/start');
+});
+
 it('renders all proposed-plan choices and preserves one protected answer across duplicate submits', async () => {
   const pendingInput = nativePendingInput(buildNativePendingInput({ spec: proposedPlanSpec }));
   interaction = {
@@ -1022,7 +1085,14 @@ function requireRecovery(patch: Partial<NativeExecution> = {}) {
       ...intent.execution!,
       status: 'RECOVERY_REQUIRED',
       revision: 10,
-      recovery: { id: 'recovery-1', reason: 'RESTORE_FAILED', canRecover: true },
+      recovery: {
+        id: 'recovery-1',
+        reason: 'RESTORE_FAILED',
+        canRecover: true,
+        ...(patch.recoveryMode === 'efs-workspace-v1'
+          ? { workflowResumeState: 'created' as const }
+          : {}),
+      },
       ...patch,
     },
   };
@@ -1071,6 +1141,40 @@ it('requires confirmation for fresh-session resume and sends no earlier answer',
   expect(await screen.findByText('Resuming in a fresh session')).toBeVisible();
   expect(transport.post.mock.calls.some(([path]) => path.endsWith('/responses'))).toBe(false);
 });
+
+it.each([
+  ['not_created', 'INTAKE_UNAVAILABLE', 'Intake recovery is unavailable.'],
+  ['unavailable', 'WORKFLOW_STATE_UNAVAILABLE', 'Recovery is unavailable because'],
+  [undefined, 'SESSION_LOST', 'Recovery is unavailable because'],
+] as const)(
+  'keeps intake history readable and hides resume for workflow state %s',
+  async (workflowResumeState, reason, message) => {
+    requireRecovery({
+      recoveryMode: 'efs-workspace-v1',
+      stopStatus: { state: 'confirmed', confirmedAt: '2026-09-29T12:00:00Z' },
+      recovery: {
+        id: 'recovery-1',
+        reason,
+        // Even a retained older API's permissive value needs creation proof.
+        canRecover: true,
+        ...(workflowResumeState === undefined ? {} : { workflowResumeState }),
+      },
+    });
+    renderPage();
+    await loaded();
+    expect(screen.getByText(new RegExp(message.replaceAll('.', '\\.')))).toBeVisible();
+    if (workflowResumeState === 'not_created')
+      expect(
+        screen.getByText(/AI-DLC 2\.11\.1 can resume only after a workflow has been created/),
+      ).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: 'Resume in fresh session' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(messages[0].text)).toBeVisible();
+    expect(screen.getByRole('link', { name: 'History' })).toBeVisible();
+    expect(transport.post).not.toHaveBeenCalled();
+  },
+);
 
 it.each([undefined, { state: 'unconfirmed', confirmedAt: null }] as const)(
   'does not offer fresh-session resume without confirmed predecessor stop %j',

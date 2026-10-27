@@ -10,6 +10,8 @@ import {
   nativeReplyRequest,
   nativeTurnSequence,
   nativeWriterGeneration,
+  nativeRecoveryAvailable,
+  nativeRecoveryReason,
 } from './execution-store.js';
 import { nativeDraftPrompt, promptFailure } from './draft-prompt.js';
 import { nativeInteractionView } from '../shared/native-interaction.js';
@@ -81,14 +83,25 @@ export const nativeExecutionView = (row) =>
         recovery: row.recovery
           ? {
               id: row.recovery.id,
-              reason: row.recovery.reason,
-              canRecover: row.recovery.canRecover,
+              reason: nativeRecoveryReason(row),
+              canRecover: nativeRecoveryAvailable(row),
+              ...(row.recovery.workflowResumeState
+                ? { workflowResumeState: row.recovery.workflowResumeState }
+                : {}),
             }
           : null,
       }
     : null;
 
 const TERMINAL = new Set(['STOPPED', 'FAILED', 'CANCELLED', 'WAITING_FOR_INPUT']);
+
+// Temporary native admission limit until NE-18 qualifies Kiro's instruction
+// channel and authentication. Package support and existing execution pins stay
+// intact; this is not a platform-wide harness setting.
+export const nativeUnavailableHarnesses = Object.freeze({
+  kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+});
+const startUnavailableReason = (draft) => nativeUnavailableHarnesses[draft.request.harness] ?? null;
 
 export const createNativeExecutionApi = ({
   enabled,
@@ -199,6 +212,7 @@ export const createNativeExecutionApi = ({
     async status(draft, recheck) {
       const row = await read(draft, recheck);
       const view = nativeExecutionView(row);
+      const unavailable = row ? null : startUnavailableReason(draft);
       if (row && !TERMINAL.has(row.status) && images && typeof deployment === 'function') {
         // Reads never hide committed results because the policy store is
         // briefly unavailable; the client disables actions for this state and
@@ -212,8 +226,9 @@ export const createNativeExecutionApi = ({
         }
       }
       return {
-        executionAvailable: row ? true : admissionEnabled === true,
+        executionAvailable: row ? true : admissionEnabled === true && !unavailable,
         admissionEnabled: admissionEnabled === true,
+        ...(unavailable ? { startUnavailableReason: unavailable } : {}),
         execution: view,
       };
     },
@@ -229,6 +244,8 @@ export const createNativeExecutionApi = ({
       if (!row) {
         if (!admissionEnabled)
           fail('NATIVE_EXECUTION_DISABLED', 'New native executions are disabled');
+        const unavailable = startUnavailableReason(draft);
+        if (unavailable) fail(unavailable, 'Kiro is temporarily unavailable for native execution');
         await authorizeSource(draft, actorId);
         const configuration = await configure({ draft, actorId });
         // A new run always pins the current deployment image; an emergency

@@ -81,6 +81,66 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('native recovery contract', () => {
+  it.each(
+    [['created'], { value: 'created' }, 1, null, true, 'unknown'].map((workflowResumeState) => ({
+      workflowResumeState,
+    })),
+  )(
+    'rejects nonliteral or unknown workflow recovery evidence %j',
+    async ({ workflowResumeState }) => {
+      get.mockResolvedValue({
+        ...detail,
+        execution: {
+          ...execution,
+          status: 'RECOVERY_REQUIRED',
+          recoveryMode: 'efs-workspace-v1',
+          recovery: {
+            id: 'recovery-1',
+            reason: 'SESSION_LOST',
+            canRecover: true,
+            workflowResumeState,
+          },
+        },
+      });
+      await expect(nativeIntentsService.get('project-1', 'run-1')).rejects.toThrow(
+        'The native recovery status could not be verified.',
+      );
+    },
+  );
+
+  it.each([
+    ['created', 'SESSION_LOST', true],
+    ['not_created', 'INTAKE_UNAVAILABLE', false],
+    ['unavailable', 'WORKFLOW_STATE_UNAVAILABLE', false],
+    [undefined, 'WORKFLOW_STATE_UNAVAILABLE', false],
+  ])(
+    'requires created proof before exposing EFS recovery from %s',
+    async (state, reason, canRecover) => {
+      get.mockResolvedValue({
+        ...detail,
+        execution: {
+          ...execution,
+          status: 'RECOVERY_REQUIRED',
+          recoveryMode: 'efs-workspace-v1',
+          recovery: {
+            id: 'recovery-1',
+            reason: 'SESSION_LOST',
+            canRecover: true,
+            ...(state === undefined ? {} : { workflowResumeState: state }),
+          },
+        },
+      });
+      const result = await nativeIntentsService.get('project-1', 'run-1');
+      expect(result.execution?.recovery).toEqual({
+        id: 'recovery-1',
+        reason,
+        canRecover,
+        ...(state === undefined ? {} : { workflowResumeState: state }),
+      });
+      expect(result.execution?.publicationId).toBe(execution.publicationId);
+    },
+  );
+
   it('reads exact publication sequence and public stop evidence independently of pending turn sequence', async () => {
     get.mockResolvedValue({
       ...detail,

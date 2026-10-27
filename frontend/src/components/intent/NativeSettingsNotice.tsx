@@ -4,7 +4,9 @@ export function NativeSettingsNotice() {
     <div className="space-y-2 text-sm text-muted-foreground">
       <p>
         The release target is AI-DLC 2.11.1 with Claude Code, Codex, OpenCode and Kiro. Complete
-        deployed qualification is still pending for every harness.
+        deployed qualification is still pending for every harness. Kiro is temporarily unavailable
+        for new native executions pending AI-DLC input and authentication qualification; it remains
+        required for release.
       </p>
       <p>
         Current requests use a written prompt and one connected GitHub, GitLab or Bitbucket

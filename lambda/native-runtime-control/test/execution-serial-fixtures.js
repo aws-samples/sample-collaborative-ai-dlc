@@ -15,8 +15,8 @@ export const SERIAL_SOURCE = { branch: 'develop', commit: 'e'.repeat(40) };
 
 // Uses the production authority store and both immutable S3 codecs. Only AWS
 // transport is local; no canned manifests, interaction hashes or receipt IDs.
-export const serialFixture = () => {
-  const f = executionFixture();
+export const serialFixture = (fixtureOptions) => {
+  const f = executionFixture(fixtureOptions);
   const objects = new Map();
   const reads = [];
   let version = 0;

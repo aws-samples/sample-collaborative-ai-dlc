@@ -34,7 +34,7 @@ afterEach(() => {
 });
 afterAll(() => vi.unstubAllEnvs());
 
-const fixture = async () => {
+const fixture = async ({ workflowResumeState = 'created' } = {}) => {
   const f = executionFixture({ harness: 'claude', recoveryMode: NATIVE_WORKSPACE_RECOVERY });
   // Complete the existing authority fixture's prepared-row presentation. Its
   // request, package, binding and execution pins remain the fixture's real ones.
@@ -57,9 +57,10 @@ const fixture = async () => {
   const required = await f.store.recoveryRequired({
     row,
     reason: 'SESSION_LOST',
+    workflowResumeState,
     stoppedSessionId: row.runtimeSessionId,
   });
-  expect(required.recovery.canRecover).toBe(true);
+  expect(required.recovery.canRecover).toBe(workflowResumeState === 'created');
 
   const enqueue = vi.fn(async () => {});
   const execution = createNativeExecutionApi({ enabled: true, store: f.store, enqueue });
@@ -170,3 +171,20 @@ it('rejects the same frontend recovery request before execution dispatch when me
   expect(f.enqueue).not.toHaveBeenCalled();
   expect(f.row()).toEqual(f.required);
 });
+
+it.each(['not_created', 'unavailable'])(
+  'rejects direct frontend recovery through the public router for %s workflow state',
+  async (workflowResumeState) => {
+    const f = await fixture({ workflowResumeState });
+    await expect(f.resume()).rejects.toMatchObject({
+      status: 409,
+      body: { code: 'NATIVE_EXECUTION_CONFLICT' },
+    });
+    expect(f.recover).toHaveBeenCalledOnce();
+    expect(f.enqueue).not.toHaveBeenCalled();
+    expect(
+      f.authority.mock.calls.filter(([command]) => command instanceof TransactWriteCommand),
+    ).toHaveLength(0);
+    expect(f.row()).toEqual(f.required);
+  },
+);

@@ -4,6 +4,8 @@ import { ApiError } from '@/services/api';
 import {
   nativeDraftInputRejected,
   nativeIntentsService,
+  nativeStartUnavailableMessages,
+  type NativeCapabilities,
   type NativeDraftRequest,
 } from '@/services/nativeIntents';
 import { currentSessionEpoch, isSessionExpiryNotified } from '@/services/sessionExpiry';
@@ -110,6 +112,7 @@ function NativeDraftForm({
   const [prompt, setPrompt] = useState('');
   const [harness, setHarness] = useState<WorkflowPackageHarness>('codex');
   const [preview, setPreview] = useState<WorkflowPackagePreview | null>(null);
+  const [capabilities, setCapabilities] = useState<NativeCapabilities | null>(null);
   const [repository, setRepository] = useState('');
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -131,13 +134,13 @@ function NativeDraftForm({
           if (current()) navigateToDraft(existing.id);
           return;
         }
-        const [enabled, sources, job] = await Promise.all([
-          nativeIntentsService.canPrepare(projectId),
+        const [availability, sources, job] = await Promise.all([
+          nativeIntentsService.capabilities(projectId),
           workflowSourcesService.list(projectId),
           workflowSourcesService.getPackageImport(projectId, sourceId, packageJobId),
         ]);
         const source = sources.find((item) => item.sourceId === sourceId);
-        if (!enabled)
+        if (!availability.preparationEnabled)
           throw new Error('Native workspace preparation is not enabled for this space.');
         if (
           source?.status !== 'active' ||
@@ -149,6 +152,7 @@ function NativeDraftForm({
           );
         }
         if (current()) {
+          setCapabilities(availability);
           setPreview(job.package);
           setRepository(source.repository);
         }
@@ -173,7 +177,15 @@ function NativeDraftForm({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!isCurrent() || submitting.current || !preview || (!title.trim() && !prompt.trim())) return;
+    if (
+      !isCurrent() ||
+      submitting.current ||
+      !preview ||
+      !capabilities?.preparationEnabled ||
+      capabilities.unavailableHarnesses[harness] ||
+      (!title.trim() && !prompt.trim())
+    )
+      return;
     submitting.current = true;
     setCreating(true);
     setError(null);
@@ -271,13 +283,28 @@ function NativeDraftForm({
                   className="h-9 w-full rounded-md border bg-background px-3 text-sm"
                   value={harness}
                   disabled={locked}
-                  onChange={(event) => setHarness(event.target.value as WorkflowPackageHarness)}
+                  aria-describedby="native-harness-availability"
+                  onChange={(event) => {
+                    const next = event.target.value as WorkflowPackageHarness;
+                    if (!capabilities?.unavailableHarnesses[next]) setHarness(next);
+                  }}
                 >
                   <option value="claude">Claude Code</option>
                   <option value="codex">Codex</option>
-                  <option value="kiro">Kiro</option>
+                  <option value="kiro" disabled={Boolean(capabilities?.unavailableHarnesses.kiro)}>
+                    {capabilities?.unavailableHarnesses.kiro
+                      ? 'Kiro (temporarily unavailable)'
+                      : 'Kiro'}
+                  </option>
                   <option value="opencode">OpenCode</option>
                 </select>
+                <div id="native-harness-availability" className="text-sm text-muted-foreground">
+                  {Object.entries(capabilities?.unavailableHarnesses ?? {}).map(
+                    ([unavailableHarness, reason]) => (
+                      <p key={unavailableHarness}>{nativeStartUnavailableMessages[reason]}</p>
+                    ),
+                  )}
+                </div>
               </div>
               <details className="rounded-md border p-3">
                 <summary className="cursor-pointer text-sm font-medium">
@@ -287,7 +314,15 @@ function NativeDraftForm({
                   <NativeSettingsNotice />
                 </div>
               </details>
-              <Button type="submit" disabled={creating || (!title.trim() && !prompt.trim())}>
+              <Button
+                type="submit"
+                disabled={
+                  creating ||
+                  !capabilities?.preparationEnabled ||
+                  Boolean(capabilities.unavailableHarnesses[harness]) ||
+                  (!title.trim() && !prompt.trim())
+                }
+              >
                 {creating ? 'Creating draft…' : locked ? 'Retry same draft' : 'Create native draft'}
               </Button>
             </form>

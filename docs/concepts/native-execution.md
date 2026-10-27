@@ -31,6 +31,13 @@ draft creation. A member selects the package and harness, enters the request and
 prepares the workspace. Preparing a workspace does not start agent work. The
 saved request can be corrected before **Start**.
 
+Kiro is temporarily unavailable for new native executions while AI-DLC input
+and authentication qualification is pending. Creation shows the disabled Kiro choice
+and its reason, and a prepared Kiro draft cannot Start through either the
+application or a direct API request. Claude Code, Codex and OpenCode remain
+selectable for development. Existing Kiro configuration and history remain
+readable; other platform Kiro behavior is unchanged.
+
 Start captures the request revision, package, application source commit, harness,
 model selection, credential scope and execution image. Later project settings
 changes do not silently change that execution. Credential rotation within the
@@ -48,6 +55,9 @@ When AI-DLC needs input, it publishes its response and, where supported, a
 structured question form. Members can edit the answer together before submitting
 it. Available questions from the current workflow step can appear together;
 summary confirmations and required approvals remain separate interactions.
+Grouping is a presentation choice. AI-DLC's interaction-mode question remains
+unless the member has already expressed a preference in their retained request
+or answers; platform instructions are not evidence of a human selection.
 
 The platform records an accepted answer against the exact question and revision
 that the member saw. Competing or stale submissions cannot replace it. A retry
@@ -140,6 +150,21 @@ process has stopped before admitting another writer. The member then confirms
 **Resume in a fresh session**. Native opens the same surviving workspace with a
 fresh CLI session and invokes AI-DLC's supported resume entrypoint. AI-DLC checks
 its workflow records and incomplete work, then continues or asks for input.
+
+**AI-DLC 2.11.1 recovery starts after workflow creation.** The initial scope or
+plan-selection offer has no active workflow and is outside recovery coverage.
+After session loss at that point, the application shows **Intake recovery is
+unavailable** and does not offer fresh-session resume. Published proposals and
+accepted answers remain readable. Native does not route a later resume message
+through the earlier offer's answer command or turn it into plan consent.
+
+Eligibility comes from the surviving workspace's active pointers, matching
+committed intent registry entry and initialized workflow state. It is checked
+when loss is observed and again before a fresh CLI starts. The last publication
+alone is insufficient: a workflow may have been created during an interrupted
+turn after that publication. Missing, incomplete or ambiguous workflow records
+make recovery unavailable; this structural observation does not establish
+approval, completion or permission to skip AI-DLC's reconciliation.
 
 Resume confirmation does not approve a workflow gate or replay an earlier answer.
 Previously delivered, uncertain and undelivered answers remain distinct. The
@@ -237,6 +262,9 @@ The initial serial release targets **AI-DLC 2.11.1**, **all four harnesses** and
 **all three application repository providers** below. These scope decisions were
 confirmed on 2026-10-26. Each advertised combination must pass qualification
 before release; Kiro is a required row even while its qualification is blocked.
+The temporary native Kiro admission restriction was approved on 2026-10-27.
+Full Kiro instruction-channel, input and authentication qualification belongs
+to NE-18 and must pass before this restriction is removed for release.
 
 | Scope              | Initial release requirement                                                                                                                                                                                                                                       |
 | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -272,17 +300,17 @@ The normal **New intent** backend/default decision remains part of NE-08.
 
 ### Current implementation
 
-| Area                        | Current behavior and limit                                                                                                                                                                                                                                                                          |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Coding harnesses            | Adapters exist for Claude Code, Codex, OpenCode and Kiro. Installed local workflow/recovery journeys have been demonstrated for Claude, Codex and OpenCode. Kiro's supported deterministic provider input remains a qualification gap. None of these facts establishes a complete deployed release. |
-| Methodology sources         | Import adapters cover GitHub.com, GitLab.com and Bitbucket Cloud with their supported source bindings. Installer and provenance constraints require separate qualification; importing from a provider is not a claim of full workflow support.                                                      |
-| Application source          | Exactly one connected GitHub, GitLab or Bitbucket repository. Source resolution captures the default branch and exact commit. CodeCommit, multiple repositories, submodule and LFS materialization are not supported by this path.                                                                  |
-| Package and harness         | Selected for the native draft and pinned for execution. Repository and package instructions remain part of the workspace.                                                                                                                                                                           |
-| Models                      | Start captures the resolved project/platform model selection. An unset selection or automatic routing is not an immutable provider-model version.                                                                                                                                                   |
-| Credentials                 | The starting member's effective credential scope is captured. A responding member does not replace it. Rotation within that scope is allowed; revocation does not silently fall back to another scope.                                                                                              |
-| Environments and tools      | Native uses its dedicated runtime. Platform-managed environments, custom MCP server selections and uploaded custom rules do not currently apply. Repository/package configuration can still supply instructions and tools.                                                                          |
-| Platform execution controls | Agent-tier assignments, v2 stage scheduling, platform sensors, parallelism, rewind/recompose and per-unit PR strategies do not control native methodology execution.                                                                                                                                |
-| Optional features           | Native graph enrichment and debug archive capture are off. Platform preferences do not enable them for native runs.                                                                                                                                                                                 |
+| Area                        | Current behavior and limit                                                                                                                                                                                                                                                                                                    |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Coding harnesses            | Claude Code, Codex and OpenCode remain selectable for development. Kiro is visibly temporarily unavailable for new native executions, with authoritative Start rejection and an explicit runtime guard. All four harnesses still require release qualification; Kiro's full input and authentication path remains NE-18 work. |
+| Methodology sources         | Import adapters cover GitHub.com, GitLab.com and Bitbucket Cloud with their supported source bindings. Installer and provenance constraints require separate qualification; importing from a provider is not a claim of full workflow support.                                                                                |
+| Application source          | Exactly one connected GitHub, GitLab or Bitbucket repository. Source resolution captures the default branch and exact commit. CodeCommit, multiple repositories, submodule and LFS materialization are not supported by this path.                                                                                            |
+| Package and harness         | Selected for the native draft and pinned for execution. Repository and package instructions remain part of the workspace.                                                                                                                                                                                                     |
+| Models                      | Start captures the resolved project/platform model selection. An unset selection or automatic routing is not an immutable provider-model version.                                                                                                                                                                             |
+| Credentials                 | The starting member's effective credential scope is captured. A responding member does not replace it. Rotation within that scope is allowed; revocation does not silently fall back to another scope.                                                                                                                        |
+| Environments and tools      | Native uses its dedicated runtime. Platform-managed environments, custom MCP server selections and uploaded custom rules do not currently apply. Repository/package configuration can still supply instructions and tools.                                                                                                    |
+| Platform execution controls | Agent-tier assignments, v2 stage scheduling, platform sensors, parallelism, rewind/recompose and per-unit PR strategies do not control native methodology execution.                                                                                                                                                          |
+| Optional features           | Native graph enrichment and debug archive capture are off. Platform preferences do not enable them for native runs.                                                                                                                                                                                                           |
 
 The Intent configuration view shows captured settings rather than current defaults.
 Unsupported settings need to remain visible as limitations wherever users choose
@@ -336,9 +364,11 @@ package/materialization identifiers and application source commit. Verify these
 against the accepted execution configuration before exercising recovery; a
 Terraform default or mutable image tag is insufficient.
 
-1. Start through the application and reach a real workflow question. Record its
-   interaction and publication identifiers and any accepted answer's delivery
-   status. Let the runtime remain idle beyond its 900-second session timeout,
+1. Start through the application, select a plan as a real member, and verify that
+   AI-DLC has created its workflow before reaching a real workflow question.
+   The initial scope/plan-selection offer is not a recoverable boundary for
+   2.11.1. Record the created workflow, interaction and publication identifiers
+   and any accepted answer's delivery status. Let the runtime remain idle beyond its 900-second session timeout,
    then submit the next real member answer through the application. Ordinary
    application reads do not detect expiry or keep the runtime alive. The next
    dispatch must detect the lost session before sending that answer to the
@@ -360,10 +390,15 @@ Terraform default or mutable image tag is insufficient.
    member, and absent delivery time/resulting publication. The current interaction's
    generic delivery status alone cannot establish this history. Capture evidence
    that the turn used no private recovery capture, export, import or restore.
-5. Exercise missing and incorrectly bound workspaces using isolated qualification
+5. Separately lose a session at the initial plan-selection offer. Confirm that the
+   browser explains that intake recovery is unavailable, the recovery API refuses
+   the action, and no fresh CLI starts. Its proposal and any accepted answer must
+   remain in history, without plan consent or automatic answer replay.
+6. Exercise missing and incorrectly bound workspaces using isolated qualification
    resources. The browser must show that resume is unavailable, with no replacement
    workspace, model turn or admitted publication. Preserve existing dev workspaces
-   and earlier failed intents.
+   and earlier failed intents. Start these faults from a created workflow so the
+   intake restriction does not mask a workspace-binding failure.
 
 **Local readiness, 2026-10-26:** the frontend recovery service and authenticated
 API wrapper now run against the real public router, execution API and authority
@@ -422,8 +457,8 @@ execution matches the package, model and image pins recorded before Start:
 
 The accepted execution captures the space's model selection, which differs from
 the platform fallback. Its runtime uses the prepared EFS access point and a
-dedicated execution endpoint. The first real AI-DLC question was published before
-the waiting-session expiry test. After more than 900 seconds of inactivity, a
+dedicated execution endpoint. The initial AI-DLC scope/plan-selection offer was
+published before the waiting-session expiry test. After more than 900 seconds of inactivity, a
 browser reply was accepted and the worker detected the lost session before
 dispatching it. The application exposed a confirmed predecessor stop and accepted
 the member's explicit fresh-session confirmation. Writer generation 2 reused the
@@ -435,11 +470,92 @@ capture or restore.
 
 This is partial proof: publication 2 reported `next does not take --on-instruction
 where` from the pinned workflow's resume command and contained no workflow
-question. The argument-handling failure is under investigation; publication
-admission alone does not qualify workflow recovery. The interrupted-tool case is
+question. The pinned engine reads the complete AI-DLC user message, including the
+previously appended platform guidance; even clean CLI arguments reproduced the
+failure. Moving guidance outside that message exposed the independent intake
+limit: an exact resume returns **No workflow state found** before an active intent
+exists. The selected release therefore limits recovery to created workflows.
+The offered question's request-answer route is not a supported fallback: a later
+resume message can satisfy that route's input check and produce a workflow-create
+instruction without a plan choice.
+
+The two publications preserved the complete file inventory and application
+source; five engine hook-health timestamps changed. Publication admission and
+these retention checks do not qualify workflow recovery. Platform transport
+guidance must use a separate harness instruction channel while the resume user
+message remains the literal supported entrypoint. The interrupted-tool case is
 prepared but not started: the pinned application commit contains an empty Phaser
 scene, so its implementation/build/test fixture needs a source-baseline decision.
 The missing/wrong-workspace cases also remain unqualified. NE-02 stays open.
+
+**Recovery candidate, 2026-10-27:** the local candidate requires a created workflow
+observed in the surviving EFS workspace, including its active pointers, committed
+intent registry and initialized state. It checks this state before fresh-session
+admission and again immediately before the CLI starts. Current workspace state
+can establish creation after an older intake publication; publication alone
+cannot establish recovery eligibility. Missing or unrecognized state leaves
+recovery unavailable. Accepted answers, delivery classifications and immutable
+publications remain intact, including interrupted-resume and lost-acknowledgement
+paths.
+
+The AI-DLC user request and resume entrypoint now remain literal. Platform
+transport guidance uses the harness instruction channel and supplies no human
+answer, interaction-mode selection or workflow consent. The earlier exact-image,
+network-disabled Claude hook check used literal `/aidlc --resume` with zero model
+tokens; it remains an offline hook check, not live recovery proof.
+
+The approved temporary Kiro restriction uses native capability/status responses,
+the existing creation/configuration UI, and the authenticated Start authority.
+It rejects a new Kiro Start before configuration capture or dispatch, including
+direct requests and forged availability overrides. Already admitted
+configurations and readable work are preserved, and the runtime retains
+`native_execution_transport_kiro_unqualified`. This does not qualify Kiro or
+remove it from the four-harness release requirement.
+
+Local validation of this candidate on Node **24.21.0**:
+
+| Check                                                                                        | Result                                                                       |
+| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `npm test -- --maxWorkers=4`                                                                 | **11,544 passed, 10 skipped**; 390 files passed                              |
+| `npx vitest run --project=native-runtime-control --maxWorkers=4`                             | **1,437 passed** across 52 controller files                                  |
+| Seven focused recovery suites through `vitest.native-foundation.config.js`                   | **284 passed**, including runtime, authority and fence                       |
+| `npm --prefix frontend test -- --maxWorkers=4`                                               | **2,104 passed** across 150 files                                            |
+| Five focused native creation, interaction, execution and service suites                      | **417 passed**                                                               |
+| `npm --prefix frontend run build`; `npm run build -w native-runtime-control`                 | Frontend and all eight controller bundles built                              |
+| `npm run architecture:check`; `npm run dep:check`                                            | 413 production modules, zero violations; zero errors, 17 dependency warnings |
+| `npm run lint -- --ignore-pattern '.worktrees/**'`; `npm run secretlint -- '!.worktrees/**'` | Zero lint errors, 82 warnings; secret scan passed                            |
+| `npm run format:check -- . '!.worktrees/**'`; `git diff --check`                             | Passed                                                                       |
+| `uv sync --group docs --locked --offline`; `uv run --no-sync zensical build`                 | Passed using a local evidence-directory UV cache                             |
+
+These suites overlap; their counts are separate results, not an aggregate.
+The full backend suite used local Docker test services and inert test credentials.
+The first backend run found two capability-response assertions that needed the
+new field; both were corrected before the successful full rerun. The architecture
+check also prompted local extraction of recovery-result and record validation,
+followed by the successful controller/full reruns. The frontend build retains its
+bundle-size advisory. No deployed browser journey, newly built runtime image,
+credentialed provider call or live recovery fault was exercised in this stage.
+The earlier source-hash comparison matched all 31 recorded candidate files at
+stage entry; earlier passes remain historical evidence. Exact commands, source
+hashes and local logs are recorded under
+`.native-evidence/ne02-2026-10-27-candidate/`.
+
+Deploy this candidate's frontend, API/authority, workers **and a newly built
+runtime image** before the next proof. `scripts/deploy-terraform.sh` builds the
+source-derived AgentCore image and wires its digest into native services;
+`scripts/deploy-frontend.sh` then builds and uploads the frontend. Generate a
+fresh candidate-specific plan with `--phase plan --plan-file`, review it, and
+apply that same `--plan-file` path with `--phase apply --skip-seed`. Reusing an old
+image or deploying only backend archives cannot validate the transport and
+pre-spawn recovery corrections.
+
+Live acceptance remains pending for created-workflow waiting-session expiry,
+interruption during an active tool with retained edits/dependencies and real
+build/tests, the next genuine workflow question, visible intake rejection,
+missing/wrong EFS workspace rejection, and exact deployed/configuration/image
+alignment. The application fixture choice is still pending separately and does
+not block this local candidate. Do not start NE-03 until the actual NE-02 live
+proof passes.
 
 ## Integration and simplification checklist
 
@@ -463,13 +579,13 @@ with previous native development executions.
       configuration and Intent tests, frontend build, lint, formatting and secret
       checks pass. Deployed qualification remains open in the items below.
 - [ ] **NE-02 — Prove EFS resume through the actual application.** Deploy the matching
-      recovery-confirmation API correction and exercise browser → public REST API →
-      authority → worker → runtime. Cover waiting-session expiry and an interrupted
+      runtime, recovery API, worker and UI corrections and exercise browser → public REST API →
+      authority → worker → runtime. Cover waiting-session expiry after workflow creation and an interrupted
       tool, confirmed predecessor stop, member confirmation, the same EFS workspace,
       a fresh CLI session, unfinished edits, dependency links, build/test and the
       next real workflow question. **Done when:** a new publication is admitted
-      without private recovery operations or automatic answer replay; a missing or
-      wrong workspace blocks resume visibly.
+      without private recovery operations or automatic answer replay; intake,
+      unavailable workflow state, and a missing or wrong workspace block resume visibly.
 - [ ] **NE-03 — Delete the exact native snapshot/restore stack.** After NE-02, remove
       private CLI checkpoint capture, export/import, upload/download and exact
       filesystem/database restore; remove legacy native commands, mode fallbacks,
@@ -582,8 +698,10 @@ with previous native development executions.
       Consolidate the reusable runner around installed harnesses, current engine
       commands, public API requests and EFS resume. Remove legacy restore-only
       suites and fix fixture assumptions about paths, permissions and external
-      prerequisites. Resolve Kiro's supported input gap before claiming its full
-      journey. **Done when:** each advertised row reports repeatable pass/fail/blocked
+      prerequisites. Complete Kiro's instruction-channel, input and authentication
+      qualification before removing its temporary native unavailability or claiming
+      its full journey. All four harnesses remain release requirements.
+      **Done when:** each advertised row reports repeatable pass/fail/blocked
       evidence; missing prerequisites cannot silently become cloud calls or a
       successful qualification, and scripted output is distinguished from a real
       installed workflow.

@@ -251,7 +251,11 @@ describe('native API authentication and gates', () => {
       f.membership.mockResolvedValue({ ...MEMBERSHIP, role });
       const response = await f.api(event('capabilities'));
       expect(response.statusCode).toBe(200);
-      expect(json(response)).toEqual({ preparationEnabled: true, executionEnabled: false });
+      expect(json(response)).toEqual({
+        preparationEnabled: true,
+        executionEnabled: false,
+        unavailableHarnesses: { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
+      });
       expect(f.membership).toHaveBeenCalledWith(PROJECT, ACTOR);
       noWork(f);
     },

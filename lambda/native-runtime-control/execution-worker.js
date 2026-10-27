@@ -9,6 +9,7 @@ import {
   admitted,
   ownerErrors,
   statusOwnerErrors,
+  workflowRecoveryFailure,
   markRuntimeReadFailure,
   failRuntimeRead,
   shortTransportRetry,
@@ -90,6 +91,7 @@ export const createNativeExecutionSupervisor =
     const state = { row: claim.row };
     const draft = await preparationStore.get(identity);
     let observation = {};
+    let workflowResumeState;
     const observe = (value) => emitNativeExecutionDiagnostic(diagnostics, value);
     const observedInvoke = async (input) => {
       const phase = nativeDiagnosticPhase(input.payload.command);
@@ -190,7 +192,28 @@ export const createNativeExecutionSupervisor =
       state.row = await store.release({ row: state.row });
       return { pending: true, status };
     };
-    const requireRecovery = async (reason) => {
+    const requireRecovery = async (requestedReason, deniedResumeObservation) => {
+      const workspace = nativeWorkspaceRecovery(state.row.configuration);
+      const observedState = deniedResumeObservation
+        ? deniedResumeObservation.workflowResumeState
+        : workflowResumeState;
+      const verifiedState = ['created', 'not_created', 'unavailable'].includes(observedState)
+        ? observedState
+        : 'unavailable';
+      const observedWorkflow = workspace
+        ? requestedReason === 'INTAKE_UNAVAILABLE'
+          ? 'not_created'
+          : ['WORKSPACE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE'].includes(requestedReason)
+            ? 'unavailable'
+            : verifiedState
+        : undefined;
+      const reason =
+        !workspace || requestedReason === 'WORKSPACE_UNAVAILABLE' || observedWorkflow === 'created'
+          ? requestedReason
+          : observedWorkflow === 'not_created'
+            ? 'INTAKE_UNAVAILABLE'
+            : 'WORKFLOW_STATE_UNAVAILABLE';
+      const workflowEvidence = workspace ? { workflowResumeState: observedWorkflow } : {};
       observe({
         ...observation,
         stage: 'decision',
@@ -204,7 +227,9 @@ export const createNativeExecutionSupervisor =
         await check();
         const recoveryId = recoveryStopId(state.row, reason);
         if (
-          reason === 'CHECKPOINT_UNAVAILABLE' &&
+          ['CHECKPOINT_UNAVAILABLE', 'INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE'].includes(
+            reason,
+          ) &&
           state.row.status === 'RECOVERING' &&
           state.row.recovery.phase === 'RESTORING'
         ) {
@@ -227,9 +252,15 @@ export const createNativeExecutionSupervisor =
               writerGeneration: state.row.recovery.previousGeneration,
               recoveryId,
               reason,
+              ...workflowEvidence,
             });
             await check();
-            state.row = await store.recoveryRequired({ row: state.row, reason, recoveryId });
+            state.row = await store.recoveryRequired({
+              row: state.row,
+              reason,
+              recoveryId,
+              ...workflowEvidence,
+            });
             return { pending: false, status: state.row.status, reason };
           }
         }
@@ -237,6 +268,7 @@ export const createNativeExecutionSupervisor =
           ...writerOptions(state.row),
           recoveryId,
           reason,
+          ...workflowEvidence,
         });
         await check();
         const stopped = await stop({ draft, execution: state.row, recoveryId });
@@ -247,6 +279,7 @@ export const createNativeExecutionSupervisor =
           row: state.row,
           reason,
           recoveryId,
+          ...workflowEvidence,
           ...stopEvidence(stopped),
         });
         return { pending: false, status: state.row.status, reason };
@@ -320,11 +353,23 @@ export const createNativeExecutionSupervisor =
       });
       return manifest;
     };
-    const status = () =>
-      observedInvoke({
+    const status = async () => {
+      workflowResumeState = undefined;
+      const report = await observedInvoke({
         execution: state.row,
         payload: { command: 'native-status', ...writerPayload(state.row) },
       });
+      checkReportIdentity(state.row, report);
+      // Only a fresh status response from this exact writer can establish the
+      // current filesystem phase. Published files and earlier observations
+      // cannot prove that an interrupted turn did or did not create a workflow.
+      if (
+        nativeWorkspaceRecovery(state.row.configuration) &&
+        ['created', 'not_created', 'unavailable'].includes(report.workflowResumeState)
+      )
+        workflowResumeState = report.workflowResumeState;
+      return report;
+    };
     try {
       if (state.row.cancelRequested) {
         await current({ allowCancelled: true });
@@ -366,8 +411,13 @@ export const createNativeExecutionSupervisor =
           savedFence?.state === 'FENCED' &&
           savedFence.writerGeneration === nativeWriterGeneration(state.row) &&
           savedFence.recoveryId === recoveryStopId(state.row, savedFence.reason)
-        )
+        ) {
+          // Eligibility belongs to this protected stop episode. Reading the
+          // runtime again could create a diagnostic VM after a successful stop
+          // whose acknowledgement was lost. Retain its proof and stop token.
+          workflowResumeState = savedFence.workflowResumeState;
           return requireRecovery(savedFence.reason);
+        }
       }
       if (state.row.status === 'REQUESTED') {
         await advance({ status: 'UPGRADING' });
@@ -472,6 +522,10 @@ export const createNativeExecutionSupervisor =
       }
       await check();
       checkReportIdentity(state.row, report);
+      const unavailableWorkflow = nativeWorkspaceRecovery(state.row.configuration)
+        ? workflowRecoveryFailure(report.code)
+        : null;
+      if (unavailableWorkflow) return requireRecovery(unavailableWorkflow);
       if (report.recovered === true && !admitted(state.row, report))
         return requireRecovery('DELIVERY_UNCERTAIN');
       if (report.sequence !== nativeTurnSequence(state.row))

@@ -130,6 +130,38 @@ const payload = {
 };
 
 describe('native controller diagnostic privacy boundary', () => {
+  it.each(['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE'])(
+    'records recovery reason %s without leaking raw workflow data or invoking getters',
+    (reason) => {
+      const s = sinks();
+      const getter = vi.fn(() => {
+        throw Error(CANARY);
+      });
+      s.diagnostics({
+        stage: 'decision',
+        code: 'RECOVERY_REQUIRED',
+        reason,
+        workflowResumeState: CANARY,
+        request: CANARY,
+        get stateFile() {
+          return getter();
+        },
+      });
+      expect(s.events()[0]).toMatchObject({
+        stage: 'decision',
+        code: 'RECOVERY_REQUIRED',
+        reason,
+      });
+      expect(s.events()[0].workflowResumeState).toBeUndefined();
+      s.diagnostics({ reason: CANARY });
+      expect(s.events()[1].reason).toBe('unknown');
+      s.diagnostics(Object.defineProperty({}, 'reason', { get: getter }));
+      expect(s.events()[2].reason).toBeUndefined();
+      expect(getter).not.toHaveBeenCalled();
+      s.assertPrivate();
+    },
+  );
+
   it('preserves bounded output rejection evidence through runtime, mapper, sink and lifecycle', () => {
     const s = sinks();
     const getter = vi.fn(() => {

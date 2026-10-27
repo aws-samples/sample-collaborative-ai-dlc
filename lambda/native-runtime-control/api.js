@@ -8,6 +8,7 @@ import { NATIVE_INTERACTION_LIMITS } from '../shared/native-interaction.js';
 import { nativeDraftPrompt, nativePromptRequest, promptFailure } from './draft-prompt.js';
 import { nativeRevisionQuery } from './revision-query.js';
 import { nativeResultRequest, nativeResultQuery } from './result-store.js';
+import { nativeUnavailableHarnesses } from './execution-api.js';
 
 const COLLECTION = '/api/projects/{projectId}/native-intents';
 const ITEM = `${COLLECTION}/{intentId}`;
@@ -63,6 +64,10 @@ const ERRORS = {
   native_package_job_not_found: [404, 'Package import not found'],
   native_package_job_unavailable: [503, 'Package import service unavailable'],
   NATIVE_EXECUTION_DISABLED: [503, 'Native execution is disabled'],
+  NATIVE_EXECUTION_KIRO_UNAVAILABLE: [
+    409,
+    'Kiro is temporarily unavailable for new native executions while AI-DLC input and authentication qualification is pending. Choose Claude Code, Codex or OpenCode.',
+  ],
   NATIVE_EXECUTION_INVALID: [400, 'Invalid native execution request'],
   NATIVE_EXECUTION_CONFLICT: [409, 'Native execution changed; refresh its status'],
   NATIVE_EXECUTION_NOT_FOUND: [404, 'Native execution not found'],
@@ -261,6 +266,7 @@ export const createNativeRuntimeApi = ({
     return response(200, {
       preparationEnabled: admissionEnabled === true,
       executionEnabled: execution?.enabled === true,
+      unavailableHarnesses: nativeUnavailableHarnesses,
     });
   };
   const executionCommand = async ({

@@ -35,6 +35,8 @@ import {
   nativeInitializationCheckStatuses,
 } from './initialization-evidence.js';
 import { inspectNativeEfsWorkspace } from './efs-workspace.js';
+import { observeNativeWorkflowResumeState } from './workflow-resume-state.js';
+import { prepareNativeTransportInstructions } from './transport-instructions.js';
 import { snapshotNativeExecutionFiles } from './execution-files.js';
 import {
   nativeRuntimeFailureCode,
@@ -86,14 +88,27 @@ const sameIdentity = (a, b) => IDENTITY.every((key) => a[key] === b[key]);
 const within = (base, path) => path === base || path.startsWith(`${base}/`);
 const identityOf = (payload) => Object.fromEntries(IDENTITY.map((key) => [key, payload[key]]));
 
-export const nativeFirstTurnPrompt = ({ harness, request, recoveryMode } = {}) => {
+export const nativeFirstTurnPrompt = ({ harness, request } = {}) => {
   if (!HARNESSES.includes(harness)) fail('native_execution_harness_invalid');
   // Codex expands a named skill from $aidlc in exec as well as interactive mode.
   const marker = harness === 'codex' ? '$aidlc' : '/aidlc';
+  return `${marker} ${request}`;
+};
+
+export const nativeWorkspaceResumePrompt = ({ harness }) => {
+  if (!HARNESSES.includes(harness)) fail('native_execution_harness_invalid');
+  return `${harness === 'codex' ? '$aidlc' : '/aidlc'} --resume`;
+};
+
+// The pinned engine consumes the entire /aidlc message as human input. Keep
+// platform guidance in the harness instruction channel: adding an annex here
+// changes both command parsing and the provenance of recorded human answers.
+export const nativeTransportInstructions = ({ recoveryMode } = {}) => {
   return (
-    `${marker} ${request}\n\n` +
-    'Platform transport instruction: The request above is the exact user request. ' +
-    'Start a new native AI-DLC workflow using its normal filesystem artifacts. ' +
+    'Platform transport instruction: The user message contains the exact request, reply, ' +
+    'or explicitly confirmed fresh-session resume entrypoint. Follow the pinned AI-DLC ' +
+    'entrypoint and its normal filesystem artifacts. This platform guidance is not a human ' +
+    'answer, interaction-mode selection or workflow approval. ' +
     'Do not invent missing scope, requirements, or human answers. At the first workflow ' +
     'question or approval that needs a person, present the complete proposal and questions ' +
     'in your normal assistant response, preserve any normal workflow artifacts, leave ' +
@@ -107,23 +122,14 @@ export const nativeFirstTurnPrompt = ({ harness, request, recoveryMode } = {}) =
     'remain published. Other public symbolic links, external/absolute or private targets, ' +
     'cycles and missing targets are unsupported. Do not skip required dependencies or tests ' +
     'or copy private files as a workaround. ' +
-    NATIVE_QUESTION_MODE_INSTRUCTION +
-    NATIVE_PENDING_SPEC_INSTRUCTION +
-    NATIVE_INTAKE_ANSWER_INSTRUCTION
-  );
-};
-
-export const nativeWorkspaceResumePrompt = ({ harness }) => {
-  if (!HARNESSES.includes(harness)) fail('native_execution_harness_invalid');
-  return (
-    `${harness === 'codex' ? '$aidlc' : '/aidlc'} --resume\n\n` +
-    'The member explicitly confirmed a fresh CLI session on this same surviving workspace. ' +
-    'Use the pinned AI-DLC recovery protocol and its supported resume entrypoint. ' +
+    'For an explicitly confirmed fresh-session resume, use the pinned AI-DLC recovery ' +
+    'protocol and its supported resume entrypoint on this same surviving workspace. ' +
     'The workspace contains its existing workflow records and may contain interrupted, unpublished edits. ' +
     'Do not initialize another project, replace this directory from a publication, or reconstruct a workflow in parallel. ' +
     'AI-DLC must reconcile its artifacts, audit, state and runtime graph, continue incomplete work, or ask the member. ' +
     'This confirmation grants no workflow approval and contains no replay of an earlier answer or command. ' +
     'Do not infer that a prior answer was consumed or repeat uncertain external effects. ' +
+    'Never route a resume message through an earlier plan offer or treat it as plan consent. ' +
     'At the next required question or human gate, preserve work, present it and end this turn. ' +
     NATIVE_QUESTION_MODE_INSTRUCTION +
     NATIVE_PENDING_SPEC_INSTRUCTION +
@@ -131,16 +137,15 @@ export const nativeWorkspaceResumePrompt = ({ harness }) => {
   );
 };
 
-// AI-DLC 2.11.0 stage-protocol §3 Step 2 supports an already expressed
-// interaction preference via `--on-instruction`, and reuses answer_mode.
-// This is a rendering preference, never an answer to a business question.
+// The grouped form is a platform renderer, not evidence that a person selected
+// an AI-DLC interaction mode. Its normal mode question and human gates remain.
 const NATIVE_QUESTION_MODE_INSTRUCTION =
-  'Native UI interaction preference: "Guide me through the current workflow step\'s available ' +
-  'questions together in one form." Use the pinned workflow\'s supported explicit-preference ' +
-  'path for Guide me; record the mode decision with the engine and use that exact preference ' +
-  'with --on-instruction where supported. Do not spend a turn asking guide/file/chat again. ' +
-  "Honor an explicit later user change and the engine's answer_mode reuse. " +
-  'This preference grants no autonomy over answers, summaries, approvals or stage gates. ' +
+  "Native UI presentation: show the current workflow step's available questions together in one form. " +
+  "Follow the pinned workflow's normal interaction-mode question unless the person has already " +
+  'expressed a genuine preference in their retained request or answers. Never record these ' +
+  'platform instructions as words spoken by the person. Honor genuine later user changes ' +
+  "and the engine's answer_mode reuse. This rendering guidance grants no autonomy over " +
+  'answers, summaries, approvals or stage gates. ' +
   'The native form is the question renderer for this noninteractive invocation: it supports ' +
   'up to 32 questions and 16 options per question, plus free text. Collect ALL unanswered ' +
   'questions already available at the CURRENT workflow step into one form, copying their ' +
@@ -344,6 +349,7 @@ export const nativeExecutionInvocation = ({
   nativeSessionId = null,
   promptEvidence = null,
   priorAssistantSha256 = null,
+  systemPrompt = null,
 }) => {
   const modelArgs = model ? [harness === 'codex' ? '-m' : '--model', model] : [];
   if (harness === 'codex')
@@ -384,6 +390,7 @@ export const nativeExecutionInvocation = ({
         '--verbose',
         '--permission-mode',
         'bypassPermissions',
+        ...(systemPrompt ? ['--append-system-prompt', systemPrompt] : []),
         ...(nativeSessionId ? ['--resume', nativeSessionId] : []),
         ...modelArgs,
       ],
@@ -771,6 +778,46 @@ export const createNativeExecutor = ({
         fail('native_execution_directory_changed');
     }
   };
+  const assertCreatedWorkflow = async () => {
+    const state = await observeNativeWorkflowResumeState({ project });
+    if (state !== 'created')
+      fail(
+        state === 'not_created'
+          ? 'native_execution_workflow_not_created'
+          : 'native_execution_workflow_state_unavailable',
+      );
+  };
+  const workspaceResumeObservation = async (identity, configurationSha256) => {
+    try {
+      const workspace = await readLocalRecord(join(control, 'workspace.json'));
+      if (
+        workspace.schemaVersion !== 1 ||
+        !sameIdentity(workspace.identity ?? {}, identity) ||
+        workspace.configurationSha256 !== configurationSha256 ||
+        !/^sha256:[a-f0-9]{64}$/.test(workspace.packageId ?? '')
+      )
+        return 'unavailable';
+      const paths = [
+        ['root', root],
+        ['project', project],
+        ['machine', join(root, 'machine')],
+      ];
+      const nodes = [];
+      for (const [name, path] of paths) {
+        nodes.push(await privateDirectory(path));
+        if (String((await fs.lstat(path, { bigint: true })).ino) !== workspace.nodes?.[name]?.ino)
+          return 'unavailable';
+      }
+      const state = await observeNativeWorkflowResumeState({ project });
+      for (const [index, [, path]] of paths.entries())
+        if (!sameNode(nodes[index], await privateDirectory(path))) return 'unavailable';
+      return state;
+    } catch {
+      // Status is observation only. Missing, substituted or unrecognized
+      // workspace state cannot grant fresh-session recovery.
+      return 'unavailable';
+    }
+  };
   const writeJson = async (path, data, replace = false) => {
     await checkDirectories();
     const temp = replace ? `${path}.${randomUUID()}.tmp` : path;
@@ -1113,6 +1160,13 @@ export const createNativeExecutor = ({
       XDG_CACHE_HOME: join(current.home, '.cache'),
       OPENCODE_DISABLE_AUTOUPDATE: '1',
     };
+    const transport = await prepareNativeTransportInstructions({
+      harness: configuration.harness,
+      project,
+      home: current.home,
+      instructions: nativeTransportInstructions(configuration),
+      env: modelEnv,
+    });
     const prompt =
       payload.command === 'native-resume'
         ? nativeWorkspaceResumePrompt(configuration)
@@ -1121,7 +1175,6 @@ export const createNativeExecutor = ({
           : nativeFirstTurnPrompt({
               harness: configuration.harness,
               request: configuration.prompt,
-              recoveryMode: configuration.recoveryMode,
             });
     const nextPromptEvidence =
       configuration.harness === 'kiro'
@@ -1138,6 +1191,9 @@ export const createNativeExecutor = ({
     });
     await checkpoint('running', { packageId: pkg.packageId });
     activityTurn.lifecycle({ title: 'Agent started' });
+    // Recheck after package/credential preparation as well as at admission.
+    // No workflow command is used to discover state or answer a pending offer.
+    if (payload.command === 'native-resume') await assertCreatedWorkflow();
     const result = await run(
       {
         ...nativeExecutionInvocation({
@@ -1148,6 +1204,7 @@ export const createNativeExecutor = ({
           nativeSessionId: continuing ? current.head.nativeSessionId : null,
           promptEvidence: current.promptEvidence,
           priorAssistantSha256: current.priorAssistantSha256,
+          ...transport.invocation,
         }),
         onStdoutChunk: (chunk) => {
           if (!current.report.timings.firstOutput) timing('firstOutput');
@@ -1155,7 +1212,7 @@ export const createNativeExecutor = ({
           return activityTurn.write(chunk);
         },
       },
-      modelEnv,
+      transport.env,
       true,
     );
     timing('harnessCompleted');
@@ -1540,9 +1597,20 @@ export const createNativeExecutor = ({
         current.writerGeneration !== writerGeneration
       )
         fail('native_execution_owner_conflict');
-      return report();
+      const observation = current.workspaceRecovery
+        ? {
+            workflowResumeState: await workspaceResumeObservation(
+              identity,
+              current.configurationSha256,
+            ),
+          }
+        : {};
+      return { ...report(), ...observation };
     }
-    await readExisting(identity, writerGeneration);
+    const owner = await readExisting(identity, writerGeneration);
+    const observation = {
+      workflowResumeState: await workspaceResumeObservation(identity, owner.configurationSha256),
+    };
     // Restore completed upload evidence or fixed initialization diagnostics.
     // Neither is authority or permission to start a new writer on restart.
     try {
@@ -1567,6 +1635,7 @@ export const createNativeExecutor = ({
             ? { initializationBaselineReason: saved.initializationBaselineReason }
             : {}),
           recovered: true,
+          ...observation,
         };
       }
       if (
@@ -1606,6 +1675,7 @@ export const createNativeExecutor = ({
           waitEvidence: saved.waitEvidence ?? null,
           ...(saved.checkpoint ? { checkpoint: saved.checkpoint } : {}),
           recovered: true,
+          ...observation,
         };
       }
     } catch {
@@ -1617,6 +1687,7 @@ export const createNativeExecutor = ({
       writerGeneration,
       status: 'stopped_needs_review',
       code: 'native_execution_existing_owner',
+      ...observation,
     };
   };
   const start = async (input) => {
@@ -1669,6 +1740,7 @@ export const createNativeExecutor = ({
         identity,
         writerGeneration,
         configurationSha256,
+        workspaceRecovery: nativeWorkspaceRecovery(configuration),
         directories,
         controller: new AbortController(),
         report: {
@@ -1788,15 +1860,35 @@ export const createNativeExecutor = ({
       }
       for (const path of [control, join(root, 'machine/data'), join(root, 'machine/bin')])
         directories.set(path, await privateDirectory(path));
+      await assertCreatedWorkflow();
       ownerDirectory = directoryForGeneration(writerGeneration);
       // An existing cold owner may already have delivered this resume action.
       // Never reconstruct its ACK or execute it again; require another stopped,
       // explicitly confirmed generation through the authority.
-      directories.set(ownerDirectory, await createPrivateDirectory(ownerDirectory));
+      try {
+        directories.set(ownerDirectory, await createPrivateDirectory(ownerDirectory));
+      } catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const existing = await readExisting(identity, writerGeneration);
+        if (existing.configurationSha256 !== configurationSha256)
+          fail('native_execution_owner_conflict');
+        return {
+          schemaVersion: 1,
+          ...identity,
+          writerGeneration,
+          recoveryId: input.recoveryId,
+          status: 'stopped_needs_review',
+          code: 'native_execution_existing_owner',
+          accepted: false,
+          duplicate: true,
+          workflowResumeState: await workspaceResumeObservation(identity, configurationSha256),
+        };
+      }
       current = {
         identity,
         writerGeneration,
         configurationSha256,
+        workspaceRecovery: true,
         directories,
         controller,
         sourceBaseline: workspace.sourceBaseline,
