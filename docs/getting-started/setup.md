@@ -105,6 +105,26 @@ Building-block bodies are methodology markdown and sensor scripts. They legitima
 
 The two rules still block in every other request body, and the other body rules (`GenericRFI_BODY`, `EC2MetaDataSSRF_BODY`) block everywhere. A block write still goes through every other managed rule, and needs the `platform-admin` group. The two rules add to the ACLs' monthly rule charge.
 
+### Neptune Streams
+
+[Neptune Streams](https://docs.aws.amazon.com/neptune/latest/userguide/streams-using.html) records every change to the knowledge graph as a change log that other systems can read, for example to feed reporting, a search index or a replica. It is optional and disabled by default. To enable it, set:
+
+```hcl
+neptune_streams_enabled     = true
+neptune_streams_expiry_days = 14 # optional; 1-90, default 7
+```
+
+Both settings are static cluster parameters (`apply_method = "pending-reboot"`). Terraform updates the cluster parameter group, but the change takes effect only after the Neptune instance reboots. Neither Terraform nor the installer reboots it, because a reboot briefly interrupts the platform. Reboot at a quiet time:
+
+```bash
+aws neptune reboot-db-instance \
+  --db-instance-identifier "<project_name>-<environment>-neptune-instance"
+```
+
+The same applies when you disable Streams or change the expiry. Stream consumers run inside the VPC like any other Neptune client: they need network access to the cluster (its security group is the `neptune_security_group_id` output) and IAM permission to read the stream (`neptune-db:GetStreamRecords`), because the cluster uses IAM database authentication.
+
+With `neptune_streams_enabled = false` (the default), the parameter group is unchanged.
+
 ### Custom domain
 
 Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.
