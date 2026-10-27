@@ -367,6 +367,24 @@ fork as follows. Every step is explicit; none happens on its own.
 Existing intents keep the release they were created with. To stop offering a
 release, follow [Roll back a channel](#roll-back-a-channel).
 
+## Release contents in the authoring UI
+
+A release's closure is browsable read-only, so authors can see what a pinned intent resolves rather than only the mutable library:
+
+- `GET /aidlc-releases/{releaseId}/blocks[?type=agent,stage]` lists the closure's blocks by type, in the `GET /blocks/{type}` shape with `source: "release"` and the `releaseId`, plus the release's workflow.
+- `GET /aidlc-releases/{releaseId}/blocks/{type}/{blockId}` returns one block with its body and script. Each object must be one the manifest lists, and its bytes must match the recorded digest, or the read is a `409`.
+- Both read the digest-verified closure and never the SYSTEM rows. An admin may read any registered release; anybody else only a selectable one, and an unknown and a hidden release get the same `404`.
+
+In the app:
+
+- **Admin → AI-DLC releases**: each registered release has a **Contents** view listing its workflow and its blocks by type.
+- **Block library**: with pinning on, the stable release's blocks of the current type appear below the library, read-only and labelled with the release id. `?release=<id>` shows another release instead. A release block opens read-only in the block editor. A library block with the same id is flagged, because it replaces the release's block in pinned intents.
+- **Workflows**: the stable release's workflow is listed, read-only.
+- **Stage editor**: the lead, support, reviewer, artifact, sensor and stage pickers include the stable release's blocks. Each id is listed once, in the order a pinned intent resolves it: the user library, then the release, then the SYSTEM baseline. Each option is labelled with its source. A typed id that no picker lists is still accepted.
+- **Workflow composer**: for a user workflow, the plan check and compiled view pass `?libraryRelease=<stable>`. This previews the live workflow the way an intent created now would resolve it: the closure replaces the SYSTEM rows, the user library overlays it at `V#latest`, and SYSTEM placements resolve from the closure. So a custom stage that names an agent only the release ships checks clean, as it runs. `libraryRelease` cannot be combined with `release`, which previews a pinned intent's own closure and workflow snapshot.
+
+Copying a release agent into the `default` library to make it pickable is no longer needed. Such a copy replaces the release's agent in every pinned intent.
+
 ## Selection and rollback
 
 With pinning enabled, the intent API resolves the selected release or the stable

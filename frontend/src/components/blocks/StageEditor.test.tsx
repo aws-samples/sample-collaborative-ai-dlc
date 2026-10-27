@@ -50,4 +50,32 @@ describe('StageEditor', () => {
 
     expect(screen.getByText('Support agents')).toBeInTheDocument();
   });
+  it('names where each agent option comes from, and accepts a typed id', async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <StageEditor
+        value={{}}
+        onChange={onChange}
+        referenceOptions={{
+          agents: [
+            { id: 'security-reviewer', label: 'Security reviewer', source: 'AI-DLC 2.11.0' },
+            { id: 'team-reviewer', label: 'Team reviewer', source: 'library' },
+          ],
+        }}
+      />,
+    );
+
+    await user.type(screen.getAllByPlaceholderText('Search agents')[0], 'reviewer');
+
+    expect(
+      screen.getByRole('button', { name: /Security reviewer.*AI-DLC 2\.11\.0/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Team reviewer.*library/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Security reviewer/ }));
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ leadAgent: 'security-reviewer' }),
+    );
+  });
 });

@@ -1,4 +1,5 @@
 import { api } from './api';
+import type { Block, BlockType } from './blocks';
 
 // AI-DLC release registry — the typed client over the
 // registry routes in lambda/workflows. A "release" is one immutably imported
@@ -217,6 +218,116 @@ const sharedChannels = (): Promise<ReleaseChannels> => {
   return entry.request;
 };
 
+// ── Release contents (issue #607) ──
+//
+// A release's closure, read-only: the blocks and the workflow a pinned intent
+// resolves. Blocks come back in the GET /blocks/{type} shape, labelled with
+// where they came from, so the authoring UI can render them beside the
+// mutable library.
+export interface ReleaseBlock extends Block {
+  source: 'release';
+  releaseId: string;
+}
+
+export interface ReleaseWorkflowPlacement {
+  stageId: string;
+  phasePath: string | null;
+  order: number;
+  scopeMembership: Record<string, 'EXECUTE' | 'SKIP'>;
+}
+
+export interface ReleaseWorkflow {
+  id: string;
+  workflowId: string;
+  name: string;
+  objective: string;
+  workflowVersion: number;
+  readOnly: true;
+  phases: { phaseId: string; path: string | null; name?: string }[];
+  placements: ReleaseWorkflowPlacement[];
+  scopeRefs: { scopeId: string }[];
+  ruleRefs: { ruleId: string; layer: string }[];
+  source: 'release';
+  releaseId: string;
+}
+
+export interface ReleaseContents {
+  // The selection projection, for admins and non-admins alike.
+  release: AidlcRelease;
+  workflow: ReleaseWorkflow | null;
+  // Keyed by the lowercase block type; only the requested types are present.
+  blocks: Partial<Record<BlockType, ReleaseBlock[]>>;
+}
+
+export interface ReleaseBlockDetail {
+  block: ReleaseBlock;
+  body: string;
+  script: string;
+}
+
+const releasePath = (releaseId: string) => `/aidlc-releases/${encodeURIComponent(releaseId)}`;
+
+const fetchReleaseContents = (releaseId: string, types?: readonly BlockType[]) => {
+  const qs = types?.length ? `?type=${types.map(encodeURIComponent).join(',')}` : '';
+  return api.get<ReleaseContents>(`${releasePath(releaseId)}/blocks${qs}`);
+};
+
+// A closure never changes under a release id, so the contents only go stale
+// when the record's closure is upgraded. A short TTL keeps every picker and
+// library tab on one read without pinning an upgraded closure for long.
+export const RELEASE_CONTENTS_TTL_MS = 60_000;
+
+const releaseContentsCache = new Map<
+  string,
+  { request: Promise<ReleaseContents>; expiresAt: number }
+>();
+
+const cachedReleaseContents = (releaseId: string, types?: readonly BlockType[]) => {
+  const key = `${releaseId}|${types?.toSorted().join(',') ?? '*'}`;
+  const cached = releaseContentsCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.request;
+  const entry = {
+    request: fetchReleaseContents(releaseId, types),
+    expiresAt: Date.now() + RELEASE_CONTENTS_TTL_MS,
+  };
+  entry.request.catch(() => {
+    if (releaseContentsCache.get(key) === entry) releaseContentsCache.delete(key);
+  });
+  releaseContentsCache.set(key, entry);
+  return entry.request;
+};
+
+const invalidateReleaseContents = () => releaseContentsCache.clear();
+
+// The release new intents pin by default, with the requested slice of its
+// catalog. Null when pinning is off or no stable release is set, which is
+// exactly when the mutable library is what runs, and when the contents can't
+// be read: the release is an addition to the authoring UI, never a blocker.
+export interface StableReleaseCatalog {
+  releaseId: string;
+  release: AidlcRelease;
+  contents: ReleaseContents;
+}
+
+const stableReleaseCatalog = async (
+  types?: readonly BlockType[],
+): Promise<StableReleaseCatalog | null> => {
+  try {
+    const channels = await sharedChannels();
+    const releaseId = channels.pinningEnabled === true ? channels.stable?.releaseId : null;
+    if (!releaseId) return null;
+    const contents = await cachedReleaseContents(releaseId, types);
+    return { releaseId, release: contents.release, contents };
+  } catch {
+    return null;
+  }
+};
+
+// A short human label: the upstream version when the record has one.
+export const releaseDisplayLabel = (
+  release: Pick<AidlcRelease, 'releaseId' | 'upstreamVersion'>,
+) => (release.upstreamVersion ? `AI-DLC ${release.upstreamVersion}` : release.releaseId);
+
 export const aidlcReleasesService = {
   // Non-admins only receive visible + selectable/certified records.
   // `currentImporterRevision` is returned to platform admins only.
@@ -235,10 +346,9 @@ export const aidlcReleasesService = {
   // Move the record onto the closure a newer importer revision published for the
   // same source SHA (platform-admin, CAS). Existing intents keep their closure.
   upgradeClosure: (releaseId: string, input: UpgradeReleaseClosureInput) =>
-    api.patch<UpgradeReleaseClosureResult>(
-      `/aidlc-releases/${encodeURIComponent(releaseId)}`,
-      input,
-    ),
+    api
+      .patch<UpgradeReleaseClosureResult>(`/aidlc-releases/${encodeURIComponent(releaseId)}`, input)
+      .finally(invalidateReleaseContents),
   channels: () => api.get<ReleaseChannels>('/aidlc-release-channels'),
   // Cached channels read for the intent pages (see sharedChannels above).
   sharedChannels,
@@ -262,4 +372,17 @@ export const aidlcReleasesService = {
       .delete(`/aidlc-release-channels/${encodeURIComponent(channel)}`, { expectedRevision })
       .finally(invalidateSharedChannels),
   profiles: () => api.get<{ profiles: RegistrableProfile[] }>('/aidlc-release-profiles'),
+  // A release's catalog (read-only). `types` narrows the listing; omitted,
+  // every block type is returned. Admins may read any registered release,
+  // everybody else only a selectable one.
+  contents: (releaseId: string, types?: readonly BlockType[]) =>
+    cachedReleaseContents(releaseId, types),
+  invalidateContents: invalidateReleaseContents,
+  // One catalog block with its digest-verified body and script.
+  block: (releaseId: string, type: BlockType, blockId: string) =>
+    api.get<ReleaseBlockDetail>(
+      `${releasePath(releaseId)}/blocks/${encodeURIComponent(type)}/${encodeURIComponent(blockId)}`,
+    ),
+  // The stable channel's release and catalog, or null (see above).
+  stableCatalog: stableReleaseCatalog,
 };

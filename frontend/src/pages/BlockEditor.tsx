@@ -1,19 +1,23 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router';
+import { useParams, useNavigate, useSearchParams } from 'react-router';
 import {
   blocksService,
   BLOCK_TYPES,
   BLOCK_TYPE_LABELS,
   type BlockInput,
   type BlockType,
-  type Block,
 } from '@/services/blocks';
+import { aidlcReleasesService } from '@/services/aidlcReleases';
 import { SIMPLE_BLOCK_FORMS } from '@/components/blocks/blockFields';
 import {
   StageEditor,
   type StageForm,
   type StageReferenceOptions,
 } from '@/components/blocks/StageEditor';
+import {
+  loadStageReferenceOptions,
+  type StageReferenceRelease,
+} from '@/components/blocks/stageReferenceOptions';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,7 +25,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, AlertCircle, CheckCircle2, X, Lock } from 'lucide-react';
+import { ArrowLeft, AlertCircle, CheckCircle2, X, Lock, Package } from 'lucide-react';
 
 const isBlockType = (v: string | undefined): v is BlockType =>
   !!v && (BLOCK_TYPES as readonly string[]).includes(v);
@@ -32,8 +36,12 @@ const ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export default function BlockEditor() {
   const navigate = useNavigate();
   const { type: typeParam, id } = useParams<{ type: string; id: string }>();
+  // `?release=<id>` opens a block from that AI-DLC release's closure instead
+  // of the mutable library (issue #607). Release blocks are always read-only.
+  const [searchParams] = useSearchParams();
+  const releaseId = searchParams.get('release') || null;
   const blockType: BlockType = isBlockType(typeParam) ? typeParam : 'stage';
-  const isNew = id === 'new' || id === undefined;
+  const isNew = !releaseId && (id === 'new' || id === undefined);
   const labels = BLOCK_TYPE_LABELS[blockType];
   const isStage = blockType === 'stage';
   const typeForm = SIMPLE_BLOCK_FORMS[blockType];
@@ -46,6 +54,8 @@ export default function BlockEditor() {
   const [script, setScript] = useState('');
   const [readOnly, setReadOnly] = useState(false);
   const [referenceOptions, setReferenceOptions] = useState<StageReferenceOptions>({});
+  // The stable release the pickers include, when release pinning is on.
+  const [pickerRelease, setPickerRelease] = useState<StageReferenceRelease | null>(null);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +68,14 @@ export default function BlockEditor() {
     if (isNew || !id) return;
     setLoading(true);
     try {
+      if (releaseId) {
+        const detail = await aidlcReleasesService.block(releaseId, blockType, id);
+        setReadOnly(true);
+        setForm(detail.block);
+        setBody(detail.body);
+        setScript(detail.script);
+        return;
+      }
       const block = await blocksService.get(blockType, id);
       setReadOnly(block.readOnly);
       setForm(block);
@@ -74,7 +92,7 @@ export default function BlockEditor() {
     } finally {
       setLoading(false);
     }
-  }, [blockType, id, isNew]);
+  }, [blockType, id, isNew, releaseId]);
 
   useEffect(() => {
     load();
@@ -82,30 +100,20 @@ export default function BlockEditor() {
 
   useEffect(() => {
     if (!isStage) return;
-    const toOptions = (blocks: Block[]) =>
-      blocks.map((block) => ({
-        id: block.id,
-        label: block.name,
-        description: typeof block.description === 'string' ? block.description : undefined,
-      }));
-    Promise.all([
-      blocksService.list('agent'),
-      blocksService.list('artifact'),
-      blocksService.list('sensor'),
-      blocksService.list('stage'),
-    ])
-      .then(([agents, artifacts, sensors, stages]) =>
-        setReferenceOptions({
-          agents: toOptions(agents.blocks),
-          artifacts: toOptions(artifacts.blocks),
-          sensors: toOptions(sensors.blocks),
-          stages: toOptions(stages.blocks).filter((stage) => stage.id !== id),
-        }),
-      )
+    loadStageReferenceOptions(id)
+      .then(({ options, release }) => {
+        setReferenceOptions(options);
+        setPickerRelease(release);
+      })
       .catch(() => {
         setReferenceOptions({});
+        setPickerRelease(null);
       });
   }, [id, isStage]);
+
+  const backTo = releaseId
+    ? `/blocks/${blockType}?release=${encodeURIComponent(releaseId)}`
+    : `/blocks/${blockType}`;
 
   const buildPayload = (): BlockInput => {
     // Drop server-managed fields; keep intrinsic attributes + name/description.
@@ -191,7 +199,7 @@ export default function BlockEditor() {
             variant="ghost"
             size="sm"
             className="gap-1.5"
-            onClick={() => navigate(`/blocks/${blockType}`)}
+            onClick={() => navigate(backTo)}
           >
             <ArrowLeft className="h-3.5 w-3.5" />
             Back
@@ -200,19 +208,34 @@ export default function BlockEditor() {
           <h1 className="text-xl font-semibold tracking-tight">
             {isNew ? `New ${labels.singular}` : str('name') || labels.singular}
           </h1>
-          {readOnly && (
+          {releaseId ? (
             <Badge variant="outline" className="gap-1 text-[10px] ml-auto">
-              <Lock className="h-2.5 w-2.5" />
-              SYSTEM · read-only
+              <Package className="h-2.5 w-2.5" />
+              Release · read-only
             </Badge>
+          ) : (
+            readOnly && (
+              <Badge variant="outline" className="gap-1 text-[10px] ml-auto">
+                <Lock className="h-2.5 w-2.5" />
+                SYSTEM · read-only
+              </Badge>
+            )
           )}
         </div>
 
-        {readOnly && (
+        {releaseId ? (
           <p className="text-xs text-muted-foreground">
-            This is a shipped baseline block and cannot be edited. Clone it to make changes (coming
-            soon).
+            This block is part of the immutable AI-DLC release{' '}
+            <span className="font-mono break-all">{releaseId}</span>, as intents pinned to it
+            resolve it. It cannot be edited here.
           </p>
+        ) : (
+          readOnly && (
+            <p className="text-xs text-muted-foreground">
+              This is a shipped baseline block and cannot be edited. Clone it to make changes
+              (coming soon).
+            </p>
+          )
         )}
 
         {/* Messages */}
@@ -296,7 +319,13 @@ export default function BlockEditor() {
                 <CardHeader>
                   <CardTitle className="text-sm">Configuration</CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-3">
+                  {pickerRelease && !readOnly && (
+                    <p className="text-xs text-muted-foreground" data-testid="picker-release-note">
+                      The pickers include {pickerRelease.label}, the stable release new intents pin.
+                      A library block with the same id replaces the release&apos;s in those intents.
+                    </p>
+                  )}
                   <StageEditor
                     value={form as StageForm}
                     onChange={(next) => setForm(next as Record<string, unknown>)}
@@ -414,11 +443,7 @@ export default function BlockEditor() {
         {/* Actions */}
         {!readOnly && (
           <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => navigate(`/blocks/${blockType}`)}
-            >
+            <Button type="button" variant="outline" onClick={() => navigate(backTo)}>
               Cancel
             </Button>
             <Button type="submit" disabled={saving}>

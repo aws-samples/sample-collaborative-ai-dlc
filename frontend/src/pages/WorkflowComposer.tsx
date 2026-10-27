@@ -8,6 +8,7 @@ import {
   type ExecutionPreview,
 } from '@/services/workflows';
 import { blocksService, type Block } from '@/services/blocks';
+import { aidlcReleasesService, releaseDisplayLabel } from '@/services/aidlcReleases';
 import { WorkflowInsights } from '@/components/blocks/WorkflowInsights';
 import { WorkflowScopeGraph } from '@/components/v2';
 import { Button } from '@/components/ui/button';
@@ -33,6 +34,16 @@ import { DEFAULT_PHASE_NODES } from './composer/defaultPhases';
 import { ScopeBuilder } from './composer/ScopeBuilder';
 import { displayPhasePathForPlacement, visibleWorkflowPhases } from './composer/phaseDisplay';
 
+// The compiled view over a release's library when one is in force. A release
+// that cannot be read falls back to the live library rather than failing the
+// page: the composer still works, its check is just the unpinned one.
+const compiledOver = (workflowId: string, libraryRelease: string | null) =>
+  libraryRelease
+    ? workflowsService
+        .compiled(workflowId, undefined, undefined, undefined, undefined, libraryRelease)
+        .catch(() => workflowsService.compiled(workflowId))
+    : workflowsService.compiled(workflowId);
+
 export default function WorkflowComposer() {
   const navigate = useNavigate();
   const { workflowId } = useParams<{ workflowId: string }>();
@@ -51,6 +62,14 @@ export default function WorkflowComposer() {
   const [editingStageId, setEditingStageId] = useState<string | null>(null);
   const [editingPhasePath, setEditingPhasePath] = useState<string | null>(null);
   const [activeScope, setActiveScope] = useState<string | null>(null);
+  // With release pinning on, a new intent runs the stable release's library
+  // in place of the SYSTEM rows, so the plan check previews the live workflow
+  // over it (issue #607). Null for a SYSTEM workflow, whose pinned intents run
+  // the release's own copy, and whenever no stable release is in force.
+  const [libraryRelease, setLibraryRelease] = useState<{
+    releaseId: string;
+    label: string;
+  } | null>(null);
 
   const readOnly = workflow?.readOnly ?? false;
 
@@ -59,12 +78,18 @@ export default function WorkflowComposer() {
     if (!workflowId) return;
     setLoading(true);
     try {
-      const [wf, stages, scopes, comp] = await Promise.all([
+      const [wf, stages, scopes, stable] = await Promise.all([
         workflowsService.get(workflowId),
         blocksService.list('stage'),
         blocksService.list('scope'),
-        workflowsService.compiled(workflowId),
+        aidlcReleasesService.stableCatalog(['scope']),
       ]);
+      const release =
+        stable && !wf.readOnly
+          ? { releaseId: stable.releaseId, label: releaseDisplayLabel(stable.release) }
+          : null;
+      const comp = await compiledOver(workflowId, release?.releaseId ?? null);
+      setLibraryRelease(release);
       setWorkflow(wf);
       setStageLib(stages.blocks);
       setScopeLib(scopes.blocks);
@@ -82,7 +107,7 @@ export default function WorkflowComposer() {
     try {
       const [wf, comp, scopes] = await Promise.all([
         workflowsService.get(workflowId),
-        workflowsService.compiled(workflowId),
+        compiledOver(workflowId, libraryRelease?.releaseId ?? null),
         blocksService.list('scope'),
       ]);
       setWorkflow(wf);
@@ -91,7 +116,7 @@ export default function WorkflowComposer() {
     } catch {
       // silent — the optimistic state is good enough for now
     }
-  }, [workflowId]);
+  }, [workflowId, libraryRelease]);
 
   useEffect(() => {
     load();
@@ -562,7 +587,22 @@ export default function WorkflowComposer() {
     }
     let cancelled = false;
     workflowsService
-      .executionPreview(workflowId, activeScope)
+      .executionPreview(
+        workflowId,
+        activeScope,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        libraryRelease?.releaseId ?? null,
+      )
+      // Same fallback as the compiled view; the label below then says the
+      // release was not used.
+      .catch((previewError) => {
+        if (!libraryRelease) throw previewError;
+        return workflowsService.executionPreview(workflowId, activeScope);
+      })
       .then((next) => {
         if (!cancelled) setPreview(next);
       })
@@ -572,7 +612,7 @@ export default function WorkflowComposer() {
     return () => {
       cancelled = true;
     };
-  }, [activeScope, workflowId, workflow?.version]);
+  }, [activeScope, workflowId, workflow?.version, libraryRelease]);
 
   const stageMeta = useMemo(() => {
     const meta: Record<string, { number: string; name: string; phase: string }> = {};
@@ -671,6 +711,13 @@ export default function WorkflowComposer() {
     }
     return issues;
   }, [preview]);
+
+  // Only claim the release check when both reads actually used the release:
+  // either one falls back to the live library if the release can't be read.
+  const checkedAgainstRelease =
+    !!libraryRelease &&
+    compiled?.libraryRelease === libraryRelease.releaseId &&
+    (preview == null || preview.libraryRelease === libraryRelease.releaseId);
 
   if (loading) {
     return <div className="text-sm text-muted-foreground">Loading…</div>;
@@ -777,6 +824,28 @@ export default function WorkflowComposer() {
               <TabsTrigger value="validate">Validate</TabsTrigger>
             </TabsList>
           </Tabs>
+
+          {libraryRelease &&
+            (checkedAgainstRelease ? (
+              <span
+                className="text-xs text-muted-foreground"
+                data-testid="composer-library-release"
+                title={libraryRelease.releaseId}
+              >
+                Checked against {libraryRelease.label} (stable), as new intents run it
+              </span>
+            ) : (
+              compiled && (
+                <span
+                  className="text-xs text-amber-600 dark:text-amber-400"
+                  data-testid="composer-library-release-unavailable"
+                  title={libraryRelease.releaseId}
+                >
+                  {libraryRelease.label} (stable) couldn&apos;t be read: checked against the library
+                  only, which new intents don&apos;t run
+                </span>
+              )
+            ))}
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <Popover open={paletteOpen} onOpenChange={setPaletteOpen}>

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { useNavigate, useParams, useSearchParams } from 'react-router';
 import {
   blocksService,
   BLOCK_TYPES,
@@ -7,6 +7,11 @@ import {
   type Block,
   type BlockType,
 } from '@/services/blocks';
+import {
+  aidlcReleasesService,
+  releaseDisplayLabel,
+  type ReleaseBlock,
+} from '@/services/aidlcReleases';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -23,7 +28,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Plus, Trash2, Blocks as BlocksIcon, Search, Lock } from 'lucide-react';
+import { Plus, Trash2, Blocks as BlocksIcon, Search, Lock, Package } from 'lucide-react';
 
 const isBlockType = (v: string | undefined): v is BlockType =>
   !!v && (BLOCK_TYPES as readonly string[]).includes(v);
@@ -38,6 +43,19 @@ export default function BlockLibrary() {
   const [searchQuery, setSearchQuery] = useState('');
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Block | null>(null);
+
+  // The release shown beside the library (issue #607): the one named by
+  // `?release=`, else the stable release when pinning is on. Its blocks are
+  // what pinned intents resolve in place of the SYSTEM baseline.
+  const [searchParams] = useSearchParams();
+  const requestedRelease = searchParams.get('release') || null;
+  const [release, setRelease] = useState<{
+    releaseId: string;
+    label: string;
+    stable: boolean;
+    blocks: ReleaseBlock[];
+  } | null>(null);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
 
   const loadBlocks = useCallback(async () => {
     setLoading(true);
@@ -56,6 +74,43 @@ export default function BlockLibrary() {
     loadBlocks();
   }, [loadBlocks]);
 
+  useEffect(() => {
+    let cancelled = false;
+    setReleaseError(null);
+    // Drop the previous type's release blocks at once: until the new read
+    // lands they would show under this type's heading and link to this type.
+    setRelease(null);
+    const request = requestedRelease
+      ? aidlcReleasesService
+          .contents(requestedRelease, [activeType])
+          .then((contents) => ({ releaseId: requestedRelease, stable: false, contents }))
+      : aidlcReleasesService
+          .stableCatalog([activeType])
+          .then((stable) => (stable ? { ...stable, stable: true } : null));
+    request
+      .then((found) => {
+        if (cancelled) return;
+        setRelease(
+          found
+            ? {
+                releaseId: found.releaseId,
+                label: releaseDisplayLabel(found.contents.release),
+                stable: found.stable,
+                blocks: found.contents.blocks[activeType] ?? [],
+              }
+            : null,
+        );
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setRelease(null);
+        setReleaseError(error instanceof Error ? error.message : 'Failed to load the release');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeType, requestedRelease]);
+
   const handleDeleteConfirm = async () => {
     if (!confirmDelete) return;
     setDeleting(confirmDelete.id);
@@ -70,11 +125,14 @@ export default function BlockLibrary() {
     }
   };
 
-  const filtered = blocks.filter(
-    (b) =>
-      b.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      b.id.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
+  const matchesSearch = (b: Block) =>
+    b.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    b.id.toLowerCase().includes(searchQuery.toLowerCase());
+  const filtered = blocks.filter(matchesSearch);
+  const releaseFiltered = (release?.blocks ?? []).filter(matchesSearch);
+  // A `default` block with a release block's id replaces it in pinned intents.
+  const libraryIds = new Set(blocks.filter((b) => !b.readOnly).map((b) => b.id));
+  const releaseQuery = release ? `?release=${encodeURIComponent(release.releaseId)}` : '';
 
   const labels = BLOCK_TYPE_LABELS[activeType];
 
@@ -104,7 +162,15 @@ export default function BlockLibrary() {
         <Tabs value={activeType} className="mb-6">
           <TabsList className="flex-wrap h-auto">
             {BLOCK_TYPES.map((t) => (
-              <TabsTrigger key={t} value={t} onClick={() => navigate(`/blocks/${t}`)}>
+              <TabsTrigger
+                key={t}
+                value={t}
+                onClick={() =>
+                  navigate(
+                    `/blocks/${t}${requestedRelease ? `?release=${encodeURIComponent(requestedRelease)}` : ''}`,
+                  )
+                }
+              >
                 {BLOCK_TYPE_LABELS[t].plural}
               </TabsTrigger>
             ))}
@@ -203,6 +269,91 @@ export default function BlockLibrary() {
               </Card>
             ))}
           </div>
+        )}
+
+        {releaseError && (
+          <p className="mt-8 text-sm text-destructive" role="alert">
+            {releaseError}
+          </p>
+        )}
+        {release && (
+          <section
+            className="mt-10"
+            aria-labelledby="release-blocks-heading"
+            data-testid="release-blocks"
+          >
+            <div className="mb-4 flex flex-wrap items-center gap-2">
+              <Package className="h-4 w-4 text-muted-foreground" />
+              <h2 id="release-blocks-heading" className="text-base font-semibold">
+                {labels.plural} in {release.label}
+                {release.stable ? ' (stable)' : ''}
+              </h2>
+              <span className="font-mono text-[11px] text-muted-foreground break-all">
+                {release.releaseId}
+              </span>
+              {requestedRelease && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="ml-auto h-7 text-xs"
+                  onClick={() => navigate(`/blocks/${activeType}`)}
+                >
+                  Back to the stable release
+                </Button>
+              )}
+            </div>
+            <p className="mb-4 max-w-3xl text-xs text-muted-foreground">
+              {release.stable
+                ? 'New intents pin this release: they run these blocks in place of the SYSTEM baseline, and a library block with the same id replaces the release’s. Release blocks are read-only.'
+                : 'Intents pinned to this release run these blocks in place of the SYSTEM baseline. Release blocks are read-only.'}
+            </p>
+            {releaseFiltered.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {release.blocks.length === 0
+                  ? `This release has no ${labels.plural.toLowerCase()}.`
+                  : `No ${labels.plural.toLowerCase()} in this release match "${searchQuery}".`}
+              </p>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                {releaseFiltered.map((block) => (
+                  <Card
+                    key={block.id}
+                    className="cursor-pointer transition-all hover:shadow-md hover:border-foreground/20"
+                    onClick={() =>
+                      navigate(
+                        `/blocks/${activeType}/${encodeURIComponent(block.id)}${releaseQuery}`,
+                      )
+                    }
+                  >
+                    <CardContent className="p-5">
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="min-w-0">
+                          <h3 className="font-semibold text-sm truncate">{block.name}</h3>
+                          <p className="text-[11px] text-muted-foreground/70 font-mono truncate">
+                            {block.id}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="h-5 gap-1 text-[9px] shrink-0">
+                          <Package className="h-2.5 w-2.5" />
+                          RELEASE
+                        </Badge>
+                      </div>
+                      {typeof block.description === 'string' && block.description && (
+                        <p className="text-xs text-muted-foreground line-clamp-2 mb-2">
+                          {block.description}
+                        </p>
+                      )}
+                      {libraryIds.has(block.id) && (
+                        <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                          Replaced by the library block with this id
+                        </p>
+                      )}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </section>
         )}
       </div>
 
