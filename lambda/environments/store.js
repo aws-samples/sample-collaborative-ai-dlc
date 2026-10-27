@@ -20,6 +20,7 @@ import {
 } from './catalog-recipe.js';
 import { queryAll, scanAll } from './registry.js';
 import { readDefaultEnvironment, writeDefaultEnvironment } from '../shared/environment-default.js';
+import { resolvePublishedEnvironment as resolvePublished } from '../shared/environment-snapshot.js';
 
 const environmentPk = (environmentId) => `ENV#${environmentId}`;
 const environmentKey = (environmentId) => ({ pk: environmentPk(environmentId), sk: 'META' });
@@ -872,12 +873,21 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
   const getDefaultEnvironment = () => readDefaultEnvironment({ ddb, tableName: table() });
   const setDefaultEnvironment = ({ environmentId, actor }) =>
     writeDefaultEnvironment({ ddb, tableName: table(), environmentId, actor, now: now() });
+  // The check space and intent creation apply; throws an environment resolution error.
+  const resolvePublishedEnvironment = (environmentId) =>
+    resolvePublished({
+      ddb,
+      tableName: table(),
+      environmentId,
+      fallback: { compatibilityVersion: compatibilityVersion() },
+    });
 
   return {
     getEnvironment,
     getRevision,
     getDefaultEnvironment,
     setDefaultEnvironment,
+    resolvePublishedEnvironment,
     listEnvironments,
     listRevisions,
     createEnvironment,

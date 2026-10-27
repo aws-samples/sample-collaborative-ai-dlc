@@ -22,7 +22,7 @@ Choose the path that matches your task:
 
 | Goal                                              | What to do                                                                                                                                                               |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Use the built-in Node.js and Python runtime       | Use **Standard**. Projects use it automatically until another environment is assigned.                                                                                   |
+| Use the built-in Node.js and Python runtime       | Use **Standard**. New projects use it unless a [different default](#set-the-default-environment-for-new-spaces) is set.                                                  |
 | Create a Java, Go, Rust, Maven, or Gradle runtime | [Publish the required shipped tool versions](#publish-and-recommend-tools), [create an environment](#create-an-environment), then [publish it](#publish-an-environment). |
 | Add another SDK or CLI                            | [Add and verify a tool](#add-a-new-tool), publish its exact version, then include it in an environment.                                                                  |
 | Upgrade a tool without changing existing runs     | [Add the new tool version](#add-or-update-a-tool-version), create and publish a new environment revision, then create new intents.                                       |
@@ -804,7 +804,8 @@ changes project assignments.
 Compatibility warnings compare detected repository stacks with the tools in
 the selected environment. They are advisory; assignment is still allowed.
 
-Projects without an explicit assignment use Standard.
+New projects are assigned the [default environment](#set-the-default-environment-for-new-spaces),
+which is Standard unless a platform administrator has chosen another.
 
 The assignment stores the environment ID, not a mutable container reference.
 When an intent is created, the platform resolves that environment's current
@@ -824,6 +825,38 @@ Running, waiting, rewound, cancelled, and resumed intents continue to target
 their original snapshotted runtime and endpoint.
 
 Choose the environment before creating the intent that should use it.
+
+### Set the default environment for new spaces
+
+New spaces (projects) use Standard unless a platform administrator chooses
+another default:
+
+1. Open **Admin -> Environments -> Environments**.
+2. Select a published environment and choose **Set as default**. A star marks
+   the current default in the list.
+
+To go back to Standard, choose **Set as default** on Standard.
+
+An environment can only be the default when its published revision passes the
+same check as intent creation: published, verified, with a runtime and image
+digest, and on a supported runtime compatibility version. Otherwise the change
+is refused with the reason.
+
+The default is read when a space is created and stored as that space's
+assignment, so:
+
+- Existing spaces keep their environment when the default changes.
+- Space owners can still assign another environment afterwards.
+- If the default stops passing the check later, for example after a platform
+  upgrade raises the runtime compatibility version, new spaces use Standard and
+  the projects Lambda logs a warning. Space creation is never blocked.
+
+The default environment cannot be retired: retiring it returns
+`DEFAULT_ENVIRONMENT`. Choose another default first.
+
+Platform administrators can also read and change the setting with `GET` and
+`PUT /environments/settings/default`, using a body of
+`{ "environmentId": "<id>" }`.
 
 ### Audit an intent's environment
 

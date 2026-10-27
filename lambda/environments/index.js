@@ -38,6 +38,7 @@ import {
 } from './compute-model.js';
 import { runtimeBackendFor } from './runtime-backends/index.js';
 import { STANDARD_ENVIRONMENT_ID } from '../shared/environment-default.js';
+import { isEnvironmentResolutionError } from '../shared/environment-snapshot.js';
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const s3 = new S3Client({});
@@ -407,8 +408,9 @@ export const createHandler = ({
         return response(200, capabilities());
       }
 
-      // Default environment for new spaces. Unset means Standard.
-      if (tail.length === 1 && environmentId === 'default') {
+      // Default environment for new spaces. Unset means Standard. A two-segment
+      // path no environment route uses, so no existing environment id is shadowed.
+      if (tail.length === 2 && environmentId === 'settings' && tail[1] === 'default') {
         const denied = requirePlatformAdmin(event);
         if (denied)
           return response(denied.statusCode, {
@@ -429,10 +431,14 @@ export const createHandler = ({
           if (requested !== STANDARD_ENVIRONMENT_ID) {
             const candidate = await store.getEnvironment(requested);
             if (!candidate) return response(404, { error: 'Environment not found' });
-            if (candidate.status === 'RETIRED' || !candidate.publishedRevisionId) {
+            // The same check space creation applies, so a saved default is used.
+            try {
+              await store.resolvePublishedEnvironment(requested);
+            } catch (error) {
+              if (!isEnvironmentResolutionError(error)) throw error;
               return response(409, {
-                error: 'Only a published environment can be the default for new spaces',
-                code: 'ENVIRONMENT_NOT_PUBLISHED',
+                error: `This environment cannot be the default for new spaces: ${error.message}`,
+                code: error.code,
               });
             }
           }
@@ -456,7 +462,7 @@ export const createHandler = ({
         const data = parseBody(event);
         if (!data.name?.trim()) return response(400, { error: 'name is required' });
         const id = normalizeEnvironmentId(data.environmentId || data.name);
-        if (id === 'rebuild' || id === 'capabilities' || id === 'default') {
+        if (id === 'rebuild' || id === 'capabilities' || id === 'settings') {
           return response(400, { error: 'environmentId is reserved by the platform' });
         }
         const baseEnvironmentId = data.baseEnvironmentId || 'standard';

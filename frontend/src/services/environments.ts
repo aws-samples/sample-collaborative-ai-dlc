@@ -329,9 +329,9 @@ export const environmentsService = {
   list: (publishedOnly = false) =>
     api.get<ManagedEnvironment[]>(`/environments${publishedOnly ? '?published=true' : ''}`),
   capabilities: () => api.get<EnvironmentCapabilities>('/environments/capabilities'),
-  getDefault: () => api.get<DefaultEnvironment>('/environments/default'),
+  getDefault: () => api.get<DefaultEnvironment>('/environments/settings/default'),
   setDefault: (environmentId: string) =>
-    api.put<DefaultEnvironment>('/environments/default', { environmentId }),
+    api.put<DefaultEnvironment>('/environments/settings/default', { environmentId }),
   get: (environmentId: string) => api.get<EnvironmentDetail>(environmentPath(environmentId)),
   create: (input: {
     environmentId?: string;
