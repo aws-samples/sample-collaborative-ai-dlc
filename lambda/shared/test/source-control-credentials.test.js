@@ -347,6 +347,60 @@ describe('verifyCodeCommitRoleBinding (platform connection, #531)', () => {
     expect(sts.calls).toHaveLength(0);
   });
 
+  it('binds only in the connection region, even when the role allows more (review #578)', async () => {
+    // One role that AWS would let reach both regions: the connection region
+    // binds, the other is refused before STS, so nothing is assumed or written.
+    const connectionSsm = ssmReturning(JSON.stringify({ roleArn: ROLE, region: 'eu-west-1' }));
+    const okSts = stsOk();
+    const bound = await verifyCodeCommitRoleBinding({
+      ssm: connectionSsm,
+      sts: okSts,
+      repo: REPO,
+      selection: {},
+    });
+    expect(bound.region).toBe('eu-west-1');
+    expect(okSts.calls).toHaveLength(1);
+
+    const deniedSts = stsOk();
+    await expect(
+      verifyCodeCommitRoleBinding({
+        ssm: connectionSsm,
+        sts: deniedSts,
+        repo: 'arn:aws:codecommit:us-west-2:123456789012:demo',
+        selection: {},
+      }),
+    ).rejects.toMatchObject({ code: 'CODECOMMIT_REGION_MISMATCH' });
+    expect(deniedSts.calls).toHaveLength(0);
+  });
+
+  it('resolveBindingCredential keeps a binding pinned to its stored region after the connection region changes', async () => {
+    const sts = stsOk();
+    const binding = {
+      status: 'active',
+      authType: 'codecommit-role',
+      provider: 'codecommit',
+      repo: REPO,
+      roleArn: ROLE,
+      externalId: EXTERNAL_ID,
+      region: 'eu-west-1',
+      credentialRef: `codecommit-role#${ROLE}#${EXTERNAL_ID}`,
+      actorName: 'AIDLC',
+      actorEmail: 'aidlc@example.com',
+      actorLogin: ROLE,
+    };
+    const resolved = await resolveBindingCredential({
+      ddb: {},
+      ssm: ssmReturning(JSON.stringify({ roleArn: ROLE, region: 'us-west-2' })),
+      secrets: {},
+      sts,
+      binding,
+      requiredAccess: 'write',
+      executionId: 'exec-1',
+    });
+    expect(resolved.token.accessKeyId).toBe('ASIA');
+    expect(sts.calls).toHaveLength(1);
+  });
+
   it('rejects an unreadable repository with INSUFFICIENT_REPOSITORY_ACCESS', async () => {
     getProvider.mockImplementation(() => ({
       getRepositoryAccess: async () => ({ canRead: false, canWrite: false }),
