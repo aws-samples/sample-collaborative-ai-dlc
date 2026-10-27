@@ -391,7 +391,9 @@ resource "aws_dynamodb_table" "v2_executions" {
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "agentcore" {
-  name = "${var.project_name}-agentcore-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-agentcore-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -664,6 +666,24 @@ resource "aws_ssm_parameter" "compose_llm_bypass" {
   description = "Composer deterministic keyword bypass: enabled | disabled (Admin UI managed)"
   type        = "String"
   value       = "enabled"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = var.tags
+}
+
+# Agent CLIs disabled platform-wide — a JSON array of CLI ids (kiro, claude,
+# opencode, codex). A disabled CLI cannot be selected for a new intent, a DRAFT
+# compose/assist, or as a space's recommended CLI; runs that already pinned it
+# are unaffected. Seeded from var.disabled_clis (empty = all enabled), then
+# managed by the Admin UI at runtime.
+resource "aws_ssm_parameter" "disabled_clis" {
+  name        = "/${var.project_name}/${var.environment}/disabled-clis"
+  description = "Agent CLIs disabled for selection (JSON array, Admin UI managed)"
+  type        = "String"
+  value       = jsonencode(var.disabled_clis)
 
   lifecycle {
     ignore_changes = [value]

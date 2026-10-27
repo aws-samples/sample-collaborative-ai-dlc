@@ -85,6 +85,14 @@ enable_waf = true
 ```
 
 The ACLs use the AWS-managed Common Rule Set, Known Bad Inputs, and Amazon IP Reputation rule groups.
+With `enable_waf = true`, the shared regional ACL also blocks application REST API requests with a missing or incorrect `X-Origin-Verify` header, including direct requests with a valid Cognito JWT. The rule checks URL-decoded paths containing `/api`, which covers every application REST route with or without the stage prefix. Cognito's supported login and token paths do not match this condition, so they do not require the header. CloudFront injects the generated secret for every request to the REST API origin, including OPTIONS preflight and OAuth callbacks. A correct header continues through the managed rules and existing authentication and application authorization checks.
+
+This retains two ACLs: one for CloudFront and one shared by API Gateway and Cognito. The origin check adds one WAF rule (currently $1/month, prorated hourly), with no additional ACL or managed rule groups. New REST routes must remain under `/api` or the rule's path scope must be updated.
+
+With `enable_waf = false` (the default), no WAF ACLs or origin-header restriction are enforced. Direct REST API requests remain available with the existing authentication and authorization controls. The WebSocket API is unaffected by the REST API origin check.
+
+This is a secret-based access restriction: the REST API endpoint remains public, and anyone who obtains the secret can satisfy the origin check. Keep Terraform state and access to the CloudFront/WAF configuration restricted. The secret is not included in the frontend bundle. WAF request sampling is disabled and WAF request logging is not configured; if you enable WAF logging separately, redact the `x-origin-verify` header.
+
 Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
 A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
 
@@ -190,7 +198,7 @@ Keep `environment`, `project_name` and `aws_region` in the tfvars. The retired-v
 
 !!! warning "A production environment must be named exactly `prod`"
 
-    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger Yjs collaboration containers, immutable ECR repositories, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, DynamoDB and Neptune deletion protection, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run.
+    Terraform selects production behaviour by comparing `environment` to the literal string `prod`. That single value controls, among others: two NAT gateways for high availability instead of one, 30-day CloudWatch log retention instead of 7, larger Yjs collaboration containers, immutable ECR repositories, 90-day S3 lifecycle rules, `force_destroy = false` on every bucket, DynamoDB, Neptune and Cognito user pool deletion protection, a required final Neptune snapshot, and the refusal of `scripts/destroy.sh` to run.
 
     A near-miss name such as `production`, `prd`, or `prod-us` is treated as **non-production**: the hardening is silently disabled and the buckets become force-destroyable. Name the production environment `prod` and nothing else.
 

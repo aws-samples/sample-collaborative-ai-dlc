@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { authenticatedClis, resolveInvocationAgentAuth } from '../auth-resolver.js';
 import { AGENT_AUTH_MODES } from '../command-registry.js';
+import { getDriver } from '../cli/drivers.js';
 import {
   credentialEnvName,
   credentialProviderForCli,
@@ -218,6 +219,30 @@ describe('resolveInvocationAgentAuth', () => {
       KIRO_API_KEY: 'kiro-platform-key',
     });
     expect(result.resolvedProviders).toEqual(['bedrock', 'kiro']);
+  });
+
+  it('keeps the platform inference region when a platform API key is leased', async () => {
+    const platform = { provider: 'bedrock', source: 'platform' };
+    const result = await resolveInvocationAgentAuth({
+      authMode: AGENT_AUTH_MODES.CAPABILITIES,
+      payload: {
+        command: 'capabilities',
+        credentialBindings: { bedrock: platform },
+        agentCredentialGrant: 'grant-platform',
+      },
+      // The runtime is deployed in eu-central-1 but sends inference to us-east-1.
+      env: { AWS_REGION: 'eu-central-1', BEDROCK_REGION: 'us-east-1' },
+      broker: async () => ({
+        purpose: 'capabilities',
+        projectId: null,
+        executionId: null,
+        credentials: [{ binding: platform, value: 'bedrock-platform-key' }],
+      }),
+    });
+
+    expect(result.env.BEDROCK_REGION).toBe('us-east-1');
+    for (const cli of ['claude', 'opencode', 'codex'])
+      expect(getDriver(cli).envForAuth(result.env).AWS_REGION, cli).toBe('us-east-1');
   });
 
   it('never falls back to a platform key when pre-start compose has no binding', async () => {

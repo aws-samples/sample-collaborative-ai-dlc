@@ -75,3 +75,6 @@ lambda/agentcore/test/a7-mcp-config.json
 
 # dependency-cruiser generated reports
 reports/dependency/
+
+# Local cognitive-complexity analysis
+reports/complexity/

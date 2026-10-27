@@ -173,7 +173,9 @@ resource "aws_cloudwatch_log_group" "codebuild" {
 }
 
 resource "aws_iam_role" "build" {
-  name = "${var.project_name}-environment-build-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-environment-build-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -307,9 +309,11 @@ resource "aws_codebuild_project" "managed_environments" {
 }
 
 resource "aws_iam_role" "control" {
-  name               = "${var.project_name}-environment-control-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
-  tags               = var.tags
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-environment-control-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
+  tags                 = var.tags
 }
 
 resource "aws_iam_role_policy_attachment" "control_basic" {
@@ -416,9 +420,11 @@ module "control_lambda" {
 }
 
 resource "aws_iam_role" "status" {
-  name               = "${var.project_name}-environment-status-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
-  tags               = var.tags
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-environment-status-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
+  tags                 = var.tags
 }
 
 # ---------------------------------------------------------------------------
@@ -442,7 +448,9 @@ resource "aws_iam_role" "status" {
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "instances_operator" {
-  name = "${var.project_name}-instances-operator-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-instances-operator-${var.environment}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -753,7 +761,9 @@ resource "aws_cloudwatch_log_group" "tool_codebuild" {
 }
 
 resource "aws_iam_role" "tool_build" {
-  name = "${var.project_name}-tool-build-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-tool-build-${var.environment}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -876,9 +886,11 @@ resource "aws_codebuild_project" "managed_tools" {
 }
 
 resource "aws_iam_role" "tool_control" {
-  name               = "${var.project_name}-tool-control-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
-  tags               = var.tags
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-tool-control-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
+  tags                 = var.tags
 }
 
 resource "aws_iam_role_policy_attachment" "tool_control_basic" {
@@ -997,9 +1009,11 @@ resource "aws_lambda_permission" "tool_catalog_bootstrap" {
 }
 
 resource "aws_iam_role" "tool_status" {
-  name               = "${var.project_name}-tool-status-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
-  tags               = var.tags
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-tool-status-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
+  tags                 = var.tags
 }
 
 resource "aws_iam_role_policy_attachment" "tool_status_basic" {

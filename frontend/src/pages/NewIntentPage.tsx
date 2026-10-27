@@ -88,6 +88,10 @@ export default function NewIntentPage() {
   const [releaseSelectionDisabled, setReleaseSelectionDisabled] = useState(false);
   const [releasesSettled, setReleasesSettled] = useState(false);
 
+  // Construction autonomy, off by default: the opt-in is the human's grant, so
+  // it is never pre-checked and never remembered across intents.
+  const [autonomousConstruction, setAutonomousConstruction] = useState(false);
+
   useEffect(() => {
     let cancelled = false;
     aidlcReleasesService
@@ -151,6 +155,11 @@ export default function NewIntentPage() {
   }, [sourceIntent, releasesSettled, prefilled, releases, selectedReleaseId]);
 
   const showReleaseSelector = pinningEnabled && releases.length > 0 && !releaseSelectionDisabled;
+  // The opt-in is offered only for a selected release that authors the protocol;
+  // anywhere else the server would refuse it at submit.
+  const releaseOffersAutonomy = (releaseId: string | null) =>
+    releases.find((r) => r.releaseId === releaseId)?.constructionAutonomy === true;
+  const showAutonomyOptIn = showReleaseSelector && releaseOffersAutonomy(selectedReleaseId);
 
   // Lazily fetch each repo's branch list (+ its actual default branch) the
   // first time the base-branch picker is expanded — most intents never open
@@ -228,6 +237,10 @@ export default function NewIntentPage() {
           showReleaseSelector && selectedReleaseId && selectedReleaseId !== stableReleaseId
             ? selectedReleaseId
             : undefined,
+        // Sent only as an explicit opt-in, and only for a selected release that
+        // authors the protocol — the server refuses it anywhere else.
+        constructionGateAutonomy:
+          showAutonomyOptIn && autonomousConstruction ? 'autonomous' : undefined,
         source: source
           ? {
               bindingId: source.binding.id,
@@ -438,7 +451,11 @@ export default function NewIntentPage() {
                 <Label htmlFor="intent-methodology-release">AI-DLC version</Label>
                 <Select
                   value={selectedReleaseId ?? '__default__'}
-                  onValueChange={(v) => setSelectedReleaseId(v === '__default__' ? null : v)}
+                  onValueChange={(v) => {
+                    const next = v === '__default__' ? null : v;
+                    setSelectedReleaseId(next);
+                    if (!releaseOffersAutonomy(next)) setAutonomousConstruction(false);
+                  }}
                 >
                   <SelectTrigger id="intent-methodology-release" className="mt-1.5">
                     <SelectValue placeholder="Platform default" />
@@ -461,6 +478,26 @@ export default function NewIntentPage() {
                 </Select>
                 <p className="mt-1.5 text-xs text-muted-foreground">
                   This intent stays on this version; it is never migrated automatically.
+                </p>
+              </div>
+            )}
+
+            {showAutonomyOptIn && (
+              <div>
+                <label className="inline-flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={autonomousConstruction}
+                    onChange={(event) => setAutonomousConstruction(event.target.checked)}
+                  />
+                  Autonomous construction
+                </label>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Build the remaining construction stages without stopping for approval. The first
+                  construction stage, plan approvals, and anything that fails still stop and ask.
+                  The grant holds for the rest of the intent, rewinds included, until the intent is
+                  cancelled. An intent can be cancelled once its run stops at a gate, a question or
+                  a failure.
                 </p>
               </div>
             )}

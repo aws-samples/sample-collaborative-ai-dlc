@@ -20,9 +20,10 @@
 // zero-padded upstream version so a lexicographic index scan is also a version
 // ordering. Every mutation is a compare-and-swap on an integer `revision`, so
 // two concurrent admins cannot silently clobber one another's decision. The one
-// deliberate exception is the fidelity-evidence cache (`cacheFidelityEvidence`):
-// it is still CAS-guarded on `revision`, but it does NOT bump it, because what it
-// writes is derived from an immutable closure rather than decided by anyone.
+// deliberate exceptions are the fidelity-evidence writes the admin listing makes
+// (`cacheFidelityEvidence` and `recordFidelityEvidenceAttempt`): both are still
+// CAS-guarded on `revision`, but neither bumps it, because what they write is
+// derived from an immutable closure rather than decided by anyone.
 //
 // Clients are injected (shared/ is a leaf foundation, see .dependency-cruiser.cjs).
 
@@ -33,6 +34,7 @@ import {
   PutCommand,
   QueryCommand,
   TransactWriteCommand,
+  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import {
   AIDLC_RELEASE_IMPORTER_REVISION,
@@ -48,7 +50,8 @@ import {
   customProfile,
   profileFor,
 } from './aidlc-compatibility-profiles.js';
-import { unhonouredValues } from './aidlc-capabilities.js';
+import { protocolCapabilitiesFromEvidence, unhonouredValues } from './aidlc-capabilities.js';
+import { constructionAutonomyApplies } from './construction-autonomy.js';
 import { mapWithConcurrency } from './concurrency.js';
 
 const logger = new Logger({ persistentKeys: { component: 'release-registry' } });
@@ -84,6 +87,27 @@ const VERSION_SEGMENT_WIDTH = 6;
 // once. One closure's catalog and objects are buffered per verification, so this
 // stays at 1: the listing Lambda has 128 MB and a registry page is unbounded.
 const RELEASE_LIST_EVIDENCE_CONCURRENCY = 1;
+
+// How many it may re-verify SUCCESSFULLY in one call. A deploy that bumps
+// FIDELITY_EVIDENCE_REVISION makes every registered row stale at the same
+// moment, so an unbounded migrate-on-read turns the first admin GET into one
+// closure verification per release — past the 30 s the listing Lambda has, which
+// answers 504 and loses the work. The listing recomputes up to this many rows,
+// reports the rest with the evidence it has (marked stale), and converges across
+// calls. Promotion and channel moves are unaffected: they re-verify the closure
+// themselves before deciding, so no decision is ever taken on stale evidence.
+//
+// Only a verification that PRODUCED evidence is charged. A closure that cannot
+// be read is never cached and keeps its place in a deterministic page order, so
+// charging it would make the listing spend the whole budget on the same row on
+// every call and park every row behind it at its stored evidence for good.
+const RELEASE_LIST_EVIDENCE_BUDGET = 1;
+
+// The bound on everything the budget does not charge for: a closure that is slow
+// to read, and the failures. Checked before a verification starts, so the one
+// already in flight is always allowed to finish and be cached, and a page of
+// unverifiable rows costs this much wall clock rather than one attempt per row.
+const RELEASE_LIST_EVIDENCE_BUDGET_MS = 6000;
 
 class ReleaseRegistryError extends Error {
   constructor(code, message, { cause, details = null } = {}) {
@@ -155,16 +179,26 @@ const assertRevision = (revision, field) => {
 };
 
 /**
- * Runnability is a property of provenance, decided once at registration and
- * never patchable: only an allowlisted official profile above T0 may ever be
- * offered for a new intent. Custom, preview, and T0 content stays non-runnable
- * however complete its files look.
+ * Runnability at registration is a property of provenance: an allowlisted
+ * official profile above T0 is runnable as imported. A custom fork (T0) is
+ * recorded non-runnable; the only way it becomes runnable is the explicit admin
+ * promotion in `updateRelease`, which first passes it through the same fidelity
+ * guard as an official release. It is never patchable directly.
  */
 const profileIsRunnable = (profile) => Boolean(profile) && profile.trustTier !== 'T0';
 
 const isImporterStale = (item) =>
   Number(item?.importerRevision ?? AIDLC_RELEASE_IMPORTER_REVISION) <
   AIDLC_RELEASE_IMPORTER_REVISION;
+
+// Whether an intent pinned to this release may be created with an autonomous
+// construction grant: the same capability the create path checks, read from the
+// record's stored evidence so the listing never loads a closure. Evidence stored
+// before the protocol entries existed reads as false until an admin listing or a
+// promotion re-verifies it; the admin listing below recomputes it, the non-admin
+// one does not, which only ever hides the opt-in.
+const offersConstructionAutonomy = (fidelityGaps) =>
+  constructionAutonomyApplies({ capabilities: protocolCapabilitiesFromEvidence(fidelityGaps) });
 
 const releaseToApi = (item) =>
   item
@@ -185,6 +219,7 @@ const releaseToApi = (item) =>
         structurallyValid: item.structurallyValid === true,
         visible: item.visible === true,
         runnable: item.runnable === true,
+        constructionAutonomy: offersConstructionAutonomy(item.fidelityGaps),
         notes: item.notes ?? null,
         registeredAt: item.registeredAt ?? null,
         registeredBy: item.registeredBy ?? null,
@@ -201,6 +236,11 @@ const releaseToApi = (item) =>
         unhonouredValues: Array.isArray(item.fidelityGaps)
           ? unhonouredValues({ fidelityGaps: item.fidelityGaps })
           : null,
+        // Whether `fidelityGaps` above is a verdict THIS build reached. A stored
+        // list an earlier evidence revision produced can name behavior this
+        // build now honours, so a reader must not refuse a release for it; the
+        // registry re-verifies the closure before any decision.
+        fidelityEvidenceStale: !hasCurrentFidelityEvidence(item),
         revision: item.revision ?? 1,
       }
     : null;
@@ -222,6 +262,7 @@ const releaseToSelectionApi = (item) =>
         trustTier: item.trustTier ?? null,
         visible: item.visible === true,
         runnable: item.runnable === true,
+        constructionAutonomy: offersConstructionAutonomy(item.fidelityGaps),
         ...(item.certifiedAt ? { certifiedAt: item.certifiedAt } : {}),
       }
     : null;
@@ -245,6 +286,8 @@ const channelToSelectionApi = (item) =>
  * Identical in shape to `methodologyReleasePinFromManifest` (release-resolver),
  * because the runtime re-verifies every field of it against the manifest.
  */
+// A fork's closure lives under its own custom prefix, so its pin says so; an
+// official pin keeps exactly the shape it always had.
 const releasePinFromRecord = (release) => ({
   releaseId: release.releaseId,
   sourceSha: release.sourceSha,
@@ -252,6 +295,9 @@ const releasePinFromRecord = (release) => ({
   closureDigest: release.closureDigest,
   catalogKey: release.catalogKey,
   manifestKey: release.manifestKey,
+  ...(release.custom === true
+    ? { custom: true, sourceRepository: release.sourceRepository ?? null }
+    : {}),
 });
 
 const getRelease = async ({ ddb, tableName, releaseId }) => {
@@ -327,26 +373,63 @@ const listReleases = async ({ ddb, tableName, visibleOnly = false, s3 = null, bu
   // one at a time: the peak heap is one closure rather than the whole page, which
   // is what a 128 MB listing Lambda can actually afford. The recomputed evidence
   // is then cached back onto the row, so this cost is paid once per legacy record.
-  return mapWithConcurrency(
-    projected,
-    RELEASE_LIST_EVIDENCE_CONCURRENCY,
-    async (release, index) => {
-      const item = sortedItems[index];
-      if (hasCurrentFidelityEvidence(item)) return release;
-      const fidelityGaps = await fidelityGapsForRecord({
-        release: item,
-        s3,
-        bucket,
-        requireCurrentEvidence: true,
-      }).catch(() => null);
-      if (fidelityGaps) await cacheFidelityEvidence({ ddb, tableName, item, fidelityGaps });
-      return {
-        ...release,
-        fidelityGaps,
-        unhonouredValues: fidelityGaps ? unhonouredValues({ fidelityGaps }) : null,
-      };
-    },
-  );
+  //
+  // What one call may pay for is capped by `RELEASE_LIST_EVIDENCE_BUDGET`, which
+  // only a verification that produced evidence spends, and by a wall-clock
+  // budget, which bounds the rest — a slow closure and a closure that cannot be
+  // verified at all. A row past either is reported as it is stored, already
+  // marked `fidelityEvidenceStale` by `releaseToApi`, and is left untouched so a
+  // later call recomputes it. Charging a failure would be the end of the
+  // backlog's convergence: the same unverifiable row would spend the budget on
+  // every call.
+  //
+  // Neither bound is enough on its own, because the page order is deterministic:
+  // a row whose read fails only after spending the whole wall clock would be
+  // attempted first on every call and leave every row behind it unattempted for
+  // good. So stale rows are attempted least-recently-ATTEMPTED first rather than
+  // in page order, and a failed attempt is recorded on the row. The rotation is
+  // therefore persisted state, not per-call state: it survives a cold start, and
+  // two concurrent listings converge on it rather than racing on one row. The
+  // answer itself stays in page order.
+  const deadline = Date.now() + RELEASE_LIST_EVIDENCE_BUDGET_MS;
+  let remaining = RELEASE_LIST_EVIDENCE_BUDGET;
+  const staleOrder = [...sortedItems.keys()]
+    .filter((index) => !hasCurrentFidelityEvidence(sortedItems[index]))
+    .toSorted(
+      (left, right) =>
+        lastFidelityEvidenceAttempt(sortedItems[left]).localeCompare(
+          lastFidelityEvidenceAttempt(sortedItems[right]),
+        ) || left - right,
+    );
+  const recomputed = new Map();
+  await mapWithConcurrency(staleOrder, RELEASE_LIST_EVIDENCE_CONCURRENCY, async (index) => {
+    if (remaining <= 0 || Date.now() >= deadline) return;
+    const item = sortedItems[index];
+    // The turn is claimed BEFORE the read: a read that never returns (a stalled
+    // S3 request, a Lambda killed at its timeout) still moves the row behind the
+    // others, and a concurrent listing stops picking the same row.
+    await recordFidelityEvidenceAttempt({ ddb, tableName, item });
+    const fidelityGaps = await fidelityGapsForRecord({
+      release: item,
+      s3,
+      bucket,
+      requireCurrentEvidence: true,
+    }).catch(() => null);
+    // A failure caches nothing: the row is answered as unverified (no gaps, no
+    // verdict), which the admin view shows as such, and stays stale in storage.
+    if (fidelityGaps) {
+      remaining -= 1;
+      await cacheFidelityEvidence({ ddb, tableName, item, fidelityGaps });
+    }
+    recomputed.set(index, {
+      ...projected[index],
+      fidelityGaps,
+      unhonouredValues: fidelityGaps ? unhonouredValues({ fidelityGaps }) : null,
+      constructionAutonomy: offersConstructionAutonomy(fidelityGaps),
+      fidelityEvidenceStale: false,
+    });
+  });
+  return projected.map((release, index) => recomputed.get(index) ?? release);
 };
 
 const assertRegistryStorage = (s3, bucket) => {
@@ -530,10 +613,11 @@ const registerRelease = async ({ ddb, tableName, s3, bucket, profileId, actor = 
 };
 
 /**
- * Registers a PUBLISHED custom fork closure. The record is import-only by
- * construction: the synthesized profile is T0, so `runnable` is false and both
- * `updateRelease` and `setChannel` will refuse to make it offerable. There is
- * deliberately no parameter that could override that.
+ * Registers a PUBLISHED custom fork closure. The record starts import-only: the
+ * synthesized profile is T0, so `runnable` is false and `setChannel` refuses it.
+ * Registration has no parameter that makes it runnable; only an admin promotion
+ * in `updateRelease`, which runs the same fidelity guard as an official release,
+ * does.
  */
 const registerCustomRelease = async ({
   ddb,
@@ -597,11 +681,30 @@ const registerCustomRelease = async ({
 // The revision of the evidence a record's stored `fidelityGaps` was computed
 // with. Revision 2 includes the protocol capabilities the closure ships (the
 // build-and-test loop-back), which a gap list stored by an earlier build never
-// judged. Promotion therefore re-evaluates such a list from the immutable
-// closure, exactly like a record with no list at all. Other readers (the
-// intent-creation eligibility check) keep using the stored list: a record can
-// only be selected after a promotion has written current evidence.
-const FIDELITY_EVIDENCE_REVISION = 2;
+// judged. Revision 3 reads engine commands only from what reaches a prompt: a
+// list stored by an earlier build also holds the commands the engine CLI's own
+// sources quote, and would keep refusing a release for them. Revision 4 decides
+// annex coverage per CONSUMING BLOCK instead of per content-addressed body key,
+// and judges an approximated command by the same reach: a revision-3 list can
+// therefore hold `annexed: true` for a body a stage and a rule share, and omit
+// an approximated command whose answer never reached its prompt. Revision 5 adds
+// the execution-relevant fields no mapper consumed, which an earlier build
+// recorded on the closure but never turned into a blocker. Revision 6 covers the
+// two classification changes made on top of it: `feat/release-scope-policy`
+// judges a scope policy value by its authored type and activates one only from a
+// field a consumer reads, and the fourteen AI-DLC 2.11 engine-command families
+// are each classified in their own right, three approximated and judged by annex
+// reach, eleven refused. A list stored by the previous build therefore looks
+// current at revision 5 while still holding blockers this build has answered.
+// Promotion therefore re-evaluates such a list from the immutable closure,
+// exactly like a record with no list at all. Other readers (the intent-creation
+// eligibility check) keep using the stored list: a record can only be selected
+// after a promotion has written current evidence.
+//
+// Bump this with EVERY change to what the evidence collector decides. Without
+// it, eligibility would depend on when a record was registered or last
+// refreshed rather than on its immutable closure and this runtime.
+const FIDELITY_EVIDENCE_REVISION = 6;
 
 const hasCurrentFidelityEvidence = (release) =>
   Array.isArray(release.fidelityGaps) &&
@@ -673,21 +776,70 @@ const fidelityGapsForRecord = async ({ release, s3, bucket, requireCurrentEviden
  * Every write failure is swallowed: this runs inside `GET /aidlc-releases`, which
  * must keep answering with the evidence it just computed whether or not the cache
  * could be filled. A record whose closure can never be verified never reaches
- * this function, so it simply stays uncached and is re-attempted each listing.
+ * this function; the attempt marker `recordFidelityEvidenceAttempt` wrote before
+ * the read is what moves it aside. A successful verification drops that marker.
  */
 const cacheFidelityEvidence = async ({ ddb, tableName, item, fidelityGaps }) => {
   if (typeof item.revision !== 'number') return;
+  const verified = { ...item, fidelityGaps, fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION };
+  delete verified[FIDELITY_EVIDENCE_ATTEMPT_FIELD];
   try {
     await ddb.send(
       new PutCommand({
         TableName: tableName,
-        Item: { ...item, fidelityGaps, fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION },
+        Item: verified,
         ConditionExpression: 'revision = :expected',
         ExpressionAttributeValues: { ':expected': item.revision },
       }),
     );
   } catch (error) {
     logger.info('release fidelity evidence cache write failed; leaving the row stale', {
+      releaseId: item.releaseId,
+      revision: item.revision,
+      error: error?.name ?? 'Error',
+    });
+  }
+};
+
+// When the admin listing last TRIED to re-verify a row's closure and could not.
+// It is not evidence and says nothing about the release: it is only what orders
+// the backlog, so a row that cannot be read moves to the back of it instead of
+// being retried first on every call.
+const FIDELITY_EVIDENCE_ATTEMPT_FIELD = 'fidelityEvidenceAttemptedAt';
+
+const lastFidelityEvidenceAttempt = (release) =>
+  typeof release[FIDELITY_EVIDENCE_ATTEMPT_FIELD] === 'string'
+    ? release[FIDELITY_EVIDENCE_ATTEMPT_FIELD]
+    : '';
+
+/**
+ * Records that the listing is about to try a row's closure, so the next listing
+ * starts behind it rather than on it, whether this attempt fails or never returns.
+ *
+ * This writes no evidence: `fidelityGaps` and `fidelityEvidenceRevision` are left
+ * exactly as they were, so a failed verification is never stored as a verdict and
+ * every reader keeps treating the row as stale. Like `cacheFidelityEvidence` it is
+ * CAS-guarded on `revision` without bumping it or touching the audit trail, and
+ * every failure is swallowed — the listing must still answer. A row whose marker
+ * cannot be written is simply re-attempted, which is the behaviour this replaces.
+ */
+const recordFidelityEvidenceAttempt = async ({ ddb, tableName, item }) => {
+  if (typeof item.revision !== 'number') return;
+  try {
+    // An update of the one field, never a re-put of the listing's snapshot, so
+    // the marker cannot overwrite evidence another listing has just cached.
+    await ddb.send(
+      new UpdateCommand({
+        TableName: tableName,
+        Key: { pk: item.pk, sk: item.sk },
+        UpdateExpression: 'SET #attempt = :now',
+        ConditionExpression: 'revision = :expected',
+        ExpressionAttributeNames: { '#attempt': FIDELITY_EVIDENCE_ATTEMPT_FIELD },
+        ExpressionAttributeValues: { ':expected': item.revision, ':now': nowIso() },
+      }),
+    );
+  } catch (error) {
+    logger.info('release fidelity evidence attempt write failed; row keeps its place', {
       releaseId: item.releaseId,
       revision: item.revision,
       error: error?.name ?? 'Error',
@@ -781,11 +933,13 @@ const assertSelectableRecord = (release) => {
 
 /**
  * Only a support decision is patchable: `supportState`, `visible`, `notes`.
- * Identity, provenance, and runnability are import evidence and are immutable.
+ * Identity and provenance are import evidence and are immutable.
  *
- * `selectable` and `certified` both require a runnable, structurally-valid
- * release — the registry refuses to make importable or non-allowlisted content
- * offerable no matter what the caller asks for.
+ * `selectable` and `certified` both require a structurally-valid release whose
+ * authored behavior this build honours. An official release must also be
+ * runnable by provenance. A custom fork becomes runnable here, and only here,
+ * once that guard accepts it; it stays runnable afterwards, like any record
+ * existing intents may still be pinned to.
  *
  * A transition that would STRAND a channel pointer — taking it from satisfied to
  * unsatisfied (non-selectable, or for `stable` non-certifiable) — is refused with
@@ -856,14 +1010,17 @@ const updateRelease = async ({
     current.visible !== true &&
     SELECTABLE_SUPPORT_STATES.includes(next.supportState);
   if (supportStatePromotion || visibilityPromotion) {
-    if (next.runnable !== true || next.structurallyValid !== true) {
+    // A fork is made runnable by this promotion, once the guard below accepts
+    // it; an official release must already be runnable by provenance.
+    const runnable = next.runnable === true || current.custom === true;
+    if (!runnable || next.structurallyValid !== true) {
       throw new ReleaseRegistryError(
         'release_not_selectable',
         `release-registry: ${current.releaseId} cannot become selectable — it is not a runnable, structurally-valid release`,
         {
           details: {
             releaseId: current.releaseId,
-            runnable: next.runnable === true,
+            runnable,
             structurallyValid: next.structurallyValid === true,
           },
         },
@@ -876,6 +1033,7 @@ const updateRelease = async ({
       requireCurrentEvidence: true,
     });
     next.fidelityEvidenceRevision = FIDELITY_EVIDENCE_REVISION;
+    next.runnable = true;
   }
 
   const channelsByName = await getChannels({ ddb, tableName });
@@ -1401,16 +1559,19 @@ const resolveSelectableRelease = async ({ ddb, tableName, releaseId = null }) =>
  * probe over keys that are USUALLY absent, so a masked 403 there means "not
  * published", not "broken", and must not 500 the whole listing.
  *
+ * Registration and a closure upgrade let the 403 propagate, and the admin API
+ * answers it as 502 `release_manifest_unreadable`, naming both possible causes
+ * rather than guessing between them.
+ *
  * This tolerance is deliberately scoped to the probe. Every execution path
  * (loadReleaseClosure, registerRelease, the auto-pin lookup) keeps treating an
  * unreadable manifest as a hard failure: there, "cannot read" must never be
  * downgraded to "does not exist", or a genuine permissions regression would
  * silently unpin intents.
  */
-const isAccessDenied = (error) =>
-  error?.name === 'AccessDenied' ||
-  error?.Code === 'AccessDenied' ||
-  error?.$metadata?.httpStatusCode === 403;
+// S3's own code only: DynamoDB, STS and KMS also answer 403, as
+// `AccessDeniedException`, and those are not a masked "not published".
+const isAccessDenied = (error) => error?.name === 'AccessDenied' || error?.Code === 'AccessDenied';
 
 const probePublishedManifest = async ({ s3, bucket, profile }) => {
   try {
@@ -1472,6 +1633,9 @@ const __test = {
   isSelectableRecord,
   isStableEligible,
   channelsBrokenBy,
+  FIDELITY_EVIDENCE_REVISION,
+  RELEASE_LIST_EVIDENCE_BUDGET,
+  RELEASE_LIST_EVIDENCE_BUDGET_MS,
 };
 
 export {
@@ -1487,6 +1651,7 @@ export {
   getChannel,
   getChannels,
   getRelease,
+  isAccessDenied,
   isReleaseRegistryError,
   isSelectableRecord,
   listRegistrableProfiles,
@@ -1514,6 +1679,7 @@ export default {
   getChannel,
   getChannels,
   getRelease,
+  isAccessDenied,
   isReleaseRegistryError,
   isSelectableRecord,
   listRegistrableProfiles,

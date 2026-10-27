@@ -458,6 +458,18 @@ npm run audit:prod:all   # npm audit on production deps for root + frontend (hig
 npm run typecheck:frontend  # tsc -b on the frontend package
 ```
 
+Inspect cognitive complexity with the free SonarJS ESLint plugin:
+
+```bash
+npm run complexity          # advisory warnings for function scores above 15
+npm run complexity:compare  # compare origin/main's merge base with HEAD
+```
+
+CI combines complexity changes, backend branch coverage, and importer counts in one PR comment,
+helping reviewers find new or worsening complex functions and coverage regressions.
+These signals are advisory. See [PR quality reports](docs/development/pr-quality.md)
+for coverage details, thresholds, matching limits, and CI behavior.
+
 Analyze backend module coupling with [dependency-cruiser](https://github.com/sverweij/dependency-cruiser). The rules — no circular dependencies, no cross-workspace imports, `lambda/shared/` kept as a leaf foundation, and no production code importing test files — live in `.dependency-cruiser.cjs` and are enforced by the pre-commit hook and CI:
 
 ```bash

@@ -36,6 +36,10 @@ import {
   resolveEnvironmentSnapshot,
 } from '../shared/environment-snapshot.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
+import {
+  GRANT_AUTONOMY_OPTION,
+  constructionAutonomyApplies,
+} from '../shared/construction-autonomy.js';
 import { SessionReleaseHandoffError, stopSessions } from '../shared/runtime-session.js';
 import {
   composeSessionIdFor,
@@ -44,7 +48,7 @@ import {
 } from '../shared/runtime-session-ids.js';
 import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
 import { createProcessStore, isTransactionConflict } from '../shared/v2-process-store.js';
-import { isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
+import { CONSTRUCTION_AUTONOMY_MODES, isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
@@ -61,6 +65,10 @@ import {
 import { stageInstanceId as planStageInstanceId } from '../shared/v2-execution-plan.js';
 import { createIntentMethodologyLoader } from '../shared/intent-methodology.js';
 import { effectiveStageSkipping, normalizeSkipStageIds } from '../shared/stage-skip.js';
+import {
+  describeAidlcSettingsChange,
+  normalizeAidlcSettings,
+} from '../shared/intent-aidlc-settings.js';
 import {
   assertPrStrategySupported,
   draftlessProviders,
@@ -141,7 +149,7 @@ import {
   createAttachmentCleanupService,
   pendingAttachmentDeletions,
   validateAttachmentDescriptor,
-} from '../shared/intent-attachments.js';
+} from './attachments.js';
 import {
   GATE_CHOICES,
   LOOP_BACK_OPTION,
@@ -331,6 +339,13 @@ const composeReportPrefix = (intentId) => `compose-reports/${intentId}/`;
 // Composer one-shots run in a THROWAWAY session keyed by the compose id — see
 // the compose dispatch below for the field incident this avoids.
 const runtimeSessionIdFor = intentSessionIdFor;
+
+// The stock scope a compose should be grounded in: the recorded base of a
+// composed grid, or the scope of a selection that names one directly. A
+// customization with NO recorded base has none — its `scope` is a display label
+// that names no SCOPE block, so grounding the composer in it would describe a
+// scope that does not exist and invite a proposal the draft write then refuses.
+const composePolicyScope = (meta) => meta.policyScope ?? (meta.composedGrid ? null : meta.scope);
 const invokeSourceControl = async (input) => {
   if (!SOURCE_CONTROL_FN()) {
     throw Object.assign(new Error('Source-control service is not configured'), {
@@ -806,6 +821,12 @@ const mapCompose = (c) => ({
   reportKey: c.reportKey ?? null,
   proposal: c.proposal ?? null,
   validation: c.validation ?? null,
+  // The scope whose authored settings this proposal was validated against, and
+  // that scope's authored defaults, so Apply normalises the accepted values
+  // against the same authored map the validation used. Omitted for a proposal
+  // that resolved none.
+  ...(c.settingsScope ? { settingsScope: c.settingsScope } : {}),
+  ...(c.settingsAuthored ? { settingsAuthored: c.settingsAuthored } : {}),
   failureReason: c.failureReason ?? null,
   createdAt: c.createdAt ?? null,
   updatedAt: c.updatedAt ?? null,
@@ -1372,10 +1393,21 @@ const mapIntent = (meta) => ({
   parkReleaseSeconds: meta.parkReleaseSeconds ?? null,
   maxParallelUnits: meta.maxParallelUnits ?? null,
   constructionAutonomyMode: meta.constructionAutonomyMode ?? null,
+  constructionGateAutonomy: meta.constructionGateAutonomy ?? null,
   prStrategy: meta.prStrategy ?? null,
   stageSkipping: meta.stageSkipping ?? null,
   skipStageIds: meta.skipStageIds ?? null,
   composedGrid: meta.composedGrid ?? null,
+  // The stock scope a composed grid runs on, so a reopened draft resolves the
+  // same policy and settings context the save verified. OMITTED, not nulled,
+  // for every selection that names its scope directly — which is every intent
+  // created before this field existed.
+  ...(meta.policyScope ? { policyScope: meta.policyScope } : {}),
+  // The per-intent AI-DLC settings: the OVERRIDES recorded for this intent, as
+  // plain values. OMITTED, not nulled, for an intent that has none: every
+  // unpinned, 2.3.3, 2.8.2 and 2.9.0 intent falls in that case, and their DTOs
+  // stay byte-identical to what a deployed client already parses.
+  ...(meta.aidlcSettings ? { aidlcSettings: meta.aidlcSettings } : {}),
   source: meta.source ?? null,
   planWarnings: meta.planWarnings ?? null,
   attachments: Array.isArray(meta.attachments) ? meta.attachments : [],
@@ -1489,6 +1521,8 @@ const loadClassificationBlocks = async (meta, types) => {
     s3,
     bucket: ARTIFACTS_BUCKET(),
     methodologyRelease: meta.methodologyRelease,
+    ddb,
+    tableName: BLOCKS_TABLE(),
   });
   const overlay = meta.methodologyPins ?? {};
   return Object.fromEntries(
@@ -2757,6 +2791,14 @@ export const handler = async (event, context) => {
             code: 'loop_back_status_invalid',
           });
         }
+        // The engine applies a grant on the parsed decision alone, so a row whose
+        // status says it was not approved must not carry one.
+        if (chosen === GRANT_AUTONOMY_OPTION && answerStatus !== 'approved') {
+          return response(400, {
+            error: 'A grant-autonomy answer must be recorded with status "approved"',
+            code: 'grant_autonomy_status_invalid',
+          });
+        }
       }
       // A loop-back is recordable ONLY on the gate the ENGINE offered it on, and
       // `loopBackTarget` is the only proof of that offer: `awaitEngineGate` writes it
@@ -3187,12 +3229,15 @@ export const handler = async (event, context) => {
             code: 'agent_cli_required',
           });
         }
-        const resolved = await resolveSelectedAgentCredential({
-          projectId,
-          userId: sub,
-          agentCli: selectedAgentCli,
-          runtimeCapabilities: meta.environment,
-        });
+        const resolved = await resolveSelectedAgentCredential(
+          {
+            projectId,
+            userId: sub,
+            agentCli: selectedAgentCli,
+            runtimeCapabilities: meta.environment,
+          },
+          { ssm },
+        );
         if (resolved.error) {
           return response(resolved.error.statusCode, resolved.error.body);
         }
@@ -3353,6 +3398,10 @@ export const handler = async (event, context) => {
       // The run is over — free the warm microVM now instead of waiting for the
       // idle reap (the persistent mount survives for a later rewind relaunch).
       await stopRuntimeSessions(intentId, meta);
+      // Cancelling withdraws a construction autonomy grant, so a later rewind
+      // relaunches the intent gated. The grant's provenance keeps who gave it and
+      // gains who withdrew it. An intent without a grant writes nothing extra.
+      const revokesAutonomy = meta.constructionGateAutonomy === 'autonomous';
       const updated = await store.updateExecution({
         executionId: intentId,
         projectId,
@@ -3363,6 +3412,18 @@ export const handler = async (event, context) => {
         // A recorded answer whose callback failed is moot once the run ends.
         resumeRequired: null,
         completedAt: new Date().toISOString(),
+        ...(revokesAutonomy
+          ? {
+              constructionGateAutonomy: null,
+              constructionGateAutonomyGrant: {
+                ...meta.constructionGateAutonomyGrant,
+                revokedAt: new Date().toISOString(),
+                revokedBy: responder.sub,
+                revokedByName: responder.displayName || null,
+                revokedSource: 'cancel',
+              },
+            }
+          : {}),
       });
       await store
         .appendEvent({
@@ -3609,12 +3670,15 @@ export const handler = async (event, context) => {
             code: 'agent_cli_required',
           });
         }
-        const resolved = await resolveSelectedAgentCredential({
-          projectId,
-          userId: sub,
-          agentCli: requestedCli,
-          runtimeCapabilities: meta.environment,
-        });
+        const resolved = await resolveSelectedAgentCredential(
+          {
+            projectId,
+            userId: sub,
+            agentCli: requestedCli,
+            runtimeCapabilities: meta.environment,
+          },
+          { ssm },
+        );
         if (resolved.error) {
           return response(resolved.error.statusCode, resolved.error.body);
         }
@@ -3650,6 +3714,8 @@ export const handler = async (event, context) => {
               s3,
               bucket: ARTIFACTS_BUCKET(),
               methodologyRelease: meta.methodologyRelease,
+              ddb,
+              tableName: BLOCKS_TABLE(),
             })
               .then((closure) =>
                 resolveMethodologyLibrary({
@@ -3820,6 +3886,12 @@ export const handler = async (event, context) => {
                 ...(frozenGrid && Object.keys(frozenGrid).length ? { frozenGrid } : {}),
                 ...(progressContext ? { progressContext } : {}),
                 ...(meta.methodologyRelease ? { methodologyRelease: meta.methodologyRelease } : {}),
+                // The settings this intent already runs with, and the scope
+                // whose own values they override. The composer is grounded in
+                // the EFFECTIVE values rather than the subset a member changed,
+                // which is what lets the annex forbid it reading them off disk.
+                ...(meta.aidlcSettings ? { aidlcSettings: meta.aidlcSettings } : {}),
+                ...(composePolicyScope(meta) ? { policyScope: composePolicyScope(meta) } : {}),
                 ...(meta.methodologyRelease && meta.methodologyPins
                   ? { methodologyPins: meta.methodologyPins }
                   : {}),
@@ -3868,17 +3940,53 @@ export const handler = async (event, context) => {
     // immutable through this route (its plan is pinned by the running/finished
     // execution).
     if (intentId && httpMethod === 'PATCH') {
-      const meta = await store.getExecution(intentId);
+      let meta = await store.getExecution(intentId);
       if (!meta || meta.projectId !== projectId) {
         return response(404, { error: 'Intent not found' });
       }
+      const data = body ? JSON.parse(body) : {};
+      // The settings path normalises against this row and diffs the timeline
+      // against it, so on that path the row has to be the exact pre-image this
+      // write replaces — it is re-read CONSISTENTLY rather than letting a
+      // replication lag become a refusal. A body that MENTIONS the field pays
+      // for that read whatever it carries: whether `aidlcSettings: null` clears
+      // a recorded override or asks for nothing (see `settingsRequested` below)
+      // is decided by the row, so a lagging read must not be what decides it.
+      // Only this path pays: a save that neither mentions settings nor finds any
+      // recorded keeps the single eventually consistent read it has always made,
+      // which is the save every unpinned, 2.3.3, 2.8.2 and 2.9.0 draft makes.
+      if (data.aidlcSettings !== undefined || meta.aidlcSettings) {
+        meta = (await store.getExecution(intentId, { consistentRead: true })) ?? meta;
+      }
+      // A body that carries `aidlcSettings: null` for an intent that has none
+      // asks for nothing: it is not a settings change, and treating it as one
+      // is what would put every draft that has no settings — every unpinned,
+      // 2.3.3, 2.8.2 and 2.9.0 draft — on the settings path, with its extra
+      // plan resolution, its revision pre-check and an `aidlcSettings`
+      // attribute on a META row that never had one.
+      const settingsRequested =
+        data.aidlcSettings !== undefined && !(data.aidlcSettings === null && !meta.aidlcSettings);
       if (meta.status !== 'DRAFT') {
+        // A settings change after the run started is refused by name: the
+        // dialect annex tells the agent a human changes settings on the intent,
+        // and this is the endpoint saying a human cannot either, once it is
+        // running. Its own code, because "the draft is closed" and "this
+        // setting is now part of a running plan" are different refusals.
+        if (settingsRequested) {
+          return response(409, {
+            error: `Intent is ${meta.status}; its AI-DLC settings were locked when the run started`,
+            code: 'settings_locked',
+          });
+        }
         return response(409, {
           error: `Intent is ${meta.status}, only DRAFT intents are editable`,
         });
       }
-      const data = body ? JSON.parse(body) : {};
       const patch = {};
+      let authoredSettings = null;
+      let settingsDropped = [];
+      let settingsScope = null;
+      let settingsChanged = false;
       if (data.title !== undefined) {
         if (data.title !== null && typeof data.title !== 'string') {
           return response(400, { error: 'title must be a string or null' });
@@ -3895,6 +4003,17 @@ export const handler = async (event, context) => {
         const { value, error: gridError } = normalizeComposedGrid(data.composedGrid);
         if (gridError) return response(400, { error: gridError });
         patch.composedGrid = value; // null clears
+      }
+      // The stock scope a composed grid runs on. Verified against the pinned
+      // workflow's own scope vocabulary below, together with the grid itself.
+      if (data.policyScope !== undefined) {
+        if (
+          data.policyScope !== null &&
+          (typeof data.policyScope !== 'string' || !data.policyScope)
+        ) {
+          return response(400, { error: 'policyScope must be a non-empty scope name or null' });
+        }
+        patch.policyScope = data.policyScope || null; // null clears
       }
       if (data.skipStageIds !== undefined) {
         if (data.skipStageIds !== null && !Array.isArray(data.skipStageIds)) {
@@ -3914,6 +4033,21 @@ export const handler = async (event, context) => {
         }
         patch.scope = data.scope;
       }
+      // Per-intent AI-DLC settings travel with the selection they belong to, in
+      // this one body, under this one CAS — which is what makes them
+      // unorderable against it. A caller that sends settings WITHOUT the
+      // selection is refused by name rather than having them validated against
+      // a snapshot that may describe a different selection: that is the whole
+      // mechanism by which a stale read could silently authorise a setting the
+      // current scope does not offer. The collaborative page always sends the
+      // full selection, so this is invisible in normal use.
+      if (settingsRequested && data.scope === undefined && data.composedGrid === undefined) {
+        return response(400, {
+          error:
+            'Send the scope or the composed grid in the same request as aidlcSettings — settings are validated against the selection they belong to',
+          code: 'selection_required_with_settings',
+        });
+      }
       if (Object.keys(patch).length === 0) {
         return response(400, { error: 'Nothing to update' });
       }
@@ -3923,7 +4057,9 @@ export const handler = async (event, context) => {
       if (
         patch.scope !== undefined ||
         patch.composedGrid !== undefined ||
-        patch.skipStageIds !== undefined
+        patch.policyScope !== undefined ||
+        patch.skipStageIds !== undefined ||
+        settingsRequested
       ) {
         const effScope = patch.scope ?? meta.scope;
         const effGrid =
@@ -3948,10 +4084,67 @@ export const handler = async (event, context) => {
             });
           }
         }
+        // A base scope belongs to a GRID, so clearing the grid clears it in the
+        // SAME write. A row that kept the previous base would apply it to no
+        // grid: every later save and Start would be refused, and no client
+        // could repair it, because the field only travels with a grid. An
+        // explicitly sent base scope without a grid is still a 400, because
+        // that is a caller describing a selection that names its scope
+        // directly.
+        let effPolicyScope =
+          patch.policyScope !== undefined ? patch.policyScope : (meta.policyScope ?? null);
+        if (!effGrid && effPolicyScope) {
+          if (patch.policyScope) {
+            return response(400, {
+              error: 'policyScope applies to a composed stage grid; send the scope itself instead',
+            });
+          }
+          effPolicyScope = null;
+          patch.policyScope = null;
+        }
+        // Which settings EXIST is decided by the selection, so the authored map
+        // is resolved from the selection in THIS body — never from a stored
+        // snapshot that may describe a different one — and the settings are
+        // normalised against it before anything is stored or re-validated.
+        //
+        // A selection change that carries NO settings normalises the recorded
+        // ones too, in the same write: the run honours whatever META holds, so
+        // a scope that does not author a recorded override must not leave it
+        // there to be honoured. The withdrawal is recorded by the same write.
+        const selectionChanged =
+          patch.scope !== undefined ||
+          patch.composedGrid !== undefined ||
+          patch.policyScope !== undefined;
+        settingsChanged = settingsRequested || (selectionChanged && Boolean(meta.aidlcSettings));
+        if (settingsChanged) {
+          const authoredCheck = await intentMethodology.loadPlan(meta, {
+            scope: effScope,
+            skipStageIds: effSkips ?? null,
+            composedGrid: effGrid ?? null,
+            policyScope: effPolicyScope,
+            intentSettings: null,
+          });
+          if (!authoredCheck.valid) {
+            return response(400, {
+              error: `The requested draft changes are not runnable for workflow "${meta.workflowId}"`,
+              errors: authoredCheck.errors ?? [],
+            });
+          }
+          authoredSettings = authoredCheck.plan?.aidlcSettingsAuthored ?? {};
+          const normalized = normalizeAidlcSettings({
+            settings: settingsRequested ? data.aidlcSettings : meta.aidlcSettings,
+            authored: authoredSettings,
+          });
+          if (normalized.error) return response(400, normalized.error);
+          patch.aidlcSettings = normalized.value;
+          settingsDropped = normalized.dropped ?? [];
+        }
         const planCheck = await intentMethodology.loadPlan(meta, {
           scope: effScope,
           skipStageIds: effSkips ?? null,
           composedGrid: effGrid ?? null,
+          policyScope: effPolicyScope,
+          ...(patch.aidlcSettings !== undefined ? { intentSettings: patch.aidlcSettings } : {}),
         });
         if (!planCheck.valid) {
           return response(400, {
@@ -3959,12 +4152,48 @@ export const handler = async (event, context) => {
             errors: planCheck.errors ?? [],
           });
         }
+        // The base is honoured ONLY on a catalog that authors the per-intent
+        // settings, so the catalog's own answer — carried beside the plan this
+        // resolution already produced — decides what happens to it here.
+        //
+        // On any other library the base resolves nothing the run reads, so it
+        // is DROPPED rather than refused and rather than stored: the page
+        // records the base for every stock scope, and an unpinned, 2.3.3,
+        // 2.8.2 or 2.9.0 draft must keep both the save it always made and the
+        // row it always had. Dropping it also repairs a row an older bundle
+        // left behind. Where the base IS honoured it has to name a real scope
+        // block, or a customized grid would quietly run with no policy at all.
+        if (effPolicyScope && !planCheck.aidlcSettingsAware) {
+          effPolicyScope = null;
+          patch.policyScope = null;
+        } else if (effPolicyScope) {
+          const scopes = await intentMethodology.loadScopes(meta);
+          if (!scopes.includes(effPolicyScope)) {
+            return response(400, {
+              error: `Unknown policyScope "${effPolicyScope}" for workflow "${meta.workflowId}"`,
+              scopes,
+            });
+          }
+        }
         patch.planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+        settingsScope = effPolicyScope ?? effScope;
       }
       if (!Number.isSafeInteger(data.ifDraftRevision) || data.ifDraftRevision < 0) {
         return response(428, {
           error: 'Read the edit state before saving',
           code: 'edit_precondition_required',
+        });
+      }
+      // The settings were normalised against the selection in this body and the
+      // timeline diff is taken from the row read above, so that row has to be
+      // the exact pre-image this CAS replaces. The read is consistent on this
+      // path, so this is a real concurrent edit rather than a replication lag,
+      // and it is refused here rather than producing a correct write with a
+      // timeline entry describing a change nobody made.
+      if (settingsChanged && (meta.draftRevision ?? 0) !== data.ifDraftRevision) {
+        return response(409, {
+          error: 'Draft changed while saving — retry from the current document',
+          code: 'edit_conflict',
         });
       }
       let updated;
@@ -3986,7 +4215,41 @@ export const handler = async (event, context) => {
         }
         throw err;
       }
-      return response(200, mapIntent(updated));
+      // One timeline event per changed key, from the pre-image this write
+      // replaced, with the authenticated caller of THIS request as the actor.
+      // Because the diff comes from the row the CAS condition bound, the audit
+      // cannot attribute a change this write did not make. Appended after the
+      // successful write, best-effort with a logged failure — the same contract
+      // the existing event appends have, and not a transactional-durability
+      // claim.
+      if (settingsChanged) {
+        const editor = getResponder(event);
+        for (const summary of describeAidlcSettingsChange({
+          previous: meta.aidlcSettings ?? null,
+          next: patch.aidlcSettings ?? null,
+          authored: authoredSettings,
+          dropped: settingsDropped,
+          scope: settingsScope,
+        })) {
+          await store
+            .appendEvent({
+              executionId: intentId,
+              type: 'v2.intent.settings.changed',
+              actor: editor.displayName || editor.sub,
+              summary,
+            })
+            .catch((err) => logger.error('AI-DLC settings event append failed', err));
+        }
+      }
+      return response(200, {
+        ...mapIntent(updated),
+        // The settings this selection does not author, so the page can say
+        // which choice the scope change withdrew. Omitted when nothing was
+        // dropped, which is every save of every intent that has no settings.
+        ...(settingsDropped.length
+          ? { aidlcSettingsDropped: settingsDropped.map(({ key }) => key) }
+          : {}),
+      });
     }
 
     if (intentId && httpMethod === 'DELETE') {
@@ -5373,6 +5636,17 @@ export const handler = async (event, context) => {
       if (composedGridError) {
         return response(400, { error: composedGridError });
       }
+      // The stock scope the grid was built from. A grid's own `scope` is a
+      // provenance label that names no SCOPE block, so this is what carries the
+      // per-scope policy and the settings a member may choose. Verified against
+      // the pinned release's own scope vocabulary below, never taken on trust.
+      let policyScope = null;
+      if (data.policyScope !== undefined && data.policyScope !== null) {
+        if (typeof data.policyScope !== 'string' || !data.policyScope) {
+          return response(400, { error: 'policyScope must be a non-empty scope name or null' });
+        }
+        policyScope = data.policyScope;
+      }
       // Per-intent release selection. The registry is the
       // ONLY selection gate; it is consulted here and nowhere in the execution
       // path, so demoting a release never changes what an existing intent runs.
@@ -5396,6 +5670,27 @@ export const handler = async (event, context) => {
         typeof data.methodologyReleaseId === 'string' && data.methodologyReleaseId
           ? data.methodologyReleaseId
           : null;
+      // Construction Autonomy Mode, frozen onto the intent at create. The human
+      // typing this create request IS the grant, which is what upstream's
+      // human-presence guard exists to prove — so the field is accepted here and
+      // nowhere an unattended run could reach. Absent and null both leave the
+      // intent gated; a malformed value is a client bug, not an opt-out, because
+      // silently dropping it would run a gated intent while the caller believes
+      // it asked for autonomy.
+      if (
+        Object.hasOwn(data, 'constructionGateAutonomy') &&
+        data.constructionGateAutonomy !== null &&
+        !CONSTRUCTION_AUTONOMY_MODES.includes(data.constructionGateAutonomy)
+      ) {
+        return response(400, {
+          error: `constructionGateAutonomy must be one of ${CONSTRUCTION_AUTONOMY_MODES.join(', ')}, or null`,
+          code: 'construction_autonomy_mode_invalid',
+        });
+      }
+      // Only `autonomous` is a grant. `gated` is the default every intent already
+      // has, so it is stored as no grant and accepted on any release.
+      const requestedAutonomyMode =
+        data.constructionGateAutonomy === 'autonomous' ? 'autonomous' : null;
       if (requestedReleaseId && AIDLC_RELEASE_PINNING() !== 'on') {
         return response(400, {
           error: 'Per-intent AI-DLC release selection is disabled',
@@ -5462,6 +5757,16 @@ export const handler = async (event, context) => {
       } else if (!scope) {
         scope = 'composed';
       }
+      // A base scope describes a GRID, so a caller that names its scope directly
+      // is describing a selection that has no base — refused here, before any
+      // catalog is consulted, because that is the body being wrong rather than
+      // the library having nothing to resolve. Whether the base means anything
+      // at all is the catalog's answer, so it is decided after the plan below.
+      if (policyScope && !composedGrid) {
+        return response(400, {
+          error: 'policyScope applies to a composed stage grid; send the scope itself instead',
+        });
+      }
       // Per-intent stage deselection (shared/stage-skip.js): only accepted when
       // stage skipping is EFFECTIVELY enabled (project override over platform
       // setting), and validated structurally by the plan resolver below
@@ -5517,6 +5822,7 @@ export const handler = async (event, context) => {
         scope,
         ...(skipStageIds ? { skipStageIds } : {}),
         ...(composedGrid ? { composedGrid } : {}),
+        ...(policyScope ? { policyScope } : {}),
         ...selectedReleaseOptions,
       });
       // A stable channel is an implicit default, so an overlay it cannot apply
@@ -5578,7 +5884,72 @@ export const handler = async (event, context) => {
         });
       }
       workflowVersion = planCheck.workflowVersion ?? workflowVersion;
-      const planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+      // The base is honoured ONLY on a catalog that authors the per-intent
+      // settings, and that catalog's own answer travels beside the plan this
+      // resolution already produced — the same gate the save and `validate-grid`
+      // apply, read from the resolution rather than re-derived.
+      //
+      // On any other library the base resolves nothing the run reads, so it is
+      // DROPPED rather than refused and rather than stored: the page records a
+      // base for every stock scope, and an unpinned, 2.3.3, 2.8.2 or 2.9.0
+      // intent must be created with the row it always had. Where the base IS
+      // honoured it has to name a real scope block, or a customized grid would
+      // quietly run with no policy at all.
+      if (policyScope && !planCheck.aidlcSettingsAware) {
+        policyScope = null;
+      } else if (policyScope) {
+        const scopes = await loadWorkflowScopes({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId,
+          workflowVersion,
+          ...selectedReleaseOptions,
+        });
+        if (!scopes.includes(policyScope)) {
+          return response(400, {
+            error: `Unknown policyScope "${policyScope}" for workflow "${workflowId}"`,
+            scopes,
+          });
+        }
+      }
+      // Per-intent AI-DLC settings at create. The selection they are validated
+      // against is in this same body, so they are normalised against the plan
+      // just resolved from it: a setting the pinned release's chosen scope does
+      // not author is dropped, and a value outside the registry's own value set
+      // is refused by name.
+      const createdSettings = normalizeAidlcSettings({
+        settings: data.aidlcSettings ?? null,
+        authored: planCheck.plan?.aidlcSettingsAuthored ?? {},
+      });
+      if (createdSettings.error) return response(400, createdSettings.error);
+      const aidlcSettings = createdSettings.value;
+      let planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+      if (aidlcSettings) {
+        const settingsCheck = await loadExecutionPlan({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          workflowId,
+          workflowVersion,
+          scope,
+          ...(skipStageIds ? { skipStageIds } : {}),
+          ...(composedGrid ? { composedGrid } : {}),
+          ...(policyScope ? { policyScope } : {}),
+          intentSettings: aidlcSettings,
+          ...selectedReleaseOptions,
+        });
+        if (!settingsCheck.valid) {
+          return response(400, {
+            error: `The requested AI-DLC settings are not runnable for workflow "${workflowId}"`,
+            errors: settingsCheck.errors ?? [],
+          });
+        }
+        planWarnings = settingsCheck.warnings?.length ? settingsCheck.warnings : null;
+      }
+      // The capability map of the plan the intent will actually run. Only a
+      // release-mode plan resolves one, which is exactly the boundary the autonomy
+      // grant needs: an unpinned intent has no authored protocol to honour.
+      // Re-stamped below if the deployment-ref auto-pin replaces this plan.
+      let resolvedCapabilities = planCheck.plan?.capabilities ?? null;
       let aidlcRepoRef = null;
       // A selected release IS the source of truth for the ref, so the network
       // lookup of the deployment ref is skipped: resolving an unrelated ref
@@ -5716,6 +6087,8 @@ export const handler = async (event, context) => {
               s3,
               bucket: ARTIFACTS_BUCKET(),
               methodologyRelease: candidatePin,
+              ddb,
+              tableName: BLOCKS_TABLE(),
             });
             const candidateMethodologyPins = await snapshotUserMethodologyPins(
               planCheck.methodologyPins,
@@ -5751,6 +6124,7 @@ export const handler = async (event, context) => {
             if (releasePlan.valid) {
               methodologyRelease = candidatePin;
               methodologyPins = releasePlan.methodologyPins;
+              resolvedCapabilities = releasePlan.plan?.capabilities ?? null;
               workflowVersion = releasePlan.workflowVersion ?? workflowVersion;
               if (skippedStableReleaseId) {
                 logger.info(
@@ -5871,6 +6245,21 @@ export const handler = async (event, context) => {
         if (error.code !== 'PR_STRATEGY_UNSUPPORTED') throw error;
         return response(409, { error: error.message, code: error.code });
       }
+      // Refuse the grant the resolved methodology cannot honour, before the
+      // execution exists. An unpinned intent, or a release whose closure ships no
+      // construction protocol, has no authored autonomy to reproduce — accepting
+      // the field there would persist a grant the gate walk ignores, which reads
+      // to the operator as autonomy that silently never happened.
+      if (
+        requestedAutonomyMode &&
+        !constructionAutonomyApplies({ capabilities: resolvedCapabilities ?? {} })
+      ) {
+        return response(400, {
+          error:
+            'constructionGateAutonomy needs an AI-DLC release whose methodology authors the construction autonomy protocol',
+          code: 'construction_autonomy_unavailable',
+        });
+      }
       const meta = await store.createExecution({
         executionId: newIntentId,
         projectId,
@@ -5900,12 +6289,43 @@ export const handler = async (event, context) => {
         parkReleaseSeconds: cfg.parkReleaseSeconds,
         maxParallelUnits: cfg.maxParallelUnits,
         prStrategy,
+        constructionGateAutonomy: requestedAutonomyMode,
+        constructionGateAutonomyGrant: requestedAutonomyMode
+          ? {
+              source: 'create',
+              grantedAt: new Date().toISOString(),
+              grantedBy: sub,
+              grantedByName: getResponder(event).displayName || null,
+            }
+          : null,
         stageSkipping,
         skipStageIds,
         composedGrid,
+        policyScope,
+        aidlcSettings,
         source,
         planWarnings,
       });
+      if (aidlcSettings) {
+        const creator = getResponder(event);
+        for (const summary of describeAidlcSettingsChange({
+          previous: null,
+          next: aidlcSettings,
+          authored: planCheck.plan?.aidlcSettingsAuthored ?? {},
+          scope,
+        })) {
+          await store
+            .appendEvent({
+              executionId: newIntentId,
+              type: 'v2.intent.settings.changed',
+              actor: creator.displayName || creator.sub,
+              summary,
+            })
+            // Non-fatal, but NOT silent: the event is the audit record of who
+            // changed a setting, so losing it must leave a trace.
+            .catch((err) => logger.error('AI-DLC settings event append failed', err));
+        }
+      }
       return response(201, mapIntent(meta));
     }
 
@@ -6412,6 +6832,7 @@ const mapFeedbackBatch = (batch) => ({
   requestedByName: batch.requestedByName ?? null,
   stageInstanceId: batch.stageInstanceId ?? null,
   output: batch.output ?? null,
+  changedFileProvenance: batch.changedFileProvenance ?? null,
   changedFiles: batch.changedFiles ?? null,
   verification: batch.verification ?? null,
   commitSha: batch.commitSha ?? null,

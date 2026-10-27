@@ -34,7 +34,7 @@ output "application_domain" {
 }
 
 output "cloudfront_origin_secret" {
-  description = "Shared secret that CloudFront injects as X-Origin-Verify. Used when enable_cloudfront_origin_policy is enabled on the api module."
+  description = "Shared secret that CloudFront injects as X-Origin-Verify. Required by the REST API WAF ACL when enable_waf is true."
   value       = random_password.cloudfront_origin_secret.result
   sensitive   = true
 }

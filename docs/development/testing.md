@@ -152,6 +152,24 @@ unset AIDLC_TEST_ENV
 The script refuses production environments and performs the required deletion-protection update for non-production data stores.
 A bare `terraform destroy` remains blocked by those protections.
 
+## WAF origin verification
+
+Run the credential-free Terraform configuration tests with `terraform -chdir=terraform test -filter=tests/waf.tftest.hcl`. They check the API path scope, blocking rule, managed-rule preservation, disabled sampling, and WAF-disabled configuration. These tests inspect planned configuration; they do not execute the AWS WAF engine.
+
+For a deployed non-production environment, verify both `enable_waf` settings after Terraform apply and WAF propagation. Use a current Cognito JWT and an authenticated REST route such as `/api/projects`:
+
+| Request                                                                | `enable_waf = true`        | `enable_waf = false`                               |
+| ---------------------------------------------------------------------- | -------------------------- | -------------------------------------------------- |
+| CloudFront URL, valid JWT                                              | Normal authorized response | Normal authorized response                         |
+| Direct API Gateway stage URL, valid JWT, no origin header              | WAF 403                    | Normal authorized response                         |
+| Direct stage URL, valid JWT, incorrect origin header                   | WAF 403                    | Normal authorized response                         |
+| Direct stage URL, valid JWT, URL-encoded `/api` path, no origin header | WAF 403                    | Normal response if the API routes the encoded path |
+| CloudFront URL, missing or invalid JWT                                 | Authentication rejection   | Authentication rejection                           |
+| CloudFront OPTIONS preflight and configured OAuth callback             | Existing flow works        | Existing flow works                                |
+| Cognito local login and configured SSO login                           | Existing flow works        | Existing flow works                                |
+
+Also verify in a controlled test that the correct origin header with a missing or invalid JWT still fails authentication, and that a request matching an existing blocking managed rule remains blocked with the correct header. Retrieve the secret securely from `/{project}/{environment}/cloudfront-origin-secret` in SSM; do not print it, record it in test output, or paste it into shell history. Check that WAF request sampling remains disabled and any separately configured WAF logs redact the header.
+
 ## Enterprise SSO integration test
 
 The repository includes a disposable Cognito User Pool that behaves as an

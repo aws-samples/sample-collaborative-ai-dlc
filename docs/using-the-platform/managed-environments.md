@@ -7,6 +7,11 @@ into environments, and publish environment revisions that project owners can
 assign.
 
 Standard provides the protected AgentCore runtime plus Node.js and Python.
+It also includes MarkItDown for agents to extract text and tables from PDF,
+DOCX, and XLSX files already present in their workspace. Agents invoke
+`markitdown path/to/document.pdf` when needed; the platform does not run an
+automatic conversion step.
+
 Java, Go, Rust, Maven, and Gradle are shipped as tool definitions, not as
 predefined JVM, Go, Rust, or Polyglot environments. Administrators can add other
 tools, such as a .NET SDK, without changing the application source.

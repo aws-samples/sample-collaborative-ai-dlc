@@ -33,6 +33,12 @@ import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
 import { requirePlatformAdmin, isPlatformAdmin } from '../shared/authz.js';
 import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
+import {
+  disabledClisParameterName,
+  normalizeDisabledClis,
+  parseDisabledClis,
+  readDisabledClis,
+} from '../shared/agent-cli-availability.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
@@ -249,6 +255,26 @@ const fetchGlobalCustomMcpServers = async () => {
   } catch {
     return {};
   }
+};
+
+// Apply the Admin disabled-CLI set to a runtime CLI listing: a disabled CLI is
+// reported with enabled=false and is never `available`, so pickers grey it out.
+// Listing only — selection is enforced server-side in
+// resolveSelectedAgentCredential, so a read failure here degrades to "none
+// disabled" instead of failing the capabilities response.
+const applyDisabledClis = async (clis) => {
+  let disabledClis = [];
+  try {
+    disabledClis = await readDisabledClis(ssm, process.env.AGENT_SETTINGS_SSM_PREFIX || '');
+  } catch (err) {
+    logger.warn('[capabilities] disabled-clis read failed', { error: err?.message });
+  }
+  const marked = clis.map((cli) =>
+    disabledClis.includes(cli.cli)
+      ? { ...cli, enabled: false, available: false }
+      : { ...cli, enabled: true },
+  );
+  return { disabledClis, clis: marked };
 };
 
 const getConnection = async () => {
@@ -624,10 +650,12 @@ export const handler = async (event, context) => {
           fetchRuntimeCapabilities(access.runtimeTarget, credentialBindings, projectId),
       });
       const credentialSources = credentialSourcesFromBindings(credentialBindings);
-      const runtimeClis = (runtimeCaps?.clis ?? []).map((cli) => ({
-        ...cli,
-        credentialSource: credentialSources[credentialProviderForCli(cli.cli)] ?? null,
-      }));
+      const { disabledClis, clis: runtimeClis } = await applyDisabledClis(
+        (runtimeCaps?.clis ?? []).map((cli) => ({
+          ...cli,
+          credentialSource: credentialSources[credentialProviderForCli(cli.cli)] ?? null,
+        })),
+      );
       const available = runtimeClis.filter((cli) => cli.available).map((cli) => cli.cli);
       if (!withModels) {
         return response(200, {
@@ -635,6 +663,7 @@ export const handler = async (event, context) => {
           runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
           runtimeClis,
           credentialSources,
+          disabledClis,
         });
       }
       const opencodeModels = claudeModels.map((model) => ({
@@ -646,6 +675,7 @@ export const handler = async (event, context) => {
         runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
         runtimeClis,
         credentialSources,
+        disabledClis,
         models: {
           claude: claudeModels,
           opencode: opencodeModels,
@@ -668,6 +698,7 @@ export const handler = async (event, context) => {
       const stageSkippingPath = `${prefix}/stage-skipping`;
       const composeLlmBypassPath = `${prefix}/compose-llm-bypass`;
       const prStrategyPath = `${prefix}/pr-strategy`;
+      const disabledClisPath = disabledClisParameterName(prefix);
       try {
         const [result, platformCredentialStatus] = await Promise.all([
           ssm.send(
@@ -680,6 +711,7 @@ export const handler = async (event, context) => {
                 stageSkippingPath,
                 composeLlmBypassPath,
                 prStrategyPath,
+                disabledClisPath,
               ],
               WithDecryption: true,
             }),
@@ -702,6 +734,9 @@ export const handler = async (event, context) => {
         const composeLlmBypass =
           byName[composeLlmBypassPath] === 'disabled' ? 'disabled' : 'enabled';
         const prStrategy = byName[prStrategyPath] === 'pr-per-unit' ? 'pr-per-unit' : 'intent-pr';
+        // Agent CLIs the platform admin switched off (shared/agent-cli-availability.js).
+        // A missing parameter means every CLI is enabled.
+        const disabledClis = parseDisabledClis(byName[disabledClisPath]);
         // Custom MCP servers may carry secrets in env/headers — only expose the
         // raw config to platform admins (the only ones who can edit it). Others
         // get an empty object so the non-secret settings fields still load.
@@ -767,6 +802,7 @@ export const handler = async (event, context) => {
           stageSkipping,
           composeLlmBypass,
           prStrategy,
+          disabledClis,
           customMcpServers,
           customMcpServerNames,
           mcpSecretsSet,
@@ -966,6 +1002,31 @@ export const handler = async (event, context) => {
         }
       }
 
+      if (input.disabledClis !== undefined) {
+        // Agent CLIs switched off platform-wide. Gates new selections only;
+        // executions that already pinned a CLI keep running on it.
+        const validation = normalizeDisabledClis(input.disabledClis);
+        if (!validation.valid) {
+          return response(400, {
+            error: 'Invalid disabledClis value',
+            issues: validation.issues,
+          });
+        }
+        try {
+          await ssm.send(
+            new PutParameterCommand({
+              Name: disabledClisParameterName(prefix),
+              Value: JSON.stringify(validation.value),
+              Type: 'String',
+              Overwrite: true,
+            }),
+          );
+        } catch (err) {
+          logger.error('[settings] Failed to write disabled CLIs', err);
+          errors.push('disabledClis: ' + err.message);
+        }
+      }
+
       if (input.customMcpServers !== undefined) {
         // Global custom MCP servers injected into every agent session (merged
         // with project-level entries at intent-create; project wins by name).
@@ -1138,11 +1199,16 @@ export const handler = async (event, context) => {
           credentialBindings,
           capabilitiesProjectId || null,
         );
-        const available = (caps?.clis ?? [])
+        const { disabledClis, clis } = await applyDisabledClis(caps?.clis ?? []);
+        const available = clis
           .filter((c) => c.available)
           .map((c) => c.cli)
           .filter(Boolean);
-        return response(200, { available, runtimeModelOverride: RUNTIME_MODEL_OVERRIDE });
+        return response(200, {
+          available,
+          runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
+          disabledClis,
+        });
       }
 
       // Piggy-back a pricing refresh on model discovery so the SSM price table
@@ -1175,15 +1241,18 @@ export const handler = async (event, context) => {
         ...m,
         id: `amazon-bedrock/${m.id}`,
       }));
-      const available = (runtimeCaps?.clis ?? [])
+      const { disabledClis, clis: markedClis } = await applyDisabledClis(runtimeCaps?.clis ?? []);
+      const available = markedClis
         .filter((c) => c.available)
         .map((c) => c.cli)
         .filter(Boolean);
       return response(200, {
         available,
         runtimeModelOverride: RUNTIME_MODEL_OVERRIDE,
-        // Per-CLI availability from the v2 runtime (installed + authed).
-        runtimeClis: runtimeCaps?.clis ?? null,
+        // Per-CLI availability from the v2 runtime (installed + authed), with
+        // the Admin disabled-CLI set applied.
+        runtimeClis: runtimeCaps?.clis ? markedClis : null,
+        disabledClis,
         models: {
           claude: claudeModels,
           opencode: opencodeModels,

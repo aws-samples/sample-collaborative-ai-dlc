@@ -8,12 +8,16 @@ import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
 } from '@aws-sdk/client-bedrock-agentcore';
+import { GetParameterCommand, SSMClient } from '@aws-sdk/client-ssm';
 import { mockClient } from 'aws-sdk-client-mock';
 
 const PARTITION = `t-${randomUUID()}`;
 const ddbMock = mockClient(DynamoDBDocumentClient);
 const lambdaMock = mockClient(LambdaClient);
 const agentcoreMock = mockClient(BedrockAgentCoreClient);
+const ssmMock = mockClient(SSMClient);
+const parameterNotFound = () =>
+  Object.assign(new Error('not found'), { name: 'ParameterNotFound' });
 let credentialMetadataHandler;
 
 let handler;
@@ -53,6 +57,8 @@ beforeEach(async () => {
   ddbMock.reset();
   lambdaMock.reset();
   agentcoreMock.reset();
+  ssmMock.reset();
+  ssmMock.on(GetParameterCommand).rejects(parameterNotFound());
   credentialMetadataHandler = () => ({
     ok: true,
     bindings: {
@@ -235,6 +241,40 @@ describe('project agent capabilities', () => {
       },
     });
     expect(typeof payload.agentCredentialGrant).toBe('string');
+  });
+
+  it('reports admin-disabled CLIs as unavailable', async () => {
+    const caller = `u-${randomUUID()}`;
+    const { projectId } = await seedProject(caller);
+    ssmMock
+      .on(GetParameterCommand, { Name: '/collab/dev/disabled-clis' })
+      .resolves({ Parameter: { Value: '["codex"]' } });
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({
+            ok: true,
+            clis: [
+              { cli: 'kiro', installed: true, authed: true, available: true },
+              { cli: 'codex', installed: true, authed: true, available: true },
+            ],
+            kiroModels: { models: [], default: null },
+          }),
+      },
+    });
+
+    const response = await handler(
+      event({ path: `/projects/${projectId}/agent-capabilities`, projectId, sub: caller }),
+    );
+
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.available).toEqual(['kiro']);
+    expect(body.disabledClis).toEqual(['codex']);
+    expect(body.runtimeClis).toEqual([
+      expect.objectContaining({ cli: 'kiro', enabled: true, available: true }),
+      expect.objectContaining({ cli: 'codex', enabled: false, available: false, installed: true }),
+    ]);
   });
 });
 

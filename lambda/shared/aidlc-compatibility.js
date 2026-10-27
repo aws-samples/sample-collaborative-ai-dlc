@@ -3,6 +3,7 @@ import {
   AIDLC_CAPABILITIES,
   FIELD_FIDELITY,
   FRONTMATTER_ENUMS,
+  FRONTMATTER_ENUM_TYPES,
   resolveCapabilities,
 } from './aidlc-capabilities.js';
 import {
@@ -15,6 +16,7 @@ import {
 } from './aidlc-compatibility-profiles.js';
 import { buildFromFiles } from './block-mappers.js';
 import { parseFrontmatterStrict, splitFrontmatter } from './frontmatter.js';
+import { dependencyClosure } from './script-closure.js';
 import { buildExecutionPlan } from './v2-execution-plan.js';
 import { canonicalJson } from './workflow-checkpoint.js';
 
@@ -88,6 +90,10 @@ const MAPPED_FRONTMATTER_FIELDS = Object.freeze({
     'review_cap',
     'summary_confirmation',
     'change_control',
+    'guard_policy',
+    'plan_approval',
+    'collaborators',
+    'existing_code',
     'learnings',
     'skeleton',
     'runner',
@@ -146,18 +152,180 @@ const INFORMATIONAL_UNMAPPED_FIELDS = new Map([
 // never disagree about which values exist or how faithfully each is honoured.
 
 // `{{INVOKE}} engine <family>` command families, classified by what this runtime
-// can actually do with them. STATE-MUTATING families are unsupported: the annex
-// instructs the agent to record a recommendation instead, which is a different
-// outcome from upstream, not a reproduction of it. Read-only reporting families
-// are approximated (the same information is already in the prompt), and the
-// per-sensor commands are native (they resolve to our own sensor runner).
+// can actually do with them. Unsupported families have no platform equivalent;
+// for the `annexed` ones the annex (agentcore/prompts/invoke-dialect-annex.md)
+// still tells the agent what to do instead (for a state-mutating command, record
+// a recommendation for the human), which is a different outcome from upstream,
+// not a reproduction of it. Approximated families have a platform equivalent the
+// annex names; the per-sensor commands are native (our own sensor runner).
+//
+// Each pattern matches exactly the subcommands the annex answers by name. The
+// engine CLI has others (`state approve`, `worktree remove`, `graph compile`,
+// `gen runners`, …); each of those stays its own unsupported family, so the
+// promotion guard keeps refusing a release that invokes one.
+// `annexed` marks the entries the annex answers by name; only a gap carrying it
+// can be honoured, so a command no pattern matches can never pass under the name
+// it happens to share. It is also what makes the answer's REACH checkable: an
+// approximated family has a platform equivalent, but the agent only learns it
+// from the annex ("skip, the data is already in the prompt", "the platform owns
+// the worktree, read the branch from git"), so a prompt carrying one of these
+// commands without the annex is a session holding an authored step and no
+// substitute. Membership in this table is therefore never evidence on its own —
+// `fidelityReport` raises an approximated family whose reach failed exactly like
+// a refused command that went unanswered.
 const INVOKE_FAMILY_FIDELITY = Object.freeze([
   Object.freeze({ pattern: /^sensor-[a-z0-9-]+$/, family: 'sensor-<id>', handling: 'native' }),
-  Object.freeze({ pattern: /^gen\b/, family: 'gen', handling: 'approximated' }),
-  Object.freeze({ pattern: /^workspace\b/, family: 'workspace', handling: 'approximated' }),
-  Object.freeze({ pattern: /^orchestrate\b/, family: 'orchestrate', handling: 'unsupported' }),
-  Object.freeze({ pattern: /^recompose\b/, family: 'recompose', handling: 'unsupported' }),
-  Object.freeze({ pattern: /^state\b/, family: 'state', handling: 'unsupported' }),
+  Object.freeze({
+    pattern: /^gen (?:scope-table|stage-table)$/,
+    family: 'gen',
+    handling: 'approximated',
+    annexed: true,
+    note: 'Read-only reporting; the scope, stage list, inputs and outputs are already in the prompt.',
+  }),
+  Object.freeze({
+    pattern: /^workspace (?:detect|codekb|codekb-scope-diff)$/,
+    family: 'workspace',
+    handling: 'approximated',
+    annexed: true,
+    note: 'Read-only reporting; the compose prompt carries the workspace signals the platform detected, and code knowledge reaches a stage through the compiled context and the checked-out working tree. No scope-diff identifier is minted.',
+  }),
+  Object.freeze({
+    pattern: /^worktree(?: (?:create|merge|info))?$/,
+    family: 'worktree',
+    handling: 'approximated',
+    annexed: true,
+    note: 'The platform performs the worktree lifecycle itself. A per-unit lane runs on a unit branch the platform creates from the intent branch and checks out before the stage starts (agentcore/commands/lane.js init-lane); any other stage runs on the intent branch. The platform merges each unit branch back into the intent branch with a --no-ff merge after the unit (merge-lane), and the intent branch reaches main through its pull request; that stands in for upstream merging the Bolt branch into main. The agent never creates, merges or inspects a worktree.',
+  }),
+  Object.freeze({
+    pattern: /^graph validate-grid$/,
+    family: 'graph validate-grid',
+    handling: 'approximated',
+    annexed: true,
+    note: 'The platform validates every compose proposal with its plan resolver (strict for an in-flight proposal) before anything is applied, and rejects an invalid grid. Not reproduced: the validator summary the agent would copy, the nearest_stock ranking, and the keyword collision check.',
+  }),
+  Object.freeze({
+    pattern: /^graph ars$/,
+    family: 'graph ars',
+    handling: 'unsupported',
+    annexed: true,
+    note: "Upstream's Autonomy Risk Score is an advisory composite of five component scores shown to the human at the compose gate. The platform computes no composite and shows none; the annex tells the agent to justify each EXECUTE/SKIP with evidence in the proposal rationale and never to present a composite score or band. Nothing routes on the score upstream either.",
+  }),
+  Object.freeze({
+    pattern: /^orchestrate report$/,
+    family: 'orchestrate',
+    handling: 'unsupported',
+    annexed: true,
+  }),
+  Object.freeze({
+    pattern: /^recompose --add$/,
+    family: 'recompose',
+    handling: 'unsupported',
+    annexed: true,
+  }),
+  Object.freeze({
+    pattern: /^state (?:set-construction-iteration|practices-event|practices-promote)$/,
+    family: 'state',
+    handling: 'unsupported',
+    annexed: true,
+  }),
+  // ── AI-DLC 2.11 ───────────────────────────────────────────────────────────
+  //
+  // Each new family below is its OWN entry, never folded into an existing one
+  // that happens to share a first word: `orchestrate next` performs upstream's
+  // project-type transition and `orchestrate report` does not, and the four
+  // parked-attempt `worktree` verbs are nothing like `worktree create`. Sharing
+  // a prefix would silently inherit the sibling's `annexed`, which is how a
+  // command would stop blocking promotion without ever being answered.
+  //
+  // THREE are approximated — the platform has a real seam for them, named in
+  // the annex, so they are not gaps for a release whose annex REACHES every
+  // prompt that invokes them. `annexed` is what makes that reach checkable: the
+  // seam is the annex's own answer rather than an always-available engine, so a
+  // prompt carrying one of these commands without the annex is a session with no
+  // answer, and the fidelity report raises it as a gap exactly like a refused
+  // command that went unanswered.
+  Object.freeze({
+    pattern: /^audit append-raw$/,
+    family: 'audit append-raw',
+    handling: 'approximated',
+    annexed: true,
+    note: "Upstream appends a free-form Error / Recovery / Change Request note to its own audit shard with an engine-owned timestamp. The platform binds the note to `emit_stage_note`, which reaches the intent timeline with the platform's own stamp. Not reproduced: the upstream audit shard, its taxonomy events and their authority — the annex forbids claiming either was written.",
+  }),
+  Object.freeze({
+    pattern: /^config get$/,
+    family: 'config get',
+    handling: 'approximated',
+    annexed: true,
+    note: "The effective per-intent settings and the source of each reach the agent IN the prompt (the compose grounding renders them), so the read is answered without any file access. Not reproduced: upstream's kill-switch provenance chain. The annex forbids opening a settings, environment or shell startup file to find a value, which upstream warns can hold credentials.",
+  }),
+  Object.freeze({
+    pattern: /^now$/,
+    family: 'now',
+    handling: 'approximated',
+    annexed: true,
+    note: 'Upstream supplies an authoritative engine UTC timestamp for state, review and audit text. The platform stamps its own events and carries those stamps in the prompt; where a stage asks for a timestamp the platform cannot supply, the annex tells the agent to omit the field and say so rather than fabricate one. Reviewer and support knowledge invoke this too, and a refusal there is the same instruction, so no session is left without an answer.',
+  }),
+  // ELEVEN are refused, each with an answer the annex gives BY NAME. They stay
+  // `unsupported` in the fidelity report, which is what keeps 2.11 promotable
+  // as `selectable` and never as `certified`.
+  Object.freeze({
+    pattern: /^config set$/,
+    family: 'config set',
+    handling: 'unsupported',
+    annexed: true,
+    note: 'Settings belong to the intent and only a human changes them, before the run starts; a started intent refuses the change with `settings_locked`. The agent records the requested change and never reports it as applied.',
+  }),
+  Object.freeze({
+    pattern: /^log answer$/,
+    family: 'log answer',
+    handling: 'unsupported',
+    annexed: true,
+    note: 'An ordinary question and a summary confirmation bind to `ask_question` and `confirm_summary`. The protected checkpoints — the plan-approval receipt and the verification-command approval — have no engine-owned question store, fingerprint or typed receipt here, and the annex names them as unavailable rather than letting the agent mint one.',
+  }),
+  Object.freeze({
+    pattern: /^log decision$/,
+    family: 'log decision',
+    handling: 'unsupported',
+    annexed: true,
+    note: 'Opening an ordinary checkpoint-bound question binds to `ask_question`. The verification-command case needs durable approved-command state, which does not exist here: the proposed command is recorded as a recommendation, never as approved authority.',
+  }),
+  Object.freeze({
+    pattern: /^orchestrate next$/,
+    family: 'orchestrate next',
+    handling: 'unsupported',
+    annexed: true,
+    note: 'In 2.11 this reclassifies the project type, rescans the workspace, reintroduces Reverse Engineering behind the cursor and returns to the interrupted stage. The platform owns stage routing and has no such transaction: the agent records a `RECOMMENDED PROJECT TYPE CHANGE` and a human rewinds and recomposes.',
+  }),
+  Object.freeze({
+    pattern: /^state set-construction-execution$/,
+    family: 'state set-construction-execution',
+    handling: 'unsupported',
+    annexed: true,
+    note: 'Serial / swarm construction scheduling is platform state the agent cannot write. It records the intended value and does not claim it was set.',
+  }),
+  Object.freeze({
+    pattern: /^state set-construction-verification-command$/,
+    family: 'state set-construction-verification-command',
+    handling: 'unsupported',
+    annexed: true,
+    note: 'Upstream stores a human-approved per-Unit verification command as executable authority. There is no approved-command store here, so the command is recorded as a recommendation and never presented as approved or executable.',
+  }),
+  Object.freeze({
+    pattern: /^testing-posture restore$/,
+    family: 'testing-posture restore',
+    handling: 'unsupported',
+    annexed: true,
+    note: 'Upstream restores the exact plan, instructions and Testing Contract a person approved. The platform has no atomic approved-bundle restore: the agent says the restore is unavailable and names what was lost.',
+  }),
+  ...['discard', 'list', 'purge', 'restore'].map((verb) =>
+    Object.freeze({
+      pattern: new RegExp(`^worktree ${verb}$`),
+      family: `worktree ${verb}`,
+      handling: 'unsupported',
+      annexed: true,
+      note: "Upstream parks a stale attempt's working tree and can list, purge or byte-exactly restore it. This runtime has no parked-attempt store — lanes are branches the platform creates and merges — so the agent parks, deletes, restores and purges nothing, and never maps this onto git deletion.",
+    }),
+  ),
 ]);
 
 const sha256 = (value = '') => {
@@ -455,80 +623,6 @@ const keyById = (items, profile) =>
       ]),
   );
 
-const importSpecifiers = (content = '') =>
-  [...String(content).matchAll(/(?:from\s+|import\s*\(\s*|import\s+)['"]([^'"]+)['"]/g)]
-    .map((match) => match[1])
-    .toSorted();
-
-const relativeImportCandidate = (path, relativePath) => {
-  const parts = path.split('/');
-  parts.pop();
-  for (const part of relativePath.split('/')) {
-    if (!part || part === '.') continue;
-    if (part === '..') parts.pop();
-    else parts.push(part);
-  }
-  return parts.join('/');
-};
-
-const resolveRelativeImport = (files, path, relativePath) => {
-  const candidate = relativeImportCandidate(path, relativePath);
-  const candidates = [
-    candidate,
-    `${candidate}.ts`,
-    `${candidate}.js`,
-    `${candidate}.mjs`,
-    `${candidate}.cjs`,
-    `${candidate}/index.ts`,
-    `${candidate}/index.js`,
-    `${candidate}/index.mjs`,
-    `${candidate}/index.cjs`,
-  ];
-  return candidates.find((item) => files.has(item)) ?? candidate;
-};
-
-const dependencyClosure = (files, entryPath) => {
-  const visited = new Set();
-  const visiting = [];
-  const missing = new Set();
-  const external = new Set();
-  const cycles = new Set();
-
-  const walk = (path) => {
-    if (visited.has(path)) return;
-    const cycleIndex = visiting.indexOf(path);
-    if (cycleIndex !== -1) {
-      cycles.add([...visiting.slice(cycleIndex), path].join(' -> '));
-      return;
-    }
-    const content = files.get(path);
-    if (content == null) {
-      missing.add(path);
-      return;
-    }
-    visiting.push(path);
-    for (const specifier of importSpecifiers(content)) {
-      if (!specifier.startsWith('.')) {
-        external.add(specifier);
-        continue;
-      }
-      const resolved = resolveRelativeImport(files, path, specifier);
-      if (!files.has(resolved)) missing.add(resolved);
-      else walk(resolved);
-    }
-    visiting.pop();
-    visited.add(path);
-  };
-
-  walk(entryPath);
-  return {
-    files: [...visited].toSorted(),
-    missing: [...missing].toSorted(),
-    external: [...external].toSorted(),
-    cycles: [...cycles].toSorted(),
-  };
-};
-
 const FIDELITY_BY_KEY = new Map(
   FIELD_FIDELITY.map((entry) => [`${entry.blockType}:${entry.field}`, entry]),
 );
@@ -555,7 +649,10 @@ const invokeFamilyHandling = (command) => {
 // Collect every `{{INVOKE}} engine <command>` a catalog carries, keyed by the
 // command family, so the report can classify the engine dialect by what the
 // release actually invokes instead of by the token's mere presence.
-const INVOKE_COMMAND_RE = /\{\{INVOKE\}\}\s+engine\s+([a-z][a-z0-9-]*(?:\s+[a-z][a-z0-9-]*)?)/g;
+// The second word may be a `--flag`, so `recompose --add` and `recompose --remove`
+// stay distinct commands.
+const INVOKE_COMMAND_RE =
+  /\{\{INVOKE\}\}\s+engine\s+([a-z][a-z0-9-]*(?:\s+(?:--)?[a-z][a-z0-9-]*)?)/g;
 
 /**
  * Accumulates the same evidence one file at a time, so a caller that reads very
@@ -565,20 +662,31 @@ const INVOKE_COMMAND_RE = /\{\{INVOKE\}\}\s+engine\s+([a-z][a-z0-9-]*(?:\s+[a-z]
  * The result is independent of the order the bodies are folded in: every family,
  * command and path list is sorted on the way out, and a family's `handling` is a
  * property of the family rather than of the body it was first seen in.
+ *
+ * `annexReaches: false` says the prompt this body is rendered into does not carry
+ * the engine-command annex, so a command found there is not answered even when
+ * the annex names it. An approximated family is judged by the SAME reach as a
+ * refused one: its substitute is named only in the annex, so a session that does
+ * not receive it holds the authored step and no answer either way.
  */
 const invokeCommandCollector = () => {
   const byFamily = new Map();
   return {
-    add: (path, content) => {
+    add: (path, content, { annexReaches = true } = {}) => {
       if (typeof content !== 'string') return;
       for (const match of content.matchAll(INVOKE_COMMAND_RE)) {
-        const { family, handling } = invokeFamilyHandling(match[1]);
+        const { family, handling, note = null, annexed = false } = invokeFamilyHandling(match[1]);
         const entry = byFamily.get(family) ?? {
           family,
           handling,
+          note,
+          annexed,
           commands: new Set(),
           paths: new Set(),
         };
+        // A family is answered only if every command filed under it is, and only
+        // where the annex reaches the prompt.
+        entry.annexed &&= annexed && annexReaches;
         entry.commands.add(match[1]);
         entry.paths.add(path);
         byFamily.set(family, entry);
@@ -589,6 +697,8 @@ const invokeCommandCollector = () => {
         .map((entry) => ({
           family: entry.family,
           handling: entry.handling,
+          ...(entry.note ? { note: entry.note } : {}),
+          ...(entry.annexed ? { annexed: true } : {}),
           commands: [...entry.commands].toSorted(),
           paths: [...entry.paths].toSorted(),
         }))
@@ -653,8 +763,35 @@ const fidelityReport = (adapterFieldValues, invokeCommands) => {
         blockType: 'BODY',
         field: '{{INVOKE}}',
         value: `engine ${entry.family}`,
+        ...(entry.annexed ? { annexed: true } : {}),
         paths: entry.paths,
-        note: 'State-mutating engine commands have no equivalent seam; the agent records a recommendation for the human instead of performing the action.',
+        note:
+          entry.note ??
+          (entry.annexed
+            ? 'State-mutating engine commands have no equivalent seam; the agent records a recommendation for the human instead of performing the action.'
+            : 'The annex does not answer this command: the agent is told it is unavailable, so the authored step is not performed.'),
+      })),
+    // An APPROXIMATED family is honoured only where the annex that names its
+    // platform equivalent arrives. `entry.annexed` is the folded reach — true
+    // only when every prompt invoking the family carries the annex — so a family
+    // the table answers by name whose reach failed is a gap, and promotion
+    // refuses it exactly like an unanswered refusal. Without this a release
+    // could move the invocation into a body no prompt builder annexes and keep
+    // an empty unhonoured list.
+    ...invokeCommands
+      .filter(
+        (entry) =>
+          entry.handling === 'approximated' &&
+          entry.annexed !== true &&
+          invokeFamilyHandling(entry.commands[0]).annexed === true,
+      )
+      .map((entry) => ({
+        kind: 'engine-command',
+        blockType: 'BODY',
+        field: '{{INVOKE}}',
+        value: `engine ${entry.family}`,
+        paths: entry.paths,
+        note: `The platform's substitute for this command is named only in the dialect annex, and the annex does not reach every prompt that invokes it (${entry.paths.join(', ')}): that session would receive the command with no answer.`,
       })),
   ].toSorted((left, right) =>
     `${left.blockType}:${left.field}:${left.value}`.localeCompare(
@@ -704,7 +841,12 @@ const fidelityGapsFromCatalog = ({
   const fieldGaps = fidelityReport(
     adapterFieldValues,
     invokeCommands ?? collectInvokeCommands(bodyFiles),
-  ).gaps.map(({ blockType, field, value }) => ({ blockType, field, value }));
+  ).gaps.map(({ blockType, field, value, annexed }) => ({
+    blockType,
+    field,
+    value,
+    ...(annexed ? { annexed } : {}),
+  }));
   const presentCapabilities = resolveCapabilities({ runtimeFilePaths });
   const protocolGaps = AIDLC_CAPABILITIES.filter(
     (capability) =>
@@ -862,10 +1004,18 @@ const analyzeAidlcCompatibility = ({ profileId, profile: explicitProfile = null,
       }
       const mapped = new Set(MAPPED_FRONTMATTER_FIELDS[type] ?? []);
       const enums = FRONTMATTER_ENUMS[type] ?? {};
+      const enumTypes = FRONTMATTER_ENUM_TYPES[type] ?? {};
       for (const [field, allowed] of Object.entries(enums)) {
         const value = data[field];
         if (value == null) continue;
-        if (typeof value !== 'string' || !allowed.includes(value)) {
+        // The enum keys are text, but not every authored value is: upstream
+        // writes `existing_code: true`, which YAML parses as a boolean. The
+        // registry declares the type it expects per field, so the real parsed
+        // value is checked instead of assumed to be a string — and a boolean
+        // field authored as the quoted string "true" stays a rejection, because
+        // the mapper would carry that string to a consumer comparing with `true`.
+        const expectedType = enumTypes[field] ?? 'string';
+        if (typeof value !== expectedType || !allowed.includes(String(value))) {
           diagnostics.push({
             code: 'frontmatter_enum_invalid',
             severity: 'error',

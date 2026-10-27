@@ -1,6 +1,22 @@
 import { loadExecutionPlan, loadWorkflowScopes } from './v2-workflow-plan.js';
 
-const PROJECTION_FIELDS = ['scope', 'skipStageIds', 'composedGrid', 'strict'];
+// THE per-intent plan projection: every field that changes WHICH plan an intent
+// resolves. The intents API, the orchestrator walk and the container's stage
+// resolution all build their projection from this one list, so a new projection
+// field cannot reach one caller and silently miss another — which is exactly how
+// a validated setting ended up never reaching the run.
+const PROJECTION_FIELDS = [
+  'scope',
+  'skipStageIds',
+  'composedGrid',
+  'policyScope',
+  'strict',
+  'intentSettings',
+];
+
+// META records the per-intent settings under their own name; the plan resolver
+// calls them `intentSettings`. One mapping here reaches every plan caller.
+const META_FIELD_ALIASES = Object.freeze({ intentSettings: 'aidlcSettings' });
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const resolve = (value) => (typeof value === 'function' ? value() : value);
 
@@ -25,12 +41,14 @@ const planProjectionOptions = (meta, overrides) => {
       continue;
     }
 
-    const value = meta?.[field];
+    const value = meta?.[META_FIELD_ALIASES[field] ?? field];
     if (value === undefined) continue;
     // Match existing call sites: empty/null overlays mean no projection
     // argument unless a caller explicitly supplies one to clear a snapshot.
     if (field === 'skipStageIds' && (!Array.isArray(value) || value.length === 0)) continue;
     if (field === 'composedGrid' && value == null) continue;
+    if (field === 'policyScope' && value == null) continue;
+    if (field === 'intentSettings' && value == null) continue;
     options[field] = value;
   }
   return options;
@@ -63,4 +81,4 @@ const createIntentMethodologyLoader = ({
     }),
 });
 
-export { createIntentMethodologyLoader, intentMethodologyOptions };
+export { createIntentMethodologyLoader, intentMethodologyOptions, planProjectionOptions };

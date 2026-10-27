@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
+import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
+import { buildFromFiles } from '../../shared/block-mappers.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import nodePath from 'node:path';
@@ -16,6 +19,7 @@ import {
   gitResultForCommitRefs as realGitResultForCommitRefs,
   runGit,
 } from '../git-engine.js';
+import { repoCheckoutPath } from '../../shared/repo-validation.js';
 import { collectCodeTraceabilityBatches } from '../code-traceability.js';
 import { currentCredentialSession } from '../credential-session.js';
 import { renderRulesDoc } from '../stage-materializer.js';
@@ -25,7 +29,8 @@ import {
   buildExecutionPlan,
   stageInstanceId as planStageInstanceId,
 } from '../../shared/v2-execution-plan.js';
-import { evaluateGatePreconditions } from '../../shared/gate-preconditions.js';
+import { evaluateGatePreconditions, sensorGateFindings } from '../../shared/gate-preconditions.js';
+import { MAX_SENSOR_REASON_LENGTH } from '../../shared/sensor-verdict.js';
 
 // A flat-frontmatter STAGE block + a minimal library/workflow that resolves to a
 // single in-scope stage.
@@ -507,6 +512,38 @@ describe('runStage — realtime broadcasts (state mirrors DynamoDB writes)', () 
   });
 });
 
+describe('changedFileProvenanceFromGitResults', () => {
+  const { changedFileProvenanceFromGitResults } = __test;
+
+  it('merges known repository files deterministically', () => {
+    expect(
+      changedFileProvenanceFromGitResults([
+        { repo: 'acme/api', provenance: { state: 'known', files: ['acme/api/b.ts'] } },
+        { repo: 'acme/web', provenance: { state: 'known', files: ['acme/web/a.ts'] } },
+      ]),
+    ).toEqual({ state: 'known', files: ['acme/api/b.ts', 'acme/web/a.ts'] });
+  });
+
+  it('returns unknown with repository and failure reason when any collection failed', () => {
+    expect(
+      changedFileProvenanceFromGitResults([
+        { repo: 'acme/api', provenance: { state: 'known', files: ['acme/api/a.ts'] } },
+        {
+          repo: 'acme/web',
+          provenance: {
+            state: 'unknown',
+            reason: 'git_diff_failed',
+            detail: 'fatal: bad revision',
+          },
+        },
+      ]),
+    ).toEqual({
+      state: 'unknown',
+      reason: 'acme/web: git_diff_failed',
+      detail: 'fatal: bad revision',
+    });
+  });
+});
 describe('mergeLearningRules — feeds the existing resolver at the right precedence', () => {
   const { mergeLearningRules } = __test;
 
@@ -970,6 +1007,119 @@ describe('runStage — release-pinned conductor', () => {
   });
 });
 
+// The container resolves its OWN plan, so a setting that only reached the
+// orchestrator's walk would leave the materialized stage running under the scope
+// defaults — the opposite policy from the one the gates announced.
+describe('runStage — per-intent AI-DLC settings', () => {
+  const okSpawn = () => ({
+    on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+    stdin: { end() {} },
+  });
+  const SETTINGS = { guardPolicy: 'strict', collaborators: 'on', existingCode: false };
+
+  const materializedPolicy = async (args) => {
+    const releaseLibrary = library();
+    releaseLibrary.fromRelease = true;
+    releaseLibrary.scopesById = {
+      feature: { id: 'feature', guardPolicy: 'off', collaborators: 'off', existingCode: true },
+    };
+    const seen = [];
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: releaseLibrary }),
+      materializeStage: async ({ stage }) => {
+        seen.push(stage.policy);
+        return { prompt: 'PROMPT', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+    });
+
+    const res = await runStage(
+      { ...baseArgs, methodologyRelease: { releaseId: 'aidlc:abc' }, ...args },
+      deps,
+    );
+
+    expect(res).toMatchObject({ ok: true });
+    return seen[0];
+  };
+
+  it('resolves the stage under the recorded choices, not the scope defaults', async () => {
+    expect(await materializedPolicy({ intentSettings: SETTINGS })).toMatchObject({
+      guardPolicy: 'strict',
+      changeControl: 'strict',
+      collaborators: 'on',
+      existingCode: false,
+      existingCodeChoice: { source: 'intent' },
+    });
+  });
+
+  it('resolves the scope defaults for a dispatch that carries no settings', async () => {
+    expect(await materializedPolicy({})).toMatchObject({
+      guardPolicy: 'off',
+      changeControl: null,
+      collaborators: 'off',
+      existingCode: true,
+      existingCodeChoice: { source: 'scope-default' },
+    });
+  });
+});
+
+// A composed grid's `scope` is a label that names no SCOPE block, so a dispatch
+// that omits the recorded base scope resolves NO policy in the container.
+describe('runStage — the composed policy scope', () => {
+  const okSpawn = () => ({
+    on: (event, callback) => event === 'close' && setImmediate(() => callback(0)),
+    stdin: { end() {} },
+  });
+
+  const materializedPolicy = async (args) => {
+    const releaseLibrary = library();
+    releaseLibrary.fromRelease = true;
+    releaseLibrary.scopesById = {
+      feature: { id: 'feature', guardPolicy: 'strict', collaborators: 'on' },
+    };
+    const seen = [];
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: releaseLibrary }),
+      materializeStage: async ({ stage }) => {
+        seen.push(stage.policy);
+        return { prompt: 'PROMPT', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+    });
+
+    const res = await runStage(
+      {
+        ...baseArgs,
+        scope: 'feature-custom',
+        composedGrid: { 'requirements-analysis': 'EXECUTE' },
+        methodologyRelease: { releaseId: 'aidlc:abc' },
+        ...args,
+      },
+      deps,
+    );
+
+    expect(res).toMatchObject({ ok: true });
+    return seen[0];
+  };
+
+  it('resolves the recorded base scope’s policy for a customized run', async () => {
+    expect(await materializedPolicy({ policyScope: 'feature' })).toMatchObject({
+      guardPolicy: 'strict',
+      changeControl: 'strict',
+      collaborators: 'on',
+    });
+  });
+
+  it('resolves no scope policy for a customized run with no recorded base scope', async () => {
+    const policy = await materializedPolicy({});
+
+    expect({
+      guardPolicy: policy?.guardPolicy ?? null,
+      collaborators: policy?.collaborators ?? null,
+    }).toEqual({ guardPolicy: null, collaborators: null });
+  });
+});
+
 describe('runStage — MCP secret resolution + child-env injection', () => {
   it.each([
     ['global', undefined],
@@ -1174,6 +1324,457 @@ describe('runStage — deterministic sensors', () => {
     return proxy;
   };
 
+  it.each([
+    { provider: 'github', release: false },
+    { provider: 'github', release: true },
+    { provider: 'codecommit', release: true },
+  ])(
+    'feeds a $provider cross-repository move into project sensors (release=$release)',
+    async ({ provider, release }) => {
+      const root = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-rename-selection-'));
+      const workspaceDir = nodePath.join(root, 'work');
+      const git = (args, cwd) => runGit(args, { cwd });
+      const repos =
+        provider === 'codecommit'
+          ? [
+              'arn:aws:codecommit:eu-west-1:123456789012:source',
+              'arn:aws:codecommit:eu-west-1:123456789012:destination',
+            ]
+          : ['acme/source', 'acme/destination'];
+      const [sourcePrefix, destinationPrefix] = repos.map(repoCheckoutPath);
+      const remotes = Object.fromEntries(
+        repos.map((repo) => [
+          repo,
+          nodePath.join(root, `${repoCheckoutPath(repo).split('/').at(-1)}.git`),
+        ]),
+      );
+
+      try {
+        for (const repo of repos) {
+          const project = repoCheckoutPath(repo).split('/').at(-1);
+          const projectDir = nodePath.join(workspaceDir, repoCheckoutPath(repo));
+          await git(['init', '--bare', '-b', 'main', remotes[repo]], root);
+          await mkdir(nodePath.join(projectDir, 'src'), { recursive: true });
+          await git(['init', '-b', 'main', projectDir], root);
+          await writeFile(nodePath.join(projectDir, 'tsconfig.json'), '{"compilerOptions":{}}\n');
+          await writeFile(
+            nodePath.join(projectDir, 'src', `${project}-consumer.ts`),
+            `export const ${project}Consumer = true;\n`,
+          );
+          if (project === 'source') {
+            await writeFile(
+              nodePath.join(projectDir, 'src', 'provider.ts'),
+              'export const provider = true;\n',
+            );
+          }
+          await git(['add', '-A'], projectDir);
+          await git(
+            ['-c', 'user.name=test', '-c', 'user.email=t@t', 'commit', '-m', 'seed project'],
+            projectDir,
+          );
+          await git(['remote', 'add', 'origin', remotes[repo]], projectDir);
+          await git(['push', '-u', 'origin', 'main'], projectDir);
+        }
+
+        const sourcePath = `${sourcePrefix}/src/provider.ts`;
+        const destinationPath = `${destinationPrefix}/src/provider.ts`;
+        await rm(nodePath.join(workspaceDir, sourcePath));
+        await writeFile(
+          nodePath.join(workspaceDir, destinationPath),
+          'export const provider = true;\n',
+        );
+
+        const lib = { ...library(), fromRelease: release };
+        lib.stagesById['requirements-analysis'].sensors = ['type-check'];
+        lib.sensorsById = {
+          'type-check': {
+            id: 'type-check',
+            ...(release ? { fireOn: 'write' } : {}),
+            command: 'bun x.ts',
+            runtime: 'bun',
+            severity: 'blocking',
+            matches: '**/*.ts',
+            verdictMode: 'stdout-json',
+            scope: 'project',
+            projectConfig: 'tsconfig.json',
+            scriptRef: { s3Key: 'blocks/scripts/sha256/type-check' },
+          },
+        };
+
+        const inspectedFiles = [];
+        const spawnFn = (command, args) => {
+          const child = new EventEmitter();
+          child.stdin = { end() {} };
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = () => {};
+          setImmediate(() => {
+            if (command === 'bun') {
+              inspectedFiles.push(args[args.indexOf('--file-path') + 1]);
+              child.stdout.emit('data', Buffer.from('{"pass":true}'));
+            }
+            child.emit('close', 0);
+          });
+          return child;
+        };
+        const store = spyStore();
+        const result = await runStage(
+          {
+            ...baseArgs,
+            workspaceDir,
+            repos,
+            branch: 'main',
+            baseBranch: 'main',
+            gitProvider: provider,
+            ...(release ? { methodologyRelease: { releaseId: 'release-a' } } : {}),
+          },
+          baseDeps({
+            store,
+            spawnFn,
+            env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6', PATH: '/usr/bin:/bin' },
+            loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+            loadBlockScript: async () => 'SENSOR_SCRIPT_BODY',
+            ensureWorkspaceSource: async () => ({ restored: false, repos: [] }),
+            redirectHeavyDirs: async () => ({ links: [] }),
+            commitAndPushAll: (args) =>
+              realCommitAndPushAll({
+                ...args,
+                urlsFor: (repo) => ({
+                  auth: remotes[repo],
+                  clean: `https://github.com/${repo}.git`,
+                }),
+              }),
+          }),
+        );
+
+        expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+        const persisted = store.calls.find(
+          ([name, row]) => name === 'recordSensorRun' && row.sensorId === 'type-check',
+        )?.[1];
+        expect(persisted).toMatchObject({
+          result: 'PASS',
+          detail: {
+            scope: 'project',
+            applicability: 'APPLICABLE',
+            provenance: { state: 'known' },
+          },
+        });
+        expect(persisted.detail.provenance.files).toEqual([destinationPath, sourcePath]);
+        expect(inspectedFiles).toEqual([
+          `${destinationPrefix}/src/destination-consumer.ts`,
+          destinationPath,
+          `${sourcePrefix}/src/source-consumer.ts`,
+        ]);
+        expect(
+          inspectedFiles.every((file) => !file.match(/^acme\/(?:source|destination)\/acme\//)),
+        ).toBe(true);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  it('persists and broadcasts only redacted harness diagnostics', async () => {
+    const workspaceDir = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-sensor-redaction-'));
+    try {
+      await writeFile(nodePath.join(workspaceDir, 'a.ts'), 'export const a = true;');
+      const lib = library();
+      lib.stagesById['requirements-analysis'].sensors = ['type-check'];
+      lib.sensorsById = {
+        'type-check': {
+          id: 'type-check',
+          command: 'bun x.ts',
+          runtime: 'bun',
+          severity: 'advisory',
+          matches: '**/*.ts',
+          verdictMode: 'stdout-json',
+          scriptRef: { s3Key: 'blocks/scripts/sha256/type-check' },
+        },
+      };
+      const store = spyStore();
+      const broadcasts = [];
+      const secretValue = 'opaque-runtime-secret';
+      const credentialPath = '/runtime/private/aws-credentials';
+      const spawnFn = (command) => {
+        const child = new EventEmitter();
+        child.stdin = { end() {} };
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.kill = () => {};
+        setImmediate(() => {
+          if (command === 'bun') {
+            child.stderr.emit(
+              'data',
+              Buffer.from(`Authorization: Token ${secretValue}\ncredential file ${credentialPath}`),
+            );
+            child.emit('close', 1);
+          } else {
+            child.emit('close', 0);
+          }
+        });
+        return child;
+      };
+
+      const res = await runStage(
+        { ...baseArgs, workspaceDir },
+        baseDeps({
+          store,
+          spawnFn,
+          broadcast: async (payload) => broadcasts.push(payload),
+          env: {
+            BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+            PATH: '/usr/bin:/bin',
+            MCP_SERVER_TOKEN: secretValue,
+            AWS_SHARED_CREDENTIALS_FILE: credentialPath,
+          },
+          loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+          loadBlockScript: async () => 'SENSOR_SCRIPT_BODY',
+          commitAndPushAll: async () => ({
+            ok: true,
+            committed: true,
+            results: [
+              {
+                repo: 'workspace',
+                committed: true,
+                pushed: true,
+                provenance: { state: 'known', files: ['a.ts'] },
+              },
+            ],
+          }),
+        }),
+      );
+
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      const persisted = store.calls.find(
+        ([name, row]) => name === 'recordSensorRun' && row.sensorId === 'type-check',
+      )?.[1];
+      expect(persisted).toMatchObject({
+        result: 'INCONCLUSIVE',
+        detail: {
+          harnessFailures: [
+            expect.objectContaining({
+              stderr: 'Authorization: [REDACTED]\ncredential file [REDACTED]',
+            }),
+          ],
+        },
+      });
+      expect(store.calls).toContainEqual([
+        'appendEvent',
+        expect.objectContaining({ type: 'v2.sensor.flagged' }),
+      ]);
+      const sinkPayload = JSON.stringify({ calls: store.calls, broadcasts });
+      expect(sinkPayload).not.toContain(secretValue);
+      expect(sinkPayload).not.toContain(credentialPath);
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('handles the original harness defect through production orchestration with explicit provenance', async () => {
+    const workspaceDir = await mkdtemp(
+      nodePath.join(tmpdir(), 'run-stage-production-sensor-regression-'),
+    );
+    const allFiles = ['src/changed-a.ts', 'src/changed-b.ts', 'src/unrelated.ts'];
+    const changedFiles = allFiles.slice(0, 2);
+    const secrets = ['first-private-value', 'second-private-value'];
+
+    try {
+      await mkdir(nodePath.join(workspaceDir, 'src'), { recursive: true });
+      await Promise.all(
+        allFiles.map((file) =>
+          writeFile(nodePath.join(workspaceDir, file), `export const value = '${file}';\n`),
+        ),
+      );
+
+      const lib = library();
+      lib.stagesById['requirements-analysis'].sensors = ['linter'];
+      lib.sensorsById = {
+        linter: {
+          id: 'linter',
+          command: 'bun x.ts',
+          runtime: 'bun',
+          severity: 'blocking',
+          matches: '**/*.ts',
+          verdictMode: 'stdout-json',
+          scope: 'file',
+          scriptRef: { s3Key: 'blocks/scripts/sha256/linter' },
+        },
+      };
+
+      const runScenario = async ({ provenance, sensorOutcome }) => {
+        const store = spyStore();
+        const broadcasts = [];
+        const inspectedFiles = [];
+        const spawnFn = (command, args) => {
+          const child = new EventEmitter();
+          child.stdin = { end() {} };
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = () => {};
+          setImmediate(() => {
+            let exitCode = 0;
+            if (command === 'bun') {
+              const file = args[args.indexOf('--file-path') + 1];
+              inspectedFiles.push(file);
+              const outcome = sensorOutcome(file, inspectedFiles.length - 1);
+              if (outcome.stdout) child.stdout.emit('data', Buffer.from(outcome.stdout));
+              if (outcome.stderr) child.stderr.emit('data', Buffer.from(outcome.stderr));
+              exitCode = outcome.exitCode;
+            }
+            child.emit('close', exitCode);
+          });
+          return child;
+        };
+
+        const result = await runStage(
+          { ...baseArgs, workspaceDir },
+          baseDeps({
+            store,
+            spawnFn,
+            broadcast: async (payload) => broadcasts.push(payload),
+            env: {
+              BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6',
+              PATH: '/usr/bin:/bin',
+              PRIMARY_API_TOKEN: secrets[0],
+              SECONDARY_API_TOKEN: secrets[1],
+            },
+            loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+            loadBlockScript: async () => 'SENSOR_SCRIPT_BODY',
+            commitAndPushAll: async () => ({
+              ok: true,
+              committed: true,
+              results: [{ repo: 'workspace', committed: true, pushed: true, provenance }],
+            }),
+          }),
+        );
+        const persisted = store.calls.find(
+          ([name, row]) => name === 'recordSensorRun' && row.sensorId === 'linter',
+        )?.[1];
+        return { result, persisted, inspectedFiles, store, broadcasts };
+      };
+
+      const known = await runScenario({
+        provenance: { state: 'known', files: changedFiles },
+        sensorOutcome: (_file, index) => ({
+          exitCode: 127,
+          stderr: `registry rejected ${secrets[index]}`,
+        }),
+      });
+
+      expect(known.result).toMatchObject({ ok: false, reason: 'sensor_blocked' });
+      expect(known.inspectedFiles.toSorted()).toEqual(changedFiles);
+      expect(known.persisted).toMatchObject({
+        result: 'INCONCLUSIVE',
+        held: true,
+        detail: {
+          scope: 'file',
+          applicability: 'APPLICABLE',
+          provenance: { state: 'known', files: changedFiles },
+          harnessFailures: [
+            {
+              reason: 'tool-unavailable',
+              result: 'INCONCLUSIVE',
+              exitCode: 127,
+              stderr: 'registry rejected [REDACTED]',
+              fileCount: 2,
+              sampleFiles: changedFiles,
+            },
+          ],
+        },
+      });
+      const knownSinks = JSON.stringify({ calls: known.store.calls, broadcasts: known.broadcasts });
+      expect(knownSinks).not.toMatch(/first-private-value|second-private-value/);
+
+      const genericFailure = await runScenario({
+        provenance: { state: 'known', files: [changedFiles[0]] },
+        sensorOutcome: () => ({
+          exitCode: 1,
+          stderr: `unable to load config using ${secrets[0]}`,
+        }),
+      });
+
+      expect(genericFailure.result).toMatchObject({ ok: false, reason: 'sensor_blocked' });
+      expect(genericFailure.inspectedFiles).toEqual([changedFiles[0]]);
+      expect(genericFailure.persisted).toMatchObject({
+        result: 'INCONCLUSIVE',
+        held: true,
+        detail: {
+          scope: 'file',
+          applicability: 'APPLICABLE',
+          provenance: { state: 'known', files: [changedFiles[0]] },
+          harnessFailures: [
+            {
+              reason: 'script-error',
+              result: 'INCONCLUSIVE',
+              exitCode: 1,
+              stderr: 'unable to load config using [REDACTED]',
+              fileCount: 1,
+              sampleFiles: [changedFiles[0]],
+            },
+          ],
+        },
+      });
+      const genericFailureSinks = JSON.stringify({
+        calls: genericFailure.store.calls,
+        broadcasts: genericFailure.broadcasts,
+      });
+      expect(genericFailureSinks).not.toContain(secrets[0]);
+
+      const unknown = await runScenario({
+        provenance: {
+          state: 'unknown',
+          reason: 'git_diff_failed',
+          detail: 'fatal: ambiguous revision',
+        },
+        sensorOutcome: () => ({
+          exitCode: 0,
+          stdout: `token=${secrets[0]} not-json`,
+          stderr: '',
+        }),
+      });
+
+      expect(unknown.result).toMatchObject({ ok: false, reason: 'sensor_blocked' });
+      expect(unknown.inspectedFiles.toSorted()).toEqual(allFiles);
+      expect(unknown.persisted).toMatchObject({
+        result: 'INCONCLUSIVE',
+        held: true,
+        detail: {
+          scope: 'file',
+          applicability: 'UNKNOWN',
+          provenance: {
+            state: 'unknown',
+            reason: 'workspace: git_diff_failed',
+            detail: 'fatal: ambiguous revision',
+          },
+        },
+      });
+      expect(unknown.persisted.detail.files).toHaveLength(allFiles.length);
+      expect(unknown.persisted.detail.files.map(({ file }) => file).toSorted()).toEqual(allFiles);
+      expect(unknown.persisted.detail.files).toEqual(
+        expect.arrayContaining(
+          allFiles.map((file) =>
+            expect.objectContaining({
+              file,
+              result: 'INCONCLUSIVE',
+              detail: expect.objectContaining({
+                reason: 'invalid-verdict',
+                stdout: 'token=[REDACTED] not-json',
+              }),
+            }),
+          ),
+        ),
+      );
+      const unknownSinks = JSON.stringify({
+        calls: unknown.store.calls,
+        broadcasts: unknown.broadcasts,
+      });
+      expect(unknownSinks).not.toContain(secrets[0]);
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
   it('an advisory sensor that does not PASS records a verdict but never fails the stage', async () => {
     const deps = baseDeps({
       spawnFn: okSpawn,
@@ -1297,6 +1898,85 @@ describe('runStage — deterministic sensors', () => {
     } finally {
       await rm(workspaceDir, { recursive: true, force: true });
     }
+  });
+
+  // A script reports per file, and its `reason` is whatever JSON it printed. The
+  // activity-feed note carries the same bounded string the gate finding quotes.
+  // `scriptOutput` is what every spawn prints, or, with several files, a map from
+  // file path to what the script prints for that file (the agent CLI's own spawn
+  // prints `{}`).
+  const flaggedRunFor = async (scriptOutput, files = ['a.ts']) => {
+    const workspaceDir = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-sensor-note-'));
+    for (const file of files) {
+      await writeFile(nodePath.join(workspaceDir, file), 'export const value = 1;');
+    }
+    const outputFor = (args) => {
+      const file = args[args.indexOf('--file-path') + 1];
+      return files.length > 1 ? (scriptOutput[file] ?? {}) : scriptOutput;
+    };
+    const printingSpawn = (_file, args) => ({
+      stdout: {
+        on: (ev, cb) => ev === 'data' && cb(Buffer.from(JSON.stringify(outputFor(args)))),
+      },
+      on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+      stdin: { end() {} },
+    });
+    const deps = baseDeps({
+      spawnFn: printingSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: libWithScriptSensor('advisory') }),
+      loadBlockScript: async () => 'console.log("{}")',
+    });
+    try {
+      await runStage({ ...baseArgs, workspaceDir }, deps);
+      return {
+        summary: deps.store.calls.find(
+          (c) => c[0] === 'appendEvent' && c[1].type === 'v2.sensor.flagged',
+        )?.[1].summary,
+        verdict: deps.store.calls.find((c) => c[0] === 'recordSensorRun')?.[1],
+      };
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  };
+  const flaggedNoteFor = async (scriptOutput) => (await flaggedRunFor(scriptOutput)).summary;
+
+  it("notes a script sensor's per-file reason, bounded", async () => {
+    const summary = await flaggedNoteFor({ pass: false, reason: `  ${'e'.repeat(2000)}` });
+
+    expect(summary).toMatch(/^Sensor type-check \(advisory\) → FAIL — a\.ts: e+…$/);
+    expect(summary.split(' — ')[1]).toHaveLength(MAX_SENSOR_REASON_LENGTH);
+  });
+
+  // The aggregate FAILs because of b.ts; a.ts failed without saying why. The
+  // note must explain the FAIL with the same file the gate finding quotes.
+  it('notes the per-file reason the gate finding quotes', async () => {
+    const { summary, verdict } = await flaggedRunFor(
+      { 'a.ts': { pass: false }, 'b.ts': { pass: false, reason: 'type error' } },
+      ['a.ts', 'b.ts'],
+    );
+
+    expect(summary).toBe('Sensor type-check (advisory) → FAIL — b.ts: type error');
+    const [finding] = sensorGateFindings({ sensorVerdicts: [verdict] });
+    expect(finding.detail.reason).toBe('b.ts: type error');
+  });
+
+  it('notes no reason when the script printed a non-string one', async () => {
+    const summary = await flaggedNoteFor({ pass: false, reason: { errors: 2 } });
+
+    expect(summary).toBe('Sensor type-check (advisory) → FAIL');
+  });
+
+  // Only the reason is read from the script's per-file JSON: its own `error`,
+  // `artifacts` or `unreferenced` never reach the note, bounded or not.
+  it.each([
+    ['an object error', { pass: false, error: { code: 2 } }],
+    ['a long error', { pass: false, error: 'x'.repeat(5000) }],
+    [
+      'unreferenced names',
+      { pass: false, unreferenced: Array.from({ length: 400 }, (_, i) => `n${i}`) },
+    ],
+  ])('notes nothing of %s a script printed', async (_label, output) => {
+    expect(await flaggedNoteFor(output)).toBe('Sensor type-check (advisory) → FAIL');
   });
 
   // Regression: the session process is long-lived and reused across every stage.
@@ -4657,7 +5337,15 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
       commitAndPushAll: async () => ({
         ok: true,
         committed: false,
-        results: [{ repo: 'owner/repo', committed: false, reason: 'clean', pushed: 'up_to_date' }],
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: false,
+            reason: 'clean',
+            pushed: 'up_to_date',
+            provenance: { state: 'known', files: [] },
+          },
+        ],
       }),
     });
     await runStage(gitArgs, deps);
@@ -5209,6 +5897,10 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
           pushed: true,
           sha: commitSha,
           files: ['app.ts', 'records/billing/traceability.json'],
+          provenance: {
+            state: 'known',
+            files: ['app.ts', 'records/billing/traceability.json'],
+          },
         },
       ],
     };
@@ -5241,7 +5933,15 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       commitAndPushAll: async () => ({
         ok: true,
         committed: false,
-        results: [{ repo: 'owner/repo', committed: false, reason: 'clean', pushed: 'up_to_date' }],
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: false,
+            reason: 'clean',
+            pushed: 'up_to_date',
+            provenance: { state: 'known', files: [] },
+          },
+        ],
       }),
       gitResultForCommitRefs,
       ingestStageCodeTraceability,
@@ -5291,6 +5991,10 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
           pushed: true,
           sha: commitSha,
           files: ['app.ts', 'records/billing/traceability.json'],
+          provenance: {
+            state: 'known',
+            files: ['app.ts', 'records/billing/traceability.json'],
+          },
         },
       ],
     };
@@ -5316,7 +6020,15 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       commitAndPushAll: async () => ({
         ok: true,
         committed: false,
-        results: [{ repo: 'owner/repo', committed: false, reason: 'clean', pushed: 'up_to_date' }],
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: false,
+            reason: 'clean',
+            pushed: 'up_to_date',
+            provenance: { state: 'known', files: [] },
+          },
+        ],
       }),
       gitResultForCommitRefs,
       ingestStageCodeTraceability,
@@ -5845,6 +6557,33 @@ describe('runStage — release-mode fidelity', () => {
     expect(event[1].summary).toContain('linter');
   });
 
+  // A support persona that never gets its own session is a downgrade a human
+  // cannot otherwise see: the stage still declares it.
+  it('emits v2.policy.applied naming the support personas collaborators off withdrew', async () => {
+    const lib = library();
+    lib.fromRelease = true;
+    lib.stagesById['requirements-analysis'].mode = 'mob';
+    lib.stagesById['requirements-analysis'].supportAgents = ['aidlc-design-agent'];
+    lib.agentsById['aidlc-design-agent'] = { id: 'aidlc-design-agent' };
+    lib.scopesById = {
+      feature: { id: 'feature', version: 1, collaborators: 'off' },
+    };
+    const store = spyStore();
+    const deps = baseDeps({
+      store,
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+    });
+
+    await runStage(baseArgs, deps);
+
+    const event = store.calls.find(
+      ([name, args]) => name === 'appendEvent' && args.type === 'v2.policy.applied',
+    );
+    expect(event).toBeDefined();
+    expect(event[1].summary).toContain('support personas withdrawn: aidlc-design-agent');
+  });
+
   it('emits no policy event for a legacy library, even with the same SCOPE row', async () => {
     const lib = library();
     lib.scopesById = { feature: { id: 'feature', version: 1, reviewCap: 'none' } };
@@ -5885,33 +6624,52 @@ describe('runStage — release-mode fidelity', () => {
     };
 
     const sensorDetail = async ({ gitResult, repos, matches }) => {
-      const store = spyStore();
-      const deps = baseDeps({
-        store,
-        spawnFn: okSpawn,
-        loadLibrary: async () => ({ workflow: workflow(), library: sensorLibrary(matches) }),
-        commitAndPushAll: async () => gitResult,
-        loadBlockScript: async () => 'export default 1;',
-        ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
-        redirectHeavyDirs: async () => ({ links: [] }),
-      });
-      const res = await runStage(
-        { ...baseArgs, repos, methodologyRelease: { releaseId: 'release-a' } },
-        deps,
-      );
-      expect(res.reason ?? null).toBeNull();
-      const run = store.calls.find(
-        ([name, args]) => name === 'recordSensorRun' && args.sensorId === 'linter',
-      );
-      return run?.[1]?.detail ?? null;
+      const workspaceDir = await mkdtemp(nodePath.join(tmpdir(), 'write-plane-stage-'));
+      try {
+        for (const file of ['acme/api/src/a.ts', 'acme/web/src/b.ts']) {
+          await mkdir(nodePath.dirname(nodePath.join(workspaceDir, file)), { recursive: true });
+          await writeFile(nodePath.join(workspaceDir, file), 'export {};');
+        }
+        const store = spyStore();
+        const deps = baseDeps({
+          store,
+          spawnFn: okSpawn,
+          loadLibrary: async () => ({ workflow: workflow(), library: sensorLibrary(matches) }),
+          commitAndPushAll: async () => gitResult,
+          loadBlockScript: async () => 'export default 1;',
+          ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+          redirectHeavyDirs: async () => ({ links: [] }),
+        });
+        const res = await runStage(
+          { ...baseArgs, workspaceDir, repos, methodologyRelease: { releaseId: 'release-a' } },
+          deps,
+        );
+        expect(res.reason ?? null).toBeNull();
+        const run = store.calls.find(
+          ([name, args]) => name === 'recordSensorRun' && args.sensorId === 'linter',
+        );
+        return run?.[1]?.detail ?? null;
+      } finally {
+        await rm(workspaceDir, { recursive: true, force: true });
+      }
     };
 
     const multiGit = {
       ok: true,
       committed: true,
       results: [
-        { repo: 'acme/api', committed: true, files: ['src/a.ts'] },
-        { repo: 'acme/web', committed: true, files: ['src/b.ts'] },
+        {
+          repo: 'acme/api',
+          committed: true,
+          files: ['acme/api/src/a.ts'],
+          provenance: { state: 'known', files: ['acme/api/src/a.ts'] },
+        },
+        {
+          repo: 'acme/web',
+          committed: true,
+          files: ['acme/web/src/b.ts'],
+          provenance: { state: 'known', files: ['acme/web/src/b.ts'] },
+        },
       ],
     };
 
@@ -5922,7 +6680,10 @@ describe('runStage — release-mode fidelity', () => {
           repos: ['acme/api', 'acme/web'],
           matches: '**/*.md',
         }),
-      ).toMatchObject({ reason: 'no files match', fireOn: 'write', changedFiles: 2 });
+      ).toMatchObject({
+        reason: 'no files match',
+        provenance: { state: 'known', files: ['acme/api/src/a.ts', 'acme/web/src/b.ts'] },
+      });
     });
 
     it('hands the sensor workspace-relative paths, not repo-relative ones', async () => {
@@ -5933,7 +6694,8 @@ describe('runStage — release-mode fidelity', () => {
         repos: ['acme/api', 'acme/web'],
         matches: 'acme/web/**',
       });
-      expect(projected?.reason).not.toBe('no files match');
+      expect(projected?.reason).toBeUndefined();
+      expect(projected.files.map((file) => file.file)).toEqual(['acme/web/src/b.ts']);
 
       // The unprojected path space matches nothing under the repo prefix.
       const unprojected = await sensorDetail({
@@ -5941,7 +6703,10 @@ describe('runStage — release-mode fidelity', () => {
         repos: ['acme/api', 'acme/web'],
         matches: 'src/**',
       });
-      expect(unprojected).toMatchObject({ reason: 'no files match', changedFiles: 2 });
+      expect(unprojected).toMatchObject({
+        reason: 'no files match',
+        provenance: { state: 'known', files: ['acme/api/src/a.ts', 'acme/web/src/b.ts'] },
+      });
     });
 
     it('falls back to the workspace-wide sweep when a repo reported no files array', async () => {
@@ -5950,7 +6715,12 @@ describe('runStage — release-mode fidelity', () => {
           ok: true,
           committed: true,
           results: [
-            { repo: 'acme/api', committed: true, files: ['src/a.ts'] },
+            {
+              repo: 'acme/api',
+              committed: true,
+              files: ['acme/api/src/a.ts'],
+              provenance: { state: 'known', files: ['acme/api/src/a.ts'] },
+            },
             { repo: 'acme/web' },
           ],
         },
@@ -5958,8 +6728,10 @@ describe('runStage — release-mode fidelity', () => {
         matches: '**/*.md',
       });
       expect(detail).toMatchObject({ reason: 'no files match' });
-      expect(detail.fireOn).toBeUndefined();
-      expect(detail.changedFiles).toBeUndefined();
+      expect(detail.provenance).toMatchObject({
+        state: 'unknown',
+        reason: 'acme/web: missing_repository_provenance',
+      });
     });
 
     it('falls back to the workspace-wide sweep when the git engine reported nothing', async () => {
@@ -5968,7 +6740,10 @@ describe('runStage — release-mode fidelity', () => {
         repos: [],
         matches: '**/*.md',
       });
-      expect(detail.fireOn).toBeUndefined();
+      expect(detail.provenance).toMatchObject({
+        state: 'unknown',
+        reason: 'no_repository_results',
+      });
     });
   });
 
@@ -6149,14 +6924,26 @@ describe('runStage — release-mode knowledge and changedFiles', () => {
           ok: true,
           committed: true,
           results: [
-            { repo: 'acme/web', committed: true, sha: 'b'.repeat(40), files: ['src/b.ts'] },
-            { repo: 'acme/api', committed: true, sha: 'a'.repeat(40), files: ['src/a.ts'] },
+            {
+              repo: 'acme/web',
+              committed: true,
+              sha: 'b'.repeat(40),
+              files: ['acme/web/src/b.ts'],
+              provenance: { state: 'known', files: ['acme/web/src/b.ts'] },
+            },
+            {
+              repo: 'acme/api',
+              committed: true,
+              sha: 'a'.repeat(40),
+              files: ['acme/api/src/a.ts'],
+              provenance: { state: 'known', files: ['acme/api/src/a.ts'] },
+            },
           ],
         },
         repos: ['acme/api', 'acme/web'],
       });
 
-      expect(res.changedFiles).toEqual(['src/a.ts', 'src/b.ts']);
+      expect(res.changedFiles).toEqual(['acme/api/src/a.ts', 'acme/web/src/b.ts']);
     });
 
     it('reports null when one repo omitted its files array', async () => {
@@ -6165,7 +6952,13 @@ describe('runStage — release-mode knowledge and changedFiles', () => {
           ok: true,
           committed: true,
           results: [
-            { repo: 'acme/api', committed: true, sha: 'a'.repeat(40), files: ['src/a.ts'] },
+            {
+              repo: 'acme/api',
+              committed: true,
+              sha: 'a'.repeat(40),
+              files: ['acme/api/src/a.ts'],
+              provenance: { state: 'known', files: ['acme/api/src/a.ts'] },
+            },
             { repo: 'acme/web', committed: true, sha: 'b'.repeat(40) },
           ],
         },
@@ -6204,14 +6997,26 @@ describe('runStage — release-mode knowledge and changedFiles', () => {
           ok: true,
           committed: false,
           results: [
-            { repo: 'acme/api', committed: false, reason: 'clean', pushed: 'up_to_date' },
-            { repo: 'acme/web', committed: true, sha: 'b'.repeat(40), files: ['src/b.ts'] },
+            {
+              repo: 'acme/api',
+              committed: false,
+              reason: 'clean',
+              pushed: 'up_to_date',
+              provenance: { state: 'known', files: [] },
+            },
+            {
+              repo: 'acme/web',
+              committed: true,
+              sha: 'b'.repeat(40),
+              files: ['acme/web/src/b.ts'],
+              provenance: { state: 'known', files: ['acme/web/src/b.ts'] },
+            },
           ],
         },
         repos: ['acme/api', 'acme/web'],
       });
 
-      expect(res.changedFiles).toEqual(['src/b.ts']);
+      expect(res.changedFiles).toEqual(['acme/web/src/b.ts']);
     });
   });
 });
@@ -6378,6 +7183,109 @@ const checkpointRun = ({
 };
 
 describe('runStage — checkpoint park races', () => {
+  it.each([false, true])(
+    'carries checkpoint repair provenance into sensors and feedback (recovery fails=%s)',
+    async (recoveryFails) => {
+      const workspaceDir = await mkdtemp(nodePath.join(tmpdir(), 'checkpoint-provenance-'));
+      try {
+        for (const file of ['before.ts', 'repaired.ts', 'untouched.ts']) {
+          await writeFile(nodePath.join(workspaceDir, file), 'export {};');
+        }
+        const run = checkpointRun({ repairCheckpoint: true, answerInline: true });
+        const loadLibrary = run.deps.loadLibrary;
+        run.deps.loadLibrary = async () => {
+          const loaded = await loadLibrary();
+          loaded.library.stagesById['requirements-analysis'].sensors = ['linter'];
+          loaded.library.sensorsById.linter = {
+            id: 'linter',
+            command: 'bun sensor.ts',
+            severity: 'blocking',
+            matches: '**/*.ts',
+            fireOn: 'write',
+          };
+          return loaded;
+        };
+        const leadSpawn = run.deps.spawnFn;
+        const inspected = [];
+        run.deps.spawnFn = (command, args) => {
+          if (command !== 'bun') return leadSpawn(command, args);
+          inspected.push(args[args.indexOf('--file-path') + 1]);
+          const child = new EventEmitter();
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = () => {};
+          setImmediate(() => {
+            child.stdout.emit('data', Buffer.from('{"pass":true}'));
+            child.emit('close', 0);
+          });
+          return child;
+        };
+        const gitResult = (sha, files) => ({
+          ok: true,
+          committed: true,
+          results: [
+            {
+              repo: 'owner/repo',
+              committed: true,
+              pushed: true,
+              sha,
+              files,
+              provenance: { state: 'known', files },
+            },
+          ],
+        });
+        run.deps.commitAndPushAll = vi
+          .fn()
+          .mockResolvedValueOnce(gitResult('a'.repeat(40), ['before.ts']))
+          .mockResolvedValueOnce(gitResult('b'.repeat(40), ['repaired.ts']));
+        run.deps.gitResultForCommitRefs = vi.fn(async () => {
+          if (recoveryFails) throw new Error('git diff-tree failed');
+          return gitResult('b'.repeat(40), ['before.ts', 'repaired.ts']);
+        });
+        run.deps.loadBlockScript = async () => 'BODY';
+        run.deps.ensureWorkspaceSource = async () => ({ restored: false, repos: [], failed: [] });
+        run.deps.redirectHeavyDirs = async () => ({ links: [] });
+        run.deps.ingestStageCodeTraceability = async () => ({ codeFiles: 0 });
+        const result = await runStage(
+          {
+            ...run.args,
+            workspaceDir,
+            repos: ['owner/repo'],
+            baseBranch: 'develop',
+            methodologyRelease: { releaseId: 'release-a' },
+          },
+          run.deps,
+        );
+        expect(result).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+        expect(run.getSpawnCount()).toBe(2);
+        expect(run.deps.commitAndPushAll).toHaveBeenCalledTimes(2);
+        expect(run.deps.commitAndPushAll.mock.calls[1][0].baseBranch).toBe('develop');
+        expect(run.deps.gitResultForCommitRefs).toHaveBeenCalledWith(
+          expect.objectContaining({
+            commitRefs: [
+              { repo: 'owner/repo', sha: 'a'.repeat(40) },
+              { repo: 'owner/repo', sha: 'b'.repeat(40) },
+            ],
+          }),
+        );
+        const provenance = recoveryFails
+          ? { state: 'unknown', reason: 'git_commit_refs_failed', detail: 'git diff-tree failed' }
+          : { state: 'known', files: ['before.ts', 'repaired.ts'] };
+        expect(result.changedFileProvenance).toEqual(provenance);
+        expect(result.changedFiles).toEqual(recoveryFails ? null : provenance.files);
+        expect(inspected).toEqual(
+          recoveryFails
+            ? ['before.ts', 'repaired.ts', 'untouched.ts']
+            : ['before.ts', 'repaired.ts'],
+        );
+        const sensor = run.deps.store.calls.find(([name]) => name === 'recordSensorRun')[1];
+        expect(sensor.detail.provenance).toEqual(provenance);
+      } finally {
+        await rm(workspaceDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('parks a gate answered after the bridge park, without repair, sensors, or review', async () => {
     const run = checkpointRun({ answerAfterPark: true, sensor: true, reviewer: true });
     const result = await runStage(run.args, run.deps);
@@ -6715,6 +7623,195 @@ describe('postAgentSensorPass', () => {
   });
 });
 
+// The stage deadline reaches only release-pinned passes with authored policy.
+// Unpinned and policy-free baseline passes keep their legacy sensor budgets.
+describe('runStage — the stage budget at the post-agent sensor pass', () => {
+  // `type-check` declares the stdout-json verdict protocol, so the stub child
+  // has to print a verdict the way the real script does — an exit code alone is
+  // a missing verdict, not a pass.
+  const okSpawn = () => ({
+    stdout: {
+      on: (ev, cb) => ev === 'data' && setImmediate(() => cb(Buffer.from('{"pass":true}'))),
+    },
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+  const libWithScriptSensor = () => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].sensors = ['type-check'];
+    lib.sensorsById = {
+      'type-check': {
+        id: 'type-check',
+        command: 'bun <runtime-managed>/tools/aidlc-sensor-type-check.ts',
+        runtime: 'bun',
+        severity: 'advisory',
+        matches: '**/*.ts',
+        timeoutSeconds: 600,
+        scriptRef: { s3Key: 'blocks/scripts/sha256/type-check' },
+      },
+    };
+    return lib;
+  };
+
+  const budgetedSensorRun = async ({
+    methodologyRelease = null,
+    stageBudgetMs,
+    sensorLibrary = null,
+    spawned = [],
+  }) => {
+    const workspaceDir = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-sensor-budget-'));
+    await writeFile(nodePath.join(workspaceDir, 'a.ts'), 'export const value = 1;');
+    const lib = sensorLibrary ?? libWithScriptSensor();
+    if (methodologyRelease && !sensorLibrary) {
+      lib.fromRelease = true;
+      lib.scopesById = { feature: { id: 'feature', sensorsPolicy: 'on' } };
+    }
+    const deps = baseDeps({
+      spawnFn: (file, args) => {
+        if (file === 'bun') spawned.push({ file, args: args.slice(1) });
+        return okSpawn();
+      },
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+      loadBlockScript: async () => 'export default 1;',
+      stageBudgetMs,
+    });
+    try {
+      const res = await runStage(
+        { ...baseArgs, workspaceDir, ...(methodologyRelease ? { methodologyRelease } : {}) },
+        deps,
+      );
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      const run = deps.store.calls.find(
+        ([name, args]) => name === 'recordSensorRun' && args.sensorId === 'type-check',
+      );
+      return run?.[1] ?? null;
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  };
+
+  it('reads no stage deadline for an unpinned run, whatever is left of the wall clock', async () => {
+    // 60 s left against a 600 s authored budget is exactly the case the
+    // release-mode bound would shorten; -1 ms is an already-expired stage.
+    for (const stageBudgetMs of [60_000, -1]) {
+      const run = await budgetedSensorRun({ stageBudgetMs });
+      expect(run, `stageBudgetMs=${stageBudgetMs}`).toMatchObject({
+        result: 'PASS',
+        held: false,
+      });
+      expect(run.detail).not.toHaveProperty('boundedBy');
+      expect(run.detail).not.toHaveProperty('timeoutMs');
+      expect(run.detail).not.toHaveProperty('stageBudgetExhausted');
+    }
+  });
+
+  it('shortens a pinned sensor to what is left of the stage', async () => {
+    const run = await budgetedSensorRun({
+      methodologyRelease: { releaseId: 'release-a' },
+      stageBudgetMs: 60_000,
+    });
+    expect(run.detail).toMatchObject({ boundedBy: 'stage-deadline' });
+    expect(run.detail.timeoutMs).toBeLessThanOrEqual(60_000);
+  });
+
+  it('launches no pinned sensor child once the stage budget is gone', async () => {
+    const run = await budgetedSensorRun({
+      methodologyRelease: { releaseId: 'release-a' },
+      stageBudgetMs: -1,
+    });
+    expect(run).toMatchObject({ result: 'BLOCKED', held: false });
+    expect(run.detail).toMatchObject({ stageBudgetExhausted: true });
+  });
+
+  it('preserves a 2.3.3-pinned sensor pass even when the stage budget is spent', async () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../shared/test/fixtures/aidlc-compatibility/current-stable.json',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    );
+    const { blocks } = buildFromFiles(
+      filesFromCompatibilityFixture({ profileId: 'current-stable', fixture }),
+    );
+    const lib = libWithScriptSensor();
+    lib.fromRelease = true;
+    lib.sensorsById = Object.fromEntries(
+      blocks.filter((b) => b.type === 'SENSOR').map((b) => [b.id, b]),
+    );
+    lib.scopesById = Object.fromEntries(
+      blocks.filter((b) => b.type === 'SCOPE').map((b) => [b.id, b]),
+    );
+    const { plan } = buildExecutionPlan({ workflow: workflow(), scope: 'feature', library: lib });
+    expect(plan.stages[0].policy ?? null).toBeNull();
+    const methodologyRelease = { releaseId: 'aidlc-2.3.3' };
+    const spawned = [];
+    const baseline = await budgetedSensorRun({
+      methodologyRelease,
+      sensorLibrary: lib,
+      stageBudgetMs: 600_000,
+      spawned,
+    });
+    expect(baseline).toMatchObject({ result: 'PASS', held: false });
+    expect(baseline.detail).toEqual({
+      scope: 'project',
+      applicability: 'UNKNOWN',
+      provenance: { state: 'unknown', reason: 'no_repository_results' },
+      files: [{ file: 'a.ts', result: 'PASS', timedOut: false, detail: { pass: true } }],
+    });
+    expect(spawned).toEqual([
+      { file: 'bun', args: ['--stage', 'requirements-analysis', '--file-path', 'a.ts'] },
+    ]);
+    for (const stageBudgetMs of [1_000, -1]) {
+      const actualSpawns = [];
+      const actual = await budgetedSensorRun({
+        methodologyRelease,
+        sensorLibrary: lib,
+        stageBudgetMs,
+        spawned: actualSpawns,
+      });
+      expect(actual, `stageBudgetMs=${stageBudgetMs}`).toEqual(baseline);
+      expect(actualSpawns).toEqual(spawned);
+    }
+  });
+
+  it('ignores authored policy deadlines outside a pinned run', async () => {
+    const lib = libWithScriptSensor();
+    lib.fromRelease = true;
+    lib.scopesById = { feature: { id: 'feature', sensorsPolicy: 'on' } };
+    const spawned = [];
+    const run = await budgetedSensorRun({ sensorLibrary: lib, stageBudgetMs: -1, spawned });
+    expect(run).toMatchObject({ result: 'PASS', held: false });
+    expect(spawned).toHaveLength(1);
+    expect(run.detail).not.toHaveProperty('boundedBy');
+    expect(run.detail).not.toHaveProperty('timeoutMs');
+    expect(run.detail).not.toHaveProperty('stageBudgetExhausted');
+  });
+
+  it.each([false, true])(
+    'uses the authored policy at the gate sensor pass: policy=%s',
+    async (policy) => {
+      const lib = libWithScriptSensor();
+      lib.fromRelease = true;
+      lib.sensorsById['type-check'].fireOn = 'gate';
+      if (policy) lib.scopesById = { feature: { id: 'feature', sensorsPolicy: 'on' } };
+      const spawned = [];
+      const run = await budgetedSensorRun({
+        methodologyRelease: { releaseId: 'custom-catalog' },
+        sensorLibrary: lib,
+        stageBudgetMs: -1,
+        spawned,
+      });
+      expect(run).toMatchObject({ result: policy ? 'BLOCKED' : 'PASS', held: false });
+      expect(spawned).toHaveLength(policy ? 0 : 1);
+      if (policy) expect(run.detail.stageBudgetExhausted).toBe(true);
+      else expect(run.detail).not.toHaveProperty('stageBudgetExhausted');
+    },
+  );
+});
+
 // The artifact-head observation the orchestrator turns into
 // `required_artifact_missing`. "Observed nothing" and "could not observe" are
 // different facts, and the stage result must say which one happened: an empty
@@ -6813,5 +7910,81 @@ describe('runStage — produced-head observation', () => {
 
     expect(res).not.toHaveProperty('producedHeads');
     expect(res).not.toHaveProperty('producedHeadsUnavailable');
+  });
+});
+
+// Which sensors the intent's release is asked for a script closure. The
+// reader is bound to the resolved library's provenance, so an immutable user
+// SENSOR overlay — whose script may legitimately import the project's own
+// checked-out code — keeps the existing user-script path instead of being
+// reported as corruption of a release that never owned it.
+describe('runStage — the release closure a pinned sensor is read for', () => {
+  // `type-check` declares the stdout-json verdict protocol, so the stub child
+  // prints a verdict the way the real script does.
+  const okSpawn = () => ({
+    stdout: {
+      on: (ev, cb) => ev === 'data' && setImmediate(() => cb(Buffer.from('{"pass":true}'))),
+    },
+    on: (ev, cb) => ev === 'close' && setImmediate(() => cb(0)),
+    stdin: { end() {} },
+  });
+  const libWithScriptSensor = () => {
+    const lib = library();
+    lib.stagesById['requirements-analysis'].sensors = ['type-check'];
+    lib.sensorsById = {
+      'type-check': {
+        id: 'type-check',
+        command: 'bun <runtime-managed>/tools/aidlc-sensor-type-check.ts',
+        runtime: 'bun',
+        severity: 'advisory',
+        matches: '**/*.ts',
+        scriptRef: { s3Key: 'blocks/scripts/sha256/type-check' },
+      },
+    };
+    return lib;
+  };
+
+  const PROJECT_IMPORT = 'import { ok } from "../../src/helper.ts";\nconsole.log(ok);\n';
+  const PIN = {
+    releaseId: 'release-a',
+    sourceSha: 'a'.repeat(40),
+    closureDigest: 'b'.repeat(64),
+  };
+
+  const pinnedSensorRun = async ({ tenantId = null }) => {
+    const workspaceDir = await mkdtemp(nodePath.join(tmpdir(), 'run-stage-sensor-closure-'));
+    await writeFile(nodePath.join(workspaceDir, 'a.ts'), 'export const value = 1;');
+    const lib = libWithScriptSensor();
+    if (tenantId) lib.sensorsById['type-check'].tenantId = tenantId;
+    const deps = baseDeps({
+      spawnFn: okSpawn,
+      loadLibrary: async () => ({ workflow: workflow(), library: lib }),
+      loadBlockScript: async () => PROJECT_IMPORT,
+    });
+    try {
+      const res = await runStage({ ...baseArgs, workspaceDir, methodologyRelease: PIN }, deps);
+      const run = deps.store.calls.find(
+        ([name, args]) => name === 'recordSensorRun' && args.sensorId === 'type-check',
+      );
+      return { res, run: run?.[1] ?? null };
+    } finally {
+      await rm(workspaceDir, { recursive: true, force: true });
+    }
+  };
+
+  it('is not read for a user overlay, whose script runs as it did before', async () => {
+    const { res, run } = await pinnedSensorRun({ tenantId: 'default' });
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(run).toMatchObject({ result: 'PASS', held: false });
+  });
+
+  it('is read for the release\u2019s own sensor, and holds the stage when it cannot be', async () => {
+    const { res, run } = await pinnedSensorRun({});
+    expect(res).toMatchObject({ ok: false, reason: 'sensor_blocked' });
+    expect(run).toMatchObject({
+      result: 'BLOCKED',
+      held: true,
+      detail: { releaseIntegrityFailure: true },
+    });
   });
 });

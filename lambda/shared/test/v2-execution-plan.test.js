@@ -349,6 +349,233 @@ describe('buildExecutionPlan — plan shape', () => {
     expect(plan.stages[0].sensors[0].scriptRef).toBeNull();
   });
 
+  it('threads validated verdict mode, scope, and normalized project config into the plan', () => {
+    const lib = baseLibrary({
+      stagesById: { a: stage('a', { sensors: ['custom-checker'] }) },
+      sensorsById: {
+        'custom-checker': {
+          command: 'custom-checker.ts',
+          severity: 'advisory',
+          runtime: 'bun',
+          verdictMode: 'stdout-json',
+          scope: 'project',
+          projectConfig: 'config/pyproject.toml',
+        },
+      },
+    });
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+    expect(valid).toBe(true);
+    expect(errors).toEqual([]);
+    expect(plan.stages[0].sensors[0]).toMatchObject({
+      verdictMode: 'stdout-json',
+      scope: 'project',
+      projectConfig: 'config/pyproject.toml',
+    });
+  });
+
+  it.each([
+    ['verdictMode', 'yaml', 'sensor_invalid_verdict_mode'],
+    ['scope', 'workspace', 'sensor_invalid_scope'],
+  ])('rejects an unsupported sensor %s while building the plan', (field, value, code) => {
+    const lib = baseLibrary({
+      stagesById: { a: stage('a', { sensors: ['custom-checker'] }) },
+      sensorsById: {
+        'custom-checker': {
+          command: 'custom-checker.ts',
+          runtime: 'bun',
+          [field]: value,
+        },
+      },
+    });
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+
+    expect(valid).toBe(false);
+    expect(errors.find((error) => error.code === code)).toMatchObject({
+      stageId: 'a',
+      ref: 'custom-checker',
+      field,
+    });
+    expect(plan.stages[0].sensors[0][field]).not.toBe(value);
+  });
+
+  it.each([
+    ['absolute path', '/etc/tsconfig.json'],
+    ['Windows absolute path', 'C:\\secrets\\tsconfig.json'],
+    ['parent traversal', '../tsconfig.json'],
+    ['nested parent traversal', 'config/../../tsconfig.json'],
+    ['non-normalized traversal', 'config/../tsconfig.json'],
+  ])('rejects a sensor projectConfig containing %s', (_label, projectConfig) => {
+    const lib = baseLibrary({
+      stagesById: { a: stage('a', { sensors: ['custom-checker'] }) },
+      sensorsById: {
+        'custom-checker': {
+          command: 'custom-checker.ts',
+          runtime: 'bun',
+          scope: 'project',
+          projectConfig,
+        },
+      },
+    });
+    const { valid, errors, plan } = buildExecutionPlan({
+      workflow: workflow([placement('a')]),
+      scope: 'feature',
+      library: lib,
+    });
+
+    expect(valid).toBe(false);
+    expect(errors.find((error) => error.code === 'sensor_invalid_project_config')).toMatchObject({
+      stageId: 'a',
+      ref: 'custom-checker',
+      field: 'projectConfig',
+    });
+    expect(plan.stages[0].sensors[0].projectConfig).toBe('tsconfig.json');
+  });
+
+  // A catalog whose record sensors cover run records exempts a one-line
+  // timestamp record from the heading floor. The switch rides the plan, so the
+  // runtime reads the catalog's claim rather than re-deriving it, and a catalog
+  // that claims nothing keeps a byte-identical plan.
+  describe('record-sensor run-record coverage', () => {
+    const planFor = ({ matches, policyEnabled }) =>
+      buildExecutionPlan({
+        workflow: workflow([placement('a')]),
+        scope: 'feature',
+        library: baseLibrary({
+          ...(policyEnabled ? { fromRelease: true } : {}),
+          stagesById: { a: stage('a', { sensors: ['required-sections'] }) },
+          sensorsById: {
+            'required-sections': {
+              command: 'aidlc-sensor-required-sections.ts',
+              runtime: 'bun',
+              matches,
+            },
+          },
+        }),
+      }).plan.stages[0].sensors[0];
+
+    it('rides the plan when the catalog widens the record glob', () => {
+      expect(
+        planFor({ matches: '**/{aidlc-docs,intents,codekb}/**', policyEnabled: true }),
+      ).toMatchObject({ recordTimestampExempt: true });
+    });
+
+    it('is absent for the glob every earlier release authors', () => {
+      expect(
+        planFor({ matches: '**/{aidlc-docs,intents}/**', policyEnabled: true }),
+      ).not.toHaveProperty('recordTimestampExempt');
+    });
+
+    it('is absent without a release policy, whatever the glob says', () => {
+      expect(
+        planFor({ matches: '**/{aidlc-docs,intents,codekb}/**', policyEnabled: false }),
+      ).not.toHaveProperty('recordTimestampExempt');
+    });
+  });
+
+  // The exit-code contract a catalog authors by routing its sensors through its
+  // own engine dispatcher. It rides the plan so the runtime reads the authored
+  // invocation instead of re-deriving it, and an unpinned run — which has no
+  // release dispatcher to stand in for — keeps a byte-identical plan.
+  describe('dispatcher exit-code contract', () => {
+    const planFor = ({ command, policyEnabled }) =>
+      buildExecutionPlan({
+        workflow: workflow([placement('a')]),
+        scope: 'feature',
+        library: baseLibrary({
+          ...(policyEnabled ? { fromRelease: true } : {}),
+          stagesById: { a: stage('a', { sensors: ['linter'] }) },
+          sensorsById: { linter: { command, runtime: 'bun', matches: '**/*.{ts,js}' } },
+        }),
+      }).plan.stages[0].sensors[0];
+
+    it('rides the plan for a release that routes the sensor through its dispatcher', () => {
+      expect(
+        planFor({ command: '{{INVOKE}} engine sensor-linter', policyEnabled: true }),
+      ).toMatchObject({ dispatcherExitCodes: true });
+    });
+
+    it('is absent for the direct invocation every earlier release authors', () => {
+      expect(
+        planFor({
+          command: 'bun {{HARNESS_DIR}}/tools/aidlc-sensor-linter.ts',
+          policyEnabled: true,
+        }),
+      ).not.toHaveProperty('dispatcherExitCodes');
+    });
+
+    it('is absent without a release policy, whatever the command says', () => {
+      expect(
+        planFor({ command: '{{INVOKE}} engine sensor-linter', policyEnabled: false }),
+      ).not.toHaveProperty('dispatcherExitCodes');
+    });
+  });
+
+  // A document sensor declares `output_path`, so it must not be spawned with
+  // the code sensors' `--file-path`. The flag is resolved on the plan, and only
+  // when the authored contract moves it — a catalog that authors none, and a
+  // graph sensor, keep a byte-identical plan.
+  describe('a script sensor path flag', () => {
+    const planSensor = (sensorsById) =>
+      buildExecutionPlan({
+        workflow: workflow([placement('a')]),
+        scope: 'feature',
+        library: baseLibrary({
+          stagesById: { a: stage('a', { sensors: [Object.keys(sensorsById)[0]] }) },
+          sensorsById,
+        }),
+      }).plan.stages[0].sensors[0];
+
+    it('is carried when the sensor declares an output path', () => {
+      expect(
+        planSensor({
+          traceability: {
+            command: 'aidlc-sensor-traceability.ts',
+            runtime: 'bun',
+            inputSchema: { output_path: 'string', stage_slug: 'string' },
+          },
+        }).pathFlag,
+      ).toBe('--output-path');
+    });
+
+    it('is absent when the sensor declares a file path', () => {
+      expect(
+        planSensor({
+          linter: {
+            command: 'aidlc-sensor-linter.ts',
+            runtime: 'bun',
+            inputSchema: { file_path: 'string' },
+          },
+        }),
+      ).not.toHaveProperty('pathFlag');
+    });
+
+    it('is absent when the sensor declares no contract', () => {
+      expect(
+        planSensor({ linter: { command: 'aidlc-sensor-linter.ts', runtime: 'bun' } }),
+      ).not.toHaveProperty('pathFlag');
+    });
+
+    it('is absent on a graph sensor, which takes no path', () => {
+      expect(
+        planSensor({
+          'required-sections': {
+            command: 'aidlc-sensor-required-sections.ts',
+            runtime: 'bun',
+            inputSchema: { output_path: 'string', stage_slug: 'string' },
+          },
+        }),
+      ).not.toHaveProperty('pathFlag');
+    });
+  });
+
   it('flags agent-team as not implemented without crashing', () => {
     const lib = baseLibrary({ stagesById: { a: stage('a', { mode: 'agent-team' }) } });
     const { plan } = buildExecutionPlan({

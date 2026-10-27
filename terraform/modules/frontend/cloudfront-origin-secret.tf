@@ -6,7 +6,7 @@ resource "random_password" "cloudfront_origin_secret" {
 
 resource "aws_ssm_parameter" "cloudfront_origin_secret" {
   name        = "/${var.project_name}/${var.environment}/cloudfront-origin-secret"
-  description = "Shared secret injected by CloudFront as X-Origin-Verify header. Used when enable_cloudfront_origin_policy is enabled on the API module."
+  description = "Shared secret injected by CloudFront as X-Origin-Verify header. Required by the REST API WAF ACL when enable_waf is true."
   type        = "SecureString"
   value       = random_password.cloudfront_origin_secret.result
 

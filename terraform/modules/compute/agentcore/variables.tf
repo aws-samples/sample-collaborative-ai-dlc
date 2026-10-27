@@ -134,6 +134,17 @@ variable "codex_model" {
   }
 }
 
+variable "disabled_clis" {
+  description = "Agent CLIs that cannot be selected for new intents, seeded into the disabled-clis SSM parameter (empty = all enabled; Admin UI managed afterwards)"
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for cli in var.disabled_clis : contains(["kiro", "claude", "opencode", "codex"], cli)])
+    error_message = "disabled_clis may only contain kiro, claude, opencode, or codex."
+  }
+}
+
 # AgentCore Runtime network mode. Neptune lives in a private VPC, so VPC mode is
 # the default — the runtime's ENIs are placed in dedicated subnets in this VPC
 # (in AgentCore-supported AZs) and reach Neptune over the VPC. Set to PUBLIC only
@@ -187,4 +198,16 @@ variable "build_amd64_image" {
   description = "Also build an amd64 variant of the core image (required for x86_64 managed environments on the Instances compute type)"
   type        = bool
   default     = false
+}
+
+variable "iam_role_path" {
+  description = "Path for the IAM roles this module creates"
+  type        = string
+  default     = "/"
+}
+
+variable "iam_permissions_boundary_arn" {
+  description = "Permissions boundary for the IAM roles this module creates; empty sets none"
+  type        = string
+  default     = ""
 }

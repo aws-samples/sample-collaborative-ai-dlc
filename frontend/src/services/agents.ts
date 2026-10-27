@@ -63,6 +63,9 @@ export interface RuntimeCliStatus {
   installed: boolean;
   authed: boolean;
   available: boolean;
+  /** False when a platform admin disabled this CLI (then `available` is false
+   *  too). Absent from older backends, which means enabled. */
+  enabled?: boolean;
   credentialSource?: AgentCredentialSource | null;
 }
 
@@ -176,6 +179,8 @@ export interface AgentCapabilities {
   /** Present only with `?models=1`: per-CLI availability from the v2 runtime. */
   runtimeClis?: RuntimeCliStatus[] | null;
   credentialSources?: Partial<Record<'bedrock' | 'kiro', AgentCredentialSource | null>>;
+  /** CLIs a platform admin disabled for selection (excluded from `available`). */
+  disabledClis?: AgentCli[];
   /** Present only with `?models=1`: selectable models per CLI. Claude/OpenCode
    *  are region-valid Bedrock inference profiles; Kiro uses its own namespace. */
   models?: Partial<Record<AgentCli, AgentModel[]>>;
@@ -208,6 +213,9 @@ export interface AgentSettings {
   composeLlmBypass?: 'enabled' | 'disabled';
   /** Platform default for spaces that inherit PR delivery policy. */
   prStrategy?: 'intent-pr' | 'pr-per-unit';
+  /** Agent CLIs a platform admin disabled for new selections. Empty = all
+   *  enabled. Intents that already pinned a CLI keep it. */
+  disabledClis?: AgentCli[];
   /** Global custom MCP servers (raw JSON string, name-keyed JSON object)
    *  injected into every agent session; merged under a project's own set.
    *  Only returned to platform admins. */
@@ -259,6 +267,9 @@ export interface AgentSettingsUpdate {
   composeLlmBypass?: 'enabled' | 'disabled';
   /** Platform default PR delivery strategy. Omit to leave unchanged. */
   prStrategy?: 'intent-pr' | 'pr-per-unit';
+  /** Agent CLIs disabled for selection; at least one must stay enabled. Omit
+   *  to leave unchanged. */
+  disabledClis?: AgentCli[];
   /** Global custom MCP servers (raw JSON string). Omit to leave unchanged. */
   customMcpServers?: string;
   /** Global MCP secret values keyed by `${VAR}` name. A non-empty value rotates;

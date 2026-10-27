@@ -9,11 +9,21 @@ locals {
   realtime_partition  = data.aws_partition.realtime.partition
   realtime_dns_suffix = data.aws_partition.realtime.dns_suffix
   all_lambdas_in_vpc  = var.lambda_vpc_scope == "all"
+  # ws-connection bundles lambda/shared/** via esbuild, but the lambda module
+  # only hashes its own source_path. Fold the shared tree into hash_extra so a
+  # shared-file change rebuilds the package (same as modules/api/lambda).
+  shared_dir = "${path.module}/../../../lambda/shared"
+  shared_sources_hash = sha256(join("", [
+    for f in sort(fileset(local.shared_dir, "**/*.{js,mjs,cjs,json}")) :
+    filesha256("${local.shared_dir}/${f}")
+  ]))
 }
 
 # IAM Role for Lambda functions
 resource "aws_iam_role" "lambda" {
-  name = "${var.project_name}-ws-lambda-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-ws-lambda-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -96,6 +106,8 @@ module "connection_lambda" {
       ]
     }
   ]
+  # Force a rebuild when bundled lambda/shared/** changes (see local above).
+  hash_extra = local.shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.lambda.arn

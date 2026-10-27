@@ -405,6 +405,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     credentialBinding,
     mcpServersByTier,
     constructionAutonomyMode,
+    constructionGateAutonomy,
+    constructionGateAutonomyGrant,
     projectType,
     // Per-intent skip overlay (stage-skip.js). Only the rewind endpoint writes
     // this: rewinding TO a skipped stage UN-skips it (list shrinks, or null).
@@ -413,6 +415,15 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     // override) and by the recompose path (which retires + relaunches the
     // run). Validated shape only — the plan resolver owns grid policy.
     composedGrid,
+    // The stock scope a composed grid runs on (see buildExecutionMeta). DRAFT
+    // only, routed by the intents API, which verifies it against the pinned
+    // workflow's scope vocabulary; the store validates shape, like every field
+    // here.
+    policyScope,
+    // Per-intent AI-DLC settings (shared/intent-aidlc-settings.js). DRAFT-only,
+    // routed by the intents API, which owns the lifecycle rule and the value
+    // normalisation; the store validates shape, like every field here.
+    aidlcSettings,
     // DRAFT-phase editable header fields (the collaborative draft page's
     // auto-save writes these). The intents API only routes them while the
     // intent is DRAFT; the store validates shape, not lifecycle.
@@ -592,6 +603,25 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       sets.push('constructionAutonomyMode = :cam');
       values[':cam'] = constructionAutonomyMode;
     }
+    // The sequential construction-gate grant. Validated against the same two-value
+    // vocabulary, but kept as its own attribute: the field above is the unit-lane
+    // ladder's decision and must not be overwritten by this grant (or vice versa).
+    if (constructionGateAutonomy !== undefined) {
+      if (
+        constructionGateAutonomy !== null &&
+        !CONSTRUCTION_AUTONOMY_MODES.includes(constructionGateAutonomy)
+      ) {
+        throw new Error(`invalid constructionGateAutonomy: ${constructionGateAutonomy}`);
+      }
+      sets.push('constructionGateAutonomy = :cga');
+      values[':cga'] = constructionGateAutonomy;
+    }
+    // Written in the same update as the grant it describes, so the row can never
+    // carry a grant with no recorded author.
+    if (constructionGateAutonomyGrant !== undefined) {
+      sets.push('constructionGateAutonomyGrant = :cgag');
+      values[':cgag'] = constructionGateAutonomyGrant;
+    }
     if (projectType !== undefined) {
       if (projectType !== 'greenfield' && projectType !== 'brownfield') {
         throw new Error(`invalid projectType: ${projectType}`);
@@ -617,6 +647,31 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       }
       sets.push('composedGrid = :cgr');
       values[':cgr'] = composedGrid && Object.keys(composedGrid).length ? composedGrid : null;
+    }
+    if (policyScope !== undefined) {
+      if (policyScope !== null && typeof policyScope !== 'string') {
+        throw new Error('policyScope must be a scope name or null');
+      }
+      if (policyScope) {
+        sets.push('policyScope = :pscope');
+        values[':pscope'] = policyScope;
+      } else {
+        removes.push('policyScope');
+      }
+    }
+    if (aidlcSettings !== undefined) {
+      if (
+        aidlcSettings !== null &&
+        (typeof aidlcSettings !== 'object' || Array.isArray(aidlcSettings))
+      ) {
+        throw new Error('aidlcSettings must be a {setting: value} object or null');
+      }
+      if (aidlcSettings && Object.keys(aidlcSettings).length) {
+        sets.push('aidlcSettings = :ads');
+        values[':ads'] = aidlcSettings;
+      } else {
+        removes.push('aidlcSettings');
+      }
     }
     if (title !== undefined) {
       if (title !== null && typeof title !== 'string') {
@@ -676,7 +731,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       sets.push('draftRevision = :nextDraftRevision');
       values[':nextDraftRevision'] = ifDraftRevision + 1;
     } else if (
-      [title, prompt, scope, composedGrid, skipStageIds].some((value) => value !== undefined)
+      [title, prompt, scope, composedGrid, policyScope, skipStageIds, aidlcSettings].some(
+        (value) => value !== undefined,
+      )
     ) {
       // Composer/orchestrator changes invalidate a browser's preflight too.
       sets.push('draftRevision = if_not_exists(draftRevision, :draftZero) + :draftOne');

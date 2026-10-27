@@ -47,6 +47,13 @@ Add these **environment variables**:
 | `TF_STATE_KEY`    | `terraform.tfstate`                              |
 | `TF_STATE_REGION` | `eu-west-1`                                      |
 
+Optionally set `AIDLC_RELEASE_PINNING` to `on` to let new intents pin an
+AI-DLC release (see
+[AI-DLC release compatibility](../concepts/aidlc-release-compatibility.md)).
+When it is unset, the workflow writes nothing and Terraform's default `off`
+applies; any value other than `on` or `off` fails the plan. The same variable
+applies to the main demo environment.
+
 No GitHub secrets are required for a local-authentication deployment without
 a custom domain. OIDC replaces long-lived AWS access keys, and the Terraform
 variables contain no credentials. Do not create `AWS_ACCESS_KEY_ID` or `AWS_SECRET_ACCESS_KEY`

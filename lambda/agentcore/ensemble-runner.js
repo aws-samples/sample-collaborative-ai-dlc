@@ -42,33 +42,33 @@
 import { dispatchPersona } from './persona-dispatch.js';
 import { neutralizeTokens } from './stage-materializer.js';
 import { evaluateGatePreconditions } from '../shared/gate-preconditions.js';
+import {
+  ENSEMBLE_PROTOCOL_FILE,
+  SUPPORT_SESSION_MODES,
+  supportSessionRefs,
+} from '../shared/v2-execution-plan.js';
 import { contributionArtifactId } from '../shared/ensemble-contribution.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
 // capability cannot be declared handled without the code that handles it.
-export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['stage.mode.ensemble-sessions@v1']);
+export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
+  'policy.collaborators.off@v1',
+  'stage.mode.ensemble-sessions@v1',
+]);
 
 export { contributionArtifactId };
 
 // The stage modes that get real per-persona sessions. `pipeline` and `mob` have
 // separate support sessions; `subagent` does only when it declares supports. A
-// lead-only `subagent` remains one session like `inline`.
-export const SESSION_ENSEMBLE_MODES = Object.freeze(['pipeline', 'mob', 'subagent']);
+// lead-only `subagent` remains one session like `inline`. The plan records which
+// personas the collaborators switch withdrew from the SAME mode set, so the two
+// read one definition.
+export const SESSION_ENSEMBLE_MODES = SUPPORT_SESSION_MODES;
 
-// The closure's protocol file distinguishes delegated single-session subagents
-// from hub-and-spoke support sessions without relying on a release version.
-export const ENSEMBLE_PROTOCOL_FILE = 'core/aidlc-common/protocols/stage-protocol-ensemble.md';
-
-const subagentIsHubAndSpoke = (library) => {
-  const paths = library?.runtimeFilePaths;
-  // A library that carries no runtime-file list cannot say; only a release
-  // closure is ever resolved here, and the resolver always stamps the list.
-  if (paths == null) return true;
-  return Array.isArray(paths)
-    ? paths.includes(ENSEMBLE_PROTOCOL_FILE)
-    : typeof paths.has === 'function' && paths.has(ENSEMBLE_PROTOCOL_FILE);
-};
+// Re-exported so the existing callers and tests keep one import site; the
+// predicate that reads it lives with the plan, which is the other caller.
+export { ENSEMBLE_PROTOCOL_FILE };
 
 // Every cap is enforced on PERSISTED state, never an in-memory counter a resume
 // would silently reset.
@@ -472,11 +472,13 @@ export const resolveEnsembleTopology = async ({
 }) => {
   if (!methodologyRelease) return null;
   if (!stage?.policy) return null;
-  if (!SESSION_ENSEMBLE_MODES.includes(stage?.mode)) return null;
-  if (stage.mode === 'subagent' && !subagentIsHubAndSpoke(library)) return null;
-  const refs = (stage.supportAgentRefs ?? []).filter(
-    (ref) => ref && ref !== stage.agentRef && library?.agentsById?.[ref],
-  );
+  // The scope withdrew the collaborators: no topology at all, which is this
+  // runtime's single-session contract and upstream's own lead-only contract —
+  // the lead performs the synthesis and produces every declared output. A
+  // shortened roster would instead leave some declared outputs unowned.
+  if (stage.policy.collaborators === 'off') return null;
+  // The SAME eligibility question the plan's withdrawal audit asks.
+  const refs = supportSessionRefs({ stage, library });
   if (refs.length === 0) return null;
   const admitted = refs.slice(0, MAX_SUPPORT_PERSONAS);
   const dropped = refs.slice(MAX_SUPPORT_PERSONAS);

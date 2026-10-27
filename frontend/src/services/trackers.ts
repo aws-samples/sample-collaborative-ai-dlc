@@ -70,6 +70,8 @@ export interface ExternalProject {
   key: string;
   name: string;
   displayKey?: string;
+  // Jira: software, business, service_desk or product_discovery.
+  projectTypeKey?: string;
 }
 
 // Operator-side OAuth-app config status, exposed by `GET /trackers/providers`.

@@ -5,6 +5,8 @@ import {
   GetCommand,
   PutCommand,
   DeleteCommand,
+  QueryCommand,
+  UpdateCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 import {
@@ -532,6 +534,105 @@ describe('gitlab handler', () => {
           defaultBranch: 'develop',
         },
       ]);
+    });
+
+    describe('token expiry while parallel pages are in flight', () => {
+      const BINDINGS_TABLE = 'test-source-control-bindings';
+      const fullPage = (n) =>
+        Array.from({ length: 100 }, (_, i) => ({
+          id: n * 100 + i,
+          name: `p${n}-${i}`,
+          path_with_namespace: `g/p${n}-${i}`,
+          visibility: 'private',
+        }));
+
+      // GitLab double: page 1 succeeds with the stored token, which then
+      // expires; /oauth/token answers with `refreshResult`.
+      const stubGitLab = (refreshResult) => {
+        let valid = ['glpat-old'];
+        let projectCalls = 0;
+        const refreshBodies = [];
+        globalThis.fetch = vi.fn(async (url, options) => {
+          if (url === 'https://gitlab.com/oauth/token') {
+            refreshBodies.push(JSON.parse(options.body));
+            await new Promise((r) => setTimeout(r, 5));
+            if (refreshResult.error) return { status: 400, json: async () => refreshResult };
+            valid = [refreshResult.access_token];
+            return { status: 200, json: async () => refreshResult };
+          }
+          projectCalls += 1;
+          const page = Number(new URL(url).searchParams.get('page'));
+          const token = options.headers.Authorization.replace('Bearer ', '');
+          const accepted = valid.includes(token);
+          if (projectCalls === 1) valid = [];
+          if (!accepted) {
+            return { status: 401, ok: false, json: async () => ({ message: '401 Unauthorized' }) };
+          }
+          return {
+            status: 200,
+            ok: true,
+            json: async () => fullPage(page),
+            headers: { get: (h) => (h === 'x-total-pages' ? '3' : null) },
+          };
+        });
+        return { refreshBodies };
+      };
+
+      beforeEach(() => {
+        vi.stubEnv('SOURCE_CONTROL_BINDINGS_TABLE', BINDINGS_TABLE);
+        mockOAuthSecret();
+        mockGitConnection();
+        mockResolveGitToken('glpat-old', 'refresh-old');
+        ssmMock.on(PutParameterCommand).resolves({});
+        ddbMock.on(PutCommand).resolves({});
+        ddbMock.on(QueryCommand).resolves({
+          Items: [{ projectId: 'proj-1', bindingKey: 'repo#g/p', credentialRef: 'x' }],
+        });
+        ddbMock.on(UpdateCommand).resolves({});
+      });
+
+      it('refreshes once, retries both pages and leaves bindings valid', async () => {
+        const { refreshBodies } = stubGitLab({
+          access_token: 'glpat-new',
+          refresh_token: 'refresh-new',
+          token_type: 'bearer',
+          scope: 'api read_user',
+        });
+
+        const handler = await loadHandler();
+        const res = await handler(makeEvent('GET', '/gitlab/repos'));
+
+        expect(res.statusCode).toBe(200);
+        expect(JSON.parse(res.body).map((r) => r.id)).toEqual(
+          Array.from({ length: 300 }, (_, i) => i + 100),
+        );
+        expect(refreshBodies).toHaveLength(1);
+        expect(refreshBodies[0].refresh_token).toBe('refresh-old');
+        expect(ssmMock).toHaveReceivedCommandTimes(PutParameterCommand, 1);
+        expect(ddbMock).toHaveReceivedCommandTimes(UpdateCommand, 0);
+      });
+
+      it('keeps a genuine refresh rejection as one refresh and one invalidation', async () => {
+        const { refreshBodies } = stubGitLab({
+          error: 'invalid_grant',
+          error_description: 'The provided authorization grant is invalid',
+        });
+
+        const handler = await loadHandler();
+        const res = await handler(makeEvent('GET', '/gitlab/repos'));
+
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body).error).toBe('401 Unauthorized');
+        expect(refreshBodies).toHaveLength(1);
+        expect(ssmMock).toHaveReceivedCommandTimes(PutParameterCommand, 0);
+        expect(ddbMock).toHaveReceivedCommandWith(UpdateCommand, {
+          TableName: BINDINGS_TABLE,
+          ExpressionAttributeValues: expect.objectContaining({
+            ':reason': 'oauth_refresh_failed',
+          }),
+        });
+        expect(ddbMock).toHaveReceivedCommandTimes(UpdateCommand, 1);
+      });
     });
 
     it('returns 400 when GitLab API returns an error object instead of array', async () => {

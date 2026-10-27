@@ -167,16 +167,25 @@ describe('PATCH /aidlc-releases/{releaseId} {importerRevision}', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('upgraded');
     expect(res.body.release).toMatchObject({
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
       importerStale: false,
       closureDigest: currentBundle.manifest.closureDigest,
-      catalogKey: releaseCatalogKey({ sha: SHA, importerRevision: 2 }),
-      manifestKey: releaseManifestKey({ sha: SHA, importerRevision: 2 }),
+      catalogKey: releaseCatalogKey({
+        sha: SHA,
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      }),
+      manifestKey: releaseManifestKey({
+        sha: SHA,
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      }),
     });
     expect(res.body.release.importerHistory).toHaveLength(1);
     expect(res.body.release.importerHistory[0]).toMatchObject({
       from: { importerRevision: 1, closureDigest: legacyBundle.manifest.closureDigest },
-      to: { importerRevision: 2, closureDigest: currentBundle.manifest.closureDigest },
+      to: {
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+        closureDigest: currentBundle.manifest.closureDigest,
+      },
       upgradedBy: 'admin-1',
     });
   });
@@ -184,11 +193,11 @@ describe('PATCH /aidlc-releases/{releaseId} {importerRevision}', () => {
   it('is idempotent on retry', async () => {
     const first = await patchRelease({
       expectedRevision: await currentRevision(),
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
     });
     const again = await patchRelease({
       expectedRevision: first.body.release.revision,
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
     });
 
     expect(again.status).toBe(200);
@@ -199,7 +208,7 @@ describe('PATCH /aidlc-releases/{releaseId} {importerRevision}', () => {
   it('409s a stale expectedRevision', async () => {
     const res = await patchRelease({
       expectedRevision: (await currentRevision()) + 3,
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
     });
 
     expect(res.status).toBe(409);
@@ -215,27 +224,64 @@ describe('PATCH /aidlc-releases/{releaseId} {importerRevision}', () => {
         'release_importer_revision_invalid',
       ],
       [{ expectedRevision: revision, importerRevision: 9 }, 'release_importer_revision_invalid'],
-      [{ expectedRevision: revision, importerRevision: 2, visible: true }, 'release_state_invalid'],
+      [
+        {
+          expectedRevision: revision,
+          importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+          visible: true,
+        },
+        'release_state_invalid',
+      ],
     ]) {
       const res = await patchRelease(body);
       expect({ status: res.status, code: res.body.code }).toEqual({ status: 400, code });
     }
 
-    objects.delete(releaseManifestKey({ sha: SHA, importerRevision: 2 }));
-    const unpublished = await patchRelease({ expectedRevision: revision, importerRevision: 2 });
+    objects.delete(
+      releaseManifestKey({ sha: SHA, importerRevision: AIDLC_RELEASE_IMPORTER_REVISION }),
+    );
+    const unpublished = await patchRelease({
+      expectedRevision: revision,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+    });
     expect({ status: unpublished.status, code: unpublished.body.code }).toEqual({
       status: 400,
       code: 'release_not_published',
     });
   });
 
+  it('502s when S3 denies the read of the target revision manifest', async () => {
+    const revision = await currentRevision();
+    const key = releaseManifestKey({ sha: SHA, importerRevision: AIDLC_RELEASE_IMPORTER_REVISION });
+    s3Mock.on(GetObjectCommand).callsFake((input) => {
+      if (input.Key === key) {
+        const error = new Error('Access Denied');
+        error.name = 'AccessDenied';
+        error.$metadata = { httpStatusCode: 403 };
+        throw error;
+      }
+      if (!objects.has(input.Key)) throw Object.assign(new Error('missing'), { name: 'NoSuchKey' });
+      return { Body: { transformToString: async () => objects.get(input.Key) } };
+    });
+
+    const res = await patchRelease({
+      expectedRevision: revision,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+    });
+
+    expect({ status: res.status, code: res.body.code }).toEqual({
+      status: 502,
+      code: 'release_manifest_unreadable',
+    });
+  });
+
   it('409s a manifest at the target revision that fails verification', async () => {
-    const key = releaseManifestKey({ sha: SHA, importerRevision: 2 });
+    const key = releaseManifestKey({ sha: SHA, importerRevision: AIDLC_RELEASE_IMPORTER_REVISION });
     objects.set(key, JSON.stringify({ ...currentBundle.manifest, closureDigest: 'a'.repeat(64) }));
 
     const res = await patchRelease({
       expectedRevision: await currentRevision(),
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
     });
 
     expect(res.status).toBe(409);
@@ -244,7 +290,10 @@ describe('PATCH /aidlc-releases/{releaseId} {importerRevision}', () => {
 
   it('403s a non-admin', async () => {
     const res = await patchRelease(
-      { expectedRevision: await currentRevision(), importerRevision: 2 },
+      {
+        expectedRevision: await currentRevision(),
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      },
       memberClaims,
     );
 
@@ -256,7 +305,7 @@ describe('compose reads after an upgrade', () => {
   beforeEach(async () => {
     const res = await patchRelease({
       expectedRevision: await currentRevision(),
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
     });
     expect(res.status).toBe(200);
   });
@@ -277,12 +326,15 @@ describe('compose reads after an upgrade', () => {
 
     expect(res.status).toBe(200);
     expect(catalogReads().slice(before)).toEqual([
-      releaseCatalogKey({ sha: SHA, importerRevision: 2 }),
+      releaseCatalogKey({ sha: SHA, importerRevision: AIDLC_RELEASE_IMPORTER_REVISION }),
     ]);
   });
 
   it('404s a revision the record never pointed at and 400s a malformed one', async () => {
-    const never = await compiled({ release: RELEASE_ID, releaseImporterRevision: '3' });
+    const never = await compiled({
+      release: RELEASE_ID,
+      releaseImporterRevision: String(AIDLC_RELEASE_IMPORTER_REVISION + 1),
+    });
     expect({ status: never.status, code: never.body.code }).toEqual({
       status: 404,
       code: 'release_not_found',

@@ -9,6 +9,10 @@
 // These are additions: nothing in run-stage.test.js is modified.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { EventEmitter } from 'node:events';
 
 // The contribution vocabulary is the real one: run-stage reaches the graph through
 // `createGraphWriter`, so the writer is mocked rather than the connection — that is
@@ -657,6 +661,187 @@ describe('runStage — the lead draft is durable before any persona runs', () =>
       .at(-1);
     expect(failedStage[1].pendingCodeCommitRefs).toContainEqual({ repo: 'r1', sha: 'lead1' });
   });
+});
+
+describe('runStage — ensemble lead-draft provenance', () => {
+  it.each(
+    ['pipeline', 'mob', 'subagent'].flatMap((mode) =>
+      [
+        'known lead',
+        'unknown lead',
+        'unknown final',
+        'failed recovery',
+        'unknown lead and failed recovery',
+      ].flatMap((provenanceCase) =>
+        [0, 127].map((sensorExit) => [mode, provenanceCase, sensorExit]),
+      ),
+    ),
+  )(
+    'runs the write sensor after a %s ensemble with %s, no persona file edits and sensor exit %s',
+    async (mode, provenanceCase, sensorExit) => {
+      const workspaceDir = await mkdtemp(path.join(tmpdir(), 'ensemble-lead-provenance-'));
+      try {
+        const { deps, store, args } = harness({ mode, ...withGraph() });
+        const lib = library(mode);
+        lib.stagesById['requirements-analysis'].sensors = ['linter'];
+        lib.sensorsById.linter = {
+          id: 'linter',
+          runtime: 'bun',
+          command: 'bun lint.ts',
+          severity: 'blocking',
+          fireOn: 'write',
+          scope: 'file',
+          verdictMode: 'stdout-json',
+          matches: 'src/lead.ts',
+          scriptRef: { s3Key: 'blocks/scripts/sha256/linter' },
+        };
+        deps.loadLibrary = async () => ({ workflow: workflow(), library: lib });
+        deps.loadBlockScript = async () => 'SENSOR_SCRIPT';
+        deps.ensureWorkspaceSource = async () => ({ restored: false, repos: [], failed: [] });
+        deps.redirectHeavyDirs = async () => ({ links: [] });
+        await mkdir(path.join(workspaceDir, 'src'));
+        await writeFile(path.join(workspaceDir, 'src/lead.ts'), 'export const lead = true;\n');
+        const leadProvenance = provenanceCase.startsWith('unknown lead')
+          ? { state: 'unknown', reason: 'lead_enumeration_failed' }
+          : { state: 'known', files: ['src/lead.ts'] };
+        const finalProvenance =
+          provenanceCase === 'unknown final'
+            ? { state: 'unknown', reason: 'final_enumeration_failed' }
+            : { state: 'known', files: [] };
+        const commits = [];
+        deps.commitAndPushAll = async (input) => {
+          commits.push(input);
+          const lead = commits.length === 1;
+          return {
+            ok: true,
+            committed: lead,
+            results: [
+              {
+                repo: 'acme/api',
+                committed: lead,
+                pushed: lead ? true : 'up_to_date',
+                sha: lead ? 'a'.repeat(40) : null,
+                files: lead ? ['src/lead.ts'] : [],
+                provenance: lead ? leadProvenance : finalProvenance,
+              },
+            ],
+          };
+        };
+        deps.gitResultForCommitRefs = vi.fn(async () => {
+          if (provenanceCase.includes('failed recovery'))
+            throw new Error('lead commit unavailable');
+          return {
+            ok: true,
+            committed: true,
+            results: [
+              {
+                repo: 'acme/api',
+                committed: true,
+                pushed: true,
+                sha: 'a'.repeat(40),
+                files: ['src/lead.ts'],
+                provenance: { state: 'known', files: ['src/lead.ts'] },
+              },
+            ],
+          };
+        });
+        deps.ingestStageCodeTraceability = vi.fn(async () => ({ codeFiles: 0 }));
+        const inspectedFiles = [];
+        let personaSessions = 0;
+        deps.spawnFn = (command, argv) => {
+          if (command !== 'bun') {
+            if (commits.length) personaSessions++;
+            // Personas update graph artifacts only; the filesystem stays unchanged.
+            return outputWritingSpawn();
+          }
+          inspectedFiles.push(argv[argv.indexOf('--file-path') + 1]);
+          const child = new EventEmitter();
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+          child.kill = () => {};
+          setImmediate(() => {
+            if (sensorExit === 0) child.stdout.emit('data', Buffer.from('{"pass":true}'));
+            child.emit('close', sensorExit);
+          });
+          return child;
+        };
+        const result = await runStage(
+          {
+            ...args,
+            workspaceDir,
+            repos: ['acme/api'],
+            branch: 'main',
+            baseBranch: 'trunk',
+            baseBranches: { 'acme/api': 'production' },
+          },
+          deps,
+        );
+        expect(commits).toHaveLength(2);
+        expect(commits[0].message).toContain('(lead draft)');
+        expect(commits[0]).toMatchObject({
+          baseBranch: 'trunk',
+          baseBranches: { 'acme/api': 'production' },
+        });
+        expect(personaSessions).toBeGreaterThan(0);
+        expect(deps.gitResultForCommitRefs).toHaveBeenCalledWith({
+          commitRefs: [{ repo: 'acme/api', sha: 'a'.repeat(40) }],
+          repos: ['acme/api'],
+          workspaceDir,
+        });
+        expect.soft(inspectedFiles).toEqual(['src/lead.ts']);
+        const expectedProvenance =
+          provenanceCase === 'known lead'
+            ? leadProvenance
+            : provenanceCase.includes('failed recovery')
+              ? {
+                  state: 'unknown',
+                  reason: provenanceCase.startsWith('unknown lead')
+                    ? 'acme/api: lead_enumeration_failed; git_commit_refs_failed'
+                    : 'git_commit_refs_failed',
+                  detail: 'lead commit unavailable',
+                }
+              : {
+                  state: 'unknown',
+                  reason: `acme/api: ${provenanceCase === 'unknown lead' ? 'lead' : 'final'}_enumeration_failed`,
+                };
+        if (sensorExit === 0) {
+          expect.soft(result).toMatchObject({
+            ok: true,
+            state: 'SUCCEEDED',
+            changedFiles: expectedProvenance.state === 'known' ? ['src/lead.ts'] : null,
+            changedFileProvenance: expectedProvenance,
+          });
+          if (!provenanceCase.includes('failed recovery')) {
+            expect(result.commitSha).toBe('a'.repeat(40));
+            expect(deps.ingestStageCodeTraceability).toHaveBeenCalledWith(
+              expect.objectContaining({
+                gitResult: expect.objectContaining({
+                  results: [
+                    expect.objectContaining({ sha: 'a'.repeat(40), files: ['src/lead.ts'] }),
+                  ],
+                }),
+              }),
+            );
+          }
+        } else {
+          expect.soft(result).toMatchObject({ ok: false, reason: 'sensor_blocked' });
+        }
+        const persisted = store.calls.find(
+          ([name, row]) => name === 'recordSensorRun' && row.sensorId === 'linter',
+        )?.[1];
+        expect.soft(persisted).toMatchObject({
+          result: sensorExit === 0 ? 'PASS' : 'INCONCLUSIVE',
+          held: sensorExit !== 0,
+          detail: {
+            applicability: provenanceCase === 'known lead' ? 'APPLICABLE' : 'UNKNOWN',
+            provenance: expectedProvenance,
+          },
+        });
+      } finally {
+        await rm(workspaceDir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('runStage — the lead session carries its own trusted identity', () => {

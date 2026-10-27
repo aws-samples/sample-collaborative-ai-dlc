@@ -93,6 +93,53 @@ describe('platform PR strategy settings', () => {
   });
 });
 
+describe('platform agent CLI availability settings', () => {
+  it('reads the disabled set and defaults to every CLI enabled', async () => {
+    ssmMock.on(GetParametersCommand).resolves({
+      Parameters: [{ Name: '/collab/dev/disabled-clis', Value: '["codex","unknown"]' }],
+    });
+    const configured = await handler(event('GET'));
+    expect(configured.statusCode).toBe(200);
+    expect(JSON.parse(configured.body).disabledClis).toEqual(['codex']);
+    expect(ssmMock.commandCalls(GetParametersCommand)[0].args[0].input.Names).toContain(
+      '/collab/dev/disabled-clis',
+    );
+
+    ssmMock.on(GetParametersCommand).resolves({ Parameters: [] });
+    const missing = await handler(event('GET'));
+    expect(JSON.parse(missing.body).disabledClis).toEqual([]);
+  });
+
+  it('allows only platform admins to update the disabled set', async () => {
+    const denied = await handler(event('PUT', { disabledClis: ['codex'] }));
+    expect(denied.statusCode).toBe(403);
+    expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
+
+    ssmMock.on(PutParameterCommand).resolves({});
+    const allowed = await handler(
+      event('PUT', { disabledClis: ['codex', 'claude', 'codex'] }, 'platform-admin'),
+    );
+    expect(allowed.statusCode).toBe(200);
+    expect(ssmMock.commandCalls(PutParameterCommand)[0].args[0].input).toMatchObject({
+      Name: '/collab/dev/disabled-clis',
+      Value: '["claude","codex"]',
+      Type: 'String',
+      Overwrite: true,
+    });
+  });
+
+  it('rejects unknown CLIs and disabling every CLI without writing SSM', async () => {
+    const unknown = await handler(event('PUT', { disabledClis: ['gemini'] }, 'platform-admin'));
+    expect(unknown.statusCode).toBe(400);
+    const all = await handler(
+      event('PUT', { disabledClis: ['kiro', 'claude', 'opencode', 'codex'] }, 'platform-admin'),
+    );
+    expect(all.statusCode).toBe(400);
+    expect(JSON.parse(all.body).issues).toEqual(['At least one agent CLI must stay enabled']);
+    expect(ssmMock.commandCalls(PutParameterCommand)).toHaveLength(0);
+  });
+});
+
 describe('personal agent credentials', () => {
   const personalEvent = (method, body) => ({
     ...event(method, body),

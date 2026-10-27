@@ -1,0 +1,231 @@
+name: PR Quality
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: pr-quality-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  revisions:
+    runs-on: ubuntu-latest
+    outputs:
+      merge-base: ${{ steps.refs.outputs.merge-base }}
+      coverage-needed: ${{ steps.refs.outputs.coverage-needed }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: refs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          merge_base=$(git merge-base "$BASE_SHA" "$PR_SHA")
+          echo "merge-base=$merge_base" >> "$GITHUB_OUTPUT"
+          if git diff --quiet "$merge_base" "$PR_SHA" -- lambda/ test/ \
+            'package*.json' vitest.config.js eslint.complexity.config.mjs \
+            'scripts/*complexity*' 'scripts/test/*complexity*' '.github/workflows/pr-quality*'; then
+            echo "coverage-needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "coverage-needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  coverage:
+    name: coverage-${{ matrix.revision }}
+    needs: revisions
+    if: needs.revisions.outputs.coverage-needed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        revision: [base, pr]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: tooling
+          persist-credentials: false
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ matrix.revision == 'base' && needs.revisions.outputs.merge-base || github.event.pull_request.head.sha }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            source/package-lock.json
+            source/lambda/yjs-server/package-lock.json
+      - name: Install revision dependencies
+        id: install
+        continue-on-error: true
+        working-directory: source
+        run: |
+          npm ci
+          npm ci --prefix lambda/yjs-server --ignore-scripts
+      - name: Measure backend coverage
+        id: tests
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        working-directory: source
+        run: npm test -- --coverage --coverage.reporter=json --coverage.reportOnFailure
+      - name: Collect revision-bound coverage
+        if: always()
+        env:
+          TESTS_PASSED: ${{ steps.tests.outcome == 'success' }}
+        run: |
+          args=()
+          if [ "$TESTS_PASSED" = true ]; then args+=(--successful); fi
+          node tooling/scripts/complexity-coverage.mjs --cwd "$PWD/source" \
+            --input "$PWD/source/coverage/coverage-final.json" \
+            --output "$PWD/coverage.json" "${args[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: coverage-${{ matrix.revision }}-${{ github.run_attempt }}
+          path: coverage.json
+          if-no-files-found: error
+          retention-days: 7
+
+  comment:
+    needs: report
+    if: >-
+      always() &&
+      github.event.pull_request.head.repo.id == github.event.repository.id &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: write
+    concurrency:
+      group: pr-quality-comment-${{ github.event.pull_request.head.repo.id }}-${{ github.event.pull_request.head.ref }}
+      cancel-in-progress: false
+    steps:
+      # Same-repository authors already control this PR workflow. Forks and
+      # Dependabot use the default-branch publisher in pr-quality-comment.yml.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /scripts/publish-complexity-comment.mjs
+            /scripts/complexity-report.mjs
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        id: artifacts
+        with:
+          script: |
+            const { qualityArtifactNames } = await import(
+              `${process.env.GITHUB_WORKSPACE}/scripts/publish-complexity-comment.mjs`
+            );
+            const names = await qualityArtifactNames({
+              github, repo: context.repo, runId: context.runId,
+              attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            });
+            core.setOutput('report', names.report);
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.artifacts.outputs.report != ''
+        continue-on-error: true
+        with:
+          name: ${{ steps.artifacts.outputs.report }}
+          path: quality-report
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const { publishComplexityComment } = await import(
+              `${process.env.GITHUB_WORKSPACE}/scripts/publish-complexity-comment.mjs`
+            );
+            await publishComplexityComment({
+              github, context,
+              reportPath: `${process.env.GITHUB_WORKSPACE}/quality-report/comparison.json`,
+              warn: core.warning,
+            });
+
+  report:
+    needs: [revisions, coverage]
+    if: always() && needs.revisions.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        id: artifacts
+        with:
+          script: |
+            const { qualityArtifactNames } = await import(
+              `${process.env.GITHUB_WORKSPACE}/scripts/publish-complexity-comment.mjs`
+            );
+            const names = await qualityArtifactNames({
+              github, repo: context.repo, runId: context.runId,
+              attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            });
+            core.setOutput('base', names.base);
+            core.setOutput('pr', names.pr);
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.artifacts.outputs.base != ''
+        continue-on-error: true
+        with:
+          name: ${{ steps.artifacts.outputs.base }}
+          path: coverage-input/base
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.artifacts.outputs.pr != ''
+        continue-on-error: true
+        with:
+          name: ${{ steps.artifacts.outputs.pr }}
+          path: coverage-input/pr
+      - name: Compare complexity and coverage
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          COVERAGE_NEEDED: ${{ needs.revisions.outputs.coverage-needed }}
+        run: |
+          args=()
+          if [ "$COVERAGE_NEEDED" = false ]; then args+=(--coverage-not-needed); fi
+          if [ -f "coverage-input/base/coverage.json" ]; then
+            args+=(--base-coverage "coverage-input/base/coverage.json")
+          fi
+          if [ -f "coverage-input/pr/coverage.json" ]; then
+            args+=(--pr-coverage "coverage-input/pr/coverage.json")
+          fi
+          npm run complexity:compare -- --base "$BASE_SHA" --base-ref "$BASE_REF" --pr "$PR_SHA" "${args[@]}"
+          cat reports/complexity/comparison.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pr-quality-${{ github.run_attempt }}
+          path: reports/complexity/comparison.json
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: complexity-${{ github.run_attempt }}
+          path: reports/complexity/complexity.*
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dependencies-${{ github.run_attempt }}
+          path: reports/complexity/dependencies.*
+          if-no-files-found: error
+          retention-days: 7

@@ -23,9 +23,11 @@ import {
   normalizeAidlcFrontmatter,
   profileFor,
 } from './aidlc-compatibility.js';
+import { unmappedFieldGaps } from './aidlc-capabilities.js';
 import { parseRepositorySlug } from './aidlc-custom-source.js';
-import { buildFromFiles } from './block-mappers.js';
-import { buildBodyRef, buildScriptRef, sha256 } from './blocks.js';
+import { annexReachingBlocks } from './annex-reach.js';
+import { buildFromFiles, CONDUCTOR_REPO_PATH } from './block-mappers.js';
+import { buildBodyRef, buildScriptRef, RELEASE_LIBRARY_TYPES, sha256 } from './blocks.js';
 import { isCommitSha } from './aidlc-ref.js';
 import { mapWithConcurrency } from './concurrency.js';
 import {
@@ -501,10 +503,15 @@ const getObjectText = async ({
   return bodyToStringWithin(result.Body, maxBytes, tooLarge);
 };
 
+const bodyKeys = (blocks) => blocks.map((block) => block?.bodyRef?.s3Key).filter(Boolean);
+
 // Preserve the published manifest bytes while recovering the analyzer's
 // promotion evidence from its immutable closure. The catalog holds mapped
 // frontmatter values; content-addressed objects hold the source bodies that
-// may include unsupported engine commands.
+// may include unsupported engine commands. The manifest's own compatibility
+// record holds the third kind of evidence: the execution-relevant fields no
+// mapper consumed, which no catalog or body can show because nothing mapped
+// them.
 const readReleaseFidelityGaps = async ({ s3, bucket, manifest }) => {
   let catalog;
   try {
@@ -541,6 +548,40 @@ const readReleaseFidelityGaps = async ({ s3, bucket, manifest }) => {
   // RELEASE_EVIDENCE_IO_CONCURRENCY objects are resident at a time. Retaining all
   // of them made the capability check cost the whole closure in heap at once,
   // which a 128 MB Lambda cannot afford for a multi-release page.
+  //
+  // Only what reaches a prompt is engine-command evidence: the bodies of the
+  // blocks a release library resolves (stages, agents, knowledge, rules, …) and
+  // the conductor, which every stage prompt renders. Other `runtime` objects are
+  // the upstream engine's own sources, hooks and protocols; SKILL and TEMPLATE
+  // bodies are imported for the library but never rendered into a prompt; and a
+  // `script` object is a sensor's script. The `{{INVOKE}}` strings those carry
+  // are not behavior the release authors for an agent. Block types, `role` and
+  // `path` are covered by the closure digest, and the digest check below still
+  // covers EVERY object.
+  const promptBodyKeys = new Set(
+    Object.keys(RELEASE_LIBRARY_TYPES).flatMap((type) => bodyKeys(catalog.blocks[type] ?? [])),
+  );
+  // A prompt carries the engine-command annex only when a part that instructs
+  // the agent carries the token. `annex-reach.js` names those bodies for both
+  // this guard and the prompt builders; a command the annex answers is answered
+  // only there, and in any other body (a rule, a scope) it reaches a prompt with
+  // no annex and keeps holding promotion.
+  //
+  // Coverage is decided per CONSUMING BLOCK, not per object key: bodies are
+  // content-addressed, so one object can be the body of several blocks, and a
+  // body shared by a stage and a rule is still read by the rule's session.
+  // Reading coverage off the key alone let deduplication — a storage detail —
+  // decide the compatibility verdict.
+  const reachingBlockIds = new Set(
+    annexReachingBlocks({ blocks: catalog.blocks }).map((block) => block?.blockId),
+  );
+  const unreachedBodyKeys = new Set(
+    Object.keys(RELEASE_LIBRARY_TYPES)
+      .flatMap((type) => catalog.blocks[type] ?? [])
+      .filter((block) => !reachingBlockIds.has(block?.blockId))
+      .map((block) => block?.bodyRef?.s3Key)
+      .filter(Boolean),
+  );
   const invokes = invokeCommandCollector();
   await mapWithConcurrency(
     manifest.objects ?? [],
@@ -584,15 +625,29 @@ const readReleaseFidelityGaps = async ({ s3, bucket, manifest }) => {
           { keys: [object.key] },
         );
       }
-      invokes.add(`closure/body-${index}.md`, body);
+      const conductor = object.path === CONDUCTOR_REPO_PATH;
+      if (promptBodyKeys.has(object.key) || conductor) {
+        // No consuming block means the conductor, which every stage prompt
+        // renders and gates on, so it reaches.
+        invokes.add(`closure/body-${index}.md`, body, {
+          annexReaches: !unreachedBodyKeys.has(object.key),
+        });
+      }
     },
   );
 
-  return fidelityGapsFromCatalog({
-    catalog,
-    invokeCommands: invokes.commands(),
-    runtimeFilePaths: (manifest.runtimeFiles ?? []).map(({ path }) => path),
-  });
+  return [
+    ...unmappedFieldGaps(manifest.compatibility?.executionRelevantUnmappedFields ?? []),
+    ...fidelityGapsFromCatalog({
+      catalog,
+      invokeCommands: invokes.commands(),
+      runtimeFilePaths: (manifest.runtimeFiles ?? []).map(({ path }) => path),
+    }),
+  ].toSorted((left, right) =>
+    `${left.blockType}:${left.field}:${left.value}`.localeCompare(
+      `${right.blockType}:${right.field}:${right.value}`,
+    ),
+  );
 };
 
 const putJsonIfAbsent = async ({ s3, bucket, key, value }) => {

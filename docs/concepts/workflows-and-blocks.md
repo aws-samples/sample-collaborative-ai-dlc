@@ -68,6 +68,23 @@ Every stage carries three independent safety nets:
 2. **Reviewer** — an LLM-judged reviewer agent that renders a READY / NOT-READY verdict in a clean-room pass, with a bounded iteration count.
 3. **Human validation** — an approval gate, required by default on every non-init stage. The run parks at zero compute until a human answers.
 
+Sensors receive explicit changed-file provenance. Known changes are normalized to
+workspace-relative paths once at the Git boundary, including both endpoints of a
+rename. Git paths are repository-relative even when they start with the checkout
+directory's name. Project-scoped checks inspect every matching file in affected
+projects. Failed committed-file enumeration is unknown; a pre-commit directory
+listing cannot establish the exact changed files. Unknown provenance retains its
+reason and widens inspection rather than becoming an empty change list. Harness
+failures and invalid successful JSON output are inconclusive and hold an applicable
+blocking sensor. Diagnostics are bounded and redacted before they are recorded.
+
+Release-pinned write sensors inspect the stage attempt's changes, including ensemble
+lead drafts, parked legs and checkpoint repairs. A clean final commit result does
+not discard earlier changes or unknown provenance. Gate sensors run after reviewer
+repairs and inspect all existing matching deliverables, even when the attempt's
+change list is empty.
+An incomplete workspace scan cannot prove that a blocking sensor is inapplicable.
+
 ## Parallel construction
 
 Construction stages that are marked to run **per unit of work** form a parallel section. At the fan-out point, the methodology's own unit-of-work dependency DAG — produced by an inception stage whose review gate doubles as the fan-out approval (the approve answer may re-pick the walking skeleton or adjust the per-unit skip matrix) — becomes the schedule:

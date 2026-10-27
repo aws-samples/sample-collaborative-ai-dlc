@@ -9,7 +9,15 @@ import { describe, expect, it } from 'vitest';
 import { filesFromCompatibilityFixture } from '../aidlc-compatibility.js';
 import { buildFromFiles, mapAgent, mapScope, mapSensor, mapStage } from '../block-mappers.js';
 import { buildExecutionPlan, resolveStagePolicy } from '../v2-execution-plan.js';
-import { resolveCapabilities } from '../aidlc-capabilities.js';
+import {
+  AIDLC_CAPABILITIES,
+  POLICY_ENUMS,
+  SCOPE_POLICY_KEYS,
+  SCOPE_RUNTIME_POLICY_KEYS,
+  STAGE_POLICY_KEYS,
+  STAGE_RUNTIME_POLICY_KEYS,
+  resolveCapabilities,
+} from '../aidlc-capabilities.js';
 import { canonicalJson } from '../workflow-checkpoint.js';
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
@@ -58,11 +66,16 @@ const planFor = ({
   sensorFm = null,
   scope = 'feature',
   releaseMode = true,
+  // A saved user SCOPE overlay row, as `release-resolver.js` merges it into the
+  // library: the only thing distinguishing it from a closure block is the tenant
+  // it carries.
+  scopeTenant = null,
 }) => {
   const stage = { ...mapStage(stageFm, 'body'), version: 1 };
   const scopeBlock = {
     ...mapScope({ name: scope, depth: 'standard', ...scopeFm }, '', scope),
     version: 1,
+    ...(scopeTenant ? { tenantId: scopeTenant } : {}),
   };
   const sensors = sensorFm
     ? { [sensorFm.id]: { ...mapSensor(sensorFm, '', sensorFm.id), version: 1 } }
@@ -404,6 +417,152 @@ describe('Per-release adapters: effective per-stage policy', () => {
         errors: [],
       }),
     ).toBeNull();
+  });
+});
+
+// A SCOPE block does not always come from the importer. A user SCOPE overlay is
+// stored verbatim (the building-block API preserves intrinsic attributes and
+// `release-resolver.js` `loadUserOverlay` reads the pinned row as saved), so the
+// plan boundary is the FIRST place that sees some authored values and must judge
+// their type itself rather than assume the import analyzer already did.
+describe('Per-release adapters: the plan boundary judges the authored type', () => {
+  const invalid = (scopeFm, field) => {
+    const result = planFor({ scopeFm });
+    expect(result.valid).toBe(false);
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ code: 'policy_enum_invalid', ref: field }),
+    );
+    expect(result.plan.stages[0].policy).toBeUndefined();
+  };
+
+  it.each([
+    ['change_control', { change_control: ['strict'] }],
+    ['guard_policy', { guard_policy: ['strict'] }],
+    ['plan_approval', { plan_approval: ['off'] }],
+    ['collaborators', { collaborators: ['off'] }],
+    ['review_cap', { review_cap: ['none'] }],
+  ])('refuses a singleton array for the string-valued %s', (field, scopeFm) => {
+    invalid(scopeFm, field);
+  });
+
+  it('refuses a quoted boolean project type and accepts the real one', () => {
+    invalid({ existing_code: 'true' }, 'existing_code');
+    invalid({ existing_code: 'false' }, 'existing_code');
+    expect(planFor({ scopeFm: { existing_code: true } }).valid).toBe(true);
+    expect(planFor({ scopeFm: { existing_code: false } }).valid).toBe(true);
+  });
+
+  it('still refuses an out-of-vocabulary value of the right type', () => {
+    invalid({ guard_policy: 'paranoid' }, 'guard_policy');
+  });
+});
+
+// Classifying a field as a scope policy makes the plan KNOW it; it must not make
+// the plan ACT on it. An entry whose handling is still `unsupported` has no
+// consumer, so a scope — or a user overlay — authoring only such a field must
+// resolve exactly the policy-free plan it resolved before the entry existed.
+// Otherwise the unrelated defaults (change control, loop-back) and every policy
+// gate downstream switch on for a release whose setting the platform drops.
+//
+// This PR gives the last of the four 2.11 settings its consumer, so there is no
+// `unsupported` policy entry left to drive the behavioural case with. The rule
+// is kept as the invariant that governs the NEXT one: the activation vocabulary
+// is the handled subset, never the full one.
+describe('Per-release adapters: an unsupported-only field activates no policy', () => {
+  it('keeps every unsupported policy field out of the activation vocabulary', () => {
+    const unsupported = (owner) =>
+      AIDLC_CAPABILITIES.filter(
+        (entry) => entry.policy === owner && entry.planKey && entry.handling === 'unsupported',
+      ).map((entry) => entry.planKey);
+    const handled = (owner) =>
+      AIDLC_CAPABILITIES.filter(
+        (entry) => entry.policy === owner && entry.planKey && entry.handling !== 'unsupported',
+      ).map((entry) => entry.planKey);
+
+    expect(SCOPE_RUNTIME_POLICY_KEYS).toEqual(handled('scope'));
+    expect(STAGE_RUNTIME_POLICY_KEYS).toEqual(handled('stage'));
+    for (const key of unsupported('scope')) {
+      expect(SCOPE_POLICY_KEYS, key).toContain(key);
+      expect(SCOPE_RUNTIME_POLICY_KEYS, key).not.toContain(key);
+    }
+    for (const key of unsupported('stage')) {
+      expect(STAGE_POLICY_KEYS, key).toContain(key);
+      expect(STAGE_RUNTIME_POLICY_KEYS, key).not.toContain(key);
+    }
+  });
+
+  // The counterpart of the rule: a field becomes an activator in the very change
+  // that gives it a consumer. Collaborators is this PR's.
+  it.each([
+    ['plan approval', { plan_approval: 'off' }, { planApproval: null }],
+    ['project type', { existing_code: true }, { existingCode: true }],
+    ['collaborators', { collaborators: 'off' }, { collaborators: 'off' }],
+  ])('activates the policy for a scope authoring only the %s', (_label, scopeFm, expected) => {
+    const result = planFor({ scopeFm });
+    expect(result.valid).toBe(true);
+    expect(result.plan.stages[0].policy).toMatchObject(expected);
+  });
+
+  // `guard_policy` has been an activator since before its own entry existed: the
+  // mapper resolves `changeControl` from it first, and change control has had a
+  // consumer since 2.6.18.
+  it('treats the guard policy as the change-control field it renames', () => {
+    const { plan } = planFor({ scopeFm: { guard_policy: 'strict' } });
+    expect(plan.stages[0].policy).toMatchObject({ changeControl: 'strict' });
+  });
+
+  it('still resolves the policy when a supported field is authored alongside', () => {
+    const { plan } = planFor({ scopeFm: { change_control: 'relaxed', collaborators: 'off' } });
+    expect(plan.stages[0].policy).toMatchObject({ changeControl: 'relaxed' });
+  });
+});
+
+// The previous commit refused `change_control: off` from a user overlay because
+// the value was legal, activating and uninterpreted. This commit ships its
+// interpretation, so the same overlay is now accepted and resolved — and the
+// registry-derived refusal, which exists for exactly that combination, has
+// nothing left to refuse. Both halves are asserted here so the transition is
+// visible rather than inferred from a deleted test.
+describe('Per-release adapters: the overlay value this commit learns to interpret', () => {
+  const OVERLAY = { scopeTenant: 'default' };
+
+  it('accepts the change control it can now interpret from a user overlay', () => {
+    for (const scopeFm of [
+      { change_control: 'off' },
+      { change_control: 'off', review_cap: 'advisory' },
+      { guard_policy: 'off' },
+    ]) {
+      const result = planFor({ ...OVERLAY, scopeFm });
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+      expect(result.plan.stages[0].policy).toMatchObject({ changeControl: null });
+    }
+  });
+
+  it('keeps the two older controls resolvable from the same overlay', () => {
+    for (const [scopeFm, expected] of [
+      [{ change_control: 'strict' }, 'strict'],
+      [{ change_control: 'relaxed' }, 'relaxed'],
+      [{ guard_policy: 'strict' }, 'strict'],
+      [{ guard_policy: 'relaxed' }, 'relaxed'],
+    ]) {
+      const result = planFor({ ...OVERLAY, scopeFm });
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+      expect(result.plan.stages[0].policy).toMatchObject({ changeControl: expected });
+    }
+  });
+
+  // The refusal is derived from the registry, so it retires with the
+  // classification rather than needing its own edit: no handled policy field
+  // carries an uninterpreted value any more. A future entry that does gets the
+  // same fail-closed treatment with no further change here.
+  it('leaves no handled policy field carrying an uninterpreted value', () => {
+    expect(
+      POLICY_ENUMS.filter(([, , , , , uninterpreted]) => uninterpreted.length > 0).map(
+        ([, , field, , , uninterpreted]) => [field, uninterpreted],
+      ),
+    ).toEqual([]);
   });
 });
 

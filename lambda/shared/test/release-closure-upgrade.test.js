@@ -86,7 +86,10 @@ const upgrade = (expectedRevision, importerRevision = AIDLC_RELEASE_IMPORTER_REV
 const record = () => getRelease({ ...registryArgs(), releaseId: RELEASE_ID });
 
 const addUnsupportedModeToCurrentClosure = () => {
-  const manifestKey = releaseManifestKey({ sha: SHA, importerRevision: 2 });
+  const manifestKey = releaseManifestKey({
+    sha: SHA,
+    importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+  });
   const manifest = JSON.parse(objects.get(manifestKey));
   const catalog = JSON.parse(objects.get(manifest.catalog.key));
   catalog.blocks.STAGE[0].mode = 'agent-team';
@@ -108,7 +111,7 @@ const addUnsupportedModeToCurrentClosure = () => {
 };
 
 // The post-deploy, pre-upgrade world: both closures are published (the operator
-// re-imported at revision 2), but the record still points at the revision-1
+// re-imported at the current revision), but the record still points at the revision-1
 // closure it was registered against before the importer bump.
 const registerLegacy = async () => {
   await publishReleaseBundle({ s3, bucket: BUCKET, bundle: currentBundle });
@@ -148,19 +151,26 @@ beforeEach(async () => {
 describe('importer revisions coexist', () => {
   it('keeps both closures published, distinct, and resolvable', async () => {
     const i1 = await readReleaseManifest({ s3, bucket: BUCKET, sha: SHA, importerRevision: 1 });
-    const i2 = await readReleaseManifest({ s3, bucket: BUCKET, sha: SHA, importerRevision: 2 });
+    const upgraded = await readReleaseManifest({
+      s3,
+      bucket: BUCKET,
+      sha: SHA,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+    });
 
     expect(i1.closureDigest).toBe(legacyBundle.manifest.closureDigest);
-    expect(i2.closureDigest).toBe(currentBundle.manifest.closureDigest);
+    expect(upgraded.closureDigest).toBe(currentBundle.manifest.closureDigest);
     expect(i1.catalog.key).toBe(releaseCatalogKey({ sha: SHA, importerRevision: 1 }));
-    expect(i2.catalog.key).toBe(releaseCatalogKey({ sha: SHA, importerRevision: 2 }));
-    expect(countAuthored(JSON.parse(objects.get(i1.catalog.key)), 'STAGE', 'reviewClass')).toBe(0);
-    expect(countAuthored(JSON.parse(objects.get(i2.catalog.key)), 'STAGE', 'reviewClass')).toBe(
-      PROFILE === 'current-stable' ? 0 : 8,
+    expect(upgraded.catalog.key).toBe(
+      releaseCatalogKey({ sha: SHA, importerRevision: AIDLC_RELEASE_IMPORTER_REVISION }),
     );
+    expect(countAuthored(JSON.parse(objects.get(i1.catalog.key)), 'STAGE', 'reviewClass')).toBe(0);
+    expect(
+      countAuthored(JSON.parse(objects.get(upgraded.catalog.key)), 'STAGE', 'reviewClass'),
+    ).toBe(PROFILE === 'current-stable' ? 0 : 8);
   });
 
-  it('re-publishes revision 2 idempotently without touching revision 1', async () => {
+  it('re-publishes the current revision idempotently without touching revision 1', async () => {
     const i1Keys = [
       releaseManifestKey({ sha: SHA, importerRevision: 1 }),
       releaseCatalogKey({ sha: SHA, importerRevision: 1 }),
@@ -186,7 +196,10 @@ describe('stale detection', () => {
     await upgrade(stale.revision);
 
     const [fresh] = await listReleases(registryArgs());
-    expect(fresh).toMatchObject({ importerRevision: 2, importerStale: false });
+    expect(fresh).toMatchObject({
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      importerStale: false,
+    });
   });
 
   it('flags the stale registration on the admin profile listing too', async () => {
@@ -223,10 +236,16 @@ describe('upgradeReleaseClosure', () => {
     expect(result.status).toBe('upgraded');
     const after = await record();
     expect(after).toMatchObject({
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
       closureDigest: currentBundle.manifest.closureDigest,
-      manifestKey: releaseManifestKey({ sha: SHA, importerRevision: 2 }),
-      catalogKey: releaseCatalogKey({ sha: SHA, importerRevision: 2 }),
+      manifestKey: releaseManifestKey({
+        sha: SHA,
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      }),
+      catalogKey: releaseCatalogKey({
+        sha: SHA,
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      }),
       revision: before.revision + 1,
       updatedBy: 'admin-1',
       // A pointer move is not a support decision.
@@ -244,10 +263,16 @@ describe('upgradeReleaseClosure', () => {
           catalogKey: releaseCatalogKey({ sha: SHA, importerRevision: 1 }),
         },
         to: {
-          importerRevision: 2,
+          importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
           closureDigest: currentBundle.manifest.closureDigest,
-          manifestKey: releaseManifestKey({ sha: SHA, importerRevision: 2 }),
-          catalogKey: releaseCatalogKey({ sha: SHA, importerRevision: 2 }),
+          manifestKey: releaseManifestKey({
+            sha: SHA,
+            importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+          }),
+          catalogKey: releaseCatalogKey({
+            sha: SHA,
+            importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+          }),
         },
         upgradedAt: expect.any(String),
         upgradedBy: 'admin-1',
@@ -300,7 +325,7 @@ describe('upgradeReleaseClosure', () => {
 
     expect(result.status).toBe('upgraded');
     expect(await record()).toMatchObject({
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
       sourceRepository: currentBundle.manifest.sourceRepository,
     });
   });
@@ -321,7 +346,9 @@ describe('upgradeReleaseClosure', () => {
   });
 
   it('refuses when the target revision is not published', async () => {
-    objects.delete(releaseManifestKey({ sha: SHA, importerRevision: 2 }));
+    objects.delete(
+      releaseManifestKey({ sha: SHA, importerRevision: AIDLC_RELEASE_IMPORTER_REVISION }),
+    );
 
     await expect(upgrade((await record()).revision)).rejects.toMatchObject({
       code: 'release_not_published',
@@ -330,7 +357,7 @@ describe('upgradeReleaseClosure', () => {
   });
 
   it('fails closed on a tampered or foreign manifest at the target revision', async () => {
-    const key = releaseManifestKey({ sha: SHA, importerRevision: 2 });
+    const key = releaseManifestKey({ sha: SHA, importerRevision: AIDLC_RELEASE_IMPORTER_REVISION });
     const { closureDigest: _digest, ...base } = currentBundle.manifest;
     const foreign = { ...base, releaseId: 'aidlc:someone-else' };
     objects.set(key, JSON.stringify({ ...foreign, closureDigest: sha256(canonicalJson(foreign)) }));
@@ -346,7 +373,7 @@ describe('upgradeReleaseClosure', () => {
   });
 
   it('refuses to move a structurally valid record onto a closure that is not', async () => {
-    const key = releaseManifestKey({ sha: SHA, importerRevision: 2 });
+    const key = releaseManifestKey({ sha: SHA, importerRevision: AIDLC_RELEASE_IMPORTER_REVISION });
     const { closureDigest: _digest, ...base } = currentBundle.manifest;
     const invalid = {
       ...base,
@@ -384,9 +411,12 @@ describe('upgradeReleaseClosure', () => {
 
     const result = await upgrade(selectable.revision);
 
-    expect(result.release).toMatchObject({ supportState: 'certified', importerRevision: 2 });
+    expect(result.release).toMatchObject({
+      supportState: 'certified',
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+    });
     const stable = await resolveSelectableRelease(registryArgs());
-    expect(releasePinFromRecord(stable).importerRevision).toBe(2);
+    expect(releasePinFromRecord(stable).importerRevision).toBe(AIDLC_RELEASE_IMPORTER_REVISION);
   });
 
   it('404s an unregistered release', async () => {
@@ -395,14 +425,14 @@ describe('upgradeReleaseClosure', () => {
         ...storageArgs(),
         releaseId: 'aidlc:not-registered',
         expectedRevision: 1,
-        importerRevision: 2,
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
       }),
     ).rejects.toMatchObject({ code: 'release_not_found' });
   });
 });
 
 describe('pins survive the upgrade', () => {
-  it('keeps an existing intent on its i1 closure while a new intent pins i2', async () => {
+  it('keeps an existing intent on its i1 closure while a new intent pins the current one', async () => {
     await makeSelectable();
     const existingPin = releasePinFromRecord(
       await resolveSelectableRelease({ ...registryArgs(), releaseId: RELEASE_ID }),
@@ -431,10 +461,16 @@ describe('pins survive the upgrade', () => {
     expect(newPin).toEqual({
       releaseId: RELEASE_ID,
       sourceSha: SHA,
-      importerRevision: 2,
+      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
       closureDigest: currentBundle.manifest.closureDigest,
-      catalogKey: releaseCatalogKey({ sha: SHA, importerRevision: 2 }),
-      manifestKey: releaseManifestKey({ sha: SHA, importerRevision: 2 }),
+      catalogKey: releaseCatalogKey({
+        sha: SHA,
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      }),
+      manifestKey: releaseManifestKey({
+        sha: SHA,
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+      }),
     });
     const upgraded = await loadReleaseClosure({
       s3,
@@ -447,7 +483,7 @@ describe('pins survive the upgrade', () => {
     );
   });
 
-  it('fails closed rather than silently widening an i1 pin onto the i2 closure', async () => {
+  it('fails closed rather than silently widening an i1 pin onto the upgraded closure', async () => {
     const existingPin = releasePinFromRecord(await record());
     await upgrade((await record()).revision);
 
@@ -455,7 +491,7 @@ describe('pins survive the upgrade', () => {
       loadReleaseClosure({
         s3,
         bucket: BUCKET,
-        methodologyRelease: { ...existingPin, importerRevision: 2 },
+        methodologyRelease: { ...existingPin, importerRevision: AIDLC_RELEASE_IMPORTER_REVISION },
         cache: new Map(),
       }),
     ).rejects.toMatchObject({ code: 'release_closure_mismatch' });

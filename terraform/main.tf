@@ -30,10 +30,10 @@ provider "aws" {
   region = var.aws_region
 
   default_tags {
-    tags = {
+    tags = merge(var.extra_tags, {
       Environment = var.environment
       Project     = var.project_name
-    }
+    })
   }
 }
 
@@ -42,6 +42,29 @@ provider "aws" {
 provider "aws" {
   alias  = "us_east_1"
   region = "us-east-1"
+
+  default_tags {
+    tags = merge(var.extra_tags, {
+      Environment = var.environment
+      Project     = var.project_name
+    })
+  }
+}
+
+# Route53 records for route53_zone_id and auth_route53_zone_id. Assumes
+# dns_role_arn when the hosted zones live in another account; otherwise it is
+# the deployment account's own credentials.
+provider "aws" {
+  alias  = "dns"
+  region = var.aws_region
+
+  dynamic "assume_role" {
+    for_each = var.dns_role_arn == "" ? [] : [var.dns_role_arn]
+    content {
+      role_arn     = assume_role.value
+      session_name = "${var.project_name}-${var.environment}-dns"
+    }
+  }
 
   default_tags {
     tags = {
@@ -249,6 +272,7 @@ module "domain" {
   providers = {
     aws           = aws
     aws.us_east_1 = aws.us_east_1
+    aws.dns       = aws.dns
   }
 
   project_name    = var.project_name
@@ -264,7 +288,9 @@ module "domain" {
 # This is a singleton per AWS account/region — both the REST API and WebSocket
 # API stages need it configured before they can enable access logging.
 resource "aws_iam_role" "api_gateway_cloudwatch" {
-  name = "${var.project_name}-apigw-cw-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-apigw-cw-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -302,14 +328,20 @@ module "waf" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  enabled      = var.enable_waf
-  project_name = var.project_name
-  environment  = var.environment
+  enabled                  = var.enable_waf
+  project_name             = var.project_name
+  environment              = var.environment
+  cloudfront_origin_secret = module.frontend.cloudfront_origin_secret
 }
 
 # Auth (Cognito)
 module "auth" {
   source = "./modules/auth"
+
+  deletion_protection = var.deletion_protection
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id       = local.aws_sdk_ua_app_id
   project_name            = var.project_name
@@ -347,12 +379,14 @@ module "frontend" {
   web_acl_arn                    = module.waf.cloudfront_web_acl_arn
 }
 
-# Route53 alias records for the custom domain. Only created when the hosted zone
-# lives in this account; otherwise the dns_target and dns_target_hosted_zone_id
-# outputs carry everything an external DNS provider needs.
+# Route53 alias records for the custom domain. Only created when route53_zone_id
+# is set (in this account, or in another one through dns_role_arn); otherwise
+# the dns_target and dns_target_hosted_zone_id outputs carry everything an
+# external DNS provider needs.
 #
 # Both record types are required because the distribution has is_ipv6_enabled.
 resource "aws_route53_record" "app" {
+  provider = aws.dns
   for_each = var.route53_zone_id == "" ? {} : {
     for pair in setproduct(local.app_aliases, ["A", "AAAA"]) :
     "${pair[0]}-${pair[1]}" => { name = pair[0], type = pair[1] }
@@ -370,6 +404,7 @@ resource "aws_route53_record" "app" {
 }
 
 resource "aws_route53_record" "auth" {
+  provider = aws.dns
   for_each = var.auth_route53_zone_id == "" || var.auth_domain == "" ? toset([]) : toset(["A", "AAAA"])
 
   zone_id = var.auth_route53_zone_id
@@ -470,6 +505,9 @@ module "neptune" {
 module "lambda" {
   source = "./modules/api/lambda"
 
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
+
   aws_sdk_ua_app_id           = local.aws_sdk_ua_app_id
   project_name                = var.project_name
   environment                 = var.environment
@@ -558,6 +596,7 @@ module "api" {
   source = "./modules/api"
 
   aws_sdk_ua_app_id                        = local.aws_sdk_ua_app_id
+  credential_broker_role_arn               = module.lambda.credential_broker_role_arn
   project_name                             = var.project_name
   environment                              = var.environment
   powertools_service_name                  = local.powertools_service_name
@@ -629,8 +668,6 @@ module "api" {
   lambda_security_group_ids                = [module.lambda.lambda_security_group_id]
   neptune_endpoint                         = module.neptune.cluster_endpoint
   cors_allowed_origins                     = local.cors_allowed_origins
-  cloudfront_origin_secret                 = module.frontend.cloudfront_origin_secret
-  enable_cloudfront_origin_policy          = false
   # Pass a non-deprecated attribute (the account's CloudWatch role ARN, not the
   # deprecated `.id`). The value itself is unused — the api module interpolates it
   # into the stage description to create an implicit dependency so the stage waits
@@ -641,6 +678,9 @@ module "api" {
 # Real-time (WebSocket)
 module "realtime" {
   source = "./modules/realtime"
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id       = local.aws_sdk_ua_app_id
   project_name            = var.project_name
@@ -664,6 +704,9 @@ module "realtime" {
 # Yjs Server (ECS)
 module "yjs_server" {
   source = "./modules/realtime/yjs-server"
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id             = local.aws_sdk_ua_app_id
   project_name                  = var.project_name
@@ -696,6 +739,9 @@ module "yjs_server" {
 module "agentcore" {
   source = "./modules/compute/agentcore"
 
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
+
   aws_sdk_ua_app_id           = local.aws_sdk_ua_app_id
   project_name                = var.project_name
   environment                 = var.environment
@@ -723,6 +769,7 @@ module "agentcore" {
   # failing every stage with cli_nonzero_exit. Let kiro resolve the model.
   kiro_model          = "auto"
   codex_model         = var.codex_model
+  disabled_clis       = var.disabled_clis
   kms_key_arn         = var.kms_key_arn
   deletion_protection = var.deletion_protection
 
@@ -740,6 +787,9 @@ module "agentcore" {
 
 module "managed_environments" {
   source = "./modules/compute/managed-environments"
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id             = local.aws_sdk_ua_app_id
   project_name                  = var.project_name

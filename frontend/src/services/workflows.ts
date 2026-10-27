@@ -151,6 +151,10 @@ export interface ExecutionPreview {
     outOfScopeStageIds: string[];
     // Per-intent skip overlay applied to this preview (empty when none).
     skippedStages?: { stageId: string; phase: string | null; stageInstanceId: string }[];
+    // The AI-DLC settings the previewed scope AUTHORS, with the authored value.
+    // Absent for a release that has none, which is what hides the settings
+    // chooser entirely for an unpinned or pre-2.11 intent.
+    aidlcSettingsAuthored?: Record<string, string | boolean> | null;
     // Exact run-shape counts (upstream validate-grid `summary`, 2.2.12) — the
     // scope-confirmation UI renders these verbatim ("N of T stages, G approval
     // gates" + per-unit fan-out clause) instead of re-deriving them.
@@ -305,6 +309,9 @@ export const workflowsService = {
     input: {
       composedGrid: Record<string, 'EXECUTE' | 'SKIP'>;
       scope?: string;
+      // The stock scope the grid was built from, so the preview resolves the
+      // same policy and settings context the save and the run will.
+      policyScope?: string;
       skipStageIds?: string[];
       strict?: boolean;
       version?: number;

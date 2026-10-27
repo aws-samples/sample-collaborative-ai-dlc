@@ -443,8 +443,15 @@ export function AidlcReleasesTab() {
               // Known unpublished only for an allowlisted profile: a fork has no
               // profile row, so its upgrade is attempted and the API decides.
               const upgradePublished = release.custom ? true : (profile?.published ?? false);
-              const promotionGaps = release.unhonouredValues ?? [];
-              const compatibilityEvidenceMissing = release.fidelityGaps === null;
+              // Evidence the server could not afford to recompute for this
+              // listing is a verdict an earlier build reached, so it may name
+              // behavior this build now honours. Promotion must stay available:
+              // the server re-verifies the closure before it decides, and
+              // refuses with a readable reason if the gap is real.
+              const evidenceRefreshing = release.fidelityEvidenceStale === true;
+              const promotionGaps = evidenceRefreshing ? [] : (release.unhonouredValues ?? []);
+              const compatibilityEvidenceMissing =
+                !evidenceRefreshing && release.fidelityGaps === null;
               return (
                 <div
                   key={release.releaseId}
@@ -598,6 +605,15 @@ export function AidlcReleasesTab() {
                         .map((gap) => `${gap.blockType}.${gap.field}=${gap.value}`)
                         .join(', ')}
                       .
+                    </p>
+                  )}
+                  {evidenceRefreshing && (
+                    <p
+                      className="text-[11px] text-muted-foreground"
+                      data-testid={`release-evidence-refreshing-${release.releaseId}`}
+                    >
+                      Capability evidence is being refreshed for this record; the server verifies
+                      its immutable closure before promotion.
                     </p>
                   )}
                   {compatibilityEvidenceMissing && (
@@ -754,7 +770,7 @@ export function AidlcReleasesTab() {
       <SettingsCard
         icon={<GitFork />}
         title="Register custom fork"
-        description="Import a fork of aidlc-workflows for inspection. Custom forks are import-only and can never be selected or run."
+        description="Import a fork of aidlc-workflows. It stays import-only until an admin promotes it."
       >
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="space-y-1">
@@ -811,8 +827,12 @@ export function AidlcReleasesTab() {
             The fork&apos;s closure must already be published by the seed lambda&apos;s
             <span className="font-mono"> importRelease </span>
             custom mode. The base dialect only says how the fork&apos;s frontmatter is parsed — it
-            grants no trust. The record is recorded T0, stays import-only, and is never offered to a
-            new intent until sandboxed execution and IAM isolation exist.
+            grants no trust. The record is recorded T0 and import-only. Promoting it to selectable
+            or certified runs the same guard as an official release: it is refused while the fork
+            authors behavior this build cannot honour, and the record lists those gaps. Once
+            promoted, the fork is offered to every project, and its sensor scripts and their
+            commands run in the agent runtime with the runtime&apos;s own permissions. Promote only
+            a fork whose sources you would run as your own sensors.
           </p>
         </div>
       </SettingsCard>

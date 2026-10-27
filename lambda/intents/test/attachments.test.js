@@ -5,7 +5,7 @@ import {
   attachmentStagingKey,
   createAttachmentCleanupService,
   validateAttachmentDescriptor,
-} from '../intent-attachments.js';
+} from '../attachments.js';
 
 describe('intent attachments', () => {
   it('validates supported descriptors and rejects prompt-breaking filenames', () => {
@@ -26,6 +26,39 @@ describe('intent attachments', () => {
   it('uses separate staging and committed prefixes', () => {
     expect(attachmentStagingKey('i1', 'a1', '.md')).toBe('intent-attachments/staging/i1/a1.md');
     expect(attachmentCommittedKey('i1', 'a1', '.md')).toBe('intent-attachments/committed/i1/a1.md');
+  });
+
+  it.each([
+    ['pdf', 'application/pdf'],
+    ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ])('accepts %s documents while enforcing MIME and size limits', (extension, mimeType) => {
+    const descriptor = {
+      filename: `reference.${extension.toUpperCase()}`,
+      mimeType,
+      size: 5 * 1024 * 1024,
+    };
+    expect(validateAttachmentDescriptor(descriptor)).toEqual({
+      value: { ...descriptor, extension: `.${extension}` },
+    });
+    expect(
+      validateAttachmentDescriptor({ ...descriptor, mimeType: 'application/octet-stream' }).error,
+    ).toContain(`must use MIME type ${mimeType}`);
+    for (const size of [0, descriptor.size + 1]) {
+      expect(validateAttachmentDescriptor({ ...descriptor, size }).error).toContain(
+        'between 1 byte and 5 MB',
+      );
+    }
+  });
+
+  it.each(['doc', 'xls', 'docm', 'xlsm'])('continues to reject .%s attachments', (extension) => {
+    expect(
+      validateAttachmentDescriptor({
+        filename: `reference.${extension}`,
+        mimeType: 'application/octet-stream',
+        size: 10,
+      }).error,
+    ).toContain('Unsupported attachment type');
   });
 
   it('keeps only unexpired upload reservations', () => {

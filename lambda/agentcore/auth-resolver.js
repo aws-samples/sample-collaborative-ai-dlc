@@ -30,10 +30,16 @@ const grantMismatch = () =>
     code: 'credential_grant_mismatch',
   });
 
+// Adapter-controlled names that are deployment configuration, not credentials. The platform sets
+// BEDROCK_REGION (Terraform) as the default inference region; stripping it would send API-key
+// inference to the runtime's own region. An adapter that writes the name, as IAM does with its
+// binding's region, still overrides it for that invocation.
+const PLATFORM_ENV_NAMES = Object.freeze(['BEDROCK_REGION']);
+
 const cleanBaseEnv = (env) => {
   const invocationEnv = { ...env };
   for (const name of [...AGENT_CREDENTIAL_ENV_NAMES, ...CREDENTIAL_ADAPTER_ENV_NAMES])
-    delete invocationEnv[name];
+    if (!PLATFORM_ENV_NAMES.includes(name)) delete invocationEnv[name];
   return invocationEnv;
 };
 

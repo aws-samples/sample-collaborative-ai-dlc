@@ -6,6 +6,12 @@ import { getUrlAndHeaders } from 'gremlin-aws-sigv4/lib/utils.js';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
+import {
+  AGENT_CLI_IDS,
+  agentCliDisabledError,
+  defaultAgentCli,
+  readDisabledClis,
+} from '../shared/agent-cli-availability.js';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
@@ -1563,6 +1569,19 @@ export const handler = async (event, context) => {
         if (!prValidation.valid) return response(400, { error: prValidation.error });
         const skipValidation = normalizeStageSkipping(data.stageSkipping);
         if (!skipValidation.valid) return response(400, { error: skipValidation.error });
+        // The recommended CLI is advisory (selection is enforced at intent
+        // start), so a settings read failure must not block space creation.
+        let disabledClis = [];
+        try {
+          disabledClis = await readDisabledClis(ssm, process.env.AGENT_SETTINGS_SSM_PREFIX || '');
+        } catch (err) {
+          logger.warn('[create] disabled-clis read failed', { error: err?.message });
+        }
+        if (data.agentCli && disabledClis.includes(data.agentCli)) {
+          const disabledError = agentCliDisabledError(data.agentCli);
+          return response(disabledError.statusCode, disabledError.body);
+        }
+        const agentCli = data.agentCli || defaultAgentCli(disabledClis);
         const v2Settings = {
           kind,
           workflowId: data.workflowId || DEFAULT_V2_WORKFLOW_ID,
@@ -1582,7 +1601,7 @@ export const handler = async (event, context) => {
           .property('name', data.name)
           .property('git_provider', data.gitProvider || 'github')
           .property('git_repo', primaryUrl)
-          .property('agent_cli', data.agentCli || 'kiro')
+          .property('agent_cli', agentCli)
           .property('cli_models', JSON.stringify(cliModels))
           .property('tier_models', JSON.stringify(tierModels))
           .property('issue_integration_enabled', issueIntegrationEnabled ? 'true' : 'false')
@@ -1659,7 +1678,7 @@ export const handler = async (event, context) => {
           name: data.name,
           gitProvider: data.gitProvider || 'github',
           gitRepo: primaryUrl,
-          agentCli: data.agentCli || 'kiro',
+          agentCli,
           cliModels,
           tierModels,
           issueIntegrationEnabled,
@@ -1717,11 +1736,24 @@ export const handler = async (event, context) => {
             .next();
         }
         if (data.agentCli) {
-          const validClis = ['kiro', 'claude', 'opencode', 'codex'];
-          if (!validClis.includes(data.agentCli)) {
+          if (!AGENT_CLI_IDS.includes(data.agentCli)) {
             return response(400, {
-              error: `Invalid agentCli value. Must be one of: ${validClis.join(', ')}`,
+              error: `Invalid agentCli value. Must be one of: ${AGENT_CLI_IDS.join(', ')}`,
             });
+          }
+          // Changing the recommendation to a CLI the platform admin disabled is
+          // rejected; leaving an already-recommended CLI in place is not.
+          const currentCli = await g.V().has('Project', 'id', projectId).values('agent_cli').next();
+          // Matches the read path's legacy default for projects without agent_cli.
+          if ((currentCli.value || 'kiro') !== data.agentCli) {
+            const disabledClis = await readDisabledClis(
+              ssm,
+              process.env.AGENT_SETTINGS_SSM_PREFIX || '',
+            );
+            if (disabledClis.includes(data.agentCli)) {
+              const disabledError = agentCliDisabledError(data.agentCli);
+              return response(disabledError.statusCode, disabledError.body);
+            }
           }
           await g
             .V()

@@ -21,6 +21,7 @@ import { useTrackerProviders } from '@/hooks/useTrackerProviders';
 import { DeploymentInfoCard } from '@/components/admin/DeploymentInfoCard';
 import { UserManagementCard } from '@/components/admin/UserManagementCard';
 import { AgentCredentialsCard } from '@/components/admin/AgentCredentialsCard';
+import { AgentClisCard } from '@/components/admin/AgentClisCard';
 import { DefaultModelsCard } from '@/components/admin/DefaultModelsCard';
 import { GlobalMcpServersCard } from '@/components/admin/GlobalMcpServersCard';
 import { GraphEnrichmentCard } from '@/components/admin/GraphEnrichmentCard';
@@ -105,6 +106,7 @@ export default function PlatformAdmin() {
 
           <TabsContent value="agents" className="mt-5 space-y-6">
             <AgentCredentialsCard />
+            <AgentClisCard />
             <DefaultModelsCard />
             <GlobalMcpServersCard />
             <GraphEnrichmentCard />

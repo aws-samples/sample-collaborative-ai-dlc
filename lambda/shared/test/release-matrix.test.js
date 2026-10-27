@@ -23,6 +23,14 @@ import {
 import { evaluateGatePreconditions } from '../gate-preconditions.js';
 import { LOOP_BACK_OPTION, resolveLoopBackOffer } from '../stage-loopback.js';
 import { resolveMethodologyLibrary } from '../release-resolver.js';
+import {
+  evalRequiredSections,
+  recordSensorsCoverRunRecords,
+  SENSOR_RESULT,
+  sensorKind,
+  severityGate,
+  validateScriptSpec,
+} from '../v2-sensor-contract.js';
 import { canonicalJson } from '../workflow-checkpoint.js';
 import { buildGateOptions } from '../../v2-orchestrator/index.js';
 
@@ -56,7 +64,7 @@ const LEGACY_PLAN_DIGESTS = Object.freeze({
 // stage immediately before it. Scopes that run code generation per unit (a
 // parallel section) have no linear target and are absent here.
 const EXPECTED_LOOP_BACK_TUPLES = Object.freeze(
-  ['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'].flatMap((profileId) =>
+  ['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0', 'v2.11.0'].flatMap((profileId) =>
     ['bugfix', 'express', 'poc', 'refactor', 'security-patch'].map((scope) => ({
       profileId,
       scope,
@@ -252,6 +260,14 @@ const loopBackOfferFor = ({ stage, stages, profileId, skippedStageIds = [] }) =>
   });
 };
 
+// Which support personas the collaborators switch withdrew from one stage, read
+// off the plan's policy effects — the audit record that makes a lead-only run a
+// stated downgrade rather than a silently shorter roster.
+const withdrawnSupportAgentsFor = (plan, stageId) =>
+  (plan.policyEffects ?? [])
+    .filter((effect) => effect.stageId === stageId)
+    .flatMap((effect) => effect.withdrawnSupportAgents ?? []);
+
 const matrixRow = ({ profileId, scope, plan, gateStats, checkpoints, ensembles, loopBacks }) => ({
   profile: profileId,
   scope,
@@ -345,15 +361,34 @@ describe('release coexistence matrix', () => {
             const supports = (stage.supportAgentRefs ?? []).filter(
               (ref) => ref && ref !== stage.agentRef && releaseLibrary.agentsById[ref],
             );
-            const expectedSeparateSessions =
+            // A release whose scope switches collaborators off resolves NO
+            // topology: the lead produces every declared output in one session.
+            // The stage keeps its authored mode and roster on the plan — the
+            // withdrawal is a policy effect, so a human reading the plan sees
+            // both what the methodology declared and what the policy removed.
+            const collaboratorsOff = stage.policy?.collaborators === 'off';
+            const wouldHaveSeparateSessions =
               supports.length > 0 &&
               (stage.mode === 'pipeline' ||
                 stage.mode === 'mob' ||
                 (stage.mode === 'subagent' &&
                   releaseLibrary.runtimeFilePaths.includes(ENSEMBLE_PROTOCOL_FILE)));
+            const expectedSeparateSessions = wouldHaveSeparateSessions && !collaboratorsOff;
             expect(Boolean(topology), `${profileId}/${scope}/${stage.stageId} topology`).toBe(
               expectedSeparateSessions,
             );
+            if (collaboratorsOff && wouldHaveSeparateSessions) {
+              // The authored roster stays on the plan, and every persona the
+              // switch withdrew is named on the policy effects — so the
+              // downgrade is an audit record, not a shorter roster nobody can
+              // see.
+              expect(stage.supportAgentRefs ?? []).toEqual(
+                releaseLibrary.stagesById[stage.stageId].supportAgents ?? [],
+              );
+              for (const ref of supports) {
+                expect(withdrawnSupportAgentsFor(plan, stage.stageId)).toContain(ref);
+              }
+            }
             if (topology) {
               expect(topology.mode).toBe(stage.mode);
               ensembles.push(stage.stageId);
@@ -510,7 +545,7 @@ describe('release coexistence matrix', () => {
     // Every other scope that runs build-and-test runs code generation per unit,
     // so its gate shows the recommendation as a note instead of the option.
     expect(loopBackUnavailable.filter((cell) => cell.endsWith('/build-and-test'))).toEqual(
-      ['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0'].flatMap((profileId) =>
+      ['v2.6.18', 'v2.7.0', 'v2.8.2', 'v2.9.0', 'v2.11.0'].flatMap((profileId) =>
         ['classic', 'enterprise', 'feature', 'mvp', 'workshop'].map(
           (scope) => `${profileId}/${scope}/build-and-test`,
         ),
@@ -569,5 +604,112 @@ describe('release coexistence matrix', () => {
 
     expect(inherited).toEqual([]);
     expect(declaredWithoutPolicy).toEqual([]);
+  });
+
+  // Only a release that widens its record-sensor glob to the knowledge base
+  // turns the run-record exemption on. 2.11.0 is the first that does, so a
+  // one-line timestamp record passes there at the heading floor, and keeps
+  // reporting two missing headings on every earlier pin.
+  it('turns the run-record exemption on only for a release whose record sensor covers run records', async () => {
+    const TIMESTAMP_BODY = 'Discovered: 2026-10-08T00:00:00Z\n';
+    const exemptBySensor = {};
+
+    for (const profileId of PROFILE_IDS) {
+      const { workflow, releaseLibrary } = await fixtureContext(profileId);
+      const covers = profileId === 'v2.11.0';
+      expect(recordSensorsCoverRunRecords(releaseLibrary.sensorsById), profileId).toBe(covers);
+      const scopes = [
+        ...new Set(
+          workflow.placements.flatMap((placement) => Object.keys(placement.scopeMembership ?? {})),
+        ),
+      ].toSorted();
+
+      for (const scope of scopes) {
+        const { plan } = buildExecutionPlan({ workflow, scope, library: releaseLibrary });
+        for (const stage of plan?.stages ?? []) {
+          for (const sensor of stage.sensors ?? []) {
+            if (sensor.sensorId !== 'required-sections') continue;
+            exemptBySensor[`${profileId}/${scope}/${stage.stageId}`] = Boolean(
+              sensor.recordTimestampExempt,
+            );
+            expect(
+              evalRequiredSections(TIMESTAMP_BODY, 'practices-discovery-timestamp', {
+                recordTimestampExempt: Boolean(sensor.recordTimestampExempt),
+              }),
+              `${profileId}/${scope}/${stage.stageId}`,
+            ).toMatchObject(
+              covers ? { pass: true } : { pass: false, detail: { h2_count: 0, findings_count: 2 } },
+            );
+          }
+        }
+      }
+    }
+
+    const exempt = Object.entries(exemptBySensor);
+    expect(exempt.length).toBeGreaterThan(0);
+    expect(exempt.filter(([key, on]) => on !== key.startsWith('v2.11.0/'))).toEqual([]);
+    expect(exempt.some(([key]) => key.startsWith('v2.11.0/'))).toBe(true);
+  });
+
+  // Every script sensor every allowlisted release runs, with the flag it is
+  // spawned on and the budget it gets. A release that authors no input contract
+  // keeps `--file-path`, and every authored budget is honoured as authored up to
+  // the ceiling — no release at or below 2.9.0 reaches it, and 2.11.0's
+  // 1200-second code sensors are clamped to it.
+  it('spawns every release script sensor on its declared flag within its authored budget', async () => {
+    const specsByProfile = {};
+
+    for (const profileId of PROFILE_IDS) {
+      const { workflow, releaseLibrary } = await fixtureContext(profileId);
+      const scopes = [
+        ...new Set(
+          workflow.placements.flatMap((placement) => Object.keys(placement.scopeMembership ?? {})),
+        ),
+      ].toSorted();
+      const specs = new Set();
+
+      for (const scope of scopes) {
+        const { plan } = buildExecutionPlan({ workflow, scope, library: releaseLibrary });
+        for (const stage of plan?.stages ?? []) {
+          for (const sensor of stage.sensors ?? []) {
+            if (sensorKind(sensor) !== 'script') continue;
+            const { ok, spec } = validateScriptSpec(sensor);
+            expect(ok, `${profileId}/${scope}/${sensor.sensorId}`).toBe(true);
+            specs.add(`${sensor.sensorId} ${spec.pathFlag} ${spec.timeoutMs} ${spec.boundedBy}`);
+            // A sensor whose flag this change moves must be advisory, or the
+            // verdict it can now reach would move a gate outcome.
+            if (spec.pathFlag !== '--file-path') {
+              expect(
+                severityGate(SENSOR_RESULT.FAIL, sensor.severity),
+                `${profileId}/${scope}/${sensor.sensorId}`,
+              ).toEqual({ continues: true, held: false });
+            }
+          }
+        }
+      }
+      specsByProfile[profileId] = [...specs].toSorted();
+    }
+
+    const documentSensors = [
+      'claim-sources --output-path 5000 authored',
+      'traceability --output-path 5000 authored',
+    ];
+    const codeSensors = [
+      'linter --file-path 30000 authored',
+      'type-check --file-path 60000 authored',
+    ];
+    expect(specsByProfile).toEqual({
+      'current-stable': codeSensors,
+      'v2.6.18': [...documentSensors, ...codeSensors].toSorted(),
+      'v2.7.0': [...documentSensors, ...codeSensors].toSorted(),
+      'v2.8.2': [...documentSensors, ...codeSensors].toSorted(),
+      'v2.9.0': [...documentSensors, ...codeSensors].toSorted(),
+      'v2.11.0': [
+        'claim-sources --output-path 300000 authored',
+        'linter --file-path 600000 ceiling',
+        'traceability --output-path 300000 authored',
+        'type-check --file-path 600000 ceiling',
+      ],
+    });
   });
 });

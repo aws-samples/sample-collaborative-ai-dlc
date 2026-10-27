@@ -164,9 +164,17 @@ const mapScope = (fm, body, id) => {
     ...optional('sensorsPolicy', fm.sensors),
     ...optional('reviewCap', fm.review_cap),
     ...optional('summaryConfirmation', fm.summary_confirmation),
-    ...optional('changeControl', fm.change_control),
+    // 2.11 renames `change_control` to `guard_policy` and adds an `off` value.
+    // The new name is read FIRST and the old one second, so one resolver serves
+    // both dialects: a 2.11 scope resolves from `guard_policy`, and a 2.8.2 or
+    // 2.9.0 scope maps to exactly the bytes it maps to today.
+    ...optional('guardPolicy', fm.guard_policy),
+    ...optional('changeControl', fm.guard_policy ?? fm.change_control),
+    ...optional('planApproval', fm.plan_approval),
+    ...optional('collaborators', fm.collaborators),
     ...optional('learnings', fm.learnings),
     ...optional('skeleton', fm.skeleton),
+    ...(fm.existing_code == null ? {} : { existingCode: fm.existing_code }),
     ...(fm.runner == null ? {} : { runner: fm.runner }),
     body,
   };
@@ -395,6 +403,10 @@ const buildDefaultWorkflow = (stages, rules) => {
   };
 };
 
+// The one runtime file the stage prompt renders: the conductor persona
+// (agentcore/block-loader.js `loadConductor`, stage-materializer.js).
+const CONDUCTOR_REPO_PATH = 'core/aidlc-common/conductor.md';
+
 // Files under core/ that are pure runtime machinery (engine code + lifecycle
 // hooks + protocols/conductor) — NOT editable blocks. They are seeded to the
 // internal runtime snapshot so execution can inject them, never to the library.
@@ -405,7 +417,7 @@ const isRuntimeFile = (path) =>
   (path.startsWith('core/tools/') && !path.startsWith('core/tools/data/')) ||
   path.startsWith('core/hooks/') ||
   path.startsWith('core/aidlc-common/protocols/') ||
-  path === 'core/aidlc-common/conductor.md';
+  path === CONDUCTOR_REPO_PATH;
 
 // The sensor-script file a sensor's `command` runs, by convention
 // core/tools/aidlc-sensor-<id>.ts. Returns the repo path or null.
@@ -480,6 +492,7 @@ const buildFromFiles = (files) => {
 };
 
 export {
+  CONDUCTOR_REPO_PATH,
   buildFromFiles,
   buildArtifacts,
   buildDefaultWorkflow,
@@ -497,6 +510,7 @@ export {
   mapTemplate,
 };
 export default {
+  CONDUCTOR_REPO_PATH,
   buildFromFiles,
   buildArtifacts,
   buildDefaultWorkflow,

@@ -28,7 +28,7 @@ export const SELECTABLE_SUPPORT_STATES: readonly ReleaseSupportState[] = [
 // Two projections share this shape: platform admins get the full record, while
 // a non-admin GET /aidlc-releases returns only the selection fields (releaseId,
 // upstreamVersion, upstreamChannel, profileId, supportState, trustTier,
-// visible, runnable, certifiedAt). Everything else is therefore optional —
+// visible, runnable, certifiedAt, constructionAutonomy). Everything else is therefore optional —
 // selection UIs (NewIntentPage) must not rely on the admin-only fields.
 export interface AidlcRelease {
   releaseId: string;
@@ -50,9 +50,13 @@ export interface AidlcRelease {
   supportState: ReleaseSupportState;
   structurallyValid?: boolean;
   visible: boolean;
-  // Provenance property decided at registration, never patchable: custom/T0
-  // content is import-only and can never be offered to a new intent.
+  // Decided at registration and never patchable directly. A custom/T0 fork
+  // starts import-only and becomes runnable only when an admin promotes it
+  // through the same fidelity guard as an official release.
   runnable: boolean;
+  // Whether the release authors the construction autonomy protocol, so an
+  // intent pinned to it may be created with an autonomous grant.
+  constructionAutonomy?: boolean;
   notes?: string | null;
   registeredAt?: string | null;
   registeredBy?: string | null;
@@ -72,6 +76,11 @@ export interface AidlcRelease {
   // before any promotion or channel move.
   fidelityGaps?: ReleaseFidelityGap[] | null;
   unhonouredValues?: ReleaseFidelityGap[] | null;
+  // True when `fidelityGaps` is a verdict an EARLIER build stored: a listing
+  // recomputes only what it can afford per call. Such a list may name behavior
+  // this build now honours, so it must not be shown as a promotion blocker —
+  // the server re-verifies the closure before it decides.
+  fidelityEvidenceStale?: boolean;
   revision?: number;
 }
 
@@ -141,7 +150,7 @@ export interface RegistrableProfile {
 
 // The three things a custom fork registration needs. `baseProfile` is the
 // official profile whose frontmatter dialect the fork is parsed with — it grants
-// no trust, and the resulting record is always T0 / import-only.
+// no trust, and the resulting record is T0 and import-only until promoted.
 export interface RegisterCustomReleaseInput {
   repository: string;
   sha: string;
@@ -174,15 +183,12 @@ export interface UpgradeReleaseClosureResult {
 }
 
 /**
- * True when the release may be offered to a NEW intent. `custom` is checked
- * independently of `runnable` so a future backend that forgot to clear one flag
- * still cannot get a fork into a selector.
+ * True when the release may be offered to a NEW intent. A custom fork is
+ * runnable only once an admin has promoted it through the same fidelity guard
+ * as an official release, so `runnable` decides for both.
  */
 export const isReleaseSelectable = (release: AidlcRelease): boolean =>
-  release.runnable &&
-  !release.custom &&
-  release.visible &&
-  SELECTABLE_SUPPORT_STATES.includes(release.supportState);
+  release.runnable && release.visible && SELECTABLE_SUPPORT_STATES.includes(release.supportState);
 
 // The intent pages only need the channels read to learn the pinning flag and
 // the stable default, so they share one short-lived lookup instead of calling
@@ -220,7 +226,7 @@ export const aidlcReleasesService = {
   register: (profileId: string) =>
     api.post<RegisterReleaseResult>('/aidlc-releases', { profileId }),
   // Register a PUBLISHED custom fork closure (platform-admin). The resulting
-  // record is import-only: it can never be made selectable or hold a channel.
+  // record is import-only until an admin promotes it through the fidelity guard.
   registerCustom: (input: RegisterCustomReleaseInput) =>
     api.post<RegisterReleaseResult>('/aidlc-releases', { custom: input }),
   // Support-state decision (platform-admin, CAS on expectedRevision).

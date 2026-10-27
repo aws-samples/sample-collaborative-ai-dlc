@@ -96,8 +96,9 @@ echo "Terraform state backup: $BACKUP_FILE"
 
 echo "Disabling deletion protection for the confirmed teardown"
 # terraform-hardening.test.mjs cross-checks this list against every protected
-# table and cluster so a newly protected resource cannot silently drift.
+# table, cluster and user pool so a newly protected resource cannot silently drift.
 PROTECTION_TARGETS=(
+    -target=module.auth.aws_cognito_user_pool.main
     -target=module.neptune.aws_neptune_cluster.main
     -target=module.dynamodb.aws_dynamodb_table.sessions
     -target=module.dynamodb.aws_dynamodb_table.notifications
