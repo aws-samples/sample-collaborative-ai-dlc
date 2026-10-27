@@ -26,7 +26,9 @@ const makeCtx = (over = {}) => {
     logger: { info() {}, debug() {}, error() {} },
     step: async (_name, fn) => fn(),
     createCallback: async (name) => {
-      if (String(name).startsWith('stage-cb-')) {
+      // The workspace-init callback is completed by the fake init-ws-start job
+      // through the same registry as stage callbacks.
+      if (isJobCallback(name)) {
         let resolve;
         const promise = new Promise((r) => {
           resolve = r;
@@ -57,6 +59,26 @@ const makeCtx = (over = {}) => {
 // for the nth runtime call (init-ws result or the stage result the container
 // would deliver through the callback). For run-stage-start the verdict is
 // routed through the ctx's stage callback — exactly the production path.
+// A current container answers the side-effect-free init-ws-start capability
+// probe (no callbackId) with missing_callback_id.
+const isInitProbe = (payload) => payload.command === 'init-ws-start' && !payload.callbackId;
+const INIT_PROBE_ACK = { ok: false, reason: 'missing_callback_id' };
+// Callbacks the harness completes itself (stage jobs + the workspace-init job);
+// ctx overrides keep these on the base registry.
+const isJobCallback = (name) => String(name).startsWith('stage-cb-') || name === 'init-ws-cb';
+
+// Wrap an inline runtime fake so workspace initialization completes through
+// the production probe → callback → dispatch path with `verdict`; `fn` sees
+// every other command.
+const withInitWs = (ctx, fn, verdict = { ok: true }) =>
+  vi.fn(async (payload, ...rest) => {
+    if (payload.command !== 'init-ws-start') return fn(payload, ...rest);
+    if (!payload.callbackId) return INIT_PROBE_ACK;
+    invokes.push(payload);
+    ctx.stageCallbackResolvers.get(payload.callbackId)(JSON.stringify(verdict));
+    return { ok: true, accepted: true, callbackId: payload.callbackId };
+  });
+
 const makeRuntime = (ctx, script) => {
   let n = 0;
   return vi.fn(async (payload, sessionId) => {
@@ -64,10 +86,17 @@ const makeRuntime = (ctx, script) => {
       checkpointInvokes.push(payload);
       return { ok: true, checkpointId: `cp-${checkpointInvokes.length}` };
     }
+    if (isInitProbe(payload)) return INIT_PROBE_ACK;
     invokes.push(payload);
     sessions.push(sessionId);
     n += 1;
     const verdict = await script(payload, n);
+    if (payload.command === 'init-ws-start') {
+      const resolve = ctx.stageCallbackResolvers.get(payload.callbackId);
+      if (!resolve) throw new Error(`no init callback registered: ${payload.callbackId}`);
+      resolve(JSON.stringify(verdict));
+      return { ok: true, accepted: true, callbackId: payload.callbackId };
+    }
     if (payload.command === 'run-stage-start') {
       const resolve = ctx.stageCallbackResolvers.get(payload.stageCallbackId);
       if (!resolve) throw new Error(`no stage callback registered: ${payload.stageCallbackId}`);
@@ -82,7 +111,7 @@ const makeRuntime = (ctx, script) => {
 
 // Default script: init-ws ok, every stage SUCCEEDED.
 const okScript = (payload) =>
-  payload.command === 'init-ws' ? { ok: true } : { ok: true, state: 'SUCCEEDED' };
+  payload.command === 'init-ws-start' ? { ok: true } : { ok: true, state: 'SUCCEEDED' };
 
 const MANAGED_RUNTIME_TARGET = {
   agentRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
@@ -170,7 +199,7 @@ describe('orchestrator durable handler', () => {
     );
     expect(res).toEqual({ ok: true, intentId: 'i1', stages: 2 });
     expect(invokes.map((p) => p.command)).toEqual([
-      'init-ws',
+      'init-ws-start',
       'run-stage-start',
       'run-stage-start',
     ]);
@@ -179,17 +208,22 @@ describe('orchestrator durable handler', () => {
     const checkpointRunIds = [...new Set(checkpointInvokes.map((p) => p.orchestratorRunId))];
     expect(checkpointRunIds).toHaveLength(1);
     expect(checkpointRunIds[0]).toMatch(/^run-/);
-    // init-ws carries the provider so the runtime picks the right clone scheme.
-    const initWs = invokes.find((p) => p.command === 'init-ws');
+    // init-ws carries the provider so the runtime picks the right clone scheme,
+    // plus the init callback and the run's ownership token.
+    const initWs = invokes.find((p) => p.command === 'init-ws-start');
     expect(initWs).toMatchObject({
       projectId: 'p1',
       executionId: 'i1',
       gitProvider: 'github',
       repos: ['owner/repo'],
+      callbackId: 'cb-init-ws-cb',
+      orchestratorRunId: checkpointRunIds[0],
     });
     expect(initWs).not.toHaveProperty('gitToken');
+    // Probe + init dispatch + 2 stage dispatches + 3 checkpoints, all on the
+    // pinned runtime target.
     expect(deps.invokeRuntime.mock.calls.map(([, , target]) => target)).toEqual(
-      Array.from({ length: 6 }, () => MANAGED_RUNTIME_TARGET),
+      Array.from({ length: 7 }, () => MANAGED_RUNTIME_TARGET),
     );
     const statuses = deps.store.updateExecution.mock.calls.map((c) => c[0].status);
     expect(statuses).toContain('RUNNING');
@@ -529,7 +563,7 @@ describe('orchestrator durable handler', () => {
       }),
     );
     expect(invokes.map((p) => p.command)).toEqual([
-      'init-ws',
+      'init-ws-start',
       'run-stage-start',
       'derive-artifacts',
     ]);
@@ -753,7 +787,7 @@ describe('orchestrator durable handler', () => {
     const raceCtx = {
       ...base,
       createCallback: async (name) => {
-        if (String(name).startsWith('stage-cb-')) return base.createCallback(name);
+        if (isJobCallback(name)) return base.createCallback(name);
         return [
           new Promise((resolve) => setTimeout(() => resolve({ answer: null }), 5)),
           `cb-${name}`,
@@ -802,7 +836,7 @@ describe('orchestrator durable handler', () => {
         },
       },
       createCallback: async (name) => {
-        if (String(name).startsWith('stage-cb-')) return base.createCallback(name);
+        if (isJobCallback(name)) return base.createCallback(name);
         // Gate callback: NEVER resolves — awaiting it would hang the test.
         return [new Promise(() => {}), `cb-${name}`];
       },
@@ -946,9 +980,8 @@ describe('orchestrator durable handler', () => {
 
   it('fails the stage when the container REFUSES the dispatch (accept-time failure)', async () => {
     deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
-    deps.invokeRuntime = vi.fn(async (payload) => {
+    deps.invokeRuntime = withInitWs(ctx, async (payload) => {
       invokes.push(payload);
-      if (payload.command === 'init-ws') return { ok: true };
       // e.g. duplicate job / old container without run-stage-start.
       return { ok: false, reason: 'job_already_running' };
     });
@@ -964,11 +997,16 @@ describe('orchestrator durable handler', () => {
   });
 
   it('fails (with reason + event) when init-ws returns ok:false instead of marching on', async () => {
-    deps.invokeRuntime = vi.fn(async (payload) => {
-      invokes.push(payload);
-      // init-ws reports a checkout failure (the runtime returns, does not throw).
-      return { ok: false, reason: 'checkout_failed', detail: 'auth' };
-    });
+    // init-ws reports a checkout failure through the init callback (the
+    // background job returns its verdict, it does not throw).
+    deps.invokeRuntime = withInitWs(
+      ctx,
+      async (payload) => {
+        invokes.push(payload);
+        return { ok: true, state: 'SUCCEEDED' };
+      },
+      { ok: false, reason: 'checkout_failed', detail: 'auth' },
+    );
     const res = await __durableHandler(
       { action: 'start', intentId: 'i1', executionId: 'i1' },
       ctx,
@@ -977,7 +1015,7 @@ describe('orchestrator durable handler', () => {
     expect(res.ok).toBe(false);
     expect(res.reason).toBe('init_ws_failed');
     // Never advanced past init-ws into the stage loop.
-    expect(invokes.map((p) => p.command)).toEqual(['init-ws']);
+    expect(invokes.map((p) => p.command)).toEqual(['init-ws-start']);
     // Status FAILED with a human-readable reason was persisted...
     const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
     expect(failCall).toBeTruthy();
@@ -989,11 +1027,8 @@ describe('orchestrator durable handler', () => {
 
   it('records FAILED + reason when a durable step throws (no silent death)', async () => {
     // A run-stage-start transport error throws out of the dispatch step.
-    let n = 0;
-    deps.invokeRuntime = vi.fn(async (payload) => {
+    deps.invokeRuntime = withInitWs(ctx, async (payload) => {
       invokes.push(payload);
-      n += 1;
-      if (n === 1) return { ok: true }; // init-ws
       throw new Error('AgentCore 500');
     });
     deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a' }] } });
@@ -1014,17 +1049,18 @@ describe('orchestrator durable handler', () => {
       valid: true,
       plan: { stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] },
     });
-    const dead = makeCtx({
+    const base = makeCtx();
+    const dead = {
+      ...base,
       createCallback: async (name) => {
         if (String(name).startsWith('stage-cb-')) {
           return [Promise.reject(new Error('callback timed out')), `cb-${name}`];
         }
-        return [Promise.resolve({ answer: null }), `cb-${name}`];
+        return base.createCallback(name);
       },
-    });
-    deps.invokeRuntime = vi.fn(async (payload) => {
+    };
+    deps.invokeRuntime = withInitWs(dead, async (payload) => {
       invokes.push(payload);
-      if (payload.command === 'init-ws') return { ok: true };
       return { ok: true, accepted: true };
     });
     const res = await __durableHandler(
@@ -1041,6 +1077,171 @@ describe('orchestrator durable handler', () => {
       stageInstanceId: 'si-a',
       stageCallbackId: 'cb-stage-cb-a',
       runtimeError: 'stage_callback_failed',
+    });
+  });
+
+  describe('asynchronous workspace initialization', () => {
+    const stepNames = () => ctx.step.mock.calls.map(([name]) => name);
+    const initSteps = () =>
+      stepNames().filter((name) => ['init-ws', 'init-ws-probe', 'init-ws-dispatch'].includes(name));
+    beforeEach(() => {
+      ctx.step = vi.fn(async (_name, fn) => fn());
+      ctx.createCallback = vi.fn(ctx.createCallback);
+    });
+
+    it('dispatches init-ws-start and waits on the init callback instead of holding the clone in a step', async () => {
+      const res = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+      expect(res.ok).toBe(true);
+      expect(initSteps()).toEqual(['init-ws-probe', 'init-ws-dispatch']);
+      expect(ctx.createCallback).toHaveBeenCalledWith('init-ws-cb', {
+        timeout: { hours: 2 },
+        heartbeatTimeout: { minutes: 15 },
+      });
+      // The probe is side-effect free: it carries no init inputs and no callback.
+      const probe = deps.invokeRuntime.mock.calls.find(([p]) => isInitProbe(p))[0];
+      expect(probe).toEqual({ command: 'init-ws-start', executionId: 'i1' });
+    });
+
+    it.each([
+      [
+        'AgentCore reports the 400',
+        async () => {
+          throw Object.assign(new Error('Received error (400) from runtime.'), {
+            name: 'RuntimeClientError',
+          });
+        },
+      ],
+      ['the body names the unknown command', async () => ({ error: 'unknown command "x"' })],
+    ])(
+      'keeps the synchronous init-ws step on an older environment image (%s)',
+      async (_label, probeAnswer) => {
+        const inner = deps.invokeRuntime;
+        deps.invokeRuntime = vi.fn(async (payload, ...rest) => {
+          if (payload.command === 'init-ws-start') return probeAnswer();
+          if (payload.command === 'init-ws') {
+            invokes.push(payload);
+            return { ok: true };
+          }
+          return inner(payload, ...rest);
+        });
+        const res = await __durableHandler(
+          { action: 'start', intentId: 'i1', executionId: 'i1' },
+          ctx,
+          deps,
+        );
+        expect(res).toEqual({ ok: true, intentId: 'i1', stages: 2 });
+        expect(initSteps()).toEqual(['init-ws-probe', 'init-ws']);
+        expect(ctx.createCallback).not.toHaveBeenCalledWith('init-ws-cb', expect.anything());
+        expect(invokes.map((p) => p.command)).toEqual([
+          'init-ws',
+          'run-stage-start',
+          'run-stage-start',
+        ]);
+      },
+    );
+
+    it('does not mistake a probe transport failure for an older image', async () => {
+      deps.invokeRuntime = vi.fn(async () => {
+        throw Object.assign(new Error('Received error (503) from runtime.'), {
+          name: 'RuntimeClientError',
+        });
+      });
+      const res = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+      expect(res).toMatchObject({ ok: false, reason: 'orchestrator_error' });
+      expect(stepNames()).not.toContain('init-ws');
+    });
+
+    it('fails initialization when the container refuses the init job', async () => {
+      deps.invokeRuntime = vi.fn(async (payload) => {
+        if (isInitProbe(payload)) return INIT_PROBE_ACK;
+        invokes.push(payload);
+        return { ok: false, reason: 'init_job_already_running', detail: 'i1:init-ws' };
+      });
+      const res = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+      expect(res).toMatchObject({ ok: false, reason: 'init_ws_failed' });
+      const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+      expect(failCall[0].failureReason).toBe('init_ws_failed: init_job_already_running');
+      expect(stageStarts()).toHaveLength(0);
+    });
+
+    it('fails initialization when the init job dies (callback heartbeat expiry)', async () => {
+      const base = ctx.createCallback;
+      ctx.createCallback = vi.fn(async (name, options) =>
+        name === 'init-ws-cb'
+          ? [Promise.reject(new Error('Callback heartbeat timed out')), `cb-${name}`]
+          : base(name, options),
+      );
+      deps.invokeRuntime = vi.fn(async (payload) => {
+        if (isInitProbe(payload)) return INIT_PROBE_ACK;
+        invokes.push(payload);
+        return { ok: true, accepted: true };
+      });
+      const res = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+      expect(res).toMatchObject({ ok: false, reason: 'init_ws_failed' });
+      const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+      expect(failCall[0].failureReason).toBe('init_ws_failed: init_ws_callback_failed');
+      expect(stageStarts()).toHaveLength(0);
+    });
+
+    it('fails initialization on a malformed init callback body', async () => {
+      deps.invokeRuntime = vi.fn(async (payload) => {
+        if (isInitProbe(payload)) return INIT_PROBE_ACK;
+        invokes.push(payload);
+        ctx.stageCallbackResolvers.get(payload.callbackId)('not json');
+        return { ok: true, accepted: true };
+      });
+      const res = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+      expect(res).toMatchObject({ ok: false, reason: 'init_ws_failed' });
+      const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+      expect(failCall[0].failureReason).toBe('init_ws_failed: init_ws_bad_callback_result');
+    });
+
+    it('replays the synchronous init-ws step for a run claimed before the mode existed', async () => {
+      // A run checkpointed by the previous code memoized a claim without
+      // initWsMode. Its replay must keep the `init-ws` operation at that
+      // position, or the durable SDK rejects the history as non-deterministic.
+      ctx.step = vi.fn(async (name, fn) => {
+        const value = await fn();
+        if (name !== 'mint-run-id') return value;
+        const { initWsMode: _dropped, ...legacyClaim } = value;
+        return legacyClaim;
+      });
+      const inner = deps.invokeRuntime;
+      deps.invokeRuntime = vi.fn(async (payload, ...rest) => {
+        if (payload.command === 'init-ws') {
+          invokes.push(payload);
+          return { ok: true };
+        }
+        return inner(payload, ...rest);
+      });
+      const res = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+      expect(res.ok).toBe(true);
+      expect(initSteps()).toEqual(['init-ws']);
+      expect(deps.invokeRuntime.mock.calls.map(([p]) => p.command)).not.toContain('init-ws-start');
     });
   });
 
@@ -1072,10 +1273,14 @@ describe('orchestrator durable handler', () => {
   });
 
   it('broadcasts FAILED live so the UI flips without a manual refresh', async () => {
-    deps.invokeRuntime = vi.fn(async (payload) => {
-      invokes.push(payload);
-      return { ok: false, reason: 'checkout_failed' }; // init-ws fails
-    });
+    deps.invokeRuntime = withInitWs(
+      ctx,
+      async (payload) => {
+        invokes.push(payload);
+        return { ok: true, accepted: true };
+      },
+      { ok: false, reason: 'checkout_failed' }, // init-ws fails
+    );
     await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
     const failed = deps.broadcast.mock.calls.find(
       (c) => c[1].action === 'agent.execution' && c[1].status === 'FAILED',
@@ -1158,7 +1363,7 @@ describe('orchestrator durable handler', () => {
       // createCallback + wait are durable primitives, legitimately called outside
       // a step (they ARE the checkpoint), so they don't assert.
       createCallback: async (name) => {
-        if (String(name).startsWith('stage-cb-')) {
+        if (isJobCallback(name)) {
           let resolve;
           const promise = new Promise((r) => {
             resolve = r;
@@ -1200,7 +1405,11 @@ describe('orchestrator durable handler', () => {
     });
     deps.invokeRuntime = vi.fn(async (payload) => {
       assertInStep(`invokeRuntime:${payload.command}`);
-      if (payload.command === 'init-ws') return { ok: true };
+      if (isInitProbe(payload)) return INIT_PROBE_ACK;
+      if (payload.command === 'init-ws-start') {
+        stageCallbacks.get(payload.callbackId)(JSON.stringify({ ok: true }));
+        return { ok: true, accepted: true };
+      }
       // Deliver the verdict via the stage callback like the harness does.
       const resolve = stageCallbacks.get(payload.stageCallbackId);
       resolve({ ok: true, state: 'SUCCEEDED' });
@@ -1245,7 +1454,7 @@ describe('rewind relaunch (startAtStageId)', () => {
     expect(res).toEqual({ ok: true, intentId: 'i1', stages: 2 });
     // init-ws still runs (idempotent workspace heal); the loop starts at 'b'.
     expect(invokes.map((p) => p.command)).toEqual([
-      'init-ws',
+      'init-ws-start',
       'run-stage-start',
       'run-stage-start',
     ]);
@@ -1406,7 +1615,7 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
   it('dispatches promote-units exactly once, after the producing stage, before the next stage', async () => {
     deps.loadPlan.mockResolvedValue(PLAN_WITH_DAG_PRODUCER);
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units')
         return { ok: true, unitCount: 3, batchCount: 2, walkingSkeleton: 'auth' };
       return { ok: true, state: 'SUCCEEDED' };
@@ -1419,7 +1628,7 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
     expect(res.ok).toBe(true);
     const commands = invokes.map((p) => p.command);
     expect(commands).toEqual([
-      'init-ws',
+      'init-ws-start',
       'run-stage-start', // units-generation
       'derive-artifacts', // projection before downstream consumers run
       'promote-units', // right after the producer succeeded
@@ -1461,7 +1670,7 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
     deps.store.getExecution = vi.fn(async () => ({ ...META, deriveEnrichment: 'llm' }));
     deps.loadPlan.mockResolvedValue(PLAN_WITH_DAG_PRODUCER);
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') return { ok: true, unitCount: 1, batchCount: 1 };
       return { ok: true, state: 'SUCCEEDED' };
     });
@@ -1474,7 +1683,7 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
   it('fails the run (units_promotion_failed) when promotion is refused', async () => {
     deps.loadPlan.mockResolvedValue(PLAN_WITH_DAG_PRODUCER);
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units')
         return { ok: false, reason: 'dag_malformed', detail: 'duplicate: auth' };
       return { ok: true, state: 'SUCCEEDED' };
@@ -1501,7 +1710,7 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
       plan: { stages: [PLAN_WITH_DAG_PRODUCER.plan.stages[0]] },
     });
     deps.invokeRuntime = makeRuntime(ctx, (payload, n) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units')
         return { ok: true, unitCount: 1, batchCount: 1, walkingSkeleton: 'auth' };
       // First stage leg parks (approval question), resume leg succeeds.
@@ -1517,7 +1726,7 @@ describe('unit DAG promotion after the producing stage succeeds', () => {
     const commands = invokes.map((p) => p.command);
     // fresh leg → resume leg → THEN projection and promotion.
     expect(commands).toEqual([
-      'init-ws',
+      'init-ws-start',
       'run-stage-start',
       'run-stage-start',
       'derive-artifacts',
@@ -1573,7 +1782,7 @@ const UNIT_PLAN = (over = {}) => ({
 });
 
 const sectionScript = (payload) => {
-  if (payload.command === 'init-ws') return { ok: true };
+  if (payload.command === 'init-ws-start') return { ok: true };
   if (payload.command === 'promote-units')
     return { ok: true, unitCount: 2, batchCount: 2, walkingSkeleton: 'auth' };
   return { ok: true, state: 'SUCCEEDED' };
@@ -1611,7 +1820,7 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     // (init → fd → cg → merge) completes before billing's lane opens; bt runs
     // after fan-in.
     expect(invokes.map((p) => `${p.command}:${p.stageId ?? p.unitSlug ?? '-'}`)).toEqual([
-      'init-ws:-',
+      'init-ws-start:-',
       'run-stage-start:units-gen',
       'derive-artifacts:-',
       'promote-units:-',
@@ -1761,7 +1970,7 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
 
   it('a lane failure halts-and-asks; an unanswered/abort decision fails the run with work preserved', async () => {
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units')
         return { ok: true, unitCount: 2, batchCount: 2, walkingSkeleton: 'auth' };
       if (payload.stageId === 'cg' && payload.unitSlug === 'auth')
@@ -1788,7 +1997,7 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
 
   it('treats a lane stage failed for a missing checkpoint like any lane failure', async () => {
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units')
         return { ok: true, unitCount: 2, batchCount: 2, walkingSkeleton: 'auth' };
       if (payload.stageId === 'cg' && payload.unitSlug === 'auth')
@@ -1831,7 +2040,7 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     deps.store.getHumanTask = vi.fn(async () => ({ status: 'answered' }));
     let parked = false;
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
       if (payload.stageId === 'fd' && payload.unitSlug === 'auth' && !parked) {
         parked = true;
@@ -1873,7 +2082,7 @@ describe('WP5 — parallel sections: lanes, skeleton, ladder, halt-and-ask', () 
     deps.store.getHumanTask = vi.fn(async () => ({ status: 'answered' }));
     let parked = false;
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
       if (payload.stageId === 'fd' && payload.unitSlug === 'auth' && !parked) {
         parked = true;
@@ -2297,7 +2506,7 @@ describe('PR per unit delivery', () => {
       },
     });
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.reviewFeedback) {
         return {
           ok: true,
@@ -2734,7 +2943,7 @@ describe('WP5 — engine-gate decisions', () => {
     let cgBillingAttempts = 0;
     deps.store.getHumanTask = gateReads({ 'eg-halt': { answer: { decision: 'retry' } } });
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
       if (payload.stageId === 'cg' && payload.unitSlug === 'billing') {
         cgBillingAttempts += 1;
@@ -2799,7 +3008,7 @@ describe('WP5 — engine-gate decisions', () => {
       deps.stopSession = vi.fn(async () => stopResult);
       let cgBillingAttempts = 0;
       deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-        if (payload.command === 'init-ws') return { ok: true };
+        if (payload.command === 'init-ws-start') return { ok: true };
         if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
         if (payload.stageId === 'cg' && payload.unitSlug === 'billing') {
           cgBillingAttempts += 1;
@@ -2829,7 +3038,7 @@ describe('WP5 — engine-gate decisions', () => {
   it('halt-and-ask SKIP preserves merged lanes and lets the run continue without the failed unit', async () => {
     deps.store.getHumanTask = gateReads({ 'eg-halt': { answer: { decision: 'skip' } } });
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
       if (payload.stageId === 'cg' && payload.unitSlug === 'billing')
         return { ok: false, state: 'FAILED', reason: 'sensor_blocked' };
@@ -2874,7 +3083,7 @@ describe('WP5 — engine-gate decisions', () => {
       'eg-halt': { answer: { decision: 'skip' } },
     });
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') return { ok: true, unitCount: 3, batchCount: 2 };
       if (payload.stageId === 'cg' && payload.unitSlug === 'b')
         return { ok: false, state: 'FAILED', reason: 'sensor_blocked' };
@@ -2915,7 +3124,7 @@ describe('WP5 — engine-gate decisions', () => {
     });
     let assetWaitedForCharts = false;
     deps.invokeRuntime = makeRuntime(ctx, async (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') {
         return { ok: true, unitCount: 3, batchCount: 1 };
       }
@@ -3091,7 +3300,7 @@ describe('WP5 — engine-gate decisions', () => {
       'eg-halt-s1-w1-r0': { answer: { decision: 'garbage' } },
     });
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
       if (payload.stageId === 'cg' && payload.unitSlug === 'billing')
         return { ok: false, state: 'FAILED', reason: 'sensor_blocked' };
@@ -3153,7 +3362,7 @@ describe('WP6 — merge conflict → resolution stage → retry → halt on repe
   it('one conflicted lane: resolve-conflict runs in the LANE session, the merge retry lands, lane MERGED', async () => {
     let authMerges = 0;
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
       if (payload.command === 'merge-lane' && payload.unitSlug === 'auth') {
         authMerges += 1;
@@ -3213,7 +3422,7 @@ describe('WP6 — merge conflict → resolution stage → retry → halt on repe
         : { status: 'answered' },
     );
     deps.invokeRuntime = makeRuntime(ctx, (payload) => {
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return { ok: true };
       if (payload.command === 'promote-units') return { ok: true, unitCount: 2, batchCount: 2 };
       if (payload.command === 'merge-lane' && payload.unitSlug === 'auth')
         return { ok: false, reason: 'merge_conflict', conflicts: ['o/r:shared.txt'] };
@@ -3688,7 +3897,7 @@ describe('credential-free runtime payloads', () => {
     const result = await start();
     expect(result.ok).toBe(true);
     const gitPayloads = invokes.filter((payload) =>
-      ['init-ws', 'run-stage-start'].includes(payload.command),
+      ['init-ws-start', 'run-stage-start'].includes(payload.command),
     );
     expect(gitPayloads.length).toBeGreaterThan(0);
     for (const payload of gitPayloads) expect(payload.gitAuthor).toEqual(author);

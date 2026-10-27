@@ -77,6 +77,13 @@ const CREDENTIAL_FAILURE_CODES = new Set([
   'credential_quota_exhausted',
 ]);
 const NON_EXPORTABLE_STATUSES = new Set(['DRAFT', 'CREATED']);
+// A CREATED run no orchestrator has claimed should leave CREATED within
+// seconds of the hand-off.
+const UNCLAIMED_STALL_AFTER_MS = 2 * 60_000;
+// A claimed run in CREATED is initializing its workspace. The orchestrator's
+// init callback times out after 2 h (v2-orchestrator INIT_WS_CALLBACK_TIMEOUT)
+// and fails the run; the slack covers that failure write.
+const CLAIMED_INIT_STALL_AFTER_MS = 2 * 60 * 60_000 + 10 * 60_000;
 const EXPORT_HARNESSES: Array<{ value: NativeExportHarness; label: string }> = [
   { value: 'claude', label: 'Claude' },
   { value: 'codex', label: 'Codex' },
@@ -391,13 +398,19 @@ export default function IntentView() {
   const fanoutActive = isFanoutActive(detail);
   const reviewGate = reviewGateId ? gates.find((g) => g.humanTaskId === reviewGateId) : null;
   // Stalled detection: a CREATED run whose hand-off never reached a live
-  // orchestrator strands here (init-ws should flip it to RUNNING within
-  // seconds). After >2 min untouched, offer a restart instead of spinning.
+  // orchestrator strands here. After >2 min untouched, offer a restart instead
+  // of spinning. Once an orchestrator has claimed the run, CREATED means the
+  // workspace is still initializing — a large clone legitimately takes many
+  // minutes, and the orchestrator fails the run itself if the init job dies —
+  // so only flag it after the init callback window has clearly passed.
   const lastTouch = intent.updatedAt ?? intent.createdAt;
+  const stallAfterMs = intent.orchestratorStartedAt
+    ? CLAIMED_INIT_STALL_AFTER_MS
+    : UNCLAIMED_STALL_AFTER_MS;
   const isStalled =
     intent.status === 'CREATED' &&
     !!lastTouch &&
-    Date.now() - new Date(lastTouch).getTime() > 120_000;
+    Date.now() - new Date(lastTouch).getTime() > stallAfterMs;
   const isCredentialFailure =
     isFailed && Boolean(intent.failure?.code && CREDENTIAL_FAILURE_CODES.has(intent.failure.code));
   const credentialSettingsPath = isCredentialFailure

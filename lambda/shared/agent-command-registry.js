@@ -15,6 +15,7 @@ const command = (handler, agentAuth = false) => Object.freeze({ handler, agentAu
 
 export const COMMANDS = Object.freeze({
   'init-ws': command('initWs'),
+  'init-ws-start': command('initWsStart'),
   'run-stage': command('runStage', AGENT_AUTH_MODES.EXECUTION),
   'run-stage-start': command('runStageStart', AGENT_AUTH_MODES.EXECUTION),
   'promote-units': command('promoteUnits'),

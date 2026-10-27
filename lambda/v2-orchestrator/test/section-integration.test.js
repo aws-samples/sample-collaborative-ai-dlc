@@ -210,9 +210,22 @@ const makeWorld = ({ remote, unitPlan, fileFor, beforeStage = null, conflictAgen
     world.invokes.push(payload);
     world.sessions.push(sessionId);
     const ws = wsFor(sessionId);
-    if (payload.command === 'init-ws') {
-      await realCheckoutRepo(remote)({ branch: payload.branch, targetDir: ws });
-      return { ok: true };
+    if (payload.command === 'init-ws-start') {
+      // Capability probe (no callbackId); then the accepted init job runs the
+      // REAL checkout in the background and completes the init callback.
+      if (!payload.callbackId) return { ok: false, reason: 'missing_callback_id' };
+      (async () => {
+        try {
+          await realCheckoutRepo(remote)({ branch: payload.branch, targetDir: ws });
+          const op = await world.runner
+            .getOperation('init-ws-cb')
+            .waitForData(WaitingOperationStatus.STARTED);
+          await op.sendCallbackSuccess(JSON.stringify({ ok: true }));
+        } catch (e) {
+          console.error('[fixture] init-ws job failed:', e?.message);
+        }
+      })();
+      return { ok: true, accepted: true, callbackId: payload.callbackId };
     }
     if (payload.command === 'promote-units') {
       return { ok: true, unitCount: unitPlan.units.length, batchCount: unitPlan.batches.length };

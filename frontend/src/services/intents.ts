@@ -167,6 +167,9 @@ export interface Intent {
   createdAt: string | null;
   updatedAt: string | null;
   completedAt: string | null;
+  // When an orchestrator run claimed this execution; null until claimed and
+  // after a relaunch resets it. Absent from older API responses.
+  orchestratorStartedAt?: string | null;
 }
 
 export interface IntentAttachment {
