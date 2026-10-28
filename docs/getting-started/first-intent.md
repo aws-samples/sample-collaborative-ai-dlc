@@ -13,7 +13,7 @@ Open your deployed application URL (the CloudFront domain from your deployment).
 From the dashboard, choose **Create new Project**:
 
 1. Enter a name.
-2. Choose the code host — **GitHub** or **GitLab** — and connect your account if prompted (in GitHub App mode there is nothing to connect).
+2. Choose the code host — **GitHub**, **GitLab**, **Bitbucket**, or **AWS CodeCommit** — and connect it if prompted (in GitHub App mode there is nothing to connect).
 3. Pick the repository that should back the project.
 4. Optionally check **Enable GitHub/GitLab issue integration** to bind the repository's issue tracker in the same step.
 
@@ -21,13 +21,20 @@ Projects group related intents together. Each project has its own repositories, 
 
 ## Create an intent
 
-Inside your project, choose **New Intent**. The full-page form asks for:
+Creating an intent takes two steps.
+
+Inside your project, choose **New Intent** and fill in:
 
 - **Title** — for example, "Add user authentication". This also names the git branch (`aidlc/add-user-authentication`).
 - **Prompt** — what you want built, in free-form text. If the project has a tracker bound, you can instead pick an issue from the **Import from tracker** panel; its title, body, and comments are imported for you.
-- **Agent CLI** — explicitly choose one of the installed CLIs supported by your effective personal, space, or platform credentials. The space recommendation is labeled but is not selected for you.
-- **Scope** — decides which workflow stages execute. Pick `feature` for a typical change, `bugfix` for a small fix, or a larger scope for greenfield work.
+- **AI-DLC version** (shown when the platform offers selectable releases) — keep the default unless you need a specific release.
 - **Base branch** (optional) — defaults to each repository's default branch; expand the section to pick a different base per repository.
+
+Choose **Continue to Compose**. This creates the intent as a **draft** and opens the **Compose** page, where teammates can join and edit the draft with you live. There:
+
+- **Agent CLI** — explicitly choose one of the installed CLIs supported by your effective personal, space, or platform credentials. The space recommendation is labeled but is not selected for you.
+- **Scope** — decides which workflow stages execute. Pick `feature` for a typical change, `bugfix` for a small fix, or `mvp` for a new application without the operations stages. See [Creating intents](../using-the-platform/creating-intents.md#scope) for every scope.
+- **Stages** — optionally deselect stages of the chosen scope.
 
 A good prompt typically includes:
 
@@ -42,7 +49,7 @@ For example:
 
 ## Start the intent
 
-The intent opens as a **draft** on the workbench. Review the prompt, selected CLI, scope, and branch, then start it. The selected CLI and opaque credential binding are pinned for the run; later collaborators do not change its credential source.
+When the prompt, CLI, and scope look right, choose **Start Intent** on the Compose page. The selected CLI and opaque credential binding are pinned for the run; later collaborators do not change its credential source.
 
 The orchestrator compiles the workflow, checks out your repository, creates the intent branch, and begins walking the stages. The pipeline bar at the top shows the phases; the activity panel on the right streams the agent's output live.
 

@@ -2,9 +2,11 @@
 
 An **intent** is the unit of agent work: a title and a prompt, scoped to a project, executed by the project's workflow. This page covers creating, starting, and managing intents. For what happens after you start one, see [Observing intents](intent-observability.md).
 
-## The New Intent page
+Creating an intent takes two steps. **New Intent** captures the title and prompt and creates a draft. On the **Compose** page, which teammates can edit with you live, you then pick the agent CLI, scope, and stages, and start the intent.
 
-Inside a project, choose **New Intent**. The full-page form has these fields:
+## Step 1: New Intent
+
+Inside a project, choose **New Intent**. This page has these fields:
 
 ### Title
 
@@ -19,6 +21,8 @@ What you want built, in free-form text. This is the brief every stage receives, 
 - **Constraints** or technical decisions
 - **Scope** — what is in and what is out
 
+You can keep refining the prompt with your teammates on the Compose page.
+
 ### Import from tracker
 
 If the project has one or more trackers bound (GitHub Issues, GitLab Issues, Jira Cloud), a tracker panel appears next to the form. Browse open issues and pick one to seed the intent:
@@ -29,9 +33,9 @@ If the project has one or more trackers bound (GitHub Issues, GitLab Issues, Jir
 
 You can edit the imported prompt freely before starting.
 
-### Scope
+### AI-DLC version
 
-The scope decides **which workflow stages execute** — it comes from the pinned workflow's compiled scopes. A `bugfix` scope runs a lean subset; a `greenfield` scope runs the full methodology. Pick the smallest scope that honestly covers the work.
+Shown when the platform offers selectable AI-DLC releases. Pick a release, or keep the default. The intent stays on the chosen version and is never migrated automatically. When the chosen release supports it, an **Autonomous construction** checkbox lets the remaining construction stages run without stopping for approval; the first construction stage, plan approvals, and failures still stop and ask.
 
 ### Base branch
 
@@ -39,23 +43,22 @@ Optional — collapsed by default, and defaulting to each repository's own defau
 
 Only repositories where you explicitly picked a branch are overridden; all others use their default.
 
-## Draft, review, start
-
-Creating the intent opens it on the workbench in **DRAFT** state, with a **Review & start** card showing the prompt, scope, and branch (read-only — these are set at creation). Starting the intent:
-
-1. Uses the workflow, runtime settings, and exact managed-environment revision
-   snapshotted when the intent was created.
-2. Compiles the execution plan for the chosen scope.
-3. Checks the repositories out, creates the intent branch, and begins the first stage.
+Choose **Continue to Compose**. The platform creates the intent in **DRAFT** state and opens its Compose page.
 
 Select the desired published environment in **Project Settings -> Environment**
 before creating the intent. Reassigning the project or publishing a newer
 revision afterward does not change an existing intent's image, runtime, or
 endpoint. See [Managed tools and environments](managed-environments.md#select-an-environment-for-a-project).
 
+## Step 2: Compose
+
+The Compose page is where a draft is finished and started. It is **collaborative**: anyone who opens the same draft edits it with you live, and the header shows how many others are editing. Opening a draft intent from the project page always brings you here.
+
+The title and prompt from step 1 stay editable. The page also has:
+
 ### Reference attachments
 
-While composing a draft, choose **Attach files** to provide reference material
+Choose **Attach files** to provide reference material
 for the agents. Supported formats are PDF, DOCX, XLSX, TXT, Markdown, CSV,
 HTML, PNG, JPEG, WebP, and SVG. You can attach up to **50 files**, each at most
 **5 MB**, with **25 MB** combined (limits use 1 MB = 1,048,576 bytes).
@@ -72,11 +75,50 @@ before it was included, an administrator must rebuild on the updated Standard
 base and publish the new revision before you create the intent. Existing
 intents keep their pinned environment.
 
+### Agent CLI
+
+Explicitly choose one of the CLIs available to you through your effective personal, space, or platform credentials. The space recommendation is labeled **recommended** but is not selected for you. Unavailable CLIs show why: disabled by an admin, not installed, or no credential.
+
+### Scope
+
+The scope decides **which workflow stages execute**. The **Predefined** picker offers the pinned workflow's built-in scopes ("Built-in stage sets for common work"). Alternatively, **Compose with AI** proposes a scope or a custom stage selection from your prompt (see [AI-DLC terms, mapped to the platform](../getting-started/methodology-map.md)). Pick the smallest scope that honestly covers the work.
+
+The default `aidlc-v2` workflow, seeded from AI-DLC at the platform's pinned version, has 32 stages across five phases and offers these scopes:
+
+| Scope            | Purpose                                        | Stages |
+| ---------------- | ---------------------------------------------- | ------ |
+| `bugfix`         | Fix a specific bug                             | 7      |
+| `poc`            | Prove feasibility fast                         | 8      |
+| `refactor`       | Clean up existing code                         | 8      |
+| `security-patch` | CVE response                                   | 10     |
+| `infra`          | Infrastructure changes                         | 13     |
+| `mvp`            | Skip operations, ship the core                 | 22     |
+| `workshop`       | Facilitated group session with mandatory gates | 25     |
+| `feature`        | Default for new features, practical depth      | 32     |
+| `enterprise`     | Regulated enterprise feature, full audit trail | 32     |
+
+`mvp` leaves out market research, team formation, the approval handoff, and every Operation stage; `workshop` leaves out Ideation. A forked workflow or another AI-DLC version can offer different scopes (newer AI-DLC releases, for example, add `classic` and `express`), so treat the Compose page as the source of truth.
+
+There is no greenfield or brownfield scope: the **workspace detection** stage classifies the repository, and stages such as reverse engineering run only for existing code.
+
+### Stages
+
+The stage grid shows the stages of the selected scope. Deselect stages you don't need; a summary line shows how many stages will run and how many fan out per unit of work. **reset to scope** returns a customized selection to its original scope.
+
+### Start the intent
+
+**Start Intent** is enabled once the draft has a prompt, a scope, and an agent CLI. Starting the intent:
+
+1. Uses the workflow, runtime settings, and exact managed-environment revision
+   snapshotted when the intent was created.
+2. Compiles the execution plan for the chosen scope and stage selection.
+3. Checks the repositories out, creates the intent branch, and begins the first stage.
+
 ## Intent lifecycle
 
 | State       | Meaning                                                              |
 | ----------- | -------------------------------------------------------------------- |
-| `DRAFT`     | Created, not yet started — review and start it from the workbench    |
+| `DRAFT`     | Created, not yet started — finish and start it on the Compose page   |
 | `RUNNING`   | A stage is executing                                                 |
 | `WAITING`   | Parked on a human gate — answer it to resume; no compute is consumed |
 | `SUCCEEDED` | All in-scope stages passed; a pull/merge request has been opened     |
