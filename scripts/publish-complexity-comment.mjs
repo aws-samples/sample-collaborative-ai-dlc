@@ -204,10 +204,16 @@ export async function publishComplexityComment({
         ? renderComparison(report)
         : `# Complexity and test coverage\n\nThe target branch or merge base changed. Push an updated branch to generate a fresh comparison for \`${pr.head.sha}\`.`;
     }
+    const truncated = content.slice(0, 55000);
+    const truncatedRows = truncated.slice(0, truncated.lastIndexOf('\n'));
+    const closeDetails =
+      truncatedRows.includes('<details>') && !truncatedRows.includes('</details>')
+        ? '\n\n</details>'
+        : '';
     const preview =
       content.length <= 55000
         ? content
-        : `${content.slice(0, 55000)}\n\nDisplay truncated; see the full report artifact.`;
+        : `${truncatedRows}${closeDetails}\n\nDisplay truncated; see the full report artifact.`;
     const body = `${commentMarker}\n<!-- quality-run:${run.id}:${run.run_attempt} -->\n${preview}\n[CI run and full report artifacts](${url})`;
     if (existing) {
       await github.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });

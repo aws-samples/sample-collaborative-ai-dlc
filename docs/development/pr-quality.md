@@ -29,7 +29,8 @@ These are review heuristics; use the numbers to judge each finding.
 **n/a** means no branch outcomes or frontend dependency counts; **\*** marks coverage from failing/incomplete tests.
 Coverage comparisons allow Node minor/patch differences within the same major; Vitest, provider, and configuration must match.
 **New or unmatched** means no reliable previous function match—not necessarily new code.
-The table is sorted 🟣 → 🔴 → 🟠 → 🟢 before showing up to 20 functions; artifacts contain all results.
+Rows are sorted 🟣 → 🔴 → 🟠 → 🟢. The first 10 are visible, or all purple rows if there are more;
+the remaining rows appear under “Show more”. GitHub comment size limits still apply; artifacts contain all results.
 Coverage diagnostics stay in the artifacts; the comment shows one notice if measurements are unavailable or incomplete.
 
 ## CI

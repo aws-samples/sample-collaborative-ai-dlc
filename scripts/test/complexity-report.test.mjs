@@ -156,7 +156,7 @@ test('Markdown keeps the table and a compact two-line legend', () => {
   assert.match(markdown, /\| unknown \|/);
 });
 
-test('tables prioritize purple, red, orange, green before truncation and preserve ties', () => {
+test('tables prioritize purple, red, orange, green before folding and preserve ties', () => {
   const orange = { ...row(50, 51, 0), function: 'orange' };
   const red = { ...row(50, 60, 0), function: 'red' };
   const purple = { ...row(50, 60, -10), function: 'purple' };
@@ -181,7 +181,44 @@ test('tables prioritize purple, red, orange, green before truncation and preserv
     capped.split('\n').find((line) => line.startsWith('| 🟣')),
     /— purple \|/,
   );
-  assert.match(capped, /Showing 20 of 21/);
+  assert.match(capped, /<summary>Show 11 more functions<\/summary>/);
+  assert.equal(
+    capped
+      .split('<details>')[0]
+      .split('\n')
+      .filter((line) => /^\| [🟣🔴🟠🟢]/u.test(line)).length,
+    10,
+  );
+});
+
+test('keeps at least ten rows and every purple row visible', () => {
+  const purple = row(50, 60, -10);
+  const orange = row(50, 51, 0);
+  for (const [purpleCount, otherCount, expectedVisible, expectedHidden] of [
+    [0, 4, 4, 0],
+    [0, 10, 10, 0],
+    [0, 11, 10, 1],
+    [11, 2, 11, 2],
+    [25, 3, 25, 3],
+    [25, 0, 25, 0],
+  ]) {
+    const report = {
+      files: [],
+      findings: [...Array(otherCount).fill(orange), ...Array(purpleCount).fill(purple)],
+      improvements: [],
+    };
+    const markdown = renderComparison(report);
+    const [visible, hidden] = markdown.split('<details>');
+    const countRows = (text) => (text?.match(/^\| [🟣🔴🟠🟢]/gmu) ?? []).length;
+    assert.equal(countRows(visible), expectedVisible);
+    assert.equal(countRows(hidden), expectedHidden);
+    assert.doesNotMatch(hidden ?? '', /^\| 🟣/m);
+    assert.doesNotMatch(markdown, /Analyzed|Advisory threshold/);
+    if (expectedHidden) {
+      assert.ok(hidden.includes(`<summary>Show ${expectedHidden} more functions</summary>\n\n`));
+      assert.ok(hidden.includes('\n\n</details>'));
+    } else assert.equal(hidden, undefined);
+  }
 });
 
 test('an improvement with a coverage regression is shown once with its warning color', () => {

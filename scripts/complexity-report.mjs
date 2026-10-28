@@ -55,14 +55,11 @@ export function changeIcon(row) {
   return icon;
 }
 
-function renderRows(rows) {
-  const ordered = rows.toSorted(
-    (a, b) => iconOrder.indexOf(changeIcon(a)) - iconOrder.indexOf(changeIcon(b)),
-  );
+function renderTable(rows) {
   return [
     '| | File / function | Complexity | Δ | Branch coverage | Δ | Uncovered branches | Depending files |',
     '| --- | --- | ---: | ---: | --- | ---: | ---: | ---: |',
-    ...ordered.slice(0, 20).map((row) => {
+    ...rows.map((row) => {
       const { before, after, change } = row.coverage ?? {};
       const measuredBefore = before?.status === 'measured';
       const measuredAfter = after?.status === 'measured';
@@ -80,10 +77,18 @@ function renderRows(rows) {
         : (row.dependentFiles ?? 'unknown');
       return `| ${changeIcon(row)} | ${cell(`${row.path}:${row.line} — ${row.function}`)} | ${row.before ?? '—'} → ${row.after} | ${row.delta === null ? '—' : signed(row.delta)} | ${coverage} | ${delta == null ? '—' : signed(Number(delta.toFixed(1)))} | ${branches} | ${dependents} |`;
     }),
-    ...(rows.length > 20
-      ? [`\nShowing 20 of ${rows.length}; the JSON report contains every result.`]
-      : []),
   ].join('\n');
+}
+
+function renderRows(rows) {
+  const ordered = rows.toSorted(
+    (a, b) => iconOrder.indexOf(changeIcon(a)) - iconOrder.indexOf(changeIcon(b)),
+  );
+  const visibleCount = Math.max(10, ordered.filter((row) => changeIcon(row) === '🟣').length);
+  const visible = renderTable(ordered.slice(0, visibleCount));
+  const remaining = ordered.slice(visibleCount);
+  if (!remaining.length) return visible;
+  return `${visible}\n\n<details>\n<summary>Show ${remaining.length} more functions</summary>\n\n${renderTable(remaining)}\n\n</details>`;
 }
 
 export function renderComparison(report) {
@@ -98,8 +103,6 @@ export function renderComparison(report) {
     '',
     'Automated quality report using code complexity and test coverage to highlight potential hot spots in this PR.',
     'Review 🟣 and 🔴 items first: consider simplifying the code, improving test coverage, or both. This report is advisory.',
-    '',
-    `Analyzed ${report.files.length} source files changed by this PR. Advisory threshold: ${report.analyzer.threshold}.`,
   ];
   const paths = [...report.files, ...rows]
     .map((entry) => entry?.path)

@@ -205,17 +205,25 @@ test('validates numbers and derives coverage deltas rather than trusting the art
 });
 
 test('bounds the rendered comment even when escaping expands long artifact strings', async (t) => {
-  const data = report();
-  data.findings = Array.from({ length: 20 }, () => ({
-    ...data.findings[0],
-    path: '~'.repeat(500),
-  }));
-  data.improvements = data.findings;
-  const f = await fixture(t, data);
-  await publishComplexityComment(f);
-  assert.equal(f.writes.length, 1);
-  assert.ok(f.writes[0].body.length < 60000);
-  assert.match(f.writes[0].body, /Display truncated/);
+  for (const dependentFiles of [null, 12]) {
+    const data = report();
+    data.findings = Array.from({ length: 20 }, () => ({
+      ...data.findings[0],
+      path: '~'.repeat(500),
+      dependentFiles,
+    }));
+    data.improvements = data.findings;
+    const f = await fixture(t, data);
+    await publishComplexityComment(f);
+    assert.equal(f.writes.length, 1);
+    assert.ok(f.writes[0].body.length < 60000);
+    assert.match(f.writes[0].body, /Display truncated/);
+    assert.equal(
+      (f.writes[0].body.match(/<details>/g) ?? []).length,
+      (f.writes[0].body.match(/<\/details>/g) ?? []).length,
+    );
+    assert.match(f.writes[0].body, /(?:\||<\/details>)\n\nDisplay truncated/);
+  }
 });
 
 async function sameRepositoryFixture(t) {
@@ -268,7 +276,8 @@ for (const [name, createFixture] of [
     await writeFile(f.reportPath, JSON.stringify({ ...report(), findings: [], improvements: [] }));
     await publishComplexityComment(f);
     assert.equal(f.writes[0].action, 'create');
-    assert.match(f.writes[0].body, /Analyzed 1 source files/);
+    assert.match(f.writes[0].body, /Automated quality report/);
+    assert.doesNotMatch(f.writes[0].body, /Analyzed \d+ source files/);
   });
 
   test(`${name}: posts validated JSON through the shared publisher`, async (t) => {

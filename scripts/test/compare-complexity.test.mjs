@@ -377,7 +377,7 @@ test('rejects source symlinks instead of following them or reporting a zero scor
   await assert.rejects(compareRevisions({ cwd: repo.cwd, base }), /expected a regular source file/);
 });
 
-test('caps the display without dropping JSON findings and escapes Markdown content', () => {
+test('folds remaining rows without dropping JSON findings and escapes Markdown content', () => {
   const finding = {
     path: 'lambda/a|b<file>.js',
     line: 1,
@@ -395,7 +395,7 @@ test('caps the display without dropping JSON findings and escapes Markdown conte
     improvements: [],
   };
   const text = renderComparison(report);
-  assert.match(text, /Showing 20 of 21/);
+  assert.match(text, /Show 11 more functions/);
   assert.match(text, /a&#124;b&#60;file&#62;/);
   assert.match(text, /odd&#96;name&#10;injected/);
   assert.equal(report.findings.length, 21);
