@@ -21,7 +21,7 @@ const proxyVariableNames = [
   'all_proxy',
 ];
 
-const runHarness = (proxyEnv) => {
+const runHarness = (proxyEnv, { args = [], expectedStatus = 0 } = {}) => {
   const fixture = mkdtempSync(join(tmpdir(), 'aidlc-e2e-proxy-'));
   const bin = join(fixture, 'bin');
   const dockerLog = join(fixture, 'docker.log');
@@ -41,6 +41,9 @@ second="\${2:-}"
 } >> "$DOCKER_LOG"
 if [[ "$first" == "logs" && "$second" == *"-gremlin-"* ]]; then
   printf 'Channel started at port 8182\\n'
+fi
+if [[ "$first" == "run" && "\${FAIL_SANDBOX_CASE:-}" == "1" && "$*" == *"sandbox-integration.mjs true capture" ]]; then
+  exit 1
 fi
 `,
   );
@@ -62,13 +65,13 @@ fi
   for (const name of proxyVariableNames) delete env[name];
   Object.assign(env, proxyEnv);
 
-  const result = spawnSync('bash', [e2eScript], {
+  const result = spawnSync('bash', [e2eScript, ...args], {
     cwd: root,
     encoding: 'utf8',
     env,
     timeout: 30_000,
   });
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, expectedStatus, result.stderr);
   return readFileSync(dockerLog, 'utf8');
 };
 
@@ -88,4 +91,25 @@ test('E2E harness adds no proxy arguments without proxy variables', () => {
   const log = runHarness({});
   assert.doesNotMatch(log, /--build-arg/);
   assert.doesNotMatch(log, /\t--env\t(?:HTTP_PROXY|no_proxy)(?:\t|\n)/);
+});
+
+test('sandbox mode runs both cases through both helpers without model credentials or services', () => {
+  const log = runHarness(
+    { KIRO_API_KEY: '', BEDROCK_API_KEY: '', AWS_BEARER_TOKEN_BEDROCK: '' },
+    { args: ['--sandbox'] },
+  );
+  for (const enabled of ['false', 'true']) {
+    for (const helper of ['capture', 'stream']) {
+      assert.ok(log.includes(`sandbox-integration.mjs\t${enabled}\t${helper}\n`));
+    }
+  }
+  assert.match(log, /--security-opt\tsystempaths=unconfined/);
+  assert.match(log, /sandbox-integration\.mjs:ro/);
+  assert.doesNotMatch(log, /--env|--env-file|local-e2e-harness|dynamodb-local|gremlin-server/);
+});
+
+test('sandbox mode returns failure if a test fails, and still runs the remaining cases', () => {
+  const log = runHarness({ FAIL_SANDBOX_CASE: '1' }, { args: ['--sandbox'], expectedStatus: 1 });
+  assert.ok(log.includes('sandbox-integration.mjs\ttrue\tstream\n'));
+  assert.match(log, /^ps\t-aq\t--filter\tlabel=aidlc\.e2e=/m);
 });

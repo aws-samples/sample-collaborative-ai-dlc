@@ -20,6 +20,7 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import { spawn } from 'node:child_process';
 import { childEnvironment } from './environment.js';
 import { currentCredentialSession } from '../credential-session.js';
+import { currentSandbox, spawnSandbox } from '../sandbox/launcher.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'spawn' } });
 const usesPosixProcessGroups = process.platform !== 'win32';
@@ -140,7 +141,9 @@ export const runChild = ({
 }) =>
   new Promise((resolve, reject) => {
     const capture = captureStderrTail > 0;
-    const grouped = processGroup && usesPosixProcessGroups;
+    const sandbox = currentSandbox();
+    const sandboxEnabled = sandbox.enabled;
+    const grouped = (processGroup || sandboxEnabled) && usesPosixProcessGroups;
     const session = currentCredentialSession();
     try {
       session?.assertAvailable();
@@ -160,7 +163,7 @@ export const runChild = ({
     const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
     let child;
     try {
-      child = spawnFn(command, args, {
+      const options = {
         cwd,
         env: mergedEnv,
         shell: false,
@@ -170,7 +173,10 @@ export const runChild = ({
           onStdout ? 'pipe' : 'inherit',
           capture ? 'pipe' : 'inherit',
         ],
-      });
+      };
+      child = sandboxEnabled
+        ? spawnSandbox(command, args, options, { sandbox, spawnFn })
+        : spawnFn(command, args, options);
     } catch (e) {
       // spawn() throws SYNCHRONOUSLY for E2BIG (argv/env too large) — it never
       // reaches child.on('error'). Log the code loudly, then reject so the
@@ -210,6 +216,7 @@ export const runChild = ({
       resolve({
         exitCode,
         stderrTail,
+        ...(child.sandboxError ? { sandboxError: child.sandboxError } : {}),
         ...(timedOut ? { timedOut: true } : {}),
         ...(session?.signal.aborted
           ? {
@@ -276,6 +283,8 @@ export const captureChild = ({
   killProcessGroup = (pid, signal) => process.kill(pid, signal),
 }) =>
   new Promise((resolve) => {
+    const sandbox = currentSandbox();
+    const sandboxEnabled = sandbox.enabled;
     const session = currentCredentialSession();
     try {
       session?.assertAvailable();
@@ -290,24 +299,34 @@ export const captureChild = ({
       });
       return;
     }
-    const detached = Boolean(session) && process.platform !== 'win32';
+    const detached = Boolean(session || sandboxEnabled) && process.platform !== 'win32';
     const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
     let child;
     try {
-      child = spawnFn(command, args, {
+      const options = {
         cwd,
         env: mergedEnv,
         shell: false,
         ...(detached ? { detached: true } : {}),
         stdio: [promptViaStdin ? 'pipe' : 'ignore', 'pipe', captureStderr ? 'pipe' : 'inherit'],
-      });
+      };
+      child = sandboxEnabled
+        ? spawnSandbox(command, args, options, { sandbox, spawnFn })
+        : spawnFn(command, args, options);
     } catch (e) {
       // E2BIG throws synchronously here too. Log + degrade (this path resolves
       // rather than rejects — the caller treats exitCode null as a soft failure).
       logger.error('captureChild failed', e, { command });
-      resolve({ exitCode: null, stdout: '', stderr: '', timedOut: false });
+      resolve({
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        ...(sandboxEnabled ? { sandboxError: 'sandbox_start_failed' } : {}),
+      });
       return;
     }
+    const untrackProcessGroup = sandboxEnabled ? trackProcessGroup(child) : () => {};
     let stdout = '';
     child.stdout?.on('data', (c) => (stdout += c.toString()));
     let stderr = '';
@@ -330,6 +349,7 @@ export const captureChild = ({
         stdout,
         stderr,
         timedOut,
+        ...(child.sandboxError ? { sandboxError: child.sandboxError } : {}),
         ...(session?.signal.aborted
           ? {
               credentialError: session.signal.reason?.code ?? 'credential_unavailable',
@@ -354,8 +374,20 @@ export const captureChild = ({
       timer.unref?.();
     }
     if (session?.signal.aborted) cancel();
-    child.on('error', () => finish(null));
-    child.on('close', (code) => finish(code));
+    child.on('error', () => {
+      untrackProcessGroup();
+      finish(null);
+    });
+    if (sandboxEnabled) {
+      child.on('exit', () => {
+        if (child.pid) signalGroup(child, 'SIGKILL');
+        untrackProcessGroup();
+      });
+    }
+    child.on('close', (code) => {
+      untrackProcessGroup();
+      finish(code);
+    });
     if (promptViaStdin) {
       try {
         child.stdin?.end(prompt ?? '');
