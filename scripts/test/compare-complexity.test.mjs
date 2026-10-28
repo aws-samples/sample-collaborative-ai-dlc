@@ -158,7 +158,7 @@ test('compares against merge base, not target tip, and reports only relevant cha
     encoding: 'utf8',
   });
   assert.equal(cli.status, 0, cli.stderr);
-  assert.match(cli.stdout, /3 new\/unmatched or worsening/);
+  assert.equal(cli.stdout.match(/\| File \/ function \|/g).length, 1);
   const saved = JSON.parse(readFileSync(join(repo.cwd, 'reports/complexity/comparison.json')));
   assert.deepEqual(saved, report);
   assert.equal(
@@ -193,14 +193,17 @@ test('compares against merge base, not target tip, and reports only relevant cha
     dependencies.files.find((file) => file.path === 'frontend/src/new.ts').reason,
     'Backend only',
   );
-  assert.match(cli.stdout, /unknown \(no report supplied\)/);
+  assert.match(cli.stdout, /Some coverage data is unavailable or incomplete/);
   const skipped = spawnSync(process.execPath, [script, '--base', 'main', '--coverage-not-needed'], {
     cwd: repo.cwd,
     encoding: 'utf8',
   });
   assert.equal(skipped.status, 0, skipped.stderr);
-  assert.match(skipped.stdout, /coverage: not needed for this change/);
-  assert.doesNotMatch(skipped.stdout, /no report supplied/);
+  assert.doesNotMatch(skipped.stdout, /Merge-base coverage|PR coverage|no report supplied/);
+  const skippedData = JSON.parse(
+    readFileSync(join(repo.cwd, 'reports/complexity/comparison.json')),
+  );
+  assert.ok(skippedData.coverageNotes.some((note) => note.includes('not needed for this change')));
 });
 
 test('recognizes unchanged moved functions and shifted callbacks without guessing changed callbacks', async () => {
@@ -374,7 +377,7 @@ test('rejects source symlinks instead of following them or reporting a zero scor
   await assert.rejects(compareRevisions({ cwd: repo.cwd, base }), /expected a regular source file/);
 });
 
-test('caps the display without dropping JSON findings and escapes Markdown content', () => {
+test('folds remaining rows without dropping JSON findings and escapes Markdown content', () => {
   const finding = {
     path: 'lambda/a|b<file>.js',
     line: 1,
@@ -392,7 +395,7 @@ test('caps the display without dropping JSON findings and escapes Markdown conte
     improvements: [],
   };
   const text = renderComparison(report);
-  assert.match(text, /Showing 20 of 21/);
+  assert.match(text, /Show 11 more functions/);
   assert.match(text, /a&#124;b&#60;file&#62;/);
   assert.match(text, /odd&#96;name&#10;injected/);
   assert.equal(report.findings.length, 21);
@@ -456,7 +459,7 @@ test('coverage regressions only report files changed by the PR and reject mismat
   const snapshot = (revision, hit) => ({
     status: 'complete',
     revision,
-    instrumenter: { vitest: '4.1.11' },
+    instrumenter: { node: '24.21.0', vitest: '4.1.11', provider: '4.1.11', config: 'same' },
     files: {
       'lambda/demo/index.js': {
         sourceHash: sourceHash(source),
@@ -483,6 +486,7 @@ test('coverage regressions only report files changed by the PR and reject mismat
   repo.put('lambda/demo/index.js', changedSource);
   const pr = repo.commit('source changed');
   const prCoverage = snapshot(pr, false);
+  prCoverage.instrumenter.node = '24.22.1';
   prCoverage.files['lambda/demo/index.js'].sourceHash = sourceHash(changedSource);
   const report = await compareRevisions({ cwd: repo.cwd, base, baseCoverage, prCoverage });
   assert.deepEqual(
@@ -496,6 +500,7 @@ test('coverage regressions only report files changed by the PR and reject mismat
   assert.equal(report.findings[0].delta, 0);
   assert.equal(report.findings[0].coverage.change.percentagePoints, -100);
   assert.match(renderComparison(report), /100.0% → 0.0%/);
+  assert.deepEqual(report.coverageNotes, []);
   // Crash the actual dependency-cruiser child, leaving the comparison CLI running.
   repo.put('base-coverage.json', JSON.stringify(baseCoverage));
   repo.put('pr-coverage.json', JSON.stringify(prCoverage));
@@ -561,15 +566,23 @@ test('coverage regressions only report files changed by the PR and reject mismat
   assert.equal(partial.findings[0].coverage.change.percentagePoints, -100);
   assert.equal(partial.findings[0].coverage.after.partial, true);
   assert.match(renderComparison(partial), /100.0% → 0.0%\*/);
-  assert.match(
-    renderComparison(partial),
-    /PR coverage: measured with failing or interrupted tests/,
-  );
+  assert.match(renderComparison(partial), /Some coverage data is unavailable or incomplete/);
   prCoverage.status = 'complete';
-  prCoverage.instrumenter.vitest = 'different';
-  const incompatible = await compareRevisions({ cwd: repo.cwd, base, baseCoverage, prCoverage });
-  assert.equal(incompatible.findings.length, 0);
-  assert.match(incompatible.coverageNotes[0], /differs/);
+  for (const [key, value] of [
+    ['node', '22.22.0'],
+    ['vitest', 'different'],
+    ['provider', 'different'],
+    ['config', 'different'],
+  ]) {
+    const incompatible = await compareRevisions({
+      cwd: repo.cwd,
+      base,
+      baseCoverage,
+      prCoverage: { ...prCoverage, instrumenter: { ...prCoverage.instrumenter, [key]: value } },
+    });
+    assert.equal(incompatible.findings.length, 0, key);
+    assert.match(incompatible.coverageNotes[0], /differs/);
+  }
   const unavailable = await compareRevisions({
     cwd: repo.cwd,
     base,
@@ -578,5 +591,66 @@ test('coverage regressions only report files changed by the PR and reject mismat
   });
   assert.equal(unavailable.files.length, 1);
   assert.equal(unavailable.findings.length, 0);
-  assert.match(renderComparison(unavailable), /PR coverage: unknown.*failed/);
+  assert.match(unavailable.coverageNotes.join('\n'), /PR coverage: unknown.*failed/);
+  assert.match(renderComparison(unavailable), /Some coverage data is unavailable or incomplete/);
+});
+
+test('frontend coverage stays independent of backend instrumentation and failures', async (t) => {
+  const repo = repository(t);
+  const before = branchFunction('view', 20);
+  const after = branchFunction('view', 21);
+  const path = 'frontend/src/view.tsx';
+  repo.put(path, before);
+  repo.put('lambda/demo/index.js', before);
+  const base = repo.commit('base');
+  repo.put(path, after);
+  repo.put('lambda/demo/index.js', after);
+  const pr = repo.commit('pr');
+  const snapshot = (revision, source, hit) => ({
+    status: 'complete',
+    revision,
+    instrumenter: { node: '24.22.1', vitest: '4.1.11', provider: '4.1.11', config: 'frontend' },
+    files: {
+      [path]: {
+        sourceHash: sourceHash(source),
+        branches: [{ start: { line: 2, column: 0 }, hit }],
+      },
+    },
+  });
+  const baseFrontendCoverage = snapshot(base, before, true);
+  const prFrontendCoverage = snapshot(pr, after, false);
+  const report = await compareRevisions({
+    cwd: repo.cwd,
+    base,
+    baseFrontendCoverage,
+    prFrontendCoverage,
+    baseCoverage: { status: 'unavailable', revision: base, files: {} },
+    prCoverage: { status: 'unavailable', revision: pr, files: {} },
+  });
+  const frontend = report.findings.find((row) => row.path === path);
+  assert.equal(frontend.coverage.change.percentagePoints, -100);
+  assert.equal(
+    report.findings.find((row) => row.path.startsWith('lambda/')).coverage.after.status,
+    'unknown',
+  );
+  const wrongRevision = await compareRevisions({
+    cwd: repo.cwd,
+    base,
+    baseFrontendCoverage,
+    prFrontendCoverage: { ...prFrontendCoverage, revision: base },
+  });
+  assert.equal(
+    wrongRevision.findings.find((row) => row.path === path).coverage.after.status,
+    'unknown',
+  );
+  const incompatible = await compareRevisions({
+    cwd: repo.cwd,
+    base,
+    baseFrontendCoverage,
+    prFrontendCoverage: {
+      ...prFrontendCoverage,
+      instrumenter: { ...prFrontendCoverage.instrumenter, config: 'changed' },
+    },
+  });
+  assert.equal(incompatible.findings.find((row) => row.path === path).coverage.change, null);
 });

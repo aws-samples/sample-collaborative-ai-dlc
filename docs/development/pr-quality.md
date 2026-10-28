@@ -1,9 +1,10 @@
 # PR quality reports
 
-CI updates one PR comment with cognitive-complexity, dependency counts, and backend branch-coverage changes
+CI updates one PR comment with cognitive-complexity, dependency counts, and branch-coverage changes
 for source files changed between the merge base and PR commit. Findings are advisory: functions above 15 appear
 when complexity or coverage worsens, or when the function is new/unmatched.
-Unchanged debt is omitted; improvements appear separately.
+Unchanged debt is omitted; improvements appear in the same table.
+When no source files are analyzed, CI posts no comment and removes its previous report if present.
 
 ## Reading the table
 
@@ -15,21 +16,29 @@ Unchanged debt is omitted; improvements appear separately.
 | Uncovered branches  | Outcomes not exercised by tests, before → after                                                      |
 | Icon                | 🟢 improving, 🟠 mixed/small regression, 🔴 large regression, 🟣 both metrics worsen substantially   |
 
-Without comparable measurements, icons use current complexity: orange above 15,
+Existing functions use complexity deltas even when coverage is unavailable.
+Complexity increases turn red at `max(5, 20% of base)` for backend and `max(10, 20% of base)` for frontend,
+adjusted by coverage changes.
+New/unmatched functions use current complexity: orange above 15,
 red above 50, purple above 100. Coverage below 50% raises this one level.
 More than 10 depending files raises an existing warning one level, capped at purple,
 when coverage is below 50% or regresses. Green improvements stay green.
 These are review heuristics; use the numbers to judge each finding.
 
-**Unknown** means coverage is missing, incompatible, or unsupported (frontend).
-**n/a** means no branch outcomes; **\*** marks coverage from failing/incomplete tests.
+**—** marks unavailable coverage; **unknown** marks unavailable backend dependency counts.
+**n/a** means no branch outcomes or frontend dependency counts; **\*** marks coverage from failing/incomplete tests.
+Coverage comparisons allow Node minor/patch differences within the same major; Vitest, provider, and configuration must match.
 **New or unmatched** means no reliable previous function match—not necessarily new code.
-The comment shows up to 20 findings and 20 improvements; artifacts contain all results.
+Rows are sorted 🟣 → 🔴 → 🟠 → 🟢. The first 10 are visible, or all purple rows if there are more;
+the remaining rows appear under “Show more”. GitHub comment size limits still apply; artifacts contain all results.
+Coverage diagnostics stay in the artifacts; the comment shows one notice if measurements are unavailable or incomplete.
 
 ## CI
 
-Backend/test/configuration/tooling changes run coverage at both revisions. Docs-only,
-Terraform-only and frontend-only PRs skip these suites: “not needed for this change.”
+Backend and frontend suites run independently at both revisions when their source, tests, or configuration change.
+Tools come from the workflow's merge commit so older PR branches need not contain them; tests still use the exact base and PR revisions.
+Docs-only and Terraform-only PRs skip coverage. Frontend-only PRs skip the backend suite.
+Each `coverage-base-*` / `coverage-pr-*` artifact contains the requested suites' measurements.
 Dependency analysis failures leave only those counts unknown. Partial reruns reuse artifacts only when their producers
 were not rerun; missing or stale results are reported explicitly.
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -22,7 +22,7 @@ const report = () => ({
   mergeBase: base,
   pr: prSha,
   analyzer: { threshold: 15 },
-  files: [],
+  files: [{ path: 'lambda/<img>@maintainers|evil.js' }],
   coverageNotes: [],
   improvements: [],
   findings: [
@@ -89,6 +89,7 @@ async function fixture(t, contents = report()) {
         listComments,
         createComment: async (input) => writes.push({ action: 'create', ...input }),
         updateComment: async (input) => writes.push({ action: 'update', ...input }),
+        deleteComment: async (input) => writes.push({ action: 'delete', ...input }),
       },
     },
   };
@@ -162,7 +163,8 @@ test('replaces stale results with an explicit unavailable message on malformed o
     if (contents.schemaVersion) await rm(f.reportPath);
     await publishComplexityComment(f);
     assert.equal(f.writes.length, 1);
-    assert.match(f.writes[0].body, /Report unavailable/);
+    assert.match(f.writes[0].body, /Quality report unavailable — see CI logs\./);
+    assert.doesNotMatch(f.writes[0].body, /clean result/);
     assert.doesNotMatch(f.writes[0].body, /0 new\/unmatched/);
   }
 });
@@ -203,17 +205,25 @@ test('validates numbers and derives coverage deltas rather than trusting the art
 });
 
 test('bounds the rendered comment even when escaping expands long artifact strings', async (t) => {
-  const data = report();
-  data.findings = Array.from({ length: 20 }, () => ({
-    ...data.findings[0],
-    path: '&'.repeat(500),
-  }));
-  data.improvements = data.findings;
-  const f = await fixture(t, data);
-  await publishComplexityComment(f);
-  assert.equal(f.writes.length, 1);
-  assert.ok(f.writes[0].body.length < 60000);
-  assert.match(f.writes[0].body, /Display truncated/);
+  for (const dependentFiles of [null, 12]) {
+    const data = report();
+    data.findings = Array.from({ length: 20 }, () => ({
+      ...data.findings[0],
+      path: '~'.repeat(500),
+      dependentFiles,
+    }));
+    data.improvements = data.findings;
+    const f = await fixture(t, data);
+    await publishComplexityComment(f);
+    assert.equal(f.writes.length, 1);
+    assert.ok(f.writes[0].body.length < 60000);
+    assert.match(f.writes[0].body, /Display truncated/);
+    assert.equal(
+      (f.writes[0].body.match(/<details>/g) ?? []).length,
+      (f.writes[0].body.match(/<\/details>/g) ?? []).length,
+    );
+    assert.match(f.writes[0].body, /(?:\||<\/details>)\n\nDisplay truncated/);
+  }
 });
 
 async function sameRepositoryFixture(t) {
@@ -232,6 +242,44 @@ for (const [name, createFixture] of [
   ['same repository', sameRepositoryFixture],
   ['fork', fixture],
 ]) {
+  test(`${name}: no analyzed files skips publication and removes only the previous bot report`, async (t) => {
+    const f = await createFixture(t);
+    await writeFile(
+      f.reportPath,
+      JSON.stringify({ ...report(), files: [], findings: [], improvements: [] }),
+    );
+    f.comments.push({ id: 1, user: { login: 'human', type: 'User' }, body: commentMarker });
+    await publishComplexityComment(f);
+    assert.deepEqual(f.writes, []);
+    const previous = {
+      id: 2,
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+      body: `${commentMarker}\n<!-- quality-run:122:1 -->`,
+    };
+    f.comments.push(previous);
+    await publishComplexityComment(f);
+    assert.deepEqual(f.writes, [
+      { action: 'delete', owner: 'example', repo: 'project', comment_id: 2 },
+    ]);
+    f.writes.length = 0;
+    previous.body = `${commentMarker}\n<!-- quality-run:123:2 -->`;
+    await publishComplexityComment(f);
+    assert.deepEqual(f.writes, [], 'An older run cannot remove a newer report');
+    previous.body = `${commentMarker}\n<!-- quality-run:122:1 -->`;
+    f.pr.head.sha = 'c'.repeat(40);
+    await publishComplexityComment(f);
+    assert.deepEqual(f.writes, [], 'A stale PR revision cannot remove a report');
+  });
+
+  test(`${name}: analyzed files without findings still produce a report`, async (t) => {
+    const f = await createFixture(t);
+    await writeFile(f.reportPath, JSON.stringify({ ...report(), findings: [], improvements: [] }));
+    await publishComplexityComment(f);
+    assert.equal(f.writes[0].action, 'create');
+    assert.match(f.writes[0].body, /Automated quality report/);
+    assert.doesNotMatch(f.writes[0].body, /Analyzed \d+ source files/);
+  });
+
   test(`${name}: posts validated JSON through the shared publisher`, async (t) => {
     const f = await createFixture(t);
     await publishComplexityComment(f);
@@ -394,7 +442,7 @@ test('both workflow paths download selected producer artifacts and call the shar
     assert.equal(checkout.with['persist-credentials'], false);
     if (file === 'pr-quality-comment.yml') assert.equal(checkout.with.ref, undefined);
     else {
-      assert.equal(checkout.with.ref, '${{ github.event.pull_request.head.sha }}');
+      assert.equal(checkout.with.ref, '${{ github.sha }}');
       const uploads = workflow.jobs.report.steps
         .filter((step) => step.uses?.startsWith('actions/upload-artifact@'))
         .map((step) => [step.with.name, step.with.path]);
@@ -407,7 +455,89 @@ test('both workflow paths download selected producer artifacts and call the shar
   }
 });
 
-test('workflow skips backend suites for docs, Terraform and frontend but detects backend inputs', async (t) => {
+test('workflow tools support PR heads that predate them without measuring the merge commit', async (t) => {
+  const cwd = await realpath(await mkdtemp(join(tmpdir(), 'quality-old-pr-')));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const source = join(cwd, 'source');
+  await mkdir(source);
+  const git = (...args) =>
+    execFileSync('git', args, {
+      cwd: source,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  git('init', '-q');
+  git('config', 'user.name', 'Test');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'commit.gpgsign', 'false');
+  await writeFile(join(source, 'app.js'), 'export const value = 1;\n');
+  git('add', '.');
+  git('commit', '-qm', 'common ancestor');
+  const baseSha = git('rev-parse', 'HEAD');
+  git('checkout', '-qb', 'old-pr');
+  await writeFile(join(source, 'app.js'), 'export const value = 2;\n');
+  git('commit', '-qam', 'PR change before quality tooling');
+  const headSha = git('rev-parse', 'HEAD');
+  git('checkout', '-qb', 'target', baseSha);
+  await mkdir(join(source, 'scripts'));
+  const scripts = [
+    'publish-complexity-comment.mjs',
+    'complexity-report.mjs',
+    'complexity-coverage.mjs',
+  ];
+  for (const name of scripts) {
+    await writeFile(
+      join(source, 'scripts', name),
+      readFileSync(new URL(`../${name}`, import.meta.url)),
+    );
+  }
+  git('add', '.');
+  git('commit', '-qm', 'add quality tools');
+  git('merge', '--no-ff', 'old-pr', '-qm', 'synthetic PR merge');
+  const mergeSha = git('rev-parse', 'HEAD');
+  assert.equal(git('ls-tree', headSha, 'scripts/'), '');
+
+  const workflow = yaml.load(
+    readFileSync(new URL('../../.github/workflows/pr-quality.yml', import.meta.url), 'utf8'),
+  );
+  for (const jobName of ['coverage', 'comment', 'report']) {
+    const checkout = workflow.jobs[jobName].steps.find((step) =>
+      step.uses?.startsWith('actions/checkout@'),
+    );
+    assert.equal(checkout.with.ref, '${{ github.sha }}', jobName);
+  }
+  const sourceCheckout = workflow.jobs.coverage.steps.find((step) => step.with?.path === 'source');
+  assert.equal(
+    sourceCheckout.with.ref,
+    "${{ matrix.revision == 'base' && needs.revisions.outputs.merge-base || github.event.pull_request.head.sha }}",
+  );
+  const compare = workflow.jobs.report.steps.find(
+    (step) => step.name === 'Compare complexity and coverage',
+  );
+  assert.equal(compare.env.PR_SHA, '${{ github.event.pull_request.head.sha }}');
+  assert.match(compare.run, /--pr "\$PR_SHA"/);
+
+  const tooling = join(cwd, 'tooling', 'scripts');
+  await mkdir(tooling, { recursive: true });
+  for (const name of scripts) {
+    await writeFile(join(tooling, name), git('show', `${mergeSha}:scripts/${name}`));
+  }
+  execFileSync(process.execPath, [join(tooling, 'publish-complexity-comment.mjs')]);
+  for (const revision of [baseSha, headSha]) {
+    git('checkout', '-q', '--detach', revision);
+    const output = join(cwd, 'coverage.json');
+    execFileSync(process.execPath, [
+      join(tooling, 'complexity-coverage.mjs'),
+      '--cwd',
+      source,
+      '--output',
+      output,
+    ]);
+    assert.equal(JSON.parse(readFileSync(output)).revision, revision);
+  }
+});
+
+test('workflow selects backend and frontend coverage independently', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'quality-paths-'));
   t.after(() => rm(cwd, { recursive: true, force: true }));
   const git = (...args) =>
@@ -430,19 +560,24 @@ test('workflow skips backend suites for docs, Terraform and frontend but detects
     readFileSync(new URL('../../.github/workflows/pr-quality.yml', import.meta.url), 'utf8'),
   );
   const script = workflow.jobs.revisions.steps.find((step) => step.id === 'refs').run;
-  assert.equal(workflow.jobs.coverage.if, "needs.revisions.outputs.coverage-needed == 'true'");
-  for (const [path, expected] of [
-    ['docs/guide.md', false],
-    ['terraform/main.tf', false],
-    ['frontend/src/index.ts', false],
-    ['lambda/intents/index.js', true],
-    ['test/setup.js', true],
-    ['package-lock.json', true],
-    ['vitest.config.js', true],
-    ['eslint.complexity.config.mjs', true],
-    ['scripts/complexity-coverage.mjs', true],
-    ['scripts/test/compare-complexity.test.mjs', true],
-    ['.github/workflows/pr-quality.yml', true],
+  assert.equal(
+    workflow.jobs.coverage.if,
+    "needs.revisions.outputs.coverage-needed == 'true' || needs.revisions.outputs.frontend-needed == 'true'",
+  );
+  for (const [path, expected, frontend] of [
+    ['docs/guide.md', false, false],
+    ['terraform/main.tf', false, false],
+    ['frontend/src/index.ts', false, true],
+    ['frontend/package-lock.json', false, true],
+    ['frontend/vitest.config.ts', false, true],
+    ['lambda/intents/index.js', true, false],
+    ['test/setup.js', true, false],
+    ['package-lock.json', true, true],
+    ['vitest.config.js', true, false],
+    ['eslint.complexity.config.mjs', true, true],
+    ['scripts/complexity-coverage.mjs', true, true],
+    ['scripts/test/compare-complexity.test.mjs', true, true],
+    ['.github/workflows/pr-quality.yml', true, true],
   ]) {
     git('checkout', '-q', '--detach', baseSha);
     await mkdir(dirname(join(cwd, path)), { recursive: true });
@@ -472,5 +607,6 @@ test('workflow skips backend suites for docs, Terraform and frontend but detects
       },
     });
     assert.match(readFileSync(output, 'utf8'), new RegExp(`coverage-needed=${expected}\n`), path);
+    assert.match(readFileSync(output, 'utf8'), new RegExp(`frontend-needed=${frontend}\n`), path);
   }
 });

@@ -24,6 +24,12 @@ export { renderComparison } from './complexity-report.mjs';
 
 const require = createRequire(import.meta.url);
 const loadCoverage = async (path) => (path ? JSON.parse(await readFile(path, 'utf8')) : undefined);
+// This advisory comparison tolerates Node minor/patch changes within a major.
+const instrumenterKey = (snapshot) =>
+  JSON.stringify({
+    ...snapshot.instrumenter,
+    node: snapshot.instrumenter?.node?.split('.')[0],
+  });
 
 function git(cwd, args) {
   return execFileSync('git', ['--literal-pathspecs', ...args], {
@@ -162,49 +168,69 @@ export async function compareRevisions({
   baseRef,
   baseCoverage,
   prCoverage,
+  baseFrontendCoverage,
+  prFrontendCoverage,
   coverageNotNeeded = false,
 }) {
   const baseSha = resolveCommit(cwd, base);
   const prSha = resolveCommit(cwd, pr);
   const mergeBase = git(cwd, ['merge-base', baseSha, prSha]).trim();
   const analyzer = createAnalyzer(cwd);
+  const candidates = changedFiles(cwd, mergeBase, prSha);
   const coverageNotes = [];
-  for (const [label, snapshot, revision] of [
-    ['Merge-base', baseCoverage, mergeBase],
-    ['PR', prCoverage, prSha],
-  ]) {
-    if (!snapshot) {
+  const pairs = {
+    backend: [baseCoverage, prCoverage],
+    frontend: [baseFrontendCoverage, prFrontendCoverage],
+  };
+  for (const [scope, pair] of Object.entries(pairs)) {
+    const relevant =
+      scope === 'backend' ||
+      pair.some(Boolean) ||
+      candidates.some((file) => file.path.startsWith('frontend/src/'));
+    if (!relevant) continue;
+    const prefix = scope === 'frontend' ? 'Frontend ' : '';
+    for (const [index, label, revision] of [
+      [0, 'Merge-base', mergeBase],
+      [1, 'PR', prSha],
+    ]) {
+      const snapshot = pair[index];
+      if (!snapshot) {
+        coverageNotes.push(
+          `${prefix}${label} coverage: ${coverageNotNeeded && scope === 'backend' ? 'not needed for this change' : 'unknown (no report supplied)'}.`,
+        );
+      } else if (!hasCoverage(snapshot)) {
+        coverageNotes.push(
+          `${prefix}${label} coverage: unknown (test run or coverage collection failed to produce a report).`,
+        );
+      } else if (snapshot.revision !== revision) {
+        coverageNotes.push(
+          `${prefix}${label} coverage: unknown (report belongs to a different revision).`,
+        );
+      } else if (snapshot.status === 'partial') {
+        coverageNotes.push(
+          `${prefix}${label} coverage: measured with failing or interrupted tests (*). Counts and deltas may reflect incomplete execution.`,
+        );
+      }
+    }
+    if (pair.every(hasCoverage) && instrumenterKey(pair[0]) !== instrumenterKey(pair[1])) {
       coverageNotes.push(
-        `${label} coverage: ${coverageNotNeeded ? 'not needed for this change' : 'unknown (no report supplied)'}.`,
+        `${prefix}Coverage is unknown: Node major, Vitest, provider, or coverage configuration differs.`,
       );
-    } else if (!hasCoverage(snapshot)) {
-      coverageNotes.push(
-        `${label} coverage: unknown (test run or coverage collection failed to produce a report).`,
-      );
-    } else if (snapshot.revision !== revision) {
-      coverageNotes.push(`${label} coverage: unknown (report belongs to a different revision).`);
-    } else if (snapshot.status === 'partial') {
-      coverageNotes.push(
-        `${label} coverage: measured with failing or interrupted tests (*). Counts and deltas may reflect incomplete execution.`,
-      );
+      pair.fill(undefined);
     }
   }
-  if (
-    hasCoverage(baseCoverage) &&
-    hasCoverage(prCoverage) &&
-    JSON.stringify(baseCoverage.instrumenter) !== JSON.stringify(prCoverage.instrumenter)
-  ) {
-    coverageNotes.push(
-      'Coverage is unknown: Node, Vitest, provider, or coverage configuration differs.',
-    );
-    baseCoverage = undefined;
-    prCoverage = undefined;
-  }
-  const candidates = changedFiles(cwd, mergeBase, prSha);
+  const coverageFor = (path, index) =>
+    pairs[path?.startsWith('frontend/') ? 'frontend' : 'backend'][index];
   const files = [];
   for (const file of candidates) {
-    const before = await measure(cwd, analyzer, mergeBase, file.previousPath, baseCoverage);
-    const after = await measure(cwd, analyzer, prSha, file.prPath, prCoverage);
+    const before = await measure(
+      cwd,
+      analyzer,
+      mergeBase,
+      file.previousPath,
+      coverageFor(file.previousPath, 0),
+    );
+    const after = await measure(cwd, analyzer, prSha, file.prPath, coverageFor(file.prPath, 1));
     if (before === null && after === null) continue;
     files.push({
       path: file.path,
@@ -272,6 +298,8 @@ async function main() {
       'output-dir': { type: 'string', default: 'reports/complexity' },
       'base-coverage': { type: 'string' },
       'pr-coverage': { type: 'string' },
+      'base-frontend-coverage': { type: 'string' },
+      'pr-frontend-coverage': { type: 'string' },
       'coverage-not-needed': { type: 'boolean', default: false },
     },
   });
@@ -283,6 +311,8 @@ async function main() {
     baseRef: values['base-ref'],
     baseCoverage: await loadCoverage(values['base-coverage']),
     prCoverage: await loadCoverage(values['pr-coverage']),
+    baseFrontendCoverage: await loadCoverage(values['base-frontend-coverage']),
+    prFrontendCoverage: await loadCoverage(values['pr-frontend-coverage']),
     coverageNotNeeded: values['coverage-not-needed'],
   });
   const markdown = renderComparison(report);

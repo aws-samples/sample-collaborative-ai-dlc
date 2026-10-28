@@ -182,7 +182,7 @@ export async function publishComplexityComment({
     )
       continue;
     const url = `https://github.com/${repo.owner}/${repo.repo}/actions/runs/${run.id}`;
-    let content = `# Complexity and test coverage\n\nReport unavailable for \`${pr.head.sha}\`. Check the CI run; this is not a clean result.`;
+    let content = '# Complexity and test coverage\n\nQuality report unavailable — see CI logs.';
     if (report) {
       let sameBase = report.baseRef === pr.base.ref;
       if (sameBase) {
@@ -194,14 +194,26 @@ export async function publishComplexityComment({
         });
         sameBase = comparison.merge_base_commit.sha === report.mergeBase;
       }
+      if (sameBase && report.files.length === 0) {
+        if (existing) {
+          await github.rest.issues.deleteComment({ ...repo, comment_id: existing.id });
+        }
+        continue;
+      }
       content = sameBase
         ? renderComparison(report)
         : `# Complexity and test coverage\n\nThe target branch or merge base changed. Push an updated branch to generate a fresh comparison for \`${pr.head.sha}\`.`;
     }
+    const truncated = content.slice(0, 55000);
+    const truncatedRows = truncated.slice(0, truncated.lastIndexOf('\n'));
+    const closeDetails =
+      truncatedRows.includes('<details>') && !truncatedRows.includes('</details>')
+        ? '\n\n</details>'
+        : '';
     const preview =
       content.length <= 55000
         ? content
-        : `${content.slice(0, 55000)}\n\nDisplay truncated; see the full report artifact.`;
+        : `${truncatedRows}${closeDetails}\n\nDisplay truncated; see the full report artifact.`;
     const body = `${commentMarker}\n<!-- quality-run:${run.id}:${run.run_attempt} -->\n${preview}\n[CI run and full report artifacts](${url})`;
     if (existing) {
       await github.rest.issues.updateComment({ ...repo, comment_id: existing.id, body });
