@@ -865,3 +865,71 @@ describe('codecommit provider: merges and comparisons', () => {
     expect(client.calls.some((call) => call.name === 'DeleteBranch')).toBe(false);
   });
 });
+
+describe('codecommit provider: tree', () => {
+  const blob = (path, mode = '100644') => ({
+    changeType: 'A',
+    afterBlob: { path, blobId: `b-${path}`, mode },
+  });
+  // GetDifferences double: `pages` is the list of `differences` arrays to serve.
+  const diffClient = (pages) => {
+    const client = makeClient({
+      GetDifferences: (input) => {
+        const page = input.NextToken ? Number(input.NextToken) : 0;
+        return {
+          differences: pages[page] ?? [],
+          ...(page + 1 < pages.length ? { NextToken: String(page + 1) } : {}),
+        };
+      },
+    });
+    return client;
+  };
+
+  it('getTree lists every blob of the branch through paginated GetDifferences', async () => {
+    const client = diffClient([
+      [blob('README.md'), blob('src/index.js')],
+      [blob('src/lib/util.js', '100755'), blob('docs/guide.md')],
+    ]);
+    const tree = await cc.getTree({ client }, ARN, 'dev');
+    expect(tree).toEqual([
+      { path: 'README.md', sha: 'b-README.md', size: null },
+      { path: 'src/index.js', sha: 'b-src/index.js', size: null },
+      { path: 'src/lib/util.js', sha: 'b-src/lib/util.js', size: null },
+      { path: 'docs/guide.md', sha: 'b-docs/guide.md', size: null },
+    ]);
+    expect(tree.truncated).toBe(false);
+    expect(client.calls).toHaveLength(2);
+    for (const { name, input } of client.calls) {
+      expect(name).toBe('GetDifferences');
+      expect(input).toMatchObject({
+        repositoryName: REPO,
+        afterCommitSpecifier: 'dev',
+        MaxResults: 400,
+      });
+      expect(input.beforeCommitSpecifier).toBeUndefined();
+    }
+    expect(client.calls[1].input.NextToken).toBe('1');
+  });
+
+  it('getTree skips symbolic links and submodules', async () => {
+    const client = diffClient([
+      [blob('a.txt'), blob('link', '120000'), blob('vendor/lib', '160000'), { changeType: 'A' }],
+    ]);
+    const tree = await cc.getTree({ client }, ARN);
+    expect(tree.map((f) => f.path)).toEqual(['a.txt']);
+  });
+
+  it('getTree stops at 50 pages and flags the result as truncated', async () => {
+    const pages = Array.from({ length: 60 }, (_, i) => [blob(`f${i}.txt`)]);
+    const client = diffClient(pages);
+    const tree = await cc.getTree({ client }, ARN);
+    expect(client.calls).toHaveLength(50);
+    expect(tree).toHaveLength(50);
+    expect(tree.truncated).toBe(true);
+  });
+
+  it('getTree maps a GetDifferences failure onto a ProviderError', async () => {
+    const client = makeClient({ GetDifferences: sdkError('CommitDoesNotExistException') });
+    await expect(cc.getTree({ client }, ARN, 'nope')).rejects.toBeInstanceOf(ProviderError);
+  });
+});
