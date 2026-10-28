@@ -938,6 +938,29 @@ describe('buildMcpConfig — dispatched persona session scope', () => {
   });
 });
 
+describe('describe_changes wiring', () => {
+  const scope = { executionId: 'e', intentId: 'i' };
+  const envOf = (extra) =>
+    buildMcpConfig({ mcpEntry: 'x', scope: { ...scope, ...extra } }).mcpServers.aidlc.env;
+
+  it('offers describe_changes to the owning session only when enabled', () => {
+    expect(envOf({ describeChanges: true }).V2_DESCRIBE_CHANGES).toBe('1');
+    expect(envOf({})).not.toHaveProperty('V2_DESCRIBE_CHANGES');
+    expect(envOf({ describeChanges: true, checkpointOwner: false })).not.toHaveProperty(
+      'V2_DESCRIBE_CHANGES',
+    );
+  });
+
+  it('adds the commit description contract to the prompt only when enabled', () => {
+    const input = { stage: { stageId: 'code-generation' }, stageBody: 'Do the work.' };
+    expect(buildStagePrompt({ ...input, describeChanges: true })).toContain(
+      '## Commit description contract',
+    );
+    expect(buildStagePrompt(input)).toBe(buildStagePrompt({ ...input, describeChanges: false }));
+    expect(buildStagePrompt(input)).not.toContain('describe_changes');
+  });
+});
+
 describe('buildMcpConfig — validation revision', () => {
   const scope = { executionId: 'e1', intentId: 'i1', stageInstanceId: 'si-1' };
   const envOf = (s) =>

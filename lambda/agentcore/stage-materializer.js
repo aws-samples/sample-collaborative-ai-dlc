@@ -244,6 +244,19 @@ const renderWorkspaceDetectionContract = (stageId, policy = null) => {
   ].join('\n');
 };
 
+// The engine commits this stage's work with the agent's Conventional Commits
+// description, which release tooling reads for the version and changelog.
+const CHANGE_DESCRIPTION_CONTRACT = [
+  '## Commit description contract',
+  '',
+  'The engine commits your work when you finish, and repositories release from those',
+  'commit messages. Before `send_output`, call `describe_changes` once with the',
+  'Conventional Commits type that matches what you changed in the repository: `feat`',
+  'for new behaviour, `fix` for a bug fix, `docs` when you only wrote documentation or',
+  'AI-DLC artifacts, and so on. Mark it breaking only when existing users must change',
+  'something, and say what breaks and how to migrate. If you change nothing, skip it.',
+].join('\n');
+
 // Render the resolved input artifacts as a prompt section. An `expectedAbsent`
 // input (its producer exists in the workflow but is out of the selected scope —
 // the plan resolver's scope-shortcut classification) is called out explicitly:
@@ -424,6 +437,8 @@ export const buildStagePrompt = ({
   conductor = '',
   compiledContext = '',
   attachments = [],
+  // The engine writes Conventional Commits and this session has describe_changes.
+  describeChanges = false,
 }) => {
   const sections = [
     `# Stage: ${stage.stageId ?? 'unknown'} (phase: ${stage.phase ?? 'unphased'})`,
@@ -456,6 +471,7 @@ export const buildStagePrompt = ({
   if (unitScope) sections.push('', unitScope);
   const workspaceDetectionContract = renderWorkspaceDetectionContract(stage.stageId, stage.policy);
   if (workspaceDetectionContract) sections.push('', workspaceDetectionContract);
+  if (describeChanges) sections.push('', CHANGE_DESCRIPTION_CONTRACT);
   const scopePolicy = renderScopePolicy(stage.policy);
   if (scopePolicy) sections.push('', scopePolicy);
   sections.push(
@@ -604,6 +620,11 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
             // everywhere else — independent of the policy, because the absence of an
             // answer path does not depend on what the release enables.
             ...(scope.canAsk === false ? { V2_ASK_QUESTION: '0' } : {}),
+            // Written ONLY when the engine writes Conventional Commits, for the session
+            // that owns the stage, so it gets describe_changes. Absent everywhere else.
+            ...(scope.describeChanges === true && scope.checkpointOwner !== false
+              ? { V2_DESCRIBE_CHANGES: '1' }
+              : {}),
             // The validation revision the checkpoint receipts are scoped to. Absent
             // for the first run and for every run without a policy.
             ...(scope.policy && scope.validationRound
@@ -1214,6 +1235,7 @@ export const materializeStage = async ({
     conductor,
     compiledContext,
     attachments,
+    describeChanges: scope?.describeChanges === true && scope?.checkpointOwner !== false,
   });
   return { prompt, ...cliContext, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

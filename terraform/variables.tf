@@ -135,7 +135,7 @@ variable "aidlc_release_pinning" {
 }
 
 variable "engine_commit_style" {
-  description = "Message style of the engine's commits: \"aidlc\" (aidlc(<stage>): <execution>) or \"conventional\" (Conventional Commits, with the Jira key of the intent's tracker issue)."
+  description = "Message style of the engine's commits: \"aidlc\" (aidlc(<stage>): <execution>) or \"conventional\" (Conventional Commits whose type, summary and breaking change the stage agent declares with describe_changes, with the Jira key of the intent's tracker issue)."
   type        = string
   default     = "aidlc"
 

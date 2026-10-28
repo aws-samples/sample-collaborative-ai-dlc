@@ -151,6 +151,7 @@ describe('the tool surface the policy decides', () => {
     object: () => ({ optional: () => ({}) }),
     array: () => ({ optional: () => ({}) }),
     record: () => ({ optional: () => ({}) }),
+    boolean: () => ({ optional: () => ({}) }),
   };
 
   it('offers the field only when the release has a construction loop-back', () => {

@@ -95,7 +95,12 @@ import {
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
-import { createEngineCommitMessages } from '../commit-message.js';
+import {
+  commitStyle,
+  consumeCommitDescription,
+  createEngineCommitMessages,
+  readCommitDescription,
+} from '../commit-message.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { CHECKPOINTS, answerFreeText, chosenLabel } from '../mcp/process-bridge.js';
@@ -2625,6 +2630,8 @@ const runStageAttempt = async (
     // it write only its OWN contribution — never forge a support's evidence.
     // Absent on an unpinned/2.3.3 run, whose MCP config stays byte-identical.
     ...(stage.policy && stage.agentRef ? { agentRef: stage.agentRef } : {}),
+    // The agent describes its changes for the engine's Conventional Commits.
+    ...(commitStyle(env) === 'conventional' ? { describeChanges: true } : {}),
   };
 
   let codexHome = null;
@@ -4248,6 +4255,12 @@ const runStageAttempt = async (
         .catch(() => {});
     }
   }
+  const commitDescription = await readCommitDescription({
+    store: processStore,
+    executionId,
+    stageInstanceId,
+    env,
+  });
   const gitResult = await commitAndPushAll({
     repos,
     workspaceDir,
@@ -4261,8 +4274,16 @@ const runStageAttempt = async (
     author: gitAuthor,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.
-    message: await engineCommitMessage({ stageId, unitSlug }),
+    message: await engineCommitMessage({ stageId, unitSlug, description: commitDescription }),
   });
+  if (gitResult?.committed) {
+    await consumeCommitDescription({
+      store: processStore,
+      executionId,
+      stageInstanceId,
+      description: commitDescription,
+    });
+  }
   // Every commit of this attempt: carried from a parked leg, this leg's, and the
   // repair turns' (added by runRepairTurn below).
   let stageCodeCommitRefs = mergeCodeCommitRefs(

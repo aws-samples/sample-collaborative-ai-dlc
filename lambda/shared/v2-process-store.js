@@ -1927,6 +1927,40 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     );
   };
 
+  // The agent's description of the stage's changes (describe_changes), read by
+  // the engine for its next commit message and cleared once a commit used it.
+  const setCommitDescription = async ({ executionId, stageInstanceId, description }) => {
+    await ddb.send(
+      new UpdateCommand({
+        TableName: table(),
+        Key: stageKey(executionId, stageInstanceId),
+        UpdateExpression: 'SET commitDescription = :description',
+        ConditionExpression: 'attribute_exists(pk)',
+        ExpressionAttributeValues: { ':description': description },
+      }),
+    );
+  };
+
+  // Clears the description only if it is still the one the commit used, so a
+  // newer one written meanwhile survives. Returns whether it was cleared.
+  const clearCommitDescription = async ({ executionId, stageInstanceId, descriptionId }) => {
+    try {
+      await ddb.send(
+        new UpdateCommand({
+          TableName: table(),
+          Key: stageKey(executionId, stageInstanceId),
+          UpdateExpression: 'REMOVE commitDescription',
+          ConditionExpression: 'commitDescription.descriptionId = :descriptionId',
+          ExpressionAttributeValues: { ':descriptionId': descriptionId },
+        }),
+      );
+      return true;
+    } catch (error) {
+      if (error?.name === 'ConditionalCheckFailedException') return false;
+      throw error;
+    }
+  };
+
   const recordMetric = async ({
     executionId,
     stageInstanceId,
@@ -3511,6 +3545,8 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     resetStageRow,
     markLoopBackArchived,
     setLoopBackRecommendation,
+    setCommitDescription,
+    clearCommitDescription,
     recordMetric,
     recordGraphRead,
     recordSensorRun,

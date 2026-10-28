@@ -1,8 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   commitStyle,
+  consumeCommitDescription,
   createEngineCommitMessages,
   engineCommitMessage,
+  normaliseChangeDescription,
+  readCommitDescription,
   trackerKey,
 } from '../commit-message.js';
 
@@ -161,5 +164,140 @@ describe('createEngineCommitMessages', () => {
       env: { ENGINE_COMMIT_STYLE: 'conventional' },
     });
     expect((await messages({ stageId: 's' })).split('\n')[0]).toBe('chore(aidlc): s stage');
+  });
+});
+
+describe('normaliseChangeDescription', () => {
+  it.each([
+    [{ type: 'fix', summary: 'Handle empty carts.' }, 'handle empty carts'],
+    [{ type: 'fix', summary: 'fix(cart): handle empty carts' }, 'handle empty carts'],
+    [
+      { type: 'fix', summary: 'API returns 404 for empty carts' },
+      'API returns 404 for empty carts',
+    ],
+    [{ type: 'docs', summary: 'note: ratio is 1:2' }, 'note ratio is 1:2'],
+  ])('%j has the summary %s', (args, summary) => {
+    expect(normaliseChangeDescription(args).summary).toBe(summary);
+  });
+
+  it('keeps breakingChange only for a breaking change', () => {
+    expect(
+      normaliseChangeDescription({ type: 'fix', summary: 'x', breakingChange: 'ignored' }),
+    ).toEqual({ type: 'fix', scope: null, summary: 'x', breaking: false, breakingChange: null });
+  });
+
+  it('rejects a summary over 72 characters', () => {
+    expect(() => normaliseChangeDescription({ type: 'fix', summary: 'a'.repeat(73) })).toThrow(
+      /72 characters/,
+    );
+  });
+});
+
+describe('engineCommitMessage with a change description', () => {
+  const intent = { title: 'Stagger renovate runs', source: jira('ABC-12') };
+  const message = (options, description) =>
+    engineCommitMessage({
+      stageId: 'code-generation',
+      executionId: 'e1',
+      style: 'conventional',
+      intent,
+      description,
+      ...options,
+    });
+
+  it("uses the agent's type, scope and summary for the stage commit", () => {
+    expect(
+      message(
+        { unitSlug: 'billing' },
+        { type: 'feat', scope: 'renovate', summary: 'stagger runs' },
+      ),
+    ).toBe(
+      [
+        'feat(renovate): stagger runs [ABC-12]',
+        '',
+        'Intent: Stagger renovate runs',
+        '',
+        'AIDLC-Stage: code-generation',
+        'AIDLC-Unit: billing',
+        'AIDLC-Execution: e1',
+      ].join('\n'),
+    );
+  });
+
+  it('marks a breaking change in the header and the footer', () => {
+    const lines = message(
+      {},
+      { type: 'feat', summary: 'drop the v1 API', breaking: true, breakingChange: 'use /v2' },
+    ).split('\n');
+    expect(lines[0]).toBe('feat!: drop the v1 API [ABC-12]');
+    expect(lines).toContain('BREAKING CHANGE: use /v2');
+    expect(lines.indexOf('BREAKING CHANGE: use /v2')).toBeLessThan(
+      lines.indexOf('AIDLC-Stage: code-generation'),
+    );
+  });
+
+  it.each([
+    ['a lead draft or repair commit', { label: 'lead draft' }],
+    ['a lane merge', { kind: 'merge', unitSlug: 'auth' }],
+  ])('ignores the description for %s', (_case, options) => {
+    expect(message(options, { type: 'feat', summary: 'stagger runs' })).toMatch(
+      /^chore\(aidlc\): /,
+    );
+  });
+
+  it('falls back to chore for an invalid stored description', () => {
+    expect(message({}, { type: 'feature', summary: 'x' }).split('\n')[0]).toBe(
+      'chore(aidlc): code-generation stage [ABC-12]',
+    );
+  });
+
+  it('ignores the description in the aidlc style', () => {
+    expect(
+      engineCommitMessage({
+        stageId: 's',
+        executionId: 'e1',
+        description: { type: 'feat', summary: 'x' },
+      }),
+    ).toBe('aidlc(s): e1');
+  });
+});
+
+describe('readCommitDescription and consumeCommitDescription', () => {
+  const env = { ENGINE_COMMIT_STYLE: 'conventional' };
+  const where = { executionId: 'e1', stageInstanceId: 'si-1' };
+
+  it('reads the stage row consistently, only in the conventional style', async () => {
+    const store = {
+      getStage: vi.fn(async () => ({
+        commitDescription: { type: 'fix', summary: 'x', descriptionId: 'd1' },
+      })),
+    };
+    expect(await readCommitDescription({ store, ...where, env: {} })).toBeNull();
+    expect(store.getStage).not.toHaveBeenCalled();
+    expect(await readCommitDescription({ store, ...where, env })).toMatchObject({
+      type: 'fix',
+      descriptionId: 'd1',
+    });
+    expect(store.getStage).toHaveBeenCalledWith('e1', 'si-1', { consistentRead: true });
+  });
+
+  it.each([
+    ['has none', { getStage: async () => ({}) }],
+    ['fails', { getStage: async () => Promise.reject(new Error('down')) }],
+    ['holds an invalid one', { getStage: async () => ({ commitDescription: { type: 'x' } }) }],
+  ])('returns null when the stage row %s', async (_case, store) => {
+    expect(await readCommitDescription({ store, ...where, env })).toBeNull();
+  });
+
+  it('clears the description it used, and never throws', async () => {
+    const store = { clearCommitDescription: vi.fn(async () => true) };
+    await consumeCommitDescription({ store, ...where, description: { descriptionId: 'd1' } });
+    expect(store.clearCommitDescription).toHaveBeenCalledWith({ ...where, descriptionId: 'd1' });
+    await consumeCommitDescription({ store, ...where, description: null });
+    expect(store.clearCommitDescription).toHaveBeenCalledTimes(1);
+    const failing = { clearCommitDescription: async () => Promise.reject(new Error('down')) };
+    await expect(
+      consumeCommitDescription({ store: failing, ...where, description: { descriptionId: 'd1' } }),
+    ).resolves.toBeUndefined();
   });
 });

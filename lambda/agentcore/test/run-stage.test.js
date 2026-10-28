@@ -5871,6 +5871,47 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     ]);
   });
 
+  it('commits with the change description the agent recorded, then clears it', async () => {
+    const messages = [];
+    const store = spyStore({
+      unitPlan: UNIT_PLAN,
+      execution: {
+        source: { provider: 'jira-cloud', resourceType: 'issue', resourceId: 'ABC-12' },
+      },
+      stage: {
+        commitDescription: {
+          type: 'fix',
+          scope: 'billing',
+          summary: 'round totals',
+          descriptionId: 'd1',
+        },
+      },
+    });
+    const cleared = [];
+    store.clearCommitDescription = async (args) => cleared.push(args);
+    let mcpScope = null;
+    const deps = unitDeps({
+      store,
+      env: { BEDROCK_MODEL: 'us.anthropic.claude-sonnet-4-6', ENGINE_COMMIT_STYLE: 'conventional' },
+      materializeStage: async ({ scope }) => {
+        mcpScope = scope;
+        return { prompt: 'P', mcpConfigPath: '/ws/.aidlc/mcp.json' };
+      },
+      ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
+      commitAndPushAll: async ({ message }) => {
+        messages.push(message);
+        return { ok: true, committed: true, results: [] };
+      },
+    });
+    await runStage(
+      { ...unitArgs, repos: [{ cloneUrl: 'https://x/r.git' }], branch: 'aidlc/i1' },
+      deps,
+    );
+    expect(mcpScope).toMatchObject({ describeChanges: true });
+    expect(messages[0].split('\n')[0]).toBe('fix(billing): round totals [ABC-12]');
+    expect(cleared).toEqual([expect.objectContaining({ executionId: 'e1', descriptionId: 'd1' })]);
+  });
+
   it('retains committed code refs when a unit stage parks before projection', async () => {
     const stageInstanceId = planStageInstanceId('aidlc-v2@1', 'code-generation', 'billing');
     const humanTaskId = 'q-code-billing';
