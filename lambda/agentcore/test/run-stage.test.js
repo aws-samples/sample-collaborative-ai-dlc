@@ -5860,7 +5860,7 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     );
     expect(messages).toEqual([
       [
-        'chore(aidlc): code-generation stage for billing [ABC-12]',
+        'chore(aidlc): checkpoint code-generation stage for billing [ABC-12]',
         '',
         'Intent: Stagger renovate runs',
         '',

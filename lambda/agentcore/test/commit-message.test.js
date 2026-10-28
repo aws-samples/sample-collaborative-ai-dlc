@@ -74,7 +74,7 @@ describe('engineCommitMessage, conventional style', () => {
       ),
     ).toBe(
       [
-        'chore(aidlc): code-generation stage for billing [ABC-12]',
+        'chore(aidlc): checkpoint code-generation stage for billing [ABC-12]',
         '',
         'Intent: Stagger renovate runs',
         '',
@@ -87,17 +87,41 @@ describe('engineCommitMessage, conventional style', () => {
 
   it('leaves out the key and title when the intent has neither', () => {
     expect(message({ stageId: 'requirements-analysis' })).toBe(
-      'chore(aidlc): requirements-analysis stage\n\nAIDLC-Stage: requirements-analysis\nAIDLC-Execution: e1',
+      'chore(aidlc): checkpoint requirements-analysis stage\n\nAIDLC-Stage: requirements-analysis\nAIDLC-Execution: e1',
     );
   });
 
   it.each([
-    [{ stageId: 'code-generation', label: 'lead draft' }, 'code-generation stage, lead draft'],
+    [{ stageId: 'code-generation', label: 'lead draft' }, 'checkpoint code-generation lead draft'],
+    [
+      { stageId: 'code-generation', unitSlug: 'billing', label: 'checkpoint repair' },
+      'checkpoint code-generation repair for billing',
+    ],
+    [
+      { stageId: 'code-generation', label: 'review repair r2' },
+      'checkpoint code-generation review repair r2',
+    ],
     [{ kind: 'merge', unitSlug: 'auth' }, 'merge auth lane'],
     [{ kind: 'reconcile', unitSlug: 'auth' }, 'reconcile auth lane with the intent branch'],
     [{ kind: 'conflict-resolution', unitSlug: 'auth' }, 'resolve auth lane conflicts'],
   ])('%j has the subject %s', (options, subject) => {
     expect(message(options).split('\n')[0]).toBe(`chore(aidlc): ${subject}`);
+  });
+
+  it.each([
+    ['initialization', 'docs'],
+    ['ideation', 'docs'],
+    ['inception', 'docs'],
+    ['construction', 'chore'],
+    ['operation', 'chore'],
+    [null, 'chore'],
+  ])('uses %s phase stage commits of type %s', (phase, type) => {
+    expect(message({ stageId: 's', phase }).split('\n')[0]).toBe(
+      `${type}(aidlc): checkpoint s stage`,
+    );
+    expect(message({ kind: 'merge', unitSlug: 'auth', phase }).split('\n')[0]).toBe(
+      'chore(aidlc): merge auth lane',
+    );
   });
 
   it('keeps stage trailers off lane merges', () => {
@@ -110,7 +134,11 @@ describe('engineCommitMessage, conventional style', () => {
       { source: jira('ABCDEF-123456') },
     ).split('\n')[0];
     expect(header.length).toBeLessThanOrEqual(100);
-    expect(header).toMatch(/^chore\(aidlc\): [^():]+ \[ABCDEF-123456\]$/);
+    expect(header).toMatch(
+      /^chore\(aidlc\): checkpoint code-generation repair .+ \[ABCDEF-123456\]$/,
+    );
+    // One header separator only, so parsers read type, scope and subject correctly.
+    expect(header.match(/: /g)).toHaveLength(1);
   });
 
   it('puts the title on one line without emoji or control characters', () => {
@@ -139,7 +167,7 @@ describe('createEngineCommitMessages', () => {
       env: { ENGINE_COMMIT_STYLE: 'conventional' },
     });
     expect((await conventional({ stageId: 's' })).split('\n')[0]).toBe(
-      'chore(aidlc): s stage [ABC-1]',
+      'chore(aidlc): checkpoint s stage [ABC-1]',
     );
     await conventional({ stageId: 's', label: 'repair' });
     expect(store.getExecution).toHaveBeenCalledTimes(1);
@@ -163,7 +191,9 @@ describe('createEngineCommitMessages', () => {
       executionId: 'e1',
       env: { ENGINE_COMMIT_STYLE: 'conventional' },
     });
-    expect((await messages({ stageId: 's' })).split('\n')[0]).toBe('chore(aidlc): s stage');
+    expect((await messages({ stageId: 's' })).split('\n')[0]).toBe(
+      'chore(aidlc): checkpoint s stage',
+    );
   });
 });
 
@@ -247,7 +277,7 @@ describe('engineCommitMessage with a change description', () => {
 
   it('falls back to chore for an invalid stored description', () => {
     expect(message({}, { type: 'feature', summary: 'x' }).split('\n')[0]).toBe(
-      'chore(aidlc): code-generation stage [ABC-12]',
+      'chore(aidlc): checkpoint code-generation stage [ABC-12]',
     );
   });
 

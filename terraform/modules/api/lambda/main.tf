@@ -3484,6 +3484,7 @@ module "v2_orchestrator_lambda" {
     WEBSOCKET_ENDPOINT                   = var.websocket_api_endpoint_https
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
+    PR_TITLE_TRACKER_KEY                 = tostring(var.pr_title_tracker_key)
   }
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7

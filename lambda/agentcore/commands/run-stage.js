@@ -3947,7 +3947,12 @@ const runStageAttempt = async (
         projectId,
         executionId,
         author: gitAuthor,
-        message: await engineCommitMessage({ stageId, unitSlug, label: 'lead draft' }),
+        message: await engineCommitMessage({
+          stageId,
+          phase: stage.phase,
+          unitSlug,
+          label: 'lead draft',
+        }),
       }).catch((error) => ({
         ok: false,
         committed: false,
@@ -4274,7 +4279,12 @@ const runStageAttempt = async (
     author: gitAuthor,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.
-    message: await engineCommitMessage({ stageId, unitSlug, description: commitDescription }),
+    message: await engineCommitMessage({
+      stageId,
+      phase: stage.phase,
+      unitSlug,
+      description: commitDescription,
+    }),
   });
   if (gitResult?.committed) {
     await consumeCommitDescription({
@@ -4637,7 +4647,7 @@ const runStageAttempt = async (
           projectId,
           executionId,
           author: gitAuthor,
-          message: await engineCommitMessage({ stageId, unitSlug, label }),
+          message: await engineCommitMessage({ stageId, phase: stage.phase, unitSlug, label }),
         }).catch((error) => ({
           ok: false,
           committed: false,

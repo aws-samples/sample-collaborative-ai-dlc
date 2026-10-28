@@ -5,16 +5,21 @@
 //   - a stage commit uses the type, scope, summary and breaking change the stage
 //     agent declared with `describe_changes`, which only the agent can judge;
 //   - every other commit (lead draft, repair, lane merges, or a stage the agent
-//     did not describe) is `chore(aidlc): …`, which release tooling ignores.
+//     did not describe) is `chore(aidlc): checkpoint …`, or `docs(aidlc): …` for
+//     a stage before construction, which only writes AI-DLC artifacts. Release
+//     tooling ignores both by default.
 // The Jira key of the tracker issue the intent was started from is appended,
 // and stage, unit and execution go in trailers, so every commit stays
 // attributable from git alone.
+
+import { trackerKey } from '../shared/tracker-key.js';
+
+export { trackerKey };
 
 const HEADER_MAX = 100;
 const TITLE_MAX = 92;
 const SUMMARY_MAX = 72;
 const BREAKING_MAX = 500;
-const JIRA_KEY = /^[A-Z][A-Z0-9_]*-[1-9][0-9]*$/;
 const SCOPE = /^[a-z0-9][a-z0-9-]{0,29}$/;
 
 // Conventional Commits types (the Angular convention's set).
@@ -36,14 +41,6 @@ const AGENT_HEADER = new RegExp(`^(?:${COMMIT_TYPES.join('|')})(?:\\([^)]*\\))?!
 
 export const commitStyle = (env = process.env) =>
   env?.ENGINE_COMMIT_STYLE === 'conventional' ? 'conventional' : 'aidlc';
-
-// The Jira issue key the intent was started from, or null.
-export const trackerKey = (source) =>
-  source?.provider === 'jira-cloud' &&
-  (source.resourceType ?? 'issue') === 'issue' &&
-  JIRA_KEY.test(String(source.resourceId ?? ''))
-    ? String(source.resourceId)
-    : null;
 
 // Single line, no control characters or emoji, at most `max` characters.
 const oneLine = (text, max) => {
@@ -121,7 +118,12 @@ const legacyMessage = ({ kind, stageId, unitSlug, label, executionId }) => {
   }
 };
 
-const choreSubject = ({ kind, stageId, unitSlug, label }) => {
+// Phases whose stages only write AI-DLC artifacts, never code.
+const ARTIFACT_PHASES = new Set(['initialization', 'ideation', 'inception']);
+
+// Imperative subjects. The engine also commits when a stage parks or fails, so
+// a stage commit "checkpoints" the work rather than completing it.
+const engineSubject = ({ kind, stageId, unitSlug, label }) => {
   switch (kind) {
     case 'merge':
       return `merge ${unitSlug} lane`;
@@ -129,14 +131,17 @@ const choreSubject = ({ kind, stageId, unitSlug, label }) => {
       return `reconcile ${unitSlug} lane with the intent branch`;
     case 'conflict-resolution':
       return `resolve ${unitSlug} lane conflicts`;
-    default:
-      return `${stageId} stage${unitSlug ? ` for ${unitSlug}` : ''}${label ? `, ${label}` : ''}`;
+    default: {
+      const what = label ? String(label).replace(/^checkpoint\s+/, '') : 'stage';
+      return `checkpoint ${stageId} ${what}${unitSlug ? ` for ${unitSlug}` : ''}`;
+    }
   }
 };
 
 const conventionalMessage = ({
   kind,
   stageId,
+  phase,
   unitSlug,
   label,
   executionId,
@@ -148,9 +153,9 @@ const conventionalMessage = ({
   const described = kind === 'stage' && !label ? storedDescription(description) : null;
   const prefix = described
     ? `${described.type}${described.scope ? `(${described.scope})` : ''}${described.breaking ? '!' : ''}: `
-    : 'chore(aidlc): ';
+    : `${kind === 'stage' && ARTIFACT_PHASES.has(phase) ? 'docs' : 'chore'}(aidlc): `;
   const subject = subjectText(
-    described ? described.summary : choreSubject({ kind, stageId, unitSlug, label }),
+    described ? described.summary : engineSubject({ kind, stageId, unitSlug, label }),
     HEADER_MAX - prefix.length - suffix.length,
   );
   const title = oneLine(intent?.title, TITLE_MAX);
@@ -169,11 +174,13 @@ const conventionalMessage = ({
 };
 
 // kind: 'stage' (default), 'merge', 'reconcile' or 'conflict-resolution'.
-// intent: the execution META row ({ title, source }). description: the stage
-// row's commitDescription. Both are only read in the conventional style.
+// phase: the stage's workflow phase. intent: the execution META row ({ title,
+// source }). description: the stage row's commitDescription. All three are only
+// read in the conventional style.
 export const engineCommitMessage = ({
   kind = 'stage',
   stageId,
+  phase = null,
   unitSlug = null,
   label = null,
   executionId,
@@ -182,7 +189,16 @@ export const engineCommitMessage = ({
   style = 'aidlc',
 }) =>
   style === 'conventional'
-    ? conventionalMessage({ kind, stageId, unitSlug, label, executionId, intent, description })
+    ? conventionalMessage({
+        kind,
+        stageId,
+        phase,
+        unitSlug,
+        label,
+        executionId,
+        intent,
+        description,
+      })
     : legacyMessage({ kind, stageId, unitSlug, label, executionId });
 
 // The message builder for one execution. Reads the intent's META row once, and

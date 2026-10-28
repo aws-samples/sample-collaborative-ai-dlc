@@ -38,6 +38,12 @@ variable "application_url" {
   type        = string
 }
 
+variable "pr_title_tracker_key" {
+  description = "Prefix intent pull request titles with the intent's Jira issue key"
+  type        = bool
+  default     = false
+}
+
 variable "vpc_id" {
   description = "VPC ID for Lambda functions"
   type        = string

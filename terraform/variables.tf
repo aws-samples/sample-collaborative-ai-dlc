@@ -145,6 +145,12 @@ variable "engine_commit_style" {
   }
 }
 
+variable "pr_title_tracker_key" {
+  description = "Prefix the title of each intent's pull request with the Jira issue key of the tracker issue the intent was started from, for example \"[ABC-12] Fix invoice rounding\". Intents started without a Jira issue keep their title."
+  type        = bool
+  default     = false
+}
+
 variable "docker_build_args" {
   description = "Optional arguments for local Docker image builds, such as HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. Sensitive values are hidden in CLI output but remain stored in Terraform state."
   type        = map(string)
