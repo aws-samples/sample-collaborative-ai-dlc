@@ -776,6 +776,25 @@ Make sure the bootstrap script completed successfully and that `terraform/enviro
 
 Check CloudWatch Logs for the Yjs collaboration server's ECS service. Common issues: missing IAM permissions, ECR image not found, resource limits exceeded.
 
+**Re-running after a failed VPC Origin fails with `EntityAlreadyExists`**
+
+```
+Error: creating CloudFront VPC Origin
+… EntityAlreadyExists: Another vpc origin with the same name already exists within the aws account.
+```
+
+A failed VPC Origin create leaves the resource tainted. Terraform then creates its replacement before deleting the failed one, and VPC Origin names are unique per account, so the replacement collides. When no distribution uses the failed origin yet (always the case on a first deployment), delete it and re-run the deployment:
+
+```bash
+VPC_ORIGIN_ID=$(terraform -chdir=terraform state show -no-color 'module.frontend.aws_cloudfront_vpc_origin.yjs_alb[0]' | awk '$1 == "id" { gsub(/"/, "", $3); print $3 }')
+ETAG=$(aws cloudfront get-vpc-origin --id "$VPC_ORIGIN_ID" --query ETag --output text)
+aws cloudfront delete-vpc-origin --id "$VPC_ORIGIN_ID" --if-match "$ETAG"
+# Wait until get-vpc-origin returns EntityNotFound (several minutes), then:
+./scripts/deploy-terraform.sh dev
+```
+
+Terraform notices the origin is gone, drops it from state, and creates a fresh one.
+
 **Frontend shows authentication errors**
 
 Verify User Pool ID and App Client ID match Terraform outputs, and that the user exists in the correct group.
