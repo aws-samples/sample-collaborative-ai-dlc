@@ -17,6 +17,11 @@ kms_key_arn = ""
 # "all"           - every Lambda function
 lambda_vpc_scope = "required"
 
+# Set to true when the account enables VPC Block Public Access. CloudFront VPC
+# origins cannot reach the internal Yjs ALB in subnets covered by it. Only the
+# private subnets are excluded; they route through NAT, never an IGW.
+vpc_block_public_access_exclusion = false
+
 # Optional AWS WAF protection for CloudFront, API Gateway, and Cognito.
 enable_waf = false
 

@@ -13,3 +13,9 @@ variable "vpc_cidr" {
   type        = string
   default     = "10.0.0.0/16"
 }
+
+variable "vpc_block_public_access_exclusion" {
+  description = "Exclude the private subnets from account-level VPC Block Public Access so CloudFront VPC origins can reach the internal ALB"
+  type        = bool
+  default     = false
+}

@@ -375,3 +375,33 @@ test('the AgentCore runtime role cannot assume roles', () => {
     /\{\s*(?:#[^\n]*\n\s*)*Effect\s+= "Deny"\s+Action\s+= \["sts:AssumeRole"\]\s+Resource\s+= "\*"\s*\}/,
   );
 });
+
+test('VPC Block Public Access exclusion is opt-in and scoped to the private subnets', () => {
+  const rootVariables = read('terraform/variables.tf');
+  assert.match(
+    rootVariables,
+    /variable "vpc_block_public_access_exclusion"[\s\S]*?default\s+= false/,
+  );
+
+  const networking = read('terraform/modules/networking/main.tf');
+  const [exclusion] = resourceBlocks(networking, 'aws_vpc_block_public_access_exclusion');
+  assert.ok(exclusion, 'expected a VPC Block Public Access exclusion resource');
+  assert.match(exclusion.body, /count\s+= var\.vpc_block_public_access_exclusion \? 2 : 0/);
+  assert.match(exclusion.body, /subnet_id\s+= aws_subnet\.private\[count\.index\]\.id/);
+  assert.doesNotMatch(exclusion.body, /vpc_id|aws_subnet\.public/);
+
+  // The VPC origin attaches to the ALB, so the ALB subnets must wait for the exclusion.
+  const outputs = read('terraform/modules/networking/outputs.tf');
+  assert.match(
+    outputs,
+    /output "vpc_origin_subnet_ids"[\s\S]*?depends_on\s+= \[aws_vpc_block_public_access_exclusion\.private\]/,
+  );
+  const rootMain = read('terraform/main.tf');
+  assert.match(
+    moduleBlock(rootMain, 'yjs_server'),
+    /private_subnet_ids\s+= module\.networking\.vpc_origin_subnet_ids/,
+  );
+
+  const example = read('terraform/environments/dev.tfvars.example');
+  assert.match(example, /^vpc_block_public_access_exclusion = false$/m);
+});

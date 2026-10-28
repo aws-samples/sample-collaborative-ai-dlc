@@ -315,8 +315,9 @@ resource "aws_api_gateway_account" "main" {
 module "networking" {
   source = "./modules/networking"
 
-  project_name = var.project_name
-  environment  = var.environment
+  project_name                      = var.project_name
+  environment                       = var.environment
+  vpc_block_public_access_exclusion = var.vpc_block_public_access_exclusion
 }
 
 # Optional AWS WAF web ACLs
@@ -713,7 +714,7 @@ module "yjs_server" {
   aws_region                    = var.aws_region
   docker_build_args             = var.docker_build_args
   vpc_id                        = module.networking.vpc_id
-  private_subnet_ids            = module.networking.private_subnet_ids
+  private_subnet_ids            = module.networking.vpc_origin_subnet_ids
   cognito_user_pool_id          = module.auth.user_pool_id
   cognito_client_id             = module.auth.user_pool_client_id
   realtime_doc_secret_param_arn = module.realtime.realtime_doc_secret_param_arn

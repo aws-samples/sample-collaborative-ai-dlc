@@ -150,3 +150,18 @@ resource "aws_security_group" "default" {
     Environment = var.environment
   }
 }
+
+# CloudFront VPC origins cannot attach to subnets covered by VPC Block Public
+# Access. The private subnets route only through NAT, so excluding them opens
+# no internet ingress path; the ALB security group still admits CloudFront only.
+resource "aws_vpc_block_public_access_exclusion" "private" {
+  count = var.vpc_block_public_access_exclusion ? 2 : 0
+
+  subnet_id                       = aws_subnet.private[count.index].id
+  internet_gateway_exclusion_mode = "allow-bidirectional"
+
+  tags = {
+    Name        = "${var.project_name}-${var.environment}-private-${count.index + 1}-bpa-exclusion"
+    Environment = var.environment
+  }
+}

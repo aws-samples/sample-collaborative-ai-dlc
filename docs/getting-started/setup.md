@@ -776,6 +776,22 @@ Make sure the bootstrap script completed successfully and that `terraform/enviro
 
 Check CloudWatch Logs for the Yjs collaboration server's ECS service. Common issues: missing IAM permissions, ECR image not found, resource limits exceeded.
 
+**CloudFront VPC Origin fails with `Block Public Access enabled`**
+
+```
+Error: waiting for CloudFront VPC Origin (vo_…) create
+unexpected state 'Failed : You can't update an endpoint group that has
+endpoints in a subnet with Block Public Access enabled. …'
+```
+
+The account enables [VPC Block Public Access](https://docs.aws.amazon.com/vpc/latest/userguide/security-vpc-bpa.html), and CloudFront VPC origins cannot reach the internal Yjs ALB in subnets it covers. Check the account mode with `aws ec2 describe-vpc-block-public-access-options`. If `ExclusionsAllowed` is `allowed`, set the following in your environment's `.tfvars` and re-run the deployment:
+
+```hcl
+vpc_block_public_access_exclusion = true
+```
+
+This excludes only the two private subnets. They route through the NAT gateway, never an internet gateway, and the ALB security group still admits only the CloudFront origin-facing prefix list, so the exclusion opens no new path from the internet. If an organization policy disallows exclusions, ask its administrator for one covering the private subnets.
+
 **Frontend shows authentication errors**
 
 Verify User Pool ID and App Client ID match Terraform outputs, and that the user exists in the correct group.

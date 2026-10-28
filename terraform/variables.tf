@@ -78,6 +78,12 @@ variable "lambda_vpc_scope" {
   }
 }
 
+variable "vpc_block_public_access_exclusion" {
+  description = "Exclude the private subnets from account-level VPC Block Public Access. Required when the account enables Block Public Access, because CloudFront VPC origins cannot reach the internal Yjs ALB otherwise."
+  type        = bool
+  default     = false
+}
+
 variable "bedrock_model" {
   description = "Bedrock inference profile ID for the primary model. E.g. us.anthropic.claude-sonnet-4-6"
   type        = string
