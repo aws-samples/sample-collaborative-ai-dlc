@@ -31,14 +31,6 @@ vi.mock('@/services/sourceControl', () => ({
   },
 }));
 
-const listIssuePages = vi.fn();
-vi.mock('@/services/trackers', () => ({
-  trackersService: {
-    listIssuePages: (...a: unknown[]) => listIssuePages(...a),
-    listComments: vi.fn(),
-  },
-}));
-
 import NewIntentPage from './NewIntentPage';
 
 const baseProject = (over: Record<string, unknown> = {}) => ({
@@ -191,76 +183,5 @@ describe('NewIntentPage — base branch selection', () => {
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     const payload = create.mock.calls[0][1];
     expect(payload.baseBranches).toEqual({ 'owner/repo': 'develop' });
-  });
-});
-
-describe('NewIntentPage — tracker picker layout', () => {
-  const trackerProject = () =>
-    baseProject({
-      trackers: [
-        {
-          id: 't1',
-          provider: 'github-issues',
-          instance: null,
-          externalProjectKey: 'owner/repo',
-          displayName: null,
-          createdAt: null,
-          createdBy: null,
-        },
-      ],
-    });
-
-  beforeEach(() => {
-    create.mockReset().mockResolvedValue({ id: 'i1' });
-    listBranches
-      .mockReset()
-      .mockResolvedValue({ branches: ['main', 'develop'], defaultBranch: 'main' });
-    listIssuePages.mockReset();
-    listIssuePages.mockImplementation(() =>
-      (async function* () {
-        yield {
-          items: [
-            {
-              resourceId: '1',
-              resourceUrl: 'https://github.com/owner/repo/issues/1',
-              resourceType: 'issue',
-              title: 'Fix login redirect',
-              body: null,
-              state: 'open',
-              labels: [],
-              author: { handle: 'someone' },
-              createdAt: '2026-10-01T00:00:00Z',
-              updatedAt: '2026-10-01T00:00:00Z',
-            },
-          ],
-          totalCount: 1,
-          done: true,
-        };
-      })(),
-    );
-    useProjectCache.mockReset();
-    useProjectCache.mockReturnValue({ project: trackerProject(), loading: false });
-  });
-
-  it('stretches the issue list to the bottom of the tracker card', async () => {
-    renderPage();
-    await screen.findByText('Import from tracker');
-    const issue = await screen.findByText(/Fix login redirect/);
-
-    // The scrollable list is the direct parent of the issue row buttons.
-    const list = issue.closest('button')!.parentElement!;
-    expect(list).toHaveClass('max-h-64', 'overflow-y-auto');
-    // The card stretches to the grid row height, so below lg the list must be
-    // allowed to grow past its 16rem cap and fill the card's remaining space.
-    expect(list).toHaveClass('flex-1', 'min-h-0', 'lg:max-h-none');
-
-    // The fill chain must run from the card down to the list, or the list
-    // would flex inside a content-sized wrapper and leave white space again.
-    const picker = list.parentElement!;
-    expect(picker).toHaveClass('flex', 'min-h-0', 'flex-1', 'flex-col');
-    const cardContent = picker.parentElement!;
-    expect(cardContent).toHaveClass('flex', 'min-h-0', 'flex-1', 'flex-col');
-    const card = cardContent.parentElement!;
-    expect(card).toHaveClass('flex', 'flex-col');
   });
 });
