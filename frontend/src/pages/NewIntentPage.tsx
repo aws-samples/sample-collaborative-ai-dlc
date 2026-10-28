@@ -364,8 +364,8 @@ export default function NewIntentPage() {
 
         <div className={hasTrackers ? 'grid gap-6 lg:grid-cols-[1fr_1fr]' : 'flex justify-center'}>
           {hasTrackers && (
-            <Card className="lg:max-h-[calc(100vh-12rem)] lg:overflow-y-auto">
-              <CardContent className="p-4 space-y-3">
+            <Card className="flex flex-col lg:max-h-[calc(100vh-12rem)] lg:overflow-y-auto">
+              <CardContent className="flex min-h-0 flex-1 flex-col p-4 space-y-3">
                 <Label className="text-sm font-medium">Import from tracker</Label>
                 <IntentSourcePicker
                   project={project}
