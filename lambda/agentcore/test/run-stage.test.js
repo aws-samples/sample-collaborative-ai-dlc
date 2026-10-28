@@ -911,6 +911,29 @@ describe('runStage — failure paths (always records terminal state)', () => {
     expect(res).toMatchObject({ ok: false, reason: 'stage_not_in_scope' });
   });
 
+  it.each([0, 2])('logs CLI exit %s at the appropriate severity', async (exitCode) => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    try {
+      await runStage(
+        baseArgs,
+        baseDeps({
+          spawnFn: () => ({
+            on: (event, callback) => event === 'close' && setImmediate(() => callback(exitCode)),
+            stdin: { end() {} },
+          }),
+        }),
+      );
+      const expected = exitCode === 0 ? info : error;
+      const other = exitCode === 0 ? error : info;
+      expect(expected).toHaveBeenCalledWith('cli exit', expect.objectContaining({ exitCode }));
+      expect(other).not.toHaveBeenCalledWith('cli exit', expect.anything());
+    } finally {
+      info.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('records FAILED on a non-zero CLI exit', async () => {
     const deps = baseDeps({
       spawnFn: () => ({

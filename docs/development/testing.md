@@ -458,6 +458,30 @@ Cleanup errors are logged as `sandbox.cleanup_failed` without replacing the
 harness's exit status. A harness killed by a signal returns exit code `1`
 through the sandbox wrapper, rather than the direct launch's `null`.
 
+### Harness tool logs
+
+Both launch helpers log `cli.tool` events from Claude, Kiro, Codex and OpenCode's
+JSON output, with or without SRT. Each reported tool result includes its name,
+call ID when available, status, paths or command, and bounded, redacted failure
+details. Failures use `WARN`, successes use `INFO`, even when the harness exits
+zero. `cli.error` records recognized harness error events at `WARN`. Stage harness
+exits use `INFO` for zero and `ERROR` for nonzero.
+
+SRT denials, cleanup failures, dropped observations (`sandbox.log_gap`) and
+unclassified violations use `WARN`; sandbox setup failures use `ERROR`.
+Startup and optional file-write observations use `INFO` (a file observation alone
+does not confirm a denial). Set the existing Terraform `powertools_log_level`
+to `"WARN"` (`POWERTOOLS_LOG_LEVEL` in the runtime) to hide successful tool calls
+and other `INFO` logs while keeping warnings and errors. Raw stderr and plain
+console output bypass this setting.
+
+The `invocationId` links these records to SRT events; stage and persona launches
+also supply execution context. A tool failure alone is not proof of an SRT
+denial. Conversation events, write contents and successful tool output are
+excluded from these logs. Full stdout still reaches existing UI/capture callers;
+JSON conversation output is no longer duplicated into runtime logs. Stderr
+logging is unchanged. Tools that never report a result are not covered.
+
 ### Local multi-CLI E2E
 
 [`scripts/agent-e2e-testing.sh`](https://github.com/aws-samples/sample-collaborative-ai-dlc/blob/main/scripts/agent-e2e-testing.sh)

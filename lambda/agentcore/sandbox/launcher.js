@@ -48,8 +48,12 @@ export const withSandbox = (
 
 export const currentSandbox = () => context.getStore() ?? DEFAULT_SANDBOX_CONFIG;
 
-export const spawnSandbox = (command, args, options, { sandbox, spawnFn = spawn }) => {
-  const invocationId = randomUUID();
+export const spawnSandbox = (
+  command,
+  args,
+  options,
+  { sandbox, spawnFn = spawn, invocationId = randomUUID() },
+) => {
   const scratch = mkdtempSync(join(tmpdir(), 'aidlc-srt-'));
   const cleanup = () => rmSync(scratch, { recursive: true, force: true });
   let child;
@@ -75,7 +79,20 @@ export const spawnSandbox = (command, args, options, { sandbox, spawnFn = spawn 
     if (event.type === 'sandbox.starting') starting = true;
     if (event.type === 'sandbox.error') child.sandboxError = 'sandbox_start_failed';
     const record = { ...event, invocationId };
-    logger.info('sandbox event', record);
+    if (event.type === 'sandbox.error') {
+      logger.error('sandbox event', record);
+    } else if (
+      [
+        'sandbox.denied',
+        'sandbox.cleanup_failed',
+        'sandbox.log_gap',
+        'sandbox.observation',
+      ].includes(event.type)
+    ) {
+      logger.warn('sandbox event', record);
+    } else {
+      logger.info('sandbox event', record);
+    }
     try {
       sandbox.onEvent?.(record);
     } catch {

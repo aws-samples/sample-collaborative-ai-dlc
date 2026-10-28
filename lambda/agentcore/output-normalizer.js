@@ -1,6 +1,9 @@
 import { createOpenCodeJsonlParser } from './cli/opencode-parser.js';
 import { createCodexJsonlParser } from './cli/codex-parser.js';
 import { createKiroJsonlParser } from './cli/kiro-parser.js';
+import { basename } from 'node:path';
+import { SUPPORTED_CLIS } from './cli/drivers.js';
+import { redactCredentialText, sensitiveEnvironmentValues } from '../shared/safe-event-logger.js';
 
 const TOOL_DISPLAY_TYPES = new Set([
   'message',
@@ -362,7 +365,16 @@ const claudeResultText = (result) => {
 // Codex, OpenCode and Kiro stream JSONL through parsers with one callback
 // surface; render their events identically. Consecutive successful file reads
 // collapse into one batch row.
-const createParsedSink = ({ createParser, label, toolName, emit, onSession, onUsage, onError }) => {
+const createParsedSink = ({
+  createParser,
+  label,
+  toolName,
+  emit,
+  onSession,
+  onUsage,
+  onError,
+  onTool,
+}) => {
   let readBatch = [];
   const flushReadBatch = () => {
     if (!readBatch.length) return;
@@ -383,6 +395,7 @@ const createParsedSink = ({ createParser, label, toolName, emit, onSession, onUs
     },
     onTool(toolEvent) {
       const name = toolName(toolEvent.name);
+      onTool({ ...toolEvent, name });
       // send_output already persists its canonical output through MCP.
       if (name === 'send_output') return;
       const output = toolEvent.output ? String(toolEvent.output) : '';
@@ -471,9 +484,10 @@ export const createCliOutputSink = ({
   onSession = () => {},
   onUsage = () => {},
   onError = () => {},
+  onTool = () => {},
 }) => {
   if (PARSED_SINKS[cli]) {
-    return createParsedSink({ ...PARSED_SINKS[cli], emit, onSession, onUsage, onError });
+    return createParsedSink({ ...PARSED_SINKS[cli], emit, onSession, onUsage, onError, onTool });
   }
 
   let pending = '';
@@ -509,17 +523,26 @@ export const createCliOutputSink = ({
           const started = pendingTools.get(part.tool_use_id);
           if (!started) continue;
           pendingTools.delete(part.tool_use_id);
-          if (started.name === 'send_output') continue;
           const output = claudeResultText(part);
+          const tool = {
+            id: part.tool_use_id,
+            name: started.name,
+            input: started.input,
+            status: part.is_error === true ? 'error' : 'completed',
+            output,
+            error: part.is_error === true ? output : null,
+          };
+          onTool(tool);
+          if (tool.name === 'send_output') continue;
           const rawLines = [
-            `Running tool ${started.name}\n`,
-            `${JSON.stringify(started.input)}\n`,
-            ...(output ? [`${output}\n`] : []),
+            `Running tool ${tool.name}\n`,
+            `${JSON.stringify(tool.input)}\n`,
+            ...(tool.output ? [`${tool.output}\n`] : []),
           ];
           const normalized = displayForTool({
-            name: started.name,
+            name: tool.name,
             rawLines,
-            completion: { ok: part.is_error !== true, duration: null },
+            completion: { ok: tool.status === 'completed', duration: null },
           });
           emitEvent(emit, normalized.content, normalized.display);
         }
@@ -543,6 +566,62 @@ export const createCliOutputSink = ({
       pending = '';
     },
   };
+};
+
+// Use the same parsers as the activity UI, but log only tool results and CLI
+// errors. Do not log conversation events, write contents, or successful output.
+export const createCliToolLogSink = ({ command, args = [], env, context, log }) => {
+  if (typeof command !== 'string') return null;
+  const executable = basename(command);
+  const cli = executable === 'kiro-cli' ? 'kiro' : executable;
+  const jsonOutput =
+    args.includes('stream-json') ||
+    args.includes('--json') ||
+    (cli === 'opencode' && args.includes('--format') && args.includes('json'));
+  if (!SUPPORTED_CLIS.includes(cli) || !jsonOutput) return null;
+
+  const secrets = sensitiveEnvironmentValues(env);
+  const clean = (value, limit = 1024) =>
+    stripTerminalControls(redactCredentialText(value, secrets))
+      .replace(/[\p{Cc}\p{Cf}]/gu, ' ')
+      .slice(0, limit);
+  return createCliOutputSink({
+    cli,
+    emit: () => {},
+    onError: (message) =>
+      log({ ...context, cli, type: 'cli.error', status: 'error', error: clean(message, 2048) }),
+    onTool: (tool) => {
+      const input = tool.input;
+      const targets = tool.targets ?? readTargetsFromParams(input);
+      const commandText =
+        typeof input?.command === 'string'
+          ? input.command
+          : tool.name === 'shell' && typeof input === 'string'
+            ? input
+            : null;
+      const failed = tool.status === 'error';
+      // These tools carry conversation text; record their status only.
+      const conversationTool = ['send_output', 'ask_question'].includes(tool.name);
+      const error =
+        conversationTool || !failed
+          ? null
+          : [tool.error?.message ?? tool.error, tool.output]
+              .filter((value, index, values) => value && values.indexOf(value) === index)
+              .join('\n');
+      log({
+        ...context,
+        cli,
+        type: 'cli.tool',
+        tool: clean(tool.name, 128),
+        ...(tool.id ? { toolCallId: clean(tool.id, 128) } : {}),
+        ...(tool.server ? { server: clean(tool.server, 128) } : {}),
+        status: tool.status,
+        ...(targets.length ? { targets: targets.slice(0, 10).map((target) => clean(target)) } : {}),
+        ...(commandText && !conversationTool ? { command: clean(commandText) } : {}),
+        ...(error ? { error: clean(error, 2048) } : {}),
+      });
+    },
+  });
 };
 
 export const __test = {

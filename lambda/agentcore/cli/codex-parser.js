@@ -174,7 +174,7 @@ export const createCodexJsonlParser = ({
       }
       const tool = toolOf(item, event);
       if (tool) {
-        onTool(tool);
+        onTool({ ...tool, id: item.id });
         return;
       }
       // Reasoning summaries, plan updates, unknown item kinds — keep as

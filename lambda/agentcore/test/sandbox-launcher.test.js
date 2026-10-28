@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
+import { Logger } from '@aws-lambda-powertools/logger';
 import { describe, expect, it, vi } from 'vitest';
 import { captureChild, runChild } from '../cli/spawn.js';
 import { currentSandbox, DEFAULT_SANDBOX_CONFIG, withSandbox } from '../sandbox/launcher.js';
@@ -22,6 +23,48 @@ const fakeWorker = () => {
 };
 
 describe('sandbox launch context', () => {
+  it.each([
+    ['sandbox.starting', 'info'],
+    ['sandbox.file_observation', 'info'],
+    ['sandbox.denied', 'warn'],
+    ['sandbox.cleanup_failed', 'warn'],
+    ['sandbox.log_gap', 'warn'],
+    ['sandbox.observation', 'warn'],
+    ['sandbox.error', 'error'],
+  ])('logs %s at %s and still delivers it to the event consumer', async (type, level) => {
+    const logs = {
+      info: vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {}),
+      warn: vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {}),
+      error: vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {}),
+    };
+    const onEvent = vi.fn();
+    const spawnFn = () => {
+      const child = fakeWorker();
+      child.send = () => {
+        setImmediate(() => {
+          child.emit('message', { type });
+          child.emit('close', type === 'sandbox.error' ? 1 : 0);
+        });
+      };
+      return child;
+    };
+    try {
+      await withSandbox({ enabled: true, settings, onEvent }, () =>
+        captureChild({ command: 'fixture', args: [], env: {}, spawnFn }),
+      );
+      expect(logs[level]).toHaveBeenCalledExactlyOnceWith(
+        'sandbox event',
+        expect.objectContaining({ type, invocationId: expect.any(String) }),
+      );
+      expect(onEvent).toHaveBeenCalledExactlyOnceWith(logs[level].mock.calls[0][1]);
+      for (const other of Object.keys(logs).filter((key) => key !== level)) {
+        expect(logs[other]).not.toHaveBeenCalled();
+      }
+    } finally {
+      for (const log of Object.values(logs)) log.mockRestore();
+    }
+  });
+
   it('keeps concurrent settings separate and leaves ordinary commands unwrapped', async () => {
     const workers = [];
     const settingsByRun = ['first.invalid', 'second.invalid'].map((host) => ({

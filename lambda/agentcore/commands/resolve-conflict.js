@@ -271,6 +271,7 @@ const resolveConflictImplementation = async (
     let result;
     const execute = () =>
       runChild({
+        logContext: { executionId, intentId, projectId },
         command: invocation.command,
         args: invocation.args,
         env: { ...invocation.env, ...driver.envForAuth(env) },
