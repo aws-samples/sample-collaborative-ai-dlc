@@ -271,13 +271,81 @@ for (const [name, createFixture] of [
     assert.deepEqual(f.writes, [], 'A stale PR revision cannot remove a report');
   });
 
-  test(`${name}: analyzed files without findings still produce a report`, async (t) => {
+  test(`${name}: analyzed files without results or warnings skip publication and remove the old report`, async (t) => {
     const f = await createFixture(t);
     await writeFile(f.reportPath, JSON.stringify({ ...report(), findings: [], improvements: [] }));
     await publishComplexityComment(f);
+    assert.deepEqual(f.writes, []);
+    f.comments.push({
+      id: 2,
+      user: { login: 'github-actions[bot]', type: 'Bot' },
+      body: `${commentMarker}\n<!-- quality-run:122:1 -->\nOld report`,
+    });
+    await publishComplexityComment(f);
+    assert.equal(f.writes[0].action, 'delete');
+    assert.equal(f.writes[0].comment_id, 2);
+  });
+
+  test(`${name}: empty tables retain coverage and dependency warnings`, async (t) => {
+    for (const warning of [
+      { coverageNotes: ['PR coverage: unknown (no report supplied).'] },
+      { coverageNotes: ['PR coverage: measured with failing or interrupted tests (*).'] },
+      { dependencyNote: 'Depending files: unknown (dependency analysis failed).' },
+      {
+        files: [
+          {
+            path: 'lambda/demo/index.js',
+            before: [{ coverage: { status: 'unknown', reason: 'Coverage source does not match' } }],
+            after: [],
+          },
+        ],
+      },
+      {
+        files: [
+          {
+            path: 'lambda/demo/index.js',
+            before: [],
+            after: [{ coverage: { status: 'measured', partial: true } }],
+          },
+        ],
+      },
+    ]) {
+      const f = await createFixture(t);
+      await writeFile(
+        f.reportPath,
+        JSON.stringify({
+          ...report(),
+          findings: [],
+          improvements: [],
+          ...warning,
+        }),
+      );
+      await publishComplexityComment(f);
+      assert.equal(f.writes[0].action, 'create');
+      assert.match(
+        f.writes[0].body,
+        /coverage data is unavailable or incomplete|dependency analysis failed/,
+      );
+    }
+  });
+
+  test(`${name}: improvements alone still produce a table`, async (t) => {
+    const f = await createFixture(t);
+    const data = report();
+    data.improvements = [
+      {
+        ...data.findings[0],
+        kind: 'improved',
+        before: 20,
+        after: 16,
+        delta: -4,
+      },
+    ];
+    data.findings = [];
+    await writeFile(f.reportPath, JSON.stringify(data));
+    await publishComplexityComment(f);
     assert.equal(f.writes[0].action, 'create');
-    assert.match(f.writes[0].body, /Automated quality report/);
-    assert.doesNotMatch(f.writes[0].body, /Analyzed \d+ source files/);
+    assert.match(f.writes[0].body, /\| 20 → 16 \| -4 \|/);
   });
 
   test(`${name}: posts validated JSON through the shared publisher`, async (t) => {

@@ -91,6 +91,36 @@ function renderRows(rows) {
   return `${visible}\n\n<details>\n<summary>Show ${remaining.length} more functions</summary>\n\n${renderTable(remaining)}\n\n</details>`;
 }
 
+export function hasIncompleteCoverage(report) {
+  const rows = [...report.findings, ...report.improvements];
+  const paths = [...report.files, ...rows]
+    .map((entry) => entry?.path)
+    .filter((path) => typeof path === 'string');
+  return (
+    rows.some(
+      (row) =>
+        (row.before !== null && row.coverage?.before?.status !== 'measured') ||
+        row.coverage?.after?.status !== 'measured' ||
+        row.coverage?.before?.partial ||
+        row.coverage?.after?.partial,
+    ) ||
+    report.files.some((file) =>
+      [file?.before, file?.after].some(
+        (functions) =>
+          Array.isArray(functions) &&
+          functions.some((fn) => fn?.coverage?.status !== 'measured' || fn.coverage.partial),
+      ),
+    ) ||
+    (report.coverageNotes ?? []).some(
+      (note) =>
+        /unknown|failing|interrupted/.test(note) &&
+        paths.some((path) =>
+          path.startsWith(note.startsWith('Frontend ') ? 'frontend/' : 'lambda/'),
+        ),
+    )
+  );
+}
+
 export function renderComparison(report) {
   const findings = new Set(report.findings.map(rowKey));
   // A complexity improvement can also be a coverage regression; show it once.
@@ -104,24 +134,7 @@ export function renderComparison(report) {
     'Automated quality report using code complexity and test coverage to highlight potential hot spots in this PR.',
     'Review 🟣 and 🔴 items first: consider simplifying the code, improving test coverage, or both. This report is advisory.',
   ];
-  const paths = [...report.files, ...rows]
-    .map((entry) => entry?.path)
-    .filter((path) => typeof path === 'string');
-  const incompleteCoverage =
-    rows.some(
-      (row) =>
-        (row.before !== null && row.coverage?.before?.status !== 'measured') ||
-        row.coverage?.after?.status !== 'measured' ||
-        row.coverage?.before?.partial ||
-        row.coverage?.after?.partial,
-    ) ||
-    report.coverageNotes?.some(
-      (note) =>
-        /unknown|failing|interrupted/.test(note) &&
-        paths.some((path) =>
-          path.startsWith(note.startsWith('Frontend ') ? 'frontend/' : 'lambda/'),
-        ),
-    );
+  const incompleteCoverage = hasIncompleteCoverage(report);
   if (incompleteCoverage) {
     lines.push(
       '',
