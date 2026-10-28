@@ -6,16 +6,16 @@ Before you begin, install and verify the following tools.
 
 To run AIDLC Collaborative locally, install the following tools.
 
-| Tool        | Version     | Purpose                                                      |
-| ----------- | ----------- | ------------------------------------------------------------ |
-| **Node.js** | 22 or later | Runtime for the frontend and Lambda functions                |
-| **npm**     | 10 or later | Package manager (ships with Node.js)                         |
-| **Git**     | 2.x         | Repository cloning and branch management for agent execution |
+| Tool        | Version        | Purpose                                                      |
+| ----------- | -------------- | ------------------------------------------------------------ |
+| **Node.js** | 22.22 or later | Runtime for the frontend and Lambda functions                |
+| **npm**     | 10 or later    | Package manager (ships with Node.js)                         |
+| **Git**     | 2.x            | Repository cloning and branch management for agent execution |
 
 Run the following commands to verify your local development environment.
 
 ```bash
-node --version   # Expected output: v22.x or later
+node --version   # Expected output: v22.22.0 or later
 npm --version    # Expected output: 10.x or later
 git --version    # Expected output: 2.x
 ```

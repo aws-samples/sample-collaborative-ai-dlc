@@ -4,7 +4,7 @@ React + TypeScript + Vite single-page application for the AI-DLC collaborative p
 
 ## Prerequisites
 
-- Node.js 22+
+- Node.js 22.22+
 
 ## Configuration
 
