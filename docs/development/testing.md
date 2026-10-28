@@ -413,6 +413,51 @@ npm run secretlint
 npx vitest run --project=agentcore
 ```
 
+### SRT image integration tests
+
+With Node 22/24 and Docker running, execute from the repository root:
+
+```bash
+./scripts/agent-e2e-testing.sh --sandbox
+```
+
+This mode of the existing Docker E2E runner builds the production ARM64 image and
+mounts a test workload read-only in disposable containers. It requires native
+ARM64 or working emulation. The workload is excluded from the production image
+and is not called by the application. No AWS or model credentials are required.
+As with the lifecycle E2E, `AGENTCORE_IMAGE` can select an existing local image,
+and `KEEP_E2E=1` retains containers and logs on failure.
+
+Both cases use the same workload and the real `runChild` and `captureChild` helpers:
+
+| Operation                            | Sandbox disabled | Sandbox enabled with restrictive test settings  |
+| ------------------------------------ | ---------------- | ----------------------------------------------- |
+| Workspace write/read                 | Succeeds         | Succeeds                                        |
+| Protected test-file read/write       | Succeeds         | Blocked; original file remains unchanged        |
+| Direct connection to the test server | Succeeds         | Blocked                                         |
+| HTTP request to the test server      | Succeeds         | Proxy returns 403; destination receives nothing |
+| SRT denial event                     | None             | Destination and port logged                     |
+
+The tests also check stdin delivery, process exit, scratch cleanup and SRT's
+presence in the image. The local container uses `seccomp=unconfined` and
+`systempaths=unconfined` to permit namespaces; SRT's own weaker-isolation option
+remains disabled. These are local test-host options, not deployment settings.
+These tests do not qualify full agent conversations, Gateway tools or pause/resume.
+
+The runtime switch is `DEFAULT_SANDBOX_CONFIG.enabled` in
+`lambda/agentcore/sandbox/launcher.js`, currently `false`. Both spawn helpers
+explicitly check this boolean. Trusted code can supply an invocation's
+`{ enabled, settings }` through `withSandbox`; platform-admin configuration is
+not connected yet. If enabled with the default settings, file access and Unix
+sockets are unrestricted and unlisted proxy destinations are approved. Direct
+networking remains isolated by SRT. The integration tests supply restrictive
+settings to exercise blocking. Runtime verification and environment metadata do
+not run or store these tests.
+
+Cleanup errors are logged as `sandbox.cleanup_failed` without replacing the
+harness's exit status. A harness killed by a signal returns exit code `1`
+through the sandbox wrapper, rather than the direct launch's `null`.
+
 ### Local multi-CLI E2E
 
 [`scripts/agent-e2e-testing.sh`](https://github.com/aws-samples/sample-collaborative-ai-dlc/blob/main/scripts/agent-e2e-testing.sh)
