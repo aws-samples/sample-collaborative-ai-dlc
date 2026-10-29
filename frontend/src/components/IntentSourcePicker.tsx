@@ -96,9 +96,11 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
   // Drill-down trail: [] is the whole project; the last entry is being browsed.
   const [trail, setTrail] = useState<Crumb[]>([]);
   const parentKey = trail.at(-1)?.resourceId;
+  // Linked items sit in other projects with their own types, so no Type filter.
+  const showTypeFilter = isJira && !(isDiscovery && trail.length > 0);
   // 'all', types and drill-down only exist for Jira; don't send them elsewhere.
   const effectiveState: IssueStateFilter = !isJira && state === 'all' ? 'open' : state;
-  const effectiveType = isJira && jiraType ? jiraType : undefined;
+  const effectiveType = showTypeFilter && jiraType ? jiraType : undefined;
   const effectiveParent = isJira ? parentKey : undefined;
   const [searchInput, setSearchInput] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
@@ -330,29 +332,31 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
 
       {isJira && (
         <div className="flex items-center gap-2 flex-wrap">
-          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            Type
-            <select
-              value={jiraType}
-              onChange={(e) => setJiraType(e.target.value)}
-              className="h-7 rounded-md border bg-background px-2 text-xs text-foreground"
-              aria-label="Issue type"
-            >
-              <option value="">All types</option>
-              {(['Parent level', 'Standard', 'Sub-task level'] as const).map((group) => {
-                const inGroup = issueTypes.filter((t) => levelLabel(t) === group);
-                return inGroup.length === 0 ? null : (
-                  <optgroup key={group} label={group}>
-                    {inGroup.map((t) => (
-                      <option key={t.name} value={t.name}>
-                        {t.name}
-                      </option>
-                    ))}
-                  </optgroup>
-                );
-              })}
-            </select>
-          </label>
+          {showTypeFilter && (
+            <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              Type
+              <select
+                value={jiraType}
+                onChange={(e) => setJiraType(e.target.value)}
+                className="h-7 rounded-md border bg-background px-2 text-xs text-foreground"
+                aria-label="Issue type"
+              >
+                <option value="">All types</option>
+                {(['Parent level', 'Standard', 'Sub-task level'] as const).map((group) => {
+                  const inGroup = issueTypes.filter((t) => levelLabel(t) === group);
+                  return inGroup.length === 0 ? null : (
+                    <optgroup key={group} label={group}>
+                      {inGroup.map((t) => (
+                        <option key={t.name} value={t.name}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+              </select>
+            </label>
+          )}
           {trail.length > 0 && (
             <nav aria-label="Hierarchy" className="flex items-center gap-1 text-[11px] flex-wrap">
               <button

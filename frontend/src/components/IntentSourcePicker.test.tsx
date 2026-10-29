@@ -130,7 +130,7 @@ describe('IntentSourcePicker', () => {
     expect(screen.queryByRole('navigation', { name: 'Hierarchy' })).not.toBeInTheDocument();
   });
 
-  it('browses linked items in a Product Discovery project', async () => {
+  it('browses linked items in a Product Discovery project, without a Type filter', async () => {
     listIssuePages.mockImplementation(
       pageOf(
         [issue('IDEAS-1', 'Idea')],
@@ -141,6 +141,12 @@ describe('IntentSourcePicker', () => {
     renderPicker('jira-cloud');
     await userEvent.click(await screen.findByRole('button', { name: 'Linked items of IDEAS-1' }));
     await waitFor(() => expect(lastRequest()[2]).toMatchObject({ parent: 'IDEAS-1' }));
+    // Linked items sit in other projects, so the Discovery project's types don't apply.
+    expect(screen.queryByRole('combobox', { name: 'Issue type' })).not.toBeInTheDocument();
+
+    const trail = screen.getByRole('navigation', { name: 'Hierarchy' });
+    await userEvent.click(within(trail).getByRole('button', { name: 'All' }));
+    expect(await screen.findByRole('combobox', { name: 'Issue type' })).toBeInTheDocument();
   });
 
   it('clears the type and search that found a parent when opening its children', async () => {
