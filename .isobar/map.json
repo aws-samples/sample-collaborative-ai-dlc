@@ -1,0 +1,698 @@
+{
+  "version": 1,
+  "repo": "Collaborative AI-DLC",
+  "head": "e9ec7d6161b09ebc02a1a339cc3e41e44c7da04c",
+  "builtAt": "2026-10-26T18:23:30.768Z",
+  "source": "repo-file",
+  "layers": [
+    {
+      "id": "experience",
+      "name": "Experience",
+      "blurb": "Where people collaborate",
+      "height": 350
+    },
+    {
+      "id": "execution",
+      "name": "Execution",
+      "blurb": "Intent lifecycle and coding agents",
+      "height": 550
+    },
+    {
+      "id": "foundations",
+      "name": "Foundations",
+      "blurb": "Contracts, integrations and shared state",
+      "height": 420
+    },
+    {
+      "id": "delivery",
+      "name": "Delivery",
+      "blurb": "Build, infrastructure and guidance",
+      "height": 330
+    }
+  ],
+  "regions": [
+    {
+      "id": "ui",
+      "name": "Screens & components",
+      "blurb": "Screens, intent views and reusable controls",
+      "layer": "experience",
+      "paths": ["frontend/src/", "frontend/src/App.tsx", "frontend/src/main.tsx"],
+      "width": 840,
+      "columns": 2,
+      "weight": 10,
+      "children": [
+        {
+          "id": "pages",
+          "name": "Pages",
+          "blurb": "Top-level routes and workflow composition",
+          "paths": ["frontend/src/pages/"]
+        },
+        {
+          "id": "intent",
+          "name": "Intent widgets",
+          "blurb": "Execution, graph and collaboration views",
+          "paths": [
+            "frontend/src/components/intent/",
+            "frontend/src/components/discussion/",
+            "frontend/src/components/graph/",
+            "frontend/src/components/observability/",
+            "frontend/src/components/agent-output/",
+            "frontend/src/components/v2/"
+          ]
+        },
+        {
+          "id": "admin",
+          "name": "Admin widgets",
+          "blurb": "Platform and project configuration screens",
+          "paths": [
+            "frontend/src/components/admin/",
+            "frontend/src/components/project-settings/",
+            "frontend/src/components/settings/",
+            "frontend/src/components/blocks/"
+          ]
+        },
+        {
+          "id": "shared",
+          "name": "Shared components",
+          "blurb": "App shell and reusable interface controls",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "client-state",
+      "name": "Client state & APIs",
+      "blurb": "Browser requests, state and derived views",
+      "layer": "experience",
+      "paths": [
+        "frontend/src/services/",
+        "frontend/src/hooks/",
+        "frontend/src/contexts/",
+        "frontend/src/lib/",
+        "frontend/src/utils/",
+        "frontend/src/types/"
+      ],
+      "width": 840,
+      "columns": 2,
+      "weight": 7,
+      "children": [
+        {
+          "id": "api",
+          "name": "API clients",
+          "blurb": "Authenticated browser requests and DTOs",
+          "paths": ["frontend/src/services/"]
+        },
+        {
+          "id": "state",
+          "name": "Hooks & state",
+          "blurb": "Subscriptions, editing and context state",
+          "paths": ["frontend/src/hooks/", "frontend/src/contexts/"]
+        },
+        {
+          "id": "helpers",
+          "name": "Client helpers",
+          "blurb": "Derived UI data and browser-side utilities",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "frontend-platform",
+      "name": "Frontend tooling",
+      "blurb": "Styles, assets and browser build setup",
+      "layer": "experience",
+      "paths": [
+        "frontend/",
+        "frontend/src/assets/",
+        "frontend/src/index.css",
+        "frontend/src/test/",
+        "frontend/src/vite-env.d.ts"
+      ],
+      "width": 600,
+      "columns": 1,
+      "weight": 3,
+      "children": [
+        {
+          "id": "assets",
+          "name": "Styles & assets",
+          "blurb": "Visual styles and bundled public assets",
+          "paths": ["frontend/public/", "frontend/src/assets/", "frontend/src/index.css"]
+        },
+        {
+          "id": "build",
+          "name": "Browser build",
+          "blurb": "Vite, TypeScript and browser test setup",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "intent-api",
+      "name": "Intent & workflow APIs",
+      "blurb": "Intent lifecycle and versioned workflows",
+      "layer": "execution",
+      "paths": [
+        "lambda/intents/",
+        "lambda/intent-pin-lookup/",
+        "lambda/workflows/",
+        "lambda/building-blocks/",
+        "lambda/seed-blocks/"
+      ],
+      "width": 500,
+      "columns": 1,
+      "weight": 6,
+      "children": [
+        {
+          "id": "lifecycle",
+          "name": "Intent lifecycle",
+          "blurb": "Starts, rewinds, artifacts and attachments",
+          "paths": ["lambda/intents/", "lambda/intent-pin-lookup/"]
+        },
+        {
+          "id": "authoring",
+          "name": "Workflow authoring",
+          "blurb": "Versioned workflows and building blocks",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "orchestrator",
+      "name": "Durable orchestration",
+      "blurb": "Scheduling, gates, recovery and delivery",
+      "layer": "execution",
+      "paths": ["lambda/v2-orchestrator/"],
+      "width": 500,
+      "columns": 1,
+      "weight": 7,
+      "children": [
+        {
+          "id": "flow",
+          "name": "Durable flow",
+          "blurb": "Replay-safe execution and delivery",
+          "paths": [],
+          "fallback": true
+        },
+        {
+          "id": "gates",
+          "name": "Gate & lane helpers",
+          "blurb": "Callbacks, lane control and artifact edits",
+          "paths": [
+            "lambda/v2-orchestrator/gate-callback.js",
+            "lambda/v2-orchestrator/section.js",
+            "lambda/v2-orchestrator/pr-attribution.js",
+            "lambda/v2-orchestrator/quorum-edit.js",
+            "lambda/v2-orchestrator/test/gate-*",
+            "lambda/v2-orchestrator/test/section*",
+            "lambda/v2-orchestrator/test/pr-*",
+            "lambda/v2-orchestrator/test/quorum-*",
+            "lambda/v2-orchestrator/test/lane-*"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "agentcore",
+      "name": "Agent runtime",
+      "blurb": "CLI execution, MCP, sensors and workspaces",
+      "layer": "execution",
+      "paths": ["lambda/agentcore/", "lambda/mcp-tools/"],
+      "width": 860,
+      "columns": 3,
+      "weight": 10,
+      "children": [
+        {
+          "id": "commands",
+          "name": "Commands",
+          "blurb": "Runtime command handlers and dispatch",
+          "paths": ["lambda/agentcore/commands/", "lambda/agentcore/command-registry.js"]
+        },
+        {
+          "id": "cli",
+          "name": "CLI drivers",
+          "blurb": "CLI processes, parsers and transcript stores",
+          "paths": ["lambda/agentcore/cli/"]
+        },
+        {
+          "id": "mcp",
+          "name": "MCP tools",
+          "blurb": "Scoped graph tools and process-state access",
+          "paths": ["lambda/agentcore/mcp/", "lambda/mcp-tools/"]
+        },
+        {
+          "id": "git",
+          "name": "Git & workspace",
+          "blurb": "Engine-owned repositories and workspace I/O",
+          "paths": [
+            "lambda/agentcore/workspace.js",
+            "lambda/agentcore/git-engine.js",
+            "lambda/agentcore/git-runner.js",
+            "lambda/agentcore/git-auth.js",
+            "lambda/agentcore/repo-paths.js",
+            "lambda/agentcore/code-traceability.js"
+          ]
+        },
+        {
+          "id": "context",
+          "name": "Stage context",
+          "blurb": "Stage prompts and deterministic validation",
+          "paths": [
+            "lambda/agentcore/sensor-runner.js",
+            "lambda/agentcore/context-compiler.js",
+            "lambda/agentcore/stage-materializer.js",
+            "lambda/agentcore/block-loader.js",
+            "lambda/agentcore/custom-rules.js",
+            "lambda/agentcore/release-script-closure.js",
+            "lambda/agentcore/ensemble-runner.js",
+            "lambda/agentcore/persona-dispatch.js",
+            "lambda/agentcore/output-normalizer.js",
+            "lambda/agentcore/attachments.js",
+            "lambda/agentcore/prompts/"
+          ]
+        },
+        {
+          "id": "host",
+          "name": "Runtime host",
+          "blurb": "Runtime entry point and invocation identity",
+          "paths": [],
+          "fallback": true
+        },
+        {
+          "id": "tests",
+          "name": "Runtime tests",
+          "blurb": "Agent execution regressions and fixtures",
+          "paths": ["lambda/agentcore/test/", "lambda/mcp-tools/test/"]
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "name": "Archived sprint data",
+      "blurb": "Read-only v1 artifacts and execution history",
+      "layer": "execution",
+      "paths": [
+        "lambda/code-files/",
+        "lambda/requirements/",
+        "lambda/user-stories/",
+        "lambda/tasks/",
+        "lambda/timeline-events/",
+        "lambda/sprint-graph/",
+        "lambda/sprints/",
+        "lambda/questions/",
+        "lambda/reviews/",
+        "lambda/general-info/"
+      ],
+      "width": 400,
+      "columns": 1,
+      "weight": 4,
+      "children": [
+        {
+          "id": "reads",
+          "name": "Archived reads",
+          "blurb": "Retired sprint records, reviews and questions",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "shared",
+      "name": "Shared contracts",
+      "blurb": "Execution, access and methodology contracts",
+      "layer": "foundations",
+      "paths": ["lambda/shared/", "lambda/engine-data/"],
+      "width": 600,
+      "columns": 2,
+      "weight": 10,
+      "children": [
+        {
+          "id": "execution",
+          "name": "State & data",
+          "blurb": "Process state, data access and runtime ownership",
+          "paths": [
+            "lambda/shared/v2-*",
+            "lambda/shared/stage-*",
+            "lambda/shared/gate-*",
+            "lambda/shared/runtime-*",
+            "lambda/shared/environment-snapshot.js",
+            "lambda/shared/session-cleanup-store.js",
+            "lambda/shared/construction-autonomy.js",
+            "lambda/shared/pr-strategy.js",
+            "lambda/shared/sensor-verdict.js",
+            "lambda/shared/changed-file-provenance.js",
+            "lambda/shared/agent-command-registry.js",
+            "lambda/shared/unit-kind-pruning.js",
+            "lambda/engine-data/"
+          ]
+        },
+        {
+          "id": "authentication",
+          "name": "Agent auth",
+          "blurb": "Credential bindings and access contracts",
+          "paths": [
+            "lambda/shared/agent-auth-*",
+            "lambda/shared/agent-credential*",
+            "lambda/shared/agent-oauth-*",
+            "lambda/shared/agent-binding-selection.js",
+            "lambda/shared/agent-connection-repository.js",
+            "lambda/shared/agent-key-repository.js",
+            "lambda/shared/authz.js",
+            "lambda/shared/legacy-authz.js",
+            "lambda/shared/sso-roles.js",
+            "lambda/shared/tenant.js",
+            "lambda/shared/bedrock-iam.js"
+          ]
+        },
+        {
+          "id": "methodology",
+          "name": "Methodology",
+          "blurb": "Release catalogs and canonical artifact rules",
+          "paths": [
+            "lambda/shared/aidlc-*",
+            "lambda/shared/artifact-*",
+            "lambda/shared/annex-reach.js",
+            "lambda/shared/block-mappers.js",
+            "lambda/shared/blocks.js",
+            "lambda/shared/compile.js",
+            "lambda/shared/compose-match.js",
+            "lambda/shared/composed-grid.js",
+            "lambda/shared/custom-rule-versions.js",
+            "lambda/shared/distribution-archive.js",
+            "lambda/shared/ensemble-contribution.js",
+            "lambda/shared/frontmatter.js",
+            "lambda/shared/intent-aidlc-settings.js",
+            "lambda/shared/intent-methodology.js",
+            "lambda/shared/methodology-catalog.js",
+            "lambda/shared/native-repositories.js",
+            "lambda/shared/native-workspace-projector.js",
+            "lambda/shared/release-registry.js",
+            "lambda/shared/release-resolver.js",
+            "lambda/shared/script-closure.js",
+            "lambda/shared/workflow-checkpoint.js",
+            "lambda/shared/workflows.js",
+            "lambda/shared/upstream-artifact-ids.json"
+          ]
+        },
+        {
+          "id": "helpers",
+          "name": "Helpers & tests",
+          "blurb": "Shared support code and regression fixtures",
+          "paths": ["lambda/engine-data/test/"],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "identity",
+      "name": "Projects & admin",
+      "blurb": "Access, credentials and managed environments",
+      "layer": "foundations",
+      "paths": [
+        "lambda/projects/",
+        "lambda/users/",
+        "lambda/cognito-users/",
+        "lambda/sso-token/",
+        "lambda/agents/",
+        "lambda/credential-broker/",
+        "lambda/credential-metadata/",
+        "lambda/environments/",
+        "config/platform-roles.json"
+      ],
+      "width": 540,
+      "columns": 2,
+      "weight": 5,
+      "children": [
+        {
+          "id": "projects-users",
+          "name": "Projects & users",
+          "blurb": "Project membership and platform identity",
+          "paths": [
+            "lambda/projects/",
+            "lambda/users/",
+            "lambda/cognito-users/",
+            "lambda/sso-token/",
+            "config/platform-roles.json"
+          ]
+        },
+        {
+          "id": "agent-settings",
+          "name": "Agent settings",
+          "blurb": "Credential services, models and legacy reads",
+          "paths": ["lambda/agents/", "lambda/credential-broker/", "lambda/credential-metadata/"]
+        },
+        {
+          "id": "environments",
+          "name": "Environments",
+          "blurb": "Tool images, builds and runtime backends",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "realtime",
+      "name": "Collaboration & sync",
+      "blurb": "Discussions, Yjs and WebSocket updates",
+      "layer": "foundations",
+      "paths": [
+        "lambda/discussions/",
+        "lambda/yjs-server/",
+        "lambda/ws-authorizer/",
+        "lambda/ws-connection/",
+        "lambda/ws-message/"
+      ],
+      "width": 600,
+      "columns": 1,
+      "weight": 4,
+      "children": [
+        {
+          "id": "discussions",
+          "name": "Discussions",
+          "blurb": "Durable conversations and scope tokens",
+          "paths": ["lambda/discussions/"]
+        },
+        {
+          "id": "transports",
+          "name": "Live transports",
+          "blurb": "Yjs sync and application WebSockets",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "integrations",
+      "name": "Git & tracker adapters",
+      "blurb": "Repository access and issue synchronization",
+      "layer": "foundations",
+      "paths": [
+        "lambda/source-control/",
+        "lambda/github/",
+        "lambda/gitlab/",
+        "lambda/bitbucket/",
+        "lambda/codecommit/",
+        "lambda/trackers/",
+        "lambda/migrate-tracker-fields/",
+        "lambda/shared/git-providers/",
+        "lambda/shared/git-providers.js"
+      ],
+      "width": 520,
+      "columns": 2,
+      "weight": 5,
+      "children": [
+        {
+          "id": "git",
+          "name": "Git providers",
+          "blurb": "Repository-provider operation adapters",
+          "paths": ["lambda/shared/git-providers/", "lambda/shared/git-providers.js"]
+        },
+        {
+          "id": "oauth",
+          "name": "Connections",
+          "blurb": "Repository connections and OAuth endpoints",
+          "paths": [
+            "lambda/source-control/",
+            "lambda/github/",
+            "lambda/gitlab/",
+            "lambda/bitbucket/",
+            "lambda/codecommit/"
+          ]
+        },
+        {
+          "id": "trackers",
+          "name": "Issue trackers",
+          "blurb": "Issue imports and delivery synchronization",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "infrastructure",
+      "name": "Infrastructure",
+      "blurb": "AWS resources and operational maintenance",
+      "layer": "delivery",
+      "paths": ["terraform/", "lambda/purge-neptune/", "lambda/.dockerignore"],
+      "width": 720,
+      "columns": 2,
+      "weight": 6,
+      "children": [
+        {
+          "id": "app",
+          "name": "App resources",
+          "blurb": "API, agents, frontend and realtime services",
+          "paths": [
+            "terraform/modules/api/",
+            "terraform/modules/compute/",
+            "terraform/modules/frontend/",
+            "terraform/modules/realtime/",
+            "lambda/.dockerignore"
+          ]
+        },
+        {
+          "id": "data",
+          "name": "Data & access",
+          "blurb": "Storage, identities and operational cleanup",
+          "paths": [
+            "terraform/modules/data/",
+            "terraform/modules/auth/",
+            "terraform/modules/security/",
+            "terraform/modules/git/",
+            "lambda/purge-neptune/"
+          ]
+        },
+        {
+          "id": "stack",
+          "name": "Network & stack",
+          "blurb": "VPC, domains and root stack configuration",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "release",
+      "name": "CI, release & checks",
+      "blurb": "Builds, installs and regression harnesses",
+      "layer": "delivery",
+      "paths": ["scripts/", ".github/", ".isobar/", "test/"],
+      "width": 560,
+      "columns": 1,
+      "weight": 4,
+      "children": [
+        {
+          "id": "actions",
+          "name": "Actions & map",
+          "blurb": "GitHub automation and the fixed impact map",
+          "paths": [".github/", ".isobar/"]
+        },
+        {
+          "id": "scripts",
+          "name": "Scripts & harnesses",
+          "blurb": "Installers, release tools and test services",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "docs",
+      "name": "Documentation",
+      "blurb": "Architecture, setup and contributor guidance",
+      "layer": "delivery",
+      "paths": [
+        "docs/",
+        "README.md",
+        "CONTRIBUTING.md",
+        "AGENTS.md",
+        "SECURITY.md",
+        "CODE_OF_CONDUCT.md",
+        "LICENSE",
+        "NOTICE",
+        "zensical.toml",
+        "CHANGELOG.md",
+        "RELEASING.md"
+      ],
+      "width": 580,
+      "columns": 1,
+      "weight": 4,
+      "children": [
+        {
+          "id": "architecture",
+          "name": "Architecture & ops",
+          "blurb": "System contracts and developer runbooks",
+          "paths": ["docs/concepts/", "docs/development/"]
+        },
+        {
+          "id": "guides",
+          "name": "Guides & policy",
+          "blurb": "Setup, user guides and contribution policy",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    },
+    {
+      "id": "repository",
+      "name": "Repository setup",
+      "blurb": "Dependencies and development configuration",
+      "layer": "delivery",
+      "paths": [
+        "package.json",
+        "package-lock.json",
+        "pyproject.toml",
+        "uv.lock",
+        ".dependency-cruiser.cjs",
+        ".gitignore",
+        ".oxfmtrc.json",
+        ".oxlintrc.json",
+        ".oxlintignore",
+        ".secretlintrc.json",
+        ".husky/",
+        ".vscode/",
+        "vitest.config.js",
+        "vitest.aidlc-compatibility.config.js",
+        "lint-staged.config.mjs"
+      ],
+      "width": 400,
+      "columns": 1,
+      "weight": 3,
+      "children": [
+        {
+          "id": "setup",
+          "name": "Development setup",
+          "blurb": "Dependency, lint and test configuration",
+          "paths": [
+            "package.json",
+            "package-lock.json",
+            "pyproject.toml",
+            "uv.lock",
+            ".dependency-cruiser.cjs",
+            ".gitignore",
+            ".oxfmtrc.json",
+            ".oxlintrc.json",
+            ".oxlintignore",
+            ".secretlintrc.json",
+            ".husky/",
+            ".vscode/",
+            "vitest.config.js",
+            "vitest.aidlc-compatibility.config.js",
+            "lint-staged.config.mjs"
+          ]
+        },
+        {
+          "id": "other",
+          "name": "Other files",
+          "blurb": "Files outside the authored code areas",
+          "paths": [],
+          "fallback": true
+        }
+      ]
+    }
+  ],
+  "fallbackSection": "repository"
+}

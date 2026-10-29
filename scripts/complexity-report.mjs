@@ -55,7 +55,42 @@ export function changeIcon(row) {
   return icon;
 }
 
-function renderTable(rows) {
+function functionLocation(row, headSha) {
+  const text = `${row.path}:${row.line} — ${row.function}`.slice(0, 500);
+  const plain = cell(text);
+  const location = `${row.path}:${row.line}`;
+  if (
+    !/^[a-f0-9]{40}$/.test(headSha ?? '') ||
+    !Number.isSafeInteger(row.line) ||
+    row.line < 1 ||
+    location.length >= 500 ||
+    row.path.includes('\\') ||
+    Array.from(row.path).some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 32 || code === 127;
+    }) ||
+    /^[a-z]:/i.test(row.path) ||
+    row.path.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+  )
+    return plain;
+  let path;
+  try {
+    path = row.path
+      .split('/')
+      .map((segment) =>
+        encodeURIComponent(segment).replace(
+          /[!'()*]/g,
+          (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+        ),
+      )
+      .join('/');
+  } catch {
+    return plain;
+  }
+  return `[${cell(location)}](https://github.com/aws-samples/sample-collaborative-ai-dlc/blob/${headSha}/${path}#L${row.line})${cell(text.slice(location.length))}`;
+}
+
+function renderTable(rows, headSha) {
   return [
     '| | File / function | Complexity | Δ | Branch coverage | Δ | Uncovered branches | Depending files |',
     '| --- | --- | ---: | ---: | --- | ---: | ---: | ---: |',
@@ -75,20 +110,28 @@ function renderTable(rows) {
       const dependents = row.path.startsWith('frontend/')
         ? 'n/a'
         : (row.dependentFiles ?? 'unknown');
-      return `| ${changeIcon(row)} | ${cell(`${row.path}:${row.line} — ${row.function}`)} | ${row.before ?? '—'} → ${row.after} | ${row.delta === null ? '—' : signed(row.delta)} | ${coverage} | ${delta == null ? '—' : signed(Number(delta.toFixed(1)))} | ${branches} | ${dependents} |`;
+      return `| ${changeIcon(row)} | ${functionLocation(row, headSha)} | ${row.before ?? '—'} → ${row.after} | ${row.delta === null ? '—' : signed(row.delta)} | ${coverage} | ${delta == null ? '—' : signed(Number(delta.toFixed(1)))} | ${branches} | ${dependents} |`;
     }),
   ].join('\n');
 }
 
-function renderRows(rows) {
+function renderRows(rows, headSha, maxRows) {
   const ordered = rows.toSorted(
     (a, b) => iconOrder.indexOf(changeIcon(a)) - iconOrder.indexOf(changeIcon(b)),
   );
   const visibleCount = Math.max(10, ordered.filter((row) => changeIcon(row) === '🟣').length);
-  const visible = renderTable(ordered.slice(0, visibleCount));
-  const remaining = ordered.slice(visibleCount);
-  if (!remaining.length) return visible;
-  return `${visible}\n\n<details>\n<summary>Show ${remaining.length} more functions</summary>\n\n${renderTable(remaining)}\n\n</details>`;
+  const displayed = ordered.slice(0, maxRows);
+  const remaining = displayed.slice(visibleCount);
+  const lines = displayed.length ? [renderTable(displayed.slice(0, visibleCount), headSha)] : [];
+  if (remaining.length)
+    lines.push(
+      `<details>\n<summary>Show ${remaining.length} more functions</summary>\n\n${renderTable(remaining, headSha)}\n\n</details>`,
+    );
+  if (displayed.length < ordered.length)
+    lines.push(
+      `Display truncated: showing ${displayed.length} of ${ordered.length} functions. See the full report artifacts.`,
+    );
+  return lines.join('\n\n');
 }
 
 export function hasIncompleteCoverage(report) {
@@ -121,35 +164,41 @@ export function hasIncompleteCoverage(report) {
   );
 }
 
-export function renderComparison(report) {
+export function comparisonRows(report) {
   const findings = new Set(report.findings.map(rowKey));
   // A complexity improvement can also be a coverage regression; show it once.
-  const rows = [
-    ...report.findings,
-    ...report.improvements.filter((row) => !findings.has(rowKey(row))),
-  ];
-  const lines = [
-    '# Complexity and test coverage',
-    '',
-    'Automated quality report using code complexity and test coverage to highlight potential hot spots in this PR.',
-    'Review 🟣 and 🔴 items first: consider simplifying the code, improving test coverage, or both. This report is advisory.',
-  ];
+  return [...report.findings, ...report.improvements.filter((row) => !findings.has(rowKey(row)))];
+}
+
+export function renderComparison(report, { embedded = false, headSha, maxRows = Infinity } = {}) {
+  if (maxRows !== Infinity && (!Number.isSafeInteger(maxRows) || maxRows < 0))
+    throw new Error('Invalid comparison row limit');
+  const rows = comparisonRows(report);
+  const lines = embedded
+    ? []
+    : [
+        '# Complexity and test coverage',
+        '',
+        'Automated quality report using code complexity and test coverage to highlight potential hot spots in this PR.',
+        'Review 🟣 and 🔴 items first: consider simplifying the code, improving test coverage, or both. This report is advisory.',
+      ];
   const incompleteCoverage = hasIncompleteCoverage(report);
-  if (incompleteCoverage) {
+  if (incompleteCoverage && !embedded) {
     lines.push(
       '',
       'Some coverage data is unavailable or incomplete; see the report artifacts for details.',
     );
   }
   if (report.dependencyNote) lines.push('', cell(report.dependencyNote));
-  if (rows.length) lines.push('', renderRows(rows));
-  lines.push(
-    '',
-    '🟢 Improving · 🟠 Needs attention · 🔴 High risk · 🟣 Highest risk',
-    '',
-    '— = unavailable · n/a = not applicable · \\* = incomplete tests',
-    '',
-  );
+  if (rows.length) lines.push('', renderRows(rows, embedded ? headSha : undefined, maxRows));
+  if (rows.length || !embedded)
+    lines.push(
+      '',
+      '🟢 Improving · 🟠 Needs attention · 🔴 High risk · 🟣 Highest risk',
+      '',
+      '— = unavailable · n/a = not applicable · \\* = incomplete tests',
+      '',
+    );
   return lines.join('\n');
 }
 

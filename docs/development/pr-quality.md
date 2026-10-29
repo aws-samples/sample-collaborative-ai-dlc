@@ -5,7 +5,9 @@ for source files changed between the merge base and PR commit. Findings are advi
 when complexity or coverage worsens, or when the function is new/unmatched.
 Unchanged debt is omitted; improvements appear in the same table.
 When no source files are analyzed, or no findings, improvements, or analysis warnings remain,
-CI posts no comment and removes its previous report if present.
+the quality section is omitted. CI posts no standalone quality comment and removes its previous report
+if present. A combined [Isobar map](pr-impact-map.md) can remain useful, including for infrastructure,
+CI or documentation changes.
 
 ## Reading the table
 
@@ -43,8 +45,10 @@ Each `coverage-base-*` / `coverage-pr-*` artifact contains the requested suites'
 Dependency analysis failures leave only those counts unknown. Partial reruns reuse artifacts only when their producers
 were not rerun; missing or stale results are reported explicitly.
 
-Same-repository PRs can comment immediately. Forks and Dependabot need the comment
-workflow on the default branch; it validates report data without executing PR code.
+[PR Review Signals](pr-impact-map.md) adds an automatic static report for allowed normal fork events
+without approving contributor code execution. Tests and coverage keep their existing approval policy.
+Completed coverage enriches the same comment using default-branch publisher code; contributor code
+is never executed with the publisher token.
 Artifacts are retained for seven days: `complexity-*` lists every function in changed files with
 base/PR scores and coverage; `dependencies-*` lists their direct production importers.
 Both include Markdown and JSON. `pr-quality-*` holds the data used to publish the comment.
