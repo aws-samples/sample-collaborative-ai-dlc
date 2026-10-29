@@ -22,10 +22,12 @@ import { runCredentialJob } from '../credential-session.js';
 //     container cannot reach fails the dispatch synchronously;
 //   - heartbeats fire while the clone runs so the orchestrator's
 //     heartbeatTimeout separates "large repository" from "dead container";
-//   - one init job per execution: a duplicate start for the SAME callback is
-//     an idempotent accept (durable dispatch retry), a different callback is
-//     refused (init_job_already_running) — two clones must never race into
-//     the same workspace directory;
+//   - one init job per execution: the workspace is reserved before the first
+//     heartbeat is awaited; a duplicate start for the SAME callback shares the
+//     first dispatch's acceptance (durable dispatch retry), a different
+//     callback is refused (init_job_already_running) — two clones must never
+//     race into the same workspace directory, and a job only releases the
+//     reservation it owns;
 //   - the busy tracker is held for the job's lifetime so /ping reports
 //     HealthyBusy and AgentCore keeps the session (and its mount) alive.
 
@@ -62,12 +64,29 @@ export const createInitWsStart = ({
     const key = jobKey(payload);
     const inFlight = activeJobs.get(key);
     if (inFlight) {
-      if (inFlight.callbackId === callbackId) {
-        return { ok: true, accepted: true, alreadyRunning: true, callbackId };
+      if (inFlight.callbackId !== callbackId) {
+        return { ok: false, reason: 'init_job_already_running', detail: key };
       }
-      return { ok: false, reason: 'init_job_already_running', detail: key };
+      // A duplicate of the same attempt shares the first dispatch's outcome,
+      // including one whose initial heartbeat is still pending.
+      const first = await inFlight.acceptance;
+      return first.ok ? { ok: true, accepted: true, alreadyRunning: true, callbackId } : first;
     }
 
+    // Reserve the workspace before the first await, so an overlapping
+    // dispatch sees this attempt instead of starting a second clone.
+    const jobState = { startedAt: Date.now(), callbackId, heartbeatTimer: null, acceptance: null };
+    activeJobs.set(key, jobState);
+    jobState.acceptance = accept(payload, key, jobState);
+    return jobState.acceptance;
+  };
+
+  const release = (key, jobState) => {
+    if (activeJobs.get(key) === jobState) activeJobs.delete(key);
+  };
+
+  const accept = async (payload, key, jobState) => {
+    const { callbackId, executionId } = payload;
     let initialHeartbeat;
     try {
       initialHeartbeat = await sendCallbackHeartbeat(callbackId);
@@ -75,6 +94,7 @@ export const createInitWsStart = ({
       initialHeartbeat = { delivered: false, error: err?.message ?? String(err) };
     }
     if (!initialHeartbeat?.delivered) {
+      release(key, jobState);
       log.error('init-ws callback heartbeat could not be established', {
         executionId,
         error: initialHeartbeat?.error ?? null,
@@ -86,8 +106,6 @@ export const createInitWsStart = ({
       };
     }
 
-    const jobState = { startedAt: Date.now(), callbackId, heartbeatTimer: null };
-    activeJobs.set(key, jobState);
     busy?.enter();
     log.info('init-ws job accepted', { executionId });
 
@@ -156,7 +174,7 @@ export const createInitWsStart = ({
         return result;
       } finally {
         if (jobState.heartbeatTimer) clearTimeout(jobState.heartbeatTimer);
-        activeJobs.delete(key);
+        release(key, jobState);
         busy?.leave();
       }
     });

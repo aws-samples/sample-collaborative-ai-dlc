@@ -231,6 +231,81 @@ describe('createInitWsStart', () => {
     await flush();
   });
 
+  describe('dispatches that overlap the first heartbeat', () => {
+    const makeOverlap = () => {
+      const beat = makeGate();
+      const clone = makeGate();
+      const { deps } = makeDeps({
+        initWs: vi.fn(() => clone.promise),
+        sendCallbackHeartbeat: vi.fn(() => beat.promise),
+      });
+      return { beat, clone, deps, start: createInitWsStart(deps) };
+    };
+
+    it('runs one clone for two dispatches of the SAME attempt, both accepted', async () => {
+      const { beat, clone, deps, start } = makeOverlap();
+      const first = start(basePayload);
+      const second = start(basePayload);
+      beat.resolve({ delivered: true });
+      await expect(first).resolves.toMatchObject({ ok: true, accepted: true });
+      await expect(second).resolves.toMatchObject({
+        ok: true,
+        accepted: true,
+        alreadyRunning: true,
+      });
+      expect(deps.sendCallbackHeartbeat).toHaveBeenCalledTimes(1);
+      expect(deps.initWs).toHaveBeenCalledTimes(1);
+      clone.resolve({ ok: true });
+      await flush();
+      expect(start.activeJobs.size).toBe(0);
+    });
+
+    it('refuses a DIFFERENT attempt while the first heartbeat is pending', async () => {
+      const { beat, clone, deps, start } = makeOverlap();
+      const first = start(basePayload);
+      const relaunch = await start({ ...basePayload, callbackId: 'cb-relaunch' });
+      expect(relaunch).toEqual({
+        ok: false,
+        reason: 'init_job_already_running',
+        detail: 'e1:init-ws',
+      });
+      beat.resolve({ delivered: true });
+      await expect(first).resolves.toMatchObject({ ok: true, accepted: true });
+      expect(deps.initWs).toHaveBeenCalledTimes(1);
+      clone.resolve({ ok: true });
+      await flush();
+    });
+
+    it('shares a failed first heartbeat with the duplicate and frees the workspace', async () => {
+      const { beat, deps, start } = makeOverlap();
+      const first = start(basePayload);
+      const second = start(basePayload);
+      beat.resolve({ delivered: false, error: 'AccessDenied' });
+      const failure = {
+        ok: false,
+        reason: 'init_ws_callback_heartbeat_failed',
+        detail: 'AccessDenied',
+      };
+      await expect(first).resolves.toEqual(failure);
+      await expect(second).resolves.toEqual(failure);
+      expect(deps.initWs).not.toHaveBeenCalled();
+      expect(start.activeJobs.size).toBe(0);
+    });
+  });
+
+  it("a finished job's cleanup never removes another job's reservation", async () => {
+    const clone = makeGate();
+    const { deps } = makeDeps({ initWs: vi.fn(() => clone.promise) });
+    const start = createInitWsStart(deps);
+    await start(basePayload);
+    // Simulate a later attempt owning the entry when the first job ends.
+    const other = { callbackId: 'cb-other' };
+    start.activeJobs.set('e1:init-ws', other);
+    clone.resolve({ ok: true });
+    await flush();
+    expect(start.activeJobs.get('e1:init-ws')).toBe(other);
+  });
+
   it('holds the busy tracker for the whole job so the session stays HealthyBusy', async () => {
     const gate = makeGate();
     const busy = createBusyTracker();
