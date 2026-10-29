@@ -4,7 +4,8 @@ CI updates one PR comment with cognitive-complexity, dependency counts, and bran
 for source files changed between the merge base and PR commit. Findings are advisory: functions above 15 appear
 when complexity or coverage worsens, or when the function is new/unmatched.
 Unchanged debt is omitted; improvements appear in the same table.
-When no source files are analyzed, CI posts no comment and removes its previous report if present.
+When no source files are analyzed, or no findings, improvements, or analysis warnings remain,
+CI posts no comment and removes its previous report if present.
 
 ## Reading the table
 

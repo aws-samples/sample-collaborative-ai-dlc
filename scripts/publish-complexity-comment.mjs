@@ -1,5 +1,5 @@
 import { lstat, readFile } from 'node:fs/promises';
-import { renderComparison } from './complexity-report.mjs';
+import { hasIncompleteCoverage, renderComparison } from './complexity-report.mjs';
 
 export const commentMarker = '<!-- complexity-coverage-report -->';
 const sha = (value) => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
@@ -194,7 +194,12 @@ export async function publishComplexityComment({
         });
         sameBase = comparison.merge_base_commit.sha === report.mergeBase;
       }
-      if (sameBase && report.files.length === 0) {
+      const noResults =
+        report.findings.length === 0 &&
+        report.improvements.length === 0 &&
+        !hasIncompleteCoverage(report) &&
+        !report.dependencyNote;
+      if (sameBase && (report.files.length === 0 || noResults)) {
         if (existing) {
           await github.rest.issues.deleteComment({ ...repo, comment_id: existing.id });
         }
