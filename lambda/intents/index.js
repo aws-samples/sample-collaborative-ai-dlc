@@ -365,6 +365,31 @@ const trackerAttachmentImporter = createTrackerAttachmentImporter({
     return parseLambdaPayload(result.Payload);
   },
 });
+const handleTrackerAttachmentImport = async (
+  { intentId, projectId, httpMethod, body, sub },
+  response,
+) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) return response(404, { error: 'Intent not found' });
+  if (meta.status !== 'DRAFT')
+    return response(409, { error: 'Attachments can only be changed while DRAFT' });
+  if (!meta.source) return response(400, { error: 'This intent has no tracker source' });
+  if (!ARTIFACTS_BUCKET() || !process.env.TRACKERS_FUNCTION) {
+    return response(503, { error: 'Tracker attachment import is not configured' });
+  }
+  if (httpMethod === 'GET') {
+    return response(200, await trackerAttachmentImporter.list(meta, sub));
+  }
+  const data = body ? JSON.parse(body) : {};
+  if (
+    typeof data.attachmentId !== 'string' ||
+    !data.attachmentId ||
+    data.attachmentId.length > 128
+  ) {
+    return response(400, { error: 'An attachment ID is required' });
+  }
+  return response(200, await trackerAttachmentImporter.importOne(meta, sub, data.attachmentId));
+};
 // Session ids (main, compose, lane) come from shared/runtime-session-ids.js.
 // Composer one-shots run in a THROWAWAY session keyed by the compose id — see
 // the compose dispatch below for the field incident this avoids.
@@ -3511,27 +3536,10 @@ export const handler = async (event, context) => {
     }
 
     if (intentId && ['GET', 'POST'].includes(httpMethod) && path?.endsWith('/attachments/import')) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId)
-        return response(404, { error: 'Intent not found' });
-      if (meta.status !== 'DRAFT')
-        return response(409, { error: 'Attachments can only be changed while DRAFT' });
-      if (!meta.source) return response(400, { error: 'This intent has no tracker source' });
-      if (!ARTIFACTS_BUCKET() || !process.env.TRACKERS_FUNCTION) {
-        return response(503, { error: 'Tracker attachment import is not configured' });
-      }
-      if (httpMethod === 'GET') {
-        return response(200, await trackerAttachmentImporter.list(meta, sub));
-      }
-      const data = body ? JSON.parse(body) : {};
-      if (
-        typeof data.attachmentId !== 'string' ||
-        !data.attachmentId ||
-        data.attachmentId.length > 128
-      ) {
-        return response(400, { error: 'An attachment ID is required' });
-      }
-      return response(200, await trackerAttachmentImporter.importOne(meta, sub, data.attachmentId));
+      return await handleTrackerAttachmentImport(
+        { intentId, projectId, httpMethod, body, sub },
+        response,
+      );
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/attachments/upload')) {
