@@ -206,6 +206,13 @@ describe('normaliseChangeDescription', () => {
       'API returns 404 for empty carts',
     ],
     [{ type: 'docs', summary: 'note: ratio is 1:2' }, 'note ratio is 1:2'],
+    [{ type: 'fix', summary: 'handle empty carts [ABC-12]' }, 'handle empty carts'],
+    [{ type: 'fix', summary: '[ABC-12] Handle empty carts' }, 'handle empty carts'],
+    [{ type: 'fix', summary: 'handle empty carts (ABC-12).' }, 'handle empty carts'],
+    [
+      { type: 'fix', summary: 'fix(cart): handle empty carts [A_B-1] [CD-2]' },
+      'handle empty carts',
+    ],
   ])('%j has the summary %s', (args, summary) => {
     expect(normaliseChangeDescription(args).summary).toBe(summary);
   });
@@ -251,6 +258,12 @@ describe('engineCommitMessage with a change description', () => {
         'AIDLC-Unit: billing',
         'AIDLC-Execution: e1',
       ].join('\n'),
+    );
+  });
+
+  it('appends the key once when the agent also wrote it in the summary', () => {
+    expect(message({}, { type: 'fix', summary: 'round totals [ABC-12]' }).split('\n')[0]).toBe(
+      'fix: round totals [ABC-12]',
     );
   });
 

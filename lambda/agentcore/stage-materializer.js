@@ -254,7 +254,8 @@ const CHANGE_DESCRIPTION_CONTRACT = [
   'Conventional Commits type that matches what you changed in the repository: `feat`',
   'for new behaviour, `fix` for a bug fix, `docs` when you only wrote documentation or',
   'AI-DLC artifacts, and so on. Mark it breaking only when existing users must change',
-  'something, and say what breaks and how to migrate. If you change nothing, skip it.',
+  'something, and say what breaks and how to migrate. Leave issue keys out of the',
+  "summary: the engine adds the intent's own. If you change nothing, skip it.",
 ].join('\n');
 
 // Render the resolved input artifacts as a prompt section. An `expectedAbsent`

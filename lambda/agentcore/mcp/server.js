@@ -502,7 +502,8 @@ export const toolSchemas = (z, policy = null) => ({
       'finish; a later call replaces the earlier one. type: feat for new behaviour, fix for a ' +
       'bug fix, perf, refactor (no behaviour change), docs (documentation or AI-DLC artifacts ' +
       'only), test, build, ci, style or chore. summary: what changed, imperative and lower case, ' +
-      'for example "add retry to the payment client". Set breaking to true only when existing ' +
+      'for example "add retry to the payment client", without issue keys (the engine adds the ' +
+      "intent's own). Set breaking to true only when existing " +
       'users must change something (a removed or renamed API, option or field, or changed ' +
       'behaviour they rely on), and say what breaks and how to migrate in breakingChange.',
     shape: {
