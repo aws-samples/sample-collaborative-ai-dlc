@@ -153,7 +153,7 @@ Full documentation lives at [aws-samples.github.io/sample-collaborative-ai-dlc](
 
 | Tool      | Version       |
 | --------- | ------------- |
-| Node.js   | 22+           |
+| Node.js   | 22.22+        |
 | Terraform | 1.4+          |
 | AWS CLI   | v2            |
 | Docker    | Recent stable |
