@@ -138,7 +138,7 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
   }
 
   return (
-    <div className="space-y-2">
+    <div className="flex min-h-0 flex-1 flex-col space-y-2">
       {/* Binding tabs — only when the project has more than one tracker. */}
       {trackers.length > 1 && (
         <div className="flex items-center gap-1 border-b">
@@ -197,7 +197,7 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
         </div>
       </div>
 
-      <div className="max-h-64 overflow-y-auto space-y-1.5 pr-0.5">
+      <div className="max-h-64 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-0.5 lg:max-h-none lg:basis-0">
         {error ? (
           <div className="flex items-start gap-2 text-xs text-destructive bg-destructive/5 border border-destructive/20 rounded-md p-2.5">
             <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
