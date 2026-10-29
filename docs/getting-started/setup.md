@@ -790,6 +790,8 @@ The account enables [VPC Block Public Access](https://docs.aws.amazon.com/vpc/la
 vpc_block_public_access_exclusion = true
 ```
 
+The failed create leaves the VPC Origin tainted, so the re-run fails with `EntityAlreadyExists` until the failed origin is deleted. Follow **Re-running after a failed VPC Origin fails with `EntityAlreadyExists`** below before re-running.
+
 This works in both Block Public Access modes (`block-ingress` and `block-bidirectional`) and creates two kinds of exclusion:
 
 - **Bidirectional** for the two private subnets. They route through the NAT gateway, never an internet gateway, and the ALB security group still admits only the CloudFront origin-facing prefix list, so this opens no new path from the internet.
