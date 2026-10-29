@@ -21,7 +21,10 @@ output "private_subnet_ids" {
 output "vpc_origin_subnet_ids" {
   description = "IDs of the private subnets, available once any VPC Block Public Access exclusions exist"
   value       = aws_subnet.private[*].id
-  depends_on  = [aws_vpc_block_public_access_exclusion.private]
+  depends_on = [
+    aws_vpc_block_public_access_exclusion.private,
+    aws_vpc_block_public_access_exclusion.nat,
+  ]
 }
 
 output "internet_gateway_id" {

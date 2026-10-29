@@ -79,7 +79,7 @@ variable "lambda_vpc_scope" {
 }
 
 variable "vpc_block_public_access_exclusion" {
-  description = "Exclude the private subnets from account-level VPC Block Public Access. Required when the account enables Block Public Access, because CloudFront VPC origins cannot reach the internal Yjs ALB otherwise."
+  description = "Exclude the private subnets (bidirectional) and the NAT gateway subnets (egress-only) from account-level VPC Block Public Access. Required when the account enables Block Public Access in either mode: CloudFront VPC origins cannot reach the internal Yjs ALB otherwise, and in bidirectional mode the NAT gateways lose internet egress."
   type        = bool
   default     = false
 }

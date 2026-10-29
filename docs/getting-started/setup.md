@@ -790,7 +790,12 @@ The account enables [VPC Block Public Access](https://docs.aws.amazon.com/vpc/la
 vpc_block_public_access_exclusion = true
 ```
 
-This excludes only the two private subnets. They route through the NAT gateway, never an internet gateway, and the ALB security group still admits only the CloudFront origin-facing prefix list, so the exclusion opens no new path from the internet. If an organization policy disallows exclusions, ask its administrator for one covering the private subnets.
+This works in both Block Public Access modes (`block-ingress` and `block-bidirectional`) and creates two kinds of exclusion:
+
+- **Bidirectional** for the two private subnets. They route through the NAT gateway, never an internet gateway, and the ALB security group still admits only the CloudFront origin-facing prefix list, so this opens no new path from the internet.
+- **Egress-only** for the public subnets that hold the NAT gateways. In `block-bidirectional` mode Block Public Access also blocks NAT gateways, which the private subnets need to pull images and reach AWS APIs. Inbound internet traffic to those subnets stays blocked, and in `block-ingress` mode this exclusion has no effect.
+
+If an organization policy disallows exclusions, ask its administrator for these exclusions.
 
 **Frontend shows authentication errors**
 

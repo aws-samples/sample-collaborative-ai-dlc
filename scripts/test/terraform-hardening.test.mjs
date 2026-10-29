@@ -376,7 +376,7 @@ test('the AgentCore runtime role cannot assume roles', () => {
   );
 });
 
-test('VPC Block Public Access exclusion is opt-in and scoped to the private subnets', () => {
+test('VPC Block Public Access exclusions are opt-in and scoped to the private and NAT subnets', () => {
   const rootVariables = read('terraform/variables.tf');
   assert.match(
     rootVariables,
@@ -384,18 +384,36 @@ test('VPC Block Public Access exclusion is opt-in and scoped to the private subn
   );
 
   const networking = read('terraform/modules/networking/main.tf');
-  const [exclusion] = resourceBlocks(networking, 'aws_vpc_block_public_access_exclusion');
-  assert.ok(exclusion, 'expected a VPC Block Public Access exclusion resource');
-  assert.match(exclusion.body, /count\s+= var\.vpc_block_public_access_exclusion \? 2 : 0/);
-  assert.match(exclusion.body, /subnet_id\s+= aws_subnet\.private\[count\.index\]\.id/);
-  assert.doesNotMatch(exclusion.body, /vpc_id|aws_subnet\.public/);
-
-  // The VPC origin attaches to the ALB, so the ALB subnets must wait for the exclusion.
-  const outputs = read('terraform/modules/networking/outputs.tf');
-  assert.match(
-    outputs,
-    /output "vpc_origin_subnet_ids"[\s\S]*?depends_on\s+= \[aws_vpc_block_public_access_exclusion\.private\]/,
+  const exclusions = Object.fromEntries(
+    resourceBlocks(networking, 'aws_vpc_block_public_access_exclusion').map(({ name, body }) => [
+      name,
+      body,
+    ]),
   );
+  assert.deepEqual(Object.keys(exclusions).toSorted(), ['nat', 'private']);
+  for (const body of Object.values(exclusions)) assert.doesNotMatch(body, /vpc_id/);
+
+  const { private: privateExclusion, nat: natExclusion } = exclusions;
+  assert.match(privateExclusion, /count\s+= var\.vpc_block_public_access_exclusion \? 2 : 0/);
+  assert.match(privateExclusion, /subnet_id\s+= aws_subnet\.private\[count\.index\]\.id/);
+  assert.match(privateExclusion, /internet_gateway_exclusion_mode = "allow-bidirectional"/);
+
+  // Bidirectional mode also blocks the NAT gateways: their subnets get an
+  // egress-only exclusion, never a bidirectional one.
+  assert.match(
+    natExclusion,
+    /count\s+= var\.vpc_block_public_access_exclusion \? length\(aws_nat_gateway\.main\) : 0/,
+  );
+  assert.match(natExclusion, /subnet_id\s+= aws_nat_gateway\.main\[count\.index\]\.subnet_id/);
+  assert.match(natExclusion, /internet_gateway_exclusion_mode = "allow-egress"/);
+
+  // The VPC origin attaches to the ALB and the Yjs task pulls its image through
+  // NAT, so the ALB subnets must wait for both exclusions.
+  const outputs = read('terraform/modules/networking/outputs.tf');
+  const originOutput = outputs.match(/output "vpc_origin_subnet_ids" \{[\s\S]*?^\}/m)?.[0];
+  assert.ok(originOutput, 'missing output "vpc_origin_subnet_ids"');
+  assert.match(originOutput, /aws_vpc_block_public_access_exclusion\.private/);
+  assert.match(originOutput, /aws_vpc_block_public_access_exclusion\.nat/);
   const rootMain = read('terraform/main.tf');
   assert.match(
     moduleBlock(rootMain, 'yjs_server'),

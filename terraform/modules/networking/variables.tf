@@ -15,7 +15,7 @@ variable "vpc_cidr" {
 }
 
 variable "vpc_block_public_access_exclusion" {
-  description = "Exclude the private subnets from account-level VPC Block Public Access so CloudFront VPC origins can reach the internal ALB"
+  description = "Exclude the private subnets (bidirectional) and the NAT gateway subnets (egress-only) from account-level VPC Block Public Access so CloudFront VPC origins can reach the internal ALB and the private subnets keep NAT egress"
   type        = bool
   default     = false
 }
