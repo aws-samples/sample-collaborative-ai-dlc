@@ -224,6 +224,8 @@ agent-supplied metadata. Common fields include:
 
 - `project_id` and `intent_id`
 - `created_by_execution_id` and `created_by_stage_instance_id`
+- `updated_by_stage_instance_id` on an artifact whose content a later stage
+  changed; that stage re-derives the artifact's sections and items
 - `section_index` and `unit_slug` for parallel construction lanes
 - `stage_attempt`
 - `created_at`

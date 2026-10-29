@@ -206,6 +206,23 @@ describe('createArtifact', () => {
     });
     expect((await writer.getArtifact({ id: 'epoch' })).collaboration_epoch).not.toBe(regenerated);
   });
+  it('stamps the stage that last changed the content, which the agent cannot set', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'stories', id: 'log', content: 'first' });
+    const later = createGraphWriter({ g, scope: { ...SCOPE, stageInstanceId: 'si-later' } });
+    await later.updateArtifact({
+      id: 'log',
+      props: { content: 'appended', updated_by_stage_instance_id: 'si-forged' },
+    });
+    let row = await writer.getArtifact({ id: 'log' });
+    expect(row.updated_by_stage_instance_id).toBe('si-later');
+    expect(row.created_by_stage_instance_id).toBe('si-req');
+    // A props-only update doesn't change the content, so it isn't a change to derive.
+    const third = createGraphWriter({ g, scope: { ...SCOPE, stageInstanceId: 'si-third' } });
+    await third.updateArtifact({ id: 'log', props: { title: 'renamed' } });
+    row = await writer.getArtifact({ id: 'log' });
+    expect(row.updated_by_stage_instance_id).toBe('si-later');
+  });
   it('fails when the Intent anchor does not exist', async () => {
     await expect(
       writer.createArtifact({ artifactType: 'requirements-analysis', id: 'a1' }),

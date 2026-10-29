@@ -13,10 +13,7 @@
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
 import { machineCliModels } from '../model-resolver.js';
-import {
-  extractArtifactStructure,
-  INTENT_WIDE_ARTIFACT_TYPES,
-} from '../../shared/artifact-extractors.js';
+import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 import { selectCurrentArtifactHeads } from '../../shared/artifact-versioning.js';
 
 const artifactTs = (r) => String(r.updated_at ?? r.created_at ?? '');
@@ -152,21 +149,12 @@ export const deriveArtifacts = async (payload, deps) => {
         /* sweep is hygiene, never a blocker */
       }
     }
-    // Intent-wide types (a decision log) are updated by later stages than the
-    // one that created them, so they bypass both the declared-type and the
-    // creating-stage filters.
-    const typeFilter = artifactTypes
-      ? new Set([...artifactTypes, ...INTENT_WIDE_ARTIFACT_TYPES])
-      : null;
+    const typeFilter = artifactTypes ? new Set(artifactTypes) : null;
     const targets = all.filter((a) => {
+      // What this stage changed of another stage's work (update_artifact), whatever its type.
+      if (stageInstanceId && a.updated_by_stage_instance_id === stageInstanceId) return true;
       if (typeFilter && !typeFilter.has(a.artifact_type)) return false;
-      if (
-        stageInstanceId &&
-        !INTENT_WIDE_ARTIFACT_TYPES.has(a.artifact_type) &&
-        a.created_by_stage_instance_id !== stageInstanceId
-      ) {
-        return false;
-      }
+      if (stageInstanceId && a.created_by_stage_instance_id !== stageInstanceId) return false;
       return true;
     });
 

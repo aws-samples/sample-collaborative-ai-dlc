@@ -5,7 +5,6 @@ import {
   deriveEnrichmentMode,
   buildEnrichmentPrompt,
 } from '../commands/derive-artifacts.js';
-import { INTENT_WIDE_ARTIFACT_TYPES } from '../../shared/artifact-extractors.js';
 
 const artifact = (overrides = {}) => ({
   id: 'stories-art',
@@ -76,11 +75,12 @@ describe('deriveArtifacts', () => {
     expect(broadcast.mock.calls[0][0]).toMatchObject({ action: 'agent.derived', sectionCount: 1 });
   });
 
-  it('derives an intent-wide decision log outside the stage and type filters', async () => {
+  it('also derives artifacts this stage changed, whatever their type or creator', async () => {
     const decisions = artifact({
       id: 'decision-log',
       artifact_type: 'decisions',
       created_by_stage_instance_id: 'si-earlier',
+      updated_by_stage_instance_id: 'si-1',
       content: [
         '## Decisions',
         '',
@@ -97,6 +97,17 @@ describe('deriveArtifacts', () => {
         artifact(),
         artifact({ id: 'reqs-art', artifact_type: 'requirements' }),
         artifact({ id: 'other-stage', created_by_stage_instance_id: 'si-2' }),
+        artifact({
+          id: 'earlier-stories',
+          created_by_stage_instance_id: 'si-earlier',
+          updated_by_stage_instance_id: 'si-1',
+        }),
+        artifact({
+          id: 'untouched-log',
+          artifact_type: 'decisions',
+          created_by_stage_instance_id: 'si-other',
+          updated_by_stage_instance_id: 'si-2',
+        }),
         decisions,
       ]),
       mirrorArtifactDerivations: vi.fn(async ({ artifact: a, extraction }) => ({
@@ -119,19 +130,20 @@ describe('deriveArtifacts', () => {
       { openGraph: async () => ({}), createWriter: () => writer, store, broadcast: async () => {} },
     );
     expect(out.ok).toBe(true);
-    // This stage's stories and the intent-wide log only: not the stage's
-    // undeclared requirements, and not another stage's stories.
-    expect([...out.artifacts].toSorted()).toEqual(['decision-log', 'stories-art']);
+    // This stage's own stories, plus what it changed of earlier stages' work.
+    // Not its undeclared requirements, and nothing other stages created or
+    // last changed.
+    expect([...out.artifacts].toSorted()).toEqual([
+      'decision-log',
+      'earlier-stories',
+      'stories-art',
+    ]);
     const log = writer.mirrorArtifactDerivations.mock.calls.find(
       ([call]) => call.artifact.id === 'decision-log',
     );
     expect(log[0].extraction.items).toEqual([
       expect.objectContaining({ slug: 'dec-session-tokens', label: 'Decision' }),
     ]);
-  });
-
-  it('keeps the stage filters for every type not flagged intent-wide', () => {
-    expect([...INTENT_WIDE_ARTIFACT_TYPES]).toEqual(['decisions']);
   });
 
   it('returns missing identity without opening the graph', async () => {
