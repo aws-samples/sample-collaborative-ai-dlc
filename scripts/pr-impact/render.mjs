@@ -20,7 +20,8 @@ const TEST =
 export async function runGit(argv) {
   if (argv[0] !== 'git') throw new Error('The Isobar adapter only permits Git reads');
   try {
-    const { stdout } = await exec(argv[0], argv.slice(1), {
+    const { stdout } = await exec('git', argv.slice(1), {
+      shell: false,
       maxBuffer: 64 * 1024 * 1024,
       timeout: 120_000,
       env: {

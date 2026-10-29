@@ -4,11 +4,11 @@ export function lexicalAmbiguity(lines = []) {
   for (const line of lines) {
     const comment = line.indexOf('//');
     if (comment >= 0 && line.slice(comment + 2).includes('/*')) return 'line-comment-block-token';
-    for (const match of line.matchAll(/(["'])(?:\\.|(?!\1).)*?\1/g)) {
+    for (const match of line.matchAll(/(["'])(?:\\.|(?!\1)[^\\])*?\1/g)) {
       if (/(?<!\\)`/.test(match[0])) return 'quoted-backtick-token';
       if (match[0].includes('/*') || match[0].includes('*/')) return 'quoted-block-comment-token';
     }
-    for (const match of line.matchAll(/\/(?:\\.|[^/\r\n])+\/[dgimsuvy]*/g)) {
+    for (const match of line.matchAll(/\/(?:\\.|[^/\\\r\n])+\/[dgimsuvy]*/g)) {
       if (/(?<!\\)`/.test(match[0])) return 'regex-backtick-token';
     }
   }

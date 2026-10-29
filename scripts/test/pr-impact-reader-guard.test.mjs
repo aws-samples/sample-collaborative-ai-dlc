@@ -15,6 +15,13 @@ test('pinned reader hazards in real pricing/pagination changes require file-wide
   assert.equal(lexicalAmbiguity(['const message = `Hello ${name}`;']), null);
 });
 
+test('escaped regex bodies are scanned without ambiguous backtracking', () => {
+  const repeated = '\\.'.repeat(20_000);
+  assert.equal(lexicalAmbiguity([`const pattern = /${repeated}`]), null);
+  assert.equal(lexicalAmbiguity([`const pattern = /${repeated}\`/g;`]), 'regex-backtick-token');
+  assert.equal(lexicalAmbiguity([`const text = "${'\\\\'.repeat(20_000)}";`]), null);
+});
+
 test('ambiguous declarations lose named attribution and retain an explicit fallback', () => {
   const read = {
     shapes: new Map([['pricing.js', { kind: 'comments', touches: [{ name: 'wrong' }] }]]),

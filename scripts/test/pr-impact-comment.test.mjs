@@ -324,7 +324,8 @@ test('untrusted labels cannot inject markup, mentions or images and rendering do
   const markdown = renderReviewComment(input);
   assert.deepEqual(input, original);
   assert.equal(markdown, renderReviewComment(input));
-  assert.doesNotMatch(markdown, /<script>|@everyone|!\[x\]|<\/details><details open>/);
+  assert.doesNotMatch(markdown, /<script\b/i);
+  assert.doesNotMatch(markdown, /@everyone|!\[x\]|<\/details><details open>/);
   assert.match(markdown, /&#60;script&#62;&#64;everyone/);
   assert.equal((markdown.match(/!\[PR impact map\]/g) ?? []).length, 1);
 });
