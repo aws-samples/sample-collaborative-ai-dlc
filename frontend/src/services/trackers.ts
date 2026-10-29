@@ -202,6 +202,8 @@ export const trackersService = {
     let page = 1;
     let hasNext = true;
     let pageToken: string | null = null;
+    // Page 1 puts an exact key match first; Jira's search may return it again later.
+    const seen = new Set<string>();
     while (hasNext) {
       if (signal?.aborted) return;
       const result = await this.listIssues(
@@ -216,7 +218,9 @@ export const trackersService = {
       hasNext = result.hasNext;
       pageToken = result.nextPageToken ?? null;
       page++;
-      yield { items: result.items, totalCount: result.totalCount, done: !hasNext };
+      const items = result.items.filter((i) => !seen.has(i.resourceId));
+      for (const i of items) seen.add(i.resourceId);
+      yield { items, totalCount: result.totalCount, done: !hasNext };
     }
   },
 
