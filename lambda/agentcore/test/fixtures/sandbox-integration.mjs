@@ -2,6 +2,7 @@
 // The same workload runs with enabled=false and enabled=true.
 import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,7 +23,7 @@ const attempt = async (operation) => {
   }
 };
 
-const workload = async ([workspace, readPath, writePath, port]) => {
+const workload = async ([workspace, readPath, writePath, nestedWritePath, port]) => {
   let stdin = '';
   for await (const chunk of process.stdin) stdin += chunk;
   const output = join(workspace, 'allowed.txt');
@@ -30,6 +31,16 @@ const workload = async ([workspace, readPath, writePath, port]) => {
   const workspaceWrite = (await readFile(output, 'utf8')) === 'allowed write';
   const protectedRead = await attempt(() => readFile(readPath, 'utf8'));
   const protectedWrite = await attempt(() => writeFile(writePath, 'child wrote this'));
+  const nestedWrite = await attempt(() => writeFile(nestedWritePath, 'child wrote this'));
+  const namespace = spawnSync('unshare', ['--user', '--map-root-user', '--mount', 'true'], {
+    encoding: 'utf8',
+    env: { ...process.env, LC_ALL: 'C' },
+    timeout: 3000,
+  });
+  assert.ifError(namespace.error);
+  if (namespace.status !== 0) {
+    assert.match(namespace.stderr, /Operation not permitted/, 'unexpected unshare failure');
+  }
   const directConnection = await new Promise((resolve) => {
     const socket = connect({ host: '127.0.0.1', port: Number(port), timeout: 1000 });
     socket.once('connect', () => {
@@ -71,6 +82,8 @@ const workload = async ([workspace, readPath, writePath, port]) => {
       workspaceWrite,
       protectedRead,
       protectedWrite,
+      nestedWrite,
+      nestedNamespace: namespace.status === 0,
       directConnection,
       httpRequest: httpStatus === 200,
       stdin,
@@ -86,16 +99,26 @@ const runCase = async (enabled, helper) => {
   const workspace = join(root, 'workspace');
   const protectedDirectory = join(root, 'protected');
   const readDirectory = join(protectedDirectory, 'read');
+  const nestedDirectory = join(protectedDirectory, 'nested-allow');
   let destinationRequests = 0;
   const server = createServer((req, res) => {
     destinationRequests++;
     res.end('fixture response');
   });
   try {
-    await Promise.all([mkdir(workspace), mkdir(readDirectory, { recursive: true })]);
+    await Promise.all([
+      mkdir(workspace),
+      mkdir(readDirectory, { recursive: true }),
+      mkdir(nestedDirectory, { recursive: true }),
+    ]);
     const readPath = join(readDirectory, 'read.txt');
     const writePath = join(protectedDirectory, 'write.txt');
-    await Promise.all([writeFile(readPath, 'read fixture'), writeFile(writePath, 'write fixture')]);
+    const nestedWritePath = join(nestedDirectory, 'write.txt');
+    await Promise.all([
+      writeFile(readPath, 'read fixture'),
+      writeFile(writePath, 'write fixture'),
+      writeFile(nestedWritePath, 'nested fixture'),
+    ]);
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = server.address().port;
     const before = (await readdir(tmpdir())).filter((name) => name.startsWith('aidlc-srt-'));
@@ -103,7 +126,7 @@ const runCase = async (enabled, helper) => {
     let stdout = '';
     const options = {
       command: process.execPath,
-      args: [script, '--workload', workspace, readPath, writePath, String(port)],
+      args: [script, '--workload', workspace, readPath, writePath, nestedWritePath, String(port)],
       cwd: workspace,
       env: {},
       promptViaStdin: true,
@@ -121,9 +144,9 @@ const runCase = async (enabled, helper) => {
         settings: {
           network: { allowedDomains: [], deniedDomains: [], strictAllowlist: true },
           filesystem: {
-            allowWrite: [workspace],
+            allowWrite: [workspace, nestedDirectory],
             denyRead: [readDirectory],
-            denyWrite: [writePath],
+            denyWrite: [protectedDirectory],
           },
         },
         observeFileWrites: true,
@@ -141,6 +164,7 @@ const runCase = async (enabled, helper) => {
       srtVersion,
       ...checks,
       protectedFileUnchanged: (await readFile(writePath, 'utf8')) === 'write fixture',
+      nestedFileUnchanged: (await readFile(nestedWritePath, 'utf8')) === 'nested fixture',
       destinationRequests,
       scratchCleaned,
       networkDenialLogged: events.some(
@@ -151,14 +175,17 @@ const runCase = async (enabled, helper) => {
     assert.deepEqual(report, {
       enabled,
       helper,
-      srtVersion: '0.0.79',
+      srtVersion: '0.0.81',
       workspaceWrite: true,
       protectedRead: !enabled,
       protectedWrite: !enabled,
+      nestedWrite: !enabled,
+      nestedNamespace: !enabled,
       directConnection: !enabled,
       httpRequest: !enabled,
       stdin: 'sandbox integration input',
       protectedFileUnchanged: enabled,
+      nestedFileUnchanged: enabled,
       destinationRequests: enabled ? 0 : 1,
       scratchCleaned: true,
       networkDenialLogged: enabled,

@@ -52,7 +52,8 @@ export const runSandboxWorker = async (
     typeof command !== 'string' ||
     !Array.isArray(args) ||
     !args.every((arg) => typeof arg === 'string') ||
-    settings?.enableWeakerNestedSandbox
+    settings?.enableWeakerNestedSandbox ||
+    settings?.allowNestedUserNamespaces
   ) {
     throw new Error('Invalid sandbox launch configuration');
   }

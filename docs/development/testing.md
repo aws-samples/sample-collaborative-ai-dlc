@@ -430,19 +430,28 @@ and `KEEP_E2E=1` retains containers and logs on failure.
 
 Both cases use the same workload and the real `runChild` and `captureChild` helpers:
 
-| Operation                            | Sandbox disabled | Sandbox enabled with restrictive test settings  |
-| ------------------------------------ | ---------------- | ----------------------------------------------- |
-| Workspace write/read                 | Succeeds         | Succeeds                                        |
-| Protected test-file read/write       | Succeeds         | Blocked; original file remains unchanged        |
-| Direct connection to the test server | Succeeds         | Blocked                                         |
-| HTTP request to the test server      | Succeeds         | Proxy returns 403; destination receives nothing |
-| SRT denial event                     | None             | Destination and port logged                     |
+| Operation                                | Sandbox disabled | Sandbox enabled with restrictive test settings  |
+| ---------------------------------------- | ---------------- | ----------------------------------------------- |
+| Workspace write/read                     | Succeeds         | Succeeds                                        |
+| Protected test-file read/write           | Succeeds         | Blocked; original file remains unchanged        |
+| Write allowed beneath a denied directory | Succeeds         | Blocked; parent deny takes precedence           |
+| Create nested user/mount namespaces      | Succeeds         | Blocked with `EPERM`                            |
+| Direct connection to the test server     | Succeeds         | Blocked                                         |
+| HTTP request to the test server          | Succeeds         | Proxy returns 403; destination receives nothing |
+| SRT denial event                         | None             | Destination and port logged                     |
 
 The tests also check stdin delivery, process exit, scratch cleanup and SRT's
-presence in the image. The local container uses `seccomp=unconfined` and
+version (`0.0.81`) in the image. The local container uses `seccomp=unconfined` and
 `systempaths=unconfined` to permit namespaces; SRT's own weaker-isolation option
 remains disabled. These are local test-host options, not deployment settings.
 These tests do not qualify full agent conversations, Gateway tools or pause/resume.
+
+SRT 0.0.81 includes Linux fixes from 0.0.80: write denies take precedence over
+nested write allows, and nested user/mount namespaces are blocked by default.
+The runtime rejects `allowNestedUserNamespaces: true`; tools that need nested
+namespaces (such as rootless containers or Chromium's namespace sandbox) will
+need a separate execution environment. Avoid denying writes to all of `/tmp`,
+which also makes SRT's own scratch directory read-only.
 
 The runtime switch is `DEFAULT_SANDBOX_CONFIG.enabled` in
 `lambda/agentcore/sandbox/launcher.js`, currently `false`. Both spawn helpers

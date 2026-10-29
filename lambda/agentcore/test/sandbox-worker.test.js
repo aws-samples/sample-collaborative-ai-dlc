@@ -176,16 +176,16 @@ describe('SRT worker', () => {
     expect(result).toEqual({ code: 1, signal: null });
   });
 
-  it('rejects weaker Linux process isolation', async () => {
-    const manager = fixtureManager();
-    await expect(
-      runSandboxWorker(
-        { ...request, settings: { ...settings, enableWeakerNestedSandbox: true } },
-        { manager },
-      ),
-    ).rejects.toThrow('Invalid sandbox');
-    expect(manager.initialize).not.toHaveBeenCalled();
-  });
+  it.each(['enableWeakerNestedSandbox', 'allowNestedUserNamespaces'])(
+    'rejects weaker Linux process isolation: %s',
+    async (setting) => {
+      const manager = fixtureManager();
+      await expect(
+        runSandboxWorker({ ...request, settings: { ...settings, [setting]: true } }, { manager }),
+      ).rejects.toThrow('Invalid sandbox');
+      expect(manager.initialize).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     { policy: settings, permissive: false },
