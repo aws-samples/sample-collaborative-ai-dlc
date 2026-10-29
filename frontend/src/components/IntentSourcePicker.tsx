@@ -197,7 +197,7 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
         </div>
       </div>
 
-      <div className="max-h-64 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-0.5 lg:max-h-none">
+      <div className="max-h-64 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-0.5 lg:max-h-none lg:basis-0">
         {error ? (
           <div className="flex items-start gap-2 text-xs text-destructive bg-destructive/5 border border-destructive/20 rounded-md p-2.5">
             <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
