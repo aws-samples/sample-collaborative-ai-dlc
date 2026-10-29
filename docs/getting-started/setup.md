@@ -783,13 +783,22 @@ Error: creating CloudFront VPC Origin
 … EntityAlreadyExists: Another vpc origin with the same name already exists within the aws account.
 ```
 
-A failed VPC Origin create leaves the resource tainted. Terraform then creates its replacement before deleting the failed one, and VPC Origin names are unique per account, so the replacement collides. When no distribution uses the failed origin yet (always the case on a first deployment), delete it and re-run the deployment:
+A failed VPC Origin create leaves the resource tainted. Terraform then creates its replacement before deleting the failed one, and VPC Origin names are unique per account, so the replacement collides. Delete the failed origin only when no CloudFront distribution uses it. On a first deployment none does yet, and the commands below check before deleting:
 
 ```bash
 VPC_ORIGIN_ID=$(terraform -chdir=terraform state show -no-color 'module.frontend.aws_cloudfront_vpc_origin.yjs_alb[0]' | awk '$1 == "id" { gsub(/"/, "", $3); print $3 }')
-ETAG=$(aws cloudfront get-vpc-origin --id "$VPC_ORIGIN_ID" --query ETag --output text)
-aws cloudfront delete-vpc-origin --id "$VPC_ORIGIN_ID" --if-match "$ETAG"
-# Wait until get-vpc-origin returns EntityNotFound (several minutes), then:
+USED_BY=$(aws cloudfront list-distributions --query "DistributionList.Items[?Origins.Items[?VpcOriginConfig.VpcOriginId=='$VPC_ORIGIN_ID']].Id" --output text)
+if [ -n "$USED_BY" ]; then
+  echo "VPC origin $VPC_ORIGIN_ID is still used by distribution $USED_BY; not deleting it." >&2
+else
+  ETAG=$(aws cloudfront get-vpc-origin --id "$VPC_ORIGIN_ID" --query ETag --output text)
+  aws cloudfront delete-vpc-origin --id "$VPC_ORIGIN_ID" --if-match "$ETAG"
+fi
+```
+
+If the check reports a distribution, the origin is in use and deleting it would break that distribution, so leave it in place. Otherwise, wait until `aws cloudfront get-vpc-origin --id "$VPC_ORIGIN_ID"` returns `EntityNotFound` (several minutes), then re-run the deployment:
+
+```bash
 ./scripts/deploy-terraform.sh dev
 ```
 
