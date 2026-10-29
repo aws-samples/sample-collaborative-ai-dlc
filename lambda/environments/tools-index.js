@@ -15,6 +15,7 @@ import {
   toolVersionSnapshot,
 } from './tool-catalog.js';
 import { amd64CoreImageConfigured } from './compute-model.js';
+import { codeBuildOverridesFor } from './build-fleet.js';
 import { uploadBuildContext } from './build-lifecycle.js';
 import {
   actorFrom,
@@ -278,12 +279,7 @@ export const startToolBuild = async ({
         // The project's default fleet is arm64. x86_64 tools build and run
         // their validation natively on an x86 fleet via per-build overrides,
         // the same way x86_64 environments do.
-        ...(architecture === 'x86_64'
-          ? {
-              environmentTypeOverride: 'LINUX_CONTAINER',
-              imageOverride: 'aws/codebuild/amazonlinux-x86_64-standard:5.0',
-            }
-          : {}),
+        ...codeBuildOverridesFor(architecture),
       }),
     );
   } catch (error) {
