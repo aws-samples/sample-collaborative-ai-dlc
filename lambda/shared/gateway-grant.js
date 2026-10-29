@@ -5,9 +5,10 @@
 // Issued by a Lambda OUTSIDE the runtime (orchestrator / discussions) and
 // verified by the MCP tools Lambda behind AgentCore Gateway. The runtime only
 // relays it, so code running in the agent's VM cannot mint a grant for another
-// space. It is a compact ES256 JWT so the same token can later become the
-// Gateway's CUSTOM_JWT inbound credential (AgentCore Policy then sees its
-// claims as principal tags) without changing issuers or verifiers.
+// space. It is a compact ES256 JWT. Using it as the Gateway's CUSTOM_JWT inbound
+// credential would need an OIDC discovery document and JWKS for the KMS key, an
+// issuer and algorithm the authorizer accepts, and the same live checks behind
+// it: the native authorizer validates the token, not the execution's state.
 //
 // Signing is injected: production signs with an asymmetric KMS key (the private
 // key never leaves KMS and verifiers hold only the public key); tests sign with
