@@ -41,7 +41,7 @@ For a Jira Cloud binding the panel follows the bound project's own issue types a
 - **Issue type** lists the project's types grouped by level: **Parent level** (for example Initiative and Epic), **Standard** (Story, Task, Bug) and **Sub-task level**. **All types** lists every issue, as before.
 - **State** offers **All** next to **Open** and **Closed**.
 - Each issue shows its parent, for example `Epic PROJ-5 Login` under a story.
-- **Children** on an issue above the sub-task level lists the issues whose parent it is, with a breadcrumb back up. Opening it clears the type filter and search, which found the parent and would otherwise hide its children. In a Jira Product Discovery project, which joins items by issue links rather than the parent field, the button is **Linked items** and lists the linked issues, including delivery work in other projects you can see.
+- **Children** on an issue above the sub-task level lists the issues whose parent it is, with a breadcrumb back up. Opening it clears the type filter and search, which found the parent and would otherwise hide its children. In a Jira Product Discovery project, which joins items by issue links rather than the parent field, the button is **Linked items** and lists the linked issues, including delivery work in other projects you can see. There is no type filter there, as linked items have their own projects' types.
 
 GitHub and GitLab bindings are unchanged.
 
