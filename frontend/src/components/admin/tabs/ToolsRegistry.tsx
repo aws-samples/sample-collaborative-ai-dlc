@@ -56,6 +56,7 @@ import {
   type ToolVerification,
   type ToolVersionDefinition,
 } from '@/services/environments';
+import { rustInstallerScript } from './tool-presets';
 import { ApiError } from '@/services/api';
 import { cn } from '@/lib/utils';
 import { Disclosure, ProcessOverview } from './environment-builder/ui';
@@ -88,7 +89,7 @@ const PRESET_LABELS: Record<VerificationPreset, string> = {
 const TOOL_PROCESS_STEPS = [
   {
     label: 'Define',
-    description: 'Choose the distribution, exact version, and ARM64 download.',
+    description: 'Choose the distribution, exact version, architecture, and download.',
   },
   {
     label: 'Build',
@@ -108,32 +109,10 @@ const TOOL_PROCESS_STEPS = [
   },
 ] as const;
 
-const RUST_INSTALLER_SCRIPT = `#!/usr/bin/env bash
-set -Eeuo pipefail
-staging="$TOOL_OUTPUT/.rust-installer"
-archive_root="rust-\${TOOL_VERSION}-aarch64-unknown-linux-gnu"
-components="rustc,rust-std-aarch64-unknown-linux-gnu,cargo,rustfmt-preview"
-mkdir -p "$staging"
-trap 'rm -rf "$staging"' EXIT
-tar -xzf "$TOOL_SOURCE" -C "$staging" \\
-  "$archive_root/install.sh" \\
-  "$archive_root/components" \\
-  "$archive_root/rust-installer-version" \\
-  "$archive_root/rustc" \\
-  "$archive_root/rust-std-aarch64-unknown-linux-gnu" \\
-  "$archive_root/cargo" \\
-  "$archive_root/rustfmt-preview"
-installer="$staging/$archive_root/install.sh"
-test -f "$installer"
-"$installer" \\
-  --prefix="$TOOL_OUTPUT" \\
-  --disable-ldconfig \\
-  --components="$components"
-`;
-
 const presetDefaults = (
   preset: VerificationPreset,
   version: string,
+  architecture: ToolArchitecture = 'arm64',
 ): {
   category: 'language-sdk' | 'build-tool' | 'cli';
   stripComponents: number;
@@ -200,7 +179,7 @@ const presetDefaults = (
       argv: ['rustc', '--version'],
       expected: version,
       aptPackages: 'build-essential=12.9',
-      installerScript: RUST_INSTALLER_SCRIPT,
+      installerScript: rustInstallerScript(architecture),
     },
     maven: {
       category: 'build-tool',
@@ -370,6 +349,27 @@ const formFromVersion = (tool: ManagedTool, version: ManagedToolVersion): ToolFo
   publisherChecksumAlgorithm: version.definition.source.expectedChecksum?.algorithm ?? 'sha256',
   publisherEvidenceUrl: version.definition.source.expectedChecksum?.evidenceUrl ?? '',
 });
+
+// Moves a form to another architecture. A preset installer script that still
+// matches the previous architecture's preset is swapped for the new one; a
+// hand-edited script is left alone.
+const withArchitecture = (form: ToolForm, architecture: ToolArchitecture): ToolForm => {
+  if (form.architecture === architecture) return form;
+  const previousPreset = presetDefaults(form.preset, form.version, form.architecture);
+  const presetScriptUnchanged =
+    form.installerMode === 'script' &&
+    previousPreset.installerMode === 'script' &&
+    form.installerScript === previousPreset.installerScript;
+  return {
+    ...form,
+    architecture,
+    ...(presetScriptUnchanged
+      ? {
+          installerScript: presetDefaults(form.preset, form.version, architecture).installerScript,
+        }
+      : {}),
+  };
+};
 
 const parsePairs = (value: string) =>
   value
@@ -969,7 +969,7 @@ function ToolVersionForm({
   const [advancedOpen, setAdvancedOpen] = useState(editing);
   const issues = validateToolForm(form, creatingTool);
   const applyPreset = (preset: VerificationPreset) => {
-    const defaults = presetDefaults(preset, form.version);
+    const defaults = presetDefaults(preset, form.version, form.architecture);
     onChange({
       ...form,
       preset,
@@ -1173,7 +1173,7 @@ function ToolVersionForm({
             <Select
               value={form.architecture}
               onValueChange={(architecture) =>
-                onChange({ ...form, architecture: architecture as ToolArchitecture })
+                onChange(withArchitecture(form, architecture as ToolArchitecture))
               }
               disabled={disabled || editing}
             >
@@ -1181,8 +1181,8 @@ function ToolVersionForm({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="arm64">arm64 (serverless microVMs)</SelectItem>
-                <SelectItem value="x86_64">x86_64 (EC2 Instances)</SelectItem>
+                <SelectItem value="arm64">arm64 (microVMs and arm64 Instances)</SelectItem>
+                <SelectItem value="x86_64">x86_64 (x86_64 Instances)</SelectItem>
               </SelectContent>
             </Select>
             <p className="text-[11px] text-muted-foreground">
@@ -2037,8 +2037,10 @@ export function ToolsRegistry() {
                                   setCreatingVersion(true);
                                   setEditingVersionId(null);
                                   setForm({
-                                    ...formFromVersion(selectedTool, selectedVersion),
-                                    architecture: 'x86_64',
+                                    ...withArchitecture(
+                                      formFromVersion(selectedTool, selectedVersion),
+                                      'x86_64',
+                                    ),
                                     sourceUrl: '',
                                     publisherChecksum: '',
                                     publisherEvidenceUrl: '',
