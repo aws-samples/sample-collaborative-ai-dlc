@@ -789,9 +789,23 @@ function IntentComposePageContent() {
             />
           </div>
 
+          <div>
+            <Label htmlFor="draft-prompt">Prompt</Label>
+            <CollaborativeTextarea
+              id="draft-prompt"
+              yText={draft.promptText}
+              awareness={draft.awareness}
+              value={draft.prompt}
+              rows={10}
+              placeholder="Describe the intent in detail…"
+              className="mt-1.5 rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={!draftReady}
+            />
+          </div>
+
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
-              <Label className="text-sm font-medium">Reference attachments</Label>
+              <Label className="text-sm font-medium">Attachments</Label>
               <input
                 ref={attachmentInput}
                 type="file"
@@ -905,20 +919,6 @@ function IntentComposePageContent() {
                 ))}
               </ul>
             )}
-          </div>
-
-          <div>
-            <Label htmlFor="draft-prompt">Prompt</Label>
-            <CollaborativeTextarea
-              id="draft-prompt"
-              yText={draft.promptText}
-              awareness={draft.awareness}
-              value={draft.prompt}
-              rows={10}
-              placeholder="Describe the intent in detail…"
-              className="mt-1.5 rounded-md border bg-background px-3 py-2 text-sm"
-              disabled={!draftReady}
-            />
           </div>
 
           <div className="space-y-2">

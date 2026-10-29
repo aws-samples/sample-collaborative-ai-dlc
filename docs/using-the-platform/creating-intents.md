@@ -41,7 +41,7 @@ If the project has one or more trackers bound (GitHub Issues, GitLab Issues, Jir
 
 You can edit the imported prompt freely before starting.
 
-File imports use the same [formats and limits](#reference-attachments) as manual
+File imports use the same [formats and limits](#attachments) as manual
 uploads. A file failure leaves the imported title, prompt, and comments intact.
 Each imported file retains the source issue, attachment URL, and, where the
 provider exposes it, the comment that referenced it. Stay on the draft while
@@ -84,7 +84,7 @@ The Compose page is where a draft is finished and started. It is **collaborative
 
 The title and prompt from step 1 stay editable. The page also has:
 
-### Reference attachments
+### Attachments
 
 Choose **Attach files** to provide reference material
 for the agents. Supported formats are PDF, DOCX, XLSX, TXT, Markdown, CSV,
