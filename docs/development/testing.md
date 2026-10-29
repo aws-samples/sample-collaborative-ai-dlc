@@ -53,6 +53,10 @@ Sign in as a platform administrator and open **Platform Settings ->
 Environments**. The deployment publishes only Standard. Within five minutes,
 the catalog bootstrap creates Java, Go, Rust, Maven, and Gradle tool families
 and queues their initial versions for import.
+When the deployment enables Instances compute (and so publishes the x86_64
+core image), the bootstrap also creates an x86_64 version of each of the five
+tools and starts the Java, Go, and Rust x86_64 builds. They are not published
+or recommended automatically.
 
 This test covers three distinct paths:
 
@@ -78,13 +82,19 @@ For each shipped tool:
    unsupported, explicitly accept that scan limitation and confirm the
    acceptance remains visible.
 5. Publish the version. Mark Java as recommended before publishing Maven or
-   Gradle.
+   Gradle. Recommendations are per architecture: on an Instances-enabled
+   deployment, repeat this for the x86_64 versions, recommending x86_64 Java
+   before building x86_64 Maven or Gradle.
 
 ### Verify custom tool creation
 
 Create a `.NET SDK` tool using an official Linux ARM64 SDK archive and the
 `.NET` preset. Confirm source inspection, normalization, scanning, `dotnet
 --version`, and a real console build succeed, then publish it.
+
+On an Instances-enabled deployment, also select an arm64 Rust version, choose
+**Add x86_64 build**, enter the x86_64 archive URL, and confirm the installer
+script targets `x86_64-unknown-linux-gnu` and the build succeeds.
 
 ### Verify environment composition
 
