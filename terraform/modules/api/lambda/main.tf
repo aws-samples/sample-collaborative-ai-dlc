@@ -3383,8 +3383,10 @@ resource "aws_iam_role_policy" "v2_orchestrator" {
       },
       {
         # v2 process table: drive execution + stage + gate state.
+        # ConditionCheckItem: run-ownership and unit-plan fences are
+        # ConditionCheck entries inside TransactWriteItems.
         Effect = "Allow"
-        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query"]
+        Action = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:ConditionCheckItem"]
         Resource = [
           var.v2_executions_table_arn,
           "${var.v2_executions_table_arn}/index/*",
