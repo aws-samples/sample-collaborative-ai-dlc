@@ -1563,9 +1563,23 @@ export const gitResultForCommitRefs = async ({
       throw new Error(`invalid parked-stage commit reference for ${repo || 'unknown repository'}`);
     }
     const dir = repoTargetDir({ url: repo, workspaceDir, multi });
-    const hasCommit = async () =>
-      (await git(['cat-file', '-e', `${sha}^{commit}`], { cwd: dir })).exitCode === 0;
-    if (executionId && !(await hasCommit())) {
+    const hasCommit = async (rev) =>
+      (await git(['cat-file', '-e', `${rev}^{commit}`], { cwd: dir })).exitCode === 0;
+    // diff-tree needs the commit AND its parents. A commit at the shallow
+    // boundary reads as a root, so `--root` would list its whole tree. The
+    // raw object keeps its parent lines; a genuine root commit has none.
+    const hasDiffContext = async () => {
+      if (!(await hasCommit(sha))) return false;
+      const raw = await git(['cat-file', 'commit', sha], { cwd: dir });
+      if (raw.exitCode !== 0) return false;
+      const header = raw.stdout.split('\n\n')[0];
+      const parents = [...header.matchAll(/^parent ([0-9a-f]+)$/gm)].map((m) => m[1]);
+      for (const parent of parents) {
+        if (!(await hasCommit(parent))) return false;
+      }
+      return true;
+    };
+    if (executionId && !(await hasDiffContext())) {
       const sourceRepo = repos.find((r) => (typeof r === 'string' ? r : r.url) === repo);
       await deepenUntil({
         dir,
@@ -1578,7 +1592,7 @@ export const gitResultForCommitRefs = async ({
           gitProvider ||
           'github',
         urls: urlsFor ? urlsFor(repo) : {},
-        satisfied: hasCommit,
+        satisfied: hasDiffContext,
         git,
         withGitCredential,
       });

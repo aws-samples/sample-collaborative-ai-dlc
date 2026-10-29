@@ -2298,6 +2298,65 @@ describe('shallow checkouts deepen on demand', () => {
     ]);
   });
 
+  it('deepens past a stored commit at the shallow tip so its parent-less diff does not list the whole tree', async () => {
+    const { remote, seed } = await deepRemote(2);
+    const stored = (await git(['rev-parse', 'main'], seed)).stdout.trim();
+    const workspaceDir = await shallowClone(remote);
+    // Present, but grafted as a root: --root alone would report f1.txt too.
+    expect((await git(['cat-file', '-e', `${stored}^{commit}`], workspaceDir)).exitCode).toBe(0);
+
+    const fetches = [];
+    const result = await gitResultForCommitRefs({
+      commitRefs: [{ repo: 'o/r', sha: stored }],
+      repos: ['o/r'],
+      workspaceDir,
+      projectId: 'p1',
+      executionId: 'e1',
+      urlsFor: () => laneUrls(remote),
+      git: async (args, opts) => {
+        if (args[0] === 'fetch') fetches.push(args[1]);
+        return runGit(args, opts);
+      },
+    });
+
+    expect(fetches.length).toBeGreaterThan(0);
+    expect(result.results).toEqual([
+      expect.objectContaining({ repo: 'o/r', sha: stored, files: ['f2.txt'] }),
+    ]);
+  });
+
+  it('reads a genuine root commit from a shallow clone without deepening', async () => {
+    const { remote, seed } = await deepRemote(3);
+    await git(['checkout', '--orphan', 'aidlc/orphan'], seed);
+    await git(['rm', '-rf', '--quiet', '.'], seed);
+    await writeFile(path.join(seed, 'root.txt'), 'root\n');
+    await git(['add', '-A'], seed);
+    await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'root'], seed);
+    await git(['push', remote, 'aidlc/orphan:refs/heads/aidlc/orphan'], seed);
+    const stored = (await git(['rev-parse', 'aidlc/orphan'], seed)).stdout.trim();
+    const workspaceDir = await shallowClone(remote);
+
+    const fetches = [];
+    const result = await gitResultForCommitRefs({
+      commitRefs: [{ repo: 'o/r', sha: stored }],
+      repos: ['o/r'],
+      workspaceDir,
+      projectId: 'p1',
+      executionId: 'e1',
+      urlsFor: () => laneUrls(remote),
+      git: async (args, opts) => {
+        if (args[0] === 'fetch') fetches.push(args[1]);
+        return runGit(args, opts);
+      },
+    });
+
+    expect(fetches).toEqual([]);
+    expect(await isShallowRepository({ dir: workspaceDir })).toBe(true);
+    expect(result.results).toEqual([
+      expect.objectContaining({ repo: 'o/r', sha: stored, files: ['root.txt'] }),
+    ]);
+  });
+
   describe('deepenUntil', () => {
     it('fetches nothing for a full clone', async () => {
       const { remote } = await deepRemote(3);
