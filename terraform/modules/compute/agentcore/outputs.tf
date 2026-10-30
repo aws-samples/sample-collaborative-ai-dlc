@@ -14,8 +14,8 @@ output "ecr_repository_arn" {
 }
 
 output "image_uri" {
-  description = "Full image URI (with content-hash tag) built for the runtime"
-  value       = module.agentcore_docker_build.image_uri
+  description = "Full image URI (with content-hash or pre-built tag) for the runtime"
+  value       = local.build_image ? module.agentcore_docker_build[0].image_uri : "${aws_ecr_repository.agentcore.repository_url}:${local.agentcore_image_tag}"
 }
 
 output "image_digest" {
@@ -29,7 +29,7 @@ output "image_size_bytes" {
 }
 
 output "image_tag" {
-  description = "Content-hash image tag"
+  description = "Image tag: the content hash, or var.image_tag when pre-built"
   value       = local.agentcore_image_tag
 }
 

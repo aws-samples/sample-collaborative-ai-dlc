@@ -712,6 +712,7 @@ module "yjs_server" {
   powertools_log_level          = var.powertools_log_level
   aws_region                    = var.aws_region
   docker_build_args             = var.docker_build_args
+  image_tag                     = var.yjs_image_tag
   vpc_id                        = module.networking.vpc_id
   private_subnet_ids            = module.networking.private_subnet_ids
   cognito_user_pool_id          = module.auth.user_pool_id
@@ -746,6 +747,7 @@ module "agentcore" {
   powertools_log_level        = var.powertools_log_level
   aws_region                  = var.aws_region
   docker_build_args           = var.docker_build_args
+  image_tag                   = var.agentcore_image_tag
   build_amd64_image           = var.enable_instances_compute
   neptune_endpoint            = module.neptune.cluster_endpoint
   neptune_cluster_resource_id = module.neptune.cluster_resource_id

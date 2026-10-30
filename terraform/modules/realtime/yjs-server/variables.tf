@@ -149,6 +149,12 @@ variable "doc_token_enforce" {
   default     = true
 }
 
+variable "image_tag" {
+  description = "Tag of a pre-built image in the yjs-server ECR repository. When set, the image is not built here."
+  type        = string
+  default     = null
+}
+
 variable "build_after" {
   description = <<-EOT
     Opaque value used ONLY to serialize this module's docker build after
