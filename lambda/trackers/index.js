@@ -526,6 +526,54 @@ const disconnectTracker = async (response, userId, provider, instance) => {
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
+  // Internal Lambda-only entry point: intents supplies its stored source and
+  // authenticated user. Recheck membership and resolve the binding here;
+  // credentials and provider download URLs never reach the browser.
+  if (event?.action === 'issue-attachments') {
+    let conn;
+    try {
+      conn = await getConnection();
+      const g = graphTraversal(conn);
+      if (!event.userId || !(await fetchMembershipRole(g, event.projectId, event.userId))) {
+        return { status: 'failed', reason: 'Access to the source project is no longer available.' };
+      }
+      const binding = await fetchBinding(g, event.projectId, event.bindingId);
+      if (!binding)
+        return { status: 'failed', reason: 'The source tracker binding is no longer available.' };
+      const provider = getProvider(binding.provider, binding.instance);
+      return await provider.issueAttachments(
+        {
+          ddb,
+          ssm,
+          secrets,
+          userId: event.userId,
+          sourceControl: ({ repository, operation, args }) =>
+            invokeProjectSourceControl({
+              projectId: event.projectId,
+              trackerProvider: binding.provider,
+              repository,
+              operation,
+              args,
+            }),
+        },
+        binding.externalProjectKey,
+        event.resourceId,
+        {
+          attachmentId: event.attachmentId,
+          uploadUrl: event.uploadUrl,
+          maxBytes: event.maxBytes,
+        },
+      );
+    } catch {
+      return {
+        status: 'failed',
+        reason:
+          'Could not read source attachments. Check the tracker connection and access to the issue.',
+      };
+    } finally {
+      await conn?.close().catch(() => {});
+    }
+  }
   logSafeEventIfEnabled(logger, event);
   if (event?.action === 'reconcile-tracker-deliveries') {
     return runTrackerDeliveryMaintenance(event);

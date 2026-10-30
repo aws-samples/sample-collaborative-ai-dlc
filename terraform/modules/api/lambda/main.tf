@@ -2980,7 +2980,7 @@ resource "aws_iam_role_policy" "intents" {
         # review operations without resolving credentials in this Lambda.
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
-        Resource = [local.source_control_function_arn]
+        Resource = [local.source_control_function_arn, module.trackers_lambda.lambda_function_arn]
       },
       {
         # Watchdog repair: verify stale local rows against the durable execution
@@ -3161,6 +3161,7 @@ module "intents_lambda" {
     # Qualified name (function:alias) — durable functions reject $LATEST invokes.
     V2_ORCHESTRATOR_FUNCTION          = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
+    TRACKERS_FUNCTION                 = module.trackers_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
   }
 }

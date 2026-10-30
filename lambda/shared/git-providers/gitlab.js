@@ -7,6 +7,7 @@
 
 import { Logger } from '@aws-lambda-powertools/logger';
 import { ProviderError } from './errors.js';
+import { discoverLinkedAttachments, transferTrackerAttachment } from '../tracker-attachments.js';
 
 const logger = new Logger({ persistentKeys: { component: 'git-provider', module: 'gitlab' } });
 
@@ -440,6 +441,51 @@ const listIssueComments = async (ctx, repoId, issueNumber) => {
   return Array.isArray(data)
     ? data.filter((comment) => !comment.system).map(mapIssueDiscussionComment)
     : [];
+};
+
+const issueAttachments = async (ctx, repoId, args) => {
+  if (!/^[1-9]\d*$/.test(String(args.number))) {
+    throw new ProviderError(400, 'Invalid issue number');
+  }
+  const issue = await getIssue(ctx, repoId, args.number);
+  const project = encodeProject(repoId);
+  const comments = [];
+  let page = '1';
+  while (page) {
+    const response = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/issues/${args.number}/notes?per_page=100&sort=asc&page=${page}`,
+      { signal: AbortSignal.timeout(10_000) },
+    );
+    if (!response.ok)
+      throw new ProviderError(response.status, 'Could not read issue attachments in comments');
+    comments.push(
+      ...(await response.json()).filter((note) => !note.system).map(mapIssueDiscussionComment),
+    );
+    page = response.headers.get('x-next-page') || '';
+  }
+  const attachments = discoverLinkedAttachments({
+    provider: id,
+    repository: repoId,
+    issue,
+    comments,
+  });
+  if (!args.attachmentId) return { attachments };
+  const attachment = attachments.find((item) => item.id === args.attachmentId);
+  if (!attachment)
+    return { status: 'failed', reason: 'The attachment is no longer referenced by the issue.' };
+  const uploadPath = new URL(attachment.url).pathname.slice(`/${repoId}/uploads/`.length);
+  if (!attachment.skipReason && !/^[a-f0-9]{32}\/[^/]+$/i.test(uploadPath)) {
+    return { status: 'skipped', reason: 'This GitLab upload URL format is not supported.' };
+  }
+  return transferTrackerAttachment({
+    attachment,
+    uploadUrl: args.uploadUrl,
+    maxBytes: args.maxBytes,
+    fetchImpl: ctx.fetchImpl || fetch,
+    request: (options) =>
+      glFetch(ctx, `${API_BASE}/projects/${project}/uploads/${uploadPath}`, options),
+  });
 };
 
 const addIssueComment = async (ctx, repoId, issueNumber, body) => {
@@ -1054,6 +1100,7 @@ export {
   listIssues,
   getIssue,
   listIssueComments,
+  issueAttachments,
   addIssueComment,
   closeIssue,
   listPRComments,
@@ -1093,6 +1140,7 @@ export default {
   listIssues,
   getIssue,
   listIssueComments,
+  issueAttachments,
   addIssueComment,
   closeIssue,
   listPRComments,

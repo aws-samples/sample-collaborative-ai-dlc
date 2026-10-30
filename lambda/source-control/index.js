@@ -51,6 +51,7 @@ const SOURCE_CONTROL_OPERATIONS = Object.freeze({
   'list-issues': 'read',
   'get-issue': 'read',
   'list-issue-comments': 'read',
+  'issue-attachments': 'read',
   'add-issue-comment': 'write',
   'close-issue': 'write',
   'merge-branch': 'write',
@@ -337,6 +338,8 @@ const callProvider = async (provider, operation, ctx, repo, args = {}) => {
       return provider.getIssue(ctx, repo, args.number);
     case 'list-issue-comments':
       return provider.listIssueComments(ctx, repo, args.number);
+    case 'issue-attachments':
+      return provider.issueAttachments(ctx, repo, args);
     case 'add-issue-comment':
       return provider.addIssueComment(ctx, repo, args.number, args.body);
     case 'close-issue':
