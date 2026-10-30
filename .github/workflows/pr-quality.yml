@@ -148,23 +148,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: read
+      contents: write
       actions: read
       pull-requests: write
     concurrency:
       group: pr-quality-comment-${{ github.event.pull_request.head.repo.id }}-${{ github.event.pull_request.head.ref }}
       cancel-in-progress: false
+      queue: max
     steps:
-      # Same-repository authors already control this PR workflow. Forks and
-      # Dependabot use the default-branch publisher in pr-quality-comment.yml.
+      # Publish with default-branch code only, including for same-repository PRs.
+      # Contributor code runs only in the read-token analysis/test jobs.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           sparse-checkout-cone-mode: false
           sparse-checkout: |
             /scripts/publish-complexity-comment.mjs
             /scripts/complexity-report.mjs
+            /scripts/pr-impact/comment.mjs
+            /scripts/pr-impact/publish.mjs
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         id: artifacts
         with:
@@ -177,7 +180,7 @@ jobs:
               attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
             });
             core.setOutput('report', names.report);
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.artifacts.outputs.report != ''
         continue-on-error: true
         with:
@@ -224,13 +227,13 @@ jobs:
             });
             core.setOutput('base', names.base);
             core.setOutput('pr', names.pr);
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.artifacts.outputs.base != ''
         continue-on-error: true
         with:
           name: ${{ steps.artifacts.outputs.base }}
           path: coverage-input/base
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.artifacts.outputs.pr != ''
         continue-on-error: true
         with:

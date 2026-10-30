@@ -66,6 +66,8 @@ The [internal testing guide](docs/development/testing.md) documents the determin
 
 ## Contributing via Pull Requests
 
+See [PR review signals](docs/development/pr-quality.md) for the automated quality metrics, repository map and fork workflow behavior.
+
 Contributions via pull requests are much appreciated. Before sending us a pull request, please ensure that:
 
 1. You are working against the latest source on the _main_ branch.

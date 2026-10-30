@@ -1,0 +1,6573 @@
+{
+  "version": 1,
+  "baselineSha": "e9ec7d6161b09ebc02a1a339cc3e41e44c7da04c",
+  "mapDigest": "9d0f43dcd572f8848c2892d840a5720780906b51685982421dfdce6c4f5f6219",
+  "algorithm": "isobar-path-loc-baseline-v1",
+  "files": {
+    "frontend/src/pages/AccountSettings.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.0766279,
+      "y": 0.1228474
+    },
+    "frontend/src/pages/AgentPage.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.1466406,
+      "y": 0.1228474
+    },
+    "frontend/src/pages/AuthCallback.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.1304527,
+      "y": 0.2098956
+    },
+    "frontend/src/pages/AuthCallback.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.1304527,
+      "y": 0.2706266
+    },
+    "frontend/src/pages/BlockEditor.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.268285,
+      "y": 0.1328991
+    },
+    "frontend/src/pages/BlockLibrary.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.268285,
+      "y": 0.2525175
+    },
+    "frontend/src/pages/ConstructionPage.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.4106265,
+      "y": 0.1301538
+    },
+    "frontend/src/pages/Dashboard.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.5063462,
+      "y": 0.1301538
+    },
+    "frontend/src/pages/Dashboard.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.4318243,
+      "y": 0.2497722
+    },
+    "frontend/src/pages/GitOAuthCallback.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.0887073,
+      "y": 0.3715736
+    },
+    "frontend/src/pages/InceptionPage.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.1824477,
+      "y": 0.3715736
+    },
+    "frontend/src/pages/IntentAuditPage.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.1541804,
+      "y": 0.4883063
+    },
+    "frontend/src/pages/IntentComposePage.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.3218942,
+      "y": 0.4199294
+    },
+    "frontend/src/pages/IntentComposePage.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.4617058,
+      "y": 0.4199294
+    },
+    "frontend/src/pages/IntentGraphPage.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.1312785,
+      "y": 0.5744585
+    },
+    "frontend/src/pages/IntentGraphPage.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.1312785,
+      "y": 0.6455213
+    },
+    "frontend/src/pages/IntentLoopBack.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.1312785,
+      "y": 0.7306155
+    },
+    "frontend/src/pages/IntentNavigation.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.2605795,
+      "y": 0.5900543
+    },
+    "frontend/src/pages/IntentObservabilityPage.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.2605795,
+      "y": 0.712945
+    },
+    "frontend/src/pages/IntentObservabilityPage.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.1311956,
+      "y": 0.8610017
+    },
+    "frontend/src/pages/IntentReleaseSemantics.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.2604966,
+      "y": 0.8610017
+    },
+    "frontend/src/pages/IntentView.migration.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.423293,
+      "y": 0.5658176
+    },
+    "frontend/src/pages/IntentView.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.423293,
+      "y": 0.7005583
+    },
+    "frontend/src/pages/IntentView.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.423293,
+      "y": 0.8728517
+    },
+    "frontend/src/pages/JiraCallback.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.5910704,
+      "y": 0.1062553
+    },
+    "frontend/src/pages/Login.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.5910704,
+      "y": 0.1854769
+    },
+    "frontend/src/pages/Login.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.7047738,
+      "y": 0.1431817
+    },
+    "frontend/src/pages/NewIntentPage.releases.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.6412475,
+      "y": 0.2667661
+    },
+    "frontend/src/pages/NewIntentPage.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.8472555,
+      "y": 0.0973359
+    },
+    "frontend/src/pages/NewIntentPage.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.8472555,
+      "y": 0.1899382
+    },
+    "frontend/src/pages/ObservabilityDashboard.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.8472555,
+      "y": 0.2801468
+    },
+    "frontend/src/pages/ObservabilityLayout.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.5738655,
+      "y": 0.3772822
+    },
+    "frontend/src/pages/PlatformAdmin.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.6583122,
+      "y": 0.3772822
+    },
+    "frontend/src/pages/PlatformAdmin.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.6119907,
+      "y": 0.4752528
+    },
+    "frontend/src/pages/Project.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.7291938,
+      "y": 0.4090995
+    },
+    "frontend/src/pages/Project.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.8507551,
+      "y": 0.3809253
+    },
+    "frontend/src/pages/ProjectSettings.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.8507551,
+      "y": 0.4788959
+    },
+    "frontend/src/pages/ProjectSettings.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.6178604,
+      "y": 0.5451257
+    },
+    "frontend/src/pages/ReviewPage.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.6178604,
+      "y": 0.6429397
+    },
+    "frontend/src/pages/SprintGraph.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.6178604,
+      "y": 0.72481
+    },
+    "frontend/src/pages/WorkflowComposer.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.7669178,
+      "y": 0.6269959
+    },
+    "frontend/src/pages/WorkflowList.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.8826094,
+      "y": 0.5754046
+    },
+    "frontend/src/pages/composer/BlockPalette.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.8826094,
+      "y": 0.6953304
+    },
+    "frontend/src/pages/composer/PhaseLanes.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.6118276,
+      "y": 0.7803247
+    },
+    "frontend/src/pages/composer/PhaseLanes.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.6118276,
+      "y": 0.8766438
+    },
+    "frontend/src/pages/composer/ScopeBuilder.test.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.718364,
+      "y": 0.8432409
+    },
+    "frontend/src/pages/composer/ScopeBuilder.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.8183317,
+      "y": 0.8042369
+    },
+    "frontend/src/pages/composer/StageEditModal.tsx": {
+      "leafId": "ui-pages",
+      "x": 0.8183317,
+      "y": 0.900556
+    },
+    "frontend/src/pages/composer/defaultPhases.ts": {
+      "leafId": "ui-pages",
+      "x": 0.9178033,
+      "y": 0.7795794
+    },
+    "frontend/src/pages/composer/phaseDisplay.ts": {
+      "leafId": "ui-pages",
+      "x": 0.9178033,
+      "y": 0.8758985
+    },
+    "frontend/src/components/agent-output/AgentOutputTranscript.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.1183267,
+      "y": 0.0894407
+    },
+    "frontend/src/components/agent-output/AgentOutputTranscript.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.1183267,
+      "y": 0.1650301
+    },
+    "frontend/src/components/discussion/DiscussButton.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2077461,
+      "y": 0.1005123
+    },
+    "frontend/src/components/discussion/DiscussionInput.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2641714,
+      "y": 0.1005123
+    },
+    "frontend/src/components/discussion/DiscussionInput.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2326387,
+      "y": 0.1761017
+    },
+    "frontend/src/components/discussion/DiscussionPanel.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.0848748,
+      "y": 0.2591251
+    },
+    "frontend/src/components/discussion/DiscussionPanel.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.1716864,
+      "y": 0.2591251
+    },
+    "frontend/src/components/discussion/DiscussionProvider.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2615635,
+      "y": 0.2591251
+    },
+    "frontend/src/components/discussion/DiscussionProvider.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.3538827,
+      "y": 0.1048576
+    },
+    "frontend/src/components/discussion/DiscussionThread.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.3538827,
+      "y": 0.174555
+    },
+    "frontend/src/components/discussion/DiscussionsTab.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.4633951,
+      "y": 0.1086274
+    },
+    "frontend/src/components/discussion/MentionToasts.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.4633951,
+      "y": 0.1783248
+    },
+    "frontend/src/components/discussion/MessageBubble.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.3220972,
+      "y": 0.2532331
+    },
+    "frontend/src/components/discussion/ResolveDialog.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.3854771,
+      "y": 0.2532331
+    },
+    "frontend/src/components/discussion/index.ts": {
+      "leafId": "ui-intent",
+      "x": 0.4619563,
+      "y": 0.2133305
+    },
+    "frontend/src/components/graph/GraphCanvas.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.4619563,
+      "y": 0.2632087
+    },
+    "frontend/src/components/graph/GraphCanvas.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.1273088,
+      "y": 0.3774373
+    },
+    "frontend/src/components/graph/GraphFilterBar.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.095455,
+      "y": 0.4819427
+    },
+    "frontend/src/components/graph/GraphKeyboardHelp.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.1623239,
+      "y": 0.4819427
+    },
+    "frontend/src/components/graph/GraphLegend.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2195027,
+      "y": 0.3455515
+    },
+    "frontend/src/components/graph/GraphMinimap.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2760163,
+      "y": 0.3455515
+    },
+    "frontend/src/components/graph/GraphNodePanel.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2506912,
+      "y": 0.4500569
+    },
+    "frontend/src/components/graph/GraphStatsPanel.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.3317834,
+      "y": 0.3606834
+    },
+    "frontend/src/components/graph/GraphToolbar.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.3910375,
+      "y": 0.3606834
+    },
+    "frontend/src/components/graph/GraphZoomControls.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.366459,
+      "y": 0.4371349
+    },
+    "frontend/src/components/graph/graphTypes.ts": {
+      "leafId": "ui-intent",
+      "x": 0.4669009,
+      "y": 0.3795629
+    },
+    "frontend/src/components/graph/nodeStyles.ts": {
+      "leafId": "ui-intent",
+      "x": 0.3506062,
+      "y": 0.4840683
+    },
+    "frontend/src/components/intent/AgentProgressCard.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.4510482,
+      "y": 0.4840683
+    },
+    "frontend/src/components/intent/ArtifactContentEditor.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.0853299,
+      "y": 0.5724226
+    },
+    "frontend/src/components/intent/ArtifactEditControls.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.1552527,
+      "y": 0.5724226
+    },
+    "frontend/src/components/intent/ArtifactHistoryDrawer.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.0909217,
+      "y": 0.6850228
+    },
+    "frontend/src/components/intent/ArtifactHistoryDrawer.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.1608445,
+      "y": 0.6850228
+    },
+    "frontend/src/components/intent/ArtifactMarkdown.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2482301,
+      "y": 0.5401814
+    },
+    "frontend/src/components/intent/ArtifactMarkdown.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2482301,
+      "y": 0.6187837
+    },
+    "frontend/src/components/intent/ArtifactViewer.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2482301,
+      "y": 0.7033246
+    },
+    "frontend/src/components/intent/CodeSection.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.1109645,
+      "y": 0.7787907
+    },
+    "frontend/src/components/intent/CodeSection.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.1109645,
+      "y": 0.847307
+    },
+    "frontend/src/components/intent/ComposePanel.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.1866206,
+      "y": 0.8058387
+    },
+    "frontend/src/components/intent/ComposePanel.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.136096,
+      "y": 0.9069575
+    },
+    "frontend/src/components/intent/DerivedItemCountChip.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2539633,
+      "y": 0.7573175
+    },
+    "frontend/src/components/intent/DerivedItemRow.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2539633,
+      "y": 0.8016909
+    },
+    "frontend/src/components/intent/GateCard.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.2539633,
+      "y": 0.8828146
+    },
+    "frontend/src/components/intent/HistorySection.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.362496,
+      "y": 0.5574794
+    },
+    "frontend/src/components/intent/IntentConfigurationDialog.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.362496,
+      "y": 0.6374682
+    },
+    "frontend/src/components/intent/IntentGraphPopover.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.4684531,
+      "y": 0.5466008
+    },
+    "frontend/src/components/intent/IntentGraphPopover.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.4684531,
+      "y": 0.6265897
+    },
+    "frontend/src/components/intent/IntentPhaseDiagram.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.350238,
+      "y": 0.7205252
+    },
+    "frontend/src/components/intent/IntentStageList.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.456195,
+      "y": 0.7205252
+    },
+    "frontend/src/components/intent/MethodologyReleaseBadge.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.3293326,
+      "y": 0.791094
+    },
+    "frontend/src/components/intent/MethodologyReleaseBadge.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.3293326,
+      "y": 0.8379942
+    },
+    "frontend/src/components/intent/NativeExportSetupDialog.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.3936606,
+      "y": 0.8158509
+    },
+    "frontend/src/components/intent/NativeExportSetupDialog.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.3605026,
+      "y": 0.9011556
+    },
+    "frontend/src/components/intent/PendingQuestionsTabs.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.4664597,
+      "y": 0.8029422
+    },
+    "frontend/src/components/intent/PendingQuestionsTabs.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.4664597,
+      "y": 0.8882469
+    },
+    "frontend/src/components/intent/ProvenanceTree.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.5680494,
+      "y": 0.1218591
+    },
+    "frontend/src/components/intent/ProvenanceTree.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.5680494,
+      "y": 0.2386205
+    },
+    "frontend/src/components/intent/QuorumEditPanel.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.6875525,
+      "y": 0.0937121
+    },
+    "frontend/src/components/intent/QuorumEditPanel.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.6875525,
+      "y": 0.1685917
+    },
+    "frontend/src/components/intent/RecomposePanel.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.6875525,
+      "y": 0.2556009
+    },
+    "frontend/src/components/intent/RecomposePanel.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.79312,
+      "y": 0.1234209
+    },
+    "frontend/src/components/intent/ScopeBadge.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.852752,
+      "y": 0.1234209
+    },
+    "frontend/src/components/intent/SensorChips.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.9029595,
+      "y": 0.1234209
+    },
+    "frontend/src/components/intent/SensorChips.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.7760524,
+      "y": 0.2401822
+    },
+    "frontend/src/components/intent/SensorDiagnostics.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.8356403,
+      "y": 0.2401822
+    },
+    "frontend/src/components/intent/SensorDiagnostics.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.9029154,
+      "y": 0.2401822
+    },
+    "frontend/src/components/intent/StageDetail.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.5329594,
+      "y": 0.352713
+    },
+    "frontend/src/components/intent/StageDetail.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.6147328,
+      "y": 0.352713
+    },
+    "frontend/src/components/intent/StageGridEditor.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.5363066,
+      "y": 0.4553641
+    },
+    "frontend/src/components/intent/StageReviewPanel.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.6180799,
+      "y": 0.4553641
+    },
+    "frontend/src/components/intent/StageReviewPanel.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.7119386,
+      "y": 0.4001338
+    },
+    "frontend/src/components/intent/UnitBranchEntry.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.8003448,
+      "y": 0.3251503
+    },
+    "frontend/src/components/intent/UnitLaneBoard.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.8003448,
+      "y": 0.414886
+    },
+    "frontend/src/components/intent/UnitLaneBoard.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.894004,
+      "y": 0.3872184
+    },
+    "frontend/src/components/intent/UsageMetrics.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.8459008,
+      "y": 0.4898695
+    },
+    "frontend/src/components/intent/UsageMetrics.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.5399624,
+      "y": 0.5571576
+    },
+    "frontend/src/components/intent/WaitingCard.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.6115349,
+      "y": 0.5571576
+    },
+    "frontend/src/components/intent/WorkProductsSection.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.5796612,
+      "y": 0.6353532
+    },
+    "frontend/src/components/intent/artifactAccent.ts": {
+      "leafId": "ui-intent",
+      "x": 0.5321094,
+      "y": 0.6943133
+    },
+    "frontend/src/components/intent/documentHelpers.test.ts": {
+      "leafId": "ui-intent",
+      "x": 0.6036819,
+      "y": 0.6943133
+    },
+    "frontend/src/components/intent/documentHelpers.ts": {
+      "leafId": "ui-intent",
+      "x": 0.6977362,
+      "y": 0.5318678
+    },
+    "frontend/src/components/intent/stageStyle.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.6977362,
+      "y": 0.5926693
+    },
+    "frontend/src/components/intent/workProductsFocus.ts": {
+      "leafId": "ui-intent",
+      "x": 0.6977362,
+      "y": 0.6450605
+    },
+    "frontend/src/components/observability/ActivityFeed.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.6977362,
+      "y": 0.6975919
+    },
+    "frontend/src/components/observability/AgentFocusCard.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.7749538,
+      "y": 0.5611637
+    },
+    "frontend/src/components/observability/AgentStatusCards.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.8457239,
+      "y": 0.5611637
+    },
+    "frontend/src/components/observability/BusinessView.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.9126694,
+      "y": 0.5611637
+    },
+    "frontend/src/components/observability/IntentStatusCards.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.7779256,
+      "y": 0.6744965
+    },
+    "frontend/src/components/observability/IterationDetailView.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.8410582,
+      "y": 0.6744965
+    },
+    "frontend/src/components/observability/PhaseBlock.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.9050319,
+      "y": 0.6744965
+    },
+    "frontend/src/components/observability/ProjectDiagram.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.556922,
+      "y": 0.7686169
+    },
+    "frontend/src/components/observability/StepNode.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.556922,
+      "y": 0.8335134
+    },
+    "frontend/src/components/observability/StuckAlert.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.6243948,
+      "y": 0.794347
+    },
+    "frontend/src/components/observability/TaskStatusRow.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.5288201,
+      "y": 0.8994018
+    },
+    "frontend/src/components/observability/buildInsights.ts": {
+      "leafId": "ui-intent",
+      "x": 0.5962929,
+      "y": 0.8994018
+    },
+    "frontend/src/components/observability/index.ts": {
+      "leafId": "ui-intent",
+      "x": 0.6567692,
+      "y": 0.7644464
+    },
+    "frontend/src/components/observability/phaseConfig.ts": {
+      "leafId": "ui-intent",
+      "x": 0.7151865,
+      "y": 0.7644464
+    },
+    "frontend/src/components/v2/UnitLaneGraph.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.7014516,
+      "y": 0.8361629
+    },
+    "frontend/src/components/v2/WorkflowScopeGraph.test.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.7014516,
+      "y": 0.9062217
+    },
+    "frontend/src/components/v2/WorkflowScopeGraph.tsx": {
+      "leafId": "ui-intent",
+      "x": 0.813139,
+      "y": 0.7850119
+    },
+    "frontend/src/components/v2/index.ts": {
+      "leafId": "ui-intent",
+      "x": 0.9029846,
+      "y": 0.7379335
+    },
+    "frontend/src/components/v2/scope-graph-utils.ts": {
+      "leafId": "ui-intent",
+      "x": 0.9029846,
+      "y": 0.7934949
+    },
+    "frontend/src/components/v2/unit-lane-graph.ts": {
+      "leafId": "ui-intent",
+      "x": 0.8105653,
+      "y": 0.8900666
+    },
+    "frontend/src/components/v2/unit-lane-layout.test.ts": {
+      "leafId": "ui-intent",
+      "x": 0.9004109,
+      "y": 0.8900666
+    },
+    "frontend/src/components/admin/AgentCredentialsCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.0689865,
+      "y": 0.1164761
+    },
+    "frontend/src/components/admin/AidlcReleasesTab.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.1591358,
+      "y": 0.1164761
+    },
+    "frontend/src/components/admin/AidlcReleasesTab.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.1505893,
+      "y": 0.2301717
+    },
+    "frontend/src/components/admin/AidlcReleasesTab.upgrade.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.2741902,
+      "y": 0.1321554
+    },
+    "frontend/src/components/admin/CodeCommitSourceControlCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.2741902,
+      "y": 0.2458509
+    },
+    "frontend/src/components/admin/ComposerCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.0860527,
+      "y": 0.35997
+    },
+    "frontend/src/components/admin/DefaultModelsCard.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.1556241,
+      "y": 0.35997
+    },
+    "frontend/src/components/admin/DefaultModelsCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.1300114,
+      "y": 0.4706463
+    },
+    "frontend/src/components/admin/DeploymentInfoCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.2536123,
+      "y": 0.322618
+    },
+    "frontend/src/components/admin/GitHubSourceControlCard.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.2536123,
+      "y": 0.3860581
+    },
+    "frontend/src/components/admin/GitHubSourceControlCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.2536123,
+      "y": 0.4654676
+    },
+    "frontend/src/components/admin/GlobalMcpServersCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.3351656,
+      "y": 0.1110337
+    },
+    "frontend/src/components/admin/GraphEnrichmentCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.4006286,
+      "y": 0.1110337
+    },
+    "frontend/src/components/admin/OAuthAppConfigForm.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.3731047,
+      "y": 0.1792397
+    },
+    "frontend/src/components/admin/OAuthAppConfigForm.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.478233,
+      "y": 0.132166
+    },
+    "frontend/src/components/admin/PrStrategyCard.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.3356353,
+      "y": 0.2466558
+    },
+    "frontend/src/components/admin/PrStrategyCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.4009771,
+      "y": 0.2466558
+    },
+    "frontend/src/components/admin/StageSkippingCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.4781118,
+      "y": 0.2466558
+    },
+    "frontend/src/components/admin/TrackerMigrationCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.3430101,
+      "y": 0.3540192
+    },
+    "frontend/src/components/admin/UserManagementCard.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.404873,
+      "y": 0.3540192
+    },
+    "frontend/src/components/admin/UserManagementCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.4746329,
+      "y": 0.3540192
+    },
+    "frontend/src/components/admin/tabs/EnvironmentRegistry.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.4127699,
+      "y": 0.4639013
+    },
+    "frontend/src/components/admin/tabs/EnvironmentsTab.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.1197184,
+      "y": 0.605126
+    },
+    "frontend/src/components/admin/tabs/EnvironmentsTab.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.1197184,
+      "y": 0.7139046
+    },
+    "frontend/src/components/admin/tabs/SourceControlTab.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.2371482,
+      "y": 0.5405324
+    },
+    "frontend/src/components/admin/tabs/ToolsRegistry.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.2371482,
+      "y": 0.649311
+    },
+    "frontend/src/components/admin/tabs/ToolsRegistry.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.1409824,
+      "y": 0.8349105
+    },
+    "frontend/src/components/admin/tabs/TrackersTab.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.2584122,
+      "y": 0.778931
+    },
+    "frontend/src/components/admin/tabs/environment-builder/ComputeSelector.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.2584122,
+      "y": 0.8835806
+    },
+    "frontend/src/components/admin/tabs/environment-builder/ComputeSelector.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.3276691,
+      "y": 0.5856364
+    },
+    "frontend/src/components/admin/tabs/environment-builder/EnvironmentBuilder.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.4389685,
+      "y": 0.5856364
+    },
+    "frontend/src/components/admin/tabs/environment-builder/EnvironmentRevisionWorkspace.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.4065989,
+      "y": 0.6973535
+    },
+    "frontend/src/components/admin/tabs/environment-builder/model.ts": {
+      "leafId": "ui-admin",
+      "x": 0.3638534,
+      "y": 0.7802196
+    },
+    "frontend/src/components/admin/tabs/environment-builder/ui.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.3638534,
+      "y": 0.8622893
+    },
+    "frontend/src/components/blocks/StageEditor.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.3638534,
+      "y": 0.9199187
+    },
+    "frontend/src/components/blocks/StageEditor.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.4751527,
+      "y": 0.837849
+    },
+    "frontend/src/components/blocks/WorkflowInsights.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.5811222,
+      "y": 0.1000418
+    },
+    "frontend/src/components/blocks/blockFields.ts": {
+      "leafId": "ui-admin",
+      "x": 0.5811222,
+      "y": 0.1780219
+    },
+    "frontend/src/components/project-settings/AgentTab.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.7002976,
+      "y": 0.1419401
+    },
+    "frontend/src/components/project-settings/EnvironmentTab.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.5752005,
+      "y": 0.2670247
+    },
+    "frontend/src/components/project-settings/EnvironmentTab.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.694376,
+      "y": 0.2670247
+    },
+    "frontend/src/components/project-settings/GeneralTab.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.814143,
+      "y": 0.1137017
+    },
+    "frontend/src/components/project-settings/MembersTab.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.9057984,
+      "y": 0.1137017
+    },
+    "frontend/src/components/project-settings/MembersTab.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.8479046,
+      "y": 0.2093369
+    },
+    "frontend/src/components/project-settings/RepositoriesTab.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.8479046,
+      "y": 0.2846798
+    },
+    "frontend/src/components/project-settings/RepositoriesTab.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.5750675,
+      "y": 0.3759469
+    },
+    "frontend/src/components/project-settings/SourceControlBindingSection.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.6691393,
+      "y": 0.3759469
+    },
+    "frontend/src/components/project-settings/SourceControlBindingSection.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.6119701,
+      "y": 0.4801714
+    },
+    "frontend/src/components/project-settings/TrackersTab.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.7321774,
+      "y": 0.4183536
+    },
+    "frontend/src/components/project-settings/TrackersTab.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.8037591,
+      "y": 0.3883637
+    },
+    "frontend/src/components/settings/AgentAuthenticationModeSettings.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.8943827,
+      "y": 0.3883637
+    },
+    "frontend/src/components/settings/AgentAuthenticationModeSettings.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.8489364,
+      "y": 0.4925881
+    },
+    "frontend/src/components/settings/AgentCredentialScopeCard.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.5710312,
+      "y": 0.5885532
+    },
+    "frontend/src/components/settings/AgentCredentialScopeCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.6783751,
+      "y": 0.5885532
+    },
+    "frontend/src/components/settings/AuthenticationImpactReview.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.5826172,
+      "y": 0.7037296
+    },
+    "frontend/src/components/settings/AuthenticationImpactReview.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.689961,
+      "y": 0.7037296
+    },
+    "frontend/src/components/settings/ConfigStatusBadge.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.5726787,
+      "y": 0.775369
+    },
+    "frontend/src/components/settings/CustomMcpServersSection.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.5726787,
+      "y": 0.8686835
+    },
+    "frontend/src/components/settings/CustomRulesSection.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.6800225,
+      "y": 0.8215961
+    },
+    "frontend/src/components/settings/SaveStatusButton.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.6800225,
+      "y": 0.9149106
+    },
+    "frontend/src/components/settings/SecretField.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.7718439,
+      "y": 0.5678303
+    },
+    "frontend/src/components/settings/SettingsCard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.8403007,
+      "y": 0.5678303
+    },
+    "frontend/src/components/settings/TierModelsSection.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.8010427,
+      "y": 0.6481861
+    },
+    "frontend/src/components/settings/agent-auth/bedrock-iam/BedrockIamWizard.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.9045298,
+      "y": 0.6029338
+    },
+    "frontend/src/components/settings/agent-auth/bedrock-iam/BedrockIamWizard.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.836073,
+      "y": 0.7220005
+    },
+    "frontend/src/components/settings/agent-auth/bedrock-iam/api.ts": {
+      "leafId": "ui-admin",
+      "x": 0.7852293,
+      "y": 0.7865245
+    },
+    "frontend/src/components/settings/agent-auth/bedrock-iam/index.test.tsx": {
+      "leafId": "ui-admin",
+      "x": 0.7852293,
+      "y": 0.8759488
+    },
+    "frontend/src/components/settings/agent-auth/bedrock-iam/index.ts": {
+      "leafId": "ui-admin",
+      "x": 0.8572205,
+      "y": 0.8030647
+    },
+    "frontend/src/components/settings/agent-auth/boundary.test.ts": {
+      "leafId": "ui-admin",
+      "x": 0.9080641,
+      "y": 0.8030647
+    },
+    "frontend/src/components/settings/agent-auth/contract.ts": {
+      "leafId": "ui-admin",
+      "x": 0.8887164,
+      "y": 0.8630734
+    },
+    "frontend/src/components/settings/agent-auth/registry.ts": {
+      "leafId": "ui-admin",
+      "x": 0.8575709,
+      "y": 0.9101443
+    },
+    "frontend/src/components/settings/agent-auth/summary.ts": {
+      "leafId": "ui-admin",
+      "x": 0.9084145,
+      "y": 0.9101443
+    },
+    "frontend/src/App.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1034886,
+      "y": 0.1282452
+    },
+    "frontend/src/auth/README.md": {
+      "leafId": "ui-shared",
+      "x": 0.1757029,
+      "y": 0.1282452
+    },
+    "frontend/src/components/AgentStreamPanel.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.2508738,
+      "y": 0.1282452
+    },
+    "frontend/src/components/AidlcSettingsPanel.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1065934,
+      "y": 0.2489459
+    },
+    "frontend/src/components/AidlcSettingsPanel.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1962605,
+      "y": 0.2489459
+    },
+    "frontend/src/components/CodeCommitConnectForm.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.2683267,
+      "y": 0.2489459
+    },
+    "frontend/src/components/CodeCommitConnectForm.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1204186,
+      "y": 0.362434
+    },
+    "frontend/src/components/CodeFileViewer.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1979571,
+      "y": 0.362434
+    },
+    "frontend/src/components/CollaborativeTextarea.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1379785,
+      "y": 0.4607184
+    },
+    "frontend/src/components/CollaborativeTextarea.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.256198,
+      "y": 0.4036459
+    },
+    "frontend/src/components/ConnectionStatus.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.3447437,
+      "y": 0.0840066
+    },
+    "frontend/src/components/CreateProjectModal.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.3447437,
+      "y": 0.1808655
+    },
+    "frontend/src/components/CreateProjectModal.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.4472775,
+      "y": 0.1608189
+    },
+    "frontend/src/components/ErrorBoundary.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.3994128,
+      "y": 0.2716439
+    },
+    "frontend/src/components/GitConnectButton.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.3547904,
+      "y": 0.3093067
+    },
+    "frontend/src/components/GitConnectButton.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.3547904,
+      "y": 0.378379
+    },
+    "frontend/src/components/GitFileBrowser.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.4573242,
+      "y": 0.3546824
+    },
+    "frontend/src/components/GitRepoLink.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.3342546,
+      "y": 0.4628425
+    },
+    "frontend/src/components/GitRepoSelect.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.4367884,
+      "y": 0.4628425
+    },
+    "frontend/src/components/IntentSourcePicker.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1211752,
+      "y": 0.5578878
+    },
+    "frontend/src/components/JiraConnectButton.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1211752,
+      "y": 0.6407913
+    },
+    "frontend/src/components/JiraProjectPickerDialog.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1211752,
+      "y": 0.6980514
+    },
+    "frontend/src/components/JiraProjectPickerDialog.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.2361861,
+      "y": 0.5527784
+    },
+    "frontend/src/components/MigrateTrackerCard.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.2361861,
+      "y": 0.6356085
+    },
+    "frontend/src/components/OAuthCallbackShell.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.2361861,
+      "y": 0.6979781
+    },
+    "frontend/src/components/PrCheckoutCommand.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1000726,
+      "y": 0.7715514
+    },
+    "frontend/src/components/ProtectedRoute.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1689061,
+      "y": 0.7715514
+    },
+    "frontend/src/components/QuestionEditor.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.1292735,
+      "y": 0.8771486
+    },
+    "frontend/src/components/ReviewEditor.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.2442844,
+      "y": 0.7887844
+    },
+    "frontend/src/components/TimelinePanel.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.2442844,
+      "y": 0.8943815
+    },
+    "frontend/src/components/TrackerIssueListPanel.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.3595809,
+      "y": 0.559168
+    },
+    "frontend/src/components/domain/AgentStatusBadge.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.4653233,
+      "y": 0.559168
+    },
+    "frontend/src/components/domain/ArtifactCard.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.3551327,
+      "y": 0.671195
+    },
+    "frontend/src/components/domain/ArtifactGraphPopover.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.4608751,
+      "y": 0.671195
+    },
+    "frontend/src/components/domain/PhaseProgressRing.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.33088,
+      "y": 0.7852262
+    },
+    "frontend/src/components/domain/PresenceAvatars.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.4045991,
+      "y": 0.7852262
+    },
+    "frontend/src/components/icons/git-providers.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.4699234,
+      "y": 0.7852262
+    },
+    "frontend/src/components/layout/ActivityPanel.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.3962042,
+      "y": 0.892014
+    },
+    "frontend/src/components/layout/AppHeader.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.5509348,
+      "y": 0.1386612
+    },
+    "frontend/src/components/layout/AppShell.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.6424364,
+      "y": 0.1386612
+    },
+    "frontend/src/components/layout/AppShell.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.5934482,
+      "y": 0.2527897
+    },
+    "frontend/src/components/layout/AppSidebar.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.7218153,
+      "y": 0.1780885
+    },
+    "frontend/src/components/layout/AppSidebar.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8193557,
+      "y": 0.1475729
+    },
+    "frontend/src/components/layout/CommandPalette.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.9097953,
+      "y": 0.1475729
+    },
+    "frontend/src/components/layout/IntentActivityPanel.personaEvents.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8491204,
+      "y": 0.2617014
+    },
+    "frontend/src/components/layout/IntentActivityPanel.releaseEvents.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.5546519,
+      "y": 0.3405402
+    },
+    "frontend/src/components/layout/IntentActivityPanel.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.5546519,
+      "y": 0.4502339
+    },
+    "frontend/src/components/layout/IntentActivityPanel.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.6653803,
+      "y": 0.4019107
+    },
+    "frontend/src/components/layout/IntentPipelineBar.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.7616394,
+      "y": 0.3510692
+    },
+    "frontend/src/components/layout/IntentPipelineBar.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8541726,
+      "y": 0.3510692
+    },
+    "frontend/src/components/layout/SprintLayout.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.9240148,
+      "y": 0.3510692
+    },
+    "frontend/src/components/layout/SprintPipelineBar.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.7908529,
+      "y": 0.460763
+    },
+    "frontend/src/components/layout/StatusBar.test.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8989312,
+      "y": 0.4273637
+    },
+    "frontend/src/components/layout/StatusBar.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8989312,
+      "y": 0.4782052
+    },
+    "frontend/src/components/theme/ThemeProvider.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.5355754,
+      "y": 0.561768
+    },
+    "frontend/src/components/theme/ThemeToggle.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.5977507,
+      "y": 0.561768
+    },
+    "frontend/src/components/ui/accordion.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.564122,
+      "y": 0.6354285
+    },
+    "frontend/src/components/ui/alert-dialog.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.564122,
+      "y": 0.6939011
+    },
+    "frontend/src/components/ui/avatar.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.6529025,
+      "y": 0.5631849
+    },
+    "frontend/src/components/ui/badge.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.7045913,
+      "y": 0.5631849
+    },
+    "frontend/src/components/ui/button.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.6779861,
+      "y": 0.6424695
+    },
+    "frontend/src/components/ui/card.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.6779861,
+      "y": 0.6995252
+    },
+    "frontend/src/components/ui/collapsible.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.5494196,
+      "y": 0.7481481
+    },
+    "frontend/src/components/ui/command.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.5494196,
+      "y": 0.8182244
+    },
+    "frontend/src/components/ui/dialog.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.6259388,
+      "y": 0.798953
+    },
+    "frontend/src/components/ui/dropdown-menu.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.5784659,
+      "y": 0.9042946
+    },
+    "frontend/src/components/ui/input.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.69233,
+      "y": 0.7545703
+    },
+    "frontend/src/components/ui/label.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.69233,
+      "y": 0.8041415
+    },
+    "frontend/src/components/ui/popover.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.69233,
+      "y": 0.8575185
+    },
+    "frontend/src/components/ui/progress.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.69233,
+      "y": 0.9132889
+    },
+    "frontend/src/components/ui/resizable.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.7749098,
+      "y": 0.538739
+    },
+    "frontend/src/components/ui/scroll-area.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.7749098,
+      "y": 0.5972057
+    },
+    "frontend/src/components/ui/select.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8627112,
+      "y": 0.5700712
+    },
+    "frontend/src/components/ui/separator.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.9224188,
+      "y": 0.5700712
+    },
+    "frontend/src/components/ui/sheet.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.7731308,
+      "y": 0.6794578
+    },
+    "frontend/src/components/ui/skeleton.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8279499,
+      "y": 0.6794578
+    },
+    "frontend/src/components/ui/switch.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8894366,
+      "y": 0.6497452
+    },
+    "frontend/src/components/ui/tabs.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8894366,
+      "y": 0.7006652
+    },
+    "frontend/src/components/ui/textarea.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.7524348,
+      "y": 0.7715669
+    },
+    "frontend/src/components/ui/toggle-group.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.803726,
+      "y": 0.7715669
+    },
+    "frontend/src/components/ui/tooltip.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8585381,
+      "y": 0.7715669
+    },
+    "frontend/src/components/ui/tree-view.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.8072469,
+      "y": 0.876158
+    },
+    "frontend/src/dev/agent-output-preview.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.9121895,
+      "y": 0.8101799
+    },
+    "frontend/src/main.tsx": {
+      "leafId": "ui-shared",
+      "x": 0.9121895,
+      "y": 0.914771
+    },
+    "frontend/src/services/adminUsers.ts": {
+      "leafId": "client-state-api",
+      "x": 0.1082206,
+      "y": 0.1100233
+    },
+    "frontend/src/services/agents.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.2210224,
+      "y": 0.1100233
+    },
+    "frontend/src/services/agents.ts": {
+      "leafId": "client-state-api",
+      "x": 0.1732418,
+      "y": 0.2340424
+    },
+    "frontend/src/services/aidlcReleases.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.3936554,
+      "y": 0.1237834
+    },
+    "frontend/src/services/aidlcReleases.ts": {
+      "leafId": "client-state-api",
+      "x": 0.3936554,
+      "y": 0.2478024
+    },
+    "frontend/src/services/api.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.1381326,
+      "y": 0.3625567
+    },
+    "frontend/src/services/api.ts": {
+      "leafId": "client-state-api",
+      "x": 0.1381326,
+      "y": 0.4728375
+    },
+    "frontend/src/services/auth.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.2850668,
+      "y": 0.4222789
+    },
+    "frontend/src/services/auth.ts": {
+      "leafId": "client-state-api",
+      "x": 0.4277879,
+      "y": 0.4222789
+    },
+    "frontend/src/services/authErrors.ts": {
+      "leafId": "client-state-api",
+      "x": 0.1285845,
+      "y": 0.5830568
+    },
+    "frontend/src/services/blocks.ts": {
+      "leafId": "client-state-api",
+      "x": 0.1285845,
+      "y": 0.6915307
+    },
+    "frontend/src/services/codeFiles.ts": {
+      "leafId": "client-state-api",
+      "x": 0.2417878,
+      "y": 0.5713185
+    },
+    "frontend/src/services/codecommit.ts": {
+      "leafId": "client-state-api",
+      "x": 0.2417878,
+      "y": 0.6797923
+    },
+    "frontend/src/services/discussions.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.1058967,
+      "y": 0.8445337
+    },
+    "frontend/src/services/discussions.ts": {
+      "leafId": "client-state-api",
+      "x": 0.2191,
+      "y": 0.8445337
+    },
+    "frontend/src/services/environments.ts": {
+      "leafId": "client-state-api",
+      "x": 0.394057,
+      "y": 0.613624
+    },
+    "frontend/src/services/generalInfo.ts": {
+      "leafId": "client-state-api",
+      "x": 0.3239204,
+      "y": 0.744489
+    },
+    "frontend/src/services/gitProvider.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.4311307,
+      "y": 0.744489
+    },
+    "frontend/src/services/gitProvider.ts": {
+      "leafId": "client-state-api",
+      "x": 0.394057,
+      "y": 0.8669248
+    },
+    "frontend/src/services/intents.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.5311027,
+      "y": 0.197893
+    },
+    "frontend/src/services/intents.ts": {
+      "leafId": "client-state-api",
+      "x": 0.6780807,
+      "y": 0.197893
+    },
+    "frontend/src/services/projects.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.8673916,
+      "y": 0.1028918
+    },
+    "frontend/src/services/projects.ts": {
+      "leafId": "client-state-api",
+      "x": 0.8673916,
+      "y": 0.2368248
+    },
+    "frontend/src/services/questions.ts": {
+      "leafId": "client-state-api",
+      "x": 0.5324381,
+      "y": 0.4239889
+    },
+    "frontend/src/services/realtime.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.6261197,
+      "y": 0.4239889
+    },
+    "frontend/src/services/realtime.ts": {
+      "leafId": "client-state-api",
+      "x": 0.7707156,
+      "y": 0.4239889
+    },
+    "frontend/src/services/requirements.ts": {
+      "leafId": "client-state-api",
+      "x": 0.8961804,
+      "y": 0.3732523
+    },
+    "frontend/src/services/reviews.ts": {
+      "leafId": "client-state-api",
+      "x": 0.8961804,
+      "y": 0.4654152
+    },
+    "frontend/src/services/sessionExpiry.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.5618471,
+      "y": 0.5746505
+    },
+    "frontend/src/services/sessionExpiry.ts": {
+      "leafId": "client-state-api",
+      "x": 0.5618471,
+      "y": 0.6784622
+    },
+    "frontend/src/services/sourceControl.ts": {
+      "leafId": "client-state-api",
+      "x": 0.6779232,
+      "y": 0.6199635
+    },
+    "frontend/src/services/sprintGraph.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.6173435,
+      "y": 0.761167
+    },
+    "frontend/src/services/sprintGraph.ts": {
+      "leafId": "client-state-api",
+      "x": 0.5474159,
+      "y": 0.8690594
+    },
+    "frontend/src/services/sprints.ts": {
+      "leafId": "client-state-api",
+      "x": 0.6373036,
+      "y": 0.8690594
+    },
+    "frontend/src/services/tasks.ts": {
+      "leafId": "client-state-api",
+      "x": 0.7072312,
+      "y": 0.8690594
+    },
+    "frontend/src/services/timelineEvents.ts": {
+      "leafId": "client-state-api",
+      "x": 0.7619893,
+      "y": 0.6038628
+    },
+    "frontend/src/services/trackers.ts": {
+      "leafId": "client-state-api",
+      "x": 0.8650595,
+      "y": 0.6038628
+    },
+    "frontend/src/services/userStories.ts": {
+      "leafId": "client-state-api",
+      "x": 0.7700934,
+      "y": 0.7405751
+    },
+    "frontend/src/services/workflows.test.ts": {
+      "leafId": "client-state-api",
+      "x": 0.8731636,
+      "y": 0.7405751
+    },
+    "frontend/src/services/workflows.ts": {
+      "leafId": "client-state-api",
+      "x": 0.8364898,
+      "y": 0.8645681
+    },
+    "frontend/src/contexts/AuthContext.test.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.1314585,
+      "y": 0.1229593
+    },
+    "frontend/src/contexts/AuthContext.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.1314585,
+      "y": 0.2561685
+    },
+    "frontend/src/contexts/IntentContext.test.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.2714333,
+      "y": 0.1971692
+    },
+    "frontend/src/contexts/IntentContext.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.4287738,
+      "y": 0.1971692
+    },
+    "frontend/src/contexts/SprintContext.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.117837,
+      "y": 0.4314765
+    },
+    "frontend/src/hooks/useAgentStatus.ts": {
+      "leafId": "client-state-state",
+      "x": 0.2401753,
+      "y": 0.4314765
+    },
+    "frontend/src/hooks/useAuthSession.ts": {
+      "leafId": "client-state-state",
+      "x": 0.3655671,
+      "y": 0.3543295
+    },
+    "frontend/src/hooks/useAutoSave.test.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.3655671,
+      "y": 0.4554276
+    },
+    "frontend/src/hooks/useAutoSave.ts": {
+      "leafId": "client-state-state",
+      "x": 0.4715878,
+      "y": 0.4314765
+    },
+    "frontend/src/hooks/useCollaborativeArtifact.ts": {
+      "leafId": "client-state-state",
+      "x": 0.1465149,
+      "y": 0.5837334
+    },
+    "frontend/src/hooks/useCollaborativeArtifactContent.ts": {
+      "leafId": "client-state-state",
+      "x": 0.1465149,
+      "y": 0.6872467
+    },
+    "frontend/src/hooks/useCollaborativeInception.test.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.1465149,
+      "y": 0.7719022
+    },
+    "frontend/src/hooks/useCollaborativeInception.ts": {
+      "leafId": "client-state-state",
+      "x": 0.2824501,
+      "y": 0.6683889
+    },
+    "frontend/src/hooks/useCollaborativeIntentDraft.test.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.1963751,
+      "y": 0.8718816
+    },
+    "frontend/src/hooks/useCollaborativeIntentDraft.ts": {
+      "leafId": "client-state-state",
+      "x": 0.4247341,
+      "y": 0.6160214
+    },
+    "frontend/src/hooks/useCollaborativeLifecycle.test.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.4247341,
+      "y": 0.7582135
+    },
+    "frontend/src/hooks/useCollaborativeStructuredAnswer.ts": {
+      "leafId": "client-state-state",
+      "x": 0.4247341,
+      "y": 0.8782594
+    },
+    "frontend/src/hooks/useConstructionStatus.ts": {
+      "leafId": "client-state-state",
+      "x": 0.58555,
+      "y": 0.1484742
+    },
+    "frontend/src/hooks/useDebounce.ts": {
+      "leafId": "client-state-state",
+      "x": 0.58555,
+      "y": 0.2642992
+    },
+    "frontend/src/hooks/useDiscussion.ts": {
+      "leafId": "client-state-state",
+      "x": 0.7117353,
+      "y": 0.179785
+    },
+    "frontend/src/hooks/useGitProviderStatus.ts": {
+      "leafId": "client-state-state",
+      "x": 0.8092824,
+      "y": 0.1308687
+    },
+    "frontend/src/hooks/useIntentEvents.test.ts": {
+      "leafId": "client-state-state",
+      "x": 0.8942982,
+      "y": 0.1308687
+    },
+    "frontend/src/hooks/useIntentEvents.ts": {
+      "leafId": "client-state-state",
+      "x": 0.8545443,
+      "y": 0.2466937
+    },
+    "frontend/src/hooks/useIntentGraph.test.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.60692,
+      "y": 0.3489547
+    },
+    "frontend/src/hooks/useIntentGraph.ts": {
+      "leafId": "client-state-state",
+      "x": 0.60692,
+      "y": 0.4593274
+    },
+    "frontend/src/hooks/useMediaQuery.ts": {
+      "leafId": "client-state-state",
+      "x": 0.7584358,
+      "y": 0.3224703
+    },
+    "frontend/src/hooks/useObservability.ts": {
+      "leafId": "client-state-state",
+      "x": 0.7584358,
+      "y": 0.432843
+    },
+    "frontend/src/hooks/usePresence.ts": {
+      "leafId": "client-state-state",
+      "x": 0.8798748,
+      "y": 0.3534621
+    },
+    "frontend/src/hooks/useProjectSort.ts": {
+      "leafId": "client-state-state",
+      "x": 0.8798748,
+      "y": 0.4638348
+    },
+    "frontend/src/hooks/useProjectsCache.test.ts": {
+      "leafId": "client-state-state",
+      "x": 0.5695921,
+      "y": 0.6232993
+    },
+    "frontend/src/hooks/useProjectsCache.ts": {
+      "leafId": "client-state-state",
+      "x": 0.6971007,
+      "y": 0.6232993
+    },
+    "frontend/src/hooks/useQuestionAnchor.ts": {
+      "leafId": "client-state-state",
+      "x": 0.8084476,
+      "y": 0.5903616
+    },
+    "frontend/src/hooks/useResizablePanel.ts": {
+      "leafId": "client-state-state",
+      "x": 0.8921401,
+      "y": 0.5903616
+    },
+    "frontend/src/hooks/useSprintEvents.ts": {
+      "leafId": "client-state-state",
+      "x": 0.8558675,
+      "y": 0.6973057
+    },
+    "frontend/src/hooks/useSprintGraph.ts": {
+      "leafId": "client-state-state",
+      "x": 0.5800557,
+      "y": 0.7903252
+    },
+    "frontend/src/hooks/useTrackerProviders.ts": {
+      "leafId": "client-state-state",
+      "x": 0.5800557,
+      "y": 0.8949835
+    },
+    "frontend/src/hooks/useYjsDocument.test.tsx": {
+      "leafId": "client-state-state",
+      "x": 0.7077491,
+      "y": 0.8349017
+    },
+    "frontend/src/hooks/useYjsDocument.ts": {
+      "leafId": "client-state-state",
+      "x": 0.8560524,
+      "y": 0.8349017
+    },
+    "frontend/src/lib/agentCli.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.1536002,
+      "y": 0.1181944
+    },
+    "frontend/src/lib/agentCredentialFormat.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.1536002,
+      "y": 0.2115183
+    },
+    "frontend/src/lib/agentCredentialFormat.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.1536002,
+      "y": 0.2861125
+    },
+    "frontend/src/lib/aidlcSettings.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.3091719,
+      "y": 0.1927887
+    },
+    "frontend/src/lib/appOrigin.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.4422719,
+      "y": 0.1148279
+    },
+    "frontend/src/lib/appOrigin.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.4422719,
+      "y": 0.2021231
+    },
+    "frontend/src/lib/autonomy.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.4422719,
+      "y": 0.2800838
+    },
+    "frontend/src/lib/buildSprintDescription.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.0932873,
+      "y": 0.3959871
+    },
+    "frontend/src/lib/collaborativeSave.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.1814249,
+      "y": 0.3959871
+    },
+    "frontend/src/lib/collaborativeSave.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.1485776,
+      "y": 0.5067299
+    },
+    "frontend/src/lib/discussion.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.3096908,
+      "y": 0.4323601
+    },
+    "frontend/src/lib/discussion.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.4478134,
+      "y": 0.4323601
+    },
+    "frontend/src/lib/intentPhases.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.1430194,
+      "y": 0.5860843
+    },
+    "frontend/src/lib/intentRecovery.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.1430194,
+      "y": 0.6830744
+    },
+    "frontend/src/lib/intentRecovery.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.2780288,
+      "y": 0.640093
+    },
+    "frontend/src/lib/intentSectionPreference.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.1954494,
+      "y": 0.7788692
+    },
+    "frontend/src/lib/intentSectionPreference.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.1216921,
+      "y": 0.8801076
+    },
+    "frontend/src/lib/intentStageSelection.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.2567015,
+      "y": 0.8801076
+    },
+    "frontend/src/lib/intentStageSelection.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.4217096,
+      "y": 0.5770829
+    },
+    "frontend/src/lib/metricAggregation.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.4217096,
+      "y": 0.6911266
+    },
+    "frontend/src/lib/metricAggregation.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.4217096,
+      "y": 0.8553752
+    },
+    "frontend/src/lib/observability/buildFocusSentence.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.5994123,
+      "y": 0.1119872
+    },
+    "frontend/src/lib/observability/fetchProjectInfos.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.5994123,
+      "y": 0.2326683
+    },
+    "frontend/src/lib/observability/l2Intelligence.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.7370288,
+      "y": 0.1846411
+    },
+    "frontend/src/lib/observability/toolLabels.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.8638767,
+      "y": 0.1019991
+    },
+    "frontend/src/lib/observability/useObservabilityEvents.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.8638767,
+      "y": 0.2226802
+    },
+    "frontend/src/lib/persistentCache.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.5865306,
+      "y": 0.3674418
+    },
+    "frontend/src/lib/questionAnchor.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.5865306,
+      "y": 0.469468
+    },
+    "frontend/src/lib/realtimeToken.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.7092997,
+      "y": 0.4073484
+    },
+    "frontend/src/lib/realtimeToken.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.8490293,
+      "y": 0.381908
+    },
+    "frontend/src/lib/scope-utils.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.8490293,
+      "y": 0.4839342
+    },
+    "frontend/src/lib/seqDeduplicator.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.5604295,
+      "y": 0.5831565
+    },
+    "frontend/src/lib/sprintStatus.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.6625258,
+      "y": 0.5831565
+    },
+    "frontend/src/lib/timeAgo.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.6150567,
+      "y": 0.7024065
+    },
+    "frontend/src/lib/timeAgo.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.7431546,
+      "y": 0.6286246
+    },
+    "frontend/src/lib/trackerProviders.tsx": {
+      "leafId": "client-state-helpers",
+      "x": 0.8543581,
+      "y": 0.5935096
+    },
+    "frontend/src/lib/trackerSourceLabel.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.8543581,
+      "y": 0.7127596
+    },
+    "frontend/src/lib/trackerSourceLabel.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.5627869,
+      "y": 0.7995537
+    },
+    "frontend/src/lib/utils.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.6420911,
+      "y": 0.7995537
+    },
+    "frontend/src/lib/workProductsPreference.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.5922646,
+      "y": 0.8953964
+    },
+    "frontend/src/lib/workProductsPreference.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.7382856,
+      "y": 0.7864704
+    },
+    "frontend/src/lib/yjsSeed.test.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.7382856,
+      "y": 0.8823131
+    },
+    "frontend/src/lib/yjsSeed.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.8722811,
+      "y": 0.8026737
+    },
+    "frontend/src/utils/colors.ts": {
+      "leafId": "client-state-helpers",
+      "x": 0.8722811,
+      "y": 0.8985164
+    },
+    "frontend/public/logo.svg": {
+      "leafId": "frontend-platform-assets",
+      "x": 0.2367329,
+      "y": 0.4472776
+    },
+    "frontend/src/assets/react.svg": {
+      "leafId": "frontend-platform-assets",
+      "x": 0.2367329,
+      "y": 0.8850776
+    },
+    "frontend/src/index.css": {
+      "leafId": "frontend-platform-assets",
+      "x": 0.6762929,
+      "y": 0.50176
+    },
+    "frontend/.env.example": {
+      "leafId": "frontend-platform-build",
+      "x": 0.1133655,
+      "y": 0.1678674
+    },
+    "frontend/.gitignore": {
+      "leafId": "frontend-platform-build",
+      "x": 0.2214698,
+      "y": 0.1678674
+    },
+    "frontend/README.md": {
+      "leafId": "frontend-platform-build",
+      "x": 0.3514965,
+      "y": 0.1678674
+    },
+    "frontend/agent-output-preview.html": {
+      "leafId": "frontend-platform-build",
+      "x": 0.5178966,
+      "y": 0.1091197
+    },
+    "frontend/components.json": {
+      "leafId": "frontend-platform-build",
+      "x": 0.5178966,
+      "y": 0.2130272
+    },
+    "frontend/index.html": {
+      "leafId": "frontend-platform-build",
+      "x": 0.6562694,
+      "y": 0.1678674
+    },
+    "frontend/package-lock.json": {
+      "leafId": "frontend-platform-build",
+      "x": 0.3817651,
+      "y": 0.6056674
+    },
+    "frontend/package.json": {
+      "leafId": "frontend-platform-build",
+      "x": 0.7956528,
+      "y": 0.182137
+    },
+    "frontend/postcss.config.js": {
+      "leafId": "frontend-platform-build",
+      "x": 0.9138877,
+      "y": 0.182137
+    },
+    "frontend/src/test/setup.ts": {
+      "leafId": "frontend-platform-build",
+      "x": 0.7626239,
+      "y": 0.3580977
+    },
+    "frontend/tailwind.config.js": {
+      "leafId": "frontend-platform-build",
+      "x": 0.7626239,
+      "y": 0.4736651
+    },
+    "frontend/tsconfig.app.json": {
+      "leafId": "frontend-platform-build",
+      "x": 0.8808589,
+      "y": 0.4158814
+    },
+    "frontend/tsconfig.json": {
+      "leafId": "frontend-platform-build",
+      "x": 0.7884075,
+      "y": 0.5717699
+    },
+    "frontend/tsconfig.node.json": {
+      "leafId": "frontend-platform-build",
+      "x": 0.7884075,
+      "y": 0.681929
+    },
+    "frontend/tsconfig.test.json": {
+      "leafId": "frontend-platform-build",
+      "x": 0.9066424,
+      "y": 0.641608
+    },
+    "frontend/vite.config.ts": {
+      "leafId": "frontend-platform-build",
+      "x": 0.7590541,
+      "y": 0.8456636
+    },
+    "frontend/vitest.config.ts": {
+      "leafId": "frontend-platform-build",
+      "x": 0.877289,
+      "y": 0.8456636
+    },
+    "lambda/intent-pin-lookup/index.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.1306698,
+      "y": 0.1326773
+    },
+    "lambda/intent-pin-lookup/package.json": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.1306698,
+      "y": 0.2328165
+    },
+    "lambda/intent-pin-lookup/test/index.test.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.2688996,
+      "y": 0.1640992
+    },
+    "lambda/intents/attachments.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.1986698,
+      "y": 0.3055479
+    },
+    "lambda/intents/audit.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.4275389,
+      "y": 0.1440677
+    },
+    "lambda/intents/impact.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.4275389,
+      "y": 0.2855164
+    },
+    "lambda/intents/index.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.2893091,
+      "y": 0.5147792
+    },
+    "lambda/intents/knowledge-graph.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.1315572,
+      "y": 0.8111305
+    },
+    "lambda/intents/native-export.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.3009249,
+      "y": 0.8111305
+    },
+    "lambda/intents/package.json": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.4586768,
+      "y": 0.7271255
+    },
+    "lambda/intents/test/attachments.test.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.4586768,
+      "y": 0.8555549
+    },
+    "lambda/intents/test/audit.test.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.5901989,
+      "y": 0.1576412
+    },
+    "lambda/intents/test/gate-answer-race.test.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.7438202,
+      "y": 0.1576412
+    },
+    "lambda/intents/test/impact.test.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.8824903,
+      "y": 0.1576412
+    },
+    "lambda/intents/test/intents.test.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.7288691,
+      "y": 0.4818831
+    },
+    "lambda/intents/test/knowledge-graph.test.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.6247705,
+      "y": 0.8260019
+    },
+    "lambda/intents/test/native-export.test.js": {
+      "leafId": "intent-api-lifecycle",
+      "x": 0.8354614,
+      "y": 0.8260019
+    },
+    "lambda/building-blocks/index.js": {
+      "leafId": "intent-api-authoring",
+      "x": 0.20852,
+      "y": 0.1705949
+    },
+    "lambda/building-blocks/package.json": {
+      "leafId": "intent-api-authoring",
+      "x": 0.3884946,
+      "y": 0.1705949
+    },
+    "lambda/building-blocks/test/building-blocks.test.js": {
+      "leafId": "intent-api-authoring",
+      "x": 0.2404146,
+      "y": 0.3946549
+    },
+    "lambda/seed-blocks/index.js": {
+      "leafId": "intent-api-authoring",
+      "x": 0.5045244,
+      "y": 0.28802
+    },
+    "lambda/seed-blocks/package.json": {
+      "leafId": "intent-api-authoring",
+      "x": 0.1716491,
+      "y": 0.5443169
+    },
+    "lambda/seed-blocks/test/seed-blocks.test.js": {
+      "leafId": "intent-api-authoring",
+      "x": 0.1716491,
+      "y": 0.758057
+    },
+    "lambda/workflows/index.js": {
+      "leafId": "intent-api-authoring",
+      "x": 0.435759,
+      "y": 0.72582
+    },
+    "lambda/workflows/package.json": {
+      "leafId": "intent-api-authoring",
+      "x": 0.6225088,
+      "y": 0.1698725
+    },
+    "lambda/workflows/test/aidlc-release-upgrade.test.js": {
+      "leafId": "intent-api-authoring",
+      "x": 0.797959,
+      "y": 0.1698725
+    },
+    "lambda/workflows/test/aidlc-releases.test.js": {
+      "leafId": "intent-api-authoring",
+      "x": 0.7641098,
+      "y": 0.4553784
+    },
+    "lambda/workflows/test/workflows.test.js": {
+      "leafId": "intent-api-authoring",
+      "x": 0.7641098,
+      "y": 0.7872659
+    },
+    "lambda/v2-orchestrator/index.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.2353667,
+      "y": 0.211815
+    },
+    "lambda/v2-orchestrator/package.json": {
+      "leafId": "orchestrator-flow",
+      "x": 0.0841337,
+      "y": 0.4615599
+    },
+    "lambda/v2-orchestrator/test/construction-autonomy-gates.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.2590603,
+      "y": 0.4615599
+    },
+    "lambda/v2-orchestrator/test/construction-autonomy-grant-store.integration.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.5059055,
+      "y": 0.1589329
+    },
+    "lambda/v2-orchestrator/test/fixtures/engine-gate-before-recovery.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.5059055,
+      "y": 0.3077974
+    },
+    "lambda/v2-orchestrator/test/intent-settings-reach.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.5059055,
+      "y": 0.4625694
+    },
+    "lambda/v2-orchestrator/test/learnings-ritual.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.1855929,
+      "y": 0.6271021
+    },
+    "lambda/v2-orchestrator/test/orchestrator-replay.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.1855929,
+      "y": 0.8151572
+    },
+    "lambda/v2-orchestrator/test/orchestrator.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.4561317,
+      "y": 0.7515049
+    },
+    "lambda/v2-orchestrator/test/poc/poc-a-wavefront.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.7018267,
+      "y": 0.1554289
+    },
+    "lambda/v2-orchestrator/test/poc/poc-b-multi-callback.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.8708479,
+      "y": 0.1554289
+    },
+    "lambda/v2-orchestrator/test/poc/poc-c-interrupted-step.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.6758404,
+      "y": 0.3264618
+    },
+    "lambda/v2-orchestrator/test/poc/poc-d-async-stage.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.8448616,
+      "y": 0.3264618
+    },
+    "lambda/v2-orchestrator/test/release-coexistence-simulation.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.7705388,
+      "y": 0.4881219
+    },
+    "lambda/v2-orchestrator/test/skeleton-switch.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.6606957,
+      "y": 0.6980218
+    },
+    "lambda/v2-orchestrator/test/stage-loopback.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.8297169,
+      "y": 0.6980218
+    },
+    "lambda/v2-orchestrator/test/stage-skip.test.js": {
+      "leafId": "orchestrator-flow",
+      "x": 0.7705388,
+      "y": 0.8826928
+    },
+    "lambda/v2-orchestrator/gate-callback.js": {
+      "leafId": "orchestrator-gates",
+      "x": 0.1389978,
+      "y": 0.1657481
+    },
+    "lambda/v2-orchestrator/pr-attribution.js": {
+      "leafId": "orchestrator-gates",
+      "x": 0.241882,
+      "y": 0.1657481
+    },
+    "lambda/v2-orchestrator/quorum-edit.js": {
+      "leafId": "orchestrator-gates",
+      "x": 0.1633242,
+      "y": 0.4384448
+    },
+    "lambda/v2-orchestrator/section.js": {
+      "leafId": "orchestrator-gates",
+      "x": 0.4398207,
+      "y": 0.3366567
+    },
+    "lambda/v2-orchestrator/test/gate-callback.test.js": {
+      "leafId": "orchestrator-gates",
+      "x": 0.1400014,
+      "y": 0.7744567
+    },
+    "lambda/v2-orchestrator/test/gate-findings.test.js": {
+      "leafId": "orchestrator-gates",
+      "x": 0.4164979,
+      "y": 0.7744567
+    },
+    "lambda/v2-orchestrator/test/lane-gate-resume.test.js": {
+      "leafId": "orchestrator-gates",
+      "x": 0.7764965,
+      "y": 0.1788919
+    },
+    "lambda/v2-orchestrator/test/quorum-edit.test.js": {
+      "leafId": "orchestrator-gates",
+      "x": 0.7764965,
+      "y": 0.3900341
+    },
+    "lambda/v2-orchestrator/test/section-integration.test.js": {
+      "leafId": "orchestrator-gates",
+      "x": 0.7764965,
+      "y": 0.62973
+    },
+    "lambda/v2-orchestrator/test/section.test.js": {
+      "leafId": "orchestrator-gates",
+      "x": 0.7764965,
+      "y": 0.8563878
+    },
+    "lambda/agentcore/command-registry.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.0775205,
+      "y": 0.1060673
+    },
+    "lambda/agentcore/commands/capabilities.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.2110745,
+      "y": 0.1060673
+    },
+    "lambda/agentcore/commands/compose-plan-start.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.193994,
+      "y": 0.2462237
+    },
+    "lambda/agentcore/commands/create-workflow-checkpoint.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.4178435,
+      "y": 0.1093682
+    },
+    "lambda/agentcore/commands/derive-artifacts.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.4178435,
+      "y": 0.2495245
+    },
+    "lambda/agentcore/commands/discussion-assist-start.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.1870846,
+      "y": 0.4369813
+    },
+    "lambda/agentcore/commands/init-ws.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.4109341,
+      "y": 0.4369813
+    },
+    "lambda/agentcore/commands/inspect.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.1094251,
+      "y": 0.6622378
+    },
+    "lambda/agentcore/commands/lane.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.2438601,
+      "y": 0.6622378
+    },
+    "lambda/agentcore/commands/managed-runtime-check.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.1014058,
+      "y": 0.8671729
+    },
+    "lambda/agentcore/commands/promote-units.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.2358408,
+      "y": 0.8671729
+    },
+    "lambda/agentcore/commands/quorum-edit-apply-start.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.4187245,
+      "y": 0.6481796
+    },
+    "lambda/agentcore/commands/quorum-edit-plan-start.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.4187245,
+      "y": 0.8531147
+    },
+    "lambda/agentcore/commands/quorum-edit-shared.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.6110703,
+      "y": 0.1343552
+    },
+    "lambda/agentcore/commands/record-learning.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.6110703,
+      "y": 0.2638336
+    },
+    "lambda/agentcore/commands/record-pr.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.7451775,
+      "y": 0.1934384
+    },
+    "lambda/agentcore/commands/record-unit-pr.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.5535933,
+      "y": 0.4028177
+    },
+    "lambda/agentcore/commands/repair-structure.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.6877005,
+      "y": 0.4028177
+    },
+    "lambda/agentcore/commands/resolve-conflict.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.8579566,
+      "y": 0.1836749
+    },
+    "lambda/agentcore/commands/run-stage-start.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.8579566,
+      "y": 0.3930543
+    },
+    "lambda/agentcore/commands/run-stage.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.7238495,
+      "y": 0.6542095
+    },
+    "lambda/agentcore/commands/verify-connection.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.5693813,
+      "y": 0.8826302
+    },
+    "lambda/agentcore/commands/verify-mcp.js": {
+      "leafId": "agentcore-commands",
+      "x": 0.7850919,
+      "y": 0.8826302
+    },
+    "lambda/agentcore/cli/backend-adapters.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.1289633,
+      "y": 0.1986179
+    },
+    "lambda/agentcore/cli/codex-parser.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.3272222,
+      "y": 0.1986179
+    },
+    "lambda/agentcore/cli/codex-store.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.2586989,
+      "y": 0.4373451
+    },
+    "lambda/agentcore/cli/credential-errors.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.5157687,
+      "y": 0.201567
+    },
+    "lambda/agentcore/cli/discover.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.5157687,
+      "y": 0.4402942
+    },
+    "lambda/agentcore/cli/drivers.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.2271553,
+      "y": 0.6814326
+    },
+    "lambda/agentcore/cli/environment.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.2271553,
+      "y": 0.8805054
+    },
+    "lambda/agentcore/cli/kiro-parser.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.4842251,
+      "y": 0.7404872
+    },
+    "lambda/agentcore/cli/kiro-store.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.6448841,
+      "y": 0.2331374
+    },
+    "lambda/agentcore/cli/one-shot.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.8273743,
+      "y": 0.2331374
+    },
+    "lambda/agentcore/cli/opencode-parser.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.7570698,
+      "y": 0.4880767
+    },
+    "lambda/agentcore/cli/opencode-store.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.7570698,
+      "y": 0.636554
+    },
+    "lambda/agentcore/cli/spawn.js": {
+      "leafId": "agentcore-cli",
+      "x": 0.7570698,
+      "y": 0.8194147
+    },
+    "lambda/agentcore/mcp/graph-manager.js": {
+      "leafId": "agentcore-mcp",
+      "x": 0.1096551,
+      "y": 0.3119333
+    },
+    "lambda/agentcore/mcp/graph-writer.js": {
+      "leafId": "agentcore-mcp",
+      "x": 0.3944641,
+      "y": 0.3119333
+    },
+    "lambda/agentcore/mcp/index.js": {
+      "leafId": "agentcore-mcp",
+      "x": 0.1262613,
+      "y": 0.7497333
+    },
+    "lambda/agentcore/mcp/process-bridge.js": {
+      "leafId": "agentcore-mcp",
+      "x": 0.4110703,
+      "y": 0.7497333
+    },
+    "lambda/agentcore/mcp/runtime-bridge.js": {
+      "leafId": "agentcore-mcp",
+      "x": 0.7848091,
+      "y": 0.1423458
+    },
+    "lambda/agentcore/mcp/server.js": {
+      "leafId": "agentcore-mcp",
+      "x": 0.7848091,
+      "y": 0.4275784
+    },
+    "lambda/agentcore/mcp/startup-context.js": {
+      "leafId": "agentcore-mcp",
+      "x": 0.745543,
+      "y": 0.7869926
+    },
+    "lambda/agentcore/mcp/stdio-relay.js": {
+      "leafId": "agentcore-mcp",
+      "x": 0.900294,
+      "y": 0.7869926
+    },
+    "lambda/agentcore/code-traceability.js": {
+      "leafId": "agentcore-git",
+      "x": 0.2460409,
+      "y": 0.2392313
+    },
+    "lambda/agentcore/git-auth.js": {
+      "leafId": "agentcore-git",
+      "x": 0.5244423,
+      "y": 0.2392313
+    },
+    "lambda/agentcore/git-engine.js": {
+      "leafId": "agentcore-git",
+      "x": 0.3388414,
+      "y": 0.6770313
+    },
+    "lambda/agentcore/git-runner.js": {
+      "leafId": "agentcore-git",
+      "x": 0.7784014,
+      "y": 0.171578
+    },
+    "lambda/agentcore/repo-paths.js": {
+      "leafId": "agentcore-git",
+      "x": 0.7784014,
+      "y": 0.3557505
+    },
+    "lambda/agentcore/workspace.js": {
+      "leafId": "agentcore-git",
+      "x": 0.7784014,
+      "y": 0.6859325
+    },
+    "lambda/agentcore/attachments.js": {
+      "leafId": "agentcore-context",
+      "x": 0.1200224,
+      "y": 0.2205626
+    },
+    "lambda/agentcore/block-loader.js": {
+      "leafId": "agentcore-context",
+      "x": 0.2951022,
+      "y": 0.2205626
+    },
+    "lambda/agentcore/context-compiler.js": {
+      "leafId": "agentcore-context",
+      "x": 0.4850324,
+      "y": 0.2205626
+    },
+    "lambda/agentcore/custom-rules.js": {
+      "leafId": "agentcore-context",
+      "x": 0.1074581,
+      "y": 0.5247448
+    },
+    "lambda/agentcore/ensemble-runner.js": {
+      "leafId": "agentcore-context",
+      "x": 0.3569708,
+      "y": 0.5247448
+    },
+    "lambda/agentcore/output-normalizer.js": {
+      "leafId": "agentcore-context",
+      "x": 0.2036298,
+      "y": 0.8059422
+    },
+    "lambda/agentcore/persona-dispatch.js": {
+      "leafId": "agentcore-context",
+      "x": 0.4531425,
+      "y": 0.8059422
+    },
+    "lambda/agentcore/prompts/invoke-dialect-annex.md": {
+      "leafId": "agentcore-context",
+      "x": 0.6765231,
+      "y": 0.1181469
+    },
+    "lambda/agentcore/prompts/mcp-execution-annex.md": {
+      "leafId": "agentcore-context",
+      "x": 0.6765231,
+      "y": 0.2606393
+    },
+    "lambda/agentcore/release-script-closure.js": {
+      "leafId": "agentcore-context",
+      "x": 0.8665705,
+      "y": 0.2064523
+    },
+    "lambda/agentcore/sensor-runner.js": {
+      "leafId": "agentcore-context",
+      "x": 0.7495126,
+      "y": 0.4949907
+    },
+    "lambda/agentcore/stage-materializer.js": {
+      "leafId": "agentcore-context",
+      "x": 0.7495126,
+      "y": 0.7902984
+    },
+    "lambda/agentcore/Dockerfile": {
+      "leafId": "agentcore-host",
+      "x": 0.1633914,
+      "y": 0.1903704
+    },
+    "lambda/agentcore/auth-resolver.js": {
+      "leafId": "agentcore-host",
+      "x": 0.3836735,
+      "y": 0.1903704
+    },
+    "lambda/agentcore/authentication-command-registry.js": {
+      "leafId": "agentcore-host",
+      "x": 0.1131535,
+      "y": 0.3916459
+    },
+    "lambda/agentcore/bedrock-iam-material.js": {
+      "leafId": "agentcore-host",
+      "x": 0.2317588,
+      "y": 0.3916459
+    },
+    "lambda/agentcore/bedrock-iam-runtime-provider.js": {
+      "leafId": "agentcore-host",
+      "x": 0.1790453,
+      "y": 0.5177885
+    },
+    "lambda/agentcore/bedrock-iam.js": {
+      "leafId": "agentcore-host",
+      "x": 0.3993274,
+      "y": 0.4429235
+    },
+    "lambda/agentcore/clients.js": {
+      "leafId": "agentcore-host",
+      "x": 0.2110775,
+      "y": 0.6730361
+    },
+    "lambda/agentcore/credential-lease-adapters.js": {
+      "leafId": "agentcore-host",
+      "x": 0.2110775,
+      "y": 0.858283
+    },
+    "lambda/agentcore/credential-material-registry.js": {
+      "leafId": "agentcore-host",
+      "x": 0.4313596,
+      "y": 0.7543131
+    },
+    "lambda/agentcore/credential-session.js": {
+      "leafId": "agentcore-host",
+      "x": 0.5869482,
+      "y": 0.227921
+    },
+    "lambda/agentcore/http-server.js": {
+      "leafId": "agentcore-host",
+      "x": 0.806226,
+      "y": 0.227921
+    },
+    "lambda/agentcore/invocation-accounting.js": {
+      "leafId": "agentcore-host",
+      "x": 0.7202821,
+      "y": 0.4501996
+    },
+    "lambda/agentcore/keys-runtime-provider.js": {
+      "leafId": "agentcore-host",
+      "x": 0.5534337,
+      "y": 0.5926723
+    },
+    "lambda/agentcore/mcp-secret-paths.js": {
+      "leafId": "agentcore-host",
+      "x": 0.6721818,
+      "y": 0.5926723
+    },
+    "lambda/agentcore/mcp-secret-resolver.js": {
+      "leafId": "agentcore-host",
+      "x": 0.6197523,
+      "y": 0.8081937
+    },
+    "lambda/agentcore/model-resolver.js": {
+      "leafId": "agentcore-host",
+      "x": 0.8390302,
+      "y": 0.633429
+    },
+    "lambda/agentcore/package.json": {
+      "leafId": "agentcore-host",
+      "x": 0.8029173,
+      "y": 0.8489503
+    },
+    "lambda/agentcore/runtime-auth-providers.js": {
+      "leafId": "agentcore-host",
+      "x": 0.9034471,
+      "y": 0.8489503
+    },
+    "lambda/agentcore/test/a7-answer.mjs": {
+      "leafId": "agentcore-tests",
+      "x": 0.0862951,
+      "y": 0.0915131
+    },
+    "lambda/agentcore/test/a7-answer2.mjs": {
+      "leafId": "agentcore-tests",
+      "x": 0.1405266,
+      "y": 0.0915131
+    },
+    "lambda/agentcore/test/a7-harness.mjs": {
+      "leafId": "agentcore-tests",
+      "x": 0.1146715,
+      "y": 0.1470024
+    },
+    "lambda/agentcore/test/a7-run.sh": {
+      "leafId": "agentcore-tests",
+      "x": 0.1868211,
+      "y": 0.0900861
+    },
+    "lambda/agentcore/test/agentcore-iam-policy.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.1868211,
+      "y": 0.1455753
+    },
+    "lambda/agentcore/test/aidlc-release-adapters.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.1325896,
+      "y": 0.2189696
+    },
+    "lambda/agentcore/test/attachments.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.1325896,
+      "y": 0.2820051
+    },
+    "lambda/agentcore/test/auth-resolver.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.2577051,
+      "y": 0.1116423
+    },
+    "lambda/agentcore/test/bedrock-iam-verification.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.2577051,
+      "y": 0.1880717
+    },
+    "lambda/agentcore/test/bedrock-iam.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.2577051,
+      "y": 0.258914
+    },
+    "lambda/agentcore/test/block-loader-release.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.0979307,
+      "y": 0.3631788
+    },
+    "lambda/agentcore/test/block-loader.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.1649911,
+      "y": 0.3631788
+    },
+    "lambda/agentcore/test/capabilities.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.2193549,
+      "y": 0.3631788
+    },
+    "lambda/agentcore/test/change-control.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.1522944,
+      "y": 0.4648251
+    },
+    "lambda/agentcore/test/checkpoint-confirmation.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.2774099,
+      "y": 0.4026557
+    },
+    "lambda/agentcore/test/checkpoint-ladder.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.3474071,
+      "y": 0.1343053
+    },
+    "lambda/agentcore/test/code-traceability.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.4195879,
+      "y": 0.1343053
+    },
+    "lambda/agentcore/test/codex-parser.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.4817389,
+      "y": 0.1343053
+    },
+    "lambda/agentcore/test/codex-store.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.3454376,
+      "y": 0.2553152
+    },
+    "lambda/agentcore/test/compose-plan-start.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.4443248,
+      "y": 0.2553152
+    },
+    "lambda/agentcore/test/compose-prompt-budget.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.3592576,
+      "y": 0.3313754
+    },
+    "lambda/agentcore/test/container-deps.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.3592576,
+      "y": 0.3851644
+    },
+    "lambda/agentcore/test/context-compiler.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.4385819,
+      "y": 0.3597687
+    },
+    "lambda/agentcore/test/create-workflow-checkpoint.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.4888825,
+      "y": 0.3597687
+    },
+    "lambda/agentcore/test/credential-errors.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.3265493,
+      "y": 0.4589298
+    },
+    "lambda/agentcore/test/credential-lease.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.3791737,
+      "y": 0.4589298
+    },
+    "lambda/agentcore/test/credential-session.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.4621825,
+      "y": 0.4589298
+    },
+    "lambda/agentcore/test/custom-rules.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.0821637,
+      "y": 0.5552011
+    },
+    "lambda/agentcore/test/derive-artifacts.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.1401891,
+      "y": 0.5552011
+    },
+    "lambda/agentcore/test/discover.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.0806521,
+      "y": 0.6310226
+    },
+    "lambda/agentcore/test/discussion-assist-start.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.1386774,
+      "y": 0.6310226
+    },
+    "lambda/agentcore/test/dockerfile.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.2158227,
+      "y": 0.5176788
+    },
+    "lambda/agentcore/test/drivers.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.2158227,
+      "y": 0.5935003
+    },
+    "lambda/agentcore/test/ensemble-runner.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.1577973,
+      "y": 0.6994169
+    },
+    "lambda/agentcore/test/fixtures/agent-output/claude.jsonl": {
+      "leafId": "agentcore-tests",
+      "x": 0.2754597,
+      "y": 0.5201695
+    },
+    "lambda/agentcore/test/fixtures/agent-output/codex.jsonl": {
+      "leafId": "agentcore-tests",
+      "x": 0.2754597,
+      "y": 0.553579
+    },
+    "lambda/agentcore/test/fixtures/agent-output/kiro.jsonl": {
+      "leafId": "agentcore-tests",
+      "x": 0.3104958,
+      "y": 0.5377116
+    },
+    "lambda/agentcore/test/fixtures/agent-output/opencode.jsonl": {
+      "leafId": "agentcore-tests",
+      "x": 0.2671235,
+      "y": 0.5948613
+    },
+    "lambda/agentcore/test/fixtures/aidlc-sensor-linter-runtime-budget.ts": {
+      "leafId": "agentcore-tests",
+      "x": 0.3021596,
+      "y": 0.5948613
+    },
+    "lambda/agentcore/test/fixtures/aidlc-sensor-linter.ts": {
+      "leafId": "agentcore-tests",
+      "x": 0.2901906,
+      "y": 0.6807451
+    },
+    "lambda/agentcore/test/fixtures/aidlc-sensor-type-check.ts": {
+      "leafId": "agentcore-tests",
+      "x": 0.0981328,
+      "y": 0.7944123
+    },
+    "lambda/agentcore/test/fixtures/iam-sdk-child.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.1682053,
+      "y": 0.7627895
+    },
+    "lambda/agentcore/test/fixtures/mcp-stdio-entry.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.1682053,
+      "y": 0.8002411
+    },
+    "lambda/agentcore/test/fixtures/process-tree-cli.mjs": {
+      "leafId": "agentcore-tests",
+      "x": 0.1682053,
+      "y": 0.8318638
+    },
+    "lambda/agentcore/test/fixtures/process-tree-late-writer.mjs": {
+      "leafId": "agentcore-tests",
+      "x": 0.07294,
+      "y": 0.8686674
+    },
+    "lambda/agentcore/test/fixtures/provider-quota-messages.json": {
+      "leafId": "agentcore-tests",
+      "x": 0.1125804,
+      "y": 0.8686674
+    },
+    "lambda/agentcore/test/fixtures/requirements-analysis.md": {
+      "leafId": "agentcore-tests",
+      "x": 0.1000805,
+      "y": 0.9154795
+    },
+    "lambda/agentcore/test/fixtures/spawn-shutdown-orphan.mjs": {
+      "leafId": "agentcore-tests",
+      "x": 0.1551544,
+      "y": 0.8754591
+    },
+    "lambda/agentcore/test/fixtures/spawn-shutdown-plain-child.mjs": {
+      "leafId": "agentcore-tests",
+      "x": 0.1855864,
+      "y": 0.8754591
+    },
+    "lambda/agentcore/test/fixtures/spawn-shutdown-runner.mjs": {
+      "leafId": "agentcore-tests",
+      "x": 0.1701529,
+      "y": 0.9222712
+    },
+    "lambda/agentcore/test/git-auth.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.2629058,
+      "y": 0.7612075
+    },
+    "lambda/agentcore/test/git-engine.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.2629058,
+      "y": 0.8595431
+    },
+    "lambda/agentcore/test/git-runner.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.357355,
+      "y": 0.553657
+    },
+    "lambda/agentcore/test/graph-manager.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.4117808,
+      "y": 0.553657
+    },
+    "lambda/agentcore/test/graph-pipeline.integration.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.4712618,
+      "y": 0.553657
+    },
+    "lambda/agentcore/test/graph-writer.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.416836,
+      "y": 0.6626397
+    },
+    "lambda/agentcore/test/helpers/fake-runtime-provider.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.3713701,
+      "y": 0.7429544
+    },
+    "lambda/agentcore/test/helpers/release-fixture.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.3713701,
+      "y": 0.7905835
+    },
+    "lambda/agentcore/test/helpers/stock-grounding.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.3713701,
+      "y": 0.837949
+    },
+    "lambda/agentcore/test/helpers/v2-table.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.4629794,
+      "y": 0.7427242
+    },
+    "lambda/agentcore/test/http-server.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.4629794,
+      "y": 0.8107766
+    },
+    "lambda/agentcore/test/init-ws.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.416836,
+      "y": 0.8989661
+    },
+    "lambda/agentcore/test/inspect.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.5644919,
+      "y": 0.0927031
+    },
+    "lambda/agentcore/test/integration.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.5644919,
+      "y": 0.1521652
+    },
+    "lambda/agentcore/test/invocation-accounting.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.6428059,
+      "y": 0.1234222
+    },
+    "lambda/agentcore/test/kiro-parser.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.6992471,
+      "y": 0.1234222
+    },
+    "lambda/agentcore/test/kiro-store.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.529741,
+      "y": 0.2385874
+    },
+    "lambda/agentcore/test/lane.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.5864829,
+      "y": 0.2385874
+    },
+    "lambda/agentcore/test/local-e2e-config.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.6321312,
+      "y": 0.2385874
+    },
+    "lambda/agentcore/test/local-e2e-harness.mjs": {
+      "leafId": "agentcore-tests",
+      "x": 0.6878771,
+      "y": 0.2385874
+    },
+    "lambda/agentcore/test/local-e2e.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.7635411,
+      "y": 0.104614
+    },
+    "lambda/agentcore/test/loopback-recommendation.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.8333752,
+      "y": 0.104614
+    },
+    "lambda/agentcore/test/managed-runtime-check.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.7560933,
+      "y": 0.179426
+    },
+    "lambda/agentcore/test/mcp-secret-resolver.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.8259274,
+      "y": 0.179426
+    },
+    "lambda/agentcore/test/mcp-server.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.9063245,
+      "y": 0.138772
+    },
+    "lambda/agentcore/test/mcp-stdio.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.7909344,
+      "y": 0.2539372
+    },
+    "lambda/agentcore/test/model-resolver.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.894004,
+      "y": 0.2539372
+    },
+    "lambda/agentcore/test/one-shot-smoke.mjs": {
+      "leafId": "agentcore-tests",
+      "x": 0.5651851,
+      "y": 0.3108997
+    },
+    "lambda/agentcore/test/one-shot.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.5651851,
+      "y": 0.3716154
+    },
+    "lambda/agentcore/test/opencode-parser.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.6437327,
+      "y": 0.3550062
+    },
+    "lambda/agentcore/test/opencode-store.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.5326617,
+      "y": 0.4641007
+    },
+    "lambda/agentcore/test/persona-dispatch.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.6112093,
+      "y": 0.4641007
+    },
+    "lambda/agentcore/test/persona-session-scope.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.704231,
+      "y": 0.3566067
+    },
+    "lambda/agentcore/test/pr-363-v2-reproduction.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.704231,
+      "y": 0.4657012
+    },
+    "lambda/agentcore/test/process-bridge.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.8007141,
+      "y": 0.3341469
+    },
+    "lambda/agentcore/test/promote-units.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.8007141,
+      "y": 0.4027921
+    },
+    "lambda/agentcore/test/quorum-edit-start.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.8990333,
+      "y": 0.3629357
+    },
+    "lambda/agentcore/test/record-learning.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.7698679,
+      "y": 0.4720302
+    },
+    "lambda/agentcore/test/record-pr.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.8180549,
+      "y": 0.4720302
+    },
+    "lambda/agentcore/test/record-unit-pr.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.8598619,
+      "y": 0.4720302
+    },
+    "lambda/agentcore/test/release-integrity-gate.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.9099941,
+      "y": 0.4720302
+    },
+    "lambda/agentcore/test/release-script-closure-resolver.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.565171,
+      "y": 0.5519212
+    },
+    "lambda/agentcore/test/release-script-closure.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.565171,
+      "y": 0.6232126
+    },
+    "lambda/agentcore/test/resolve-conflict.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.565171,
+      "y": 0.6895072
+    },
+    "lambda/agentcore/test/run-stage-ensemble.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.6750512,
+      "y": 0.5824702
+    },
+    "lambda/agentcore/test/run-stage-start.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.6750512,
+      "y": 0.6882066
+    },
+    "lambda/agentcore/test/run-stage.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.6183256,
+      "y": 0.811324
+    },
+    "lambda/agentcore/test/runtime-auth-providers.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.6183256,
+      "y": 0.919128
+    },
+    "lambda/agentcore/test/sensor-planes.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.776016,
+      "y": 0.5594912
+    },
+    "lambda/agentcore/test/sensor-runner-script.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.776016,
+      "y": 0.6392097
+    },
+    "lambda/agentcore/test/sensor-runner.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.8816932,
+      "y": 0.592198
+    },
+    "lambda/agentcore/test/spawn-shutdown.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.7832554,
+      "y": 0.7004557
+    },
+    "lambda/agentcore/test/spawn.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.8889325,
+      "y": 0.7004557
+    },
+    "lambda/agentcore/test/stage-attempt-commits.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.7974003,
+      "y": 0.7597641
+    },
+    "lambda/agentcore/test/stage-materializer.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.7974003,
+      "y": 0.8391215
+    },
+    "lambda/agentcore/test/verify-connection.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.7974003,
+      "y": 0.9136349
+    },
+    "lambda/agentcore/test/verify-mcp.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.9030775,
+      "y": 0.7791258
+    },
+    "lambda/agentcore/test/workspace.test.js": {
+      "leafId": "agentcore-tests",
+      "x": 0.9030775,
+      "y": 0.8844083
+    },
+    "lambda/code-files/index.js": {
+      "leafId": "history-reads",
+      "x": 0.1530464,
+      "y": 0.1495109
+    },
+    "lambda/code-files/package.json": {
+      "leafId": "history-reads",
+      "x": 0.2902297,
+      "y": 0.1495109
+    },
+    "lambda/general-info/index.js": {
+      "leafId": "history-reads",
+      "x": 0.1976234,
+      "y": 0.2928134
+    },
+    "lambda/general-info/package.json": {
+      "leafId": "history-reads",
+      "x": 0.4282988,
+      "y": 0.1047506
+    },
+    "lambda/questions/index.js": {
+      "leafId": "history-reads",
+      "x": 0.4282988,
+      "y": 0.2480531
+    },
+    "lambda/questions/package.json": {
+      "leafId": "history-reads",
+      "x": 0.0962706,
+      "y": 0.4541605
+    },
+    "lambda/questions/test/questions.test.js": {
+      "leafId": "history-reads",
+      "x": 0.2509379,
+      "y": 0.4541605
+    },
+    "lambda/requirements/index.js": {
+      "leafId": "history-reads",
+      "x": 0.4457827,
+      "y": 0.4541605
+    },
+    "lambda/requirements/package.json": {
+      "leafId": "history-reads",
+      "x": 0.1685858,
+      "y": 0.5930195
+    },
+    "lambda/reviews/index.js": {
+      "leafId": "history-reads",
+      "x": 0.1685858,
+      "y": 0.7107852
+    },
+    "lambda/reviews/package.json": {
+      "leafId": "history-reads",
+      "x": 0.3091145,
+      "y": 0.6755217
+    },
+    "lambda/sprint-graph/index.js": {
+      "leafId": "history-reads",
+      "x": 0.2009687,
+      "y": 0.8664237
+    },
+    "lambda/sprint-graph/package.json": {
+      "leafId": "history-reads",
+      "x": 0.4316442,
+      "y": 0.598932
+    },
+    "lambda/sprint-graph/test/sprint-graph.test.js": {
+      "leafId": "history-reads",
+      "x": 0.4316442,
+      "y": 0.789834
+    },
+    "lambda/sprints/index.js": {
+      "leafId": "history-reads",
+      "x": 0.6259203,
+      "y": 0.1685647
+    },
+    "lambda/sprints/package.json": {
+      "leafId": "history-reads",
+      "x": 0.6259203,
+      "y": 0.3088163
+    },
+    "lambda/sprints/test/sprints.test.js": {
+      "leafId": "history-reads",
+      "x": 0.8348048,
+      "y": 0.2042116
+    },
+    "lambda/tasks/index.js": {
+      "leafId": "history-reads",
+      "x": 0.6234689,
+      "y": 0.4292088
+    },
+    "lambda/tasks/package.json": {
+      "leafId": "history-reads",
+      "x": 0.6234689,
+      "y": 0.5524355
+    },
+    "lambda/tasks/test/tasks.test.js": {
+      "leafId": "history-reads",
+      "x": 0.8323535,
+      "y": 0.4676898
+    },
+    "lambda/timeline-events/index.js": {
+      "leafId": "history-reads",
+      "x": 0.6189282,
+      "y": 0.6739555
+    },
+    "lambda/timeline-events/package.json": {
+      "leafId": "history-reads",
+      "x": 0.760766,
+      "y": 0.6739555
+    },
+    "lambda/timeline-events/test/timeline-events.test.js": {
+      "leafId": "history-reads",
+      "x": 0.6636287,
+      "y": 0.8482773
+    },
+    "lambda/user-stories/index.js": {
+      "leafId": "history-reads",
+      "x": 0.8725133,
+      "y": 0.7083585
+    },
+    "lambda/user-stories/package.json": {
+      "leafId": "history-reads",
+      "x": 0.8725133,
+      "y": 0.8826802
+    },
+    "lambda/shared/agent-command-registry.js": {
+      "leafId": "shared-execution",
+      "x": 0.116219,
+      "y": 0.1282533
+    },
+    "lambda/shared/changed-file-provenance.js": {
+      "leafId": "shared-execution",
+      "x": 0.2336639,
+      "y": 0.1282533
+    },
+    "lambda/shared/construction-autonomy.js": {
+      "leafId": "shared-execution",
+      "x": 0.177885,
+      "y": 0.2473592
+    },
+    "lambda/shared/environment-snapshot.js": {
+      "leafId": "shared-execution",
+      "x": 0.3484381,
+      "y": 0.1830658
+    },
+    "lambda/shared/gate-answer.js": {
+      "leafId": "shared-execution",
+      "x": 0.0968837,
+      "y": 0.403803
+    },
+    "lambda/shared/gate-preconditions.js": {
+      "leafId": "shared-execution",
+      "x": 0.2674369,
+      "y": 0.403803
+    },
+    "lambda/shared/pr-strategy.js": {
+      "leafId": "shared-execution",
+      "x": 0.4639687,
+      "y": 0.1386214
+    },
+    "lambda/shared/runtime-compatibility.js": {
+      "leafId": "shared-execution",
+      "x": 0.5522082,
+      "y": 0.1386214
+    },
+    "lambda/shared/runtime-session-ids.js": {
+      "leafId": "shared-execution",
+      "x": 0.4897857,
+      "y": 0.2496339
+    },
+    "lambda/shared/runtime-session.js": {
+      "leafId": "shared-execution",
+      "x": 0.4897857,
+      "y": 0.3957097
+    },
+    "lambda/shared/runtime-target.js": {
+      "leafId": "shared-execution",
+      "x": 0.1396795,
+      "y": 0.5464727
+    },
+    "lambda/shared/sensor-verdict.js": {
+      "leafId": "shared-execution",
+      "x": 0.1396795,
+      "y": 0.6601747
+    },
+    "lambda/shared/session-cleanup-store.js": {
+      "leafId": "shared-execution",
+      "x": 0.2872747,
+      "y": 0.5859552
+    },
+    "lambda/shared/stage-attempt.js": {
+      "leafId": "shared-execution",
+      "x": 0.2872747,
+      "y": 0.6996572
+    },
+    "lambda/shared/stage-loopback.js": {
+      "leafId": "shared-execution",
+      "x": 0.1404001,
+      "y": 0.8361992
+    },
+    "lambda/shared/stage-skip.js": {
+      "leafId": "shared-execution",
+      "x": 0.2879953,
+      "y": 0.8361992
+    },
+    "lambda/shared/unit-kind-pruning.js": {
+      "leafId": "shared-execution",
+      "x": 0.4668278,
+      "y": 0.5426745
+    },
+    "lambda/shared/v2-execution-plan.js": {
+      "leafId": "shared-execution",
+      "x": 0.4668278,
+      "y": 0.7597373
+    },
+    "lambda/shared/v2-process-keys.js": {
+      "leafId": "shared-execution",
+      "x": 0.7587926,
+      "y": 0.1792986
+    },
+    "lambda/shared/v2-process-store.js": {
+      "leafId": "shared-execution",
+      "x": 0.7587926,
+      "y": 0.4669802
+    },
+    "lambda/shared/v2-sensor-contract.js": {
+      "leafId": "shared-execution",
+      "x": 0.6790026,
+      "y": 0.7894417
+    },
+    "lambda/shared/v2-workflow-plan.js": {
+      "leafId": "shared-execution",
+      "x": 0.85977,
+      "y": 0.7894417
+    },
+    "lambda/shared/agent-auth-actions.js": {
+      "leafId": "shared-authentication",
+      "x": 0.1342711,
+      "y": 0.1972232
+    },
+    "lambda/shared/agent-auth-bedrock-iam-schema.js": {
+      "leafId": "shared-authentication",
+      "x": 0.2773547,
+      "y": 0.1260533
+    },
+    "lambda/shared/agent-auth-builtin-modes.js": {
+      "leafId": "shared-authentication",
+      "x": 0.2773547,
+      "y": 0.2593165
+    },
+    "lambda/shared/agent-auth-catalog.js": {
+      "leafId": "shared-authentication",
+      "x": 0.4317892,
+      "y": 0.0780976
+    },
+    "lambda/shared/agent-auth-changes.js": {
+      "leafId": "shared-authentication",
+      "x": 0.4317892,
+      "y": 0.2113608
+    },
+    "lambda/shared/agent-auth-contracts.js": {
+      "leafId": "shared-authentication",
+      "x": 0.1419935,
+      "y": 0.4273178
+    },
+    "lambda/shared/agent-auth-inventory-repository.js": {
+      "leafId": "shared-authentication",
+      "x": 0.3053372,
+      "y": 0.4273178
+    },
+    "lambda/shared/agent-auth-inventory.js": {
+      "leafId": "shared-authentication",
+      "x": 0.4520494,
+      "y": 0.4273178
+    },
+    "lambda/shared/agent-auth-key-changes.js": {
+      "leafId": "shared-authentication",
+      "x": 0.0991829,
+      "y": 0.604907
+    },
+    "lambda/shared/agent-auth-mode-registry.js": {
+      "leafId": "shared-authentication",
+      "x": 0.2219513,
+      "y": 0.604907
+    },
+    "lambda/shared/agent-auth-modes.js": {
+      "leafId": "shared-authentication",
+      "x": 0.0932053,
+      "y": 0.7466151
+    },
+    "lambda/shared/agent-auth-protocol.js": {
+      "leafId": "shared-authentication",
+      "x": 0.2159738,
+      "y": 0.7466151
+    },
+    "lambda/shared/agent-auth-providers.js": {
+      "leafId": "shared-authentication",
+      "x": 0.1041954,
+      "y": 0.8735627
+    },
+    "lambda/shared/agent-auth-redemption.js": {
+      "leafId": "shared-authentication",
+      "x": 0.2269639,
+      "y": 0.8735627
+    },
+    "lambda/shared/agent-auth-review-repository.js": {
+      "leafId": "shared-authentication",
+      "x": 0.3631522,
+      "y": 0.620671
+    },
+    "lambda/shared/agent-auth-runtime-capabilities.js": {
+      "leafId": "shared-authentication",
+      "x": 0.4686494,
+      "y": 0.620671
+    },
+    "lambda/shared/agent-auth-selection-strategies.js": {
+      "leafId": "shared-authentication",
+      "x": 0.4114741,
+      "y": 0.7773261
+    },
+    "lambda/shared/agent-binding-selection.js": {
+      "leafId": "shared-authentication",
+      "x": 0.4114741,
+      "y": 0.8885097
+    },
+    "lambda/shared/agent-connection-repository.js": {
+      "leafId": "shared-authentication",
+      "x": 0.6009098,
+      "y": 0.1802951
+    },
+    "lambda/shared/agent-credential-grants.js": {
+      "leafId": "shared-authentication",
+      "x": 0.7752411,
+      "y": 0.1802951
+    },
+    "lambda/shared/agent-credential-lease.js": {
+      "leafId": "shared-authentication",
+      "x": 0.9025969,
+      "y": 0.1802951
+    },
+    "lambda/shared/agent-credential-metadata.js": {
+      "leafId": "shared-authentication",
+      "x": 0.6273159,
+      "y": 0.3498172
+    },
+    "lambda/shared/agent-credential-service.js": {
+      "leafId": "shared-authentication",
+      "x": 0.6273159,
+      "y": 0.4617763
+    },
+    "lambda/shared/agent-credentials.js": {
+      "leafId": "shared-authentication",
+      "x": 0.8386103,
+      "y": 0.3124114
+    },
+    "lambda/shared/agent-key-repository.js": {
+      "leafId": "shared-authentication",
+      "x": 0.8386103,
+      "y": 0.4243705
+    },
+    "lambda/shared/agent-oauth-contract.js": {
+      "leafId": "shared-authentication",
+      "x": 0.5908162,
+      "y": 0.6265514
+    },
+    "lambda/shared/agent-oauth-state-repository.js": {
+      "leafId": "shared-authentication",
+      "x": 0.7271451,
+      "y": 0.6265514
+    },
+    "lambda/shared/authz.js": {
+      "leafId": "shared-authentication",
+      "x": 0.5718542,
+      "y": 0.8360571
+    },
+    "lambda/shared/bedrock-iam.js": {
+      "leafId": "shared-authentication",
+      "x": 0.7081831,
+      "y": 0.8360571
+    },
+    "lambda/shared/legacy-authz.js": {
+      "leafId": "shared-authentication",
+      "x": 0.8645946,
+      "y": 0.596324
+    },
+    "lambda/shared/sso-roles.js": {
+      "leafId": "shared-authentication",
+      "x": 0.8645946,
+      "y": 0.7633274
+    },
+    "lambda/shared/tenant.js": {
+      "leafId": "shared-authentication",
+      "x": 0.8645946,
+      "y": 0.8970577
+    },
+    "lambda/shared/aidlc-capabilities.js": {
+      "leafId": "shared-methodology",
+      "x": 0.1524676,
+      "y": 0.1853328
+    },
+    "lambda/shared/aidlc-compatibility-profiles.js": {
+      "leafId": "shared-methodology",
+      "x": 0.2847592,
+      "y": 0.1853328
+    },
+    "lambda/shared/aidlc-compatibility.js": {
+      "leafId": "shared-methodology",
+      "x": 0.1927317,
+      "y": 0.4057422
+    },
+    "lambda/shared/aidlc-custom-source.js": {
+      "leafId": "shared-methodology",
+      "x": 0.3884614,
+      "y": 0.1206564
+    },
+    "lambda/shared/aidlc-ref.js": {
+      "leafId": "shared-methodology",
+      "x": 0.4870885,
+      "y": 0.1206564
+    },
+    "lambda/shared/aidlc-release-importer.js": {
+      "leafId": "shared-methodology",
+      "x": 0.4236505,
+      "y": 0.2358938
+    },
+    "lambda/shared/aidlc-release.js": {
+      "leafId": "shared-methodology",
+      "x": 0.4236505,
+      "y": 0.3996068
+    },
+    "lambda/shared/annex-reach.js": {
+      "leafId": "shared-methodology",
+      "x": 0.1290974,
+      "y": 0.5411022
+    },
+    "lambda/shared/artifact-edit.js": {
+      "leafId": "shared-methodology",
+      "x": 0.1290974,
+      "y": 0.6646017
+    },
+    "lambda/shared/artifact-extractors.js": {
+      "leafId": "shared-methodology",
+      "x": 0.2593363,
+      "y": 0.6282783
+    },
+    "lambda/shared/artifact-structure-contract.js": {
+      "leafId": "shared-methodology",
+      "x": 0.1003704,
+      "y": 0.8456689
+    },
+    "lambda/shared/artifact-versioning.js": {
+      "leafId": "shared-methodology",
+      "x": 0.2306093,
+      "y": 0.8456689
+    },
+    "lambda/shared/block-mappers.js": {
+      "leafId": "shared-methodology",
+      "x": 0.4215977,
+      "y": 0.585425
+    },
+    "lambda/shared/blocks.js": {
+      "leafId": "shared-methodology",
+      "x": 0.4215977,
+      "y": 0.7380329
+    },
+    "lambda/shared/compile.js": {
+      "leafId": "shared-methodology",
+      "x": 0.4215977,
+      "y": 0.8747773
+    },
+    "lambda/shared/compose-match.js": {
+      "leafId": "shared-methodology",
+      "x": 0.602588,
+      "y": 0.1509081
+    },
+    "lambda/shared/composed-grid.js": {
+      "leafId": "shared-methodology",
+      "x": 0.602588,
+      "y": 0.274335
+    },
+    "lambda/shared/custom-rule-versions.js": {
+      "leafId": "shared-methodology",
+      "x": 0.7297182,
+      "y": 0.1045256
+    },
+    "lambda/shared/distribution-archive.js": {
+      "leafId": "shared-methodology",
+      "x": 0.7297182,
+      "y": 0.2279526
+    },
+    "lambda/shared/ensemble-contribution.js": {
+      "leafId": "shared-methodology",
+      "x": 0.7898493,
+      "y": 0.1169508
+    },
+    "lambda/shared/frontmatter.js": {
+      "leafId": "shared-methodology",
+      "x": 0.8713602,
+      "y": 0.1169508
+    },
+    "lambda/shared/intent-aidlc-settings.js": {
+      "leafId": "shared-methodology",
+      "x": 0.858049,
+      "y": 0.2403778
+    },
+    "lambda/shared/intent-methodology.js": {
+      "leafId": "shared-methodology",
+      "x": 0.5609563,
+      "y": 0.3948812
+    },
+    "lambda/shared/methodology-catalog.js": {
+      "leafId": "shared-methodology",
+      "x": 0.6689525,
+      "y": 0.3948812
+    },
+    "lambda/shared/native-repositories.js": {
+      "leafId": "shared-methodology",
+      "x": 0.6302738,
+      "y": 0.5128869
+    },
+    "lambda/shared/native-workspace-projector.js": {
+      "leafId": "shared-methodology",
+      "x": 0.838915,
+      "y": 0.4288197
+    },
+    "lambda/shared/release-registry.js": {
+      "leafId": "shared-methodology",
+      "x": 0.6405156,
+      "y": 0.669703
+    },
+    "lambda/shared/release-resolver.js": {
+      "leafId": "shared-methodology",
+      "x": 0.6405156,
+      "y": 0.8660703
+    },
+    "lambda/shared/script-closure.js": {
+      "leafId": "shared-methodology",
+      "x": 0.8491568,
+      "y": 0.5830042
+    },
+    "lambda/shared/upstream-artifact-ids.json": {
+      "leafId": "shared-methodology",
+      "x": 0.8491568,
+      "y": 0.683878
+    },
+    "lambda/shared/workflow-checkpoint.js": {
+      "leafId": "shared-methodology",
+      "x": 0.8491568,
+      "y": 0.8056436
+    },
+    "lambda/shared/workflows.js": {
+      "leafId": "shared-methodology",
+      "x": 0.8491568,
+      "y": 0.9011371
+    },
+    "lambda/shared/agent-model-discovery.js": {
+      "leafId": "shared-helpers",
+      "x": 0.0749432,
+      "y": 0.0902548
+    },
+    "lambda/shared/bedrock-models.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1189662,
+      "y": 0.0902548
+    },
+    "lambda/shared/cli-models.js": {
+      "leafId": "shared-helpers",
+      "x": 0.104463,
+      "y": 0.1375147
+    },
+    "lambda/shared/codecommit-connection.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1669543,
+      "y": 0.1112199
+    },
+    "lambda/shared/codecommit-role.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1229313,
+      "y": 0.1802805
+    },
+    "lambda/shared/concurrency.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2124652,
+      "y": 0.0773738
+    },
+    "lambda/shared/git-connection-store.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2124652,
+      "y": 0.1291001
+    },
+    "lambda/shared/git-handler.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2708699,
+      "y": 0.1156863
+    },
+    "lambda/shared/git-oauth.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2438273,
+      "y": 0.1847469
+    },
+    "lambda/shared/git-token.js": {
+      "leafId": "shared-helpers",
+      "x": 0.0988107,
+      "y": 0.2586787
+    },
+    "lambda/shared/github-admin.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1688831,
+      "y": 0.2347632
+    },
+    "lambda/shared/github-app-discovery.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1688831,
+      "y": 0.2913607
+    },
+    "lambda/shared/github-auth-config.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2260966,
+      "y": 0.2281771
+    },
+    "lambda/shared/graph-rows.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2769202,
+      "y": 0.2281771
+    },
+    "lambda/shared/intent-deletion.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2514083,
+      "y": 0.2847746
+    },
+    "lambda/shared/intent-url.js": {
+      "leafId": "shared-helpers",
+      "x": 0.0794681,
+      "y": 0.3268474
+    },
+    "lambda/shared/lambda-payload.js": {
+      "leafId": "shared-helpers",
+      "x": 0.0794681,
+      "y": 0.3522488
+    },
+    "lambda/shared/mcp-secrets-store.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1319067,
+      "y": 0.3406776
+    },
+    "lambda/shared/mcp-validator.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1128786,
+      "y": 0.3997439
+    },
+    "lambda/shared/metric-classification.js": {
+      "leafId": "shared-helpers",
+      "x": 0.177105,
+      "y": 0.3743426
+    },
+    "lambda/shared/model-pricing.js": {
+      "leafId": "shared-helpers",
+      "x": 0.0937951,
+      "y": 0.4745567
+    },
+    "lambda/shared/realtime-token.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1580215,
+      "y": 0.4745567
+    },
+    "lambda/shared/repo-fetch.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2185428,
+      "y": 0.3569067
+    },
+    "lambda/shared/repo-provider.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2185428,
+      "y": 0.4090389
+    },
+    "lambda/shared/repo-validation.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2752123,
+      "y": 0.3499856
+    },
+    "lambda/shared/response.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2752123,
+      "y": 0.4021178
+    },
+    "lambda/shared/safe-event-logger.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2092985,
+      "y": 0.4676226
+    },
+    "lambda/shared/source-control-bindings.js": {
+      "leafId": "shared-helpers",
+      "x": 0.265968,
+      "y": 0.4676226
+    },
+    "lambda/shared/source-control-credentials.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3567724,
+      "y": 0.0963276
+    },
+    "lambda/shared/test/agent-auth-binding-identity.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3307032,
+      "y": 0.1577779
+    },
+    "lambda/shared/test/agent-auth-boundary.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3852436,
+      "y": 0.1577779
+    },
+    "lambda/shared/test/agent-auth-changes.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.463554,
+      "y": 0.0990418
+    },
+    "lambda/shared/test/agent-auth-default-selection.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.463554,
+      "y": 0.1604921
+    },
+    "lambda/shared/test/agent-auth-foundation.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.343543,
+      "y": 0.2190918
+    },
+    "lambda/shared/test/agent-auth-mode-injection.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.343543,
+      "y": 0.2710606
+    },
+    "lambda/shared/test/agent-auth-mode-registry.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.4136335,
+      "y": 0.2388294
+    },
+    "lambda/shared/test/agent-auth-review-regressions.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.4791041,
+      "y": 0.2388294
+    },
+    "lambda/shared/test/agent-auth-runtime-capabilities.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3305781,
+      "y": 0.3234899
+    },
+    "lambda/shared/test/agent-credential-grants.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3898925,
+      "y": 0.3234899
+    },
+    "lambda/shared/test/agent-credentials.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3435906,
+      "y": 0.38399
+    },
+    "lambda/shared/test/agent-model-discovery.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.402905,
+      "y": 0.38399
+    },
+    "lambda/shared/test/aidlc-capabilities-ensemble.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.4683279,
+      "y": 0.3086772
+    },
+    "lambda/shared/test/aidlc-capabilities.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.4683279,
+      "y": 0.3691773
+    },
+    "lambda/shared/test/aidlc-compatibility.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3522485,
+      "y": 0.4637513
+    },
+    "lambda/shared/test/aidlc-custom-source.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.4199577,
+      "y": 0.4637513
+    },
+    "lambda/shared/test/aidlc-intent-settings.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.4767228,
+      "y": 0.4637513
+    },
+    "lambda/shared/test/aidlc-ref.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.0750937,
+      "y": 0.5457552
+    },
+    "lambda/shared/test/aidlc-release-adapters.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.123664,
+      "y": 0.5457552
+    },
+    "lambda/shared/test/aidlc-release-collaborators.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1090103,
+      "y": 0.6069781
+    },
+    "lambda/shared/test/aidlc-release-importer.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1779245,
+      "y": 0.5769273
+    },
+    "lambda/shared/test/aidlc-release-policy.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1018104,
+      "y": 0.6898674
+    },
+    "lambda/shared/test/aidlc-release-scope-policy.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1707246,
+      "y": 0.6898674
+    },
+    "lambda/shared/test/aidlc-release-scope-settings.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2465094,
+      "y": 0.5397938
+    },
+    "lambda/shared/test/aidlc-release.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2465094,
+      "y": 0.6149406
+    },
+    "lambda/shared/test/artifact-checkpoint.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2246001,
+      "y": 0.7037913
+    },
+    "lambda/shared/test/artifact-edit.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.272841,
+      "y": 0.7037913
+    },
+    "lambda/shared/test/artifact-extractors.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.0927605,
+      "y": 0.7717219
+    },
+    "lambda/shared/test/artifact-structure-contract.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.0927605,
+      "y": 0.8301822
+    },
+    "lambda/shared/test/authz.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1517885,
+      "y": 0.7708146
+    },
+    "lambda/shared/test/bedrock-iam-activation.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1517885,
+      "y": 0.829275
+    },
+    "lambda/shared/test/bedrock-iam-schema.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.0834894,
+      "y": 0.8990326
+    },
+    "lambda/shared/test/bedrock-iam-shell.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.1425174,
+      "y": 0.8990326
+    },
+    "lambda/shared/test/bedrock-iam.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2095487,
+      "y": 0.7671494
+    },
+    "lambda/shared/test/bedrock-models.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2095487,
+      "y": 0.8205649
+    },
+    "lambda/shared/test/block-mappers.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2676759,
+      "y": 0.795
+    },
+    "lambda/shared/test/bundle-smoke.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2145583,
+      "y": 0.8635478
+    },
+    "lambda/shared/test/checkpoint-release-gating.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2145583,
+      "y": 0.90912
+    },
+    "lambda/shared/test/cli-models.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.2726855,
+      "y": 0.8939878
+    },
+    "lambda/shared/test/codecommit-connection.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3261507,
+      "y": 0.5615316
+    },
+    "lambda/shared/test/codecommit-credential.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3852107,
+      "y": 0.5615316
+    },
+    "lambda/shared/test/codecommit-role.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3538102,
+      "y": 0.6289594
+    },
+    "lambda/shared/test/codecommit.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3538102,
+      "y": 0.6920735
+    },
+    "lambda/shared/test/compile.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.4643327,
+      "y": 0.5456968
+    },
+    "lambda/shared/test/compose-match.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.4643327,
+      "y": 0.6049312
+    },
+    "lambda/shared/test/composed-grid.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.439164,
+      "y": 0.6638632
+    },
+    "lambda/shared/test/concurrency.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.439164,
+      "y": 0.7135702
+    },
+    "lambda/shared/test/construction-autonomy.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.4906266,
+      "y": 0.6838801
+    },
+    "lambda/shared/test/custom-rule-versions.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3143094,
+      "y": 0.7618101
+    },
+    "lambda/shared/test/distribution-archive.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3483138,
+      "y": 0.7618101
+    },
+    "lambda/shared/test/environment-snapshot.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.3287547,
+      "y": 0.819705
+    },
+    "lambda/shared/test/fixtures/agent-auth-binding-identity.json": {
+      "leafId": "shared-helpers",
+      "x": 0.3893416,
+      "y": 0.7914821
+    },
+    "lambda/shared/test/fixtures/aidlc-211-scopes.json": {
+      "leafId": "shared-helpers",
+      "x": 0.4262895,
+      "y": 0.7914821
+    },
+    "lambda/shared/test/fixtures/aidlc-compatibility/current-stable.json": {
+      "leafId": "shared-helpers",
+      "x": 0.3657026,
+      "y": 0.8944685
+    },
+    "lambda/shared/test/fixtures/aidlc-compatibility/v2.11.0.json": {
+      "leafId": "shared-helpers",
+      "x": 0.476225,
+      "y": 0.8365736
+    },
+    "lambda/shared/test/fixtures/aidlc-compatibility/v2.6.18.json": {
+      "leafId": "shared-helpers",
+      "x": 0.5635234,
+      "y": 0.1375848
+    },
+    "lambda/shared/test/fixtures/aidlc-compatibility/v2.7.0.json": {
+      "leafId": "shared-helpers",
+      "x": 0.660715,
+      "y": 0.1375848
+    },
+    "lambda/shared/test/fixtures/aidlc-compatibility/v2.8.2.json": {
+      "leafId": "shared-helpers",
+      "x": 0.6129868,
+      "y": 0.2508564
+    },
+    "lambda/shared/test/fixtures/aidlc-compatibility/v2.9.0.json": {
+      "leafId": "shared-helpers",
+      "x": 0.7443867,
+      "y": 0.1772316
+    },
+    "lambda/shared/test/fixtures/aidlc-release-invoke-lines.json": {
+      "leafId": "shared-helpers",
+      "x": 0.8237491,
+      "y": 0.1163481
+    },
+    "lambda/shared/test/fixtures/legacy-release.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8237491,
+      "y": 0.183595
+    },
+    "lambda/shared/test/fixtures/release-store-fakes.js": {
+      "leafId": "shared-helpers",
+      "x": 0.9042316,
+      "y": 0.0910236
+    },
+    "lambda/shared/test/fixtures/repo-files.js": {
+      "leafId": "shared-helpers",
+      "x": 0.9042316,
+      "y": 0.1582705
+    },
+    "lambda/shared/test/frontmatter.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7963112,
+      "y": 0.2444785
+    },
+    "lambda/shared/test/gate-preconditions.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8767937,
+      "y": 0.2444785
+    },
+    "lambda/shared/test/gate-question-channel-outputs.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.5410754,
+      "y": 0.3287512
+    },
+    "lambda/shared/test/git-connection-store.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.5992091,
+      "y": 0.3287512
+    },
+    "lambda/shared/test/git-oauth.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.5441789,
+      "y": 0.3917042
+    },
+    "lambda/shared/test/git-provider-issue-close.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.6023126,
+      "y": 0.3917042
+    },
+    "lambda/shared/test/git-providers.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.683448,
+      "y": 0.3534561
+    },
+    "lambda/shared/test/git-token.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.5561345,
+      "y": 0.4640368
+    },
+    "lambda/shared/test/github-auth-config.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.6173619,
+      "y": 0.4437222
+    },
+    "lambda/shared/test/helpers/auth-modes.js": {
+      "leafId": "shared-helpers",
+      "x": 0.6173619,
+      "y": 0.4913499
+    },
+    "lambda/shared/test/helpers/auth-table.js": {
+      "leafId": "shared-helpers",
+      "x": 0.6506054,
+      "y": 0.4640368
+    },
+    "lambda/shared/test/intent-deletion-sessions.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.6988969,
+      "y": 0.4640368
+    },
+    "lambda/shared/test/intent-methodology.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7609115,
+      "y": 0.3339072
+    },
+    "lambda/shared/test/intent-url.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7609115,
+      "y": 0.3896706
+    },
+    "lambda/shared/test/mcp-validator.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8168371,
+      "y": 0.3462665
+    },
+    "lambda/shared/test/methodology-catalog.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8718756,
+      "y": 0.3230387
+    },
+    "lambda/shared/test/metric-classification.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.9183134,
+      "y": 0.3230387
+    },
+    "lambda/shared/test/model-pricing.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8931222,
+      "y": 0.3788021
+    },
+    "lambda/shared/test/native-repositories.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7500902,
+      "y": 0.4568471
+    },
+    "lambda/shared/test/native-workspace-projector.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8093987,
+      "y": 0.4568471
+    },
+    "lambda/shared/test/pr-strategy.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8965051,
+      "y": 0.413627
+    },
+    "lambda/shared/test/release-closure-upgrade.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8965051,
+      "y": 0.4684443
+    },
+    "lambda/shared/test/release-matrix.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.5812912,
+      "y": 0.5456634
+    },
+    "lambda/shared/test/release-registry.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.5812912,
+      "y": 0.6545954
+    },
+    "lambda/shared/test/release-resolver.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.6911437,
+      "y": 0.5769802
+    },
+    "lambda/shared/test/repo-fetch.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.6739718,
+      "y": 0.6859122
+    },
+    "lambda/shared/test/repo-validation.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7183283,
+      "y": 0.6859122
+    },
+    "lambda/shared/test/runtime-handler-ownership.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7806283,
+      "y": 0.524704
+    },
+    "lambda/shared/test/runtime-session.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7806283,
+      "y": 0.5732626
+    },
+    "lambda/shared/test/runtime-target.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7806283,
+      "y": 0.6245375
+    },
+    "lambda/shared/test/safe-event-logger.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8498947,
+      "y": 0.5759788
+    },
+    "lambda/shared/test/script-closure.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.9067965,
+      "y": 0.5349439
+    },
+    "lambda/shared/test/sensor-verdict.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.9067965,
+      "y": 0.5992583
+    },
+    "lambda/shared/test/session-cleanup-store.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7524926,
+      "y": 0.6849108
+    },
+    "lambda/shared/test/source-control-bindings.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7996177,
+      "y": 0.6849108
+    },
+    "lambda/shared/test/source-control-credentials.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8606242,
+      "y": 0.6849108
+    },
+    "lambda/shared/test/stage-loopback.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.9155291,
+      "y": 0.6849108
+    },
+    "lambda/shared/test/stage-skip.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.5414607,
+      "y": 0.7730306
+    },
+    "lambda/shared/test/tier-models.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.5872808,
+      "y": 0.7730306
+    },
+    "lambda/shared/test/unit-kind-pruning.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.5616153,
+      "y": 0.8325731
+    },
+    "lambda/shared/test/v2-execution-plan.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.6594684,
+      "y": 0.789071
+    },
+    "lambda/shared/test/v2-process.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.6136483,
+      "y": 0.8940867
+    },
+    "lambda/shared/test/v2-receipts.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7251581,
+      "y": 0.8345443
+    },
+    "lambda/shared/test/v2-sensor-contract.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7772581,
+      "y": 0.7851836
+    },
+    "lambda/shared/test/v2-workflow-plan.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8456066,
+      "y": 0.7851836
+    },
+    "lambda/shared/test/workflow-checkpoint.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.907536,
+      "y": 0.75499
+    },
+    "lambda/shared/test/yjs-revocation.test.js": {
+      "leafId": "shared-helpers",
+      "x": 0.907536,
+      "y": 0.810645
+    },
+    "lambda/shared/tier-models.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7800787,
+      "y": 0.8645302
+    },
+    "lambda/shared/tracker-migration.js": {
+      "leafId": "shared-helpers",
+      "x": 0.7800787,
+      "y": 0.9138909
+    },
+    "lambda/shared/trackers.js": {
+      "leafId": "shared-helpers",
+      "x": 0.838286,
+      "y": 0.8901993
+    },
+    "lambda/shared/ws-fanout.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8973948,
+      "y": 0.8572329
+    },
+    "lambda/shared/yjs-revocation.js": {
+      "leafId": "shared-helpers",
+      "x": 0.8973948,
+      "y": 0.9065936
+    },
+    "config/platform-roles.json": {
+      "leafId": "identity-projects-users",
+      "x": 0.164559,
+      "y": 0.0763951
+    },
+    "lambda/cognito-users/index.js": {
+      "leafId": "identity-projects-users",
+      "x": 0.164559,
+      "y": 0.2264615
+    },
+    "lambda/cognito-users/package-lock.json": {
+      "leafId": "identity-projects-users",
+      "x": 0.3877593,
+      "y": 0.2140264
+    },
+    "lambda/cognito-users/package.json": {
+      "leafId": "identity-projects-users",
+      "x": 0.0992458,
+      "y": 0.4669287
+    },
+    "lambda/cognito-users/test/cognito-users.test.js": {
+      "leafId": "identity-projects-users",
+      "x": 0.322446,
+      "y": 0.4669287
+    },
+    "lambda/projects/index.js": {
+      "leafId": "identity-projects-users",
+      "x": 0.2836403,
+      "y": 0.7546623
+    },
+    "lambda/projects/package.json": {
+      "leafId": "identity-projects-users",
+      "x": 0.7232003,
+      "y": 0.0871365
+    },
+    "lambda/projects/test/projects.test.js": {
+      "leafId": "identity-projects-users",
+      "x": 0.7232003,
+      "y": 0.3351374
+    },
+    "lambda/sso-token/index.js": {
+      "leafId": "identity-projects-users",
+      "x": 0.5665479,
+      "y": 0.6453342
+    },
+    "lambda/sso-token/package.json": {
+      "leafId": "identity-projects-users",
+      "x": 0.6717523,
+      "y": 0.6453342
+    },
+    "lambda/sso-token/test/sso-token.test.js": {
+      "leafId": "identity-projects-users",
+      "x": 0.612045,
+      "y": 0.8351333
+    },
+    "lambda/users/index.js": {
+      "leafId": "identity-projects-users",
+      "x": 0.8052716,
+      "y": 0.7497609
+    },
+    "lambda/users/package.json": {
+      "leafId": "identity-projects-users",
+      "x": 0.9164269,
+      "y": 0.7497609
+    },
+    "lambda/agents/authentication-connection-verification.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.1378727,
+      "y": 0.130212
+    },
+    "lambda/agents/authentication-iam-settings.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.11293,
+      "y": 0.2472075
+    },
+    "lambda/agents/authentication-settings-providers.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.1903627,
+      "y": 0.2472075
+    },
+    "lambda/agents/authentication-settings-service.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.2949078,
+      "y": 0.1809554
+    },
+    "lambda/agents/index.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.2174751,
+      "y": 0.4122596
+    },
+    "lambda/agents/package.json": {
+      "leafId": "identity-agent-settings",
+      "x": 0.4492109,
+      "y": 0.0978467
+    },
+    "lambda/agents/test/authentication-connection-verification.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.4492109,
+      "y": 0.2422831
+    },
+    "lambda/agents/test/authentication-iam-settings.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.4492109,
+      "y": 0.4397007
+    },
+    "lambda/agents/test/authentication-settings-providers.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.17893,
+      "y": 0.606707
+    },
+    "lambda/agents/test/authentication-settings.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.17893,
+      "y": 0.7439418
+    },
+    "lambda/agents/test/event-logging.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.1263282,
+      "y": 0.8702991
+    },
+    "lambda/agents/test/helpers/fake-settings-providers.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.2448182,
+      "y": 0.8702991
+    },
+    "lambda/agents/test/helpers/settings-harness.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.4106659,
+      "y": 0.5830854
+    },
+    "lambda/agents/test/history-auth.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.4106659,
+      "y": 0.7171499
+    },
+    "lambda/agents/test/runtime-routing.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.4106659,
+      "y": 0.8671287
+    },
+    "lambda/agents/test/settings.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.5976497,
+      "y": 0.1404476
+    },
+    "lambda/credential-broker/agent-authentication-entry.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.5976497,
+      "y": 0.2328264
+    },
+    "lambda/credential-broker/agent-authentication.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.7241981,
+      "y": 0.1563389
+    },
+    "lambda/credential-broker/agent-broker-providers.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.5582692,
+      "y": 0.2927482
+    },
+    "lambda/credential-broker/agent-credential-renewal.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.6848176,
+      "y": 0.2927482
+    },
+    "lambda/credential-broker/agent-provider-registry.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.8582842,
+      "y": 0.1650539
+    },
+    "lambda/credential-broker/bedrock-iam-provider.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.8582842,
+      "y": 0.3014632
+    },
+    "lambda/credential-broker/bedrock-iam-wire.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.5709061,
+      "y": 0.3978561
+    },
+    "lambda/credential-broker/bedrock-iam.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.6770336,
+      "y": 0.3978561
+    },
+    "lambda/credential-broker/index.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.6300393,
+      "y": 0.518393
+    },
+    "lambda/credential-broker/key-broker-provider.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.773894,
+      "y": 0.3726433
+    },
+    "lambda/credential-broker/package.json": {
+      "leafId": "identity-agent-settings",
+      "x": 0.8755906,
+      "y": 0.3726433
+    },
+    "lambda/credential-broker/test/bedrock-iam.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.8378635,
+      "y": 0.4931802
+    },
+    "lambda/credential-broker/test/broker-providers.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.6483482,
+      "y": 0.6782492
+    },
+    "lambda/credential-broker/test/credential-broker.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.6483482,
+      "y": 0.8591029
+    },
+    "lambda/credential-broker/test/helpers/fixture-broker-provider.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.8561724,
+      "y": 0.6230245
+    },
+    "lambda/credential-metadata/index.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.8561724,
+      "y": 0.7244059
+    },
+    "lambda/credential-metadata/package.json": {
+      "leafId": "identity-agent-settings",
+      "x": 0.7997047,
+      "y": 0.8600876
+    },
+    "lambda/credential-metadata/test/credential-metadata.test.js": {
+      "leafId": "identity-agent-settings",
+      "x": 0.8830923,
+      "y": 0.8600876
+    },
+    "lambda/environments/build-guardrails.js": {
+      "leafId": "identity-environments",
+      "x": 0.1221826,
+      "y": 0.1197824
+    },
+    "lambda/environments/build-lifecycle.js": {
+      "leafId": "identity-environments",
+      "x": 0.2332048,
+      "y": 0.1197824
+    },
+    "lambda/environments/catalog-recipe.js": {
+      "leafId": "identity-environments",
+      "x": 0.1714622,
+      "y": 0.2357666
+    },
+    "lambda/environments/compute-model.js": {
+      "leafId": "identity-environments",
+      "x": 0.3922109,
+      "y": 0.109759
+    },
+    "lambda/environments/fixed-tool-recipe.js": {
+      "leafId": "identity-environments",
+      "x": 0.3922109,
+      "y": 0.2257432
+    },
+    "lambda/environments/index.js": {
+      "leafId": "identity-environments",
+      "x": 0.1386117,
+      "y": 0.4041272
+    },
+    "lambda/environments/package.json": {
+      "leafId": "identity-environments",
+      "x": 0.2621083,
+      "y": 0.328652
+    },
+    "lambda/environments/registry.js": {
+      "leafId": "identity-environments",
+      "x": 0.2621083,
+      "y": 0.393438
+    },
+    "lambda/environments/request.js": {
+      "leafId": "identity-environments",
+      "x": 0.2621083,
+      "y": 0.4689132
+    },
+    "lambda/environments/runtime-backends/capacity-provider.js": {
+      "leafId": "identity-environments",
+      "x": 0.3684499,
+      "y": 0.3498459
+    },
+    "lambda/environments/runtime-backends/index.js": {
+      "leafId": "identity-environments",
+      "x": 0.3684499,
+      "y": 0.4325249
+    },
+    "lambda/environments/runtime-backends/instances.js": {
+      "leafId": "identity-environments",
+      "x": 0.465702,
+      "y": 0.3786074
+    },
+    "lambda/environments/runtime-backends/microvms.js": {
+      "leafId": "identity-environments",
+      "x": 0.4046852,
+      "y": 0.4868061
+    },
+    "lambda/environments/status.js": {
+      "leafId": "identity-environments",
+      "x": 0.1714389,
+      "y": 0.5985923
+    },
+    "lambda/environments/store.js": {
+      "leafId": "identity-environments",
+      "x": 0.1714389,
+      "y": 0.7648536
+    },
+    "lambda/environments/test/build-admission.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.1714389,
+      "y": 0.8922042
+    },
+    "lambda/environments/test/build-guardrails.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.3292631,
+      "y": 0.576619
+    },
+    "lambda/environments/test/capacity-provider.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.4390129,
+      "y": 0.576619
+    },
+    "lambda/environments/test/catalog-recipe.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.3921875,
+      "y": 0.6895634
+    },
+    "lambda/environments/test/compute-model.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.3348998,
+      "y": 0.8388874
+    },
+    "lambda/environments/test/fixed-tool-recipe.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.4446496,
+      "y": 0.8388874
+    },
+    "lambda/environments/test/helpers/verification-lease.js": {
+      "leafId": "identity-environments",
+      "x": 0.5990447,
+      "y": 0.0779586
+    },
+    "lambda/environments/test/index.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.5990447,
+      "y": 0.1803336
+    },
+    "lambda/environments/test/runtime-backends.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.5990447,
+      "y": 0.3102591
+    },
+    "lambda/environments/test/status-instances.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.7615243,
+      "y": 0.207884
+    },
+    "lambda/environments/test/status.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.8832282,
+      "y": 0.207884
+    },
+    "lambda/environments/test/store.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.5770756,
+      "y": 0.4363888
+    },
+    "lambda/environments/test/terraform-packaging.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.6762577,
+      "y": 0.4363888
+    },
+    "lambda/environments/test/tool-catalog.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.7645888,
+      "y": 0.4363888
+    },
+    "lambda/environments/test/tool-store.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.884218,
+      "y": 0.4363888
+    },
+    "lambda/environments/test/tools-index.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.5833199,
+      "y": 0.5856615
+    },
+    "lambda/environments/test/tools-status.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.5833199,
+      "y": 0.709465
+    },
+    "lambda/environments/test/verification-lease.test.js": {
+      "leafId": "identity-environments",
+      "x": 0.7093358,
+      "y": 0.6447731
+    },
+    "lambda/environments/tool-catalog.js": {
+      "leafId": "identity-environments",
+      "x": 0.6279532,
+      "y": 0.8540683
+    },
+    "lambda/environments/tool-store.js": {
+      "leafId": "identity-environments",
+      "x": 0.8467645,
+      "y": 0.5935843
+    },
+    "lambda/environments/tools-index.js": {
+      "leafId": "identity-environments",
+      "x": 0.8467645,
+      "y": 0.7396532
+    },
+    "lambda/environments/tools-status.js": {
+      "leafId": "identity-environments",
+      "x": 0.8312039,
+      "y": 0.8763337
+    },
+    "lambda/environments/vitest.config.js": {
+      "leafId": "identity-environments",
+      "x": 0.9239994,
+      "y": 0.8763337
+    },
+    "lambda/discussions/clients.js": {
+      "leafId": "realtime-discussions",
+      "x": 0.1581543,
+      "y": 0.1412009
+    },
+    "lambda/discussions/constants.js": {
+      "leafId": "realtime-discussions",
+      "x": 0.1581543,
+      "y": 0.3063559
+    },
+    "lambda/discussions/data-access.js": {
+      "leafId": "realtime-discussions",
+      "x": 0.3853104,
+      "y": 0.229115
+    },
+    "lambda/discussions/handlers.js": {
+      "leafId": "realtime-discussions",
+      "x": 0.2875961,
+      "y": 0.5614548
+    },
+    "lambda/discussions/index.js": {
+      "leafId": "realtime-discussions",
+      "x": 0.1694059,
+      "y": 0.8340999
+    },
+    "lambda/discussions/mappers.js": {
+      "leafId": "realtime-discussions",
+      "x": 0.3965621,
+      "y": 0.8340999
+    },
+    "lambda/discussions/package.json": {
+      "leafId": "realtime-discussions",
+      "x": 0.6247041,
+      "y": 0.1102398
+    },
+    "lambda/discussions/scope.js": {
+      "leafId": "realtime-discussions",
+      "x": 0.6247041,
+      "y": 0.2563167
+    },
+    "lambda/discussions/services.js": {
+      "leafId": "realtime-discussions",
+      "x": 0.837108,
+      "y": 0.2100369
+    },
+    "lambda/discussions/test/discussions.test.js": {
+      "leafId": "realtime-discussions",
+      "x": 0.7271561,
+      "y": 0.5940003
+    },
+    "lambda/discussions/test/services.test.js": {
+      "leafId": "realtime-discussions",
+      "x": 0.7271561,
+      "y": 0.8857235
+    },
+    "lambda/ws-authorizer/index.js": {
+      "leafId": "realtime-transports",
+      "x": 0.121333,
+      "y": 0.1261764
+    },
+    "lambda/ws-authorizer/package.json": {
+      "leafId": "realtime-transports",
+      "x": 0.121333,
+      "y": 0.2275365
+    },
+    "lambda/ws-authorizer/test/ws-authorizer.test.js": {
+      "leafId": "realtime-transports",
+      "x": 0.2567853,
+      "y": 0.1653201
+    },
+    "lambda/ws-connection/index.js": {
+      "leafId": "realtime-transports",
+      "x": 0.1958923,
+      "y": 0.3135866
+    },
+    "lambda/ws-connection/package.json": {
+      "leafId": "realtime-transports",
+      "x": 0.4208472,
+      "y": 0.089881
+    },
+    "lambda/ws-connection/test/ws-connection.test.js": {
+      "leafId": "realtime-transports",
+      "x": 0.4208472,
+      "y": 0.2381476
+    },
+    "lambda/ws-message/index.js": {
+      "leafId": "realtime-transports",
+      "x": 0.1140588,
+      "y": 0.4134858
+    },
+    "lambda/ws-message/package.json": {
+      "leafId": "realtime-transports",
+      "x": 0.1140588,
+      "y": 0.5097469
+    },
+    "lambda/ws-message/test/ws-message.test.js": {
+      "leafId": "realtime-transports",
+      "x": 0.2215694,
+      "y": 0.4567542
+    },
+    "lambda/yjs-server/Dockerfile": {
+      "leafId": "realtime-transports",
+      "x": 0.2995623,
+      "y": 0.4567542
+    },
+    "lambda/yjs-server/aws-store.js": {
+      "leafId": "realtime-transports",
+      "x": 0.4170067,
+      "y": 0.4567542
+    },
+    "lambda/yjs-server/cluster.js": {
+      "leafId": "realtime-transports",
+      "x": 0.1516652,
+      "y": 0.6624008
+    },
+    "lambda/yjs-server/config.js": {
+      "leafId": "realtime-transports",
+      "x": 0.2911704,
+      "y": 0.620022
+    },
+    "lambda/yjs-server/doc-name.js": {
+      "leafId": "realtime-transports",
+      "x": 0.2911704,
+      "y": 0.7294074
+    },
+    "lambda/yjs-server/load.js": {
+      "leafId": "realtime-transports",
+      "x": 0.1999452,
+      "y": 0.8556731
+    },
+    "lambda/yjs-server/package-lock.json": {
+      "leafId": "realtime-transports",
+      "x": 0.4249002,
+      "y": 0.7176685
+    },
+    "lambda/yjs-server/package.json": {
+      "leafId": "realtime-transports",
+      "x": 0.4249002,
+      "y": 0.9109409
+    },
+    "lambda/yjs-server/protocol.js": {
+      "leafId": "realtime-transports",
+      "x": 0.6030818,
+      "y": 0.1199028
+    },
+    "lambda/yjs-server/realtime-token.js": {
+      "leafId": "realtime-transports",
+      "x": 0.6030818,
+      "y": 0.2423002
+    },
+    "lambda/yjs-server/rooms.js": {
+      "leafId": "realtime-transports",
+      "x": 0.7795151,
+      "y": 0.1863574
+    },
+    "lambda/yjs-server/server.js": {
+      "leafId": "realtime-transports",
+      "x": 0.9013883,
+      "y": 0.1863574
+    },
+    "lambda/yjs-server/service.js": {
+      "leafId": "realtime-transports",
+      "x": 0.6095362,
+      "y": 0.4098126
+    },
+    "lambda/yjs-server/test/aws-store.test.js": {
+      "leafId": "realtime-transports",
+      "x": 0.7882483,
+      "y": 0.4098126
+    },
+    "lambda/yjs-server/test/doc-name.test.js": {
+      "leafId": "realtime-transports",
+      "x": 0.9036671,
+      "y": 0.4098126
+    },
+    "lambda/yjs-server/test/dynamodb.integration.test.js": {
+      "leafId": "realtime-transports",
+      "x": 0.6213093,
+      "y": 0.5832998
+    },
+    "lambda/yjs-server/test/helpers.js": {
+      "leafId": "realtime-transports",
+      "x": 0.6213093,
+      "y": 0.7245477
+    },
+    "lambda/yjs-server/test/realtime-token.test.js": {
+      "leafId": "realtime-transports",
+      "x": 0.6213093,
+      "y": 0.8664631
+    },
+    "lambda/yjs-server/test/service.test.js": {
+      "leafId": "realtime-transports",
+      "x": 0.8359144,
+      "y": 0.6447591
+    },
+    "lambda/yjs-server/test/verify-snapshots.test.js": {
+      "leafId": "realtime-transports",
+      "x": 0.7618945,
+      "y": 0.8591039
+    },
+    "lambda/yjs-server/verify-snapshots.js": {
+      "leafId": "realtime-transports",
+      "x": 0.8463164,
+      "y": 0.8591039
+    },
+    "lambda/yjs-server/vitest.config.js": {
+      "leafId": "realtime-transports",
+      "x": 0.9203363,
+      "y": 0.8591039
+    },
+    "lambda/shared/git-providers.js": {
+      "leafId": "integrations-git",
+      "x": 0.2580367,
+      "y": 0.123791
+    },
+    "lambda/shared/git-providers/bitbucket.js": {
+      "leafId": "integrations-git",
+      "x": 0.2580367,
+      "y": 0.3722268
+    },
+    "lambda/shared/git-providers/codecommit-credential.js": {
+      "leafId": "integrations-git",
+      "x": 0.5193506,
+      "y": 0.3123958
+    },
+    "lambda/shared/git-providers/codecommit-repo.js": {
+      "leafId": "integrations-git",
+      "x": 0.1096634,
+      "y": 0.7501958
+    },
+    "lambda/shared/git-providers/codecommit.js": {
+      "leafId": "integrations-git",
+      "x": 0.3709773,
+      "y": 0.7501958
+    },
+    "lambda/shared/git-providers/errors.js": {
+      "leafId": "integrations-git",
+      "x": 0.7613139,
+      "y": 0.092114
+    },
+    "lambda/shared/git-providers/github.js": {
+      "leafId": "integrations-git",
+      "x": 0.7613139,
+      "y": 0.3208341
+    },
+    "lambda/shared/git-providers/gitlab.js": {
+      "leafId": "integrations-git",
+      "x": 0.7613139,
+      "y": 0.7304801
+    },
+    "lambda/bitbucket/index.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.1393648,
+      "y": 0.1329689
+    },
+    "lambda/bitbucket/package.json": {
+      "leafId": "integrations-oauth",
+      "x": 0.2765794,
+      "y": 0.1329689
+    },
+    "lambda/codecommit/index.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.1976546,
+      "y": 0.2999403
+    },
+    "lambda/codecommit/package.json": {
+      "leafId": "integrations-oauth",
+      "x": 0.4525253,
+      "y": 0.0999982
+    },
+    "lambda/codecommit/test/index.test.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.4525253,
+      "y": 0.2669695
+    },
+    "lambda/github/index.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.1300585,
+      "y": 0.4912682
+    },
+    "lambda/github/package.json": {
+      "leafId": "integrations-oauth",
+      "x": 0.2427605,
+      "y": 0.4912682
+    },
+    "lambda/github/test/github-admin.test.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.4280127,
+      "y": 0.4912682
+    },
+    "lambda/github/test/github-app-discovery.test.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.1252157,
+      "y": 0.7620968
+    },
+    "lambda/github/test/github.test.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.3800864,
+      "y": 0.7620968
+    },
+    "lambda/gitlab/index.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.6749992,
+      "y": 0.1143225
+    },
+    "lambda/gitlab/package.json": {
+      "leafId": "integrations-oauth",
+      "x": 0.8596886,
+      "y": 0.1143225
+    },
+    "lambda/gitlab/test/gitlab.test.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.7548706,
+      "y": 0.3293599
+    },
+    "lambda/source-control/index.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.7548706,
+      "y": 0.623295
+    },
+    "lambda/source-control/package.json": {
+      "leafId": "integrations-oauth",
+      "x": 0.6218854,
+      "y": 0.8460576
+    },
+    "lambda/source-control/test/source-control.test.js": {
+      "leafId": "integrations-oauth",
+      "x": 0.8065748,
+      "y": 0.8460576
+    },
+    "lambda/migrate-tracker-fields/index.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.153774,
+      "y": 0.1351363
+    },
+    "lambda/migrate-tracker-fields/package.json": {
+      "leafId": "integrations-trackers",
+      "x": 0.2919441,
+      "y": 0.1351363
+    },
+    "lambda/migrate-tracker-fields/test/migrate-tracker-fields.test.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.1986101,
+      "y": 0.2807574
+    },
+    "lambda/trackers/delivery-sync.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.4408601,
+      "y": 0.2095811
+    },
+    "lambda/trackers/index.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.3026899,
+      "y": 0.4559599
+    },
+    "lambda/trackers/package.json": {
+      "leafId": "integrations-trackers",
+      "x": 0.1417423,
+      "y": 0.5970451
+    },
+    "lambda/trackers/providers/adf-to-markdown.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.1417423,
+      "y": 0.72317
+    },
+    "lambda/trackers/providers/errors.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.2836552,
+      "y": 0.6014632
+    },
+    "lambda/trackers/providers/github-issues.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.2836552,
+      "y": 0.7275882
+    },
+    "lambda/trackers/providers/gitlab-issues.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.1342017,
+      "y": 0.8742637
+    },
+    "lambda/trackers/providers/index.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.2761146,
+      "y": 0.8742637
+    },
+    "lambda/trackers/providers/jira-cloud.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.4446028,
+      "y": 0.7481388
+    },
+    "lambda/trackers/test/adf-to-markdown.test.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.6241462,
+      "y": 0.1972511
+    },
+    "lambda/trackers/test/delivery-sync.test.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.8214562,
+      "y": 0.1972511
+    },
+    "lambda/trackers/test/gitlab-issues.test.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.5823165,
+      "y": 0.4609644
+    },
+    "lambda/trackers/test/jira-cloud.test.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.7796266,
+      "y": 0.4609644
+    },
+    "lambda/trackers/test/providers.test.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.5769836,
+      "y": 0.7654733
+    },
+    "lambda/trackers/test/trackers.test.js": {
+      "leafId": "integrations-trackers",
+      "x": 0.7742937,
+      "y": 0.7654733
+    },
+    "lambda/.dockerignore": {
+      "leafId": "infrastructure-app",
+      "x": 0.1532246,
+      "y": 0.0861846
+    },
+    "terraform/modules/api/agents.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.1532246,
+      "y": 0.2107387
+    },
+    "terraform/modules/api/bedrock-iam.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.0776805,
+      "y": 0.3618979
+    },
+    "terraform/modules/api/cors/main.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.1515791,
+      "y": 0.3618979
+    },
+    "terraform/modules/api/lambda/bedrock-iam.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.2271231,
+      "y": 0.3618979
+    },
+    "terraform/modules/api/lambda/main.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.3746727,
+      "y": 0.2373438
+    },
+    "terraform/modules/api/lambda/outputs.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.1661759,
+      "y": 0.4758003
+    },
+    "terraform/modules/api/lambda/variables.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.387624,
+      "y": 0.4758003
+    },
+    "terraform/modules/api/main.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.2116204,
+      "y": 0.6050921
+    },
+    "terraform/modules/api/outputs.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.3974841,
+      "y": 0.6050921
+    },
+    "terraform/modules/api/routes.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.2463036,
+      "y": 0.8044355
+    },
+    "terraform/modules/api/variables.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.4677517,
+      "y": 0.7402165
+    },
+    "terraform/modules/compute/agentcore/main.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.6285438,
+      "y": 0.1496959
+    },
+    "terraform/modules/compute/agentcore/outputs.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.5564246,
+      "y": 0.3098099
+    },
+    "terraform/modules/compute/agentcore/variables.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.6816322,
+      "y": 0.3098099
+    },
+    "terraform/modules/compute/agents/main.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.8466557,
+      "y": 0.084222
+    },
+    "terraform/modules/compute/managed-environments/main.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.8466557,
+      "y": 0.244336
+    },
+    "terraform/modules/compute/managed-environments/outputs.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.5420162,
+      "y": 0.4626607
+    },
+    "terraform/modules/compute/managed-environments/variables.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.6498891,
+      "y": 0.4626607
+    },
+    "terraform/modules/frontend/cloudfront-origin-secret.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.7394368,
+      "y": 0.4626607
+    },
+    "terraform/modules/frontend/main.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.8496758,
+      "y": 0.4626607
+    },
+    "terraform/modules/frontend/outputs.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.5452995,
+      "y": 0.5985807
+    },
+    "terraform/modules/frontend/variables.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.6409062,
+      "y": 0.5985807
+    },
+    "terraform/modules/realtime/lambda.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.5989429,
+      "y": 0.7119955
+    },
+    "terraform/modules/realtime/outputs.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.7141883,
+      "y": 0.6545482
+    },
+    "terraform/modules/realtime/secret.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.5675974,
+      "y": 0.7960602
+    },
+    "terraform/modules/realtime/variables.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.5675974,
+      "y": 0.8818587
+    },
+    "terraform/modules/realtime/websocket.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.6828428,
+      "y": 0.8537615
+    },
+    "terraform/modules/realtime/yjs-server/main.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.8366935,
+      "y": 0.6200559
+    },
+    "terraform/modules/realtime/yjs-server/outputs.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.8366935,
+      "y": 0.7284858
+    },
+    "terraform/modules/realtime/yjs-server/scaling.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.7818328,
+      "y": 0.8487766
+    },
+    "terraform/modules/realtime/yjs-server/variables.tf": {
+      "leafId": "infrastructure-app",
+      "x": 0.8846994,
+      "y": 0.8487766
+    },
+    "lambda/purge-neptune/index.js": {
+      "leafId": "infrastructure-data",
+      "x": 0.1334868,
+      "y": 0.1445844
+    },
+    "lambda/purge-neptune/package.json": {
+      "leafId": "infrastructure-data",
+      "x": 0.2512655,
+      "y": 0.1445844
+    },
+    "lambda/purge-neptune/test/purge-neptune.test.js": {
+      "leafId": "infrastructure-data",
+      "x": 0.1782187,
+      "y": 0.296365
+    },
+    "terraform/modules/auth/main.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.4077841,
+      "y": 0.2157407
+    },
+    "terraform/modules/auth/outputs.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.1569607,
+      "y": 0.4482385
+    },
+    "terraform/modules/auth/variables.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.3865261,
+      "y": 0.4482385
+    },
+    "terraform/modules/data/dynamodb/main.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.2006845,
+      "y": 0.6688639
+    },
+    "terraform/modules/data/dynamodb/outputs.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.2006845,
+      "y": 0.8741661
+    },
+    "terraform/modules/data/dynamodb/variables.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.4302499,
+      "y": 0.5841207
+    },
+    "terraform/modules/data/neptune/main.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.4302499,
+      "y": 0.7277465
+    },
+    "terraform/modules/data/neptune/outputs.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.4302499,
+      "y": 0.8778837
+    },
+    "terraform/modules/data/neptune/variables.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.5738851,
+      "y": 0.1911067
+    },
+    "terraform/modules/data/s3/main.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.7437659,
+      "y": 0.1911067
+    },
+    "terraform/modules/data/s3/outputs.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.8994463,
+      "y": 0.1911067
+    },
+    "terraform/modules/data/s3/variables.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.549523,
+      "y": 0.4426099
+    },
+    "terraform/modules/git/main.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.6925424,
+      "y": 0.4426099
+    },
+    "terraform/modules/git/outputs.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.8725848,
+      "y": 0.4426099
+    },
+    "terraform/modules/git/variables.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.5692178,
+      "y": 0.6607473
+    },
+    "terraform/modules/security/dynamodb-kms-runtime-access/main.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.684729,
+      "y": 0.6607473
+    },
+    "terraform/modules/security/dynamodb-kms-runtime-access/variables.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.7890496,
+      "y": 0.6607473
+    },
+    "terraform/modules/security/waf/main.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.6735384,
+      "y": 0.8470441
+    },
+    "terraform/modules/security/waf/outputs.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.883533,
+      "y": 0.6195246
+    },
+    "terraform/modules/security/waf/variables.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.883533,
+      "y": 0.7482468
+    },
+    "terraform/modules/security/waf/versions.tf": {
+      "leafId": "infrastructure-data",
+      "x": 0.883533,
+      "y": 0.8819854
+    },
+    "terraform/.terraform.lock.hcl": {
+      "leafId": "infrastructure-stack",
+      "x": 0.1708109,
+      "y": 0.1618574
+    },
+    "terraform/.tflint.hcl": {
+      "leafId": "infrastructure-stack",
+      "x": 0.1708109,
+      "y": 0.277433
+    },
+    "terraform/agent-credential-grant.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.0966344,
+      "y": 0.3935327
+    },
+    "terraform/environments/dev.tfvars.example": {
+      "leafId": "infrastructure-stack",
+      "x": 0.2070053,
+      "y": 0.3935327
+    },
+    "terraform/main.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.3924151,
+      "y": 0.2779571
+    },
+    "terraform/modules/domain/main.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.2820441,
+      "y": 0.530333
+    },
+    "terraform/modules/domain/outputs.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.1459167,
+      "y": 0.6048041
+    },
+    "terraform/modules/domain/variables.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.1459167,
+      "y": 0.7080966
+    },
+    "terraform/modules/domain/versions.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.2658811,
+      "y": 0.6720043
+    },
+    "terraform/modules/networking/main.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.1804043,
+      "y": 0.8574284
+    },
+    "terraform/modules/networking/outputs.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.3640414,
+      "y": 0.6526326
+    },
+    "terraform/modules/networking/variables.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.4656812,
+      "y": 0.6526326
+    },
+    "terraform/modules/networking/vpc-endpoints/main.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.4020085,
+      "y": 0.7733125
+    },
+    "terraform/modules/networking/vpc-endpoints/outputs.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.3392746,
+      "y": 0.8748158
+    },
+    "terraform/modules/networking/vpc-endpoints/variables.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.4409144,
+      "y": 0.8748158
+    },
+    "terraform/outputs.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.6137315,
+      "y": 0.2133083
+    },
+    "terraform/tests/auth-domain.tftest.hcl": {
+      "leafId": "infrastructure-stack",
+      "x": 0.8316874,
+      "y": 0.1570717
+    },
+    "terraform/tests/fixtures/lambda-packaging/main.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.8316874,
+      "y": 0.30642
+    },
+    "terraform/tests/fixtures/lambda-packaging/src/lookup/index.js": {
+      "leafId": "infrastructure-stack",
+      "x": 0.5509646,
+      "y": 0.3864646
+    },
+    "terraform/tests/fixtures/lambda-packaging/src/workflows/index.js": {
+      "leafId": "infrastructure-stack",
+      "x": 0.5509646,
+      "y": 0.4340804
+    },
+    "terraform/tests/fixtures/lambda-packaging/workspace.py": {
+      "leafId": "infrastructure-stack",
+      "x": 0.5509646,
+      "y": 0.5083924
+    },
+    "terraform/tests/lambda-packaging.tftest.hcl": {
+      "leafId": "infrastructure-stack",
+      "x": 0.6752969,
+      "y": 0.4607766
+    },
+    "terraform/tests/managed-environments.tftest.hcl": {
+      "leafId": "infrastructure-stack",
+      "x": 0.8459364,
+      "y": 0.4607766
+    },
+    "terraform/tests/waf.tftest.hcl": {
+      "leafId": "infrastructure-stack",
+      "x": 0.6236783,
+      "y": 0.6428401
+    },
+    "terraform/tests/yjs.tftest.hcl": {
+      "leafId": "infrastructure-stack",
+      "x": 0.6236783,
+      "y": 0.8331718
+    },
+    "terraform/variables.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.8416341,
+      "y": 0.7110751
+    },
+    "terraform/yjs.tf": {
+      "leafId": "infrastructure-stack",
+      "x": 0.8416341,
+      "y": 0.9014068
+    },
+    ".github/CODEOWNERS": {
+      "leafId": "release-actions",
+      "x": 0.0830696,
+      "y": 0.1703555
+    },
+    ".github/ISSUE_TEMPLATE/bug_report.yml": {
+      "leafId": "release-actions",
+      "x": 0.2154005,
+      "y": 0.1703555
+    },
+    ".github/ISSUE_TEMPLATE/config.yml": {
+      "leafId": "release-actions",
+      "x": 0.1927709,
+      "y": 0.3082648
+    },
+    ".github/ISSUE_TEMPLATE/documentation.yml": {
+      "leafId": "release-actions",
+      "x": 0.1927709,
+      "y": 0.4307509
+    },
+    ".github/ISSUE_TEMPLATE/feature_request.yml": {
+      "leafId": "release-actions",
+      "x": 0.4338186,
+      "y": 0.1735794
+    },
+    ".github/ISSUE_TEMPLATE/rfc.yml": {
+      "leafId": "release-actions",
+      "x": 0.4338186,
+      "y": 0.402461
+    },
+    ".github/dependabot.yml": {
+      "leafId": "release-actions",
+      "x": 0.1261401,
+      "y": 0.7306417
+    },
+    ".github/workflows/deploy-demo.yml": {
+      "leafId": "release-actions",
+      "x": 0.3671878,
+      "y": 0.7306417
+    },
+    ".github/workflows/deploy-main.yml": {
+      "leafId": "release-actions",
+      "x": 0.6690532,
+      "y": 0.1312428
+    },
+    ".github/workflows/docs.yml": {
+      "leafId": "release-actions",
+      "x": 0.6690532,
+      "y": 0.3001203
+    },
+    ".github/workflows/frontend.yml": {
+      "leafId": "release-actions",
+      "x": 0.8675656,
+      "y": 0.2328376
+    },
+    ".github/workflows/lint.yml": {
+      "leafId": "release-actions",
+      "x": 0.7410477,
+      "y": 0.4579535
+    },
+    ".github/workflows/release.yml": {
+      "leafId": "release-actions",
+      "x": 0.6392448,
+      "y": 0.6656291
+    },
+    ".github/workflows/terraform.yml": {
+      "leafId": "release-actions",
+      "x": 0.8377571,
+      "y": 0.6656291
+    },
+    ".github/workflows/test.yml": {
+      "leafId": "release-actions",
+      "x": 0.7410477,
+      "y": 0.8783132
+    },
+    "scripts/agent-e2e-testing.sh": {
+      "leafId": "release-scripts",
+      "x": 0.1465478,
+      "y": 0.1496275
+    },
+    "scripts/backfill-yjs-deletion-cleanup.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.268646,
+      "y": 0.1496275
+    },
+    "scripts/bootstrap.sh": {
+      "leafId": "release-scripts",
+      "x": 0.1179891,
+      "y": 0.290687
+    },
+    "scripts/deploy-frontend.sh": {
+      "leafId": "release-scripts",
+      "x": 0.2400874,
+      "y": 0.290687
+    },
+    "scripts/deploy-terraform.sh": {
+      "leafId": "release-scripts",
+      "x": 0.4099911,
+      "y": 0.1392612
+    },
+    "scripts/destroy.sh": {
+      "leafId": "release-scripts",
+      "x": 0.3817782,
+      "y": 0.2803206
+    },
+    "scripts/docker-proxy-build-args.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.4871328,
+      "y": 0.2803206
+    },
+    "scripts/generate-agent-output-fixtures.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.1152933,
+      "y": 0.4195141
+    },
+    "scripts/generate-env.sh": {
+      "leafId": "release-scripts",
+      "x": 0.2260972,
+      "y": 0.4195141
+    },
+    "scripts/initialize-agent-auth-inventory.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.0943316,
+      "y": 0.5463703
+    },
+    "scripts/inspect-terraform-plan.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.2051355,
+      "y": 0.5463703
+    },
+    "scripts/install.sh": {
+      "leafId": "release-scripts",
+      "x": 0.3986967,
+      "y": 0.4729351
+    },
+    "scripts/phaseb-answer.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.1381035,
+      "y": 0.6449357
+    },
+    "scripts/phaseb.sh": {
+      "leafId": "release-scripts",
+      "x": 0.1381035,
+      "y": 0.7611734
+    },
+    "scripts/release.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.2581384,
+      "y": 0.7160291
+    },
+    "scripts/snapshot-aidlc-compatibility.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.1804749,
+      "y": 0.8859134
+    },
+    "scripts/snapshot-upstream-artifacts.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.3461631,
+      "y": 0.6936397
+    },
+    "scripts/sso-config.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.4535811,
+      "y": 0.6936397
+    },
+    "scripts/sync-aws-sdk.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.356858,
+      "y": 0.863524
+    },
+    "scripts/test/agent-e2e-proxy.test.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.4642759,
+      "y": 0.863524
+    },
+    "scripts/test/auth-parent-dns.test.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.5590148,
+      "y": 0.136367
+    },
+    "scripts/test/bedrock-iam-wiring.test.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.6352862,
+      "y": 0.136367
+    },
+    "scripts/test/docker-proxy-build-args.test.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.7018988,
+      "y": 0.136367
+    },
+    "scripts/test/fixtures/inspect-terraform-plan-v2.2.0.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.5802287,
+      "y": 0.2699096
+    },
+    "scripts/test/helpers/public-ecr.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.6905103,
+      "y": 0.2699096
+    },
+    "scripts/test/lambda-package-deployment.test.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.8377345,
+      "y": 0.1362948
+    },
+    "scripts/test/public-ecr-build-auth.test.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.8377345,
+      "y": 0.2698374
+    },
+    "scripts/test/release-tools.test.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.7274529,
+      "y": 0.4242392
+    },
+    "scripts/test/sso-config.test.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.5655631,
+      "y": 0.6270862
+    },
+    "scripts/test/terraform-hardening.test.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.6875623,
+      "y": 0.6270862
+    },
+    "scripts/test/terraform-sso-privacy.test.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.5810286,
+      "y": 0.7986832
+    },
+    "scripts/wait-for-auth-parent-dns.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.5810286,
+      "y": 0.9000935
+    },
+    "scripts/with-public-ecr-auth.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.7030279,
+      "y": 0.8381497
+    },
+    "test/dynamodb-setup.js": {
+      "leafId": "release-scripts",
+      "x": 0.8017123,
+      "y": 0.5679956
+    },
+    "test/fixtures/oidc-idp/.gitignore": {
+      "leafId": "release-scripts",
+      "x": 0.8652646,
+      "y": 0.5679956
+    },
+    "test/fixtures/oidc-idp/index.mjs": {
+      "leafId": "release-scripts",
+      "x": 0.9130043,
+      "y": 0.5679956
+    },
+    "test/fixtures/oidc-idp/main.tf": {
+      "leafId": "release-scripts",
+      "x": 0.8494521,
+      "y": 0.66798
+    },
+    "test/fixtures/oidc-idp/outputs.tf": {
+      "leafId": "release-scripts",
+      "x": 0.8494521,
+      "y": 0.7516188
+    },
+    "test/fixtures/oidc-idp/variables.tf": {
+      "leafId": "release-scripts",
+      "x": 0.8093098,
+      "y": 0.8238397
+    },
+    "test/fixtures/oidc-idp/versions.tf": {
+      "leafId": "release-scripts",
+      "x": 0.8093098,
+      "y": 0.9007019
+    },
+    "test/gremlin-setup.js": {
+      "leafId": "release-scripts",
+      "x": 0.8994177,
+      "y": 0.8401465
+    },
+    "test/setup.js": {
+      "leafId": "release-scripts",
+      "x": 0.8994177,
+      "y": 0.9170087
+    },
+    "docs/concepts/aidlc-release-compatibility.md": {
+      "leafId": "docs-architecture",
+      "x": 0.2274149,
+      "y": 0.2179868
+    },
+    "docs/concepts/architecture.md": {
+      "leafId": "docs-architecture",
+      "x": 0.2274149,
+      "y": 0.4501261
+    },
+    "docs/concepts/data-model.md": {
+      "leafId": "docs-architecture",
+      "x": 0.4861062,
+      "y": 0.2960993
+    },
+    "docs/concepts/execution.md": {
+      "leafId": "docs-architecture",
+      "x": 0.139129,
+      "y": 0.6674975
+    },
+    "docs/concepts/index.md": {
+      "leafId": "docs-architecture",
+      "x": 0.2934987,
+      "y": 0.6674975
+    },
+    "docs/concepts/workflows-and-blocks.md": {
+      "leafId": "docs-architecture",
+      "x": 0.2148097,
+      "y": 0.8731583
+    },
+    "docs/development/agent-authentication-foundation.md": {
+      "leafId": "docs-architecture",
+      "x": 0.473501,
+      "y": 0.7338993
+    },
+    "docs/development/bedrock-iam-rebuild.md": {
+      "leafId": "docs-architecture",
+      "x": 0.6269769,
+      "y": 0.2229063
+    },
+    "docs/development/demo-deployment.md": {
+      "leafId": "docs-architecture",
+      "x": 0.8078456,
+      "y": 0.2229063
+    },
+    "docs/development/recovery-ownership.md": {
+      "leafId": "docs-architecture",
+      "x": 0.7586913,
+      "y": 0.4141021
+    },
+    "docs/development/testing.md": {
+      "leafId": "docs-architecture",
+      "x": 0.7586913,
+      "y": 0.5837324
+    },
+    "docs/development/yjs-operations.md": {
+      "leafId": "docs-architecture",
+      "x": 0.7586913,
+      "y": 0.8303366
+    },
+    "AGENTS.md": {
+      "leafId": "docs-guides",
+      "x": 0.1172531,
+      "y": 0.1754226
+    },
+    "CHANGELOG.md": {
+      "leafId": "docs-guides",
+      "x": 0.2506224,
+      "y": 0.1754226
+    },
+    "CODE_OF_CONDUCT.md": {
+      "leafId": "docs-guides",
+      "x": 0.0861706,
+      "y": 0.3433466
+    },
+    "CONTRIBUTING.md": {
+      "leafId": "docs-guides",
+      "x": 0.21954,
+      "y": 0.3433466
+    },
+    "LICENSE": {
+      "leafId": "docs-guides",
+      "x": 0.4214551,
+      "y": 0.0906506
+    },
+    "README.md": {
+      "leafId": "docs-guides",
+      "x": 0.4214551,
+      "y": 0.2585745
+    },
+    "RELEASING.md": {
+      "leafId": "docs-guides",
+      "x": 0.1320495,
+      "y": 0.486674
+    },
+    "SECURITY.md": {
+      "leafId": "docs-guides",
+      "x": 0.2229707,
+      "y": 0.486674
+    },
+    "docs/getting-started/enterprise-sso.md": {
+      "leafId": "docs-guides",
+      "x": 0.379007,
+      "y": 0.486674
+    },
+    "docs/getting-started/first-intent.md": {
+      "leafId": "docs-guides",
+      "x": 0.1166861,
+      "y": 0.6666682
+    },
+    "docs/getting-started/methodology-map.md": {
+      "leafId": "docs-guides",
+      "x": 0.2511909,
+      "y": 0.6666682
+    },
+    "docs/getting-started/methodology.md": {
+      "leafId": "docs-guides",
+      "x": 0.105194,
+      "y": 0.8496781
+    },
+    "docs/getting-started/prerequisites.md": {
+      "leafId": "docs-guides",
+      "x": 0.2396989,
+      "y": 0.8496781
+    },
+    "docs/getting-started/setup.md": {
+      "leafId": "docs-guides",
+      "x": 0.4225906,
+      "y": 0.7565501
+    },
+    "docs/index.md": {
+      "leafId": "docs-guides",
+      "x": 0.6075047,
+      "y": 0.1140193
+    },
+    "docs/overview-video.md": {
+      "leafId": "docs-guides",
+      "x": 0.6075047,
+      "y": 0.2211551
+    },
+    "docs/using-the-platform/bedrock-iam.md": {
+      "leafId": "docs-guides",
+      "x": 0.7455947,
+      "y": 0.1710958
+    },
+    "docs/using-the-platform/creating-intents.md": {
+      "leafId": "docs-guides",
+      "x": 0.6538216,
+      "y": 0.3209662
+    },
+    "docs/using-the-platform/discussions.md": {
+      "leafId": "docs-guides",
+      "x": 0.8657358,
+      "y": 0.1388952
+    },
+    "docs/using-the-platform/exporting-workspaces.md": {
+      "leafId": "docs-guides",
+      "x": 0.8657358,
+      "y": 0.2887657
+    },
+    "docs/using-the-platform/git-integration.md": {
+      "leafId": "docs-guides",
+      "x": 0.6081828,
+      "y": 0.4440835
+    },
+    "docs/using-the-platform/intent-observability.md": {
+      "leafId": "docs-guides",
+      "x": 0.6081828,
+      "y": 0.5879738
+    },
+    "docs/using-the-platform/managed-environments.md": {
+      "leafId": "docs-guides",
+      "x": 0.820097,
+      "y": 0.5075911
+    },
+    "docs/using-the-platform/platform-settings.md": {
+      "leafId": "docs-guides",
+      "x": 0.6230572,
+      "y": 0.7044862
+    },
+    "docs/using-the-platform/projects.md": {
+      "leafId": "docs-guides",
+      "x": 0.6230572,
+      "y": 0.8135751
+    },
+    "docs/using-the-platform/real-time-collaboration.md": {
+      "leafId": "docs-guides",
+      "x": 0.6230572,
+      "y": 0.9046096
+    },
+    "docs/using-the-platform/recovering-intents.md": {
+      "leafId": "docs-guides",
+      "x": 0.7861531,
+      "y": 0.7447999
+    },
+    "docs/using-the-platform/workflows.md": {
+      "leafId": "docs-guides",
+      "x": 0.8907417,
+      "y": 0.7447999
+    },
+    "zensical.toml": {
+      "leafId": "docs-guides",
+      "x": 0.8349714,
+      "y": 0.8888392
+    },
+    ".dependency-cruiser.cjs": {
+      "leafId": "repository-setup",
+      "x": 0.1639225,
+      "y": 0.213602
+    },
+    ".gitignore": {
+      "leafId": "repository-setup",
+      "x": 0.3271507,
+      "y": 0.213602
+    },
+    ".husky/pre-commit": {
+      "leafId": "repository-setup",
+      "x": 0.4450899,
+      "y": 0.213602
+    },
+    ".oxfmtrc.json": {
+      "leafId": "repository-setup",
+      "x": 0.5547153,
+      "y": 0.1079714
+    },
+    ".oxlintignore": {
+      "leafId": "repository-setup",
+      "x": 0.5547153,
+      "y": 0.2040576
+    },
+    ".oxlintrc.json": {
+      "leafId": "repository-setup",
+      "x": 0.6813851,
+      "y": 0.1600463
+    },
+    ".secretlintrc.json": {
+      "leafId": "repository-setup",
+      "x": 0.5567462,
+      "y": 0.3096883
+    },
+    "lint-staged.config.mjs": {
+      "leafId": "repository-setup",
+      "x": 0.6834159,
+      "y": 0.3096883
+    },
+    "package-lock.json": {
+      "leafId": "repository-setup",
+      "x": 0.4085314,
+      "y": 0.651402
+    },
+    "package.json": {
+      "leafId": "repository-setup",
+      "x": 0.8480914,
+      "y": 0.1836709
+    },
+    "pyproject.toml": {
+      "leafId": "repository-setup",
+      "x": 0.8480914,
+      "y": 0.3365836
+    },
+    "uv.lock": {
+      "leafId": "repository-setup",
+      "x": 0.8480914,
+      "y": 0.5263003
+    },
+    "vitest.aidlc-compatibility.config.js": {
+      "leafId": "repository-setup",
+      "x": 0.8480914,
+      "y": 0.7403225
+    },
+    "vitest.config.js": {
+      "leafId": "repository-setup",
+      "x": 0.8480914,
+      "y": 0.8686949
+    }
+  }
+}
