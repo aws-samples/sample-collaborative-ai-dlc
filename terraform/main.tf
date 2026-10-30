@@ -494,6 +494,8 @@ module "neptune" {
   deletion_protection     = var.deletion_protection
   backup_retention_period = var.backup_retention_period
   skip_final_snapshot     = var.skip_final_snapshot
+  streams_enabled         = var.neptune_streams_enabled
+  streams_expiry_days     = var.neptune_streams_expiry_days
 
   tags = {
     Environment = var.environment
