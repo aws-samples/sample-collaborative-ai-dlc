@@ -44,9 +44,6 @@ area/ci:
 
 area/docs:
   - changed-files:
-      - any-glob-to-any-file:
-          - 'docs/**'
-          - '*.md'
-          - 'zensical.toml'
-          - 'pyproject.toml'
-          - 'uv.lock'
+      # Documentation-only PRs. Most code PRs also update docs, so a label on
+      # any docs change would not tell them apart.
+      - all-globs-to-all-files: '{docs/**,*.md,zensical.toml,pyproject.toml,uv.lock}'
