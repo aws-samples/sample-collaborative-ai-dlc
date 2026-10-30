@@ -81,7 +81,7 @@ All git operations are owned by the engine — agents never run git and never ho
 - Each intent works on its own branch, `aidlc/<title-slug>`, derived from the intent title.
 - The branch is created off the **base branch** — by default each repository's own default branch, overridable per repository at intent creation (see [Creating intents → Base branch](creating-intents.md#base-branch)).
 - During parallel construction, each unit of work gets a section-specific per-unit branch. Intent PR delivery merges it through the engine; PR-per-unit delivery opens draft unit-to-intent reviews and serializes readiness in dependency order.
-- The engine commits and pushes after every stage, so work is durable even if a run is cancelled.
+- The engine commits and pushes after every stage, so work is durable even if a run is cancelled. Platform operators can switch its commit messages to Conventional Commits (see [Engine-owned git](../concepts/execution.md#engine-owned-git)).
 - On success, the pull/merge request opens from the intent branch onto the base branch.
 
 ## Binding a tracker to a project

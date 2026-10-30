@@ -96,6 +96,7 @@ import { buildIntentAttribution } from './pr-attribution.js';
 import { bindGateCallback, ownsAnsweredGate, unparkGate } from './gate-callback.js';
 import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
 import { intentSessionIdFor } from '../shared/runtime-session-ids.js';
+import { withTrackerKeyPrefix } from '../shared/tracker-key.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -147,6 +148,8 @@ const BLOCKS_TABLE = () => process.env.BLOCKS_TABLE;
 const ARTIFACTS_BUCKET = () => process.env.ARTIFACTS_BUCKET || '';
 const SOURCE_CONTROL_FN = () => process.env.SOURCE_CONTROL_FUNCTION;
 const APPLICATION_URL = () => process.env.APPLICATION_URL;
+// Prefix intent pull request titles with the intent's Jira issue key.
+const PR_TITLE_TRACKER_KEY = () => process.env.PR_TITLE_TRACKER_KEY === 'true';
 const DURABLE_EXECUTION_TIMEOUT_SECONDS = () =>
   Number(process.env.DURABLE_EXECUTION_TIMEOUT_SECONDS || 31622400);
 const DURABLE_GATE_DEADLINE_MARGIN_SECONDS = () =>
@@ -304,6 +307,7 @@ const defaultDeps = () => ({
       args: { base, head },
     }),
   applicationUrl: APPLICATION_URL(),
+  prTitleTrackerKey: PR_TITLE_TRACKER_KEY(),
   unitPrProvider: {
     compare: ({ projectId, gitProvider, repoId, base, head }) =>
       defaultSourceControlOperation({
@@ -404,6 +408,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     comparePrBranches,
     unitPrProvider,
     applicationUrl,
+    prTitleTrackerKey = false,
   } = deps;
   const { intentId, executionId } = event;
   logger.resetKeys();
@@ -2523,6 +2528,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         executionId,
         runId,
         applicationUrl,
+        prTitleTrackerKey,
         log: (m) => logger.info(m),
       });
     });
@@ -2968,6 +2974,7 @@ const openIntentPrs = async ({
   executionId,
   runId = null,
   applicationUrl,
+  prTitleTrackerKey = false,
   log,
 }) => {
   const repos = meta.repos ?? [];
@@ -3025,7 +3032,8 @@ const openIntentPrs = async ({
     /* transparency section is best-effort */
   }
 
-  const title = meta.title || `AI-DLC: ${branch}`;
+  const baseTitle = meta.title || `AI-DLC: ${branch}`;
+  const title = prTitleTrackerKey ? withTrackerKeyPrefix(baseTitle, meta.source) : baseTitle;
   const aidlcAttribution = buildIntentAttribution({
     applicationUrl,
     projectId: meta.projectId,

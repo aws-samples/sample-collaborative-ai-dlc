@@ -4,7 +4,7 @@
 // code precisely where agents owned commits). Instead, THIS module:
 //
 //   - commits the whole working tree after every stage exit (success, park,
-//     fail) with a deterministic `aidlc(<stage>): …` message,
+//     fail) with a deterministic message (commit-message.js),
 //   - pushes with v1 pushBranchWithRetry semantics ported from the (since
 //     removed) v1 pool worker: retry + linear backoff + remote-HEAD
 //     verification, `'empty'` as a neutral no-commit sentinel,

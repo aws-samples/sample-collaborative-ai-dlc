@@ -767,6 +767,7 @@ locals {
     CONNECTIONS_TABLE             = var.connections_table_name
     WEBSOCKET_ENDPOINT            = var.websocket_endpoint
     AIDLC_REPO_REF                = var.aidlc_repo_ref
+    ENGINE_COMMIT_STYLE           = var.engine_commit_style
     BEDROCK_MODEL                 = var.bedrock_model
     BEDROCK_REGION                = var.bedrock_region
     AWS_REGION                    = var.aws_region

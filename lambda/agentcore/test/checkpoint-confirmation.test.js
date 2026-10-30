@@ -679,6 +679,7 @@ describe('the tool surface the policy decides', () => {
       object: () => ({ optional: () => ({}) }),
       array: () => ({ optional: () => ({}) }),
       record: () => ({ optional: () => ({}) }),
+      boolean: () => ({ optional: () => ({}) }),
     };
     const handlers = buildToolHandlers({ bridge: {}, graph: null, writer: {} });
     const names = registerTools({

@@ -3272,6 +3272,28 @@ describe('WP6 — PR opened on SUCCEEDED (intent-pr)', () => {
     expect(opened[0].summary).toContain('https://github.com/o/r/pull/7');
   });
 
+  it.each([
+    [true, '[ABC-12] Bookstore API'],
+    [false, 'Bookstore API'],
+  ])('with prTitleTrackerKey %s, titles the PR %s', async (prTitleTrackerKey, title) => {
+    deps.store.getExecution = vi.fn(async () => ({
+      ...META,
+      title: 'Bookstore API',
+      prStrategy: 'intent-pr',
+      repos: ['o/r'],
+      source: {
+        bindingId: 'b1',
+        provider: 'jira-cloud',
+        resourceType: 'issue',
+        resourceId: 'ABC-12',
+      },
+    }));
+    deps.prTitleTrackerKey = prTitleTrackerKey;
+    deps.openPr = vi.fn(async () => ({ prUrl: 'https://example.test/pr/1', prNumber: 1 }));
+    await start();
+    expect(deps.openPr.mock.calls[0][0].title).toBe(title);
+  });
+
   it('a relaunch of the same intent is a new PR creation attempt', async () => {
     // Rewind/repair relaunch the SAME execution id under a new run id. The PR
     // a reviewer closed meanwhile must not be replayed by a reused

@@ -1878,6 +1878,36 @@ describe('steering store methods', () => {
     expect(clear).not.toHaveProperty('ExpressionAttributeValues');
   });
 
+  it('records the commit description on the stage row', async () => {
+    ddb.on(UpdateCommand).resolves({});
+    const description = { type: 'fix', summary: 'handle empty carts', descriptionId: 'd1' };
+    await store.setCommitDescription({ executionId: 'e1', stageInstanceId: 'si-1', description });
+    expect(ddb.commandCalls(UpdateCommand)[0].args[0].input).toMatchObject({
+      Key: stageKey('e1', 'si-1'),
+      UpdateExpression: 'SET commitDescription = :description',
+      ConditionExpression: 'attribute_exists(pk)',
+      ExpressionAttributeValues: { ':description': description },
+    });
+  });
+
+  it('clears the commit description only while it is the one that was used', async () => {
+    ddb.on(UpdateCommand).resolvesOnce({});
+    const where = { executionId: 'e1', stageInstanceId: 'si-1', descriptionId: 'd1' };
+    expect(await store.clearCommitDescription(where)).toBe(true);
+    expect(ddb.commandCalls(UpdateCommand)[0].args[0].input).toMatchObject({
+      Key: stageKey('e1', 'si-1'),
+      UpdateExpression: 'REMOVE commitDescription',
+      ConditionExpression: 'commitDescription.descriptionId = :descriptionId',
+      ExpressionAttributeValues: { ':descriptionId': 'd1' },
+    });
+    ddb
+      .on(UpdateCommand)
+      .rejects(
+        Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' }),
+      );
+    expect(await store.clearCommitDescription(where)).toBe(false);
+  });
+
   // Stamped by the target's re-run after it archived both rewound stages, so a
   // replayed re-run recognises its own completed archive and does not version the
   // heads pass 1 has since written.

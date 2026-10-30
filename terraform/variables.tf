@@ -134,6 +134,23 @@ variable "aidlc_release_pinning" {
   }
 }
 
+variable "engine_commit_style" {
+  description = "Message style of the engine's commits: \"aidlc\" (aidlc(<stage>): <execution>) or \"conventional\" (Conventional Commits whose type, summary and breaking change the stage agent declares with describe_changes, with the Jira key of the intent's tracker issue)."
+  type        = string
+  default     = "aidlc"
+
+  validation {
+    condition     = contains(["aidlc", "conventional"], var.engine_commit_style)
+    error_message = "engine_commit_style must be \"aidlc\" or \"conventional\"."
+  }
+}
+
+variable "pr_title_tracker_key" {
+  description = "Prefix the title of each intent's pull request with the Jira issue key of the tracker issue the intent was started from, for example \"[ABC-12] Fix invoice rounding\". Intents started without a Jira issue keep their title."
+  type        = bool
+  default     = false
+}
+
 variable "docker_build_args" {
   description = "Optional arguments for local Docker image builds, such as HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. Sensitive values are hidden in CLI output but remain stored in Terraform state."
   type        = map(string)

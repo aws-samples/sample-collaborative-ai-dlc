@@ -14,6 +14,8 @@
 //   V2_ASK_QUESTION      '0' on a dispatched persona session, which has no answer
 //                        path back into it; absent otherwise
 //   V2_AGENT_REF         trusted agent identity of a dispatched persona session
+//   V2_DESCRIBE_CHANGES  '1' when the engine writes Conventional Commits, so the
+//                        stage's owner session gets describe_changes; absent otherwise
 //   V2_VALIDATION_ROUND  the validation revision checkpoint receipts are scoped
 //                        to; absent for the first run and without a policy
 //   V2_MCP_MODE          stage (default) | discussion | conflict
@@ -67,6 +69,7 @@ export const startMcpServer = async ({ env = process.env, store: injectedStore }
     policy: scope.policy,
     checkpointOwner: scope.checkpointOwner,
     canAsk: scope.canAsk,
+    describeChanges: scope.describeChanges,
     z,
     env,
   });

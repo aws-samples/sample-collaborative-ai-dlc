@@ -517,6 +517,7 @@ module "lambda" {
   lambda_vpc_scope            = var.lambda_vpc_scope
   aidlc_repo_ref              = var.aidlc_repo_ref
   aidlc_release_pinning       = var.aidlc_release_pinning
+  pr_title_tracker_key        = var.pr_title_tracker_key
   application_url             = local.app_url
   vpc_id                      = module.networking.vpc_id
   private_subnet_ids          = module.networking.private_subnet_ids
@@ -758,6 +759,7 @@ module "agentcore" {
   websocket_endpoint          = replace(module.realtime.websocket_api_endpoint, "wss://", "https://")
   websocket_execution_arn     = module.realtime.websocket_execution_arn
   aidlc_repo_ref              = var.aidlc_repo_ref
+  engine_commit_style         = var.engine_commit_style
   bedrock_model               = var.bedrock_model
   bedrock_region              = local.bedrock_region
   # The kiro-cli build shipped in the agentcore image only accepts the "auto"

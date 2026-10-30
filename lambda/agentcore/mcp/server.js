@@ -18,6 +18,7 @@
 // stdio transport over the same handlers.
 
 import { GraphWriteError } from './graph-writer.js';
+import { COMMIT_TYPES } from '../commit-message.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -211,6 +212,8 @@ export const buildToolHandlers = ({ writer, graph, bridge }) => {
       guard(() => bridge.sendOutput({ content, kind: kind ?? 'text' })),
     record_project_type: ({ projectType }) =>
       guard(() => bridge.recordProjectType({ projectType })),
+    describe_changes: ({ type, scope, summary, breaking, breakingChange }) =>
+      guard(() => bridge.describeChanges({ type, scope, summary, breaking, breakingChange })),
     collect_metric: ({ metrics }) => guard(() => bridge.collectMetric({ metrics })),
     emit_stage_note: ({ summary, type, loopBackRecommended }) =>
       guard(() => bridge.emitStageNote({ summary, type, loopBackRecommended })),
@@ -253,6 +256,9 @@ export const AUTHOR_TOOLS = [
 
 export const REVIEWER_TOOLS = [...READ_TOOLS, 'collect_metric', 'submit_review'];
 export const WORKSPACE_DETECTION_TOOLS = ['record_project_type'];
+// Offered only when the engine writes Conventional Commits, and only to the
+// session that owns the stage, so the tool list is otherwise unchanged.
+export const DESCRIBE_CHANGES_TOOLS = ['describe_changes'];
 
 // Tools the resolved release policy ADDS or WITHDRAWS,
 // §6.1, §7.3). Tool availability — not prompt prose — is the enforcement seam:
@@ -303,7 +309,12 @@ export const toolsForRole = (role, stageId = null, policy = null, options = {}) 
   // re-asks. Independent of the policy — it is a property of the session, not of
   // the release.
   const withheld = options.canAsk === false ? [...remove, 'ask_question'] : remove;
-  return [...base.filter((name) => !withheld.includes(name)), ...add];
+  const describes = options.describeChanges === true && options.checkpointOwner !== false;
+  return [
+    ...base.filter((name) => !withheld.includes(name)),
+    ...add,
+    ...(describes ? DESCRIBE_CHANGES_TOOLS : []),
+  ];
 };
 
 // The handler subset for a given role. `reader` → read-only; `reviewer` adds
@@ -483,6 +494,26 @@ export const toolSchemas = (z, policy = null) => ({
       'Workspace Detection only: persist the deterministic workspace classification for later stages and native exports.',
     shape: { projectType: z.enum(['greenfield', 'brownfield']) },
   },
+  describe_changes: {
+    description:
+      'Describe what this stage changed in the repository, as a Conventional Commits entry. The ' +
+      'engine uses it for the commit message, so release tooling reads it to choose the next ' +
+      'version and write the changelog. Call it once, after your last change and before you ' +
+      'finish; a later call replaces the earlier one. type: feat for new behaviour, fix for a ' +
+      'bug fix, perf, refactor (no behaviour change), docs (documentation or AI-DLC artifacts ' +
+      'only), test, build, ci, style or chore. summary: what changed, imperative and lower case, ' +
+      'for example "add retry to the payment client", without issue keys (the engine adds the ' +
+      "intent's own). Set breaking to true only when existing " +
+      'users must change something (a removed or renamed API, option or field, or changed ' +
+      'behaviour they rely on), and say what breaks and how to migrate in breakingChange.',
+    shape: {
+      type: z.enum(COMMIT_TYPES),
+      scope: z.string().optional(),
+      summary: z.string(),
+      breaking: z.boolean().optional(),
+      breakingChange: z.string().optional(),
+    },
+  },
   collect_metric: {
     description:
       'Record a numeric metric sample (e.g. tokensInput, tokensOutput, contextWindowPct).',
@@ -555,10 +586,11 @@ export const registerTools = ({
   policy = null,
   checkpointOwner = true,
   canAsk = true,
+  describeChanges = false,
   z,
   env = process.env,
 }) => {
-  const names = toolsForRole(role, stageId, policy, { checkpointOwner, canAsk });
+  const names = toolsForRole(role, stageId, policy, { checkpointOwner, canAsk, describeChanges });
   const schemas = toolSchemas(z, policy);
   const enabled = env.V2_MCP_TRACE !== 'off';
   for (const name of names) {
