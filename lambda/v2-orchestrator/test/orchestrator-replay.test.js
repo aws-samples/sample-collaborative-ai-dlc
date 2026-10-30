@@ -38,6 +38,27 @@ beforeAll(async () => {
   await LocalDurableTestRunner.setupTestEnvironment();
 });
 
+// The runner the current test drives. The fake container needs it to complete
+// the workspace-init callback out-of-band, as the real init-ws-start job does.
+let currentRunner = null;
+const trackedRunner = (options) => {
+  currentRunner = new LocalDurableTestRunner(options);
+  return currentRunner;
+};
+
+// The container side of init-ws-start: the side-effect-free capability probe
+// (no callbackId) is refused with missing_callback_id; a dispatch is accepted
+// and its background job completes the `init-ws-cb` callback with `verdict`.
+const acceptInitWs = (payload, verdict = { ok: true }) => {
+  if (!payload.callbackId) return { ok: false, reason: 'missing_callback_id' };
+  const runner = currentRunner;
+  (async () => {
+    const op = await runner.getOperation('init-ws-cb').waitForData(WaitingOperationStatus.STARTED);
+    await op.sendCallbackSuccess(JSON.stringify(verdict));
+  })();
+  return { ok: true, accepted: true, callbackId: payload.callbackId };
+};
+
 afterAll(async () => {
   await LocalDurableTestRunner.teardownTestEnvironment();
 });
@@ -74,7 +95,7 @@ it('resumes deployed engine-gate checkpoints with the recovery implementation', 
   const suspension = new Promise((resolve) => {
     suspended = resolve;
   });
-  const runner = new LocalDurableTestRunner({
+  const runner = trackedRunner({
     handlerFunction: async (...input) => {
       const result = await (upgraded ? newHandler : oldHandler)(...input);
       if (result.Status === 'PENDING') {
@@ -133,7 +154,7 @@ it('completes an engine gate on a racing saved answer without a callback deliver
       { name: 'halt-s1-r1', prompt: 'Retry?' },
     ),
   );
-  const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+  const runner = trackedRunner({ handlerFunction: handler });
   const execution = await runner.run({ payload: {} });
   expect(execution.getResult()).toMatchObject({
     gate: { status: 'answered', answer: { decision: 'retry' } },
@@ -200,7 +221,7 @@ it('replays an unpark whose META write committed but whose step result was lost'
       { name: 'replay', prompt: 'Continue?' },
     ),
   );
-  const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+  const runner = trackedRunner({ handlerFunction: handler });
   expect((await runner.run({ payload: {} })).getResult()).toMatchObject({
     gate: { status: 'answered' },
   });
@@ -276,7 +297,7 @@ const makeWorld = ({ stages = [{ stageId: 'a' }, { stageId: 'b' }] } = {}) => {
     loadPlan: async () => ({ valid: true, plan: { stages } }),
     invokeRuntime: async (payload) => {
       world.invokes.push(payload);
-      if (payload.command === 'init-ws') return { ok: true };
+      if (payload.command === 'init-ws-start') return acceptInitWs(payload);
       // ACCEPT only — the verdict arrives via the stage callback, later.
       return { ok: true, accepted: true, stageId: payload.stageId };
     },
@@ -343,7 +364,7 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
         });
         return __durableHandler(event, wrapped, world.deps);
       });
-      const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+      const runner = trackedRunner({ handlerFunction: handler });
       const completion = runner.run({
         payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
       });
@@ -400,7 +421,7 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
       });
       return __durableHandler(event, wrapped, world.deps);
     });
-    const runner = new LocalDurableTestRunner({
+    const runner = trackedRunner({
       handlerFunction: async (...input) => {
         const result = await handler(...input);
         if (result.Status === 'PENDING') {
@@ -469,7 +490,7 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
       });
       return __durableHandler(event, wrapped, world.deps);
     });
-    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const runner = trackedRunner({ handlerFunction: handler });
     const completion = runner.run({
       payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
     });
@@ -544,7 +565,7 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
       return __durableHandler(event, wrapped, world.deps);
     });
     const current = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
-    const runner = new LocalDurableTestRunner({
+    const runner = trackedRunner({
       handlerFunction: async (...input) => {
         const result = await (upgraded ? current : legacy)(...input);
         if (result.Status === 'PENDING') suspended();
@@ -574,10 +595,115 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
     expect(world.statusWrites).not.toContain('FAILED');
   });
 
+  it('replays a run that checkpointed the synchronous init-ws step under the previous code', async () => {
+    // In-flight executions at deploy time hold a memoized claim WITHOUT
+    // initWsMode and a checkpointed `init-ws` step. Record that history, then
+    // finish the run on the unmodified handler: the durable SDK must see the
+    // same operations in the same order (no NonDeterministicExecutionError),
+    // and init-ws must not run again.
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    let upgraded = false;
+    let suspended;
+    const suspension = new Promise((resolve) => {
+      suspended = resolve;
+    });
+    const legacy = withDurableExecution((event, ctx) => {
+      const wrapped = new Proxy(ctx, {
+        get: (target, key) =>
+          key === 'step'
+            ? (name, fn, opts) =>
+                name === 'mint-run-id'
+                  ? target.step(
+                      name,
+                      async () => {
+                        const { initWsMode: _absent, ...claim } = await fn();
+                        return claim;
+                      },
+                      opts,
+                    )
+                  : target.step(name, fn, opts)
+            : typeof target[key] === 'function'
+              ? target[key].bind(target)
+              : target[key],
+      });
+      return __durableHandler(event, wrapped, world.deps);
+    });
+    const current = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
+    const runner = trackedRunner({
+      handlerFunction: async (...input) => {
+        const result = await (upgraded ? current : legacy)(...input);
+        if (result.Status === 'PENDING') suspended();
+        return result;
+      },
+    });
+    const completion = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    await suspension;
+    upgraded = true;
+    await completeStage(runner, 'stage-cb-a', { ok: true, state: 'SUCCEEDED' });
+    const execution = await completion;
+    expect(execution.getResult()).toEqual({ ok: true, intentId: 'i1', stages: 1 });
+    const names = execution.getOperations().map((op) => op.getOperationData()?.Name);
+    expect(names).toContain('init-ws');
+    expect(names).not.toContain('init-ws-probe');
+    expect(names).not.toContain('init-ws-cb');
+    expect(world.invokes.map((p) => p.command)).toEqual([
+      'init-ws',
+      'create-workflow-checkpoint',
+      'run-stage-start',
+      'create-workflow-checkpoint',
+    ]);
+  });
+
+  it('records the probe and the init callback as durable operations for a new run', async () => {
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
+    const runner = trackedRunner({ handlerFunction: handler });
+    const completion = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    await completeStage(runner, 'stage-cb-a', { ok: true, state: 'SUCCEEDED' });
+    const execution = await completion;
+    expect(execution.getResult()).toEqual({ ok: true, intentId: 'i1', stages: 1 });
+    const names = execution.getOperations().map((op) => op.getOperationData()?.Name);
+    const order = ['init-ws-start', 'init-ws-probe', 'init-ws-cb', 'init-ws-dispatch'].map((n) =>
+      names.indexOf(n),
+    );
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect(order).toEqual(order.toSorted((a, b) => a - b));
+    expect(names).not.toContain('init-ws');
+    // The dispatch carried the REAL durable callback id the job completed.
+    const dispatch = world.invokes.find((p) => p.command === 'init-ws-start' && p.callbackId);
+    const initOp = runner.getOperation('init-ws-cb');
+    expect(dispatch.callbackId).toBe(initOp.getCallbackDetails().callbackId);
+    expect(dispatch.orchestratorRunId).toMatch(/^run-/);
+  });
+
+  it('fails the run with the init-ws reason delivered through the init callback', async () => {
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    world.deps.invokeRuntime = async (payload) => {
+      world.invokes.push(payload);
+      return acceptInitWs(payload, {
+        ok: false,
+        reason: 'checkout_failed',
+        detail: 'clone failed for owner/repo',
+      });
+    };
+    const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
+    trackedRunner({ handlerFunction: handler });
+    const execution = await currentRunner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    expect(execution.getResult()).toMatchObject({ ok: false, reason: 'init_ws_failed' });
+    expect(world.statusWrites.filter((s) => s === 'FAILED')).toHaveLength(1);
+    expect(world.invokes.map((p) => p.command)).toEqual(['init-ws-start', 'init-ws-start']);
+  });
+
   it('does not fail a replacement attempt when an old worker returns retired', async () => {
     const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
-    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const runner = trackedRunner({ handlerFunction: handler });
     const completion = runner.run({
       payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
     });
@@ -590,7 +716,7 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
   it('runs init-ws → stage a (park → human answer → resume) → stage b to SUCCEEDED with exactly-once side effects', async () => {
     const world = makeWorld();
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
-    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const runner = trackedRunner({ handlerFunction: handler });
 
     const executionPromise = runner.run({
       payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
@@ -631,7 +757,8 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
 
     // Exactly-once side effects across every replay:
     expect(world.invokes.map((p) => p.command)).toEqual([
-      'init-ws',
+      'init-ws-start', // capability probe
+      'init-ws-start', // init dispatch (verdict via the init-ws-cb callback)
       'create-workflow-checkpoint', // initial boundary
       'run-stage-start', // a (fresh)
       'run-stage-start', // a (resume h1)
@@ -660,7 +787,7 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
   it('a stage verdict of FAILED delivered through the callback fails the run after replay', async () => {
     const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
-    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const runner = trackedRunner({ handlerFunction: handler });
 
     const executionPromise = runner.run({
       payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
@@ -693,7 +820,7 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
   it('a cancel sentinel on the gate callback retires the run without terminal writes', async () => {
     const world = makeWorld({ stages: [{ stageId: 'a' }] });
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
-    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const runner = trackedRunner({ handlerFunction: handler });
 
     const executionPromise = runner.run({
       payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
@@ -802,7 +929,7 @@ describe('WP5 sections on the real durable runner', () => {
       const handler = withDurableExecution((event, ctx) =>
         __durableHandler(event, ctx, world.deps),
       );
-      const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+      const runner = trackedRunner({ handlerFunction: handler });
 
       const executionPromise = runner.run({
         payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
@@ -851,7 +978,8 @@ describe('WP5 sections on the real durable runner', () => {
       // Exactly-once dispatches: each lane got ONE init-lane, its stage legs,
       // and ONE merge-lane, in skeleton-then-remaining order.
       expect(world.invokes.map((p) => `${p.command}:${p.stageId ?? p.unitSlug ?? '-'}`)).toEqual([
-        'init-ws:-',
+        'init-ws-start:-', // capability probe
+        'init-ws-start:-', // init dispatch
         'create-workflow-checkpoint:-',
         'run-stage-start:gen',
         'derive-artifacts:-',
@@ -927,7 +1055,7 @@ describe('WP5 sections on the real durable runner', () => {
       const handler = withDurableExecution((event, ctx) =>
         __durableHandler(event, ctx, world.deps),
       );
-      const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+      const runner = trackedRunner({ handlerFunction: handler });
 
       const executionPromise = runner.run({
         payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
@@ -992,7 +1120,7 @@ describe('WP5 sections on the real durable runner', () => {
       const handler = withDurableExecution((event, ctx) =>
         __durableHandler(event, ctx, world.deps),
       );
-      const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+      const runner = trackedRunner({ handlerFunction: handler });
 
       const executionPromise = runner.run({
         payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
@@ -1061,7 +1189,7 @@ describe('orchestrator gate bind CAS classification (answer-before-bind race)', 
 
   const runTo = async (world) => {
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
-    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const runner = trackedRunner({ handlerFunction: handler });
     const executionPromise = runner.run({
       payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
     });
@@ -1215,7 +1343,7 @@ describe('an answered-early gate never awaits its dangling callback', () => {
     };
     world.deps.store.getHumanTask = async () => answeredGate;
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
-    const runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const runner = trackedRunner({ handlerFunction: handler });
     const executionPromise = runner.run({
       payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
     });

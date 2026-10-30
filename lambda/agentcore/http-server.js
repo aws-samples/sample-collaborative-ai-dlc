@@ -17,6 +17,10 @@ import {
 //
 // Invocation payloads:
 //   { "command": "init-ws",  ...initWs args }
+//   { "command": "init-ws-start", ...initWs args, callbackId }
+//     → accepts in ms, runs init-ws as a background job (clone + branch
+//       publish can outlive the orchestrator Lambda), completes the
+//       orchestrator's durable callback with init-ws's {ok, reason, detail}.
 //   { "command": "run-stage", ...runStage args }
 //   { "command": "run-stage-start", ...runStage args, stageCallbackId }
 //     → accepts in ms, runs the stage as a background job, completes the
@@ -235,6 +239,7 @@ const main = async () => {
   const { initWs } = await import('./commands/init-ws.js');
   const { runStage } = await import('./commands/run-stage.js');
   const { createRunStageStart } = await import('./commands/run-stage-start.js');
+  const { createInitWsStart } = await import('./commands/init-ws-start.js');
   const { createDiscussionAssistStart } = await import('./commands/discussion-assist-start.js');
   const { createComposePlanStart } = await import('./commands/compose-plan-start.js');
   const { createQuorumEditPlanStart } = await import('./commands/quorum-edit-plan-start.js');
@@ -398,6 +403,17 @@ const main = async () => {
       sendCallbackHeartbeat: sendStageCallbackHeartbeat,
       busy,
       activeJobs: stageJobs,
+    })(p);
+  // Async workspace initialization: init-ws as a background job so a large
+  // clone is not bounded by the orchestrator Lambda's function timeout.
+  const initJobs = new Map();
+  handlers.initWsStart = (p) =>
+    createInitWsStart({
+      initWs: (q) => handlers.initWs(q),
+      sendCallbackSuccess: sendStageCallbackSuccess,
+      sendCallbackHeartbeat: sendStageCallbackHeartbeat,
+      busy,
+      activeJobs: initJobs,
     })(p);
   const discussionJobs = new Map();
   handlers.discussionAssistStart = (p, context) =>

@@ -573,6 +573,10 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       return {
         runId: updated?.orchestratorRunId ?? token,
         orchestratorExpiresAt: updated?.orchestratorExpiresAt ?? expiresAt,
+        // Replay gate for the workspace initialization shape (see
+        // initWorkspace). Memoized with the claim, so a run that checkpointed
+        // before this field existed replays the legacy `init-ws` step.
+        initWsMode: INIT_WS_MODE_CALLBACK,
       };
     });
     runId = claim.runId;
@@ -624,31 +628,30 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       'v2.workspace.initializing',
       `Initializing workspace (${(meta.repos ?? []).length} repo(s))…`,
     );
-    const initResult = await ctx.step('init-ws', () =>
-      invokeIntentRuntime(
-        {
-          command: 'init-ws',
-          projectId,
-          intentId,
-          executionId,
-          repos: meta.repos ?? [],
-          branch: meta.branch,
-          baseBranch: meta.baseBranch,
-          baseBranches: meta.baseBranches,
-          gitProvider,
-          repoProviders: meta.repoProviders ?? null,
-          ...(gitAuthor ? { gitAuthor } : {}),
-          title: meta.title,
-          prompt: meta.prompt,
-          workflowId,
-          workflowVersion,
-          scope,
-          startedBy: meta.startedBy,
-          attachments: meta.attachments ?? [],
-        },
-        sessionId,
-      ),
-    );
+    const initResult = await initWorkspace(ctx, invokeIntentRuntime, {
+      mode: claim.initWsMode ?? null,
+      sessionId,
+      orchestratorRunId: runId,
+      initPayload: {
+        projectId,
+        intentId,
+        executionId,
+        repos: meta.repos ?? [],
+        branch: meta.branch,
+        baseBranch: meta.baseBranch,
+        baseBranches: meta.baseBranches,
+        gitProvider,
+        repoProviders: meta.repoProviders ?? null,
+        ...(gitAuthor ? { gitAuthor } : {}),
+        title: meta.title,
+        prompt: meta.prompt,
+        workflowId,
+        workflowVersion,
+        scope,
+        startedBy: meta.startedBy,
+        attachments: meta.attachments ?? [],
+      },
+    });
     // The runtime returns {ok:false, reason} on checkout / vertex / seed failure;
     // it does NOT throw. Detect it here or the run would march on into stages
     // against an un-initialized workspace.
@@ -2617,6 +2620,107 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
 // that dies mid-stage surfaces here in minutes instead of hours.
 const STAGE_CALLBACK_TIMEOUT = { hours: 8 };
 const STAGE_CALLBACK_HEARTBEAT_TIMEOUT = { minutes: 15 };
+
+// Workspace initialization (clone, intent-branch publish, Intent anchor, state
+// seed). The synchronous `init-ws` step holds the whole clone inside one
+// orchestrator Lambda invocation, so a large repository outlives the 900 s
+// function timeout and the durable retry lands on a half-written checkout.
+// Runs whose claim carries INIT_WS_MODE_CALLBACK instead dispatch
+// `init-ws-start` and suspend on a durable callback, mirroring runStage.
+//
+// Replay compatibility: the mode rides the memoized `mint-run-id` result, so a
+// run that checkpointed under the old code replays exactly `init-ws`; only new
+// runs use the probe/callback operation names.
+//
+// Older environment images: a published environment revision pins the
+// AgentCore container it was built from, and one built before init-ws-start
+// answers `unknown command`. The side-effect-free probe (no callbackId, so a
+// current container refuses with missing_callback_id) detects that BEFORE a
+// callback exists, and such runs keep the synchronous step.
+//
+// Every outcome is returned in init-ws's own {ok, reason, detail} shape so the
+// caller's single decode path is unchanged.
+export const INIT_WS_MODE_CALLBACK = 'callback';
+// Bounds a clone that is still heartbeating but never finishes; generous
+// because a repository's size is not known up front.
+const INIT_WS_CALLBACK_TIMEOUT = { hours: 2 };
+const INIT_WS_CALLBACK_HEARTBEAT_TIMEOUT = { minutes: 15 };
+
+// The container answers an unregistered command with HTTP 400, which AgentCore
+// raises as RuntimeClientError ("Received error (400) from runtime") rather
+// than returning the body. The probe sends a command and valid JSON, so a 400
+// from the runtime can only mean the command is unknown. A body-shaped
+// `unknown command` error is accepted too (direct/local transports).
+const isUnknownCommandResponse = (res) =>
+  typeof res?.error === 'string' && res.error.startsWith('unknown command');
+const isUnknownCommandError = (err) =>
+  err?.name === 'RuntimeClientError' && /\(400\)/.test(err?.message ?? '');
+
+const initWorkspace = async (
+  ctx,
+  invokeRuntime,
+  { mode, sessionId, orchestratorRunId, initPayload },
+) => {
+  const runSynchronously = () =>
+    ctx.step('init-ws', () => invokeRuntime({ command: 'init-ws', ...initPayload }, sessionId));
+  if (mode !== INIT_WS_MODE_CALLBACK) return runSynchronously();
+
+  const support = await ctx.step('init-ws-probe', async () => {
+    try {
+      const res = await invokeRuntime(
+        { command: 'init-ws-start', executionId: initPayload.executionId },
+        sessionId,
+      );
+      return { callback: !isUnknownCommandResponse(res) };
+    } catch (err) {
+      if (isUnknownCommandError(err)) return { callback: false };
+      // Transport failures (cold-start timeout, throttling) keep the durable
+      // step's retry behavior, exactly as the synchronous init-ws step does.
+      throw err;
+    }
+  });
+  if (!support?.callback) return runSynchronously();
+
+  const [initDone, callbackId] = await ctx.createCallback('init-ws-cb', {
+    timeout: INIT_WS_CALLBACK_TIMEOUT,
+    heartbeatTimeout: INIT_WS_CALLBACK_HEARTBEAT_TIMEOUT,
+  });
+  const dispatch = await ctx.step('init-ws-dispatch', () =>
+    invokeRuntime(
+      { command: 'init-ws-start', ...initPayload, orchestratorRunId, callbackId },
+      sessionId,
+    ),
+  );
+  // The accept only says "job started"; a refusal (a concurrent init job,
+  // heartbeat channel unavailable) fails initialization here.
+  if (!dispatch || dispatch.ok === false || dispatch.error) {
+    return {
+      ok: false,
+      reason: dispatch?.reason ?? 'init_ws_dispatch_failed',
+      detail: dispatch?.detail ?? dispatch?.error ?? null,
+    };
+  }
+  try {
+    // Callback serdes is pass-through: the container's body arrives as the raw
+    // JSON string (see runStage).
+    const raw = await initDone;
+    const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (!result || typeof result !== 'object') {
+      return { ok: false, reason: 'init_ws_bad_callback_result' };
+    }
+    return result;
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      return { ok: false, reason: 'init_ws_bad_callback_result', detail: err.message };
+    }
+    // Callback timeout / heartbeat expiry (dead container) / explicit failure.
+    return {
+      ok: false,
+      reason: 'init_ws_callback_failed',
+      detail: err?.message ?? String(err),
+    };
+  }
+};
 
 const runStage = async (
   ctx,
