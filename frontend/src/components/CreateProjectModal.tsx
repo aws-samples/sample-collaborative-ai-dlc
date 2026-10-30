@@ -31,20 +31,15 @@ import {
 interface Props {
   onClose: () => void;
   onCreated: () => void;
-  // Provider to preselect — used to restore the user's choice after an OAuth
-  // round-trip (the redirect to the provider and back resets in-memory state).
-  // Empty string (the default) leaves the provider UNSELECTED so opening the
-  // modal does not trigger a connection check / OAuth login until the user picks.
   initialProvider?: GitProvider | '';
 }
 
-// Short name for space naming: the last path segment for owner/repo ids, the
-// repository name for a CodeCommit ARN (whose last ':' segment is the name).
 const repoShortName = (fullName: string) =>
   (fullName.startsWith('arn:') ? fullName.split(':').pop() : fullName.split('/').pop()) || '';
 
-// Local form shape: gitProvider may be '' before the user selects one.
 type ProjectForm = Omit<CreateProjectInput, 'gitProvider'> & { gitProvider: GitProvider | '' };
+
+const STEP_LABELS = ['Provider', 'Repositories', 'Source control', 'Details'];
 
 export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }: Props) {
   const [step, setStep] = useState(1);
@@ -56,23 +51,19 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     gitRepo: '',
     issueIntegrationEnabled: false,
   });
-  // Personal OAuth is needed only for the OAuth-delegation path; the GitHub
-  // App path discovers repositories with platform App credentials.
+
   const {
     status: gitStatus,
     loading: gitStatusLoading,
     error: gitStatusError,
     refresh: gitRefresh,
   } = useGitProviderStatus(formData.gitProvider);
+  
   const [sourceControlAuthType, setSourceControlAuthType] = useState<SourceControlAuthType>(
     defaultAuthTypeFor(initialProvider),
   );
-  // Whether the platform GitHub App is configured — gates the App option in
-  // step 1. null = still loading.
   const [appConfigured, setAppConfigured] = useState<boolean | null>(null);
   const [delegationConfirmed, setDelegationConfirmed] = useState(false);
-  // CodeCommit: the proven role + the repositories it can see, from the connect
-  // form. Step 2 lists these; submit binds with the same role and external id.
   const [codecommit, setCodecommit] = useState<CodeCommitConnectResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -93,22 +84,17 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     };
   }, [formData.gitProvider]);
 
-  // If the App turns out to be unconfigured, fall back to the OAuth path.
   useEffect(() => {
     if (appConfigured === false && sourceControlAuthType === 'github-app') {
       setSourceControlAuthType('github-oauth');
     }
   }, [appConfigured, sourceControlAuthType]);
 
-  // v2 workflow options — every new project is a v2 (AI-DLC workflow runtime)
-  // project; the backend rejects v1 creation. Scope is chosen per-intent (not
-  // on the project), and park release is tuned later in project settings.
   const [workflows, setWorkflows] = useState<WorkflowSummary[]>([]);
   const [workflowId, setWorkflowId] = useState<string>('');
   const [v2Loading, setV2Loading] = useState(false);
   const [v2Error, setV2Error] = useState<string | null>(null);
 
-  // Load the workflow catalog on mount — a workflow is always required.
   useEffect(() => {
     let cancelled = false;
     setV2Loading(true);
@@ -118,7 +104,6 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
       .then(({ workflows: list }) => {
         if (cancelled) return;
         setWorkflows(list);
-        // Prefer the canonical aidlc-v2 workflow if present.
         const preferred = list.find((w) => w.workflowId === 'aidlc-v2') ?? list[0];
         if (preferred) setWorkflowId(preferred.workflowId);
       })
@@ -159,11 +144,8 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     setSelectedRepos([]);
     setPrimaryRepo('');
     setDelegationConfirmed(false);
-    setSelectedRepos([]);
-    setPrimaryRepo('');
   };
 
-  // App vs OAuth discover different repo sets, so switching resets the picks.
   const handleAuthTypeChange = (authType: SourceControlAuthType) => {
     setSourceControlAuthType(authType);
     setDelegationConfirmed(false);
@@ -208,9 +190,6 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         workflowId,
       };
       const project = await projectsService.create(input);
-      // A failed bind leaves the project unbound rather than deleting it — the
-      // launch guard blocks repository-backed starts until an owner rebinds in
-      // project settings, which is also where an interrupted create lands.
       try {
         await sourceControlService.bind(project.id, {
           [gitProvider]: {
@@ -227,8 +206,6 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         onClose();
         return;
       }
-      // GitHub and GitLab issues both reuse the project's git connection; code-
-      // host-only providers (Bitbucket, CodeCommit) have no tracker to add.
       const trackerProvider = trackerIdForGitProvider(gitProvider);
       if (formData.issueIntegrationEnabled && formData.gitRepo && trackerProvider) {
         try {
@@ -251,9 +228,6 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
     }
   };
 
-  // The App path needs no personal connection — only a configured App. The
-  // OAuth paths (github-oauth / gitlab-oauth) need the caller connected for
-  // both repository discovery and binding delegation.
   const canProceedStep1 = formData.gitProvider
     ? sourceControlAuthType === 'github-app'
       ? appConfigured === true
@@ -262,6 +236,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
         : gitStatus?.connected
     : false;
   const canProceedStep2 = selectedRepos.length > 0;
+  const canProceedStep3 = !sourceControlAuthType.endsWith('-oauth') || delegationConfirmed;
   const repoCount = selectedRepos.length;
 
   return (
@@ -271,24 +246,29 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
           Create New Space
         </h2>
 
-        {/* Step Indicator */}
-        <div className="flex items-center gap-2 mb-6">
-          {[1, 2, 3].map((s) => (
-            <div key={s} className="flex items-center">
-              <div
-                className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
-                  step === s
-                    ? 'bg-indigo-600 text-white'
-                    : step > s
-                      ? 'bg-green-500 text-white'
-                      : 'bg-gray-200 dark:bg-gray-600 dark:text-gray-300'
-                }`}
-              >
-                {step > s ? '✓' : s}
-              </div>
-              {s < 3 && (
+        {/* Step Indicator (4 Steps) */}
+        <div className="flex items-center justify-between mb-6">
+          {[1, 2, 3, 4].map((s) => (
+            <div key={s} className="flex items-center gap-2 flex-1 last:flex-none">
+              <div className="flex flex-col items-center">
                 <div
-                  className={`w-8 h-0.5 ${step > s ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-600'}`}
+                  className={`w-8 h-8 rounded-full flex items-center justify-center text-sm ${
+                    step === s
+                      ? 'bg-indigo-600 text-white'
+                      : step > s
+                        ? 'bg-green-500 text-white'
+                        : 'bg-gray-200 dark:bg-gray-600 dark:text-gray-300'
+                  }`}
+                >
+                  {step > s ? '✓' : s}
+                </div>
+                <span className="text-[10px] text-gray-500 dark:text-gray-400 mt-1">
+                  {STEP_LABELS[s - 1]}
+                </span>
+              </div>
+              {s < 4 && (
+                <div
+                  className={`h-0.5 flex-1 mx-2 ${step > s ? 'bg-green-500' : 'bg-gray-200 dark:bg-gray-600'}`}
                 />
               )}
             </div>
@@ -447,7 +427,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
           </div>
         )}
 
-        {/* Step 2: Select Repositories (provider is always set past step 1) */}
+        {/* Step 2: Select Repositories */}
         {step === 2 && formData.gitProvider && (
           <div>
             <h3 className="font-medium mb-1 text-gray-900 dark:text-white">Select Repositories</h3>
@@ -521,8 +501,60 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
           </div>
         )}
 
-        {/* Step 3: Project Details */}
+        {/* Step 3: Source Control */}
         {step === 3 && formData.gitProvider && (
+          <div>
+            <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Source Control & Tracker</h3>
+            <div className="mb-4 space-y-3 rounded border p-3 bg-gray-50/50 dark:bg-gray-900/50">
+              <p className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+                Project source control
+              </p>
+              <p className="text-sm text-gray-700 dark:text-gray-300">
+                {sourceControlAuthType === 'github-app'
+                  ? 'GitHub App installation'
+                  : sourceControlAuthType === 'codecommit-role'
+                    ? `IAM role ${codecommit?.connection.roleArn ?? ''}`
+                    : `Delegated ${formData.gitProvider ? gitProviderTerminology(formData.gitProvider).label : 'Git'} OAuth identity`}
+                <span className="block text-xs text-gray-500 dark:text-gray-400">
+                  Chosen in step 1 — go back to change it.
+                </span>
+              </p>
+              {sourceControlAuthType.endsWith('-oauth') && (
+                <label className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300 pt-2">
+                  <input
+                    type="checkbox"
+                    checked={delegationConfirmed}
+                    onChange={(event) => setDelegationConfirmed(event.target.checked)}
+                    className="mt-0.5"
+                  />
+                  I confirm that this space may use my connected identity for all selected
+                  repositories.
+                </label>
+              )}
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Every repository is verified before the space is available.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <button
+                onClick={() => setStep(2)}
+                className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+              >
+                Back
+              </button>
+              <button
+                onClick={() => setStep(4)}
+                disabled={!canProceedStep3}
+                className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Step 4: Details & Workflow Settings */}
+        {step === 4 && formData.gitProvider && (
           <form onSubmit={handleSubmit}>
             <h3 className="font-medium mb-3 text-gray-900 dark:text-white">Space Details</h3>
             <div className="mb-4">
@@ -548,46 +580,13 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 className="w-full border dark:border-gray-600 rounded px-3 py-2 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white"
                 disabled
               />
-              <div className="flex items-center gap-2 mt-1">
-                {repoCount > 1 && (
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
-                    +{repoCount - 1} additional repositor
-                    {repoCount - 1 === 1 ? 'y' : 'ies'}
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="mb-4 space-y-3 rounded border p-3">
-              <p className="text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
-                Project source control
-              </p>
-              <p className="text-sm text-gray-700 dark:text-gray-300">
-                {sourceControlAuthType === 'github-app'
-                  ? 'GitHub App installation'
-                  : sourceControlAuthType === 'codecommit-role'
-                    ? `IAM role ${codecommit?.connection.roleArn ?? ''}`
-                    : `Delegated ${formData.gitProvider ? gitProviderTerminology(formData.gitProvider).label : 'Git'} OAuth identity`}
-                <span className="block text-xs text-gray-500 dark:text-gray-400">
-                  Chosen in step 1 — go back to change it.
-                </span>
-              </p>
-              {sourceControlAuthType.endsWith('-oauth') && (
-                <label className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300">
-                  <input
-                    type="checkbox"
-                    checked={delegationConfirmed}
-                    onChange={(event) => setDelegationConfirmed(event.target.checked)}
-                    disabled={submitting}
-                    className="mt-0.5"
-                  />
-                  I confirm that this space may use my connected identity for all selected
-                  repositories.
-                </label>
+              {repoCount > 1 && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  +{repoCount - 1} additional repositor{repoCount - 1 === 1 ? 'y' : 'ies'}
+                </p>
               )}
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                Every repository is verified before the space is available.
-              </p>
             </div>
+
             {(formData.gitProvider === 'github' || formData.gitProvider === 'gitlab') && (
               <div className="mb-4">
                 <label className="flex items-start gap-2 cursor-pointer">
@@ -613,6 +612,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 </label>
               </div>
             )}
+
             <div className="mb-4 rounded border border-indigo-200 dark:border-indigo-800 bg-indigo-50/50 dark:bg-indigo-900/20 p-3 space-y-3">
               <p className="text-xs font-medium uppercase tracking-wide text-indigo-700 dark:text-indigo-300">
                 AI-DLC v2 settings
@@ -640,10 +640,11 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 later in space settings.
               </p>
             </div>
+
             <div className="flex justify-end gap-2 mt-6">
               <button
                 type="button"
-                onClick={() => setStep(2)}
+                onClick={() => setStep(3)}
                 className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
                 disabled={submitting}
               >
@@ -652,11 +653,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               <button
                 type="submit"
                 className="px-4 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
-                disabled={
-                  submitting ||
-                  !workflowId ||
-                  (sourceControlAuthType.endsWith('-oauth') && !delegationConfirmed)
-                }
+                disabled={submitting || !workflowId}
               >
                 {submitting ? 'Creating...' : 'Create Space'}
               </button>
