@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router';
 import { trackersService, type JiraPendingChoice } from '@/services/trackers';
 import { OAuthCallbackShell } from '@/components/OAuthCallbackShell';
@@ -18,6 +18,15 @@ export default function JiraCallback() {
 
   const meta = getTrackerProvider('jira-cloud');
 
+  // Consume the saved return path once so no exit (including the error state)
+  // leaves it behind for a later OAuth flow. `??=` keeps the value when
+  // StrictMode re-runs this effect.
+  const returnToRef = useRef<string | null>(null);
+  useEffect(() => {
+    returnToRef.current ??= sessionStorage.getItem('oauth_return_to');
+    sessionStorage.removeItem('oauth_return_to');
+  }, []);
+
   useEffect(() => {
     const code = searchParams.get('code');
     const state = searchParams.get('state');
@@ -35,7 +44,6 @@ export default function JiraCallback() {
       .then((data) => {
         if (data.success) {
           setStatus('success');
-          setTimeout(() => navigate(-1), 1200);
           return;
         }
         if (data.pendingChoice) {
@@ -53,13 +61,25 @@ export default function JiraCallback() {
       });
   }, [searchParams, navigate, meta.callbackPath, meta.displayName]);
 
+  const leave = useCallback(() => {
+    const returnTo = returnToRef.current;
+    // Jira connections originate in space settings. Avoid returning through
+    // browser history, which may lead back to Atlassian's consent screen.
+    navigate(returnTo?.startsWith('/space/') ? returnTo : '/dashboard', { replace: true });
+  }, [navigate]);
+
+  useEffect(() => {
+    if (status !== 'success') return;
+    const timer = setTimeout(leave, 1200);
+    return () => clearTimeout(timer);
+  }, [status, leave]);
+
   const handleConfirm = async () => {
     if (!choice || !chosenCloudId) return;
     setStatus('finalizing');
     try {
       await trackersService.finalizeJiraConnection(choice.ticket, chosenCloudId);
       setStatus('success');
-      setTimeout(() => navigate(-1), 1200);
     } catch (err) {
       setStatus('error');
       setError(err instanceof Error ? err.message : 'Failed to finalize');
@@ -119,11 +139,7 @@ export default function JiraCallback() {
             ))}
           </div>
           <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => navigate(-1)}
-              className="px-4 py-2 border rounded text-sm"
-            >
+            <button type="button" onClick={leave} className="px-4 py-2 border rounded text-sm">
               Cancel
             </button>
             <button

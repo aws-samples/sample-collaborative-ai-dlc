@@ -86,6 +86,7 @@ const seedConnectionRow = (overrides = {}) => ({
   Item: {
     userId: 'user-1',
     providerInstance: 'jira-cloud#cloud',
+    oauthClientId: CLIENT_ID,
     parameterName: PARAM_NAME,
     cloudId: CLOUD_ID,
     baseUrl: `https://api.atlassian.com/ex/jira/${CLOUD_ID}`,
@@ -183,6 +184,17 @@ describe('jira-cloud — OAuth helpers', () => {
     ).rejects.toMatchObject({ status: 401, extra: { reconnect: true } });
   });
 
+  it.each([
+    [503, 'temporarily_unavailable'],
+    [429, 'rate_limited'],
+    [401, 'invalid_client'],
+  ])('does not request authorization for a %s refresh failure (%s)', async (status, error) => {
+    fetchMock.mockResolvedValueOnce(errResponse(status, { error }));
+    await expect(
+      refreshAccessToken({ clientId: 'cid', clientSecret: 'cs', refreshToken: 'r1' }),
+    ).rejects.toMatchObject({ status, extra: { reconnect: false } });
+  });
+
   it('listAccessibleResources maps each site to {cloudId, name, host}', async () => {
     fetchMock.mockResolvedValueOnce(
       okResponse([
@@ -216,6 +228,7 @@ describe('jira-cloud — persistConnection', () => {
       ddb: DynamoDBDocumentClient.from(new DynamoDBClient({})),
       ssm: new SSMClient({}),
       userId: 'user-1',
+      clientId: CLIENT_ID,
       resource: {
         cloudId: CLOUD_ID,
         name: 'Acme',
@@ -231,6 +244,7 @@ describe('jira-cloud — persistConnection', () => {
     expect(ddbCall.args[0].input.Item).toMatchObject({
       userId: 'user-1',
       providerInstance: 'jira-cloud#cloud',
+      oauthClientId: CLIENT_ID,
       cloudId: CLOUD_ID,
       siteHost: SITE_HOST,
       baseUrl: `https://api.atlassian.com/ex/jira/${CLOUD_ID}`,
@@ -264,6 +278,174 @@ describe('jira-cloud — provider methods', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  describe('OAuth client ownership', () => {
+    it.each([undefined, 'previous-client'])(
+      'requires authorization before using a connection issued to %s',
+      async (oauthClientId) => {
+        ddbMock
+          .on(GetCommand, { TableName: TRACKER_TABLE })
+          .resolves(seedConnectionRow({ oauthClientId }));
+        await expect(jiraProvider.listExternalProjects(ctx())).rejects.toMatchObject({
+          status: 401,
+          extra: { reconnect: true },
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(ssmMock).not.toHaveReceivedCommand(GetParameterCommand);
+        expect(ddbMock).not.toHaveReceivedCommand(PutCommand);
+      },
+    );
+
+    describe.each([
+      [
+        'listIssues',
+        ['PROJ', {}],
+        { issues: [issueFixture()], isLast: true },
+        { items: [{ resourceId: 'PROJ-42' }] },
+      ],
+      ['getIssue', ['PROJ', 'PROJ-42'], issueFixture(), { resourceId: 'PROJ-42' }],
+      [
+        'getIssueDiscussion',
+        ['PROJ', 'PROJ-42'],
+        { comments: [{ id: '1001', body: adfDoc('Existing comment') }] },
+        [{ id: '1001' }],
+      ],
+      [
+        'addIssueComment',
+        ['PROJ', 'PROJ-42', 'Delivery complete'],
+        { id: '1002', body: adfDoc('Delivery complete') },
+        { id: '1002' },
+      ],
+    ])('existing connection: %s', (method, args, response, expected) => {
+      it.each(['valid', 'expired', 'rejected'])(
+        'keeps a legacy connection working when the access token is %s',
+        async (tokenState) => {
+          ddbMock
+            .on(GetCommand, { TableName: TRACKER_TABLE })
+            .resolves(seedConnectionRow({ oauthClientId: undefined }));
+          if (tokenState === 'expired') {
+            ssmMock
+              .on(GetParameterCommand)
+              .resolves(seedTokenParam({ expiresAt: Date.now() - 1000 }));
+          }
+          if (tokenState === 'rejected') {
+            fetchMock.mockResolvedValueOnce(errResponse(401, {}));
+          }
+          if (tokenState !== 'valid') {
+            fetchMock.mockResolvedValueOnce(
+              okResponse({ access_token: 'fresh-at', refresh_token: 'fresh-rt', expires_in: 3600 }),
+            );
+          }
+          fetchMock.mockResolvedValueOnce(okResponse(response));
+
+          await expect(jiraProvider[method](ctx(), ...args)).resolves.toMatchObject(expected);
+          expect(fetchMock.mock.lastCall[1].headers.Authorization).toBe(
+            `Bearer ${tokenState === 'valid' ? ACCESS_TOKEN : 'fresh-at'}`,
+          );
+          const refreshCalls = fetchMock.mock.calls.filter(([url]) => url.endsWith('/oauth/token'));
+          expect(refreshCalls).toHaveLength(tokenState === 'valid' ? 0 : 1);
+          // Refresh must not invent ownership metadata for a legacy grant.
+          for (const call of ddbMock.commandCalls(PutCommand)) {
+            expect(call.args[0].input.Item.oauthClientId).toBeUndefined();
+          }
+        },
+      );
+
+      it('rejects a known client mismatch before accessing the old tokens', async () => {
+        ddbMock
+          .on(GetCommand, { TableName: TRACKER_TABLE })
+          .resolves(seedConnectionRow({ oauthClientId: 'previous-client' }));
+        await expect(jiraProvider[method](ctx(), ...args)).rejects.toMatchObject({
+          status: 401,
+          extra: { reconnect: true },
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(ssmMock).not.toHaveReceivedCommand(GetParameterCommand);
+      });
+    });
+
+    it('authorizes a legacy connection once, then uses it for project listings', async () => {
+      ddbMock
+        .on(GetCommand, { TableName: TRACKER_TABLE })
+        .resolves(seedConnectionRow({ oauthClientId: undefined }));
+      await expect(jiraProvider.listExternalProjects(ctx())).rejects.toMatchObject({
+        extra: { reconnect: true },
+      });
+      await persistConnection({
+        ...ctx(),
+        clientId: CLIENT_ID,
+        resource: { cloudId: CLOUD_ID, host: SITE_HOST, name: 'Acme' },
+        tokens: { accessToken: 'new-at', refreshToken: 'new-rt', expiresIn: 3600 },
+      });
+      const row = ddbMock.commandCalls(PutCommand)[0].args[0].input.Item;
+      const parameter = ssmMock.commandCalls(PutParameterCommand)[0].args[0].input.Value;
+      ddbMock.on(GetCommand, { TableName: TRACKER_TABLE }).resolves({ Item: row });
+      ssmMock.on(GetParameterCommand).resolves({ Parameter: { Value: parameter } });
+      fetchMock.mockResolvedValue(okResponse({ values: [{ key: 'NEW', name: 'New project' }] }));
+
+      await expect(jiraProvider.listExternalProjects(ctx())).resolves.toEqual([
+        { key: 'NEW', displayKey: 'NEW', name: 'New project' },
+      ]);
+      await jiraProvider.listExternalProjects(ctx());
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer new-at');
+      expect(fetchMock.mock.calls.every(([url]) => !url.includes('/oauth/token'))).toBe(true);
+    });
+
+    it('silently refreshes using a rotated secret when the client ID is unchanged', async () => {
+      secretsMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify({ client_id: CLIENT_ID, client_secret: 'rotated-secret' }),
+      });
+      ssmMock.on(GetParameterCommand).resolves(seedTokenParam({ expiresAt: Date.now() - 1000 }));
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+        )
+        .mockResolvedValueOnce(okResponse({ values: [] }));
+
+      await expect(jiraProvider.listExternalProjects(ctx())).resolves.toEqual([]);
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+        client_id: CLIENT_ID,
+        client_secret: 'rotated-secret',
+        refresh_token: REFRESH_TOKEN,
+      });
+      expect(
+        JSON.parse(ssmMock.commandCalls(PutParameterCommand)[0].args[0].input.Value),
+      ).toMatchObject({
+        refreshToken: 'new-rt',
+      });
+      expect(ddbMock.commandCalls(PutCommand)[0].args[0].input.Item.oauthClientId).toBe(CLIENT_ID);
+    });
+
+    it('does not turn a reactive refresh outage into a reauthorization request', async () => {
+      fetchMock
+        .mockResolvedValueOnce(errResponse(401, {}))
+        .mockResolvedValueOnce(errResponse(503, { error: 'temporarily_unavailable' }));
+      await expect(jiraProvider.listExternalProjects(ctx())).rejects.toMatchObject({
+        status: 503,
+        extra: { reconnect: false },
+      });
+      expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+    });
+
+    it('does not refresh with a different client if the configuration changes mid-request', async () => {
+      secretsMock
+        .on(GetSecretValueCommand)
+        .resolvesOnce({
+          SecretString: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET }),
+        })
+        .resolves({
+          SecretString: JSON.stringify({ client_id: 'new-client', client_secret: CLIENT_SECRET }),
+        });
+      fetchMock.mockResolvedValueOnce(errResponse(401, {}));
+      await expect(jiraProvider.listExternalProjects(ctx())).rejects.toMatchObject({
+        status: 401,
+        extra: { reconnect: true },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+    });
   });
 
   describe('listIssues', () => {

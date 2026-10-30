@@ -571,7 +571,7 @@ export const handler = async (event, context) => {
         if (path.includes('/trackers/auth/')) {
           if (!userId) return response(401, { error: 'Unauthorized' });
           const { clientId, clientSecret } = await getJiraOAuthCredentials();
-          const state = signEnvelope({ userId, ts: Date.now() }, clientSecret);
+          const state = signEnvelope({ userId, clientId, ts: Date.now() }, clientSecret);
           const url = buildAuthorizeUrl({
             clientId,
             redirectUri: process.env.JIRA_REDIRECT_URI,
@@ -585,7 +585,10 @@ export const handler = async (event, context) => {
         if (!state) return response(400, { error: 'Missing state parameter' });
         const { clientId, clientSecret } = await getJiraOAuthCredentials();
         const statePayload = verifyEnvelope(decodeURIComponent(state), clientSecret);
-        if (!statePayload?.userId) {
+        if (
+          !statePayload?.userId ||
+          (statePayload.clientId && statePayload.clientId !== clientId)
+        ) {
           return response(400, { error: 'Invalid or expired state' });
         }
         const tokens = await exchangeCode({
@@ -603,6 +606,7 @@ export const handler = async (event, context) => {
             ddb,
             ssm,
             userId: statePayload.userId,
+            clientId,
             resource: resources[0],
             tokens,
           });
@@ -613,6 +617,7 @@ export const handler = async (event, context) => {
         const ticket = signEnvelope(
           {
             userId: statePayload.userId,
+            clientId,
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
             expiresIn: tokens.expiresIn,
@@ -662,9 +667,13 @@ export const handler = async (event, context) => {
       if (!data.ticket || !data.cloudId) {
         return response(400, { error: 'ticket and cloudId are required' });
       }
-      const { clientSecret } = await getJiraOAuthCredentials();
+      const { clientId, clientSecret } = await getJiraOAuthCredentials();
       const ticketPayload = verifyEnvelope(data.ticket, clientSecret);
-      if (!ticketPayload?.userId || ticketPayload.userId !== userId) {
+      if (
+        !ticketPayload?.userId ||
+        ticketPayload.userId !== userId ||
+        ticketPayload.clientId !== clientId
+      ) {
         return response(400, { error: 'Invalid or expired ticket' });
       }
       const resources = await listAccessibleResources(ticketPayload.accessToken);
@@ -676,6 +685,7 @@ export const handler = async (event, context) => {
         ddb,
         ssm,
         userId,
+        clientId,
         resource: chosen,
         tokens: {
           accessToken: ticketPayload.accessToken,
