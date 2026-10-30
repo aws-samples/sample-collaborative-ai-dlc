@@ -10,6 +10,7 @@ const register = vi.fn();
 const registerCustom = vi.fn();
 const setChannel = vi.fn();
 const clearChannel = vi.fn();
+const contents = vi.fn();
 vi.mock('@/services/aidlcReleases', async (importOriginal) => {
   const original = await importOriginal<typeof import('@/services/aidlcReleases')>();
   return {
@@ -23,10 +24,12 @@ vi.mock('@/services/aidlcReleases', async (importOriginal) => {
       registerCustom: (...a: unknown[]) => registerCustom(...a),
       setChannel: (...a: unknown[]) => setChannel(...a),
       clearChannel: (...a: unknown[]) => clearChannel(...a),
+      contents: (...a: unknown[]) => contents(...a),
     },
   };
 });
 
+import { MemoryRouter } from 'react-router';
 import { ApiError } from '@/services/api';
 import { AidlcReleasesTab, isValidCustomSource } from './AidlcReleasesTab';
 
@@ -542,5 +545,27 @@ describe('AidlcReleasesTab custom forks', () => {
 
     await screen.findByText('Registered releases');
     expect(screen.getAllByText('No offerable release').length).toBe(3);
+  });
+  it("opens a read-only view of a release's contents", async () => {
+    contents.mockResolvedValue({
+      release: { releaseId: 'aidlc:aaa111bbb222', upstreamVersion: '1.2.0' },
+      workflow: null,
+      blocks: {
+        agent: [
+          { id: 'security-reviewer', name: 'Security reviewer', releaseId: 'aidlc:aaa111bbb222' },
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <AidlcReleasesTab />
+      </MemoryRouter>,
+    );
+
+    await user.click(await screen.findByRole('button', { name: 'View contents of 1.2.0' }));
+
+    expect(await screen.findByText('Security reviewer')).toBeInTheDocument();
+    expect(contents).toHaveBeenCalledWith('aidlc:aaa111bbb222');
   });
 });

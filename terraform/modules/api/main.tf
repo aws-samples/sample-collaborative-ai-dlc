@@ -212,6 +212,8 @@ resource "aws_api_gateway_deployment" "main" {
     aws_api_gateway_integration.aidlc_release,
     module.cors_aidlc_releases,
     module.cors_aidlc_release,
+    module.cors_aidlc_release_blocks,
+    module.cors_aidlc_release_block,
     module.cors_aidlc_release_channels,
     module.cors_aidlc_release_channel,
     module.cors_aidlc_release_profiles,
@@ -430,6 +432,9 @@ resource "aws_api_gateway_deployment" "main" {
       # forces a stage redeployment instead of silently 403'ing OPTIONS/GET.
       aws_api_gateway_resource.aidlc_releases.id,
       aws_api_gateway_resource.aidlc_release.id,
+      aws_api_gateway_resource.aidlc_release_blocks.id,
+      aws_api_gateway_resource.aidlc_release_block_type.id,
+      aws_api_gateway_resource.aidlc_release_block.id,
       aws_api_gateway_resource.aidlc_release_channels.id,
       aws_api_gateway_resource.aidlc_release_channel.id,
       aws_api_gateway_resource.aidlc_release_profiles.id,
