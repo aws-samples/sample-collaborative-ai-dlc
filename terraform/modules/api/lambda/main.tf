@@ -1224,12 +1224,16 @@ module "source_control_lambda" {
   create_role = false
   lambda_role = aws_iam_role.source_control.arn
 
+  # The runtime alias needs a published version; without engine data nothing
+  # targets a version and the function stays unpublished.
+  publish = var.enable_engine_data
+
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID                  = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME            = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL               = var.powertools_log_level
@@ -1245,7 +1249,56 @@ module "source_control_lambda" {
     BITBUCKET_OAUTH_SECRET_NAME        = var.bitbucket_oauth_secret_name
     ENVIRONMENT                        = var.environment
     CORS_ALLOWED_ORIGINS               = var.cors_allowed_origins
-  }
+    }, var.enable_engine_data ? {
+    ENGINE_DATA_ENABLED            = "true"
+    GATEWAY_GRANT_KEY_IDS          = var.gateway_grant_key_arn
+    V2_PROCESS_TABLE               = var.v2_executions_table_name
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {})
+}
+
+# The runtime's grant-only entry point into the same function: invocations
+# through this alias are routed by their qualified ARN, before the event is
+# read, and accept only Gateway-grant-scoped review operations. Control-plane
+# callers keep the unqualified function.
+module "source_control_runtime_alias" {
+  count = var.enable_engine_data ? 1 : 0
+
+  source  = "terraform-aws-modules/lambda/aws//modules/alias"
+  version = "~> 8.0"
+
+  name             = "runtime"
+  function_name    = module.source_control_lambda.lambda_function_name
+  function_version = module.source_control_lambda.lambda_function_version
+
+  create_async_event_config = false
+}
+
+resource "aws_iam_role_policy" "source_control_runtime_alias" {
+  count = var.enable_engine_data ? 1 : 0
+
+  name = "source-control-runtime-alias"
+  role = aws_iam_role.source_control.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "VerifyGatewayGrants"
+        Effect   = "Allow"
+        Action   = ["kms:GetPublicKey"]
+        Resource = var.gateway_grant_key_arn
+      },
+      {
+        # META (GetItem) and the execution's own UNITPR# rows (Query on the
+        # base table, partition-keyed by the granted execution), which bind
+        # the review numbers the runtime may act on.
+        Sid      = "ReadExecutionProcessRecords"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem", "dynamodb:Query"]
+        Resource = var.v2_executions_table_arn
+      },
+    ]
+  })
 }
 
 # AgentCore-only credential broker. It has no API Gateway or event source; the
@@ -1380,7 +1433,7 @@ module "credential_broker_lambda" {
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID                   = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
@@ -1396,8 +1449,45 @@ module "credential_broker_lambda" {
     BITBUCKET_OAUTH_SECRET_NAME         = var.bitbucket_oauth_secret_name
     AGENT_SETTINGS_SSM_PREFIX           = "/${var.project_name}/${var.environment}"
     AGENT_CREDENTIAL_GRANT_SECRET_PARAM = var.agent_credential_grant_secret_param_name
-  }
+    }, var.enable_engine_data ? {
+    ENGINE_DATA_ENABLED            = "true"
+    GATEWAY_GRANT_KEY_IDS          = var.gateway_grant_key_arn
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+    } : {}, var.enable_engine_data && var.enforce_runtime_grants ? {
+    RUNTIME_GRANTS_ENFORCED = "true"
+  } : {})
 
+}
+
+# With engine data enabled the broker verifies Gateway grants on Git requests
+# and resolves MCP secrets for the runtime (stage and verify-mcp), deriving the
+# parameter paths itself. Invocation accounting rows use the process-table
+# item actions the broker already holds.
+resource "aws_iam_role_policy" "credential_broker_engine_data" {
+  count = var.enable_engine_data ? 1 : 0
+
+  name = "engine-data-authority"
+  role = aws_iam_role.credential_broker.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "VerifyGatewayGrants"
+        Effect   = "Allow"
+        Action   = ["kms:GetPublicKey"]
+        Resource = var.gateway_grant_key_arn
+      },
+      {
+        Sid    = "ResolveMcpSecrets"
+        Effect = "Allow"
+        Action = ["ssm:GetParameter"]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+        ]
+      },
+    ]
+  })
 }
 
 # Metadata-only companion to the value-redemption broker. It runs under the
@@ -1478,7 +1568,7 @@ module "projects_lambda" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID              = var.aws_sdk_ua_app_id
     NEPTUNE_ENDPOINT               = var.neptune_endpoint
     ENVIRONMENT                    = var.environment
@@ -1504,7 +1594,9 @@ module "projects_lambda" {
     # save-time cross-tier collision check.
     MCP_SECRETS_SSM_PREFIX    = "/${var.project_name}/${var.environment}"
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
-  }
+    }, var.enable_mcp_gateway ? {
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {})
 }
 
 # Users Lambda
@@ -3162,7 +3254,10 @@ module "intents_lambda" {
     V2_ORCHESTRATOR_FUNCTION          = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
-  }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
+    }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
+    var.enable_mcp_gateway ? {
+      GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {})
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
@@ -3484,7 +3579,10 @@ module "v2_orchestrator_lambda" {
     WEBSOCKET_ENDPOINT                   = var.websocket_api_endpoint_https
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
-  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
+    }, var.enable_mcp_gateway ? {
+    GATEWAY_GRANT_KEY_ID           = var.gateway_grant_key_arn
+    GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
+  } : {})
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 

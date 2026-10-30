@@ -197,6 +197,10 @@ const retireParkedRun = async ({ store, lambdaClient, executionId, reason }) => 
 //                          release that fails is queued there for the
 //                          environments poller to retry
 //   actor                – human-readable actor for the retire reason
+//   retireExecutionGrants – (reason) => Promise, optional; retires every Gateway
+//                          grant of the execution before anything is touched.
+//                          Throws on failure, which aborts the delete with
+//                          nothing removed (fail-closed; the delete is retried).
 //   force                – when true, a RUNNING run is retired+stopped and
 //                          deleted anyway (project delete); when false a RUNNING
 //                          run throws IntentRunningError (single intent delete).
@@ -215,11 +219,15 @@ const deleteIntentCascade = async ({
   sessionCleanupStore = null,
   actor = 'a project member',
   artifactsBucket = null,
+  retireExecutionGrants = null,
   force = false,
 }) => {
   if (meta?.status === 'RUNNING' && !force) {
     throw new IntentRunningError(intentId);
   }
+  // First, before any deletion: any status can hold live grants (a DRAFT's
+  // composer, a finished run's derive), and a forced delete stops a live run.
+  if (typeof retireExecutionGrants === 'function') await retireExecutionGrants('deleted');
 
   await revokeYjsScope({
     ddb,

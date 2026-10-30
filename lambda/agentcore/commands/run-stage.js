@@ -133,6 +133,7 @@ const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'r
 // sensor: only stages that produce a registered structured artifact get it.
 import { REGISTRY } from '../../shared/artifact-extractors.js';
 import { invokeSourceControlOperation } from '../clients.js';
+import { resolveStageMcpSecrets } from '../mcp-secret-broker.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -149,6 +150,7 @@ export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze([
 export const verifyReviewTargets = async ({
   targets = [],
   projectId,
+  executionId,
   gitProvider,
   repoProviders = null,
   operate = invokeSourceControlOperation,
@@ -158,6 +160,7 @@ export const verifyReviewTargets = async ({
     const provider = target.provider || repoProviders?.[target.repoId] || gitProvider || 'github';
     let status = await operate({
       projectId,
+      executionId,
       provider,
       repo: target.repoId,
       operation: 'pr-status',
@@ -168,6 +171,7 @@ export const verifyReviewTargets = async ({
     if (status?.state === 'open' && !status.draft) {
       status = await operate({
         projectId,
+        executionId,
         provider,
         repo: target.repoId,
         operation: 'set-pr-draft',
@@ -3210,12 +3214,14 @@ const runStageAttempt = async (
   const { globalPath, projectPath } = mcpSecretPaths({ projectId });
   let mcpSecretEnv = {};
   try {
-    ({ secretEnv: mcpSecretEnv } = await resolveMcpSecrets({
-      survivingGlobal,
-      survivingProject,
-      globalPath,
-      projectPath,
-    }));
+    ({ secretEnv: mcpSecretEnv } = process.env.ENGINE_DATA_FUNCTION
+      ? await resolveStageMcpSecrets({ projectId, mcpServersByTier })
+      : await resolveMcpSecrets({
+          survivingGlobal,
+          survivingProject,
+          globalPath,
+          projectPath,
+        }));
   } catch (e) {
     // Fail closed: a collision or an unset referenced secret aborts the stage
     // with a clear, actionable error (never a silent drop / a generic CLI 401).
@@ -4176,6 +4182,7 @@ const runStageAttempt = async (
       reviewTargetCheck = await recheckReviewTargets({
         targets: reviewFeedbackTargets,
         projectId,
+        executionId,
         gitProvider,
         repoProviders,
       });

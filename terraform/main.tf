@@ -263,6 +263,17 @@ resource "terraform_data" "resiliency_preconditions" {
   }
 }
 
+resource "terraform_data" "runtime_grant_preconditions" {
+  count = var.enforce_runtime_grants ? 1 : 0
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_engine_data
+      error_message = "enforce_runtime_grants requires enable_engine_data: there is no Gateway grant to enforce without it."
+    }
+  }
+}
+
 # Certificate first, then the distribution that references it, then the alias
 # records that point at the distribution. Splitting the certificate and the
 # records into different graph positions is what avoids a dependency cycle.
@@ -541,7 +552,10 @@ module "lambda" {
   agentcore_runtime_arn                    = module.agentcore.runtime_arn
   enable_mcp_gateway                       = var.enable_mcp_gateway
   enable_engine_data                       = var.enable_engine_data
+  enforce_runtime_grants                   = var.enforce_runtime_grants
   gateway_grant_key_arn                    = module.agentcore.gateway_grant_key_arn
+  gateway_grant_retirement_table_name      = module.agentcore.gateway_grant_retirement_table_name
+  gateway_grant_retirement_table_arn       = module.agentcore.gateway_grant_retirement_table_arn
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   environment_registry_table_arn           = module.dynamodb.environment_registry_table_arn
   core_image_digest                        = module.agentcore.image_digest
@@ -664,6 +678,7 @@ module "api" {
   v2_executions_table_name                 = module.agentcore.v2_executions_table_name
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   runtime_compatibility_version            = module.agentcore.runtime_compatibility_version
+  enable_engine_data                       = var.enable_engine_data
   private_subnet_ids                       = module.networking.private_subnet_ids
   lambda_security_group_ids                = [module.lambda.lambda_security_group_id]
   neptune_endpoint                         = module.neptune.cluster_endpoint

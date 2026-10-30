@@ -60,7 +60,7 @@ Renewal starts five minutes before STS expiry. Transient failures retry every 30
 
 Detached work retains the same credential session until it finishes. A later invocation, including an answer to a parked conversation, redeems a fresh handoff grant and gets a fresh endpoint for the pinned connection. It does not reuse expired STS credentials or extend an earlier invocation's renewal token.
 
-Revocation is checked against the stored connection on each redemption and renewal. AWS permissions and trust can also be revoked. Application selection changes do not revoke already-issued STS credentials; their AWS validity and the runtime's invocation cancellation remain distinct boundaries.
+Revocation is checked against the stored connection on each redemption and renewal. With engine-data, a renewal for an execution also ends with the Gateway grant that authorized its handoff: once that grant is retired (its stage settles, its command returns, or the execution is cancelled, rewound, recomposed, repaired or deleted), or the execution was cancelled after the handoff, renewal is refused. Renewal tokens issued before this binding are still renewed while `enforce_runtime_grants` is off, logged as `LEGACY_RENEWAL_TOKEN`, and refused once it is on. AWS permissions and trust can also be revoked. Application selection changes do not revoke already-issued STS credentials; their AWS validity and the runtime's invocation cancellation remain distinct boundaries.
 
 ## Foundation records
 

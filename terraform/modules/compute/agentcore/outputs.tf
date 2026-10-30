@@ -108,6 +108,16 @@ output "image_digest_amd64" {
   value       = var.build_amd64_image ? data.aws_ecr_image.agentcore_amd64[0].image_digest : ""
 }
 
+output "gateway_grant_retirement_table_name" {
+  description = "Table of retired MCP Gateway grant ids (null when the Gateway is disabled)"
+  value       = local.mcp_gateway_enabled ? aws_dynamodb_table.gateway_grant_retirements[0].name : null
+}
+
+output "gateway_grant_retirement_table_arn" {
+  description = "ARN of the retired MCP Gateway grant table (null when the Gateway is disabled)"
+  value       = local.mcp_gateway_enabled ? aws_dynamodb_table.gateway_grant_retirements[0].arn : null
+}
+
 output "gateway_grant_key_arn" {
   description = "KMS key that signs MCP Gateway grants (null when the Gateway is disabled)"
   value       = local.mcp_gateway_enabled ? aws_kms_key.gateway_grant[0].arn : null

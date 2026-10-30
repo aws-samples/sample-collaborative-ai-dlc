@@ -784,7 +784,8 @@ locals {
     AIDLC_MCP_GATEWAY_URL    = aws_bedrockagentcore_gateway.mcp[0].gateway_url
     AIDLC_MCP_GATEWAY_TARGET = aws_bedrockagentcore_gateway_target.aidlc[0].name
     } : {}, local.engine_data_enabled ? {
-    ENGINE_DATA_FUNCTION = module.engine_data_lambda[0].lambda_function_name
+    ENGINE_DATA_FUNCTION    = module.engine_data_lambda[0].lambda_function_name
+    SOURCE_CONTROL_FUNCTION = local.source_control_runtime_alias_arn
   } : {})
 }
 

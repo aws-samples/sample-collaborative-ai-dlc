@@ -405,13 +405,31 @@ variable "enable_mcp_gateway" {
 }
 
 variable "enable_engine_data" {
-  description = "Whether the engine's data access (process state, graph, catalog, blobs, realtime) goes through the engine-data Lambda; the intents Lambda then signs execution grants (static, for plan-time counts)"
+  description = "Whether the engine's data access (process state, graph, catalog, blobs, realtime) goes through the engine-data Lambda, with review operations through the source-control runtime alias; the intents Lambda then signs execution grants (static, for plan-time counts)"
+  type        = bool
+  default     = false
+}
+
+variable "enforce_runtime_grants" {
+  description = "Whether the credential broker refuses the pre-engine-data runtime request shapes (only with enable_engine_data); otherwise it serves them the legacy way and logs LEGACY_RUNTIME_REQUEST"
   type        = bool
   default     = false
 }
 
 variable "gateway_grant_key_arn" {
   description = "KMS key that signs AgentCore MCP Gateway grants (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
+}
+
+variable "gateway_grant_retirement_table_name" {
+  description = "Table the orchestrator, intents and projects Lambdas record retired Gateway grants and executions in and grant consumers check (used only when enable_mcp_gateway is true)"
+  type        = string
+  default     = null
+}
+
+variable "gateway_grant_retirement_table_arn" {
+  description = "ARN of the retired Gateway grant table (used only when enable_mcp_gateway is true)"
   type        = string
   default     = null
 }

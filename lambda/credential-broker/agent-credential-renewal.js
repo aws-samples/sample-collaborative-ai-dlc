@@ -11,11 +11,18 @@ const invalidRenewal = () =>
 
 // A renewal token is the handoff grant re-signed under the provider's audience: it keeps
 // grantId, carries only the renewing binding and ends issuedAt + ttlSeconds after the handoff.
-// Tokens already in flight keep verifying only while these claims stay byte-identical.
-export const signRenewal = ({ claims, binding, policy, key }) => {
+// An execution handoff authorized by a Gateway grant also names that grant (`gatewayGrant`),
+// so renewal authority ends when the grant is retired. Tokens already in flight keep
+// verifying only while these claims stay byte-identical.
+export const signRenewal = ({ claims, binding, policy, key, gatewayGrant = null }) => {
   if (binding?.version !== 2 || claims.purpose === VERIFY_CONNECTION) throw invalidRenewal();
   return signCredentialToken(
-    { ...claims, bindings: [binding], expiresAt: claims.issuedAt + policy.ttlSeconds },
+    {
+      ...claims,
+      bindings: [binding],
+      expiresAt: claims.issuedAt + policy.ttlSeconds,
+      ...(gatewayGrant ? { gatewayGrant } : {}),
+    },
     key,
     policy.audience,
   );

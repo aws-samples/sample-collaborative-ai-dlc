@@ -48,6 +48,10 @@ import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
+import {
+  GatewayGrantRetirementError,
+  gatewayExecutionRetirerFromEnv,
+} from '../shared/gateway-grant-retirement.js';
 import { requireYjsCleanupTime, revokeYjsScope } from '../shared/yjs-revocation.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
@@ -79,6 +83,38 @@ const store = createProcessStore({ ddb });
 // Structured logger (Powertools). serviceName defaults to 'projects' and is
 // overridden by POWERTOOLS_SERVICE_NAME; level via POWERTOOLS_LOG_LEVEL.
 const logger = new Logger({ persistentKeys: { component: 'projects' } });
+
+// A project delete force-deletes its intents, live runs included: retire each
+// execution's Gateway grants first. Fail-closed: a failed write throws, the
+// intent's cascade aborts before anything is removed, and the project delete
+// reports the intent as failed (retryable). Fenced on the run id the delete
+// read: when a relaunch replaced it meanwhile, nothing is retired and the
+// intent is reported failed too, so the retried delete sees the current run.
+// No-op without the retirement table.
+const retireExecutionGrants = async (executionId, reason, ifOrchestratorRunId) => {
+  const retire = gatewayExecutionRetirerFromEnv({ ddb });
+  if (!retire) return;
+  let retired;
+  try {
+    retired = await retire({ executionId, reason, ifOrchestratorRunId });
+  } catch (error) {
+    logger.error('gateway execution retirement failed', {
+      code: 'GATEWAY_GRANT_RETIREMENT_FAILED',
+      metric: 'GatewayGrantRetirementFailed',
+      value: 1,
+      executionId,
+      reason,
+      error: error?.name ?? 'Error',
+    });
+    throw new GatewayGrantRetirementError(executionId, error);
+  }
+  if (retired?.superseded) {
+    throw Object.assign(new Error('The run changed while the project was being deleted'), {
+      code: 'GATEWAY_GRANT_RETIREMENT_SUPERSEDED',
+      executionId,
+    });
+  }
+};
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -1988,6 +2024,8 @@ export const handler = async (event, context) => {
                 sessionCleanupStore,
                 artifactsBucket: process.env.ARTIFACTS_BUCKET || '',
                 actor,
+                retireExecutionGrants: (reason) =>
+                  retireExecutionGrants(intentId, reason, execMeta.orchestratorRunId ?? null),
                 force: true,
               });
             } catch (err) {

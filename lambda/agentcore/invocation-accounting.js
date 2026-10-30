@@ -1,167 +1,66 @@
-import { inventoryReferenceWrites, scopeActivityWrites } from '../shared/agent-auth-inventory.js';
-import { randomUUID } from 'node:crypto';
-import { GetCommand, TransactWriteCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import { authError, credentialChangeAffects } from '../shared/agent-auth-contracts.js';
+import {
+  beginCredentialInvocation,
+  heartbeatCredentialInvocation,
+  finishCredentialInvocation,
+} from '../shared/invocation-accounting.js';
 
-// Auxiliary work can outlive HTTP requests and RUNNING intent status. Account
-// for its actual session lifetime; stale heartbeats are uncertainty, not proof
-// that the work has stopped.
-export const accountCredentialInvocation = async ({
-  ddb,
-  tableName,
-  session,
-  payload,
-  bindings = [],
-  now = Date.now,
-}) => {
-  if (!tableName || bindings.length === 0) return;
-  const id = randomUUID();
-  const Key = { pk: `AGENTAUTH#INVOCATION#${id}`, sk: 'META' };
-  const stamp = () => new Date(now()).toISOString();
-  const policyKey = { pk: 'AGENTAUTH#POLICY', sk: 'META' };
-  const { Item: policy } = await ddb.send(
-    new GetCommand({ TableName: tableName, Key: policyKey, ConsistentRead: true }),
-  );
-  if (policy?.pendingReview) {
-    const { Item: pending } = await ddb.send(
-      new GetCommand({
-        TableName: tableName,
-        Key: { pk: `AGENTAUTH#REVIEW#${policy.pendingReview}`, sk: 'META' },
-        ConsistentRead: true,
-      }),
-    );
-    if (
-      bindings.some((binding) =>
-        credentialChangeAffects(pending?.candidate, binding, payload.projectId),
-      )
-    ) {
-      throw authError('AGENT_AUTH_CHANGE_IN_PROGRESS', 'The selected credential is being updated');
-    }
-  }
-  const invocation = {
-    ...Key,
-    type: 'AgentInvocation',
-    id,
-    executionId: payload.executionId ?? payload.intentId ?? null,
-    projectId: payload.projectId ?? null,
-    command: payload.command,
-    credentialBinding: bindings[0] ?? null,
-    credentialBindings: bindings,
-    agentAuthProtocol: 2,
-    state: 'ACTIVE',
-    startedAt: stamp(),
-    heartbeatAt: stamp(),
+export const brokerInvocationAccounting = (accounting, broker) => {
+  if (
+    typeof accounting?.invocationId !== 'string' ||
+    !accounting.invocationId ||
+    typeof accounting.ticket !== 'string' ||
+    !accounting.ticket
+  )
+    throw Object.assign(new Error('Broker invocation accounting is required'), {
+      code: 'INVOCATION_ACCOUNTING_INVALID',
+    });
+  // Final session disposal runs outside Gateway ALS and after dispatch expiry.
+  const ticket = accounting.ticket;
+  const invoke = async (action) => {
+    const result = await broker({ action, ticket });
+    if (result?.ok !== true)
+      throw Object.assign(new Error('Broker invocation accounting failed'), {
+        code: 'INVOCATION_ACCOUNTING_FAILED',
+      });
   };
-  const scopeWrites = scopeActivityWrites(tableName, [invocation]);
-  for (const { Update: write } of scopeWrites) {
-    const { Item: state } = await ddb.send(
-      new GetCommand({ TableName: tableName, Key: write.Key, ConsistentRead: true }),
-    );
-    write.ConditionExpression = '(attribute_not_exists(revision) OR revision = :revision)';
-    write.ExpressionAttributeValues[':revision'] = state?.revision ?? 0;
-    if (state?.pendingReview) {
-      const { Item: pending } = await ddb.send(
-        new GetCommand({
-          TableName: tableName,
-          Key: { pk: `AGENTAUTH#REVIEW#${state.pendingReview}`, sk: 'META' },
-          ConsistentRead: true,
-        }),
-      );
-      if (
-        bindings.some((binding) =>
-          credentialChangeAffects(pending?.candidate, binding, payload.projectId),
-        )
-      )
-        throw authError(
-          'AGENT_AUTH_CHANGE_IN_PROGRESS',
-          'The selected credential is being updated',
-        );
-    }
-  }
-  await ddb.send(
-    new TransactWriteCommand({
-      TransactItems: [
-        ...scopeWrites,
-        ...inventoryReferenceWrites(tableName, invocation),
-        {
-          Put: {
-            TableName: tableName,
-            Item: invocation,
-            ConditionExpression: 'attribute_not_exists(pk)',
-          },
-        },
-        {
-          Update: {
-            TableName: tableName,
-            Key: policyKey,
-            UpdateExpression:
-              'SET revision = if_not_exists(revision, :zero), #mode = if_not_exists(#mode, :mode), defaultConnectionId = if_not_exists(defaultConnectionId, :connection) ADD activityRevision :one',
-            ConditionExpression: '(attribute_not_exists(revision) OR revision = :revision)',
-            ExpressionAttributeNames: { '#mode': 'mode' },
-            ExpressionAttributeValues: {
-              ':zero': 0,
-              ':one': 1,
-              ':mode': 'keys',
-              ':connection': 'legacy-platform-bedrock',
-              ':revision': policy?.revision ?? 0,
-            },
-          },
-        },
-      ],
-    }),
-  );
+  let finishing;
+  return {
+    heartbeat: () => invoke('heartbeat-invocation'),
+    finish: () => (finishing ??= invoke('finish-invocation')),
+  };
+};
+
+// Stale heartbeats are uncertainty, not proof that detached work has stopped.
+export const ownInvocationAccounting = async ({ session, heartbeat, finish }) => {
   let stopped = false;
   let pending = Promise.resolve();
   const timer = setInterval(() => {
     if (stopped) return;
-    pending = pending
-      .then(() =>
-        ddb.send(
-          new UpdateCommand({
-            TableName: tableName,
-            Key,
-            UpdateExpression: 'SET heartbeatAt = :now',
-            ConditionExpression: '#state = :active',
-            ExpressionAttributeNames: { '#state': 'state' },
-            ExpressionAttributeValues: { ':now': stamp(), ':active': 'ACTIVE' },
-          }),
-        ),
-      )
-      .catch(() => {
-        /* inventory reports stale evidence */
-      });
+    pending = pending.then(heartbeat).catch(() => {
+      /* inventory reports stale evidence */
+    });
   }, 30_000);
   timer.unref?.();
-  const finish = async () => {
+  const dispose = async () => {
     stopped = true;
     clearInterval(timer);
     await pending;
-    const agentAuthTtl = Math.floor(now() / 1000) + 86400;
-    await ddb.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          {
-            Update: {
-              TableName: tableName,
-              Key,
-              UpdateExpression: 'SET #state = :state, completedAt = :now, agentAuthTtl = :ttl',
-              ExpressionAttributeNames: { '#state': 'state' },
-              ExpressionAttributeValues: {
-                ':state': 'FINISHED',
-                ':now': stamp(),
-                ':ttl': agentAuthTtl,
-              },
-            },
-          },
-          ...inventoryReferenceWrites(tableName, { ...invocation, agentAuthTtl }),
-        ],
-      }),
-    );
+    await finish();
   };
   try {
-    session.own(finish);
+    session.own(dispose);
   } catch (error) {
-    await finish();
+    await dispose();
     throw error;
   }
+};
+
+export const accountCredentialInvocation = async ({ session, ...options }) => {
+  const invocation = await beginCredentialInvocation(options);
+  if (!invocation) return;
+  await ownInvocationAccounting({
+    session,
+    heartbeat: () => heartbeatCredentialInvocation({ ...options, invocation }),
+    finish: () => finishCredentialInvocation({ ...options, invocation }),
+  });
 };

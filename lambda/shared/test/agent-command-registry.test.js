@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { COMMANDS, GRANT_SCOPES } from '../agent-command-registry.js';
+import { gatewayScopeForCommand } from '../gateway-grant.js';
 
 describe('agent command registry', () => {
   it('declares a valid Gateway grant scope for every command', () => {
@@ -35,6 +36,7 @@ describe('agent command registry', () => {
         'init-lane',
         'merge-lane',
         'reconcile-lane',
+        'refresh-intent',
       ].toSorted(),
     );
   });
@@ -45,13 +47,19 @@ describe('agent command registry', () => {
       .map(([name]) => name)
       .toSorted();
     expect(none).toEqual(
-      [
-        'refresh-intent',
-        'capabilities',
-        'managed-runtime-check',
-        'verify-mcp',
-        'verify-connection',
-      ].toSorted(),
+      ['capabilities', 'managed-runtime-check', 'verify-mcp', 'verify-connection'].toSorted(),
     );
+  });
+  it('issues execution authority for refresh-intent repository access', () => {
+    expect(
+      gatewayScopeForCommand(
+        { command: 'refresh-intent' },
+        {
+          projectId: 'p',
+          intentId: 'i',
+          executionId: 'e',
+        },
+      ),
+    ).toEqual({ mode: 'execution', projectId: 'p', intentId: 'i', executionId: 'e' });
   });
 });
