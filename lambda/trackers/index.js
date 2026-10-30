@@ -1030,6 +1030,8 @@ export const handler = async (event, context) => {
           // Cursor for providers (Jira Cloud since CHANGE-2046) that require
           // it; ignored by GitHub which uses page-number pagination.
           pageToken: queryStringParameters?.pageToken,
+          // Issue-type filter (Jira Cloud only: Epic, Story, Idea, ...).
+          type: queryStringParameters?.type,
         };
         const issues = await provider.listIssues(ctx, binding.externalProjectKey, options);
         return response(200, issues);
