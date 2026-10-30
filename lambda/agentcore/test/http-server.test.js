@@ -122,6 +122,24 @@ describe('dispatchInvocation', () => {
     );
   });
 
+  it('keeps the gateway grant out of command payloads but available to the invocation', async () => {
+    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
+    let seen = null;
+    const runStage = vi.fn(async (payload) => {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      seen = currentGatewayGrant();
+      return { ok: true, payloadKeys: Object.keys(payload) };
+    });
+    const result = await dispatchInvocation({
+      payload: { command: 'run-stage', stageId: 's1', gatewayGrant: 'gw-grant' },
+      handlers: { runStage },
+      prepareInvocation: vi.fn(async () => ({})),
+    });
+    expect(result.body.payloadKeys).not.toContain('gatewayGrant');
+    expect(seen).toBe('gw-grant');
+    expect(currentGatewayGrant()).toBeNull();
+  });
+
   it('routes promote-units (WP3 unit DAG promotion)', async () => {
     const r = await dispatchInvocation({
       payload: { command: 'promote-units', intentId: 'i1', executionId: 'e1' },

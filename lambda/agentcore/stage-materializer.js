@@ -22,6 +22,7 @@ import { APPLICATION_CREDENTIAL_ENV, INFERENCE_CREDENTIAL_ENV } from './cli/envi
 import { CREDENTIAL_ADAPTER_ENV_NAMES } from './credential-material-registry.js';
 import { currentCredentialSession } from './credential-session.js';
 import { createRuntimeMcpBridge } from './mcp/runtime-bridge.js';
+import { currentGatewayGrant } from './mcp/gateway-context.js';
 import { DEFAULT_CODEX_HOME_ROOT } from './cli/codex-store.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
@@ -636,11 +637,39 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
   },
 });
 
+const GATEWAY_PROXY_ENTRY = new URL('./mcp/gateway-proxy.js', import.meta.url).pathname;
+
+// With the Gateway enabled the runtime bridge runs the proxy instead of the
+// local server. A missing grant fails closed: falling back to the local server
+// would silently restore direct data access the deployment opted out of.
+export const mcpServerLaunch = ({ mcpEntry, trustedEnv, env, grant }) => {
+  if (!env.AIDLC_MCP_GATEWAY_URL) return { entry: mcpEntry, trustedEnv };
+  if (!grant) {
+    throw Object.assign(new Error('Gateway MCP requires a control-plane grant'), {
+      code: 'GATEWAY_GRANT_MISSING',
+    });
+  }
+  return {
+    entry: GATEWAY_PROXY_ENTRY,
+    trustedEnv: {
+      ...trustedEnv,
+      AIDLC_MCP_GATEWAY_URL: env.AIDLC_MCP_GATEWAY_URL,
+      AIDLC_MCP_GATEWAY_TARGET: env.AIDLC_MCP_GATEWAY_TARGET ?? 'aidlc',
+      AIDLC_MCP_GATEWAY_GRANT: grant,
+    },
+  };
+};
+
 const prepareMcpEnvironment = async ({ mcpEntry, scope, env }) => {
   const session = currentCredentialSession();
   if (!session) return env; // Pure/local harness callers own their process lifetime.
-  const trustedEnv = buildMcpConfig({ mcpEntry, scope, env }).mcpServers.aidlc.env;
-  const bridge = await createRuntimeMcpBridge({ entry: mcpEntry, trustedEnv });
+  const launch = mcpServerLaunch({
+    mcpEntry,
+    trustedEnv: buildMcpConfig({ mcpEntry, scope, env }).mcpServers.aidlc.env,
+    env,
+    grant: currentGatewayGrant(),
+  });
+  const bridge = await createRuntimeMcpBridge(launch);
   try {
     session.own(() => bridge.dispose());
   } catch (error) {

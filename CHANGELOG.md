@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in AgentCore Gateway path for the built-in MCP (`enable_mcp_gateway`, off by default). The four agent CLIs keep the same `aidlc` server and tool names; a runtime proxy forwards calls to an `AWS_IAM` Gateway whose Lambda target verifies a KMS-signed, control-plane grant and the current execution and stage state on every call before running the existing tool handlers. Requires VPC networking. The runtime role keeps its existing permissions in this release.
+
 ## [2.2.0] - 2026-09-29
 
 This release adds AWS CodeCommit support, custom Cognito login domains, code-file traceability, and direct unit branch and pull-request links in reviews, alongside data-store protection, structured logging, workflow reliability fixes, and usability improvements.

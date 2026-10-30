@@ -208,6 +208,43 @@ describe('orchestrator durable handler', () => {
     expect(new Set(starts.map((s) => s.stageCallbackId)).size).toBe(2);
   });
 
+  it('attaches a stage-scoped gateway grant only to MCP-launching commands', async () => {
+    deps.issueGatewayGrant = vi.fn(async (scope) => `gw:${scope.mode}:${scope.stageId}`);
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+
+    const initWs = invokes.find((p) => p.command === 'init-ws');
+    expect(initWs).not.toHaveProperty('gatewayGrant');
+    expect(stageStarts().map((s) => s.gatewayGrant)).toEqual(['gw:stage:a', 'gw:stage:b']);
+    expect(deps.issueGatewayGrant).toHaveBeenCalledWith({
+      mode: 'stage',
+      projectId: 'p1',
+      intentId: 'i1',
+      executionId: 'i1',
+      stageId: 'a',
+      unitSlug: null,
+      sectionIndex: null,
+      policyDigest: null,
+      stageCallbackId: 'cb-stage-cb-a',
+      orchestratorRunId: expect.stringMatching(/^run-/),
+    });
+  });
+
+  it('signs the stage release policy digest into the gateway grant', async () => {
+    const { gatewayPolicyDigest } = await import('../../shared/gateway-grant.js');
+    const policy = { summaryConfirmation: 'required' };
+    deps.loadPlan.mockResolvedValue({ valid: true, plan: { stages: [{ stageId: 'a', policy }] } });
+    deps.issueGatewayGrant = vi.fn(async () => 'gw');
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+    expect(deps.issueGatewayGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ stageId: 'a', policyDigest: gatewayPolicyDigest(policy) }),
+    );
+  });
+
+  it('sends no gateway grant when the deployment has not enabled the Gateway', async () => {
+    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+    for (const s of stageStarts()) expect(s).not.toHaveProperty('gatewayGrant');
+  });
+
   it('strongly reads the credential pin before issuing grants', async () => {
     const pinnedBinding = { provider: 'kiro', source: 'user', userId: 'starter' };
     const staleDraft = { ...META, status: 'DRAFT', credentialBinding: null };
