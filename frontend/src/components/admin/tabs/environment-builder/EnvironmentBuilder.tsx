@@ -41,8 +41,10 @@ import { cn } from '@/lib/utils';
 import {
   RUNTIME_IMAGE_LIMIT_BYTES,
   environmentIdPreview,
+  formArchitecture,
   isDefaultCompute,
   protectedRuntimeVersions,
+  toolsForArchitecture,
   resolvedTools,
   validateEnvironmentForm,
   type EnvironmentForm,
@@ -257,7 +259,7 @@ export function EnvironmentBuilder({
   baseEnvironment,
   baseRevision,
   baseLoading,
-  tools,
+  tools: catalogTools,
   disabled,
   showId,
   computeOptions,
@@ -266,6 +268,13 @@ export function EnvironmentBuilder({
   actionDisabled,
   onAction,
 }: Props) {
+  // Only builds for the environment's architecture are selectable; an x86_64
+  // environment sees each tool's x86_64 versions and x86_64 recommendation.
+  const architecture = formArchitecture(form);
+  const tools = useMemo(
+    () => toolsForArchitecture(catalogTools, architecture),
+    [catalogTools, architecture],
+  );
   const [toolSearch, setToolSearch] = useState('');
   const [toolFilter, setToolFilter] = useState<'all' | 'included'>('all');
   const [advancedOpen, setAdvancedOpen] = useState(
