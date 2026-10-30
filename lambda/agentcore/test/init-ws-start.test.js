@@ -306,6 +306,57 @@ describe('createInitWsStart', () => {
     expect(start.activeJobs.get('e1:init-ws')).toBe(other);
   });
 
+  describe('a dispatch retry after the job finished', () => {
+    it('answers alreadyCompleted without a second clone or a heartbeat to the completed callback', async () => {
+      const { deps, sent, beats } = makeDeps();
+      const start = createInitWsStart(deps);
+      await start(basePayload);
+      await flush();
+      expect(sent).toHaveLength(1);
+
+      const retry = await start(basePayload);
+
+      expect(retry).toEqual({
+        ok: true,
+        accepted: true,
+        alreadyCompleted: true,
+        callbackId: 'cb-init',
+      });
+      expect(deps.initWs).toHaveBeenCalledOnce();
+      expect(beats).toEqual(['cb-init']);
+      expect(sent).toHaveLength(1);
+    });
+
+    it('starts a new job for a DIFFERENT callback once the previous one finished', async () => {
+      const { deps } = makeDeps();
+      const start = createInitWsStart(deps);
+      await start(basePayload);
+      await flush();
+
+      const next = await start({ ...basePayload, callbackId: 'cb-next' });
+      await flush();
+
+      expect(next).toMatchObject({ ok: true, accepted: true, callbackId: 'cb-next' });
+      expect(next).not.toHaveProperty('alreadyCompleted');
+      expect(deps.initWs).toHaveBeenCalledTimes(2);
+    });
+
+    it('forgets a finished callback after the retention window', async () => {
+      let clock = 1_000;
+      const { deps } = makeDeps();
+      const start = createInitWsStart({ ...deps, completedRetentionMs: 100, now: () => clock });
+      await start(basePayload);
+      await flush();
+      clock += 101;
+
+      const late = await start(basePayload);
+      await flush();
+
+      expect(late).not.toHaveProperty('alreadyCompleted');
+      expect(deps.initWs).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('holds the busy tracker for the whole job so the session stays HealthyBusy', async () => {
     const gate = makeGate();
     const busy = createBusyTracker();
