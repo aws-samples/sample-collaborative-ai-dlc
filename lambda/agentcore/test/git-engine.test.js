@@ -2325,6 +2325,36 @@ describe('shallow checkouts deepen on demand', () => {
     ]);
   });
 
+  it('deepens past a stored commit whose parent is present only as another branch tip', async () => {
+    const { remote, seed } = await deepRemote(2);
+    // A first stage commit directly on an unmoved main: its parent is main's
+    // tip, so the parent object is in the clone but beyond the graft.
+    await forkOnRemote(seed, remote, 'aidlc/i1', 0, 's.txt');
+    const stored = (await git(['rev-parse', 'aidlc/i1'], seed)).stdout.trim();
+    const parent = (await git(['rev-parse', 'main'], seed)).stdout.trim();
+    const workspaceDir = await shallowClone(remote);
+    expect((await git(['cat-file', '-e', `${parent}^{commit}`], workspaceDir)).exitCode).toBe(0);
+
+    const fetches = [];
+    const result = await gitResultForCommitRefs({
+      commitRefs: [{ repo: 'o/r', sha: stored }],
+      repos: ['o/r'],
+      workspaceDir,
+      projectId: 'p1',
+      executionId: 'e1',
+      urlsFor: () => laneUrls(remote),
+      git: async (args, opts) => {
+        if (args[0] === 'fetch') fetches.push(args[1]);
+        return runGit(args, opts);
+      },
+    });
+
+    expect(fetches.length).toBeGreaterThan(0);
+    expect(result.results).toEqual([
+      expect.objectContaining({ repo: 'o/r', sha: stored, files: ['s.txt'] }),
+    ]);
+  });
+
   it('reads a genuine root commit from a shallow clone without deepening', async () => {
     const { remote, seed } = await deepRemote(3);
     await git(['checkout', '--orphan', 'aidlc/orphan'], seed);

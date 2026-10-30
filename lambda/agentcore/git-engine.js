@@ -1566,8 +1566,10 @@ export const gitResultForCommitRefs = async ({
     const hasCommit = async (rev) =>
       (await git(['cat-file', '-e', `${rev}^{commit}`], { cwd: dir })).exitCode === 0;
     // diff-tree needs the commit AND its parents. A commit at the shallow
-    // boundary reads as a root, so `--root` would list its whole tree. The
-    // raw object keeps its parent lines; a genuine root commit has none.
+    // boundary reads as a root, so `--root` would list its whole tree, even
+    // when its parent object is present as another branch's tip. Git
+    // traverses the raw object's parents only once the commit is past the
+    // boundary; a genuine root commit has none on either side.
     const hasDiffContext = async () => {
       if (!(await hasCommit(sha))) return false;
       const raw = await git(['cat-file', 'commit', sha], { cwd: dir });
@@ -1577,7 +1579,9 @@ export const gitResultForCommitRefs = async ({
       for (const parent of parents) {
         if (!(await hasCommit(parent))) return false;
       }
-      return true;
+      const traversed = await git(['rev-list', '--parents', '-n', '1', sha], { cwd: dir });
+      if (traversed.exitCode !== 0) return false;
+      return traversed.stdout.trim().split(/\s+/).slice(1).join(' ') === parents.join(' ');
     };
     if (executionId && !(await hasDiffContext())) {
       const sourceRepo = repos.find((r) => (typeof r === 'string' ? r : r.url) === repo);
