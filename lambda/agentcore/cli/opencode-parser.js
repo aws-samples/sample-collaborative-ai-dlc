@@ -79,6 +79,7 @@ const toolOf = (event) => {
   if (eventType !== 'tool_use' && partType !== 'tool') return null;
   if (!['completed', 'error', 'failed'].includes(status)) return null;
   return {
+    id: part.callID ?? part.id,
     name: part.tool ?? event?.tool ?? 'tool',
     status: status === 'completed' ? 'completed' : 'error',
     input: state.input ?? part.input ?? event?.input ?? null,

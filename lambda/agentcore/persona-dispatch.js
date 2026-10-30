@@ -270,6 +270,7 @@ export const dispatchPersona = async ({
         promptViaStdin: invocation.promptViaStdin,
         timeoutMs,
         processGroup,
+        logContext: scope,
         spawnFn,
       });
     let childResult;
