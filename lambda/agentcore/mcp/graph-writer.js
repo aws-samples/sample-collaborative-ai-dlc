@@ -685,6 +685,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       title: String(title ?? ''),
       content: String(content ?? ''),
       ...stamp(),
+      // Written afresh: no later stage has changed this content yet.
+      updated_by_stage_instance_id: '',
       id: canonicalId,
       artifact_type: artifactType,
       artifact_logical_key: logicalKey,

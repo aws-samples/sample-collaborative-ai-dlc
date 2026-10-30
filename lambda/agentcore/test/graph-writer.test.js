@@ -223,6 +223,17 @@ describe('createArtifact', () => {
     row = await writer.getArtifact({ id: 'log' });
     expect(row.updated_by_stage_instance_id).toBe('si-later');
   });
+  it('clears the stage that last changed the content when the artifact is re-created', async () => {
+    await seedIntent();
+    await writer.createArtifact({ artifactType: 'stories', id: 'log', content: 'first' });
+    const later = createGraphWriter({ g, scope: { ...SCOPE, stageInstanceId: 'si-later' } });
+    await later.updateArtifact({ id: 'log', props: { content: 'appended' } });
+    // A rewound creating stage writes the artifact afresh: the later edit is gone.
+    await writer.createArtifact({ artifactType: 'stories', id: 'log', content: 'rewritten' });
+    const row = await writer.getArtifact({ id: 'log' });
+    expect(row.created_by_stage_instance_id).toBe('si-req');
+    expect(row.updated_by_stage_instance_id).toBe('');
+  });
   it('fails when the Intent anchor does not exist', async () => {
     await expect(
       writer.createArtifact({ artifactType: 'requirements-analysis', id: 'a1' }),
