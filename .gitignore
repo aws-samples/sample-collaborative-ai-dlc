@@ -65,6 +65,8 @@ site/
 # E2E test run artifacts (generated screenshots, reports, summaries)
 test/e2e/artifacts/
 frontend/public/dev/agent-output-fixtures.json
+# Copied from AIDLC_BRANDING_DIR by scripts/deploy-frontend.sh
+frontend/public/branding/
 
 # Terraform plan files (any environment suffix)
 tfplan*

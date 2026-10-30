@@ -664,6 +664,37 @@ Because these are inlined at build time, changing the domain always requires a r
 
 This regenerates `.env`, builds the frontend, uploads it to S3, and invalidates the CloudFront cache.
 
+### Branding
+
+A deployment can carry its own logo, wordmark, colours and fonts without changing the source. Unset, the app looks as it does by default.
+
+1. Put the assets in a folder outside the repository, for example `brand/` holding `brand.css`, `logo.svg`, `wordmark.svg`, `wordmark-dark.svg` and any fonts. Set `AIDLC_BRANDING_DIR` to it, and `deploy-frontend.sh` copies it to `/branding/` in the site.
+2. Point the build at the files with these variables, exported when you run `deploy-frontend.sh`:
+
+| Variable                   | Effect                                                                                          | Default           |
+| -------------------------- | ----------------------------------------------------------------------------------------------- | ----------------- |
+| `VITE_BRAND_STYLESHEET`    | stylesheet loaded after the app's own CSS, before the first paint                               | none              |
+| `VITE_BRAND_WORDMARK`      | wordmark in the header and on the sign-in card, replacing the icon                              | none              |
+| `VITE_BRAND_WORDMARK_DARK` | wordmark for the dark theme                                                                     | the wordmark      |
+| `VITE_BRAND_LOGO`          | the app's mark: header icon when there is no wordmark, the Spaces page header, and the tab icon | `/logo.svg`       |
+| `VITE_BRAND_NAME`          | alt text for the logo and wordmark                                                              | `AI-DLC`          |
+| `VITE_BRAND_FAVICON`       | browser tab icon                                                                                | the logo          |
+| `VITE_BRAND_TITLE`         | browser tab title                                                                               | the default title |
+
+```bash
+export AIDLC_BRANDING_DIR="$PWD/../brand"
+export VITE_BRAND_STYLESHEET=/branding/brand.css
+export VITE_BRAND_WORDMARK=/branding/wordmark.svg
+export VITE_BRAND_WORDMARK_DARK=/branding/wordmark-dark.svg
+export VITE_BRAND_LOGO=/branding/logo.svg
+export VITE_BRAND_NAME="Example Corp"
+./scripts/deploy-frontend.sh dev
+```
+
+The theme is CSS variables (`--primary`, `--background`, `--radius`, the sidebar and chart colours, and so on, defined on `:root` and `.dark` in `frontend/src/index.css`). A brand stylesheet overrides them with the same selectors: it loads later, so it wins. Tailwind's colour palette is CSS variables too (`--color-blue-500` and so on), so hard-coded colour classes can follow the brand as well. Relative `url()`s and `@import`s in the stylesheet resolve under `/branding/`.
+
+The stylesheet blocks the first render for at most three seconds, so a missing file never stops the app loading. These are build-time settings, so changing them needs a rebuild.
+
 ### Access the application
 
 ```bash

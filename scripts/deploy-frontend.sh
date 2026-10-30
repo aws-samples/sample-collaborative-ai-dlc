@@ -56,6 +56,20 @@ fi
 
 # Build frontend
 cd "$SCRIPT_DIR/../frontend"
+
+# Optional branding assets (docs/getting-started/setup.md#branding): served
+# from /branding/, referenced by the VITE_BRAND_* settings.
+rm -rf public/branding
+if [[ -n "${AIDLC_BRANDING_DIR:-}" ]]; then
+    if [[ ! -d "$AIDLC_BRANDING_DIR" ]]; then
+        echo "Error: AIDLC_BRANDING_DIR is not a directory: $AIDLC_BRANDING_DIR"
+        exit 1
+    fi
+    echo "Copying branding assets from $AIDLC_BRANDING_DIR"
+    mkdir -p public/branding
+    cp -R "$AIDLC_BRANDING_DIR/." public/branding/
+fi
+
 echo "Building frontend..."
 npm ci --ignore-scripts
 npm run build
