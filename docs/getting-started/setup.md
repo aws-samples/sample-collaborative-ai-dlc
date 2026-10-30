@@ -112,9 +112,9 @@ aws neptune reboot-db-instance \
   --db-instance-identifier "<project_name>-<environment>-neptune-instance"
 ```
 
-The same applies when you disable Streams or change the expiry. Stream consumers run inside the VPC like any other Neptune client: they need network access to the cluster (its security group is the `neptune_security_group_id` output) and IAM permission to read the stream (`neptune-db:GetStreamRecords`), because the cluster uses IAM database authentication.
+The same applies when you disable Streams or change the expiry. Disabling sets `neptune_streams = 0` in the parameter group (removing the parameter would leave Streams on, because Terraform does not reset removed parameters), and Streams stops after the next reboot. Stream consumers run inside the VPC like any other Neptune client: they need network access to the cluster (its security group is the `neptune_security_group_id` output) and IAM permission to read the stream (`neptune-db:GetStreamRecords`), because the cluster uses IAM database authentication.
 
-With `neptune_streams_enabled = false` (the default), the parameter group is unchanged.
+With `neptune_streams_enabled = false` (the default), the parameter group sets only `neptune_streams = 0`, Neptune's own default, so nothing changes and no reboot is needed.
 
 ### Custom domain
 
