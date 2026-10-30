@@ -20,7 +20,7 @@ The deployment creates the bus and lets the publishing Lambdas (projects, discus
 
 Publishing is best-effort:
 
-- It never fails or blocks the action that triggered it. Each publish gives up after two seconds, and a missing bus, missing permission or EventBridge error only logs a warning.
+- It never fails or blocks the action that triggered it. Each publish, including any reads to enrich `gate.pending`, gives up after two seconds, and a missing bus, missing permission or EventBridge error only logs a warning. A slow enrichment read is dropped after one second and its fields are sent as `null`.
 - There's no retry, so a consumer that must not miss an event should reconcile against the platform's API.
 - An event is normally published once, but delivery is at least once: a retried step or request can publish it again. Deduplicate on `eventId`.
 
