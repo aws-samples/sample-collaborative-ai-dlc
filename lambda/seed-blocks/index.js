@@ -68,6 +68,15 @@
 //     --payload '{"importRelease":true,"custom":{"repository":"acme/aidlc-workflows-fork","sha":"<40-hex-sha>","baseProfile":"v2.9.0"},"dryRun":true}' \
 //     --cli-binary-format raw-in-base64-out /tmp/out.json
 //
+//   # A fork can also live in a GitLab project, private or public, on the
+//   # instance in AIDLC_GITLAB_URL (default https://gitlab.com). A private
+//   # project needs a token with read_api in the AIDLC_GITLAB_TOKEN_SECRET_ARN
+//   # secret (Terraform: aidlc_custom_source_gitlab_*). Nested groups are fine:
+//   aws lambda invoke \
+//     --function-name $(terraform output -raw seed_blocks_lambda_name) \
+//     --payload '{"importRelease":true,"custom":{"repository":"gitlab:acme/platform/aidlc-fork","sha":"<40-hex-sha>","baseProfile":"v2.9.0"},"dryRun":true}' \
+//     --cli-binary-format raw-in-base64-out /tmp/out.json
+//
 // Three modes:
 //   - Default (insert-only): a conditional write skips any block that already
 //     exists, so re-running only inserts blocks added since the last run. Safe,
@@ -78,7 +87,9 @@
 //     Combine with dryRun to preview the clear without deleting.
 //   - importRelease: stages one release commit under
 //     aidlc-releases/v1/<sha>/i<importerRevision>/ (official) or
-//     aidlc-releases/v1/custom/<owner>/<name>/<sha>/i<importerRevision>/ (fork)
+//     aidlc-releases/v1/custom/<owner>/<name>/<sha>/i<importerRevision>/ (GitHub
+//     fork) or aidlc-releases/v1/custom/gitlab/<url-encoded path>/<sha>/i<N>/
+//     (GitLab fork)
 //     plus its content-addressed bodies/scripts/runtime objects, and returns
 //     before touching DynamoDB. An official commit is resolved only from the
 //     compatibility profile allowlist and a fork only from an exact SHA, so this
@@ -98,6 +109,7 @@ import { fetchCoreFiles } from '../shared/repo-fetch.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
 import { customProfile, profileFor } from '../shared/aidlc-compatibility-profiles.js';
+import { parseRepositorySlug } from '../shared/aidlc-custom-source.js';
 import {
   AIDLC_RELEASE_IMPORTER_REVISION,
   buildReleaseBundle,
@@ -138,6 +150,73 @@ const artifactsBucket = () => process.env.ARTIFACTS_BUCKET;
 const defaultRef = () => process.env.AIDLC_REPO_REF;
 
 const isConditionalCheckFailed = (err) => err?.name === 'ConditionalCheckFailedException';
+
+// A `gitlab:` custom source is read from AIDLC_GITLAB_URL (default gitlab.com)
+// with the read token in the Secrets Manager secret AIDLC_GITLAB_TOKEN_SECRET_ARN,
+// when one is configured. The secret's value is the token itself, or a JSON
+// object whose `token` field holds it, the shape a rotation function keeps
+// alongside the token's id and project. A public GitLab project needs no secret.
+const gitlabSourceUrl = () => process.env.AIDLC_GITLAB_URL || undefined;
+const gitlabTokenSecretArn = () => process.env.AIDLC_GITLAB_TOKEN_SECRET_ARN || '';
+
+const readGitlabToken = async () => {
+  const secretId = gitlabTokenSecretArn();
+  if (!secretId) return null;
+  // Imported on first use: only a GitLab import needs it, and the Lambda
+  // runtime provides the SDK (esbuild keeps @aws-sdk/* external).
+  const { SecretsManagerClient, GetSecretValueCommand } =
+    await import('@aws-sdk/client-secrets-manager');
+  const { SecretString } = await new SecretsManagerClient({}).send(
+    new GetSecretValueCommand({ SecretId: secretId }),
+  );
+  const token = gitlabTokenFromSecret(SecretString);
+  if (!token) {
+    throw new Error(
+      'seed-blocks: the GitLab token secret (AIDLC_GITLAB_TOKEN_SECRET_ARN) is empty',
+    );
+  }
+  return token;
+};
+
+// The token in a secret value: the trimmed value, or the `token` field of a
+// JSON object. Never echoes the value: a malformed secret is reported by shape.
+const gitlabTokenFromSecret = (secretString) => {
+  const value = String(secretString ?? '').trim();
+  if (!value.startsWith('{')) return value;
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(
+      'seed-blocks: the GitLab token secret (AIDLC_GITLAB_TOKEN_SECRET_ARN) starts with "{" but is not valid JSON',
+    );
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    Array.isArray(parsed) ||
+    typeof parsed.token !== 'string'
+  ) {
+    throw new Error(
+      'seed-blocks: the GitLab token secret (AIDLC_GITLAB_TOKEN_SECRET_ARN) is JSON without a string "token" field',
+    );
+  }
+  return parsed.token.trim();
+};
+
+// The fetch source for a custom profile's canonical repository.
+const customFetchSource = async (sourceRepository) => {
+  const parsed = parseRepositorySlug(sourceRepository);
+  if (parsed.provider === 'gitlab') {
+    return {
+      provider: 'gitlab',
+      path: parsed.path,
+      baseUrl: gitlabSourceUrl(),
+      token: await readGitlabToken(),
+    };
+  }
+  return { owner: parsed.owner, repo: parsed.repo };
+};
 
 // The S3 prefix for the commit-pinned internal runtime snapshot.
 const runtimePrefix = (ref) => `aidlc-runtime/${ref}`;
@@ -304,7 +383,7 @@ const putObject = (key, body, contentType) =>
 //
 // Two mutually exclusive sources: an allowlisted official `profile` id, or a
 // `custom` fork pinned to an exact SHA. A custom import lands on its own
-// `custom/<owner>/<name>/` prefix and is recorded T0 and import-only; only an
+// `custom/<owner>/<name>/` (or `custom/gitlab/<path>/`) prefix and is recorded T0 and import-only; only an
 // admin promotion through the fidelity guard makes it runnable.
 const importRelease = async ({ event, dryRun, reseed }) => {
   if (reseed) {
@@ -347,8 +426,7 @@ const importRelease = async ({ event, dryRun, reseed }) => {
       sha: requestedCustom.sha,
       baseProfileId: requestedCustom.baseProfile,
     });
-    const [owner, repo] = profile.sourceRepository.split('/');
-    source = { owner, repo };
+    source = await customFetchSource(profile.sourceRepository);
   } else {
     // Profile id only (never a raw SHA) so the invoke payload is self-describing.
     profile = typeof requested === 'string' ? profileFor(requested) : null;

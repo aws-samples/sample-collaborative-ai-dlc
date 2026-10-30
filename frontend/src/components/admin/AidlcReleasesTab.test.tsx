@@ -104,6 +104,17 @@ describe('AidlcReleasesTab', () => {
     expect(isValidCustomSource('two--hyphens/repo', sha, 'v2.9.0')).toBe(false);
     expect(isValidCustomSource('owner/..', sha, 'v2.9.0')).toBe(false);
   });
+  it('validates GitLab project paths, including nested groups', () => {
+    const sha = 'a'.repeat(40);
+    expect(isValidCustomSource('gitlab:acme/platform/aidlc-fork', sha, 'v2.9.0')).toBe(true);
+    expect(isValidCustomSource('gitlab:acme/aidlc.fork_1', sha, 'v2.9.0')).toBe(true);
+    expect(isValidCustomSource('gitlab:acme', sha, 'v2.9.0')).toBe(false);
+    expect(isValidCustomSource('gitlab:acme/../fork', sha, 'v2.9.0')).toBe(false);
+    expect(isValidCustomSource('gitlab:acme/fork.git', sha, 'v2.9.0')).toBe(false);
+    expect(isValidCustomSource('gitlab:acme/-fork', sha, 'v2.9.0')).toBe(false);
+    expect(isValidCustomSource('gitlab:acme//fork', sha, 'v2.9.0')).toBe(false);
+    expect(isValidCustomSource('gitlab:acme/fork', 'main', 'v2.9.0')).toBe(false);
+  });
 
   it('renders releases, channels and profiles with state badges', async () => {
     list.mockResolvedValue({

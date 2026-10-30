@@ -525,6 +525,33 @@ describe('custom fork releases', () => {
     expect(releaseKeyPrefix(args).startsWith(releaseKeyPrefix({ sha: SHA }))).toBe(false);
   });
 
+  it('keys a GitLab fork under one encoded segment below custom/gitlab/', () => {
+    const args = {
+      sha: SHA,
+      importerRevision: 1,
+      custom: true,
+      sourceRepository: 'gitlab:acme/platform/fork',
+    };
+    expect(releaseKeyPrefix(args)).toBe(
+      `aidlc-releases/v${AIDLC_RELEASE_SCHEMA_VERSION}/custom/gitlab/acme%2Fplatform%2Ffork/${SHA}/i1`,
+    );
+    expect(releaseKeyPrefix({ ...args, sourceRepository: 'gitlab:acme/platform' })).not.toBe(
+      releaseKeyPrefix(args),
+    );
+  });
+
+  it('records a GitLab fork repository in the manifest and validates it', () => {
+    const profile = forkProfile({ repository: 'gitlab:acme/platform/aidlc-fork' });
+    expect(profile.releaseId).toBe(`aidlc-custom:gitlab:acme/platform/aidlc-fork@${SHA}`);
+    const { manifest } = buildReleaseBundle({ profile, files: forkFiles() });
+    expect(manifest).toMatchObject({
+      custom: true,
+      sourceRepository: 'gitlab:acme/platform/aidlc-fork',
+      trustTier: 'T0',
+    });
+    expect(() => validateReleaseManifest(manifest)).not.toThrow();
+  });
+
   it('refuses to key a custom prefix without a valid non-official repository', () => {
     for (const sourceRepository of ['awslabs/aidlc-workflows', 'acme/..', 'acme', '', null]) {
       expect(() =>
@@ -587,6 +614,32 @@ describe('custom fork releases', () => {
     expect(() => buildReleaseBundle({ profile: forkProfile(), files })).toThrowError(
       expect.objectContaining({ code: 'release_import_rejected' }),
     );
+  });
+
+  it('reads a published GitLab fork manifest back only from its own prefix', async () => {
+    const sourceRepository = 'gitlab:acme/platform/aidlc-fork';
+    const bundle = buildReleaseBundle({
+      profile: forkProfile({ repository: sourceRepository }),
+      files: forkFiles(),
+    });
+    const published = await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+    expect(published.manifestKey).toContain('/custom/gitlab/acme%2Fplatform%2Faidlc-fork/');
+    const read = (repository) =>
+      readReleaseManifest({
+        s3,
+        bucket: BUCKET,
+        sha: SHA,
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+        custom: true,
+        sourceRepository: repository,
+      });
+    await expect(read(sourceRepository)).resolves.toMatchObject({
+      releaseId: `aidlc-custom:${sourceRepository}@${SHA}`,
+      sourceRepository,
+    });
+    // Neither a shallower GitLab project nor a GitHub fork reaches these bytes.
+    await expect(read('gitlab:acme/platform')).resolves.toBeNull();
+    await expect(read('acme/aidlc-fork')).resolves.toBeNull();
   });
 
   it('publishes and reads back a custom release only from its custom prefix', async () => {

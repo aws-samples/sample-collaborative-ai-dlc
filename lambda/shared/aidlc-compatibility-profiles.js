@@ -127,7 +127,7 @@ const CUSTOM_BASE_PROFILE_IDS = Object.freeze(Object.keys(AIDLC_COMPATIBILITY_PR
  * a fork (release-resolver `release_not_runnable`).
  */
 const customProfile = ({ repository, sha, baseProfileId }) => {
-  const { owner, repo, repository: slug } = parseRepositorySlug(repository);
+  const { repository: slug } = parseRepositorySlug(repository);
   if (slug === OFFICIAL_AIDLC_REPOSITORY) {
     throw new CustomSourceError(
       'custom_repository_official',
@@ -153,7 +153,7 @@ const customProfile = ({ repository, sha, baseProfileId }) => {
     );
   }
   const upstreamRef = String(sha).toLowerCase();
-  const identity = `${owner}/${repo}@${upstreamRef}`;
+  const identity = `${slug}@${upstreamRef}`;
   return Object.freeze({
     id: `custom:${identity}`,
     releaseId: `aidlc-custom:${identity}`,
