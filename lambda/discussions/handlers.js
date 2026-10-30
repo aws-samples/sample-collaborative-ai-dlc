@@ -521,7 +521,8 @@ export const postMessage = async (event, res) => {
       // Notification event for integrations (best-effort, never throws).
       if (scope.kind === 'intent') {
         await publishNotificationEvent('discussion.message', {
-          projectId: scope.projectId,
+          // The intent's own project, checked by authorizeScope, not the URL's.
+          projectId: auth.projectId,
           intentId: scope.rootId,
           eventId: messageId,
           discussionId,
@@ -964,7 +965,7 @@ export const updateDiscussion = async (event, res) => {
   if (resolved && scope.kind === 'intent') {
     await publishNotificationEvent('discussion.resolved', {
       eventId: `${discussionId}:${now}`,
-      projectId: scope.projectId,
+      projectId: auth.projectId,
       intentId: scope.rootId,
       discussionId,
       entityType: getVal(discussion, 'entity_type'),

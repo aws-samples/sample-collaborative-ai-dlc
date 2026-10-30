@@ -236,4 +236,53 @@ describe('notifyGatePending', () => {
     );
     expect(sent(send)).toMatchObject({ humanTaskId: 'q-1', prompt: null });
   });
+
+  const never = () => new Promise(() => {});
+
+  it('drops a slow read and still publishes within the deadline', async () => {
+    const enrich = new AbortController();
+    const store = {
+      getHumanTask: vi.fn(async () => ({ kind: 'question', questions: '["Q?"]' })),
+      // Hangs; the read deadline passes shortly after the fast read lands.
+      getExecution: vi.fn(() => {
+        setTimeout(() => enrich.abort(), 10);
+        return never();
+      }),
+    };
+    const send = vi.fn(async () => ({ FailedEntryCount: 0 }));
+    const pending = notifyGatePending(store, ids, {
+      getClient: clientWith(send),
+      enrichSignal: enrich.signal,
+    });
+    await expect(pending).resolves.toBe(true);
+    expect(sent(send)).toMatchObject({ prompt: 'Q?', intentTitle: null, startedBy: null });
+    expect(send.mock.calls[0][1].abortSignal.aborted).toBe(false);
+  });
+
+  it('gives up on reads and publish together at the overall deadline', async () => {
+    const store = { getHumanTask: vi.fn(never), getExecution: vi.fn(never) };
+    const send = vi.fn(never);
+    const overall = new AbortController();
+    const pending = notifyGatePending(store, ids, {
+      getClient: clientWith(send),
+      signal: overall.signal,
+      enrichSignal: new AbortController().signal,
+    });
+    overall.abort();
+    await expect(pending).resolves.toBe(false);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('bounds the whole call by the default deadline', async () => {
+    const store = { getHumanTask: vi.fn(never), getExecution: vi.fn(never) };
+    const send = vi.fn(never);
+    const started = Date.now();
+    await expect(notifyGatePending(store, ids, { getClient: clientWith(send) })).resolves.toBe(
+      false,
+    );
+    const elapsed = Date.now() - started;
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(elapsed).toBeGreaterThanOrEqual(1900);
+    expect(elapsed).toBeLessThan(2500);
+  }, 5000);
 });
