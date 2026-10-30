@@ -142,6 +142,24 @@ variable "github_app_config_param_arn" {
   default     = ""
 }
 
+variable "codecommit_connection_param_name" {
+  description = "SSM parameter name holding the platform CodeCommit connection JSON ({roleArn, region})"
+  type        = string
+  default     = ""
+}
+
+variable "codecommit_connection_param_arn" {
+  description = "SSM parameter ARN holding the platform CodeCommit connection JSON"
+  type        = string
+  default     = ""
+}
+
+variable "codecommit_external_id" {
+  description = "Platform CodeCommit external ID (\"aidlc:<uuid>\") named in the tenant role trust policy"
+  type        = string
+  default     = ""
+}
+
 variable "git_connections_table_name" {
   description = "DynamoDB table name for git connections"
   type        = string
