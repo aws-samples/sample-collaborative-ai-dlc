@@ -328,10 +328,11 @@ module "waf" {
     aws.us_east_1 = aws.us_east_1
   }
 
-  enabled                  = var.enable_waf
-  project_name             = var.project_name
-  environment              = var.environment
-  cloudfront_origin_secret = module.frontend.cloudfront_origin_secret
+  enabled                   = var.enable_waf
+  project_name              = var.project_name
+  environment               = var.environment
+  cloudfront_origin_secret  = module.frontend.cloudfront_origin_secret
+  body_content_exempt_paths = var.waf_body_content_exempt_paths
 }
 
 # Auth (Cognito)
