@@ -28,6 +28,7 @@ nav = [
     "using-the-platform/exporting-workspaces.md",
     "using-the-platform/recovering-intents.md",
     "using-the-platform/intent-observability.md",
+    "using-the-platform/reporting.md",
     "using-the-platform/workflows.md",
     "using-the-platform/platform-settings.md",
     "using-the-platform/discussions.md",
