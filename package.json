@@ -26,6 +26,7 @@
     "lambda/projects",
     "lambda/purge-neptune",
     "lambda/questions",
+    "lambda/reporting",
     "lambda/requirements",
     "lambda/reviews",
     "lambda/sprint-graph",
