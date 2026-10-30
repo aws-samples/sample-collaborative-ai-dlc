@@ -56,6 +56,11 @@ const setup = () => {
       name.startsWith('section-completion-v1-') || name.startsWith('load-completion-v1-')
         ? { state: 'complete', unresolved: [] }
         : fn(),
+    // The accepted init-ws-start job completes the workspace-init callback.
+    createCallback: async (name) => {
+      if (name !== 'init-ws-cb') throw new Error(`unexpected callback ${name}`);
+      return [Promise.resolve(JSON.stringify({ ok: true })), `cb-${name}`];
+    },
     logger: { info() {}, error() {} },
   };
   return {

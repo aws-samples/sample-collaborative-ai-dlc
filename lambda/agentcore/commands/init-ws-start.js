@@ -28,6 +28,9 @@ import { runCredentialJob } from '../credential-session.js';
 //     callback is refused (init_job_already_running) — two clones must never
 //     race into the same workspace directory, and a job only releases the
 //     reservation it owns;
+//   - a finished job's callback id is remembered for a bounded time, so a
+//     dispatch retry that arrives after the job completed is answered
+//     alreadyCompleted instead of cloning again;
 //   - the busy tracker is held for the job's lifetime so /ping reports
 //     HealthyBusy and AgentCore keeps the session (and its mount) alive.
 
@@ -38,6 +41,11 @@ const logger = new Logger({
 });
 
 const jobKey = (p) => `${p.executionId}:init-ws`;
+
+// How long a finished job's callback id is remembered, so a durable dispatch
+// retry (lost response) is answered instead of starting a second clone.
+// Covers the step's retry backoff with a wide margin.
+const COMPLETED_RETENTION_MS = 60 * 60_000;
 
 // init-ws returns {ok:false, reason, detail} on every handled failure and
 // {ok:true, ...} on success. Anything else is a contract break — surface it as
@@ -54,14 +62,30 @@ export const createInitWsStart = ({
   busy = null,
   heartbeatIntervalMs = 60_000,
   activeJobs = new Map(),
+  completedJobs = new Map(),
+  completedRetentionMs = COMPLETED_RETENTION_MS,
+  now = Date.now,
   log = logger,
 }) => {
+  const pruneCompleted = () => {
+    for (const [key, done] of completedJobs) {
+      if (now() - done.completedAt > completedRetentionMs) completedJobs.delete(key);
+    }
+  };
+
   const start = async (payload) => {
     const { callbackId, executionId } = payload ?? {};
     if (!callbackId) return { ok: false, reason: 'missing_callback_id' };
     if (!executionId) return { ok: false, reason: 'missing_execution_id' };
 
     const key = jobKey(payload);
+    pruneCompleted();
+    // A dispatch retry that arrives after its job finished (the first
+    // response was lost) must not clone again or heartbeat a completed
+    // callback: the verdict has already been sent.
+    if (completedJobs.get(key)?.callbackId === callbackId) {
+      return { ok: true, accepted: true, alreadyCompleted: true, callbackId };
+    }
     const inFlight = activeJobs.get(key);
     if (inFlight) {
       if (inFlight.callbackId !== callbackId) {
@@ -97,6 +121,7 @@ export const createInitWsStart = ({
       release(key, jobState);
       log.error('init-ws callback heartbeat could not be established', {
         executionId,
+        callbackId,
         error: initialHeartbeat?.error ?? null,
       });
       return {
@@ -107,7 +132,7 @@ export const createInitWsStart = ({
     }
 
     busy?.enter();
-    log.info('init-ws job accepted', { executionId });
+    log.info('init-ws job accepted', { executionId, callbackId });
 
     // The job payload is init-ws's own argument bag; the callback id is
     // transport, not an init-ws input.
@@ -128,6 +153,7 @@ export const createInitWsStart = ({
             if (!sent?.delivered) {
               log.error('init-ws callback heartbeat failed', {
                 executionId,
+                callbackId,
                 error: sent?.error ?? null,
               });
             }
@@ -152,12 +178,14 @@ export const createInitWsStart = ({
           log.warn('command returned failure', {
             command: 'init-ws-start',
             executionId,
+            callbackId,
             reason: result.reason,
             detail: result.detail,
           });
         } else {
           log.info('init-ws job completed', {
             executionId,
+            callbackId,
             durationMs: Date.now() - jobState.startedAt,
           });
         }
@@ -168,12 +196,14 @@ export const createInitWsStart = ({
           // backstop; log loudly so an operator can complete it manually.
           log.error('init-ws callback could not be delivered', {
             executionId,
+            callbackId,
             error: sent?.error ?? null,
           });
         }
         return result;
       } finally {
         if (jobState.heartbeatTimer) clearTimeout(jobState.heartbeatTimer);
+        completedJobs.set(key, { callbackId, completedAt: now() });
         release(key, jobState);
         busy?.leave();
       }
@@ -181,6 +211,7 @@ export const createInitWsStart = ({
     job.catch((err) =>
       log.error('init-ws job promise rejected unexpectedly', {
         executionId,
+        callbackId,
         error: err?.message ?? String(err),
       }),
     );
