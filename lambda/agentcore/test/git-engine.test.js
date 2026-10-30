@@ -2153,3 +2153,363 @@ describe('rename and copy endpoint provenance', () => {
     );
   });
 });
+
+import { pathToFileURL } from 'node:url';
+import { deepenUntil, isShallowRepository } from '../git-engine.js';
+import { SHALLOW_CLONE_ARGS } from '../workspace.js';
+
+// ── Shallow checkouts (workspace.js clones --depth 1 --no-single-branch) ────
+// Each case below fails on a shallow clone without the on-demand deepen:
+// a merge base below the boundary reads as "unrelated histories", an
+// already-merged lane reads as unmerged, and a stored commit is missing.
+describe('shallow checkouts deepen on demand', () => {
+  // A remote whose main has `depth` commits, with the intent branch at its tip.
+  const deepRemote = async (depth = 30) => {
+    const remote = path.join(root, 'remote.git');
+    const seed = path.join(root, 'seed');
+    await git(['init', '--bare', '-b', 'main', remote], root);
+    await git(['init', '-b', 'main', seed], root);
+    for (let i = 1; i <= depth; i++) {
+      await writeFile(path.join(seed, `f${i}.txt`), `${i}\n`);
+      await git(['add', '-A'], seed);
+      await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', `c${i}`], seed);
+    }
+    await git(['push', remote, 'main', 'main:refs/heads/aidlc/i1'], seed);
+    return { remote, seed };
+  };
+  // The engine's own clone, scrubbed to a clean URL like checkoutRepo.
+  const shallowClone = async (remote, branch = 'aidlc/i1') => {
+    const dir = await mkdtemp(path.join(root, 'shallow-'));
+    const clone = await git([...SHALLOW_CLONE_ARGS, pathToFileURL(remote).href, dir], root);
+    expect(clone.exitCode, clone.stderr).toBe(0);
+    await git(['remote', 'set-url', 'origin', 'https://github.com/o/r.git'], dir);
+    await git(['checkout', '-B', branch, `refs/remotes/origin/${branch}`], dir);
+    expect(await isShallowRepository({ dir })).toBe(true);
+    return dir;
+  };
+  // A branch forked from main~<back> on the remote, with one commit of its own.
+  const forkOnRemote = async (seed, remote, branch, back, file) => {
+    await git(['checkout', '-B', branch, `main~${back}`], seed);
+    await writeFile(path.join(seed, file), `${branch}\n`);
+    await git(['add', '-A'], seed);
+    await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', branch], seed);
+    await git(['push', '--force', remote, `${branch}:refs/heads/${branch}`], seed);
+    await git(['checkout', 'main'], seed);
+  };
+
+  it('isShallowRepository tells a shallow clone from a full one', async () => {
+    const { remote } = await deepRemote(3);
+    const full = path.join(root, 'full');
+    await git(['clone', remote, full], root);
+    expect(await isShallowRepository({ dir: full })).toBe(false);
+    expect(await isShallowRepository({ dir: await shallowClone(remote) })).toBe(true);
+  });
+
+  it('merges a unit branch forked below the shallow boundary instead of refusing unrelated histories', async () => {
+    const { remote, seed } = await deepRemote(30);
+    const work = await shallowClone(remote);
+    await forkOnRemote(seed, remote, 'aidlc/i1--s1-unit-old', 20, 'old.txt');
+
+    const res = await mergeBranchNoFf({
+      dir: work,
+      repo: 'o/r',
+      intentBranch: 'aidlc/i1',
+      unitBranch: 'aidlc/i1--s1-unit-old',
+      message: 'aidlc(merge): old — e1',
+      urls: laneUrls(remote),
+      ...quiet,
+    });
+
+    expect(res.merged).toBe(true);
+    expect(await readFile(path.join(work, 'old.txt'), 'utf8')).toBe('aidlc/i1--s1-unit-old\n');
+    const parents = await git(['log', '-1', '--format=%P'], work);
+    expect(parents.stdout.trim().split(' ')).toHaveLength(2);
+  });
+
+  it('recognises an already-merged lane in a fresh shallow re-clone (no duplicate merge)', async () => {
+    const { remote, seed } = await deepRemote(10);
+    await forkOnRemote(seed, remote, 'aidlc/i1--s1-unit-auth', 0, 'auth.txt');
+    const first = await shallowClone(remote);
+    const args = {
+      repo: 'o/r',
+      intentBranch: 'aidlc/i1',
+      unitBranch: 'aidlc/i1--s1-unit-auth',
+      message: 'aidlc(merge): auth — e1',
+      urls: laneUrls(remote),
+      ...quiet,
+    };
+    expect((await mergeBranchNoFf({ ...args, dir: first })).merged).toBe(true);
+
+    // The intent workspace was wiped and re-cloned at depth 1: the merged
+    // unit tip now sits below the boundary, behind the merge commit.
+    const recloned = await shallowClone(remote);
+    const replay = await mergeBranchNoFf({ ...args, dir: recloned });
+
+    expect(replay.merged).toBe('up_to_date');
+    const merges = await git(
+      ['rev-list', '--merges', '--count', 'refs/remotes/origin/aidlc/i1'],
+      recloned,
+    );
+    expect(merges.stdout.trim()).toBe('1');
+  });
+
+  it('starts a conflict merge into a lane whose shallow clone shares no history with the intent tip', async () => {
+    const { remote, seed } = await deepRemote(30);
+    await forkOnRemote(seed, remote, 'aidlc/i1--s1-unit-u', 20, 'shared.txt');
+    // The intent branch moves on with a conflicting version of the same file.
+    await git(['checkout', '-B', 'aidlc/i1', 'main'], seed);
+    await writeFile(path.join(seed, 'shared.txt'), 'intent version\n');
+    await git(['add', '-A'], seed);
+    await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'intent'], seed);
+    await git(['push', '--force', remote, 'aidlc/i1:refs/heads/aidlc/i1'], seed);
+    const lane = await shallowClone(remote, 'aidlc/i1--s1-unit-u');
+
+    const res = await beginConflictMerge({
+      dir: lane,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-u',
+      intentBranch: 'aidlc/i1',
+      message: 'aidlc(conflict-resolution): u — e1',
+      urls: laneUrls(remote),
+    });
+
+    expect(res).toEqual({ conflicted: true, conflicts: ['shared.txt'] });
+  });
+
+  it('deepens to a stored commit that a shallow re-clone does not hold', async () => {
+    const { remote, seed } = await deepRemote(10);
+    const stored = (await git(['rev-parse', 'main~4'], seed)).stdout.trim();
+    const workspaceDir = await shallowClone(remote);
+    expect((await git(['cat-file', '-e', `${stored}^{commit}`], workspaceDir)).exitCode).not.toBe(
+      0,
+    );
+
+    const result = await gitResultForCommitRefs({
+      commitRefs: [{ repo: 'o/r', sha: stored }],
+      repos: ['o/r'],
+      workspaceDir,
+      projectId: 'p1',
+      executionId: 'e1',
+      urlsFor: () => laneUrls(remote),
+    });
+
+    expect(result.results).toEqual([
+      expect.objectContaining({ repo: 'o/r', sha: stored, files: ['f6.txt'] }),
+    ]);
+  });
+
+  it('deepens past a stored commit at the shallow tip so its parent-less diff does not list the whole tree', async () => {
+    const { remote, seed } = await deepRemote(2);
+    const stored = (await git(['rev-parse', 'main'], seed)).stdout.trim();
+    const workspaceDir = await shallowClone(remote);
+    // Present, but grafted as a root: --root alone would report f1.txt too.
+    expect((await git(['cat-file', '-e', `${stored}^{commit}`], workspaceDir)).exitCode).toBe(0);
+
+    const fetches = [];
+    const result = await gitResultForCommitRefs({
+      commitRefs: [{ repo: 'o/r', sha: stored }],
+      repos: ['o/r'],
+      workspaceDir,
+      projectId: 'p1',
+      executionId: 'e1',
+      urlsFor: () => laneUrls(remote),
+      git: async (args, opts) => {
+        if (args[0] === 'fetch') fetches.push(args[1]);
+        return runGit(args, opts);
+      },
+    });
+
+    expect(fetches.length).toBeGreaterThan(0);
+    expect(result.results).toEqual([
+      expect.objectContaining({ repo: 'o/r', sha: stored, files: ['f2.txt'] }),
+    ]);
+  });
+
+  it('deepens past a stored commit whose parent is present only as another branch tip', async () => {
+    const { remote, seed } = await deepRemote(2);
+    // A first stage commit directly on an unmoved main: its parent is main's
+    // tip, so the parent object is in the clone but beyond the graft.
+    await forkOnRemote(seed, remote, 'aidlc/i1', 0, 's.txt');
+    const stored = (await git(['rev-parse', 'aidlc/i1'], seed)).stdout.trim();
+    const parent = (await git(['rev-parse', 'main'], seed)).stdout.trim();
+    const workspaceDir = await shallowClone(remote);
+    expect((await git(['cat-file', '-e', `${parent}^{commit}`], workspaceDir)).exitCode).toBe(0);
+
+    const fetches = [];
+    const result = await gitResultForCommitRefs({
+      commitRefs: [{ repo: 'o/r', sha: stored }],
+      repos: ['o/r'],
+      workspaceDir,
+      projectId: 'p1',
+      executionId: 'e1',
+      urlsFor: () => laneUrls(remote),
+      git: async (args, opts) => {
+        if (args[0] === 'fetch') fetches.push(args[1]);
+        return runGit(args, opts);
+      },
+    });
+
+    expect(fetches.length).toBeGreaterThan(0);
+    expect(result.results).toEqual([
+      expect.objectContaining({ repo: 'o/r', sha: stored, files: ['s.txt'] }),
+    ]);
+  });
+
+  it('reads a genuine root commit from a shallow clone without deepening', async () => {
+    const { remote, seed } = await deepRemote(3);
+    await git(['checkout', '--orphan', 'aidlc/orphan'], seed);
+    await git(['rm', '-rf', '--quiet', '.'], seed);
+    await writeFile(path.join(seed, 'root.txt'), 'root\n');
+    await git(['add', '-A'], seed);
+    await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'root'], seed);
+    await git(['push', remote, 'aidlc/orphan:refs/heads/aidlc/orphan'], seed);
+    const stored = (await git(['rev-parse', 'aidlc/orphan'], seed)).stdout.trim();
+    const workspaceDir = await shallowClone(remote);
+
+    const fetches = [];
+    const result = await gitResultForCommitRefs({
+      commitRefs: [{ repo: 'o/r', sha: stored }],
+      repos: ['o/r'],
+      workspaceDir,
+      projectId: 'p1',
+      executionId: 'e1',
+      urlsFor: () => laneUrls(remote),
+      git: async (args, opts) => {
+        if (args[0] === 'fetch') fetches.push(args[1]);
+        return runGit(args, opts);
+      },
+    });
+
+    expect(fetches).toEqual([]);
+    expect(await isShallowRepository({ dir: workspaceDir })).toBe(true);
+    expect(result.results).toEqual([
+      expect.objectContaining({ repo: 'o/r', sha: stored, files: ['root.txt'] }),
+    ]);
+  });
+
+  describe('deepenUntil', () => {
+    it('fetches nothing for a full clone', async () => {
+      const { remote } = await deepRemote(3);
+      const full = path.join(root, 'full');
+      await git(['clone', remote, full], root);
+      const calls = [];
+      const res = await deepenUntil({
+        dir: full,
+        repo: 'o/r',
+        urls: laneUrls(remote),
+        satisfied: async () => false,
+        git: async (args, opts) => {
+          calls.push(args.join(' '));
+          return runGit(args, opts);
+        },
+      });
+      expect(res).toEqual({ ok: true, deepened: 0 });
+      expect(calls.some((c) => c.startsWith('fetch'))).toBe(false);
+    });
+
+    it('deepens in growing steps and stops once the condition holds', async () => {
+      const { remote, seed } = await deepRemote(30);
+      const work = await shallowClone(remote);
+      const target = (await git(['rev-parse', 'main~25'], seed)).stdout.trim();
+      const fetches = [];
+      const res = await deepenUntil({
+        dir: work,
+        repo: 'o/r',
+        urls: laneUrls(remote),
+        steps: [5, 50],
+        satisfied: async () =>
+          (await git(['cat-file', '-e', `${target}^{commit}`], work)).exitCode === 0,
+        git: async (args, opts) => {
+          if (args[0] === 'fetch') fetches.push(args[1]);
+          return runGit(args, opts);
+        },
+      });
+      expect(res).toEqual({ ok: true, deepened: 2 });
+      expect(fetches).toEqual(['--deepen=5', '--deepen=50']);
+    });
+
+    it('reports exhaustion after unshallowing when the condition never holds', async () => {
+      const { remote } = await deepRemote(5);
+      const work = await shallowClone(remote);
+      const res = await deepenUntil({
+        dir: work,
+        repo: 'o/r',
+        urls: laneUrls(remote),
+        steps: [1],
+        satisfied: async () => false,
+      });
+      expect(res).toMatchObject({ ok: true, exhausted: true });
+      expect(await isShallowRepository({ dir: work })).toBe(false);
+    });
+
+    it('returns a deepen failure as a value and leaves the remote scrubbed', async () => {
+      const { remote } = await deepRemote(5);
+      const work = await shallowClone(remote);
+      const res = await deepenUntil({
+        dir: work,
+        repo: 'o/r',
+        urls: { auth: path.join(root, 'nonexistent.git'), clean: 'https://github.com/o/r.git' },
+        satisfied: async () => false,
+      });
+      expect(res).toMatchObject({ ok: false, reason: 'deepen_failed' });
+      const { stdout } = await git(['remote', 'get-url', 'origin'], work);
+      expect(stdout.trim()).toBe('https://github.com/o/r.git');
+    });
+
+    it('falls back to --unshallow when the server refuses a relative deepen', async () => {
+      const { remote, seed } = await deepRemote(30);
+      const work = await shallowClone(remote);
+      const target = (await git(['rev-parse', 'main~25'], seed)).stdout.trim();
+      const fetches = [];
+      const res = await deepenUntil({
+        dir: work,
+        repo: 'o/r',
+        urls: laneUrls(remote),
+        satisfied: async () =>
+          (await git(['cat-file', '-e', `${target}^{commit}`], work)).exitCode === 0,
+        // A server without deepen-relative: every --deepen fetch fails.
+        git: async (args, opts) => {
+          if (args[0] === 'fetch') fetches.push(args[1]);
+          if (args[0] === 'fetch' && args[1].startsWith('--deepen=')) {
+            return { exitCode: 128, stdout: '', stderr: 'fatal: Server does not support --deepen' };
+          }
+          return runGit(args, opts);
+        },
+      });
+      expect(res).toEqual({ ok: true, deepened: 1 });
+      expect(fetches).toEqual(['--deepen=50', '--unshallow']);
+      expect(await isShallowRepository({ dir: work })).toBe(false);
+    });
+  });
+
+  it('does not download history when a merge ref does not exist (merge-base exit 128)', async () => {
+    const { remote, seed } = await deepRemote(30);
+    const lane = await shallowClone(remote);
+    await forkOnRemote(seed, remote, 'aidlc/i1--s1-unit-u', 0, 'u.txt');
+    await fetchOrigin({ dir: lane, repo: 'o/r', urls: laneUrls(remote) });
+    await git(
+      ['checkout', '-B', 'aidlc/i1--s1-unit-u', 'refs/remotes/origin/aidlc/i1--s1-unit-u'],
+      lane,
+    );
+    const fetches = [];
+
+    const res = await beginConflictMerge({
+      dir: lane,
+      repo: 'o/r',
+      unitBranch: 'aidlc/i1--s1-unit-u',
+      intentBranch: 'aidlc/ghost',
+      message: 'aidlc(conflict-resolution): u — e1',
+      urls: laneUrls(remote),
+      git: async (args, opts) => {
+        if (args[0] === 'fetch') fetches.push(args.slice(1).join(' '));
+        return runGit(args, opts);
+      },
+    });
+
+    // Only the ordinary fetch ran: no --deepen or --unshallow for a ref that
+    // can never resolve, and the repository stays shallow.
+    expect(fetches).toEqual(['origin --prune']);
+    expect(await isShallowRepository({ dir: lane })).toBe(true);
+    expect(res.conflicted).toBe(false);
+  });
+});

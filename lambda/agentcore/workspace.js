@@ -63,6 +63,8 @@ export const trustGitDirectory = async ({ targetDir, runner: injectedRunner = ru
   return added.code === 0;
 };
 
+export const SHALLOW_CLONE_ARGS = Object.freeze(['clone', '--depth', '1', '--no-single-branch']);
+
 // Clone one repo and check out (creating if needed) the working branch off the
 // base branch. `runner`/`ensureDir`
 // injectable for tests. The origin remote is left TOKEN-FREE in both outcomes.
@@ -205,7 +207,22 @@ export const checkoutRepo = async ({
         repository: repo,
         requiredAccess: 'read',
       },
-      ({ env }) => runner('git', ['clone', cleanUrl, targetDir], { env }),
+      async ({ env }) => {
+        // Shallow: the tip of every branch, no history. Lanes fork and merge
+        // through origin/<branch> refs, so every branch is fetched
+        // (--no-single-branch); the engine deepens on demand where it needs
+        // history (git-engine.js deepenUntil). A large repository's history
+        // can be most of its size (one repository: 1.5 GB of .git, 302 MB shallow).
+        const shallow = await runner('git', [...SHALLOW_CLONE_ARGS, cleanUrl, targetDir], {
+          env,
+        });
+        if (shallow.code === 0) return shallow;
+        // A server without shallow support: retry as a full clone into a
+        // clean directory. A real access failure fails again, quickly.
+        await removeDir(targetDir).catch(() => {});
+        await ensureDir(targetDir);
+        return runner('git', ['clone', cleanUrl, targetDir], { env });
+      },
     );
   } catch (error) {
     clone = { code: null, error: error.code || 'credential_unavailable' };

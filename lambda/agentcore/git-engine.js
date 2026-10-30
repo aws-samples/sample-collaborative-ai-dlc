@@ -815,6 +815,100 @@ export const fetchOrigin = async ({
   }
 };
 
+// ── Shallow-checkout history (workspace.js clones --depth 1) ────────────────
+// A shallow clone carries no history below its boundary, and a plain fetch
+// does not reliably fill it in: a branch forked deep in history arrives with
+// only part of its ancestry. Operations that walk history (merge bases,
+// ancestry checks, diffs of stored commits) therefore deepen ON DEMAND,
+// inside the credential scope, until their condition holds. A full clone
+// (`is-shallow-repository` false) never fetches anything here.
+const DEEPEN_STEPS = Object.freeze([50, 500, 5000]);
+
+export const isShallowRepository = async ({ dir, git = runGit }) => {
+  const res = await git(['rev-parse', '--is-shallow-repository'], { cwd: dir });
+  return res.exitCode === 0 && res.stdout.trim() === 'true';
+};
+
+// Deepen `dir` until `satisfied()` holds: --deepen in growing steps, then
+// --unshallow. Never throws.
+//   { ok: true, deepened }          — condition holds (deepened: fetches run)
+//   { ok: true, deepened, exhausted: true } — full history, condition still
+//                                     false: the caller's own check decides
+//   { ok: false, reason, detail }   — a deepen fetch failed
+export const deepenUntil = async ({
+  dir,
+  repo,
+  projectId,
+  executionId,
+  gitProvider,
+  urls = {},
+  satisfied,
+  git = runGit,
+  withGitCredential = defaultWithGitCredential,
+  steps = DEEPEN_STEPS,
+}) => {
+  if (!(await isShallowRepository({ dir, git })) || (await satisfied())) {
+    return { ok: true, deepened: 0 };
+  }
+  const fetchHistory = async (args) => {
+    try {
+      return await withAuthenticatedRemote(
+        {
+          dir,
+          repo,
+          projectId,
+          executionId,
+          gitProvider,
+          requiredAccess: 'read',
+          urls,
+          git,
+          withGitCredential,
+        },
+        (env) => git(['fetch', ...args, 'origin'], { cwd: dir, env }),
+      );
+    } catch (error) {
+      return { credentialError: error.code || error.message };
+    }
+  };
+  let deepened = 0;
+  for (const n of steps) {
+    const fetch = await fetchHistory([`--deepen=${n}`]);
+    if (fetch.credentialError) {
+      return { ok: false, reason: 'credential_unavailable', detail: fetch.credentialError };
+    }
+    // A server that serves shallow clones but not relative deepening (no
+    // deepen-relative capability) refuses every --deepen: go straight to the
+    // full history rather than failing the operation the old full clone ran.
+    if (fetch.exitCode !== 0) break;
+    deepened += 1;
+    if (await satisfied()) return { ok: true, deepened };
+    if (!(await isShallowRepository({ dir, git }))) return { ok: true, deepened, exhausted: true };
+  }
+  const unshallow = await fetchHistory(['--unshallow']);
+  if (unshallow.credentialError) {
+    return { ok: false, reason: 'credential_unavailable', detail: unshallow.credentialError };
+  }
+  if (unshallow.exitCode !== 0) {
+    return { ok: false, reason: 'deepen_failed', detail: unshallow.stderr.trim().slice(-500) };
+  }
+  deepened += 1;
+  if (await satisfied()) return { ok: true, deepened };
+  return { ok: true, deepened, exhausted: true };
+};
+
+// Deepen until <a> and <b> share a merge base. `git merge-base` exits 1 only
+// when both refs resolve and share no history, which is the one case more
+// history can fix; a ref that doesn't resolve (128) is left to the caller's
+// own missing-branch check rather than downloading the whole history. Two
+// branches with truly no common history stay unrelated, and the caller's
+// merge reports that itself.
+const ensureMergeBase = (args, a, b) =>
+  deepenUntil({
+    ...args,
+    satisfied: async () =>
+      (await (args.git ?? runGit)(['merge-base', a, b], { cwd: args.dir })).exitCode !== 1,
+  });
+
 // Ensure the unit-lane branch exists locally AND remotely, branched from the
 // intent branch's remote HEAD (docs/v2-parallel.md A3: lane start). An existing
 // remote unit branch (lane retry / relaunch / re-init after a wiped mount) is
@@ -859,6 +953,14 @@ export const ensureLaneBranch = async ({
   const localUnit = await git(['rev-parse', '--verify', localUnitRef], { cwd: dir });
   if (remoteUnit.exitCode === 0) {
     if (localUnit.exitCode === 0 && localUnit.stdout.trim() !== remoteUnit.stdout.trim()) {
+      // A shallow boundary between the two would read as "not an ancestor"
+      // and reset the local branch, discarding its unpublished commits.
+      const history = await ensureMergeBase(
+        { dir, repo, projectId, executionId, gitProvider, urls, git, withGitCredential },
+        remoteUnitRef,
+        localUnitRef,
+      );
+      if (!history.ok) return { ready: false, reason: history.reason, detail: history.detail };
       const remoteIsAncestor = await git(
         ['merge-base', '--is-ancestor', remoteUnitRef, localUnitRef],
         { cwd: dir },
@@ -1010,6 +1112,14 @@ export const mergeBranchNoFf = async ({
   if (remoteIntent.exitCode !== 0) {
     return { merged: false, reason: 'intent_branch_missing', detail: intentBranch };
   }
+  // Shallow checkout: the merge and the already-merged check below both need
+  // the branches' shared history locally.
+  const history = await ensureMergeBase(
+    { dir, repo, projectId, executionId, gitProvider, urls, git, withGitCredential },
+    `refs/remotes/origin/${intentBranch}`,
+    `refs/remotes/origin/${unitBranch}`,
+  );
+  if (!history.ok) return { merged: false, reason: history.reason, detail: history.detail };
 
   // Remote is the merge base: reset the local intent branch onto it so a
   // stale local ref (parallel merges landed since this workspace last moved)
@@ -1137,6 +1247,12 @@ export const beginConflictMerge = async ({
   if (checkout.exitCode !== 0) {
     return { conflicted: false, error: 'checkout_failed', detail: checkout.stderr.trim() };
   }
+  const history = await ensureMergeBase(
+    { dir, repo, projectId, executionId, gitProvider, urls, git, withGitCredential },
+    `refs/remotes/origin/${intentBranch}`,
+    'HEAD',
+  );
+  if (!history.ok) return { conflicted: false, error: history.reason, detail: history.detail };
   const ancestor = await git(
     ['merge-base', '--is-ancestor', `refs/remotes/origin/${intentBranch}`, 'HEAD'],
     { cwd: dir },
@@ -1425,7 +1541,15 @@ export const gitResultForCommitRefs = async ({
   commitRefs = [],
   repos = [],
   workspaceDir,
+  // Credential context for deepening a shallow checkout that was re-cloned
+  // after these commits were made. Without it a missing commit still throws.
+  projectId = null,
+  executionId = null,
+  gitProvider = null,
+  repoProviders = null,
+  urlsFor = null,
   git = runGit,
+  withGitCredential = defaultWithGitCredential,
 }) => {
   const repoUrls = repos.map((repo) => (typeof repo === 'string' ? repo : repo.url));
   const allowedRepos = new Set(repoUrls);
@@ -1439,6 +1563,44 @@ export const gitResultForCommitRefs = async ({
       throw new Error(`invalid parked-stage commit reference for ${repo || 'unknown repository'}`);
     }
     const dir = repoTargetDir({ url: repo, workspaceDir, multi });
+    const hasCommit = async (rev) =>
+      (await git(['cat-file', '-e', `${rev}^{commit}`], { cwd: dir })).exitCode === 0;
+    // diff-tree needs the commit AND its parents. A commit at the shallow
+    // boundary reads as a root, so `--root` would list its whole tree, even
+    // when its parent object is present as another branch's tip. Git
+    // traverses the raw object's parents only once the commit is past the
+    // boundary; a genuine root commit has none on either side.
+    const hasDiffContext = async () => {
+      if (!(await hasCommit(sha))) return false;
+      const raw = await git(['cat-file', 'commit', sha], { cwd: dir });
+      if (raw.exitCode !== 0) return false;
+      const header = raw.stdout.split('\n\n')[0];
+      const parents = [...header.matchAll(/^parent ([0-9a-f]+)$/gm)].map((m) => m[1]);
+      for (const parent of parents) {
+        if (!(await hasCommit(parent))) return false;
+      }
+      const traversed = await git(['rev-list', '--parents', '-n', '1', sha], { cwd: dir });
+      if (traversed.exitCode !== 0) return false;
+      return traversed.stdout.trim().split(/\s+/).slice(1).join(' ') === parents.join(' ');
+    };
+    if (executionId && !(await hasDiffContext())) {
+      const sourceRepo = repos.find((r) => (typeof r === 'string' ? r : r.url) === repo);
+      await deepenUntil({
+        dir,
+        repo,
+        projectId,
+        executionId,
+        gitProvider:
+          (typeof sourceRepo === 'object' && sourceRepo?.provider) ||
+          repoProviders?.[repo] ||
+          gitProvider ||
+          'github',
+        urls: urlsFor ? urlsFor(repo) : {},
+        satisfied: hasDiffContext,
+        git,
+        withGitCredential,
+      });
+    }
     const diff = await git(
       ['diff-tree', '--root', '--format=', '--name-only', '-r', '-z', sha, '--'],
       { cwd: dir },
