@@ -1762,6 +1762,4547 @@ const authorize = async (g, projectId, sub, response) => {
   return { role };
 };
 
+// Authenticated unit-review selection. Provider comments are data only:
+// no webhook/comment can launch an agent. GET refreshes selectable
+// comments; POST persists a replay-safe batch that the durable lane claims.
+const handleUnitReviewFeedback = async ({
+  event,
+  body,
+  httpMethod,
+  projectId,
+  intentId,
+  unitSlug,
+  rawSectionIndex,
+  response,
+}) => {
+  const sectionIndex = Number(rawSectionIndex);
+  if (!Number.isInteger(sectionIndex) || sectionIndex < 0) {
+    return response(400, { error: 'sectionIndex must be a non-negative integer' });
+  }
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  if (meta.prStrategy !== 'pr-per-unit') {
+    return response(409, { error: 'This intent does not use PR per unit' });
+  }
+  // A feedback revision rewrites the unit branch under a PR that must stay
+  // unmergeable meanwhile (a draft). Refused durably, before any provider
+  // call, for providers that have no drafts.
+  const draftless = draftlessProviders(
+    (meta.repos ?? []).map((repo) =>
+      sharedRepoProvider(repo, meta.gitProvider, meta.repoProviders),
+    ),
+  );
+  if (draftless.length) {
+    return response(409, {
+      error: `Feedback revisions need draft pull requests, which ${draftless.join(', ')} does not support`,
+      code: 'PR_STRATEGY_UNSUPPORTED',
+    });
+  }
+  const unit = await store.getUnit(intentId, sectionIndex, unitSlug);
+  const activeUnitStates = new Set(['PR_DRAFT', 'RECONCILING', 'PR_READY', 'ADDRESSING_FEEDBACK']);
+  if (!unit || !activeUnitStates.has(unit.state)) {
+    return response(409, { error: 'The unit lane is not in active review' });
+  }
+  const prs = (await store.listUnitPrs(intentId, { sectionIndex, slug: unitSlug })).filter(
+    (pr) => pr.state !== 'UNCHANGED' && pr.number != null,
+  );
+  if (prs.length === 0) {
+    return response(409, { error: 'The unit lane has no review pull requests' });
+  }
+  const fetched = [];
+  for (const pr of prs) {
+    const provider =
+      pr.provider || meta.repoProviders?.[pr.repository] || meta.gitProvider || 'github';
+    let comments;
+    try {
+      comments = await sourceControlOperation({
+        projectId,
+        provider,
+        repo: pr.repository,
+        operation: 'list-review-comments',
+        args: { number: pr.number },
+      });
+    } catch (error) {
+      logger.error('Review comment refresh failed', error);
+      return response(error.code === 'SOURCE_CONTROL_NOT_READY' ? 409 : 502, {
+        error:
+          error.code === 'SOURCE_CONTROL_NOT_READY'
+            ? 'Project source control setup is required'
+            : 'Could not refresh review comments',
+        code: error.code,
+      });
+    }
+    const selectable = comments.filter(isSelectableReviewComment).map((comment) => ({
+      ...comment,
+      id: String(comment.id),
+      repository: pr.repository,
+      prNumber: pr.number,
+    }));
+    fetched.push(...selectable);
+    await store
+      .updateUnitPr({
+        executionId: intentId,
+        sectionIndex,
+        slug: unitSlug,
+        repository: pr.repository,
+        fields: { commentCount: selectable.length },
+      })
+      .catch(() => {});
+  }
+  const comments = fetched.toSorted((a, b) =>
+    String(a.createdAt).localeCompare(String(b.createdAt)),
+  );
+  if (httpMethod === 'GET') {
+    const history = await store.listFeedbackBatches(intentId, {
+      sectionIndex,
+      slug: unitSlug,
+    });
+    const handled = new Set(
+      history.flatMap((batch) => (batch.comments ?? []).map(reviewCommentKey)),
+    );
+    return response(200, {
+      comments: comments.map((comment) => ({
+        ...comment,
+        previouslySelected: handled.has(reviewCommentKey(comment)),
+      })),
+    });
+  }
+  if (httpMethod === 'POST') {
+    const data = body ? JSON.parse(body) : {};
+    const selections = Array.isArray(data.comments) ? data.comments : [];
+    if (selections.length < 1 || selections.length > 20) {
+      return response(400, { error: 'Select between 1 and 20 comments' });
+    }
+    const requested = new Map(
+      selections.map((selection) => [
+        `${selection.repository}\u0000${String(selection.commentId)}`,
+        selection,
+      ]),
+    );
+    if (requested.size !== selections.length) {
+      return response(400, { error: 'Duplicate comment selections are not allowed' });
+    }
+    const selected = comments.filter((comment) =>
+      requested.has(`${comment.repository}\u0000${String(comment.id)}`),
+    );
+    if (selected.length !== requested.size) {
+      return response(400, {
+        error: 'One or more selected comments no longer exist or cannot be addressed',
+      });
+    }
+    const bytes = Buffer.byteLength(JSON.stringify(selected), 'utf8');
+    if (bytes > 32 * 1024) {
+      return response(413, { error: 'Selected feedback exceeds 32 KiB' });
+    }
+    const history = await store.listFeedbackBatches(intentId, {
+      sectionIndex,
+      slug: unitSlug,
+    });
+    const prior = new Set(history.flatMap((batch) => (batch.comments ?? []).map(reviewCommentKey)));
+    const repeated = selected.filter((comment) => prior.has(reviewCommentKey(comment)));
+    if (repeated.length > 0) {
+      return response(409, {
+        error: 'Selected feedback has already been queued or handled',
+        commentIds: repeated.map((comment) => comment.id),
+      });
+    }
+    const responder = getResponder(event);
+    const batchId = feedbackBatchId(selected);
+    const created = await store.createFeedbackBatch({
+      executionId: intentId,
+      sectionIndex,
+      slug: unitSlug,
+      batchId,
+      comments: selected,
+      requestedBy: responder.sub,
+      requestedByName: responder.displayName,
+    });
+    if (created.conflict) {
+      return response(409, {
+        error: 'Selected feedback has already been queued or handled',
+      });
+    }
+    if (created.created) {
+      const summary = `${responder.displayName || 'A project member'} queued ${selected.length} review comment(s) for unit ${unitSlug}`;
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.feedback.queued',
+          unitSlug,
+          sectionIndex,
+          actor: responder.displayName || responder.sub,
+          summary,
+        })
+        .catch(() => {});
+      await broadcastToIntentChannel(intentId, {
+        action: 'agent.feedback',
+        intentId,
+        projectId,
+        unitSlug,
+        sectionIndex,
+        state: 'QUEUED',
+        summary,
+      }).catch(() => {});
+      const wait = await store.getUnit(intentId, sectionIndex, unitSlug).catch(() => null);
+      if (wait?.prWaitCallbackId) {
+        await wakeUnitPrWait(wait, {
+          reason: 'queued_feedback',
+          detail: { batchId, commentCount: selected.length },
+        }).catch((error) => logger.error('Queued feedback PR-wait wake failed', error));
+      }
+    }
+    return response(created.created ? 202 : 200, mapFeedbackBatch(created.item));
+  }
+  return response(405, { error: 'Method not allowed' });
+};
+
+// POST /projects/{projectId}/intents/{intentId}/export — materialize a
+// native AI-DLC workspace snapshot and return a short-lived S3 download.
+// RUNNING executions export their latest completed immutable checkpoint.
+// Parked and terminal executions export current live state with a final
+// consistency recheck so post-stage human edits are preserved.
+const handleExportIntent = async ({ event, body, projectId, intentId, g, response }) => {
+  const liveRecords = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  const liveMeta = liveRecords.meta;
+  if (!liveMeta || liveMeta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  if (NATIVE_EXPORT_BLOCKED_STATUSES.has(liveMeta.status)) {
+    return response(409, {
+      error: 'The intent is not in an exportable state',
+    });
+  }
+  const useLiveSnapshot = isGloballyParkedForExport(liveRecords);
+  const checkpoint = useLiveSnapshot ? null : await store.getWorkflowCheckpoint(intentId);
+  if (!useLiveSnapshot && !checkpoint) {
+    return response(409, {
+      error: 'No completed workflow checkpoint is available yet',
+      code: 'export_checkpoint_unavailable',
+    });
+  }
+  const records = checkpoint ? checkpointProjection(checkpoint) : liveRecords;
+  const meta = records.meta;
+  const data = body ? JSON.parse(body) : {};
+  const harness = data.harness || meta.agentCli || 'kiro';
+  if (!NATIVE_EXPORT_HARNESSES.has(harness)) {
+    return response(400, { error: `Unsupported native AI-DLC harness: ${harness}` });
+  }
+  const refRequiredStages = (records.stages ?? []).filter((stage) =>
+    NATIVE_EXPORT_REF_REQUIRED_STAGE_STATES.has(stage.state),
+  );
+  const executionRefsMatch = meta.aidlcRepoRef
+    ? refRequiredStages.every((stage) => stage.aidlcRepoRef === meta.aidlcRepoRef)
+    : new Set(refRequiredStages.map((stage) => stage.aidlcRepoRef).filter(Boolean)).size <= 1;
+  if (!executionRefsMatch) {
+    return response(409, {
+      error:
+        'This workflow has incomplete or mixed AI-DLC revision attribution and cannot be exported',
+      code: 'export_mixed_aidlc_refs',
+    });
+  }
+  const planResult = await loadNativeExportPlan(meta);
+  if (!planResult.valid || !planResult.plan) {
+    return response(409, {
+      error: 'The workflow snapshot cannot be resolved for native export',
+      errors: planResult.errors ?? [],
+    });
+  }
+  const incompatibleBlocks = await findNativeIncompatibleBlocks(planResult.plan, meta);
+  if (incompatibleBlocks.length > 0) {
+    return response(409, {
+      error: 'The workflow uses edited methodology blocks that cannot yet be exported',
+      incompatibleBlocks,
+    });
+  }
+  const stages = [
+    ...planResult.plan.stages,
+    ...(planResult.plan.skippedStages ?? []).map((stage) => ({ ...stage, excluded: true })),
+  ];
+  try {
+    const artifactRows = checkpoint
+      ? (
+          await readCheckpointArtifactVersions({
+            g,
+            intentId,
+            refs: checkpoint.artifactRefs ?? [],
+          })
+        ).map(mapCheckpointArtifact)
+      : await fetchArtifacts(g, intentId);
+    const customRules = checkpoint
+      ? (checkpoint.customRuleRefs ?? [])
+      : await pinCustomRuleVersions({
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+          rules: meta.customRules ?? [],
+        });
+    const buildProjection = (projectionRecords, projectionArtifacts, projectionRules) => {
+      const projectionMeta = projectionRecords.meta;
+      const projectionStagesByInstance = new Map(
+        (projectionRecords.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+      );
+      return {
+        intent: {
+          intentId,
+          projectId,
+          title: projectionMeta.title,
+          prompt: projectionMeta.prompt,
+          scope: projectionMeta.scope,
+          workflowId: projectionMeta.workflowId,
+          workflowVersion: projectionMeta.workflowVersion,
+          createdAt: projectionMeta.startedAt,
+          branch: projectionMeta.branch,
+          projectType: projectionMeta.projectType,
+          customRules: projectionRules,
+        },
+        stages,
+        stageRows: projectionRecords.stages ?? [],
+        artifacts: projectionArtifacts.map((artifact) => {
+          const producer = projectionStagesByInstance.get(artifact.createdByStageInstanceId);
+          return {
+            ...artifact,
+            stageId: producer?.stageId ?? null,
+            phase: producer?.phase ?? null,
+            repository: artifact.repository ?? producer?.repository ?? null,
+          };
+        }),
+        humanTasks: projectionRecords.humanTasks ?? [],
+        repositories: exportRepositories(projectionMeta),
+        unitPlan: projectionRecords.unitPlan,
+        unitRows: projectionRecords.units ?? [],
+      };
+    };
+    const projection = buildProjection(records, artifactRows, customRules);
+    const initialSnapshotToken = checkpoint ? null : exportSnapshotToken(projection);
+    const legacyRefWarning = meta.aidlcRepoRef
+      ? []
+      : [
+          'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
+        ];
+    const upstreamRef = meta.aidlcRepoRef || (await resolveAidlcRepoRef(AIDLC_REPO_REF()));
+    const exported = await createNativeExport({
+      s3,
+      bucket: ARTIFACTS_BUCKET(),
+      upstreamRef,
+      harness,
+      warnings: legacyRefWarning,
+      projection,
+      sourceCheckpoint: checkpoint
+        ? {
+            checkpointId: checkpoint.checkpointId,
+            createdAt: checkpoint.createdAt,
+            sourceStageInstanceId: checkpoint.sourceStageInstanceId ?? null,
+          }
+        : null,
+      validateSnapshot: checkpoint
+        ? null
+        : async () => {
+            const latestRecords = await store.getExecutionRecords(intentId, {
+              includeOutputs: false,
+            });
+            if (
+              !latestRecords.meta ||
+              latestRecords.meta.projectId !== projectId ||
+              NATIVE_EXPORT_BLOCKED_STATUSES.has(latestRecords.meta.status) ||
+              !isGloballyParkedForExport(latestRecords)
+            ) {
+              return false;
+            }
+            const latestArtifacts = await fetchArtifacts(g, intentId);
+            const latestRules = await pinCustomRuleVersions({
+              s3,
+              bucket: ARTIFACTS_BUCKET(),
+              rules: latestRecords.meta.customRules ?? [],
+            });
+            return (
+              exportSnapshotToken(buildProjection(latestRecords, latestArtifacts, latestRules)) ===
+              initialSnapshotToken
+            );
+          },
+    });
+    const exporter = getResponder(event);
+    await store
+      .appendEvent({
+        executionId: intentId,
+        type: 'v2.execution.exported',
+        actor: exporter.displayName || exporter.sub,
+        summary: `${exporter.displayName || 'Someone'} exported the ${harness} native workspace (export ${exported.exportId})`,
+      })
+      .catch((err) => logger.error('Export event append failed', err));
+    return response(201, exported);
+  } catch (error) {
+    logger.error('Native workflow export failed', error);
+    if (error.code === 'export_snapshot_changed') {
+      return response(409, {
+        error: error.message,
+        code: error.code,
+      });
+    }
+    if (error.code === 'export_checkpoint_unavailable') {
+      return response(409, {
+        error: 'The latest completed checkpoint is incomplete or unavailable',
+        code: error.code,
+      });
+    }
+    // A configured AI-DLC ref that cannot be resolved is a deployment
+    // misconfiguration; name it rather than blaming the workflow snapshot.
+    if (/AI-DLC repository ref/.test(String(error.message ?? ''))) {
+      return response(409, {
+        error: 'The deployment AI-DLC repository ref is misconfigured',
+        detail: error.message,
+      });
+    }
+    // A transient upstream fetch failure is retryable and not the caller's
+    // fault, so surface it as 502 rather than an un-exportable workflow.
+    if (error.code === EXPORT_SOURCE_UNAVAILABLE) {
+      return response(502, {
+        error: 'The AI-DLC distribution source is temporarily unavailable',
+        code: error.code,
+        detail: error.message,
+      });
+    }
+    // A server-side invariant violation (unset bucket/ref) is a deployment
+    // bug the caller cannot fix -- surface it as 500.
+    if (error.code === EXPORT_MISCONFIGURED) {
+      return response(500, {
+        error: 'The native workspace export is misconfigured',
+        code: error.code,
+        detail: error.message,
+      });
+    }
+    // `native-export:`-prefixed errors are deterministic snapshot/distribution
+    // incompatibilities the caller cannot retry away (409). Anything else is an
+    // unexpected runtime failure (S3, bug) and must surface as 500 so it is not
+    // mistaken for an un-exportable workflow.
+    if (String(error.message ?? '').startsWith('native-export:')) {
+      return response(409, {
+        error: 'This workflow snapshot is not compatible with native AI-DLC export',
+        detail: error.message,
+      });
+    }
+    return response(500, {
+      error: 'The native workspace export failed unexpectedly',
+      detail: error.message,
+    });
+  }
+};
+
+// POST /projects/{projectId}/intents/{intentId}/realtime-token
+const handleRealtimeToken = async ({ projectId, intentId, sub, response }) => {
+  // Confirm the intent belongs to this project before minting an intent
+  // scope (the caller is already a verified member of projectId).
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const scopes = [`intent:${intentId}`, `project:${projectId}`];
+  const secret = await getSecret();
+  const { token, exp } = signRealtimeToken({ sub, scopes }, secret);
+  return response(200, { token, exp, scopes });
+};
+
+// ── Post-hoc artifact (document) editing ─────────────────────────────────
+// Documents in Neptune stay editable after the stages that produced /
+// consumed them ran. Every mutation records drift bookkeeping
+// (shared/artifact-edit.js) and broadcasts a payload-blind reload hint on
+// the intent channel (handlers refetch the detail DTO).
+
+// Read-only artifact history. Archived versions are never returned by the
+// normal intent DTO and never receive collaborative document ids.
+const handleArtifactVersions = async ({ projectId, intentId, artifactId, g, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const history = await fetchArtifactHistory(g, intentId, artifactId);
+  if (!history) return response(404, { error: 'Artifact not found' });
+  const current = mapArtifactHead(history.head);
+  return response(200, {
+    artifactId: history.head.id,
+    current: history.head.superseded_at
+      ? null
+      : {
+          versionId: 'current',
+          artifactId: history.head.id,
+          generation: current.generation,
+          artifactType: current.artifactType,
+          title: current.title,
+          stageInstanceId: current.createdByStageInstanceId,
+          stageAttempt: current.stageAttempt,
+          sectionIndex: current.sectionIndex,
+          unitSlug: current.unitSlug,
+          archivedAt: null,
+          restartId: null,
+          restartReason: null,
+          actor: null,
+          createdAt: current.createdAt,
+          editedAt: current.editedAt,
+          editedByName: current.editedByName,
+          contentLength: Buffer.byteLength(String(current.content ?? ''), 'utf8'),
+          contentType: 'text/markdown',
+          contentHash: createHash('sha256')
+            .update(String(current.content ?? ''))
+            .digest('hex'),
+          legacy: false,
+          current: true,
+        },
+    versions: history.versions.map(({ summary }) => ({ ...summary, current: false })),
+  });
+};
+
+const handleArtifactVersion = async ({
+  projectId,
+  intentId,
+  artifactId,
+  versionId,
+  g,
+  response,
+}) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const history = await fetchArtifactHistory(g, intentId, artifactId);
+  const archived = history?.versions.find(({ summary }) => summary.versionId === versionId);
+  if (!archived) return response(404, { error: 'Artifact version not found' });
+  return response(200, {
+    ...archived.summary,
+    current: false,
+    content: archived.row.content ?? null,
+    relationships: safeJsonParse(archived.row.relationships, []),
+    editedBy: archived.row.edited_by ?? null,
+    editOrigin: archived.row.edit_origin ?? null,
+    verifiedBy: archived.row.verified_by ?? null,
+    verifiedByName: archived.row.verified_by_name ?? null,
+    verifiedAt: archived.row.verified_at ?? null,
+  });
+};
+
+// GET .../artifacts/{artifactId}/impact — the pre-edit drift warning data:
+// consuming stages (declared + actual reads), the transitive downstream
+// closure, and whether editing is currently blocked.
+const handleArtifactImpact = async ({ projectId, intentId, artifactId, g, response }) => {
+  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  if (!records.meta || records.meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const artifact = await fetchArtifactRow(g, intentId, artifactId);
+  if (!artifact) return response(404, { error: 'Artifact not found' });
+  // Declared-consumes evidence needs the resolved plan; degrade to graph +
+  // read evidence when it cannot be resolved (never block the warning).
+  let plan = null;
+  try {
+    const planResult = await intentMethodology.loadPlan(records.meta);
+    plan = planResult.valid ? planResult.plan : null;
+  } catch {
+    plan = null;
+  }
+  return response(200, await buildArtifactImpact({ g, intentId, artifact, plan, records }));
+};
+
+// PUT .../artifacts/{artifactId}/content — the human "simple edit". Writes
+// the new content + server-stamped edit provenance, marks the transitive
+// downstream closure stale (drift), re-derives the graph projection for
+// the edited document, and broadcasts a reload hint. Refused while an
+// execution is active or a Quorum edit is in flight (racing the agent's
+// own update_artifact — or a parked conversation resuming over stale
+// in-memory context — is never safe).
+const handleArtifactContentUpdate = async ({
+  event,
+  body,
+  projectId,
+  intentId,
+  artifactId,
+  g,
+  response,
+}) => {
+  const data = body ? JSON.parse(body) : {};
+  if (typeof data.content !== 'string' || !data.content.trim()) {
+    return response(400, { error: 'content is required' });
+  }
+  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  if (!records.meta || records.meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const blockReason = editBlockReason({
+    meta: records.meta,
+    quorumEdits: records.quorumEdits ?? [],
+  });
+  if (blockReason) {
+    return response(409, {
+      error:
+        blockReason === 'execution_active'
+          ? `Intent is ${records.meta.status} — wait for the stage to park or finish before editing artifacts`
+          : 'A Quorum edit is in progress for this intent — wait for it to finish',
+      code: blockReason,
+    });
+  }
+  const artifact = await fetchArtifactRow(g, intentId, artifactId);
+  if (!artifact) return response(404, { error: 'Artifact not found' });
+  if (artifact.supersededAt) {
+    return response(409, { error: 'Artifact is superseded — edit its replacement instead' });
+  }
+  if (
+    data.collaborationEpoch !== undefined &&
+    data.collaborationEpoch !== artifact.collaborationEpoch
+  ) {
+    return response(409, {
+      error: 'Artifact content was replaced — reload before editing',
+      code: 'artifact_replaced',
+    });
+  }
+  if (
+    !Object.hasOwn(data, 'ifEditRevision') ||
+    (data.ifEditRevision !== null && typeof data.ifEditRevision !== 'string') ||
+    !Object.hasOwn(data, 'collaborationEpoch')
+  ) {
+    return response(428, {
+      error: 'Read the edit state before saving',
+      code: 'edit_precondition_required',
+    });
+  }
+  const canonicalArtifactId = artifact.id;
+  const responder = getResponder(event);
+  // Closure BEFORE the write (root is excluded by construction either way).
+  const downstream = await fetchDownstreamClosure({
+    g,
+    intentId,
+    artifactId: canonicalArtifactId,
+  }).catch((err) => {
+    logger.error('Downstream closure failed', err);
+    return [];
+  });
+  let edit;
+  try {
+    edit = await applyArtifactEdit({
+      g,
+      intentId,
+      artifactId: canonicalArtifactId,
+      content: data.content,
+      editedBy: responder.sub,
+      editedByName: responder.displayName,
+      origin: 'human',
+      editRef: `human:${responder.sub}`,
+      ifEditRevision: data.ifEditRevision,
+      ifCollaborationEpoch: data.collaborationEpoch,
+    });
+  } catch (error) {
+    if (error.code === 'edit_conflict')
+      return response(409, { error: error.message, code: 'edit_conflict' });
+    throw error;
+  }
+  const staleMarked = await markArtifactsStale({
+    g,
+    intentId,
+    artifactIds: downstream.map((d) => d.id),
+    reason: `edit:${canonicalArtifactId}:${edit.editedAt}`,
+  }).catch((err) => {
+    logger.error('Stale marking failed', err);
+    return [];
+  });
+  // Mid-run edit (the run is parked WAITING on a gate): the parked CLI
+  // conversation still holds the OLD document content. Record a steering
+  // row so the next deterministic injection point (this gate's resume or
+  // the next fresh stage start — docs/v2-steering.md) tells the agent to
+  // re-read the edited document instead of trusting stale context.
+  let steer = null;
+  if (records.meta.status === 'WAITING') {
+    steer = await store
+      .createSteering({
+        executionId: intentId,
+        kind: 'artifact-edit',
+        message: `The document "${artifact.title || canonicalArtifactId}" (artifact id: ${canonicalArtifactId}) was edited while this run was parked. Re-read it with get_artifact before continuing — its CURRENT content overrides anything you read earlier in this conversation.`,
+        createdBy: responder.sub,
+        createdByName: responder.displayName,
+      })
+      .catch((err) => {
+        logger.error('Artifact-edit steering record failed', err);
+        return null;
+      });
+    if (steer) {
+      await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
+        logger.error('Steering graph mirror failed', err),
+      );
+    }
+  }
+  const summary = `${responder.displayName || 'Someone'} edited "${artifact.title || canonicalArtifactId}"${
+    staleMarked.length
+      ? ` — ${staleMarked.length} downstream artifact(s) marked possibly stale`
+      : ''
+  }`;
+  await store
+    .appendEvent({
+      executionId: intentId,
+      type: 'v2.artifact.edited',
+      actor: responder.displayName || responder.sub,
+      summary,
+    })
+    .catch((err) => logger.error('Edit event append failed', err));
+  await broadcastToIntentChannel(intentId, {
+    action: 'agent.note',
+    intentId,
+    projectId,
+    noteType: 'v2.artifact.edited',
+    summary,
+  });
+  // Re-derive the fine-grained projection for the edited document so
+  // sections/items/citations stay truthful. Best-effort — the canonical
+  // content is already saved; a failed derive is picked up by the next
+  // stage-exit derive or the admin backfill.
+  let derived = false;
+  if (
+    runtimeTargetInput(records.meta, AGENTCORE_RUNTIME_ARN()).agentRuntimeArn &&
+    artifact.artifactType
+  ) {
+    try {
+      const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
+        purpose: 'execution',
+        projectId,
+        executionId: intentId,
+        credentialBinding: records.meta.credentialBinding,
+        agentCli: records.meta.agentCli,
+        runtimeCapabilities: records.meta.environment,
+      });
+      const res = await agentcore.send(
+        new InvokeAgentRuntimeCommand({
+          ...runtimeTargetInput(records.meta, AGENTCORE_RUNTIME_ARN()),
+          runtimeSessionId: runtimeSessionIdFor(intentId),
+          contentType: 'application/json',
+          accept: 'application/json',
+          payload: Buffer.from(
+            JSON.stringify({
+              command: 'derive-artifacts',
+              projectId,
+              intentId,
+              executionId: intentId,
+              artifactTypes: [artifact.artifactType],
+              enrichment: records.meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
+              ...(records.meta.agentCli ? { requestedCli: records.meta.agentCli } : {}),
+              ...(records.meta.cliModels ? { cliModels: records.meta.cliModels } : {}),
+              ...(records.meta.tierModels ? { tierModels: records.meta.tierModels } : {}),
+              ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
+            }),
+          ),
+        }),
+      );
+      const text = res.response ? await res.response.transformToString() : '';
+      derived = text ? JSON.parse(text).ok !== false : false;
+    } catch (err) {
+      logger.error('[artifact-edit] derive dispatch failed', err);
+    }
+  }
+  return response(200, {
+    artifactId: canonicalArtifactId,
+    editedAt: edit.editedAt,
+    staleMarked,
+    derived,
+    // Set when the run was parked: the correction the resumed agent will
+    // receive at the next deterministic injection point.
+    steering: steer ? mapSteering(steer) : null,
+  });
+};
+
+// POST .../artifacts/{artifactId}/verify — clear the drift marker: a human
+// reviewed the artifact against the upstream edit and judged it still
+// valid. Metadata-only, so it is allowed regardless of run state.
+const handleArtifactVerify = async ({
+  event,
+  body,
+  projectId,
+  intentId,
+  artifactId,
+  g,
+  response,
+}) => {
+  const data = body ? JSON.parse(body) : {};
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const artifact = await fetchArtifactRow(g, intentId, artifactId);
+  if (!artifact) return response(404, { error: 'Artifact not found' });
+  const responder = getResponder(event);
+  const result = await verifyArtifact({
+    g,
+    intentId,
+    artifactId: artifact.id,
+    verifiedBy: responder.sub,
+    verifiedByName: responder.displayName,
+    note: typeof data.note === 'string' ? data.note : '',
+  });
+  const summary = `${responder.displayName || 'Someone'} verified "${artifact.title || artifact.id}" against the upstream edit`;
+  await store
+    .appendEvent({
+      executionId: intentId,
+      type: 'v2.artifact.verified',
+      actor: responder.displayName || responder.sub,
+      summary,
+    })
+    .catch((err) => logger.error('Verify event append failed', err));
+  await broadcastToIntentChannel(intentId, {
+    action: 'agent.note',
+    intentId,
+    projectId,
+    noteType: 'v2.artifact.verified',
+    summary,
+  });
+  return response(200, { artifactId: artifact.id, verifiedAt: result.verifiedAt });
+};
+
+// POST .../artifacts/{artifactId}/quorum-edit — start a Quorum-supported
+// edit: the user describes the change; Quorum analyzes the downstream
+// impact, proposes a per-artifact update plan (human-approved), then
+// applies it. Driven by a durable orchestrator flow; this endpoint only
+// records the request and hands off.
+const handleArtifactQuorumEdit = async ({
+  event,
+  body,
+  projectId,
+  intentId,
+  artifactId,
+  g,
+  response,
+}) => {
+  const data = body ? JSON.parse(body) : {};
+  const changeDescription =
+    typeof data.changeDescription === 'string' ? data.changeDescription.trim() : '';
+  if (!changeDescription) {
+    return response(400, { error: 'changeDescription is required' });
+  }
+  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  if (!records.meta || records.meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const blockReason = editBlockReason({
+    meta: records.meta,
+    quorumEdits: records.quorumEdits ?? [],
+  });
+  if (blockReason) {
+    return response(409, {
+      error:
+        blockReason === 'execution_active'
+          ? `Intent is ${records.meta.status} — wait for the stage to park or finish before editing artifacts`
+          : 'A Quorum edit is already in progress for this intent',
+      code: blockReason,
+    });
+  }
+  const artifact = await fetchArtifactRow(g, intentId, artifactId);
+  if (!artifact) return response(404, { error: 'Artifact not found' });
+  if (artifact.supersededAt) {
+    return response(409, { error: 'Artifact is superseded — edit its replacement instead' });
+  }
+  if (!ORCHESTRATOR_FN()) {
+    return response(500, { error: 'V2_ORCHESTRATOR_FUNCTION not configured' });
+  }
+  const responder = getResponder(event);
+  const newEditId = `qe-${randomUUID()}`;
+  const row = await store.createQuorumEdit({
+    executionId: intentId,
+    editId: newEditId,
+    artifactId: artifact.id,
+    artifactType: artifact.artifactType,
+    artifactTitle: artifact.title,
+    changeDescription,
+    requestedBy: responder.sub,
+    requestedByName: responder.displayName,
+  });
+  const summary = `${responder.displayName || 'Someone'} asked Quorum to edit "${artifact.title || artifact.id}"`;
+  await store
+    .appendEvent({
+      executionId: intentId,
+      type: 'v2.quorum_edit.requested',
+      actor: responder.displayName || responder.sub,
+      summary,
+    })
+    .catch((err) => logger.error('Quorum edit event append failed', err));
+  await broadcastToIntentChannel(intentId, {
+    action: 'agent.note',
+    intentId,
+    projectId,
+    noteType: 'v2.quorum_edit.updated',
+    summary,
+  });
+  try {
+    await invokeOrchestrator({
+      action: 'quorum-edit',
+      intentId,
+      executionId: intentId,
+      editId: newEditId,
+    });
+  } catch (err) {
+    // The hand-off never reached a live orchestrator — fail the session so
+    // it doesn't strand in PLANNING (which would block future edits).
+    await store
+      .updateQuorumEdit({
+        executionId: intentId,
+        editId: newEditId,
+        state: 'FAILED',
+        fields: { failureReason: 'orchestrator_dispatch_failed', completedAt: true },
+      })
+      .catch(() => {});
+    throw err;
+  }
+  return response(202, mapQuorumEdit(row));
+};
+
+// POST .../quorum-edits/{editId}/decision — approve or reject Quorum's
+// update plan. Approve optionally narrows the plan to a subset of
+// artifacts. CAS on AWAITING_APPROVAL (a double decision loses), then the
+// suspended durable callback is completed — the same resume-by-callback
+// pattern as gate answers.
+const handleQuorumEditDecision = async ({ event, body, projectId, intentId, editId, response }) => {
+  const data = body ? JSON.parse(body) : {};
+  const decision =
+    data.decision === 'approve' ? 'approve' : data.decision === 'reject' ? 'reject' : null;
+  if (!decision) {
+    return response(400, { error: 'decision must be "approve" or "reject"' });
+  }
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const edit = await store.getQuorumEdit(intentId, editId);
+  if (!edit) return response(404, { error: 'Quorum edit not found' });
+  if (edit.state !== 'AWAITING_APPROVAL' || !edit.callbackId) {
+    return response(409, { error: `Quorum edit is ${edit.state}, not awaiting approval` });
+  }
+  const responder = getResponder(event);
+  // Only plan items can be approved — a fabricated id is dropped, never
+  // forwarded to the apply step.
+  const planIds = (edit.plan?.items ?? []).map((i) => i.artifactId);
+  const planIdSet = new Set(planIds);
+  const approvedArtifactIds =
+    decision === 'approve'
+      ? Array.isArray(data.approvedArtifactIds)
+        ? data.approvedArtifactIds.filter((id) => planIdSet.has(id))
+        : planIds
+      : [];
+  const updated = await store.updateQuorumEdit({
+    executionId: intentId,
+    editId,
+    state: decision === 'approve' ? 'APPLYING' : 'REJECTED',
+    fromStates: ['AWAITING_APPROVAL'],
+    fields: {
+      decidedBy: responder.sub,
+      decidedByName: responder.displayName,
+      decidedAt: true,
+      approvedArtifactIds,
+      ...(decision === 'reject' ? { completedAt: true } : {}),
+    },
+  });
+  if (!updated) {
+    return response(409, { error: 'Quorum edit was already decided' });
+  }
+  // Wake the suspended orchestrator with the decision.
+  await resumeDurableCallback(edit.callbackId, {
+    decision,
+    approvedArtifactIds,
+    decidedBy: responder.sub,
+    decidedByName: responder.displayName,
+  });
+  const summary = `${responder.displayName || 'Someone'} ${decision === 'approve' ? `approved Quorum's update plan (${approvedArtifactIds.length} artifact(s))` : "rejected Quorum's update plan"}`;
+  await store
+    .appendEvent({
+      executionId: intentId,
+      type: 'v2.quorum_edit.decided',
+      actor: responder.displayName || responder.sub,
+      summary,
+    })
+    .catch((err) => logger.error('Quorum decision event append failed', err));
+  await broadcastToIntentChannel(intentId, {
+    action: 'agent.note',
+    intentId,
+    projectId,
+    noteType: 'v2.quorum_edit.updated',
+    summary,
+  });
+  return response(200, mapQuorumEdit(updated));
+};
+
+// POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer
+const handleGateAnswer = async ({ event, body, projectId, intentId, humanTaskId, g, response }) => {
+  const data = body ? JSON.parse(body) : {};
+  const gate = await store.getHumanTask(intentId, humanTaskId);
+  if (!gate) return response(404, { error: 'Gate not found' });
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const answerStatus = data.status ?? 'answered';
+  if (!isHumanTaskAnswerStatus(answerStatus)) {
+    return response(400, {
+      error: 'status must be answered, approved, or rejected',
+      code: 'invalid_gate_status',
+    });
+  }
+  // A validation gate that withheld an option (a blocking finding withholds
+  // `approve`) must not record that option: the engine would re-run the
+  // stage while the gate row and its badge said "approved".
+  const offered =
+    gate.kind === 'validation' && Array.isArray(gate.options) && gate.options.length > 0
+      ? gate.options
+      : null;
+  if (offered) {
+    const choice = parseChoice(data.answer, GATE_CHOICES);
+    const chosen = choice ?? (answerStatus === 'approved' ? 'approve' : null);
+    if (chosen && !offered.includes(chosen)) {
+      return response(400, {
+        error: `This gate offers ${offered.join(', ')}; "${chosen}" is not one of them`,
+        code: 'gate_choice_not_offered',
+      });
+    }
+    // Orchestrator code that predates the loop-back reads a rejected answer
+    // as request-changes; any other status would be misread on a rollback.
+    if (chosen === LOOP_BACK_OPTION && answerStatus !== 'rejected') {
+      return response(400, {
+        error: 'A loop-back answer must be recorded with status "rejected"',
+        code: 'loop_back_status_invalid',
+      });
+    }
+    // The engine applies a grant on the parsed decision alone, so a row whose
+    // status says it was not approved must not carry one.
+    if (chosen === GRANT_AUTONOMY_OPTION && answerStatus !== 'approved') {
+      return response(400, {
+        error: 'A grant-autonomy answer must be recorded with status "approved"',
+        code: 'grant_autonomy_status_invalid',
+      });
+    }
+  }
+  // A loop-back is recordable ONLY on the gate the ENGINE offered it on, and
+  // `loopBackTarget` is the only proof of that offer: `awaitEngineGate` writes it
+  // when, and only when, the walk resolved a target. The branch above covers
+  // validation gates with a stored option list; this covers every other gate,
+  // because `loop-back` in a `question` gate's `freeText` is read as the choice
+  // by the same parser the orchestrator and the stage runner use, and would
+  // otherwise re-enter a stage as a fresh run on nothing but typed text.
+  if (parseChoice(data.answer, [LOOP_BACK_OPTION]) === LOOP_BACK_OPTION && !gate.loopBackTarget) {
+    return response(400, {
+      error: 'This gate did not offer a loop-back',
+      code: 'loop_back_not_offered',
+    });
+  }
+  // The same parser the orchestrator reads the answer with, so an answer the
+  // engine treats as an override is held to the override's requirements here.
+  const overrideChosen =
+    parseChoice(data.answer, ['override-and-approve']) === 'override-and-approve' ||
+    (Array.isArray(data.answer?.perQuestion) &&
+      data.answer.perQuestion.some(
+        (entry) =>
+          typeof entry?.answer === 'string' &&
+          entry.answer.trim().toLowerCase() === 'override-and-approve',
+      ));
+  if (overrideChosen) {
+    const reason = typeof data.answer?.reason === 'string' ? data.answer.reason.trim() : '';
+    if (!reason) {
+      return response(400, {
+        error: 'A non-blank reason is required to override blocking findings',
+        code: 'override_reason_required',
+      });
+    }
+    if (reason.length > OVERRIDE_REASON_MAX) {
+      return response(400, {
+        error: `Override reason must be at most ${OVERRIDE_REASON_MAX} characters`,
+        code: 'override_reason_too_long',
+      });
+    }
+    data.answer = { ...data.answer, reason };
+  }
+  // A live Quorum edit is mutating this intent's artifacts; answering the
+  // gate would resume the parked stage RIGHT INTO those writes. The run is
+  // already parked — waiting for the edit to finish costs nothing (mirror
+  // of the /start guard).
+  const answerBlockingEdit = activeQuorumEdit(
+    await store.listQuorumEdits(intentId).catch(() => []),
+  );
+  if (answerBlockingEdit) {
+    return response(409, {
+      error:
+        'A Quorum artifact edit is in progress — wait for it to finish (or reject its plan) before answering, so the resumed stage sees the final documents',
+      code: 'quorum_edit_active',
+    });
+  }
+  // Answer THIS specific gate (CAS on pending). D3: a stage can leave more
+  // than one pending gate; answer the one addressed by the URL, never blindly
+  // META.pendingHumanTaskId.
+  const responder = getResponder(event);
+  const steeringMessage = typeof data.steering === 'string' ? data.steering.trim() : '';
+  const answerInput = {
+    executionId: intentId,
+    humanTaskId,
+    status: answerStatus,
+    answer: data.answer ?? null,
+    answeredBy: responder.sub,
+    answeredByName: responder.displayName,
+    ifOrchestratorRunId: gate.orchestratorRunId ?? null,
+    ifStageCallbackId: gate.stageCallbackId ?? null,
+    stageInstanceId: gate.stageInstanceId ?? null,
+  };
+  let answerResult;
+  try {
+    answerResult = steeringMessage
+      ? await store.answerHumanTaskWithSteering({
+          ...answerInput,
+          steering: {
+            kind: 'gate-steer',
+            message: steeringMessage,
+            targetGateId: humanTaskId,
+            createdBy: responder.sub,
+            createdByName: responder.displayName,
+          },
+        })
+      : await store.answerHumanTask(answerInput);
+  } catch (error) {
+    // The answer transaction also checks META, which running workers write
+    // constantly. A conflict that outlasts the store's retries committed
+    // nothing, so the same answer can simply be sent again.
+    if (!isTransactionConflict(error)) throw error;
+    return response(409, {
+      error: 'The intent was busy saving other changes. Send the answer again.',
+      code: 'gate_answer_conflict',
+      retryable: true,
+    });
+  }
+  const answered = steeringMessage ? answerResult?.answered : answerResult;
+  if (!answered) {
+    return response(409, { error: 'Gate already answered or not pending' });
+  }
+  // Optional course correction riding on the answer (docs/v2-steering.md):
+  // its STEER row and HUMAN decision were committed atomically above, so an
+  // early orchestrator recovery cannot observe one without the other.
+  const steer = steeringMessage ? answerResult.steering : null;
+  if (steeringMessage) {
+    await store
+      .appendEvent({
+        executionId: intentId,
+        type: 'v2.steering.recorded',
+        stageInstanceId: gate.stageInstanceId ?? null,
+        actor: responder.displayName || responder.sub,
+        summary: `${responder.displayName || 'Someone'} added a course correction with their answer`,
+      })
+      .catch((err) => logger.error('Steering event append failed', err));
+    await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
+      logger.error('Steering graph mirror failed', err),
+    );
+  }
+  await syncAnsweredQuestionVertex({
+    g,
+    intentId,
+    gate,
+    answer: answered.answer,
+    responder,
+    answeredAt: answered.answeredAt,
+  }).catch((err) => logger.error('Question graph sync failed', err));
+  await linkQuestionToStageArtifacts(g, intentId, gate).catch((err) =>
+    logger.error('Question artifact link sync failed', err),
+  );
+  // Resume the suspended orchestrator ONLY if this gate is the one the
+  // durable run actually parked on (it carries the callbackId). Answering an
+  // older sibling gate just records the durable Q&A — the run is parked on a
+  // different callback. SendDurableExecutionCallbackSuccess resumes the
+  // EXISTING execution; a fresh Invoke would start a new one.
+  // Binding can finish after the initial GET. ALL_NEW from the answer CAS
+  // is the authoritative callback owner at the instant the answer commits.
+  if (answered.callbackId) {
+    try {
+      await resumeDurableCallback(answered.callbackId, answered.answer);
+      await (
+        store.markGateCallbackConsumed?.({
+          executionId: intentId,
+          humanTaskId,
+          callbackId: answered.callbackId,
+        }) ?? Promise.resolve()
+      ).catch((markErr) => logger.error('Gate callback consumption marker write failed', markErr));
+    } catch (err) {
+      if (isCallbackTimeoutError(err)) {
+        await repairExpiredDurableExecution({
+          executionId: intentId,
+          projectId,
+          meta,
+          actor: responder.displayName || responder.sub,
+          summary: `${responder.displayName || 'Someone'} answered after the durable execution expired; the run was marked failed and can be restarted`,
+        }).catch((repairErr) => logger.error('Durable callback expiry repair failed', repairErr));
+        return response(409, {
+          error: 'Durable execution expired before this answer could resume the run',
+          code: 'durable_execution_expired',
+        });
+      }
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.gate.resume_failed',
+          stageInstanceId: gate.stageInstanceId ?? null,
+          actor: responder.displayName || responder.sub,
+          summary: `Gate answer was recorded, but the durable callback could not be completed: ${err?.message ?? 'unknown error'}`,
+        })
+        .catch((eventErr) => logger.error('Gate resume failure event append failed', eventErr));
+      // The answer is already durable; this makes the NEED TO RESUME durable
+      // too. Without it the run sits WAITING with no pending gate and no
+      // action able to wake it — the one known indefinite-wait path.
+      await store
+        .updateExecution({
+          executionId: intentId,
+          resumeRequired: {
+            humanTaskId,
+            callbackId: answered.callbackId,
+            answeredAt: answered.answeredAt ?? null,
+          },
+        })
+        .catch((metaErr) => logger.error('Gate resume marker write failed', metaErr));
+      return response(503, {
+        error:
+          'Gate answer was recorded, but the durable callback could not be completed. Use Resume run to retry.',
+        code: 'durable_callback_resume_failed',
+        retryable: true,
+      });
+    }
+  }
+  return response(200, {
+    ...mapHumanTask(answered),
+    steering: steer ? mapSteering(steer) : null,
+  });
+};
+
+// POST /projects/{projectId}/intents/{intentId}/resume
+// Re-attempt the durable callback for an answer that was recorded but whose
+// resume failed (META.resumeRequired, set by the answer path above). This is
+// the one-click recovery for the only known indefinite-WAITING path: the
+// answer is already durable, so resuming never needs new human input.
+//
+// IDEMPOTENT: nothing to resume is a 200, not an error, so a double click or
+// a retried request is harmless. An expired callback runs the same repair the
+// answer path runs, which lands the intent in FAILED — recoverable by the
+// existing rewind API — instead of leaving it parked forever.
+const handleResumeIntent = async ({ event, projectId, intentId, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  // Every gate is judged with the rule the intent detail uses for the banner
+  // (resumeOwed), so the button and this route always agree: concurrent
+  // lanes can each owe a resume, and the marker only records the latest one
+  // (or none, when its own write failed).
+  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  const stagesByInstance = new Map(
+    (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+  );
+  const owed = (records.humanTasks ?? [])
+    .filter((gate) =>
+      resumeOwed({
+        meta,
+        gate,
+        stageRow: stagesByInstance.get(gate.stageInstanceId) ?? null,
+      }),
+    )
+    .toSorted((a, b) => String(a.answeredAt ?? '').localeCompare(String(b.answeredAt ?? '')));
+  const marker = meta.resumeRequired ?? null;
+  const responder = getResponder(event);
+  const markConsumed = (gate) =>
+    (
+      store.markGateCallbackConsumed?.({
+        executionId: intentId,
+        humanTaskId: gate.humanTaskId,
+        callbackId: gate.callbackId,
+      }) ?? Promise.resolve()
+    ).catch((markErr) => logger.error('Gate callback consumption marker write failed', markErr));
+  let resumed = 0;
+  let retryable = null;
+  for (const gate of owed) {
+    try {
+      await resumeDurableCallback(gate.callbackId, gate.answer ?? null);
+    } catch (err) {
+      if (isCallbackTimeoutError(err)) {
+        const failed = await repairExpiredDurableExecution({
+          executionId: intentId,
+          projectId,
+          meta,
+          actor: responder.displayName || responder.sub,
+          summary: `${responder.displayName || 'Someone'} retried the resume after the durable execution expired; the run was marked failed and can be rewound`,
+        }).catch((repairErr) => {
+          logger.error('Durable callback expiry repair failed', repairErr);
+          return null;
+        });
+        // The marker is cleared either way: the resume can never succeed now,
+        // and leaving it set would offer the human a button that cannot work.
+        await store
+          .updateExecution({ executionId: intentId, resumeRequired: null })
+          .catch((metaErr) => logger.error('Resume marker clear failed', metaErr));
+        return response(409, {
+          error: 'Durable execution expired before this answer could resume the run',
+          code: 'durable_execution_expired',
+          intent: mapIntent(failed ?? { ...meta, status: 'FAILED' }),
+        });
+      }
+      // The callback is gone or already completed: the first send was
+      // delivered even though it reported an error. Nothing is owed.
+      if (isMissingDurableCallbackError(err)) {
+        await markConsumed(gate);
+        continue;
+      }
+      logger.error('Gate resume retry failed', err);
+      retryable ??= gate;
+      continue;
+    }
+    await markConsumed(gate);
+    resumed += 1;
+    await store
+      .appendEvent({
+        executionId: intentId,
+        type: 'v2.gate.resumed',
+        stageInstanceId: gate.stageInstanceId ?? null,
+        actor: responder.displayName || responder.sub,
+        summary: `${responder.displayName || 'Someone'} resumed the run after a failed gate callback`,
+      })
+      .catch((eventErr) => logger.error('Gate resumed event append failed', eventErr));
+  }
+  // The marker is cleared once nothing it could stand for is still owed;
+  // the conditional write keeps a marker a concurrent answer just set.
+  const current =
+    marker && !retryable
+      ? await store
+          .updateExecution({
+            executionId: intentId,
+            resumeRequired: null,
+            ifResumeRequiredFor: marker.humanTaskId,
+          })
+          .catch((metaErr) => {
+            if (metaErr?.name !== 'ConditionalCheckFailedException') {
+              logger.error('Resume marker clear failed', metaErr);
+            }
+            return meta;
+          })
+      : meta;
+  if (retryable) {
+    return response(503, {
+      error: 'The durable callback could not be completed. Try again in a moment.',
+      code: 'durable_callback_resume_failed',
+      retryable: true,
+    });
+  }
+  return response(200, { intent: mapIntent(current ?? meta), resumed: resumed > 0 });
+};
+
+// POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/revise
+// Correct an already-given answer (docs/v2-steering.md). The original answer
+// is immutable — the correction is a STEER row delivered at the next
+// deterministic injection point (gate resume or fresh stage start).
+const handleGateRevise = async ({ event, body, projectId, intentId, humanTaskId, g, response }) => {
+  const data = body ? JSON.parse(body) : {};
+  const message = typeof data.message === 'string' ? data.message.trim() : '';
+  if (!message) return response(400, { error: 'message is required' });
+  const gate = await store.getHumanTask(intentId, humanTaskId);
+  if (!gate) return response(404, { error: 'Gate not found' });
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  if (gate.status === 'pending') {
+    return response(409, { error: 'Gate is still pending — answer it instead of revising' });
+  }
+  if (['SUCCEEDED', 'CANCELLED'].includes(meta.status)) {
+    return response(409, { error: `Intent is ${meta.status}; nothing left to steer` });
+  }
+  const responder = getResponder(event);
+  const steer = await store.createSteering({
+    executionId: intentId,
+    kind: 'revision',
+    message,
+    targetGateId: humanTaskId,
+    createdBy: responder.sub,
+    createdByName: responder.displayName,
+  });
+  await store.markGateRevised({ executionId: intentId, humanTaskId, steerId: steer.steerId });
+  await store
+    .appendEvent({
+      executionId: intentId,
+      type: 'v2.gate.revised',
+      stageInstanceId: gate.stageInstanceId ?? null,
+      actor: responder.displayName || responder.sub,
+      summary: `${responder.displayName || 'Someone'} revised their answer to "${questionText(gate.questions)}"`,
+    })
+    .catch((err) => logger.error('Revise event append failed', err));
+  await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
+    logger.error('Steering graph mirror failed', err),
+  );
+  // Tell the caller when the correction will reach the agent: a WAITING run
+  // delivers on the pending gate's resume; otherwise at the next stage start.
+  const delivery = meta.status === 'WAITING' ? 'next-resume' : 'next-stage-start';
+  return response(201, { ...mapSteering(steer), delivery });
+};
+
+// POST /projects/{projectId}/intents/{intentId}/start
+// Optional body { skipStageIds } (DRAFT only): replace the intent's skip
+// overlay at the moment of launch — the DRAFT screen is where the user
+// reviews the run before starting, so it is the natural last chance to
+// (de)select CONDITIONAL stages. Same validation as create: only accepted
+// when the run's snapshotted stageSkipping is 'enabled', and the plan must
+// resolve with the overlay applied. FAILED/CREATED restarts never touch
+// the overlay (the prior run's plan holds).
+const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  // Startable states: a fresh DRAFT, a FAILED run the user wants to retry, or
+  // a CREATED run whose hand-off never reached a live orchestrator (stranded —
+  // see the rollback below). init-ws is idempotent in the runtime, so a restart
+  // re-runs cleanly. RUNNING/WAITING/SUCCEEDED are rejected (already live/done).
+  const STARTABLE = new Set(['DRAFT', 'FAILED', 'CREATED']);
+  if (!STARTABLE.has(meta.status)) {
+    return response(409, { error: `Intent is ${meta.status}, cannot start` });
+  }
+  if (meta.status === 'DRAFT' && activePendingAttachments(meta).length > 0) {
+    return response(409, {
+      error: 'Attachment uploads are still being processed — retry when they appear in the list',
+    });
+  }
+  // A live Quorum artifact edit is mutating this intent's artifacts —
+  // starting a run underneath it would race the apply step.
+  const liveQuorumEdit = activeQuorumEdit(await store.listQuorumEdits(intentId).catch(() => []));
+  if (liveQuorumEdit) {
+    return response(409, {
+      error: 'A Quorum artifact edit is in progress — wait for it to finish before starting',
+      code: 'quorum_edit_active',
+    });
+  }
+  if (!meta.prompt) {
+    return response(400, { error: 'Intent has no prompt; define it before starting' });
+  }
+  // Skip-overlay / composed-grid override at launch (DRAFT only — a restart
+  // re-enters the prior run's pinned plan). `skipStageIds: []` explicitly
+  // clears skips picked at create; `composedGrid: null` reverts to the
+  // named-scope projection; an absent field leaves the create-time
+  // snapshot. Both overrides are validated TOGETHER against the pinned
+  // plan below — a grid and an overlay that are individually fine can
+  // still starve each other's stages.
+  const startData = body ? JSON.parse(body) : {};
+  let selectedAgentCli = meta.agentCli ?? null;
+  let selectedCredentialBinding = meta.credentialBinding ?? null;
+  if (meta.status === 'DRAFT') {
+    selectedAgentCli = typeof startData.agentCli === 'string' ? startData.agentCli.trim() : '';
+    if (!selectedAgentCli) {
+      return response(400, {
+        error: 'Select an agent CLI before starting the intent',
+        code: 'agent_cli_required',
+      });
+    }
+    const resolved = await resolveSelectedAgentCredential(
+      {
+        projectId,
+        userId: sub,
+        agentCli: selectedAgentCli,
+        runtimeCapabilities: meta.environment,
+      },
+      { ssm },
+    );
+    if (resolved.error) {
+      return response(resolved.error.statusCode, resolved.error.body);
+    }
+    selectedCredentialBinding = resolved.credentialBinding;
+  }
+  let skipOverride; // undefined = untouched
+  let gridOverride; // undefined = untouched
+  if (startData.composedGrid !== undefined) {
+    if (meta.status !== 'DRAFT') {
+      return response(409, {
+        error: 'composedGrid can only be changed before the first start (DRAFT)',
+      });
+    }
+    const { value, error: gridError } = normalizeComposedGrid(startData.composedGrid);
+    if (gridError) {
+      return response(400, { error: gridError });
+    }
+    gridOverride = value; // null clears, object replaces
+  }
+  if (startData.skipStageIds !== undefined) {
+    if (meta.status !== 'DRAFT') {
+      return response(409, {
+        error: 'skipStageIds can only be changed before the first start (DRAFT)',
+      });
+    }
+    if (!Array.isArray(startData.skipStageIds)) {
+      return response(400, { error: 'skipStageIds must be an array of stage ids' });
+    }
+    const normalized = normalizeSkipStageIds(startData.skipStageIds);
+    if (normalized && meta.stageSkipping !== 'enabled') {
+      return response(400, {
+        error: 'Stage skipping is disabled for this intent — skipStageIds is not accepted',
+      });
+    }
+    skipOverride = normalized; // null clears, array replaces
+  }
+  if (skipOverride !== undefined || gridOverride !== undefined) {
+    const effectiveGrid = gridOverride !== undefined ? gridOverride : meta.composedGrid;
+    // The grid absorbs redundant overlay skips (composed-grid.js) — the
+    // pruned overlay is what launches, so the pinned combination always
+    // resolves for the orchestrator and the container alike.
+    const effectiveSkips = pruneSkipsForGrid(
+      skipOverride !== undefined ? skipOverride : meta.skipStageIds,
+      effectiveGrid,
+    );
+    if (effectiveGrid) skipOverride = effectiveSkips;
+    const planCheck = await intentMethodology.loadPlan(meta, {
+      skipStageIds: effectiveSkips ?? null,
+      composedGrid: effectiveGrid ?? null,
+    });
+    if (!planCheck.valid) {
+      return response(400, {
+        error:
+          gridOverride !== undefined
+            ? `The composed stage grid is not runnable for workflow "${meta.workflowId}"`
+            : `The requested stage skips are not runnable for workflow "${meta.workflowId}"`,
+        errors: planCheck.errors ?? [],
+      });
+    }
+  }
+  const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
+  if (sourceControlBlocked) return sourceControlBlocked;
+  const mcpLaunch = await prepareMcpLaunch(g, meta);
+  if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
+  // Flip <current> → CREATED (CAS on the observed status) so a double-start
+  // can't launch two runs, then hand off to the orchestrator (init-ws + run the
+  // plan). If the hand-off throws, roll back to the prior status — otherwise the
+  // intent strands in CREATED (the orchestrator never ran) and never retries.
+  const priorStatus = meta.status;
+  const starter = getResponder(event);
+  const durableExecutionName = durableExecutionNameForIntent(intentId);
+  let updated;
+  try {
+    updated = await store.updateExecution({
+      executionId: intentId,
+      projectId,
+      status: 'CREATED',
+      fromStatus: priorStatus,
+      ifAttachmentRevision: Number(meta.attachmentRevision ?? 0),
+      startedAt: meta.startedAt,
+      durableExecutionName,
+      durableExecutionArn: null,
+      orchestratorStartedAt: null,
+      orchestratorExpiresAt: null,
+      // Clear any stale failure from a prior attempt as we re-enter the pipeline.
+      failureReason: null,
+      failure: null,
+      startedBy: starter.sub,
+      starterName: starter.displayName,
+      starterEmail: starter.email,
+      ...mcpLaunch.update,
+      ...(priorStatus === 'DRAFT'
+        ? {
+            agentCli: selectedAgentCli,
+            credentialBinding: selectedCredentialBinding,
+          }
+        : {}),
+      // Launch-time skip override (validated above; undefined = untouched).
+      ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
+      ...(gridOverride !== undefined ? { composedGrid: gridOverride } : {}),
+    });
+  } catch (error) {
+    if (error?.name === 'ConditionalCheckFailedException') {
+      return response(409, { error: 'Intent changed while starting — refresh and retry' });
+    }
+    throw error;
+  }
+  try {
+    const invoked = await invokeOrchestrator(
+      { action: 'start', intentId, executionId: intentId },
+      { durableExecutionName },
+    );
+    if (invoked?.durableExecutionArn) {
+      await store
+        .updateExecution({
+          executionId: intentId,
+          durableExecutionArn: invoked.durableExecutionArn,
+        })
+        .catch((err) => logger.error('Durable execution ARN stamp failed', err));
+    }
+  } catch (err) {
+    await store.updateExecution({
+      executionId: intentId,
+      projectId,
+      status: priorStatus,
+      fromStatus: 'CREATED',
+      startedAt: meta.startedAt,
+      ...(priorStatus === 'DRAFT'
+        ? {
+            agentCli: meta.agentCli ?? null,
+            credentialBinding: meta.credentialBinding ?? null,
+          }
+        : {}),
+    });
+    throw err;
+  }
+  return response(202, mapIntent(updated));
+};
+
+// POST /projects/{projectId}/intents/{intentId}/cancel
+// Retire a run that is parked (WAITING), stranded (CREATED) or FAILED. A
+// RUNNING stage cannot be cancelled mid-turn (steering is deterministic —
+// docs/v2-steering.md); wait for it to park or finish. Supersedes every
+// pending gate, wakes the suspended orchestrator with a cancel sentinel
+// (it sees the superseded gate and exits without touching META), then
+// flips META → CANCELLED.
+const handleCancelIntent = async ({ event, projectId, intentId, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const CANCELLABLE = new Set(['WAITING', 'CREATED', 'FAILED']);
+  if (!CANCELLABLE.has(meta.status)) {
+    return response(409, { error: `Intent is ${meta.status}, cannot cancel` });
+  }
+  const responder = getResponder(event);
+  await retireParkedRun(intentId, `cancelled by ${responder.displayName || responder.sub}`);
+  // The run is over — free the warm microVM now instead of waiting for the
+  // idle reap (the persistent mount survives for a later rewind relaunch).
+  await stopRuntimeSessions(intentId, meta);
+  // Cancelling withdraws a construction autonomy grant, so a later rewind
+  // relaunches the intent gated. The grant's provenance keeps who gave it and
+  // gains who withdrew it. An intent without a grant writes nothing extra.
+  const revokesAutonomy = meta.constructionGateAutonomy === 'autonomous';
+  const updated = await store.updateExecution({
+    executionId: intentId,
+    projectId,
+    status: 'CANCELLED',
+    fromStatus: meta.status,
+    startedAt: meta.startedAt,
+    pendingHumanTaskId: null,
+    // A recorded answer whose callback failed is moot once the run ends.
+    resumeRequired: null,
+    completedAt: new Date().toISOString(),
+    ...(revokesAutonomy
+      ? {
+          constructionGateAutonomy: null,
+          constructionGateAutonomyGrant: {
+            ...meta.constructionGateAutonomyGrant,
+            revokedAt: new Date().toISOString(),
+            revokedBy: responder.sub,
+            revokedByName: responder.displayName || null,
+            revokedSource: 'cancel',
+          },
+        }
+      : {}),
+  });
+  await store
+    .appendEvent({
+      executionId: intentId,
+      type: 'v2.execution.cancelled',
+      actor: responder.displayName || responder.sub,
+      summary: `Run cancelled by ${responder.displayName || 'a project member'}`,
+    })
+    .catch((err) => logger.error('Cancel event append failed', err));
+  return response(200, mapIntent(updated));
+};
+
+// ── Composer (Adaptive Workflows) ────────────────────────────────────────
+// "LLM proposes, engine disposes": a compose request only ever produces a
+// COMPOSE row carrying a proposal + the plan resolver's authoritative
+// verdict. Applying a proposal is a SEPARATE human action (the DRAFT PATCH
+// above / the recompose path), which validates again.
+
+// POST .../compose-report-upload — presigned PUT for an external analysis
+// report (report-mode compose input). DRAFT only; the key is namespaced
+// under this intent so a report can never be smuggled across intents.
+const handleComposeReportUpload = async ({ projectId, intentId, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  if (meta.status !== 'DRAFT') {
+    return response(409, { error: `Intent is ${meta.status}, compose applies to DRAFT only` });
+  }
+  if (!ARTIFACTS_BUCKET()) {
+    return response(503, { error: 'Report uploads are not configured' });
+  }
+  const key = `${composeReportPrefix(intentId)}${randomUUID()}.json`;
+  const uploadUrl = await getSignedUrl(
+    s3,
+    new PutObjectCommand({
+      Bucket: ARTIFACTS_BUCKET(),
+      Key: key,
+      ContentType: 'application/json',
+    }),
+    { expiresIn: 300 },
+  );
+  return response(200, { uploadUrl, key, expiresIn: 300 });
+};
+
+const handleAttachmentUpload = async ({ body, projectId, intentId, sub, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) return response(404, { error: 'Intent not found' });
+  if (meta.status !== 'DRAFT')
+    return response(409, { error: 'Attachments can only be changed while DRAFT' });
+  if (!ARTIFACTS_BUCKET()) return response(503, { error: 'Attachment uploads are not configured' });
+  const data = body ? JSON.parse(body) : {};
+  const descriptors = Array.isArray(data.attachments) ? data.attachments : [];
+  const current = Array.isArray(meta.attachments) ? meta.attachments : [];
+  const pending = activePendingAttachments(meta);
+  if (!descriptors.length) return response(400, { error: 'Provide at least one attachment' });
+  if (current.length + pending.length + descriptors.length > MAX_ATTACHMENTS) {
+    return response(400, { error: `Maximum ${MAX_ATTACHMENTS} attachments per intent` });
+  }
+  const validated = descriptors.map(validateAttachmentDescriptor);
+  const invalid = validated.find((entry) => entry.error);
+  if (invalid) return response(400, { error: invalid.error });
+  const incomingBytes = validated.reduce((sum, entry) => sum + entry.value.size, 0);
+  const existingBytes = [...current, ...pending].reduce(
+    (sum, attachment) => sum + Number(attachment.size ?? 0),
+    0,
+  );
+  if (existingBytes + incomingBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
+    return response(400, { error: 'Attachments cannot exceed 25 MB in total' });
+  }
+  const expiresAt = new Date(Date.now() + ATTACHMENT_UPLOAD_TTL_SECONDS * 1000).toISOString();
+  const allocated = validated.map(({ value }) => {
+    const attachmentId = randomUUID();
+    return {
+      attachmentId,
+      filename: value.filename,
+      mimeType: value.mimeType,
+      size: value.size,
+      s3Key: attachmentStagingKey(intentId, attachmentId, value.extension),
+      expiresAt,
+      uploadedBy: sub,
+    };
+  });
+  try {
+    await store.updateExecution({
+      executionId: intentId,
+      fromStatus: 'DRAFT',
+      ifAttachmentRevision: Number(meta.attachmentRevision ?? 0),
+      attachments: current,
+      pendingAttachmentUploads: [...pending, ...allocated],
+    });
+  } catch (error) {
+    if (error?.name === 'ConditionalCheckFailedException') {
+      return response(409, {
+        error: 'Attachments changed by another collaborator — refresh and retry',
+      });
+    }
+    throw error;
+  }
+  const uploads = await Promise.all(
+    allocated.map(async (attachment) => {
+      const post = await createPresignedPost(s3, {
+        Bucket: ARTIFACTS_BUCKET(),
+        Key: attachment.s3Key,
+        Expires: ATTACHMENT_UPLOAD_TTL_SECONDS,
+        Fields: { 'Content-Type': attachment.mimeType },
+        Conditions: [
+          ['eq', '$Content-Type', attachment.mimeType],
+          ['content-length-range', attachment.size, attachment.size],
+        ],
+      });
+      return { ...attachment, ...post, expiresIn: ATTACHMENT_UPLOAD_TTL_SECONDS };
+    }),
+  );
+  return response(200, { uploads });
+};
+
+const handleListAttachments = async ({ projectId, intentId, response }) => {
+  let meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) return response(404, { error: 'Intent not found' });
+  meta = await attachmentCleanup.retryPendingDeletions(meta);
+  return response(200, {
+    attachments: mapIntent(meta).attachments,
+    attachmentRevision: Number(meta.attachmentRevision ?? 0),
+  });
+};
+
+const handleDeleteAttachment = async ({ event, path, projectId, intentId, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) return response(404, { error: 'Intent not found' });
+  if (meta.status !== 'DRAFT')
+    return response(409, { error: 'Attachments can only be changed while DRAFT' });
+  const attachmentId = path.split('/').at(-1);
+  const attachmentRevision = Number(event.queryStringParameters?.attachmentRevision);
+  if (!Number.isInteger(attachmentRevision) || attachmentRevision < 0) {
+    return response(400, { error: 'attachmentRevision must be a non-negative integer' });
+  }
+  const current = Array.isArray(meta.attachments) ? meta.attachments : [];
+  const pending = activePendingAttachments(meta);
+  const pendingDeletions = pendingAttachmentDeletions(meta);
+  const attachment = current.find((entry) => entry.attachmentId === attachmentId);
+  if (!attachment) {
+    const retry = pendingDeletions.find((entry) => entry.attachmentId === attachmentId);
+    if (!retry) return response(404, { error: 'Attachment not found' });
+    const cleaned = await attachmentCleanup.retryPendingDeletions(meta);
+    return response(200, {
+      attachments: mapIntent(cleaned).attachments,
+      attachmentRevision: cleaned.attachmentRevision,
+    });
+  }
+  let updated;
+  try {
+    updated = await store.updateExecution({
+      executionId: intentId,
+      fromStatus: 'DRAFT',
+      ifAttachmentRevision: attachmentRevision,
+      attachments: current.filter((entry) => entry.attachmentId !== attachmentId),
+      pendingAttachmentUploads: pending,
+      pendingAttachmentDeletions: [...pendingDeletions, attachment],
+    });
+  } catch (error) {
+    if (error?.name === 'ConditionalCheckFailedException') {
+      return response(409, {
+        error: 'Attachments changed by another collaborator — refresh and retry',
+      });
+    }
+    throw error;
+  }
+  updated = await attachmentCleanup.retryPendingDeletions(updated);
+  await broadcastToIntentChannel(intentId, {
+    action: 'intent.attachments',
+    intentId,
+    projectId,
+  }).catch(() => {});
+  return response(200, {
+    attachments: mapIntent(updated).attachments,
+    attachmentRevision: updated.attachmentRevision,
+  });
+};
+
+// POST .../compose — start a composer session for this intent.
+// Body: { instructions?, reportKey?, repoSignals?, mode? }. Modes:
+//   front  (default) — DRAFT only, composed from the draft text;
+//   report           — DRAFT only, derived when a reportKey rides along;
+//   inflight         — a parked (WAITING) or FAILED run: propose
+//                      EXECUTE/SKIP flips for pending stages, with the
+//                      run's frozen progress enforced by the compose job.
+//                      The proposal applies via POST .../recompose.
+// Deterministic-first: when the Admin bypass is enabled and exactly one
+// stock scope's keywords match the draft text, a front compose completes
+// WITHOUT any LLM call.
+const handleComposeIntent = async ({ event, body, projectId, intentId, sub, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const data = body ? JSON.parse(body) : {};
+  const reportKey = typeof data.reportKey === 'string' && data.reportKey ? data.reportKey : null;
+  const mode = data.mode === 'inflight' ? 'inflight' : reportKey ? 'report' : 'front';
+  let requestedCli = meta.agentCli ?? null;
+  let credentialBinding = meta.credentialBinding ?? null;
+  if (mode === 'inflight') {
+    if (!['WAITING', 'FAILED'].includes(meta.status)) {
+      return response(409, {
+        error: `Intent is ${meta.status} — in-flight compose needs a parked or failed run`,
+      });
+    }
+    if (meta.constructionAutonomyMode === 'autonomous') {
+      return response(409, {
+        error:
+          'Construction is running autonomously — recompose is disabled until the swarm finishes or autonomy drops back to gated',
+        code: 'autonomous_construction',
+      });
+    }
+    if (!requestedCli) {
+      return response(409, {
+        error: 'This intent has no pinned agent CLI',
+        code: 'agent_cli_required',
+      });
+    }
+  } else if (meta.status !== 'DRAFT') {
+    return response(409, { error: `Intent is ${meta.status}, compose applies to DRAFT only` });
+  } else {
+    requestedCli = typeof data.agentCli === 'string' ? data.agentCli.trim() : '';
+    if (!requestedCli) {
+      return response(400, {
+        error: 'Select an agent CLI before composing with AI',
+        code: 'agent_cli_required',
+      });
+    }
+    const resolved = await resolveSelectedAgentCredential(
+      {
+        projectId,
+        userId: sub,
+        agentCli: requestedCli,
+        runtimeCapabilities: meta.environment,
+      },
+      { ssm },
+    );
+    if (resolved.error) {
+      return response(resolved.error.statusCode, resolved.error.body);
+    }
+    credentialBinding = resolved.credentialBinding;
+  }
+  if (!meta.prompt && !meta.title) {
+    return response(400, { error: 'Give the intent a prompt (or title) before composing' });
+  }
+  const instructions =
+    typeof data.instructions === 'string' && data.instructions.trim()
+      ? data.instructions.trim().slice(0, 4000)
+      : null;
+  if (reportKey && !reportKey.startsWith(composeReportPrefix(intentId))) {
+    return response(400, { error: 'reportKey does not belong to this intent' });
+  }
+  // Advisory workspace signals, gathered client-side through the existing
+  // authenticated git-provider routes (branch lists, trees). Bounded and
+  // shape-checked only — runtime workspace-detection stays authoritative.
+  const repoSignals =
+    data.repoSignals && typeof data.repoSignals === 'object' && !Array.isArray(data.repoSignals)
+      ? JSON.parse(JSON.stringify(data.repoSignals).slice(0, 8192))
+      : null;
+  const responder = getResponder(event);
+  const composeId = randomUUID();
+  const intentText = [meta.title, meta.prompt].filter(Boolean).join('\n\n');
+
+  // Deterministic pre-pass: a CLEAN single-scope keyword match (front mode,
+  // no steering instructions) resolves without the LLM — unless the Admin
+  // switch forces every compose through the composer agent.
+  if (mode === 'front' && !instructions && (await fetchComposeLlmBypass()) === 'enabled') {
+    const scopeBlocks = meta.methodologyRelease
+      ? await loadReleaseClosure({
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+          methodologyRelease: meta.methodologyRelease,
+          ddb,
+          tableName: BLOCKS_TABLE(),
+        })
+          .then((closure) =>
+            resolveMethodologyLibrary({
+              closure,
+              ddb,
+              tableName: BLOCKS_TABLE(),
+              workflowId: meta.workflowId,
+              workflowVersion: meta.workflowVersion,
+              methodologyPins: meta.methodologyPins,
+            }),
+          )
+          .then((resolved) => resolved.blocksByType.SCOPE ?? [])
+          .catch(() => [])
+      : await listMergedBlocks(ddb, BLOCKS_TABLE(), 'SCOPE').catch(() => []);
+    const match = matchScopeByKeywords({ text: intentText, scopes: scopeBlocks });
+    if (match) {
+      const planCheck = await intentMethodology.loadPlan(meta, {
+        scope: match.scopeId,
+        skipStageIds: null,
+        composedGrid: null,
+      });
+      if (planCheck.valid) {
+        const row = await store.createCompose({
+          executionId: intentId,
+          composeId,
+          mode,
+          state: 'PENDING',
+          source: 'match',
+          requestedBy: responder.sub,
+          requestedByName: responder.displayName,
+          instructions,
+        });
+        const completed = await store.updateCompose({
+          executionId: intentId,
+          composeId,
+          state: 'COMPLETED',
+          fromStates: ['PENDING'],
+          fields: {
+            proposal: {
+              mode: 'matched',
+              scope: match.scopeId,
+              grid: null,
+              rationale: [`keyword match: ${match.matched.join(', ')}`],
+              confidence: 1,
+            },
+            validation: {
+              valid: true,
+              errors: [],
+              warnings: planCheck.warnings ?? [],
+              summary: planCheck.plan?.summary ?? null,
+            },
+          },
+        });
+        await store
+          .appendEvent({
+            executionId: intentId,
+            type: 'v2.compose.completed',
+            actor: 'composer',
+            summary: `Deterministic keyword match proposed scope "${match.scopeId}"`,
+          })
+          .catch(() => {});
+        await broadcastToIntentChannel(intentId, {
+          action: 'compose.updated',
+          intentId,
+          projectId,
+          compose: mapCompose(completed ?? row),
+        });
+        return response(201, mapCompose(completed ?? row));
+      }
+      // A matched-but-unrunnable scope falls through to the composer.
+    }
+  }
+
+  const composeRuntimeTarget = runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN());
+  if (!composeRuntimeTarget.agentRuntimeArn) {
+    return response(503, { error: 'Composer runtime is not configured' });
+  }
+  // Report excerpt: read + bound the uploaded report server-side so the
+  // container payload stays small and the container needs no S3 grant.
+  let reportExcerpt = null;
+  if (reportKey) {
+    try {
+      const obj = await s3.send(
+        new GetObjectCommand({ Bucket: ARTIFACTS_BUCKET(), Key: reportKey }),
+      );
+      const text = await obj.Body.transformToString();
+      reportExcerpt = text.slice(0, 24 * 1024);
+    } catch {
+      return response(400, { error: 'Report not found — upload it first' });
+    }
+  }
+  // In-flight context: the run's frozen progress, computed from its own
+  // stage rows. `frozenGrid` pins what already happened (the compose job
+  // rejects any proposal flipping it); `progressContext` grounds the
+  // composer in the live state instead of letting it guess.
+  let frozenGrid = null;
+  let progressContext = null;
+  if (mode === 'inflight') {
+    const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+    const byStage = new Map();
+    for (const stageRow of records.stages ?? []) {
+      if (!stageRow.stageId) continue;
+      if (!byStage.has(stageRow.stageId)) byStage.set(stageRow.stageId, new Set());
+      byStage.get(stageRow.stageId).add(stageRow.state);
+    }
+    frozenGrid = {};
+    const lines = [];
+    for (const [stageId, states] of byStage) {
+      const ran = ['SUCCEEDED', 'RUNNING', 'WAITING_FOR_HUMAN', 'FAILED'].some((s) =>
+        states.has(s),
+      );
+      frozenGrid[stageId] = ran ? 'EXECUTE' : 'SKIP';
+      lines.push(`- ${stageId}: ${[...states].join('/')}`);
+    }
+    progressContext = lines.length ? lines.join('\n') : '(no stage has run yet)';
+  }
+  const row = await store.createCompose({
+    executionId: intentId,
+    composeId,
+    mode,
+    state: 'PENDING',
+    source: 'llm',
+    requestedBy: responder.sub,
+    requestedByName: responder.displayName,
+    instructions,
+    reportKey,
+  });
+  try {
+    const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
+      purpose: 'compose',
+      projectId,
+      executionId: intentId,
+      credentialBinding,
+      agentCli: requestedCli,
+      runtimeCapabilities: meta.environment,
+    });
+    const res = await agentcore.send(
+      new InvokeAgentRuntimeCommand({
+        ...composeRuntimeTarget,
+        // A FRESH throwaway session per compose, never the intent's own
+        // session. Compose is stateless (no workspace/conversation to
+        // preserve), and dispatching it to `aidlc-intent-<id>` had two
+        // failure modes: an EXISTING intent microVM kept serving the
+        // image it was booted with (zombie-session field incident — a
+        // redeploy never reached composes for drafts that had composed
+        // once), and it spawned the intent's long-lived session early,
+        // pinning the future RUN to compose-time code.
+        runtimeSessionId: composeSessionIdFor(composeId),
+        contentType: 'application/json',
+        accept: 'application/json',
+        payload: Buffer.from(
+          JSON.stringify({
+            command: 'compose-plan-start',
+            projectId,
+            intentId,
+            executionId: intentId,
+            composeId,
+            mode,
+            workflowId: meta.workflowId,
+            workflowVersion: meta.workflowVersion,
+            prompt: intentText,
+            requestedCli,
+            ...(credentialBinding ? { credentialBinding } : {}),
+            ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
+            ...(instructions ? { instructions } : {}),
+            ...(repoSignals ? { repoSignals } : {}),
+            ...(reportExcerpt ? { reportExcerpt } : {}),
+            ...(frozenGrid && Object.keys(frozenGrid).length ? { frozenGrid } : {}),
+            ...(progressContext ? { progressContext } : {}),
+            ...(meta.methodologyRelease ? { methodologyRelease: meta.methodologyRelease } : {}),
+            // The settings this intent already runs with, and the scope
+            // whose own values they override. The composer is grounded in
+            // the EFFECTIVE values rather than the subset a member changed,
+            // which is what lets the annex forbid it reading them off disk.
+            ...(meta.aidlcSettings ? { aidlcSettings: meta.aidlcSettings } : {}),
+            ...(composePolicyScope(meta) ? { policyScope: composePolicyScope(meta) } : {}),
+            ...(meta.methodologyRelease && meta.methodologyPins
+              ? { methodologyPins: meta.methodologyPins }
+              : {}),
+          }),
+        ),
+      }),
+    );
+    const text = res.response ? await res.response.transformToString() : '';
+    const accepted = text ? JSON.parse(text) : {};
+    if (accepted.ok === false) {
+      throw new Error(accepted.reason ?? 'compose dispatch refused');
+    }
+  } catch (err) {
+    // The accept failed — terminalize the row so the UI never spins on a
+    // compose no container is running.
+    await store
+      .updateCompose({
+        executionId: intentId,
+        composeId,
+        state: 'FAILED',
+        fromStates: ['PENDING'],
+        fields: { failureReason: `dispatch failed: ${err.message}` },
+      })
+      .catch(() => {});
+    return response(503, { error: `Compose dispatch failed: ${err.message}` });
+  }
+  return response(202, mapCompose(row));
+};
+
+// GET .../composes — the intent's composer sessions (the compose page
+// seeds from this, then follows compose.updated broadcasts).
+const handleListComposes = async ({ projectId, intentId, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const rows = await store.listComposes(intentId);
+  return response(200, { composes: rows.map(mapCompose) });
+};
+
+// PATCH /projects/{projectId}/intents/{intentId} — DRAFT-only header edit.
+// The collaborative draft page auto-saves the shared prompt/title and the
+// scope / composed-grid / skip selections here (the Yjs doc is transport;
+// this row is durability — Yjs docs evaporate ~60s after the last client).
+// Everything is re-validated exactly like create; a non-DRAFT intent is
+// immutable through this route (its plan is pinned by the running/finished
+// execution).
+const handleUpdateIntent = async ({ event, body, projectId, intentId, response }) => {
+  let meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const data = body ? JSON.parse(body) : {};
+  // The settings path normalises against this row and diffs the timeline
+  // against it, so on that path the row has to be the exact pre-image this
+  // write replaces — it is re-read CONSISTENTLY rather than letting a
+  // replication lag become a refusal. A body that MENTIONS the field pays
+  // for that read whatever it carries: whether `aidlcSettings: null` clears
+  // a recorded override or asks for nothing (see `settingsRequested` below)
+  // is decided by the row, so a lagging read must not be what decides it.
+  // Only this path pays: a save that neither mentions settings nor finds any
+  // recorded keeps the single eventually consistent read it has always made,
+  // which is the save every unpinned, 2.3.3, 2.8.2 and 2.9.0 draft makes.
+  if (data.aidlcSettings !== undefined || meta.aidlcSettings) {
+    meta = (await store.getExecution(intentId, { consistentRead: true })) ?? meta;
+  }
+  // A body that carries `aidlcSettings: null` for an intent that has none
+  // asks for nothing: it is not a settings change, and treating it as one
+  // is what would put every draft that has no settings — every unpinned,
+  // 2.3.3, 2.8.2 and 2.9.0 draft — on the settings path, with its extra
+  // plan resolution, its revision pre-check and an `aidlcSettings`
+  // attribute on a META row that never had one.
+  const settingsRequested =
+    data.aidlcSettings !== undefined && !(data.aidlcSettings === null && !meta.aidlcSettings);
+  if (meta.status !== 'DRAFT') {
+    // A settings change after the run started is refused by name: the
+    // dialect annex tells the agent a human changes settings on the intent,
+    // and this is the endpoint saying a human cannot either, once it is
+    // running. Its own code, because "the draft is closed" and "this
+    // setting is now part of a running plan" are different refusals.
+    if (settingsRequested) {
+      return response(409, {
+        error: `Intent is ${meta.status}; its AI-DLC settings were locked when the run started`,
+        code: 'settings_locked',
+      });
+    }
+    return response(409, {
+      error: `Intent is ${meta.status}, only DRAFT intents are editable`,
+    });
+  }
+  const patch = {};
+  let authoredSettings = null;
+  let settingsDropped = [];
+  let settingsScope = null;
+  let settingsChanged = false;
+  if (data.title !== undefined) {
+    if (data.title !== null && typeof data.title !== 'string') {
+      return response(400, { error: 'title must be a string or null' });
+    }
+    patch.title = data.title === null ? null : data.title.trim() || null;
+  }
+  if (data.prompt !== undefined) {
+    if (data.prompt !== null && typeof data.prompt !== 'string') {
+      return response(400, { error: 'prompt must be a string or null' });
+    }
+    patch.prompt = data.prompt === null ? null : data.prompt.trim() || null;
+  }
+  if (data.composedGrid !== undefined) {
+    const { value, error: gridError } = normalizeComposedGrid(data.composedGrid);
+    if (gridError) return response(400, { error: gridError });
+    patch.composedGrid = value; // null clears
+  }
+  // The stock scope a composed grid runs on. Verified against the pinned
+  // workflow's own scope vocabulary below, together with the grid itself.
+  if (data.policyScope !== undefined) {
+    if (data.policyScope !== null && (typeof data.policyScope !== 'string' || !data.policyScope)) {
+      return response(400, { error: 'policyScope must be a non-empty scope name or null' });
+    }
+    patch.policyScope = data.policyScope || null; // null clears
+  }
+  if (data.skipStageIds !== undefined) {
+    if (data.skipStageIds !== null && !Array.isArray(data.skipStageIds)) {
+      return response(400, { error: 'skipStageIds must be an array of stage ids or null' });
+    }
+    const normalized = normalizeSkipStageIds(data.skipStageIds ?? []);
+    if (normalized && meta.stageSkipping !== 'enabled') {
+      return response(400, {
+        error: 'Stage skipping is disabled for this intent — skipStageIds is not accepted',
+      });
+    }
+    patch.skipStageIds = normalized; // null clears
+  }
+  if (data.scope !== undefined) {
+    if (typeof data.scope !== 'string' || !data.scope) {
+      return response(400, { error: 'scope must be a non-empty string' });
+    }
+    patch.scope = data.scope;
+  }
+  // Per-intent AI-DLC settings travel with the selection they belong to, in
+  // this one body, under this one CAS — which is what makes them
+  // unorderable against it. A caller that sends settings WITHOUT the
+  // selection is refused by name rather than having them validated against
+  // a snapshot that may describe a different selection: that is the whole
+  // mechanism by which a stale read could silently authorise a setting the
+  // current scope does not offer. The collaborative page always sends the
+  // full selection, so this is invisible in normal use.
+  if (settingsRequested && data.scope === undefined && data.composedGrid === undefined) {
+    return response(400, {
+      error:
+        'Send the scope or the composed grid in the same request as aidlcSettings — settings are validated against the selection they belong to',
+      code: 'selection_required_with_settings',
+    });
+  }
+  if (Object.keys(patch).length === 0) {
+    return response(400, { error: 'Nothing to update' });
+  }
+  // Plan re-validation when the projection inputs change. The effective
+  // combination (patched value where supplied, current META otherwise) must
+  // resolve — mirrors create so a broken draft can never reach Start.
+  if (
+    patch.scope !== undefined ||
+    patch.composedGrid !== undefined ||
+    patch.policyScope !== undefined ||
+    patch.skipStageIds !== undefined ||
+    settingsRequested
+  ) {
+    const effScope = patch.scope ?? meta.scope;
+    const effGrid =
+      patch.composedGrid !== undefined ? patch.composedGrid : (meta.composedGrid ?? null);
+    // The grid absorbs redundant overlay skips (composed-grid.js): a
+    // shared-draft flow can legitimately pair "deselect X" with a grid
+    // that later flips X to SKIP — persist the pruned overlay so the
+    // pinned combination always resolves.
+    const effSkips = pruneSkipsForGrid(
+      patch.skipStageIds !== undefined ? patch.skipStageIds : (meta.skipStageIds ?? null),
+      effGrid,
+    );
+    if (effGrid && (patch.skipStageIds !== undefined || patch.composedGrid !== undefined)) {
+      patch.skipStageIds = effSkips;
+    }
+    if (!effGrid) {
+      const scopes = await intentMethodology.loadScopes(meta);
+      if (!scopes.includes(effScope)) {
+        return response(400, {
+          error: `Unknown scope "${effScope}" for workflow "${meta.workflowId}"`,
+          scopes,
+        });
+      }
+    }
+    // A base scope belongs to a GRID, so clearing the grid clears it in the
+    // SAME write. A row that kept the previous base would apply it to no
+    // grid: every later save and Start would be refused, and no client
+    // could repair it, because the field only travels with a grid. An
+    // explicitly sent base scope without a grid is still a 400, because
+    // that is a caller describing a selection that names its scope
+    // directly.
+    let effPolicyScope =
+      patch.policyScope !== undefined ? patch.policyScope : (meta.policyScope ?? null);
+    if (!effGrid && effPolicyScope) {
+      if (patch.policyScope) {
+        return response(400, {
+          error: 'policyScope applies to a composed stage grid; send the scope itself instead',
+        });
+      }
+      effPolicyScope = null;
+      patch.policyScope = null;
+    }
+    // Which settings EXIST is decided by the selection, so the authored map
+    // is resolved from the selection in THIS body — never from a stored
+    // snapshot that may describe a different one — and the settings are
+    // normalised against it before anything is stored or re-validated.
+    //
+    // A selection change that carries NO settings normalises the recorded
+    // ones too, in the same write: the run honours whatever META holds, so
+    // a scope that does not author a recorded override must not leave it
+    // there to be honoured. The withdrawal is recorded by the same write.
+    const selectionChanged =
+      patch.scope !== undefined ||
+      patch.composedGrid !== undefined ||
+      patch.policyScope !== undefined;
+    settingsChanged = settingsRequested || (selectionChanged && Boolean(meta.aidlcSettings));
+    if (settingsChanged) {
+      const authoredCheck = await intentMethodology.loadPlan(meta, {
+        scope: effScope,
+        skipStageIds: effSkips ?? null,
+        composedGrid: effGrid ?? null,
+        policyScope: effPolicyScope,
+        intentSettings: null,
+      });
+      if (!authoredCheck.valid) {
+        return response(400, {
+          error: `The requested draft changes are not runnable for workflow "${meta.workflowId}"`,
+          errors: authoredCheck.errors ?? [],
+        });
+      }
+      authoredSettings = authoredCheck.plan?.aidlcSettingsAuthored ?? {};
+      const normalized = normalizeAidlcSettings({
+        settings: settingsRequested ? data.aidlcSettings : meta.aidlcSettings,
+        authored: authoredSettings,
+      });
+      if (normalized.error) return response(400, normalized.error);
+      patch.aidlcSettings = normalized.value;
+      settingsDropped = normalized.dropped ?? [];
+    }
+    const planCheck = await intentMethodology.loadPlan(meta, {
+      scope: effScope,
+      skipStageIds: effSkips ?? null,
+      composedGrid: effGrid ?? null,
+      policyScope: effPolicyScope,
+      ...(patch.aidlcSettings !== undefined ? { intentSettings: patch.aidlcSettings } : {}),
+    });
+    if (!planCheck.valid) {
+      return response(400, {
+        error: `The requested draft changes are not runnable for workflow "${meta.workflowId}"`,
+        errors: planCheck.errors ?? [],
+      });
+    }
+    // The base is honoured ONLY on a catalog that authors the per-intent
+    // settings, so the catalog's own answer — carried beside the plan this
+    // resolution already produced — decides what happens to it here.
+    //
+    // On any other library the base resolves nothing the run reads, so it
+    // is DROPPED rather than refused and rather than stored: the page
+    // records the base for every stock scope, and an unpinned, 2.3.3,
+    // 2.8.2 or 2.9.0 draft must keep both the save it always made and the
+    // row it always had. Dropping it also repairs a row an older bundle
+    // left behind. Where the base IS honoured it has to name a real scope
+    // block, or a customized grid would quietly run with no policy at all.
+    if (effPolicyScope && !planCheck.aidlcSettingsAware) {
+      effPolicyScope = null;
+      patch.policyScope = null;
+    } else if (effPolicyScope) {
+      const scopes = await intentMethodology.loadScopes(meta);
+      if (!scopes.includes(effPolicyScope)) {
+        return response(400, {
+          error: `Unknown policyScope "${effPolicyScope}" for workflow "${meta.workflowId}"`,
+          scopes,
+        });
+      }
+    }
+    patch.planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+    settingsScope = effPolicyScope ?? effScope;
+  }
+  if (!Number.isSafeInteger(data.ifDraftRevision) || data.ifDraftRevision < 0) {
+    return response(428, {
+      error: 'Read the edit state before saving',
+      code: 'edit_precondition_required',
+    });
+  }
+  // The settings were normalised against the selection in this body and the
+  // timeline diff is taken from the row read above, so that row has to be
+  // the exact pre-image this CAS replaces. The read is consistent on this
+  // path, so this is a real concurrent edit rather than a replication lag,
+  // and it is refused here rather than producing a correct write with a
+  // timeline entry describing a change nobody made.
+  if (settingsChanged && (meta.draftRevision ?? 0) !== data.ifDraftRevision) {
+    return response(409, {
+      error: 'Draft changed while saving — retry from the current document',
+      code: 'edit_conflict',
+    });
+  }
+  let updated;
+  try {
+    updated = await store.updateExecution({
+      executionId: intentId,
+      // CAS on DRAFT so a concurrent Start can never race a header edit
+      // into a launched run.
+      fromStatus: 'DRAFT',
+      ifDraftRevision: data.ifDraftRevision,
+      ...patch,
+    });
+  } catch (err) {
+    if (err?.name === 'ConditionalCheckFailedException') {
+      return response(409, {
+        error: 'Draft changed while saving — retry from the current document',
+        code: 'edit_conflict',
+      });
+    }
+    throw err;
+  }
+  // One timeline event per changed key, from the pre-image this write
+  // replaced, with the authenticated caller of THIS request as the actor.
+  // Because the diff comes from the row the CAS condition bound, the audit
+  // cannot attribute a change this write did not make. Appended after the
+  // successful write, best-effort with a logged failure — the same contract
+  // the existing event appends have, and not a transactional-durability
+  // claim.
+  if (settingsChanged) {
+    const editor = getResponder(event);
+    for (const summary of describeAidlcSettingsChange({
+      previous: meta.aidlcSettings ?? null,
+      next: patch.aidlcSettings ?? null,
+      authored: authoredSettings,
+      dropped: settingsDropped,
+      scope: settingsScope,
+    })) {
+      await store
+        .appendEvent({
+          executionId: intentId,
+          type: 'v2.intent.settings.changed',
+          actor: editor.displayName || editor.sub,
+          summary,
+        })
+        .catch((err) => logger.error('AI-DLC settings event append failed', err));
+    }
+  }
+  return response(200, {
+    ...mapIntent(updated),
+    // The settings this selection does not author, so the page can say
+    // which choice the scope change withdrew. Omitted when nothing was
+    // dropped, which is every save of every intent that has no settings.
+    ...(settingsDropped.length
+      ? { aidlcSettingsDropped: settingsDropped.map(({ key }) => key) }
+      : {}),
+  });
+};
+
+// DELETE /projects/{projectId}/intents/{intentId}
+// Permanently remove an intent: the Neptune subgraph (anchor + everything
+// it CONTAINS + discussion threads), the entire EXEC#<id> DynamoDB
+// partition, and the intent-scoped realtime Yjs documents. Owner/admin
+// only (destructive, matches repo removal). A RUNNING intent is refused —
+// its durable orchestrator + AgentCore session are live and would write
+// into the deleted partition; any other non-terminal status is first
+// retired exactly like cancel (supersede pending gates, wake the parked
+// orchestrator with a cancel sentinel) so nothing resumes afterwards.
+// Deletion order is deliberate: Yjs docs → Neptune → DynamoDB (META last),
+// so a partial failure leaves the intent listed and the delete retryable.
+const handleDeleteIntent = async ({
+  event,
+  projectId,
+  intentId,
+  auth,
+  g,
+  response,
+  cleanupDeadline,
+}) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  if (auth.role !== 'owner' && auth.role !== 'admin') {
+    return response(403, { error: 'Only project owners and admins can delete intents' });
+  }
+  // The two-pass, intent_id-guarded cascade (Yjs → Neptune → DynamoDB) lives
+  // in shared/intent-deletion so the projects lambda reuses it verbatim on a
+  // project delete. force:false → a RUNNING run is refused (IntentRunningError
+  // → 409) instead of deleted out from under its live orchestrator.
+  const responder = getResponder(event);
+  try {
+    await deleteIntentCascade({
+      cleanupDeadline,
+      g,
+      store,
+      ddb,
+      agentcore,
+      lambdaClient,
+      intentId,
+      meta,
+      yjsTable: process.env.YJS_DOCUMENTS_TABLE,
+      agentcoreRuntimeTarget: runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN()),
+      sessionCleanupStore,
+      artifactsBucket: ARTIFACTS_BUCKET(),
+      actor: responder.displayName || responder.sub,
+      force: false,
+    });
+  } catch (err) {
+    if (err instanceof IntentRunningError) {
+      return response(409, {
+        error:
+          'Intent is RUNNING, cannot delete — wait for it to park or finish, or cancel it first',
+      });
+    }
+    if (err instanceof SessionReleaseHandoffError) {
+      // Nothing was removed: the intent still owns its workspace sessions.
+      logger.error('Intent delete: workspace release could not be handed off', err, {
+        intentId,
+        sessionIds: err.sessionIds,
+      });
+      return response(503, {
+        error: 'Could not release the intent workspaces right now; nothing was deleted. Retry.',
+        code: err.code,
+      });
+    }
+    throw err;
+  }
+
+  logger.info('Intent deleted', {
+    intentId,
+    deletedBy: responder.sub,
+    projectId,
+    priorStatus: meta.status,
+  });
+  return response(204, {});
+};
+
+// POST /projects/{projectId}/intents/{intentId}/derive
+// Manual graph-projection backfill (platform admin): re-run the
+// derive-artifacts command over ALL of the intent's current artifacts —
+// e.g. to project intents that predate the derivation feature, or to apply
+// enrichment after flipping the Admin toggle. Idempotent (the command
+// upserts by deterministic ids and supersedes stale rows) and safe to run
+// repeatedly; refused while RUNNING to keep out of a live stage's way.
+const handleDeriveIntent = async ({ event, projectId, intentId, response }) => {
+  const denied = requirePlatformAdmin(event);
+  if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const deriveRuntimeTarget = runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN());
+  if (!deriveRuntimeTarget.agentRuntimeArn) {
+    return response(500, { error: 'Agent runtime is not configured' });
+  }
+  if (meta.status === 'RUNNING') {
+    return response(409, { error: 'Intent is RUNNING — the run derives after each stage' });
+  }
+  const payload = {
+    command: 'derive-artifacts',
+    projectId,
+    intentId,
+    executionId: intentId,
+    // No stageInstanceId / artifactTypes: the whole intent is the target.
+    enrichment: meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
+    ...(meta.agentCli ? { requestedCli: meta.agentCli } : {}),
+    ...(meta.cliModels ? { cliModels: meta.cliModels } : {}),
+    ...(meta.tierModels ? { tierModels: meta.tierModels } : {}),
+  };
+  try {
+    const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
+      purpose: 'execution',
+      projectId,
+      executionId: intentId,
+      credentialBinding: meta.credentialBinding,
+      agentCli: meta.agentCli,
+      runtimeCapabilities: meta.environment,
+    });
+    const res = await agentcore.send(
+      new InvokeAgentRuntimeCommand({
+        ...deriveRuntimeTarget,
+        runtimeSessionId: runtimeSessionIdFor(intentId),
+        contentType: 'application/json',
+        accept: 'application/json',
+        payload: Buffer.from(
+          JSON.stringify({
+            ...payload,
+            ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
+          }),
+        ),
+      }),
+    );
+    const text = res.response ? await res.response.transformToString() : '';
+    const out = text ? JSON.parse(text) : {};
+    if (out.ok === false) {
+      return response(422, {
+        error: out.reason ?? 'derive_failed',
+        detail: out.detail ?? null,
+      });
+    }
+    return response(200, {
+      ok: true,
+      artifacts: out.artifacts ?? [],
+      sections: out.sections ?? 0,
+      items: out.items ?? 0,
+      citations: out.citations ?? 0,
+      enrichment: out.enrichment ?? 'off',
+      enriched: out.enriched ?? 0,
+    });
+  } catch (err) {
+    logger.error('[derive] runtime invoke failed', err);
+    return response(502, { error: 'Failed to invoke the derive runtime' });
+  }
+};
+
+// POST /projects/{projectId}/intents/{intentId}/repair
+// Recover a parallel section whose stage callbacks became orphaned. This is
+// intentionally narrower than rewind: merged units remain merged, pending
+// dependents remain pending, and every active lane in the affected section
+// is replayed from the section start so a sibling that consumed the wrong
+// gate answer cannot be integrated.
+const handleRepairIntent = async ({ event, projectId, intentId, auth, g, response }) => {
+  if (auth.role !== 'owner' && auth.role !== 'admin') {
+    return response(403, { error: 'Only project owners and admins can repair intents' });
+  }
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  if (!['RUNNING', 'WAITING', 'FAILED'].includes(meta.status)) {
+    return response(409, { error: `Intent is ${meta.status}; no active run can be repaired` });
+  }
+
+  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  const pendingByStage = new Map(
+    (records.humanTasks ?? [])
+      .filter((gate) => gate.status === 'pending' && gate.stageInstanceId)
+      .map((gate) => [gate.stageInstanceId, gate]),
+  );
+  const orphaned = (records.stages ?? []).filter(
+    (stage) =>
+      stage.state === 'WAITING_FOR_HUMAN' &&
+      stage.unitSlug &&
+      !pendingByStage.has(stage.stageInstanceId),
+  );
+  const activeReviewStates = new Set([
+    'PR_DRAFT',
+    'RECONCILING',
+    'PR_READY',
+    'ADDRESSING_FEEDBACK',
+    'MERGING',
+  ]);
+  const activeUnits = records.unitPlan?.units?.length
+    ? activePlanUnits(records.unitPlan, records.units)
+    : (records.units ?? []);
+  const prUnits = activeUnits.filter(
+    (unit) =>
+      !hasUnitSkipDecision(unit, records.unitPlan) &&
+      activeReviewStates.has(unit.state) &&
+      (records.unitPrs ?? []).some(
+        (pr) =>
+          Number(pr.sectionIndex) === Number(unit.sectionIndex) &&
+          pr.unitSlug === unit.slug &&
+          pr.number != null,
+      ),
+  );
+  if (orphaned.length === 0 && prUnits.length === 0) {
+    return response(409, {
+      error: 'No orphaned parallel lane waits or recoverable PR reviews were detected',
+      code: 'repair_not_needed',
+    });
+  }
+  const sectionIndexes = [
+    ...new Set(
+      [
+        ...orphaned.map((stage) => stage.sectionIndex),
+        ...prUnits.map((unit) => unit.sectionIndex),
+      ].filter((index) => index !== null && index !== undefined && Number.isInteger(Number(index))),
+    ),
+  ];
+  if (sectionIndexes.length !== 1) {
+    return response(409, {
+      error: 'Repair currently requires all orphaned lanes to belong to one section',
+      sections: sectionIndexes,
+    });
+  }
+  const sectionIndex = Number(sectionIndexes[0]);
+  const repairableStates = new Set([
+    'READY',
+    'RUNNING',
+    'PR_DRAFT',
+    'RECONCILING',
+    'PR_READY',
+    'ADDRESSING_FEEDBACK',
+    'MERGING',
+    'FAILED',
+    'BLOCKED',
+  ]);
+  const repairUnits = activeUnits.filter(
+    (unit) =>
+      Number(unit.sectionIndex) === sectionIndex &&
+      !hasUnitSkipDecision(unit, records.unitPlan) &&
+      repairableStates.has(unit.state),
+  );
+  const repairSlugs = [...new Set(repairUnits.map((unit) => unit.slug))];
+  if (repairSlugs.length === 0) {
+    return response(409, { error: 'No active lanes are available to repair' });
+  }
+
+  const planResult = await intentMethodology.loadPlan(meta);
+  if (!planResult.valid || !planResult.plan) {
+    return response(409, {
+      error: 'Execution plan cannot be resolved for repair',
+      errors: planResult.errors ?? [],
+    });
+  }
+  const sectionStages = planResult.plan.stages.filter(
+    (stage) => Number(stage.parallelSection) === sectionIndex,
+  );
+  if (sectionStages.length === 0) {
+    return response(409, { error: `Parallel section ${sectionIndex} is not in the plan` });
+  }
+  const planNamespace = planResult.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
+  const sectionInstances = sectionStages.flatMap((stage) =>
+    repairSlugs.map((slug) => ({
+      stage,
+      slug,
+      stageInstanceId: planStageInstanceId(planNamespace, stage.stageId, slug, sectionIndex),
+    })),
+  );
+  const stagesByInstance = new Map(
+    (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+  );
+  const completedStageStates = new Set(['SUCCEEDED', 'SKIPPED']);
+  const resetInstances = sectionInstances.filter((instance) => {
+    const row = stagesByInstance.get(instance.stageInstanceId);
+    return row && !completedStageStates.has(row.state);
+  });
+  const responder = getResponder(event);
+  const repairId = `repair-${randomUUID()}`;
+  const repairReason = `Recover durable parallel work in section ${sectionIndex}`;
+  const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
+  if (sourceControlBlocked) return sourceControlBlocked;
+
+  // Reconcile provider truth before retiring the old execution. A merged PR
+  // is accepted only when the exact reviewed head is reachable from the
+  // intent branch; open drafts are retained for the resumed lane.
+  const repairPrs = (records.unitPrs ?? []).filter(
+    (pr) => Number(pr.sectionIndex) === sectionIndex && repairSlugs.includes(pr.unitSlug),
+  );
+  const remotePrs = new Map();
+  try {
+    for (const pr of repairPrs) {
+      if (pr.state === 'UNCHANGED' || pr.number == null) continue;
+      const provider =
+        pr.provider || meta.repoProviders?.[pr.repository] || meta.gitProvider || 'github';
+      const status = await sourceControlOperation({
+        projectId,
+        provider,
+        repo: pr.repository,
+        operation: 'pr-status',
+        args: { number: pr.number },
+      });
+      if (!status?.state) {
+        throw new Error(`${pr.repository}#${pr.number}: provider status unavailable`);
+      }
+      let mergedHeadIsAncestor = null;
+      if (status.state === 'merged') {
+        const reviewedHead = pr.readyHeadSha ?? pr.headSha ?? status.headSha;
+        mergedHeadIsAncestor =
+          Boolean(reviewedHead) &&
+          Boolean(
+            await sourceControlOperation({
+              projectId,
+              provider,
+              repo: pr.repository,
+              operation: 'is-ancestor',
+              args: {
+                ancestorSha: reviewedHead,
+                descendantRef: pr.targetBranch ?? meta.branch,
+              },
+            }),
+          );
+      }
+      remotePrs.set(pr.sk, { status, mergedHeadIsAncestor });
+    }
+  } catch (error) {
+    logger.error('Repair provider reconciliation failed', error);
+    return response(502, {
+      error: 'Pull request state could not be reconciled; repair made no changes',
+      code: 'provider_reconciliation_failed',
+    });
+  }
+
+  const mcpLaunch = await prepareMcpLaunch(g, meta);
+  if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
+  let priorDurableExecutionArn = meta.durableExecutionArn ?? null;
+  if (!priorDurableExecutionArn && meta.durableExecutionName && ORCHESTRATOR_FN()) {
+    const listed = await lambdaClient.send(
+      new ListDurableExecutionsByFunctionCommand({
+        ...parseFunctionAndQualifier(ORCHESTRATOR_FN()),
+        DurableExecutionName: meta.durableExecutionName,
+        MaxItems: 1,
+      }),
+    );
+    priorDurableExecutionArn = listed.DurableExecutions?.[0]?.DurableExecutionArn ?? null;
+  }
+
+  await store.updateExecution({
+    executionId: intentId,
+    projectId,
+    status: 'FAILED',
+    fromStatus: meta.status,
+    startedAt: meta.startedAt,
+    pendingHumanTaskId: null,
+    resumeRequired: null,
+    failureReason: 'lane_repair_in_progress',
+    completedAt: null,
+    orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+  });
+  if (priorDurableExecutionArn) {
+    try {
+      await lambdaClient.send(
+        new StopDurableExecutionCommand({
+          DurableExecutionArn: priorDurableExecutionArn,
+          Error: {
+            ErrorType: 'LaneRepair',
+            ErrorMessage: repairReason,
+            ErrorData: JSON.stringify({ repairId, sectionIndex, repairSlugs }),
+          },
+        }),
+      );
+    } catch (error) {
+      if (!['ResourceNotFoundException', 'ConflictException'].includes(error?.name)) {
+        await store
+          .updateExecution({
+            executionId: intentId,
+            projectId,
+            failureReason: 'lane_repair_durable_stop_failed',
+          })
+          .catch(() => {});
+        await store
+          .appendEvent({
+            executionId: intentId,
+            type: 'v2.execution.repair_failed',
+            actor: responder.displayName || responder.sub,
+            summary: `Could not stop the prior durable execution: ${error?.message ?? 'unknown error'}`,
+          })
+          .catch(() => {});
+        return response(502, {
+          error: 'The old durable execution could not be stopped; repair did not relaunch',
+          code: 'durable_stop_failed',
+        });
+      }
+    }
+  }
+
+  const archivedArtifacts = await archiveArtifactsForStages({
+    g,
+    intentId,
+    stageInstanceIds: resetInstances.map((instance) => instance.stageInstanceId),
+    restartId: repairId,
+    reason: repairReason,
+    actor: responder.displayName || responder.sub,
+  });
+  await retireParkedRun(intentId, repairReason);
+  await stopRuntimeSessions(intentId, meta, {
+    sectionIndexes: [sectionIndex],
+    unitSlugs: repairSlugs,
+  });
+
+  await mapWithConcurrency(resetInstances, 12, async ({ stage, slug, stageInstanceId }) => {
+    const reset = await store.resetStageRow({
+      executionId: intentId,
+      stageInstanceId,
+      preservePendingCodeCommitRefs: true,
+    });
+    if (!reset) return;
+    await store
+      .appendEvent({
+        executionId: intentId,
+        type: 'v2.stage.reset',
+        stageInstanceId,
+        unitSlug: slug,
+        sectionIndex,
+        actor: responder.displayName || responder.sub,
+        summary: `Stage ${stage.stageId} [unit ${slug}] reset by lane repair`,
+      })
+      .catch(() => {});
+  });
+  const reconciledPrs = await mapWithConcurrency(repairPrs, 8, async (pr) => {
+    if (pr.state === 'UNCHANGED' || pr.number == null) return pr;
+    const remote = remotePrs.get(pr.sk);
+    const status = remote.status;
+    let state;
+    let repositoryOutcome = null;
+    if (status.state === 'merged') {
+      state = remote.mergedHeadIsAncestor ? 'MERGED' : 'FAILED';
+      repositoryOutcome = remote.mergedHeadIsAncestor ? 'merged' : 'ready_head_not_on_intent';
+    } else if (status.state === 'closed') {
+      state = 'CLOSED';
+      repositoryOutcome = 'closed_without_merge';
+    } else {
+      const stillReady =
+        !status.draft &&
+        pr.readyHeadSha &&
+        status.headSha === pr.readyHeadSha &&
+        (!pr.targetSha || !status.targetSha || status.targetSha === pr.targetSha);
+      state = stillReady ? 'READY' : 'DRAFT';
+    }
+    return store.updateUnitPr({
+      executionId: intentId,
+      sectionIndex,
+      slug: pr.unitSlug,
+      repository: pr.repository,
+      state,
+      fields: {
+        providerId: status.providerId ?? pr.providerId ?? null,
+        number: status.number ?? pr.number,
+        url: status.url ?? pr.url,
+        sourceBranch: status.sourceBranch ?? pr.sourceBranch,
+        targetBranch: status.targetBranch ?? pr.targetBranch,
+        headSha: status.headSha ?? pr.headSha ?? null,
+        targetSha: status.targetSha ?? pr.targetSha ?? null,
+        readyHeadSha: state === 'READY' || state === 'MERGED' ? pr.readyHeadSha : null,
+        mergeable: status.mergeable ?? null,
+        repositoryOutcome,
+      },
+    });
+  });
+  const prsByUnit = new Map();
+  for (const pr of reconciledPrs.filter(Boolean)) {
+    const rows = prsByUnit.get(pr.unitSlug) ?? [];
+    rows.push(pr);
+    prsByUnit.set(pr.unitSlug, rows);
+  }
+  await mapWithConcurrency(repairSlugs, 8, async (slug) => {
+    const prs = prsByUnit.get(slug) ?? [];
+    const changed = prs.filter((pr) => pr.state !== 'UNCHANGED');
+    const constructionComplete = sectionStages.every((stage) => {
+      const stageInstanceId = planStageInstanceId(planNamespace, stage.stageId, slug, sectionIndex);
+      return completedStageStates.has(stagesByInstance.get(stageInstanceId)?.state);
+    });
+    const fullyMerged =
+      changed.length > 0 &&
+      changed.every((pr) => pr.state === 'MERGED') &&
+      prs.every((pr) => pr.state === 'MERGED' || pr.state === 'UNCHANGED');
+    const resumeReview =
+      constructionComplete &&
+      changed.some((pr) => pr.state === 'DRAFT' || pr.state === 'READY') &&
+      !changed.some((pr) => pr.state === 'CLOSED' || pr.state === 'FAILED');
+    return store.updateUnitState({
+      executionId: intentId,
+      sectionIndex,
+      slug,
+      state: fullyMerged ? 'MERGED' : resumeReview ? 'PR_DRAFT' : 'PENDING',
+      fields: {
+        failureReason: null,
+        blockedOn: null,
+        integrationOwner: false,
+        recoveryPreserveCompleted: true,
+        blockedReason: fullyMerged
+          ? null
+          : resumeReview
+            ? 'Resuming existing pull request after durable recovery'
+            : 'Replaying unfinished work after durable recovery',
+        ...(fullyMerged ? { mergedAt: true } : {}),
+      },
+    });
+  });
+  await store
+    .appendEvent({
+      executionId: intentId,
+      type: 'v2.execution.lanes_repaired',
+      actor: responder.displayName || responder.sub,
+      summary: `${responder.displayName || 'Someone'} recovered section ${sectionIndex}; reconciled ${repairPrs.length} pull request(s), preserved completed stages, and relaunched unfinished lanes [${repairSlugs.join(', ')}] (${archivedArtifacts.length} artifact version(s) archived)`,
+    })
+    .catch(() => {});
+
+  const fromStageId = sectionStages[0].stageId;
+  const durableExecutionName = durableExecutionNameForIntent(intentId);
+  await store.deleteWorkflowCheckpoint(intentId);
+  const updated = await store.updateExecution({
+    executionId: intentId,
+    projectId,
+    status: 'CREATED',
+    fromStatus: 'FAILED',
+    startedAt: meta.startedAt,
+    durableExecutionName,
+    durableExecutionArn: null,
+    orchestratorStartedAt: null,
+    orchestratorExpiresAt: null,
+    pendingHumanTaskId: null,
+    resumeRequired: null,
+    failureReason: null,
+    failure: null,
+    completedAt: null,
+    rewindFromStageId: fromStageId,
+    startedBy: responder.sub,
+    starterName: responder.displayName,
+    starterEmail: responder.email,
+    ...mcpLaunch.update,
+  });
+  try {
+    const invoked = await invokeOrchestrator(
+      {
+        action: 'start',
+        intentId,
+        executionId: intentId,
+        startAtStageId: fromStageId,
+      },
+      { durableExecutionName },
+    );
+    if (invoked?.durableExecutionArn) {
+      await store
+        .updateExecution({
+          executionId: intentId,
+          durableExecutionArn: invoked.durableExecutionArn,
+        })
+        .catch((error) => logger.error('Repair durable execution ARN stamp failed', error));
+    }
+  } catch (error) {
+    await store.updateExecution({
+      executionId: intentId,
+      projectId,
+      status: 'FAILED',
+      fromStatus: 'CREATED',
+      startedAt: meta.startedAt,
+      pendingHumanTaskId: null,
+      failureReason: 'lane_repair_relaunch_failed',
+      durableExecutionArn: null,
+    });
+    throw error;
+  }
+  return response(202, {
+    intent: mapIntent(updated),
+    repair: {
+      repairId,
+      sectionIndex,
+      laneSlugs: repairSlugs,
+      archivedArtifactCount: archivedArtifacts.length,
+      fromStageId,
+    },
+  });
+};
+
+// POST /projects/{projectId}/intents/{intentId}/rewind
+// Restart the run from an earlier stage with corrective guidance
+// (docs/v2-steering.md). Rejected while RUNNING (409) — steering is only
+// applied at deterministic points, so wait for the stage to park or finish.
+// Resets the target stage + everything after it in run order (attempt+1),
+// supersedes the artifacts those stages produced (kept for lineage), records
+// the guidance as a rewind STEER row (injected into the restarted stage's
+// prompt), and relaunches the orchestrator at that stage.
+const handleRewindIntent = async ({ event, body, projectId, intentId, g, response }) => {
+  const data = body ? JSON.parse(body) : {};
+  const requestedFromStageId = typeof data.fromStageId === 'string' ? data.fromStageId : '';
+  // Guidance is OPTIONAL: with guidance this is a steering rewind (a
+  // correction the restarted stage consumes at entry); without it, a plain
+  // retry — same reset + relaunch mechanics, no steering row.
+  const guidance = typeof data.guidance === 'string' ? data.guidance.trim() : '';
+  if (!requestedFromStageId) return response(400, { error: 'fromStageId is required' });
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const REWINDABLE = new Set(['SUCCEEDED', 'FAILED', 'WAITING', 'CANCELLED']);
+  if (!REWINDABLE.has(meta.status)) {
+    return response(409, {
+      error: `Intent is ${meta.status}, cannot rewind — wait for the stage to park or finish`,
+    });
+  }
+  // Resolve the pinned plan to find the rewind point + the downstream set.
+  // The intent's skip overlay rides along — EXCEPT the rewind target
+  // itself: rewinding TO a stage that was deselected at create UN-skips it
+  // (the shrunken overlay is persisted on META below, so every later
+  // recompute agrees). Upstream calls this "Add [Skipped Stage]".
+  const priorSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
+  const unskipping = priorSkipIds.includes(requestedFromStageId);
+  const rewindSkipIds = priorSkipIds.filter((id) => id !== requestedFromStageId);
+  const planResult = await intentMethodology.loadPlan(meta, { skipStageIds: rewindSkipIds });
+  if (!planResult.valid || !planResult.plan) {
+    return response(409, {
+      error: 'Execution plan cannot be resolved',
+      errors: planResult.errors,
+    });
+  }
+  const stages = planResult.plan.stages;
+  let idx = stages.findIndex((s) => s.stageId === requestedFromStageId);
+  if (idx < 0) {
+    // The plan is scope-projected: a stage the workflow places but the
+    // run's scope does not EXECUTE is not a rewind target — running it
+    // would execute a stage the scope deliberately (or accidentally, see
+    // zero_scope_placement) excludes. 409 with the wiring hint instead of
+    // pretending the stage does not exist.
+    if ((planResult.plan.outOfScopeStageIds ?? []).includes(requestedFromStageId)) {
+      return response(409, {
+        error: planResult.plan.composed
+          ? `Stage "${requestedFromStageId}" is SKIP in this intent's composed grid — recompose it to EXECUTE before rewinding to it`
+          : `Stage "${requestedFromStageId}" is not executed in scope "${meta.scope}" — wire it to EXECUTE for this scope in the workflow composer before rewinding to it`,
+      });
+    }
+    return response(400, {
+      error: `Unknown stage "${requestedFromStageId}"`,
+      stages: stages.map((s) => s.stageId),
+    });
+  }
+  const planNamespace = planResult.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
+  let unitPlan = null;
+  let fromStageId = requestedFromStageId;
+
+  // A partial parallel section cannot be relaunched in its middle when the
+  // walking skeleton is the only lane that reached the requested stage.
+  // The orchestrator's rewind guard correctly requires every earlier
+  // per-unit instance to be terminal, so normalize such retries to the
+  // section's first stage instead of launching a run that immediately
+  // fails rewind_upstream_incomplete.
+  const requestedStage = stages[idx];
+  if (requestedStage.parallelSection != null) {
+    const firstSectionIdx = stages.findIndex(
+      (stage) => stage.parallelSection === requestedStage.parallelSection,
+    );
+    const priorSectionStages = firstSectionIdx >= 0 ? stages.slice(firstSectionIdx, idx) : [];
+    if (priorSectionStages.length > 0) {
+      unitPlan = await store.getUnitPlan(intentId).catch(() => null);
+      const unitSlugs = (unitPlan?.units ?? []).map((unit) => unit.slug);
+      let incomplete = unitSlugs.length === 0;
+      for (const stage of priorSectionStages) {
+        if (incomplete) break;
+        for (const laneSlug of unitSlugs) {
+          const row = await store
+            .getStage(
+              intentId,
+              planStageInstanceId(planNamespace, stage.stageId, laneSlug, stage.parallelSection),
+            )
+            .catch(() => null);
+          if (!row || (row.state !== 'SUCCEEDED' && row.state !== 'SKIPPED')) {
+            incomplete = true;
+            break;
+          }
+        }
+      }
+      if (incomplete && firstSectionIdx >= 0) {
+        idx = firstSectionIdx;
+        fromStageId = stages[firstSectionIdx].stageId;
+      }
+    }
+  }
+  const resetStages = stages.slice(idx);
+  // Per-unit instance expansion (docs/v2-parallel.md WP4): a `forEach:
+  // unit-of-work` stage has one STAGE row (and one artifact provenance id)
+  // PER UNIT — a rewind must reset every lane's instance, and the touched
+  // lanes themselves, or the relaunch would see stale terminal rows.
+  const sectionStages = resetStages.filter((s) => s.parallelSection != null);
+  if (sectionStages.length && !unitPlan) {
+    unitPlan = await store.getUnitPlan(intentId).catch(() => null);
+  }
+  const unitSlugs = (unitPlan?.units ?? []).map((u) => u.slug);
+  const resetInstances = resetStages.flatMap((stage) =>
+    stage.parallelSection != null
+      ? unitSlugs.map((laneSlug) => ({
+          stage,
+          unitSlug: laneSlug,
+          sectionIndex: stage.parallelSection,
+          stageInstanceId: planStageInstanceId(
+            planNamespace,
+            stage.stageId,
+            laneSlug,
+            stage.parallelSection,
+          ),
+        }))
+      : [
+          {
+            stage,
+            unitSlug: null,
+            sectionIndex: null,
+            stageInstanceId: stage.stageInstanceId,
+          },
+        ],
+  );
+  const responder = getResponder(event);
+  const priorStatus = meta.status;
+  const restartId = `restart-${randomUUID()}`;
+  const restartReason = guidance
+    ? `Rewind to ${fromStageId}: ${guidance}`
+    : `Retry from ${fromStageId}`;
+  const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
+  if (sourceControlBlocked) return sourceControlBlocked;
+
+  const mcpLaunch = await prepareMcpLaunch(g, meta);
+  if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
+  // Artifact history is a hard precondition for a restart. Snapshot before
+  // META, gates, stage rows, lanes, or sessions are touched; a Neptune
+  // failure leaves the run exactly where it was and no relaunch occurs.
+  const archivedArtifacts = await archiveArtifactsForStages({
+    g,
+    intentId,
+    stageInstanceIds: resetInstances.map((instance) => instance.stageInstanceId),
+    restartId,
+    reason: restartReason,
+    actor: responder.displayName || responder.sub,
+  });
+
+  // Make interrupted cleanup recoverable before touching gates, sessions,
+  // or stage rows. A Lambda timeout used to leave META WAITING on a gate
+  // already superseded by the first cleanup step, with no action capable
+  // of waking it. FAILED remains rewindable, so a repeated request can
+  // safely finish an interrupted reset.
+  try {
+    await store.updateExecution({
+      executionId: intentId,
+      projectId,
+      status: 'FAILED',
+      fromStatus: priorStatus,
+      startedAt: meta.startedAt,
+      pendingHumanTaskId: null,
+      resumeRequired: null,
+      failureReason: 'rewind_in_progress',
+      completedAt: null,
+      ifOrchestratorRunId: meta.orchestratorRunId,
+      orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+    });
+  } catch (error) {
+    if (error?.name === 'ConditionalCheckFailedException') {
+      return response(409, {
+        error:
+          'Execution changed while preparing rewind. Refresh and review the restart point again.',
+        code: 'execution_changed',
+      });
+    }
+    throw error;
+  }
+  // Retire a parked run first so the woken orchestrator exits quietly (its
+  // gate is superseded) instead of racing the relaunch.
+  await retireParkedRun(intentId, `rewound to ${fromStageId}`);
+  // Stop the live session(s) so the relaunch gets a fresh microVM on the
+  // CURRENT runtime image (zombie-session field incident) — the persistent
+  // workspace mount survives and is re-attached by session id.
+  await stopRuntimeSessions(intentId, meta, {
+    sectionIndexes: [...new Set(sectionStages.map((s) => s.parallelSection))],
+    unitSlugs,
+  });
+  // Record the guidance BEFORE resetting/relaunching: the restarted stage
+  // reads pending steering at entry, so the correction can never be missed.
+  // A guidance-less retry records no steering row — there is nothing to
+  // inject; the stage simply re-runs.
+  const steer = guidance
+    ? await store.createSteering({
+        executionId: intentId,
+        kind: 'rewind',
+        message: guidance,
+        targetStageId: fromStageId,
+        createdBy: responder.sub,
+        createdByName: responder.displayName,
+      })
+    : null;
+  await mapWithConcurrency(
+    resetInstances,
+    12,
+    async ({ stage, unitSlug: laneSlug, sectionIndex, stageInstanceId }) => {
+      const reset = await store.resetStageRow({
+        executionId: intentId,
+        stageInstanceId,
+        // A guidance-less restart is a retry of the same work. Preserve any
+        // commits made before failure so the clean retry can still project
+        // their CodeFiles. Guided rewinds intentionally replace prior work.
+        preservePendingCodeCommitRefs: !guidance,
+      });
+      if (reset) {
+        await store
+          .appendEvent({
+            executionId: intentId,
+            type: 'v2.stage.reset',
+            stageInstanceId,
+            unitSlug: laneSlug,
+            sectionIndex,
+            actor: responder.displayName || responder.sub,
+            summary: `Stage ${stage.stageId}${laneSlug ? ` [unit ${laneSlug}]` : ''} reset for rewind (attempt ${reset.attempt + 1})`,
+          })
+          .catch(() => {});
+      }
+    },
+  );
+  // Reset the touched lanes so the relaunch re-walks them (state PENDING,
+  // stale verdict fields cleared). Unconditional — a rewind overrides any
+  // lane state; the UNIT rows are the lane-level view, never audit (the
+  // per-instance STAGE rows + EVENT feed keep the history).
+  if (sectionStages.length && unitSlugs.length) {
+    const sectionIndexes = [...new Set(sectionStages.map((stage) => stage.parallelSection))];
+    const lanes = sectionIndexes.flatMap((sectionIndex) =>
+      unitSlugs.map((slug) => ({ sectionIndex, slug })),
+    );
+    await mapWithConcurrency(lanes, 12, ({ sectionIndex, slug }) =>
+      store
+        .updateUnitState({
+          executionId: intentId,
+          sectionIndex,
+          slug,
+          state: 'PENDING',
+          fields: { failureReason: null, blockedOn: null, completionSkip: null },
+        })
+        .catch((err) => logger.error('Unit lane reset failed', err, { sectionIndex, slug })),
+    );
+  }
+  if (steer) {
+    await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
+      logger.error('Steering graph mirror failed', err),
+    );
+  }
+  await store
+    .appendEvent({
+      executionId: intentId,
+      type: 'v2.execution.rewound',
+      actor: responder.displayName || responder.sub,
+      summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId}${fromStageId !== requestedFromStageId ? ` (requested ${requestedFromStageId}; restarted the incomplete unit section from its first stage)` : ''}${unskipping ? ' (un-skipped: it was deselected at creation)' : ''} (${resetInstances.length} stage instance(s) reset, ${archivedArtifacts.length} artifact(s) archived)`,
+    })
+    .catch((err) => logger.error('Rewind event append failed', err));
+  // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
+  const durableExecutionName = durableExecutionNameForIntent(intentId);
+  await store.deleteWorkflowCheckpoint(intentId);
+  const updated = await store.updateExecution({
+    executionId: intentId,
+    projectId,
+    status: 'CREATED',
+    fromStatus: 'FAILED',
+    startedAt: meta.startedAt,
+    durableExecutionName,
+    durableExecutionArn: null,
+    orchestratorStartedAt: null,
+    orchestratorExpiresAt: null,
+    pendingHumanTaskId: null,
+    resumeRequired: null,
+    failureReason: null,
+    failure: null,
+    completedAt: null,
+    rewindFromStageId: fromStageId,
+    startedBy: responder.sub,
+    starterName: responder.displayName,
+    starterEmail: responder.email,
+    // Un-skip: the rewind target leaves the intent's skip overlay so the
+    // relaunch (and every later plan recompute) actually runs it.
+    ...(unskipping ? { skipStageIds: rewindSkipIds.length ? rewindSkipIds : null } : {}),
+    ...mcpLaunch.update,
+  });
+  try {
+    const invoked = await invokeOrchestrator(
+      {
+        action: 'start',
+        intentId,
+        executionId: intentId,
+        startAtStageId: fromStageId,
+      },
+      { durableExecutionName },
+    );
+    if (invoked?.durableExecutionArn) {
+      await store
+        .updateExecution({
+          executionId: intentId,
+          durableExecutionArn: invoked.durableExecutionArn,
+        })
+        .catch((err) => logger.error('Durable execution ARN stamp failed', err));
+    }
+  } catch (err) {
+    await store.updateExecution({
+      executionId: intentId,
+      projectId,
+      status: 'FAILED',
+      fromStatus: 'CREATED',
+      startedAt: meta.startedAt,
+      pendingHumanTaskId: null,
+      failureReason: 'rewind_relaunch_failed',
+      durableExecutionArn: null,
+    });
+    throw err;
+  }
+  return response(202, {
+    intent: mapIntent(updated),
+    steering: steer ? mapSteering(steer) : null,
+    restart: {
+      requestedFromStageId,
+      fromStageId,
+      sectionRestarted: fromStageId !== requestedFromStageId,
+    },
+  });
+};
+
+// POST /projects/{projectId}/intents/{intentId}/recompose
+// In-flight reshape (Adaptive Workflows): replace the run's projection
+// with a new composed EXECUTE/SKIP grid and relaunch at the first
+// not-yet-done stage — the retire-and-relaunch path (rewind mechanics)
+// that handles BOTH directions (skip and un-skip of pending stages).
+// Guardrails, mirroring upstream:
+//   - only a parked (WAITING) or FAILED run — never mid-turn;
+//   - never while construction runs autonomously (finish the swarm or
+//     drop back to gated first);
+//   - the PAST is frozen: completed/skipped stages must keep their fate
+//     in the new grid (reshaping the past is rewind's job);
+//   - unit-lane stages are frozen once the unit plan is promoted (lanes
+//     are reshaped at the fan-out approval's skip matrix);
+//   - the new grid must resolve STRICTLY (no starved required inputs).
+const handleRecomposeIntent = async ({ event, body, projectId, intentId, g, response }) => {
+  const data = body ? JSON.parse(body) : {};
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const RECOMPOSABLE = new Set(['WAITING', 'FAILED']);
+  if (!RECOMPOSABLE.has(meta.status)) {
+    return response(409, {
+      error: `Intent is ${meta.status}, cannot recompose — wait for the run to park or fail`,
+    });
+  }
+  if (meta.constructionAutonomyMode === 'autonomous') {
+    return response(409, {
+      error:
+        'Construction is running autonomously — recompose is disabled until the swarm finishes or autonomy drops back to gated',
+      code: 'autonomous_construction',
+    });
+  }
+  const { value: newGrid, error: gridError } = normalizeComposedGrid(data.composedGrid);
+  if (gridError) return response(400, { error: gridError });
+  if (!newGrid) return response(400, { error: 'composedGrid is required' });
+  const newScope =
+    typeof data.scope === 'string' && data.scope ? data.scope : (meta.scope ?? 'composed');
+  // The grid absorbs redundant overlay skips (composed-grid.js): entries
+  // the new grid already excludes leave the standing overlay — persisted
+  // below with the grid so every later recompute of this run resolves.
+  const priorSkipIds =
+    pruneSkipsForGrid(Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [], newGrid) ?? [];
+  // The stages the new projection would run: EXECUTE entries minus the
+  // intent's standing skip overlay. Computed straight off the grid so the
+  // frozen-past check below can answer BEFORE plan resolution (a frozen
+  // violation is a clearer verdict than the starvation error it causes).
+  const skipOverlay = new Set(priorSkipIds);
+  const newStageIds = new Set(
+    Object.entries(newGrid)
+      .filter(([id, v]) => v === 'EXECUTE' && !skipOverlay.has(id))
+      .map(([id]) => id),
+  );
+
+  // Frozen-past enforcement, from the run's own stage rows: a stage that
+  // ran (or is running/parked) must stay EXECUTE; a stage the run already
+  // SKIPPED must stay out of the projection. Per-unit rows collapse onto
+  // their stageId — any unit having run the stage freezes it.
+  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  const rowsByStageId = new Map();
+  for (const row of records.stages ?? []) {
+    if (!row.stageId) continue;
+    if (!rowsByStageId.has(row.stageId)) rowsByStageId.set(row.stageId, []);
+    rowsByStageId.get(row.stageId).push(row);
+  }
+  const violations = [];
+  for (const [stageId, rows] of rowsByStageId) {
+    const states = new Set(rows.map((r) => r.state));
+    const ran = ['SUCCEEDED', 'RUNNING', 'WAITING_FOR_HUMAN', 'FAILED'].some((s) => states.has(s));
+    if (ran && !newStageIds.has(stageId)) {
+      violations.push(`"${stageId}" already ran — it cannot flip to SKIP (rewind instead)`);
+    }
+    if (!ran && states.has('SKIPPED') && newStageIds.has(stageId)) {
+      violations.push(`"${stageId}" was skipped earlier in this run — rewind to it to un-skip`);
+    }
+  }
+  // Unit lanes: once the unit plan is promoted the per-unit stages are
+  // scheduled state — their membership can only change via rewind.
+  const unitPlan = await store.getUnitPlan(intentId).catch(() => null);
+  if (unitPlan) {
+    const currentPlanResult = await intentMethodology.loadPlan(meta, {
+      skipStageIds: priorSkipIds,
+    });
+    const currentSectionIds = new Set(
+      (currentPlanResult.plan?.stages ?? [])
+        .filter((s) => s.parallelSection != null)
+        .map((s) => s.stageId),
+    );
+    for (const stageId of currentSectionIds) {
+      if (!newStageIds.has(stageId)) {
+        violations.push(
+          `"${stageId}" fans out per unit and the unit plan is already promoted — reshape units at the fan-out approval`,
+        );
+      }
+    }
+  }
+  if (violations.length > 0) {
+    return response(409, {
+      error: 'Recompose violates the run\u2019s frozen state',
+      violations,
+    });
+  }
+
+  // Strict resolution of the NEW projection (starved required inputs are
+  // hard errors mid-run — a stage must never park waiting for an input
+  // nothing will write).
+  const planResult = await intentMethodology.loadPlan(meta, {
+    scope: newScope,
+    composedGrid: newGrid,
+    skipStageIds: priorSkipIds,
+    strict: true,
+  });
+  if (!planResult.valid || !planResult.plan) {
+    return response(400, {
+      error: 'The recomposed grid is not runnable',
+      errors: planResult.errors ?? [],
+    });
+  }
+  const newPlan = planResult.plan;
+
+  // Relaunch point: the first stage of the NEW plan that has neither
+  // succeeded nor been skipped. Nothing pending = nothing to relaunch.
+  const doneStates = new Set(['SUCCEEDED', 'SKIPPED']);
+  const fromStage = newPlan.stages.find((s) => {
+    const rows = rowsByStageId.get(s.stageId) ?? [];
+    return rows.length === 0 || rows.some((r) => !doneStates.has(r.state));
+  });
+  if (!fromStage) {
+    return response(409, {
+      error: 'Nothing left to run under the recomposed grid — every remaining stage is done',
+    });
+  }
+  const responder = getResponder(event);
+  const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
+  if (sourceControlBlocked) return sourceControlBlocked;
+  const mcpLaunch = await prepareMcpLaunch(g, meta);
+  if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
+  // Reset the relaunch stage's non-terminal instances (a parked/failed
+  // stage re-runs from scratch, attempt+1).
+  const resetIds = (rowsByStageId.get(fromStage.stageId) ?? [])
+    .filter((r) => !doneStates.has(r.state))
+    .map((r) => r.stageInstanceId)
+    .filter(Boolean);
+  const recomposeRestartId = `restart-${randomUUID()}`;
+  await archiveArtifactsForStages({
+    g,
+    intentId,
+    stageInstanceIds: resetIds,
+    restartId: recomposeRestartId,
+    reason: `Recompose from ${fromStage.stageId}`,
+    actor: responder.displayName || responder.sub,
+  });
+
+  // Retire only after every affected artifact was durably snapshotted.
+  try {
+    await store.updateExecution({
+      executionId: intentId,
+      fromStatus: meta.status,
+      ifOrchestratorRunId: meta.orchestratorRunId,
+      orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
+    });
+  } catch (error) {
+    if (error?.name === 'ConditionalCheckFailedException') {
+      return response(409, {
+        error:
+          'Execution changed while preparing recompose. Refresh and review the stage selection again.',
+        code: 'execution_changed',
+      });
+    }
+    throw error;
+  }
+  await retireParkedRun(intentId, `recomposed from ${fromStage.stageId}`);
+  await stopRuntimeSessions(intentId, meta);
+  for (const stageInstanceId of resetIds) {
+    await store.resetStageRow({ executionId: intentId, stageInstanceId }).catch(() => {});
+  }
+  await store
+    .appendEvent({
+      executionId: intentId,
+      type: 'v2.execution.recomposed',
+      actor: responder.displayName || responder.sub,
+      summary: `${responder.displayName || 'Someone'} recomposed the run (${newPlan.summary.executedStages} of ${newPlan.summary.totalStages} stages, scope label "${newScope}") — relaunching at ${fromStage.stageId}`,
+    })
+    .catch((err) => logger.error('Recompose event append failed', err));
+  const priorStatus = meta.status;
+  const durableExecutionName = durableExecutionNameForIntent(intentId);
+  await store.deleteWorkflowCheckpoint(intentId);
+  const updated = await store.updateExecution({
+    executionId: intentId,
+    projectId,
+    status: 'CREATED',
+    fromStatus: priorStatus,
+    startedAt: meta.startedAt,
+    durableExecutionName,
+    durableExecutionArn: null,
+    orchestratorStartedAt: null,
+    orchestratorExpiresAt: null,
+    pendingHumanTaskId: null,
+    failureReason: null,
+    failure: null,
+    completedAt: null,
+    rewindFromStageId: fromStage.stageId,
+    scope: newScope,
+    composedGrid: newGrid,
+    // Persist the pruned overlay (see priorSkipIds above) so META never
+    // pins a skip the new grid already excludes.
+    skipStageIds: priorSkipIds.length ? priorSkipIds : null,
+    planWarnings: planResult.warnings?.length ? planResult.warnings : null,
+    startedBy: responder.sub,
+    starterName: responder.displayName,
+    starterEmail: responder.email,
+    ...mcpLaunch.update,
+  });
+  try {
+    const invoked = await invokeOrchestrator(
+      {
+        action: 'start',
+        intentId,
+        executionId: intentId,
+        startAtStageId: fromStage.stageId,
+      },
+      { durableExecutionName },
+    );
+    if (invoked?.durableExecutionArn) {
+      await store
+        .updateExecution({
+          executionId: intentId,
+          durableExecutionArn: invoked.durableExecutionArn,
+        })
+        .catch((err) => logger.error('Durable execution ARN stamp failed', err));
+    }
+  } catch (err) {
+    await store.updateExecution({
+      executionId: intentId,
+      projectId,
+      status: priorStatus,
+      fromStatus: 'CREATED',
+      startedAt: meta.startedAt,
+    });
+    throw err;
+  }
+  return response(202, mapIntent(updated));
+};
+
+// Lightweight preflight for autosaves: no graph projection or workflow reads.
+// Membership was checked above; an artifact is always looked up within this intent.
+const handleIntentEditState = async ({ event, projectId, intentId, g, response }) => {
+  const meta = await store.getExecution(intentId, { consistentRead: true });
+  if (!meta || meta.projectId !== projectId) return response(404, { error: 'Intent not found' });
+  const requested = event.queryStringParameters.editState;
+  if (requested === 'draft')
+    return response(200, { draftRevision: meta.draftRevision ?? 0, status: meta.status });
+  const artifact = await fetchArtifactRow(g, intentId, requested);
+  if (!artifact) return response(404, { error: 'Artifact not found' });
+  return response(200, {
+    editRevision: artifact.editRevision,
+    collaborationEpoch: artifact.collaborationEpoch,
+  });
+};
+
+// GET /projects/{projectId}/intents/{intentId}/graph — the intent's
+// Neptune knowledge subgraph (artifacts + typed relations + questions +
+// discussions + the project knowledge corpus) for the KnowledgeGraph
+// view. Same membership check as the detail DTO.
+const handleIntentGraph = async ({ projectId, intentId, g, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  return response(200, await fetchKnowledgeGraph(g, { projectId, intentId }));
+};
+
+// GET /projects/{projectId}/intents/{intentId}/audit — aggregated process
+// and graph-read evidence for improving future runs.
+const handleIntentAudit = async ({ projectId, intentId, response }) => {
+  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  if (!records.meta || records.meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  return response(200, buildIntentAudit({ records }));
+};
+
+// GET /projects/{projectId}/intents/{intentId}/outputs — the agent
+// transcript, fetched lazily per activity pane instead of riding the
+// detail DTO (a long run's transcript is megabytes; the DTO is polled).
+// Query params:
+//   stageInstanceId — that stage's chunks; the literal "intent" selects
+//     the stage-less workspace/init bucket; absent = ALL chunks.
+//   afterSeq — only chunks with seq > afterSeq (incremental catch-up
+//     after a websocket-live pane is seeded).
+const handleIntentOutputs = async ({ event, projectId, intentId, response }) => {
+  const meta = await store.getExecution(intentId);
+  if (!meta || meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const qs = event.queryStringParameters ?? {};
+  const rawStage = qs.stageInstanceId ?? undefined;
+  const afterSeq = qs.afterSeq != null && qs.afterSeq !== '' ? Number(qs.afterSeq) : null;
+  if (afterSeq != null && !Number.isFinite(afterSeq)) {
+    return response(400, { error: 'afterSeq must be a number' });
+  }
+  const rows = await store.getOutputs(intentId, {
+    // "intent" is the UI's bucket key for stage-less (init-ws) output.
+    ...(rawStage !== undefined
+      ? { stageInstanceId: rawStage === 'intent' ? null : rawStage, filterByStage: true }
+      : {}),
+    afterSeq,
+  });
+  return response(200, {
+    outputs: rows.map((o) => ({
+      seq: o.seq,
+      stageInstanceId: o.stageInstanceId ?? null,
+      unitSlug: o.unitSlug ?? null,
+      sectionIndex: o.sectionIndex ?? null,
+      kind: o.kind,
+      content: o.content,
+      timestamp: o.timestamp,
+      ...(o.display ? { display: o.display } : {}),
+    })),
+  });
+};
+
+const handleGetIntent = async ({ projectId, intentId, g, response }) => {
+  // GET single — assembled detail DTO. Outputs are deliberately EXCLUDED
+  // (see /outputs above): they dominate the partition's size and the UI
+  // fetches them lazily per pane. `outputs: []` keeps the DTO shape stable.
+  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  if (!records.meta || records.meta.projectId !== projectId) {
+    return response(404, { error: 'Intent not found' });
+  }
+  const completion = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(records.meta.status)
+    ? await assessExecutionCompletion({ records, loadPlan: intentMethodology.loadPlan })
+    : unitCompletion(records);
+  const artifacts = await fetchArtifacts(g, intentId);
+  const pullRequests = await fetchPullRequests(g, intentId);
+  const stagesByInstance = new Map(
+    (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
+  );
+  const gates = records.humanTasks.map((task) => ({
+    ...mapHumanTask(task),
+    resumeAvailable: resumeOwed({
+      meta: records.meta,
+      gate: task,
+      stageRow: stagesByInstance.get(task.stageInstanceId) ?? null,
+    }),
+  }));
+  const answerEvents = await buildGateAnswerEvents(g, gates);
+  const priceFor = await getPriceResolver();
+  return response(200, {
+    intent: mapIntent(records.meta),
+    stages: records.stages.map(mapStage),
+    // Activity feed: lifecycle events (workspace init, failures, completion)
+    // newest-last in emit order, so the UI can show what's happening — init-ws
+    // is otherwise invisible (it creates no stage row).
+    events: [
+      ...(records.events ?? []).map((e) => ({
+        eventId: e.eventId,
+        type: e.eventType,
+        stageInstanceId: e.stageInstanceId ?? null,
+        unitSlug: e.unitSlug ?? null,
+        sectionIndex: e.sectionIndex ?? null,
+        actor: e.actor ?? null,
+        summary: e.summary ?? null,
+        timestamp: e.timestamp,
+        // A WHITELIST of `detail` fields the timeline renders — never the
+        // whole object, which carries verbatim agent text and internal ids.
+        // Today: the dissent round counters, so the feed can say "round 1/2"
+        // instead of an unqualified "Maintained dissent".
+        ...timelineEventDetail(e.detail),
+      })),
+      ...answerEvents,
+    ].toSorted((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))),
+    gates,
+    steering: (records.steering ?? []).map(mapSteering),
+    metrics: mapMetricsWithCost(records.metrics, records.stages, priceFor),
+    outputs: [],
+    sensorRuns: records.sensorRuns.map((s) => ({
+      sensorRunId: s.sensorRunId,
+      stageInstanceId: s.stageInstanceId ?? null,
+      unitSlug: s.unitSlug ?? null,
+      sectionIndex: s.sectionIndex ?? null,
+      sensorId: s.sensorId,
+      result: s.result,
+      severity: s.severity,
+      held: s.held,
+      // The sensor's structured verdict (missing artifacts, unreferenced
+      // upstreams, violations …). Surfaced so the UI can explain WHY a
+      // non-PASS verdict fired — an advisory INCONCLUSIVE still matters even
+      // though it did not hold the stage.
+      detail: s.detail ?? null,
+      timestamp: s.timestamp,
+    })),
+    artifacts,
+    // Fan-in PR record(s) — a run-level output, surfaced as a work product.
+    pullRequests,
+    // Quorum-supported artifact edit sessions (post-hoc document editing):
+    // plan approval + progress render from these rows.
+    quorumEdits: (records.quorumEdits ?? []).map(mapQuorumEdit),
+    // Composer sessions (proposal + authoritative validation) — the
+    // compose page renders these; compose.updated broadcasts keep it live.
+    composes: (records.composes ?? []).map(mapCompose),
+    // Unit lanes (docs/v2-parallel.md WP4): the promoted UNITPLAN snapshot
+    // + the live UNIT lane rows, so the UI can render the lane board and
+    // attribute per-unit stage instances. Both null/empty pre-promotion.
+    unitCompletion: completion,
+    unitPlan: mapUnitPlan(records.unitPlan),
+    units: (records.units ?? []).map(mapUnit),
+    unitPrs: (records.unitPrs ?? []).map(mapUnitPr),
+    feedbackBatches: (records.feedbackBatches ?? []).map(mapFeedbackBatch),
+  });
+};
+
+// GET /projects/{projectId}/metrics — usage + cost rolled up across every
+// intent in the project. Reads each execution's METRIC#/STAGE# rows (bounded,
+// fanned out concurrently), aggregates per intent, then rolls up: token
+// counts + cost summed, gauges (context %) peaked. `anyUnpriced` flags that a
+// model (newer / Kiro) couldn't be priced so the UI can caveat the total.
+const handleProjectMetrics = async ({ projectId, response }) => {
+  const metas = await store.listProjectExecutions({ projectId });
+  const priceFor = await getPriceResolver();
+  const perIntent = await Promise.all(
+    metas.map(async (meta) => {
+      const records = await store.getExecutionRecords(meta.executionId ?? meta.intentId, {
+        includeOutputs: false,
+      });
+      const summary = summarizeExecutionMetrics(records.metrics, records.stages, priceFor);
+      return {
+        intentId: meta.intentId ?? meta.executionId,
+        title: meta.title ?? null,
+        status: meta.status ?? null,
+        metrics: summary.metrics,
+        cost: summary.cost,
+      };
+    }),
+  );
+  const withUsage = perIntent.filter(
+    (p) => Object.keys(p.metrics).length > 0 || p.cost.hasCostedSamples,
+  );
+  const projectMetrics = rollupAggregates(withUsage.map((p) => p.metrics));
+  const totalCost = withUsage.reduce((s, p) => s + p.cost.totalCost, 0);
+  const anyUnpriced = withUsage.some((p) => p.cost.hasCostedSamples && !p.cost.priced);
+  // Kiro credit-priced dollars are estimates (overage rate) — flag them so
+  // the UI can caveat the project total instead of presenting it as billing.
+  const anyEstimated = withUsage.some((p) => p.cost.estimated);
+  return response(200, {
+    perIntent: withUsage,
+    project: {
+      metrics: projectMetrics,
+      cost: { totalCost, currency: 'USD', anyUnpriced, anyEstimated },
+    },
+  });
+};
+
+const handleListIntents = async ({ event, projectId, response }) => {
+  // GET list — META rows for the project, newest first.
+  const status = event.queryStringParameters?.status || null;
+  const metas = await store.listProjectExecutions({ projectId, status });
+  return response(200, metas.map(mapIntent));
+};
+
+const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) => {
+  // Create a DRAFT intent (no Neptune anchor yet — init-ws makes it at Start).
+  const data = body ? JSON.parse(body) : {};
+  if (!data.title && !data.prompt) {
+    return response(400, { error: 'title or prompt is required' });
+  }
+  const cfg = await fetchProjectConfig(g, projectId);
+  if (!cfg) {
+    return response(400, { error: 'Project is not a v2 project' });
+  }
+  const newIntentId = randomUUID();
+  // Pin the workflow version now (reproducibility) — project pin wins, else
+  // resolve the workflow's current latest version.
+  const workflowId = cfg.workflowId;
+  let workflowVersion = cfg.workflowVersion ?? (await resolveWorkflowVersion(workflowId));
+  if (!workflowVersion) {
+    return response(400, { error: `Workflow "${workflowId}" has no published version` });
+  }
+  // Scope is chosen per-intent (a project can hold features, bugfixes, …).
+  // It must be one of the pinned workflow's offered scopes — a free-typed
+  // scope would be rejected by buildExecutionPlan when the orchestrator runs.
+  // OPTIONAL at create: the DRAFT-first flow creates the intent as soon as
+  // a title/prompt exists and picks the projection on the draft page, so an
+  // absent scope defaults to the workflow's conventional default ("feature"
+  // when offered, else the first offered scope). With a composed grid the
+  // grid IS the projection and `scope` degrades to the provenance label of
+  // whatever base it was composed from (possibly a custom name) — the
+  // resolver validates the grid instead.
+  const { value: composedGrid, error: composedGridError } = normalizeComposedGrid(
+    data.composedGrid,
+  );
+  if (composedGridError) {
+    return response(400, { error: composedGridError });
+  }
+  // The stock scope the grid was built from. A grid's own `scope` is a
+  // provenance label that names no SCOPE block, so this is what carries the
+  // per-scope policy and the settings a member may choose. Verified against
+  // the pinned release's own scope vocabulary below, never taken on trust.
+  let policyScope = null;
+  if (data.policyScope !== undefined && data.policyScope !== null) {
+    if (typeof data.policyScope !== 'string' || !data.policyScope) {
+      return response(400, { error: 'policyScope must be a non-empty scope name or null' });
+    }
+    policyScope = data.policyScope;
+  }
+  // Per-intent release selection. The registry is the
+  // ONLY selection gate; it is consulted here and nowhere in the execution
+  // path, so demoting a release never changes what an existing intent runs.
+  //
+  // The flag is the hard boundary. While it is off no registry row is read
+  // at all, so an unpinned create stays byte-identical to its pre-#482 form.
+  // A non-string value is a client bug, not an opt-out: silently ignoring it
+  // would create the intent on the stable channel (or unpinned) while the
+  // caller believes it asked for a specific release.
+  if (
+    Object.hasOwn(data, 'methodologyReleaseId') &&
+    data.methodologyReleaseId !== null &&
+    typeof data.methodologyReleaseId !== 'string'
+  ) {
+    return response(400, {
+      error: 'methodologyReleaseId must be a string or null',
+      code: 'release_selection_invalid',
+    });
+  }
+  const requestedReleaseId =
+    typeof data.methodologyReleaseId === 'string' && data.methodologyReleaseId
+      ? data.methodologyReleaseId
+      : null;
+  // Construction Autonomy Mode, frozen onto the intent at create. The human
+  // typing this create request IS the grant, which is what upstream's
+  // human-presence guard exists to prove — so the field is accepted here and
+  // nowhere an unattended run could reach. Absent and null both leave the
+  // intent gated; a malformed value is a client bug, not an opt-out, because
+  // silently dropping it would run a gated intent while the caller believes
+  // it asked for autonomy.
+  if (
+    Object.hasOwn(data, 'constructionGateAutonomy') &&
+    data.constructionGateAutonomy !== null &&
+    !CONSTRUCTION_AUTONOMY_MODES.includes(data.constructionGateAutonomy)
+  ) {
+    return response(400, {
+      error: `constructionGateAutonomy must be one of ${CONSTRUCTION_AUTONOMY_MODES.join(', ')}, or null`,
+      code: 'construction_autonomy_mode_invalid',
+    });
+  }
+  // Only `autonomous` is a grant. `gated` is the default every intent already
+  // has, so it is stored as no grant and accepted on any release.
+  const requestedAutonomyMode =
+    data.constructionGateAutonomy === 'autonomous' ? 'autonomous' : null;
+  if (requestedReleaseId && AIDLC_RELEASE_PINNING() !== 'on') {
+    return response(400, {
+      error: 'Per-intent AI-DLC release selection is disabled',
+      code: 'release_selection_disabled',
+    });
+  }
+  let selectedRelease = null;
+  if (AIDLC_RELEASE_PINNING() === 'on') {
+    try {
+      // A null id falls back to the stable channel; an unset stable channel
+      // returns null, which keeps today's derive-the-pin-from-the-ref path.
+      selectedRelease = await resolveSelectableRelease({
+        ddb,
+        tableName: BLOCKS_TABLE(),
+        releaseId: requestedReleaseId,
+      });
+    } catch (error) {
+      // Never substitute a different release than the one requested.
+      if (isReleaseRegistryError(error)) {
+        return response(400, { error: error.message, code: error.code });
+      }
+      throw error;
+    }
+  }
+  let selectedReleasePin = selectedRelease ? releasePinFromRecord(selectedRelease) : null;
+  // Allowed, but loud: the intent pins a closure an older importer produced,
+  // so it misses every field later mappers learned until an admin upgrades
+  // the record (PATCH /aidlc-releases/{releaseId} {importerRevision}).
+  if (selectedRelease?.importerStale === true) {
+    logger.warn('AI-DLC release selected for a new intent has a stale importer closure', {
+      releaseId: selectedRelease.releaseId,
+      importerRevision: selectedRelease.importerRevision,
+      currentImporterRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+    });
+  }
+  // Every create-time resolution (scope vocabulary AND the plan check) runs
+  // against the selected release, so an intent is validated against exactly
+  // the methodology it will run rather than the current SYSTEM catalog.
+  let selectedReleaseOptions = selectedReleasePin
+    ? { methodologyRelease: selectedReleasePin, s3, bucket: ARTIFACTS_BUCKET() }
+    : {};
+  let scope = data.scope;
+  if (!composedGrid) {
+    const scopes = await loadWorkflowScopes({
+      ddb,
+      tableName: BLOCKS_TABLE(),
+      workflowId,
+      workflowVersion,
+      ...selectedReleaseOptions,
+    });
+    if (!scope) {
+      scope = scopes.includes('feature') ? 'feature' : (scopes[0] ?? null);
+      if (!scope) {
+        return response(400, {
+          error: `Workflow "${workflowId}" offers no scopes — cannot default one`,
+        });
+      }
+    } else if (!scopes.includes(scope)) {
+      return response(400, {
+        error: `Unknown scope "${scope}" for workflow "${workflowId}"`,
+        scopes,
+      });
+    }
+  } else if (!scope) {
+    scope = 'composed';
+  }
+  // A base scope describes a GRID, so a caller that names its scope directly
+  // is describing a selection that has no base — refused here, before any
+  // catalog is consulted, because that is the body being wrong rather than
+  // the library having nothing to resolve. Whether the base means anything
+  // at all is the catalog's answer, so it is decided after the plan below.
+  if (policyScope && !composedGrid) {
+    return response(400, {
+      error: 'policyScope applies to a composed stage grid; send the scope itself instead',
+    });
+  }
+  // Per-intent stage deselection (shared/stage-skip.js): only accepted when
+  // stage skipping is EFFECTIVELY enabled (project override over platform
+  // setting), and validated structurally by the plan resolver below
+  // (CONDITIONAL-only, in-scope, never initialization). The effective mode
+  // is snapshotted onto META either way — it also gates the run's
+  // gate-time "skip to stage X" options.
+  const stageSkipping = effectiveStageSkipping(
+    await fetchPlatformStageSkipping(),
+    cfg.stageSkipping,
+  );
+  const rawSkipStageIds = normalizeSkipStageIds(data.skipStageIds);
+  if (rawSkipStageIds && stageSkipping !== 'enabled') {
+    return response(400, {
+      error: 'Stage skipping is disabled for this project — skipStageIds is not accepted',
+    });
+  }
+  // The grid absorbs redundant overlay skips (composed-grid.js): an
+  // overlay entry the grid already excludes would otherwise fail the
+  // resolver's skip_stage_not_in_scope guard on every later recompute.
+  const skipStageIds = pruneSkipsForGrid(rawSkipStageIds, composedGrid);
+  if (selectedReleasePin) {
+    // Capture the current user forks before release mode replaces the
+    // mutable SYSTEM library with the immutable closure. SYSTEM coordinates
+    // are intentionally discarded; only user-tenant versions can overlay it.
+    const currentPlan = await loadExecutionPlan({
+      ddb,
+      tableName: BLOCKS_TABLE(),
+      workflowId,
+      workflowVersion,
+      scope,
+      ...(skipStageIds ? { skipStageIds } : {}),
+      ...(composedGrid ? { composedGrid } : {}),
+    });
+    const methodologyPins = await snapshotUserMethodologyPins(currentPlan.methodologyPins);
+    if (methodologyPins) {
+      selectedReleaseOptions = { ...selectedReleaseOptions, methodologyPins };
+    }
+  }
+  // Resolve the full execution plan NOW, before any row is written. The
+  // plan is a pure function of (workflow@pinnedVersion, scope, skip
+  // overlay), so a pass here holds for the whole intent lifetime — this
+  // turns a structurally broken scope (or an illegal skip) into a
+  // synchronous 400 instead of a post-init-ws `plan_invalid` failure
+  // (after a git clone + Neptune anchor were burnt).
+  // Non-fatal `warnings` (scope-shortcut degradations: inputs whose
+  // producer is out of scope, sections downgraded to once-per-workflow)
+  // are persisted on the intent so the UI can surface the degraded run.
+  let planCheck = await loadExecutionPlan({
+    ddb,
+    tableName: BLOCKS_TABLE(),
+    workflowId,
+    workflowVersion,
+    scope,
+    ...(skipStageIds ? { skipStageIds } : {}),
+    ...(composedGrid ? { composedGrid } : {}),
+    ...(policyScope ? { policyScope } : {}),
+    ...selectedReleaseOptions,
+  });
+  // A stable channel is an implicit default, so an overlay it cannot apply
+  // must degrade the way the no-channel path degrades rather than blocking
+  // every create in the space: the intent continues as if no channel were
+  // set, so it may still auto-pin the deployment-ref release below. An
+  // explicitly requested release stays strict. The base release is
+  // verified first, so a corrupt closure is never mistaken for an
+  // incompatible user fork.
+  let skippedStableReleaseId = null;
+  if (
+    !planCheck.valid &&
+    selectedReleasePin &&
+    !requestedReleaseId &&
+    selectedReleaseOptions.methodologyPins
+  ) {
+    const baseReleasePlan = await loadExecutionPlan({
+      ddb,
+      tableName: BLOCKS_TABLE(),
+      workflowId,
+      workflowVersion,
+      scope,
+      ...(skipStageIds ? { skipStageIds } : {}),
+      ...(composedGrid ? { composedGrid } : {}),
+      methodologyRelease: selectedReleasePin,
+      s3,
+      bucket: ARTIFACTS_BUCKET(),
+    });
+    if (baseReleasePlan.valid) {
+      logger.warn(
+        'Stable AI-DLC release is incompatible with the user overlay; falling back to the deployment ref',
+        {
+          releaseId: selectedReleasePin.releaseId,
+          errors: planCheck.errors ?? [],
+        },
+      );
+      skippedStableReleaseId = selectedReleasePin.releaseId;
+      selectedReleasePin = null;
+      selectedReleaseOptions = {};
+      planCheck = await loadExecutionPlan({
+        ddb,
+        tableName: BLOCKS_TABLE(),
+        workflowId,
+        workflowVersion,
+        scope,
+        ...(skipStageIds ? { skipStageIds } : {}),
+        ...(composedGrid ? { composedGrid } : {}),
+      });
+    }
+  }
+  if (!planCheck.valid) {
+    return response(400, {
+      error: composedGrid
+        ? `The composed stage grid is not runnable for workflow "${workflowId}"`
+        : skipStageIds
+          ? `Scope "${scope}" with the requested stage skips is not runnable for workflow "${workflowId}"`
+          : `Scope "${scope}" is not runnable for workflow "${workflowId}"`,
+      errors: planCheck.errors ?? [],
+    });
+  }
+  workflowVersion = planCheck.workflowVersion ?? workflowVersion;
+  // The base is honoured ONLY on a catalog that authors the per-intent
+  // settings, and that catalog's own answer travels beside the plan this
+  // resolution already produced — the same gate the save and `validate-grid`
+  // apply, read from the resolution rather than re-derived.
+  //
+  // On any other library the base resolves nothing the run reads, so it is
+  // DROPPED rather than refused and rather than stored: the page records a
+  // base for every stock scope, and an unpinned, 2.3.3, 2.8.2 or 2.9.0
+  // intent must be created with the row it always had. Where the base IS
+  // honoured it has to name a real scope block, or a customized grid would
+  // quietly run with no policy at all.
+  if (policyScope && !planCheck.aidlcSettingsAware) {
+    policyScope = null;
+  } else if (policyScope) {
+    const scopes = await loadWorkflowScopes({
+      ddb,
+      tableName: BLOCKS_TABLE(),
+      workflowId,
+      workflowVersion,
+      ...selectedReleaseOptions,
+    });
+    if (!scopes.includes(policyScope)) {
+      return response(400, {
+        error: `Unknown policyScope "${policyScope}" for workflow "${workflowId}"`,
+        scopes,
+      });
+    }
+  }
+  // Per-intent AI-DLC settings at create. The selection they are validated
+  // against is in this same body, so they are normalised against the plan
+  // just resolved from it: a setting the pinned release's chosen scope does
+  // not author is dropped, and a value outside the registry's own value set
+  // is refused by name.
+  const createdSettings = normalizeAidlcSettings({
+    settings: data.aidlcSettings ?? null,
+    authored: planCheck.plan?.aidlcSettingsAuthored ?? {},
+  });
+  if (createdSettings.error) return response(400, createdSettings.error);
+  const aidlcSettings = createdSettings.value;
+  let planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
+  if (aidlcSettings) {
+    const settingsCheck = await loadExecutionPlan({
+      ddb,
+      tableName: BLOCKS_TABLE(),
+      workflowId,
+      workflowVersion,
+      scope,
+      ...(skipStageIds ? { skipStageIds } : {}),
+      ...(composedGrid ? { composedGrid } : {}),
+      ...(policyScope ? { policyScope } : {}),
+      intentSettings: aidlcSettings,
+      ...selectedReleaseOptions,
+    });
+    if (!settingsCheck.valid) {
+      return response(400, {
+        error: `The requested AI-DLC settings are not runnable for workflow "${workflowId}"`,
+        errors: settingsCheck.errors ?? [],
+      });
+    }
+    planWarnings = settingsCheck.warnings?.length ? settingsCheck.warnings : null;
+  }
+  // The capability map of the plan the intent will actually run. Only a
+  // release-mode plan resolves one, which is exactly the boundary the autonomy
+  // grant needs: an unpinned intent has no authored protocol to honour.
+  // Re-stamped below if the deployment-ref auto-pin replaces this plan.
+  let resolvedCapabilities = planCheck.plan?.capabilities ?? null;
+  let aidlcRepoRef = null;
+  // A selected release IS the source of truth for the ref, so the network
+  // lookup of the deployment ref is skipped: resolving an unrelated ref
+  // could 503 a create that does not depend on it.
+  if (!selectedReleasePin && AIDLC_REPO_REF()) {
+    try {
+      aidlcRepoRef = await resolveAidlcRepoRef(AIDLC_REPO_REF());
+    } catch (error) {
+      return response(503, {
+        error: 'The configured AI-DLC repository ref could not be resolved',
+        detail: error.message,
+      });
+    }
+  }
+  if ((planCheck.methodologySourceRefs ?? []).length > 1) {
+    return response(409, {
+      error: 'The selected workflow combines blocks from multiple AI-DLC revisions',
+      refs: planCheck.methodologySourceRefs,
+    });
+  }
+  aidlcRepoRef = planCheck.methodologySourceRefs?.[0] ?? aidlcRepoRef;
+  // Issue #482: bind the intent to the immutable release published for the
+  // resolved SHA, so a later SYSTEM reseed cannot change what it runs. A
+  // ref with no published manifest is NOT an error — the intent stays on
+  // the legacy DynamoDB path exactly as before.
+  let methodologyRelease = null;
+  // The pin set to persist. In release mode it is recomputed from the
+  // release-mode plan, so it never carries the SYSTEM-tenant pins the
+  // DynamoDB resolver produces (see v2-workflow-plan.js).
+  let methodologyPins = planCheck.methodologyPins;
+  if (selectedReleasePin) {
+    // An explicitly selected (or stable-channel) release. Its SHA
+    // is the intent's ref, and the pin is stamped from the registry record
+    // the plan was just validated against.
+    methodologyRelease = selectedReleasePin;
+    aidlcRepoRef = selectedRelease.sourceSha;
+  } else if (AIDLC_RELEASE_PINNING() === 'on' && aidlcRepoRef && ARTIFACTS_BUCKET()) {
+    // The registry decides eligibility, so it is asked first. The manifest is
+    // read only once a row exists: the role has no s3:ListBucket, so a GET
+    // for a ref that was never imported answers 403 AccessDenied, which is
+    // indistinguishable from a real permissions failure.
+    let eligibleRelease = null;
+    let ineligibleCode = null;
+    try {
+      const deploymentProfile = profileFor(aidlcRepoRef);
+      if (deploymentProfile?.upstreamRef === aidlcRepoRef) {
+        // A published closure is evidence, not authorization. Only pin it
+        // when the registry has explicitly made this exact closure visible
+        // and selectable and its recorded authored behavior is still
+        // honoured by this runtime.
+        eligibleRelease = await resolveSelectableRelease({
+          ddb,
+          tableName: BLOCKS_TABLE(),
+          releaseId: deploymentProfile.releaseId,
+        });
+        await assertReleaseCapabilitiesHonoured({
+          release: eligibleRelease,
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+        });
+      }
+    } catch (error) {
+      // Only a genuine "not registered / not eligible" answer may fall back
+      // to an unpinned intent. A throttled registry read or an unverifiable
+      // capability record means the lookup could not be completed, and
+      // downgrading that to "does not exist" would silently unpin intents.
+      if (!isAutoPinIneligible(error)) {
+        logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
+        return response(503, {
+          error: 'The published AI-DLC release could not be resolved',
+          code: 'release_resolution_failed',
+        });
+      }
+      ineligibleCode = error.code;
+      eligibleRelease = null;
+    }
+    if (eligibleRelease) {
+      try {
+        // The manifest is addressed by this runtime's importer revision. After
+        // a revision bump the eligible row still describes the previous
+        // revision until the release is re-imported, and the new-revision
+        // manifest does not exist yet (a 403 without s3:ListBucket). That is
+        // the same half-finished re-import as a closure mismatch below, so it
+        // is detected from the row alone, before S3 is touched.
+        if (Number(eligibleRelease.importerRevision) !== AIDLC_RELEASE_IMPORTER_REVISION) {
+          throw new ReleaseRegistryError(
+            'release_registry_skew',
+            'The eligible registry row was imported under a different importer revision',
+            {
+              details: {
+                releaseId: eligibleRelease.releaseId,
+                fields: ['importerRevision'],
+                registeredImporterRevision: eligibleRelease.importerRevision,
+                currentImporterRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+              },
+            },
+          );
+        }
+        const manifest = await readReleaseManifest({
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+          sha: aidlcRepoRef,
+          importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+        });
+        if (!manifest) {
+          throw new ReleaseRegistryError(
+            'release_not_published',
+            `The registered release ${eligibleRelease.releaseId} has no published manifest`,
+          );
+        }
+        // AUTO-PIN. Everything above was validated against the SYSTEM
+        // DynamoDB library, which is NOT what a pinned intent will run.
+        // Re-resolve the scope vocabulary and the plan against the closure
+        // before committing to the pin: if the release cannot reproduce
+        // them, the intent is created UNPINNED (today's behaviour) rather
+        // than stamped with a pin that would fail on its first run. A 201
+        // followed by a permanent 409 at execution time is the one outcome
+        // this path must never produce.
+        const candidatePin = methodologyReleasePinFromManifest(manifest);
+        const registeredPin = releasePinFromRecord(eligibleRelease);
+        const skewedFields = Object.keys(candidatePin).filter(
+          (key) => candidatePin[key] !== registeredPin[key],
+        );
+        if (skewedFields.length > 0) {
+          throw new ReleaseRegistryError(
+            'release_registry_skew',
+            'The deployment-ref closure does not match its eligible registry row',
+            { details: { releaseId: eligibleRelease.releaseId, fields: skewedFields } },
+          );
+        }
+        // Scope discovery maps a permanent resolution failure to an empty
+        // vocabulary, so read the closure first: without this an unreadable
+        // closure is indistinguishable from an incompatible scope.
+        await loadReleaseClosure({
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+          methodologyRelease: candidatePin,
+          ddb,
+          tableName: BLOCKS_TABLE(),
+        });
+        const candidateMethodologyPins = await snapshotUserMethodologyPins(
+          planCheck.methodologyPins,
+        );
+        const candidateOptions = {
+          methodologyRelease: candidatePin,
+          s3,
+          bucket: ARTIFACTS_BUCKET(),
+          ...(candidateMethodologyPins ? { methodologyPins: candidateMethodologyPins } : {}),
+        };
+        const releaseScopes = composedGrid
+          ? null
+          : await loadWorkflowScopes({
+              ddb,
+              tableName: BLOCKS_TABLE(),
+              workflowId,
+              workflowVersion,
+              ...candidateOptions,
+            });
+        const releasePlan =
+          releaseScopes && !releaseScopes.includes(scope)
+            ? { valid: false, errors: [{ code: 'scope_not_in_release', scope }] }
+            : await loadExecutionPlan({
+                ddb,
+                tableName: BLOCKS_TABLE(),
+                workflowId,
+                workflowVersion,
+                scope,
+                ...(skipStageIds ? { skipStageIds } : {}),
+                ...(composedGrid ? { composedGrid } : {}),
+                ...candidateOptions,
+              });
+        if (releasePlan.valid) {
+          methodologyRelease = candidatePin;
+          methodologyPins = releasePlan.methodologyPins;
+          resolvedCapabilities = releasePlan.plan?.capabilities ?? null;
+          workflowVersion = releasePlan.workflowVersion ?? workflowVersion;
+          if (skippedStableReleaseId) {
+            logger.info(
+              'Stable AI-DLC release was skipped; intent auto-pinned to the deployment-ref release',
+              { releaseId: candidatePin.releaseId, skippedReleaseId: skippedStableReleaseId },
+            );
+          }
+        } else if (
+          (releasePlan.errors ?? []).some((error) =>
+            String(error.code ?? '').startsWith('release_'),
+          )
+        ) {
+          return response(503, {
+            error: 'The published AI-DLC release could not be verified',
+            code: 'release_resolution_failed',
+          });
+        } else {
+          logger.warn(
+            'The published AI-DLC release cannot reproduce this plan; intent stays unpinned',
+            {
+              aidlcRepoRef,
+              releaseId: manifest.releaseId,
+              scope,
+              errors: releasePlan.errors ?? [],
+            },
+          );
+        }
+      } catch (error) {
+        // A row and a manifest that describe different closures of the same
+        // release, or a row at another importer revision, mean a re-import
+        // under a new importer revision is only half done. Both closures are readable, so this is not an integrity
+        // failure: the intent stays unpinned until the registry catches up.
+        if (isReleaseRegistryError(error) && error.code === 'release_registry_skew') {
+          logger.warn(
+            'Deployment-ref AI-DLC release does not match its registry row; intent stays unpinned',
+            { aidlcRepoRef, code: error.code, ...error.details },
+          );
+        } else {
+          // Otherwise the registry says this closure is eligible, so any
+          // failure to read or verify it (a denied or corrupt manifest, a
+          // missing catalog) is an integrity problem, never a reason to
+          // quietly unpin the intent.
+          logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
+          return response(503, {
+            error: 'The published AI-DLC release could not be resolved',
+            code: 'release_resolution_failed',
+          });
+        }
+      }
+    } else {
+      logger.warn('No eligible AI-DLC release for the resolved ref; intent stays unpinned', {
+        aidlcRepoRef,
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+        code: ineligibleCode,
+      });
+    }
+  }
+  // Optional per-repo base-branch override (see validateBaseBranches) —
+  // validated against THIS intent's repo set before anything is written.
+  const { value: baseBranches, error: baseBranchesError } = validateBaseBranches(
+    data.baseBranches,
+    cfg.repos,
+  );
+  if (baseBranchesError) {
+    return response(400, { error: baseBranchesError });
+  }
+  // Optional provenance — when the intent is kicked off from a tracker
+  // issue, record which one. The imported text rides in `prompt`; this is
+  // only the back-link. Validated against the project's actual bindings.
+  const source = normalizeSource(data.source, cfg.trackers);
+  // Branch: caller override wins; otherwise derive a readable slug from
+  // the title/prompt, de-duplicated against the project's existing intents
+  // (best-effort — the listing is capped, and a stale duplicate only means
+  // two intents share a branch name candidate, not data corruption).
+  let branch = data.branch || null;
+  if (!branch) {
+    const existing = await store.listProjectExecutions({ projectId, limit: 1000 });
+    const taken = new Set(existing.map((m) => m.branch).filter(Boolean));
+    branch = branchForIntent({
+      title: data.title,
+      prompt: data.prompt,
+      intentId: newIntentId,
+      taken,
+    });
+  }
+  let environment;
+  try {
+    environment = await resolveEnvironmentSnapshot({
+      ddb,
+      tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
+      environmentId: cfg.environmentId,
+      fallback: {
+        revisionId: `core-${process.env.CORE_RUNTIME_VERSION || '1'}`,
+        runtimeArn: AGENTCORE_RUNTIME_ARN(),
+        runtimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
+        imageDigest: process.env.CORE_IMAGE_DIGEST || null,
+        compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
+        verification: { status: 'PASSED', source: 'core-runtime' },
+      },
+    });
+  } catch (error) {
+    if (isEnvironmentResolutionError(error)) {
+      return response(409, { error: error.message, code: error.code });
+    }
+    throw error;
+  }
+  // Refuse a strategy the space's providers cannot honour now, before the
+  // execution exists, rather than failing its first unit lane later.
+  const prStrategy = effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy);
+  try {
+    assertPrStrategySupported(
+      prStrategy,
+      (cfg.repos ?? []).map((repo) => sharedRepoProvider(repo, cfg.gitProvider, cfg.repoProviders)),
+    );
+  } catch (error) {
+    if (error.code !== 'PR_STRATEGY_UNSUPPORTED') throw error;
+    return response(409, { error: error.message, code: error.code });
+  }
+  // Refuse the grant the resolved methodology cannot honour, before the
+  // execution exists. An unpinned intent, or a release whose closure ships no
+  // construction protocol, has no authored autonomy to reproduce — accepting
+  // the field there would persist a grant the gate walk ignores, which reads
+  // to the operator as autonomy that silently never happened.
+  if (
+    requestedAutonomyMode &&
+    !constructionAutonomyApplies({ capabilities: resolvedCapabilities ?? {} })
+  ) {
+    return response(400, {
+      error:
+        'constructionGateAutonomy needs an AI-DLC release whose methodology authors the construction autonomy protocol',
+      code: 'construction_autonomy_unavailable',
+    });
+  }
+  const meta = await store.createExecution({
+    executionId: newIntentId,
+    projectId,
+    intentId: newIntentId,
+    status: 'DRAFT',
+    workflowId,
+    workflowVersion,
+    aidlcRepoRef,
+    methodologyPins,
+    methodologyRelease,
+    scope,
+    startedBy: sub,
+    title: data.title || null,
+    prompt: data.prompt || null,
+    branch,
+    baseBranch: data.baseBranch || cfg.baseBranch,
+    baseBranches,
+    repos: cfg.repos,
+    repoProviders: cfg.repoProviders,
+    gitProvider: cfg.gitProvider,
+    cliModels: cfg.cliModels,
+    tierModels: cfg.tierModels,
+    mcpServersByTier: cfg.mcpServersByTier,
+    customRules: cfg.customRules,
+    environment,
+    deriveEnrichment: await fetchDeriveEnrichment(),
+    parkReleaseSeconds: cfg.parkReleaseSeconds,
+    maxParallelUnits: cfg.maxParallelUnits,
+    prStrategy,
+    constructionGateAutonomy: requestedAutonomyMode,
+    constructionGateAutonomyGrant: requestedAutonomyMode
+      ? {
+          source: 'create',
+          grantedAt: new Date().toISOString(),
+          grantedBy: sub,
+          grantedByName: getResponder(event).displayName || null,
+        }
+      : null,
+    stageSkipping,
+    skipStageIds,
+    composedGrid,
+    policyScope,
+    aidlcSettings,
+    source,
+    planWarnings,
+  });
+  if (aidlcSettings) {
+    const creator = getResponder(event);
+    for (const summary of describeAidlcSettingsChange({
+      previous: null,
+      next: aidlcSettings,
+      authored: planCheck.plan?.aidlcSettingsAuthored ?? {},
+      scope,
+    })) {
+      await store
+        .appendEvent({
+          executionId: newIntentId,
+          type: 'v2.intent.settings.changed',
+          actor: creator.displayName || creator.sub,
+          summary,
+        })
+        // Non-fatal, but NOT silent: the event is the audit record of who
+        // changed a setting, so losing it must leave a trace.
+        .catch((err) => logger.error('AI-DLC settings event append failed', err));
+    }
+  }
+  return response(201, mapIntent(meta));
+};
+
 export const handler = async (event, context) => {
   const cleanupDeadline = Date.now() + 10_000;
   if (context) logger.addContext(context);
@@ -1825,492 +6366,31 @@ export const handler = async (event, context) => {
     const auth = await authorize(g, projectId, sub, response);
     if (auth.res) return auth.res;
 
-    // Authenticated unit-review selection. Provider comments are data only:
-    // no webhook/comment can launch an agent. GET refreshes selectable
-    // comments; POST persists a replay-safe batch that the durable lane claims.
+    // Await each route so failures reach catch and finally closes the graph
+    // connection only after the route has finished using it.
     if (intentId && unitSlug && rawSectionIndex !== undefined && path?.endsWith('/feedback')) {
-      const sectionIndex = Number(rawSectionIndex);
-      if (!Number.isInteger(sectionIndex) || sectionIndex < 0) {
-        return response(400, { error: 'sectionIndex must be a non-negative integer' });
-      }
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      if (meta.prStrategy !== 'pr-per-unit') {
-        return response(409, { error: 'This intent does not use PR per unit' });
-      }
-      // A feedback revision rewrites the unit branch under a PR that must stay
-      // unmergeable meanwhile (a draft). Refused durably, before any provider
-      // call, for providers that have no drafts.
-      const draftless = draftlessProviders(
-        (meta.repos ?? []).map((repo) =>
-          sharedRepoProvider(repo, meta.gitProvider, meta.repoProviders),
-        ),
-      );
-      if (draftless.length) {
-        return response(409, {
-          error: `Feedback revisions need draft pull requests, which ${draftless.join(', ')} does not support`,
-          code: 'PR_STRATEGY_UNSUPPORTED',
-        });
-      }
-      const unit = await store.getUnit(intentId, sectionIndex, unitSlug);
-      const activeUnitStates = new Set([
-        'PR_DRAFT',
-        'RECONCILING',
-        'PR_READY',
-        'ADDRESSING_FEEDBACK',
-      ]);
-      if (!unit || !activeUnitStates.has(unit.state)) {
-        return response(409, { error: 'The unit lane is not in active review' });
-      }
-      const prs = (await store.listUnitPrs(intentId, { sectionIndex, slug: unitSlug })).filter(
-        (pr) => pr.state !== 'UNCHANGED' && pr.number != null,
-      );
-      if (prs.length === 0) {
-        return response(409, { error: 'The unit lane has no review pull requests' });
-      }
-      const fetched = [];
-      for (const pr of prs) {
-        const provider =
-          pr.provider || meta.repoProviders?.[pr.repository] || meta.gitProvider || 'github';
-        let comments;
-        try {
-          comments = await sourceControlOperation({
-            projectId,
-            provider,
-            repo: pr.repository,
-            operation: 'list-review-comments',
-            args: { number: pr.number },
-          });
-        } catch (error) {
-          logger.error('Review comment refresh failed', error);
-          return response(error.code === 'SOURCE_CONTROL_NOT_READY' ? 409 : 502, {
-            error:
-              error.code === 'SOURCE_CONTROL_NOT_READY'
-                ? 'Project source control setup is required'
-                : 'Could not refresh review comments',
-            code: error.code,
-          });
-        }
-        const selectable = comments.filter(isSelectableReviewComment).map((comment) => ({
-          ...comment,
-          id: String(comment.id),
-          repository: pr.repository,
-          prNumber: pr.number,
-        }));
-        fetched.push(...selectable);
-        await store
-          .updateUnitPr({
-            executionId: intentId,
-            sectionIndex,
-            slug: unitSlug,
-            repository: pr.repository,
-            fields: { commentCount: selectable.length },
-          })
-          .catch(() => {});
-      }
-      const comments = fetched.toSorted((a, b) =>
-        String(a.createdAt).localeCompare(String(b.createdAt)),
-      );
-      if (httpMethod === 'GET') {
-        const history = await store.listFeedbackBatches(intentId, {
-          sectionIndex,
-          slug: unitSlug,
-        });
-        const handled = new Set(
-          history.flatMap((batch) => (batch.comments ?? []).map(reviewCommentKey)),
-        );
-        return response(200, {
-          comments: comments.map((comment) => ({
-            ...comment,
-            previouslySelected: handled.has(reviewCommentKey(comment)),
-          })),
-        });
-      }
-      if (httpMethod === 'POST') {
-        const data = body ? JSON.parse(body) : {};
-        const selections = Array.isArray(data.comments) ? data.comments : [];
-        if (selections.length < 1 || selections.length > 20) {
-          return response(400, { error: 'Select between 1 and 20 comments' });
-        }
-        const requested = new Map(
-          selections.map((selection) => [
-            `${selection.repository}\u0000${String(selection.commentId)}`,
-            selection,
-          ]),
-        );
-        if (requested.size !== selections.length) {
-          return response(400, { error: 'Duplicate comment selections are not allowed' });
-        }
-        const selected = comments.filter((comment) =>
-          requested.has(`${comment.repository}\u0000${String(comment.id)}`),
-        );
-        if (selected.length !== requested.size) {
-          return response(400, {
-            error: 'One or more selected comments no longer exist or cannot be addressed',
-          });
-        }
-        const bytes = Buffer.byteLength(JSON.stringify(selected), 'utf8');
-        if (bytes > 32 * 1024) {
-          return response(413, { error: 'Selected feedback exceeds 32 KiB' });
-        }
-        const history = await store.listFeedbackBatches(intentId, {
-          sectionIndex,
-          slug: unitSlug,
-        });
-        const prior = new Set(
-          history.flatMap((batch) => (batch.comments ?? []).map(reviewCommentKey)),
-        );
-        const repeated = selected.filter((comment) => prior.has(reviewCommentKey(comment)));
-        if (repeated.length > 0) {
-          return response(409, {
-            error: 'Selected feedback has already been queued or handled',
-            commentIds: repeated.map((comment) => comment.id),
-          });
-        }
-        const responder = getResponder(event);
-        const batchId = feedbackBatchId(selected);
-        const created = await store.createFeedbackBatch({
-          executionId: intentId,
-          sectionIndex,
-          slug: unitSlug,
-          batchId,
-          comments: selected,
-          requestedBy: responder.sub,
-          requestedByName: responder.displayName,
-        });
-        if (created.conflict) {
-          return response(409, {
-            error: 'Selected feedback has already been queued or handled',
-          });
-        }
-        if (created.created) {
-          const summary = `${responder.displayName || 'A project member'} queued ${selected.length} review comment(s) for unit ${unitSlug}`;
-          await store
-            .appendEvent({
-              executionId: intentId,
-              type: 'v2.feedback.queued',
-              unitSlug,
-              sectionIndex,
-              actor: responder.displayName || responder.sub,
-              summary,
-            })
-            .catch(() => {});
-          await broadcastToIntentChannel(intentId, {
-            action: 'agent.feedback',
-            intentId,
-            projectId,
-            unitSlug,
-            sectionIndex,
-            state: 'QUEUED',
-            summary,
-          }).catch(() => {});
-          const wait = await store.getUnit(intentId, sectionIndex, unitSlug).catch(() => null);
-          if (wait?.prWaitCallbackId) {
-            await wakeUnitPrWait(wait, {
-              reason: 'queued_feedback',
-              detail: { batchId, commentCount: selected.length },
-            }).catch((error) => logger.error('Queued feedback PR-wait wake failed', error));
-          }
-        }
-        return response(created.created ? 202 : 200, mapFeedbackBatch(created.item));
-      }
-      return response(405, { error: 'Method not allowed' });
-    }
-
-    // POST /projects/{projectId}/intents/{intentId}/export — materialize a
-    // native AI-DLC workspace snapshot and return a short-lived S3 download.
-    // RUNNING executions export their latest completed immutable checkpoint.
-    // Parked and terminal executions export current live state with a final
-    // consistency recheck so post-stage human edits are preserved.
-    if (intentId && httpMethod === 'POST' && path?.endsWith('/export')) {
-      const liveRecords = await store.getExecutionRecords(intentId, { includeOutputs: false });
-      const liveMeta = liveRecords.meta;
-      if (!liveMeta || liveMeta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      if (NATIVE_EXPORT_BLOCKED_STATUSES.has(liveMeta.status)) {
-        return response(409, {
-          error: 'The intent is not in an exportable state',
-        });
-      }
-      const useLiveSnapshot = isGloballyParkedForExport(liveRecords);
-      const checkpoint = useLiveSnapshot ? null : await store.getWorkflowCheckpoint(intentId);
-      if (!useLiveSnapshot && !checkpoint) {
-        return response(409, {
-          error: 'No completed workflow checkpoint is available yet',
-          code: 'export_checkpoint_unavailable',
-        });
-      }
-      const records = checkpoint ? checkpointProjection(checkpoint) : liveRecords;
-      const meta = records.meta;
-      const data = body ? JSON.parse(body) : {};
-      const harness = data.harness || meta.agentCli || 'kiro';
-      if (!NATIVE_EXPORT_HARNESSES.has(harness)) {
-        return response(400, { error: `Unsupported native AI-DLC harness: ${harness}` });
-      }
-      const refRequiredStages = (records.stages ?? []).filter((stage) =>
-        NATIVE_EXPORT_REF_REQUIRED_STAGE_STATES.has(stage.state),
-      );
-      const executionRefsMatch = meta.aidlcRepoRef
-        ? refRequiredStages.every((stage) => stage.aidlcRepoRef === meta.aidlcRepoRef)
-        : new Set(refRequiredStages.map((stage) => stage.aidlcRepoRef).filter(Boolean)).size <= 1;
-      if (!executionRefsMatch) {
-        return response(409, {
-          error:
-            'This workflow has incomplete or mixed AI-DLC revision attribution and cannot be exported',
-          code: 'export_mixed_aidlc_refs',
-        });
-      }
-      const planResult = await loadNativeExportPlan(meta);
-      if (!planResult.valid || !planResult.plan) {
-        return response(409, {
-          error: 'The workflow snapshot cannot be resolved for native export',
-          errors: planResult.errors ?? [],
-        });
-      }
-      const incompatibleBlocks = await findNativeIncompatibleBlocks(planResult.plan, meta);
-      if (incompatibleBlocks.length > 0) {
-        return response(409, {
-          error: 'The workflow uses edited methodology blocks that cannot yet be exported',
-          incompatibleBlocks,
-        });
-      }
-      const stages = [
-        ...planResult.plan.stages,
-        ...(planResult.plan.skippedStages ?? []).map((stage) => ({ ...stage, excluded: true })),
-      ];
-      try {
-        const artifactRows = checkpoint
-          ? (
-              await readCheckpointArtifactVersions({
-                g,
-                intentId,
-                refs: checkpoint.artifactRefs ?? [],
-              })
-            ).map(mapCheckpointArtifact)
-          : await fetchArtifacts(g, intentId);
-        const customRules = checkpoint
-          ? (checkpoint.customRuleRefs ?? [])
-          : await pinCustomRuleVersions({
-              s3,
-              bucket: ARTIFACTS_BUCKET(),
-              rules: meta.customRules ?? [],
-            });
-        const buildProjection = (projectionRecords, projectionArtifacts, projectionRules) => {
-          const projectionMeta = projectionRecords.meta;
-          const projectionStagesByInstance = new Map(
-            (projectionRecords.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
-          );
-          return {
-            intent: {
-              intentId,
-              projectId,
-              title: projectionMeta.title,
-              prompt: projectionMeta.prompt,
-              scope: projectionMeta.scope,
-              workflowId: projectionMeta.workflowId,
-              workflowVersion: projectionMeta.workflowVersion,
-              createdAt: projectionMeta.startedAt,
-              branch: projectionMeta.branch,
-              projectType: projectionMeta.projectType,
-              customRules: projectionRules,
-            },
-            stages,
-            stageRows: projectionRecords.stages ?? [],
-            artifacts: projectionArtifacts.map((artifact) => {
-              const producer = projectionStagesByInstance.get(artifact.createdByStageInstanceId);
-              return {
-                ...artifact,
-                stageId: producer?.stageId ?? null,
-                phase: producer?.phase ?? null,
-                repository: artifact.repository ?? producer?.repository ?? null,
-              };
-            }),
-            humanTasks: projectionRecords.humanTasks ?? [],
-            repositories: exportRepositories(projectionMeta),
-            unitPlan: projectionRecords.unitPlan,
-            unitRows: projectionRecords.units ?? [],
-          };
-        };
-        const projection = buildProjection(records, artifactRows, customRules);
-        const initialSnapshotToken = checkpoint ? null : exportSnapshotToken(projection);
-        const legacyRefWarning = meta.aidlcRepoRef
-          ? []
-          : [
-              'This legacy intent did not pin a native upstream ref; the current deployment ref was used.',
-            ];
-        const upstreamRef = meta.aidlcRepoRef || (await resolveAidlcRepoRef(AIDLC_REPO_REF()));
-        const exported = await createNativeExport({
-          s3,
-          bucket: ARTIFACTS_BUCKET(),
-          upstreamRef,
-          harness,
-          warnings: legacyRefWarning,
-          projection,
-          sourceCheckpoint: checkpoint
-            ? {
-                checkpointId: checkpoint.checkpointId,
-                createdAt: checkpoint.createdAt,
-                sourceStageInstanceId: checkpoint.sourceStageInstanceId ?? null,
-              }
-            : null,
-          validateSnapshot: checkpoint
-            ? null
-            : async () => {
-                const latestRecords = await store.getExecutionRecords(intentId, {
-                  includeOutputs: false,
-                });
-                if (
-                  !latestRecords.meta ||
-                  latestRecords.meta.projectId !== projectId ||
-                  NATIVE_EXPORT_BLOCKED_STATUSES.has(latestRecords.meta.status) ||
-                  !isGloballyParkedForExport(latestRecords)
-                ) {
-                  return false;
-                }
-                const latestArtifacts = await fetchArtifacts(g, intentId);
-                const latestRules = await pinCustomRuleVersions({
-                  s3,
-                  bucket: ARTIFACTS_BUCKET(),
-                  rules: latestRecords.meta.customRules ?? [],
-                });
-                return (
-                  exportSnapshotToken(
-                    buildProjection(latestRecords, latestArtifacts, latestRules),
-                  ) === initialSnapshotToken
-                );
-              },
-        });
-        const exporter = getResponder(event);
-        await store
-          .appendEvent({
-            executionId: intentId,
-            type: 'v2.execution.exported',
-            actor: exporter.displayName || exporter.sub,
-            summary: `${exporter.displayName || 'Someone'} exported the ${harness} native workspace (export ${exported.exportId})`,
-          })
-          .catch((err) => logger.error('Export event append failed', err));
-        return response(201, exported);
-      } catch (error) {
-        logger.error('Native workflow export failed', error);
-        if (error.code === 'export_snapshot_changed') {
-          return response(409, {
-            error: error.message,
-            code: error.code,
-          });
-        }
-        if (error.code === 'export_checkpoint_unavailable') {
-          return response(409, {
-            error: 'The latest completed checkpoint is incomplete or unavailable',
-            code: error.code,
-          });
-        }
-        // A configured AI-DLC ref that cannot be resolved is a deployment
-        // misconfiguration; name it rather than blaming the workflow snapshot.
-        if (/AI-DLC repository ref/.test(String(error.message ?? ''))) {
-          return response(409, {
-            error: 'The deployment AI-DLC repository ref is misconfigured',
-            detail: error.message,
-          });
-        }
-        // A transient upstream fetch failure is retryable and not the caller's
-        // fault, so surface it as 502 rather than an un-exportable workflow.
-        if (error.code === EXPORT_SOURCE_UNAVAILABLE) {
-          return response(502, {
-            error: 'The AI-DLC distribution source is temporarily unavailable',
-            code: error.code,
-            detail: error.message,
-          });
-        }
-        // A server-side invariant violation (unset bucket/ref) is a deployment
-        // bug the caller cannot fix -- surface it as 500.
-        if (error.code === EXPORT_MISCONFIGURED) {
-          return response(500, {
-            error: 'The native workspace export is misconfigured',
-            code: error.code,
-            detail: error.message,
-          });
-        }
-        // `native-export:`-prefixed errors are deterministic snapshot/distribution
-        // incompatibilities the caller cannot retry away (409). Anything else is an
-        // unexpected runtime failure (S3, bug) and must surface as 500 so it is not
-        // mistaken for an un-exportable workflow.
-        if (String(error.message ?? '').startsWith('native-export:')) {
-          return response(409, {
-            error: 'This workflow snapshot is not compatible with native AI-DLC export',
-            detail: error.message,
-          });
-        }
-        return response(500, {
-          error: 'The native workspace export failed unexpectedly',
-          detail: error.message,
-        });
-      }
-    }
-
-    // POST /projects/{projectId}/intents/{intentId}/realtime-token
-    if (intentId && httpMethod === 'POST' && path?.endsWith('/realtime-token')) {
-      // Confirm the intent belongs to this project before minting an intent
-      // scope (the caller is already a verified member of projectId).
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const scopes = [`intent:${intentId}`, `project:${projectId}`];
-      const secret = await getSecret();
-      const { token, exp } = signRealtimeToken({ sub, scopes }, secret);
-      return response(200, { token, exp, scopes });
-    }
-
-    // ── Post-hoc artifact (document) editing ─────────────────────────────────
-    // Documents in Neptune stay editable after the stages that produced /
-    // consumed them ran. Every mutation records drift bookkeeping
-    // (shared/artifact-edit.js) and broadcasts a payload-blind reload hint on
-    // the intent channel (handlers refetch the detail DTO).
-
-    // Read-only artifact history. Archived versions are never returned by the
-    // normal intent DTO and never receive collaborative document ids.
-    if (intentId && artifactId && httpMethod === 'GET' && path?.endsWith('/versions')) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const history = await fetchArtifactHistory(g, intentId, artifactId);
-      if (!history) return response(404, { error: 'Artifact not found' });
-      const current = mapArtifactHead(history.head);
-      return response(200, {
-        artifactId: history.head.id,
-        current: history.head.superseded_at
-          ? null
-          : {
-              versionId: 'current',
-              artifactId: history.head.id,
-              generation: current.generation,
-              artifactType: current.artifactType,
-              title: current.title,
-              stageInstanceId: current.createdByStageInstanceId,
-              stageAttempt: current.stageAttempt,
-              sectionIndex: current.sectionIndex,
-              unitSlug: current.unitSlug,
-              archivedAt: null,
-              restartId: null,
-              restartReason: null,
-              actor: null,
-              createdAt: current.createdAt,
-              editedAt: current.editedAt,
-              editedByName: current.editedByName,
-              contentLength: Buffer.byteLength(String(current.content ?? ''), 'utf8'),
-              contentType: 'text/markdown',
-              contentHash: createHash('sha256')
-                .update(String(current.content ?? ''))
-                .digest('hex'),
-              legacy: false,
-              current: true,
-            },
-        versions: history.versions.map(({ summary }) => ({ ...summary, current: false })),
+      return await handleUnitReviewFeedback({
+        event,
+        body,
+        httpMethod,
+        projectId,
+        intentId,
+        unitSlug,
+        rawSectionIndex,
+        response,
       });
+    }
+
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/export')) {
+      return await handleExportIntent({ event, body, projectId, intentId, g, response });
+    }
+
+    if (intentId && httpMethod === 'POST' && path?.endsWith('/realtime-token')) {
+      return await handleRealtimeToken({ projectId, intentId, sub, response });
+    }
+
+    if (intentId && artifactId && httpMethod === 'GET' && path?.endsWith('/versions')) {
+      return await handleArtifactVersions({ projectId, intentId, artifactId, g, response });
     }
 
     if (
@@ -2320,4054 +6400,162 @@ export const handler = async (event, context) => {
       httpMethod === 'GET' &&
       path?.includes('/versions/')
     ) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const history = await fetchArtifactHistory(g, intentId, artifactId);
-      const archived = history?.versions.find(({ summary }) => summary.versionId === versionId);
-      if (!archived) return response(404, { error: 'Artifact version not found' });
-      return response(200, {
-        ...archived.summary,
-        current: false,
-        content: archived.row.content ?? null,
-        relationships: safeJsonParse(archived.row.relationships, []),
-        editedBy: archived.row.edited_by ?? null,
-        editOrigin: archived.row.edit_origin ?? null,
-        verifiedBy: archived.row.verified_by ?? null,
-        verifiedByName: archived.row.verified_by_name ?? null,
-        verifiedAt: archived.row.verified_at ?? null,
+      return await handleArtifactVersion({
+        projectId,
+        intentId,
+        artifactId,
+        versionId,
+        g,
+        response,
       });
     }
 
-    // GET .../artifacts/{artifactId}/impact — the pre-edit drift warning data:
-    // consuming stages (declared + actual reads), the transitive downstream
-    // closure, and whether editing is currently blocked.
     if (intentId && artifactId && httpMethod === 'GET' && path?.endsWith('/impact')) {
-      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-      if (!records.meta || records.meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const artifact = await fetchArtifactRow(g, intentId, artifactId);
-      if (!artifact) return response(404, { error: 'Artifact not found' });
-      // Declared-consumes evidence needs the resolved plan; degrade to graph +
-      // read evidence when it cannot be resolved (never block the warning).
-      let plan = null;
-      try {
-        const planResult = await intentMethodology.loadPlan(records.meta);
-        plan = planResult.valid ? planResult.plan : null;
-      } catch {
-        plan = null;
-      }
-      return response(200, await buildArtifactImpact({ g, intentId, artifact, plan, records }));
+      return await handleArtifactImpact({ projectId, intentId, artifactId, g, response });
     }
 
-    // PUT .../artifacts/{artifactId}/content — the human "simple edit". Writes
-    // the new content + server-stamped edit provenance, marks the transitive
-    // downstream closure stale (drift), re-derives the graph projection for
-    // the edited document, and broadcasts a reload hint. Refused while an
-    // execution is active or a Quorum edit is in flight (racing the agent's
-    // own update_artifact — or a parked conversation resuming over stale
-    // in-memory context — is never safe).
     if (intentId && artifactId && httpMethod === 'PUT' && path?.endsWith('/content')) {
-      const data = body ? JSON.parse(body) : {};
-      if (typeof data.content !== 'string' || !data.content.trim()) {
-        return response(400, { error: 'content is required' });
-      }
-      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-      if (!records.meta || records.meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const blockReason = editBlockReason({
-        meta: records.meta,
-        quorumEdits: records.quorumEdits ?? [],
-      });
-      if (blockReason) {
-        return response(409, {
-          error:
-            blockReason === 'execution_active'
-              ? `Intent is ${records.meta.status} — wait for the stage to park or finish before editing artifacts`
-              : 'A Quorum edit is in progress for this intent — wait for it to finish',
-          code: blockReason,
-        });
-      }
-      const artifact = await fetchArtifactRow(g, intentId, artifactId);
-      if (!artifact) return response(404, { error: 'Artifact not found' });
-      if (artifact.supersededAt) {
-        return response(409, { error: 'Artifact is superseded — edit its replacement instead' });
-      }
-      if (
-        data.collaborationEpoch !== undefined &&
-        data.collaborationEpoch !== artifact.collaborationEpoch
-      ) {
-        return response(409, {
-          error: 'Artifact content was replaced — reload before editing',
-          code: 'artifact_replaced',
-        });
-      }
-      if (
-        !Object.hasOwn(data, 'ifEditRevision') ||
-        (data.ifEditRevision !== null && typeof data.ifEditRevision !== 'string') ||
-        !Object.hasOwn(data, 'collaborationEpoch')
-      ) {
-        return response(428, {
-          error: 'Read the edit state before saving',
-          code: 'edit_precondition_required',
-        });
-      }
-      const canonicalArtifactId = artifact.id;
-      const responder = getResponder(event);
-      // Closure BEFORE the write (root is excluded by construction either way).
-      const downstream = await fetchDownstreamClosure({
-        g,
-        intentId,
-        artifactId: canonicalArtifactId,
-      }).catch((err) => {
-        logger.error('Downstream closure failed', err);
-        return [];
-      });
-      let edit;
-      try {
-        edit = await applyArtifactEdit({
-          g,
-          intentId,
-          artifactId: canonicalArtifactId,
-          content: data.content,
-          editedBy: responder.sub,
-          editedByName: responder.displayName,
-          origin: 'human',
-          editRef: `human:${responder.sub}`,
-          ifEditRevision: data.ifEditRevision,
-          ifCollaborationEpoch: data.collaborationEpoch,
-        });
-      } catch (error) {
-        if (error.code === 'edit_conflict')
-          return response(409, { error: error.message, code: 'edit_conflict' });
-        throw error;
-      }
-      const staleMarked = await markArtifactsStale({
-        g,
-        intentId,
-        artifactIds: downstream.map((d) => d.id),
-        reason: `edit:${canonicalArtifactId}:${edit.editedAt}`,
-      }).catch((err) => {
-        logger.error('Stale marking failed', err);
-        return [];
-      });
-      // Mid-run edit (the run is parked WAITING on a gate): the parked CLI
-      // conversation still holds the OLD document content. Record a steering
-      // row so the next deterministic injection point (this gate's resume or
-      // the next fresh stage start — docs/v2-steering.md) tells the agent to
-      // re-read the edited document instead of trusting stale context.
-      let steer = null;
-      if (records.meta.status === 'WAITING') {
-        steer = await store
-          .createSteering({
-            executionId: intentId,
-            kind: 'artifact-edit',
-            message: `The document "${artifact.title || canonicalArtifactId}" (artifact id: ${canonicalArtifactId}) was edited while this run was parked. Re-read it with get_artifact before continuing — its CURRENT content overrides anything you read earlier in this conversation.`,
-            createdBy: responder.sub,
-            createdByName: responder.displayName,
-          })
-          .catch((err) => {
-            logger.error('Artifact-edit steering record failed', err);
-            return null;
-          });
-        if (steer) {
-          await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-            logger.error('Steering graph mirror failed', err),
-          );
-        }
-      }
-      const summary = `${responder.displayName || 'Someone'} edited "${artifact.title || canonicalArtifactId}"${
-        staleMarked.length
-          ? ` — ${staleMarked.length} downstream artifact(s) marked possibly stale`
-          : ''
-      }`;
-      await store
-        .appendEvent({
-          executionId: intentId,
-          type: 'v2.artifact.edited',
-          actor: responder.displayName || responder.sub,
-          summary,
-        })
-        .catch((err) => logger.error('Edit event append failed', err));
-      await broadcastToIntentChannel(intentId, {
-        action: 'agent.note',
-        intentId,
+      return await handleArtifactContentUpdate({
+        event,
+        body,
         projectId,
-        noteType: 'v2.artifact.edited',
-        summary,
-      });
-      // Re-derive the fine-grained projection for the edited document so
-      // sections/items/citations stay truthful. Best-effort — the canonical
-      // content is already saved; a failed derive is picked up by the next
-      // stage-exit derive or the admin backfill.
-      let derived = false;
-      if (
-        runtimeTargetInput(records.meta, AGENTCORE_RUNTIME_ARN()).agentRuntimeArn &&
-        artifact.artifactType
-      ) {
-        try {
-          const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
-            purpose: 'execution',
-            projectId,
-            executionId: intentId,
-            credentialBinding: records.meta.credentialBinding,
-            agentCli: records.meta.agentCli,
-            runtimeCapabilities: records.meta.environment,
-          });
-          const res = await agentcore.send(
-            new InvokeAgentRuntimeCommand({
-              ...runtimeTargetInput(records.meta, AGENTCORE_RUNTIME_ARN()),
-              runtimeSessionId: runtimeSessionIdFor(intentId),
-              contentType: 'application/json',
-              accept: 'application/json',
-              payload: Buffer.from(
-                JSON.stringify({
-                  command: 'derive-artifacts',
-                  projectId,
-                  intentId,
-                  executionId: intentId,
-                  artifactTypes: [artifact.artifactType],
-                  enrichment: records.meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
-                  ...(records.meta.agentCli ? { requestedCli: records.meta.agentCli } : {}),
-                  ...(records.meta.cliModels ? { cliModels: records.meta.cliModels } : {}),
-                  ...(records.meta.tierModels ? { tierModels: records.meta.tierModels } : {}),
-                  ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
-                }),
-              ),
-            }),
-          );
-          const text = res.response ? await res.response.transformToString() : '';
-          derived = text ? JSON.parse(text).ok !== false : false;
-        } catch (err) {
-          logger.error('[artifact-edit] derive dispatch failed', err);
-        }
-      }
-      return response(200, {
-        artifactId: canonicalArtifactId,
-        editedAt: edit.editedAt,
-        staleMarked,
-        derived,
-        // Set when the run was parked: the correction the resumed agent will
-        // receive at the next deterministic injection point.
-        steering: steer ? mapSteering(steer) : null,
+        intentId,
+        artifactId,
+        g,
+        response,
       });
     }
 
-    // POST .../artifacts/{artifactId}/verify — clear the drift marker: a human
-    // reviewed the artifact against the upstream edit and judged it still
-    // valid. Metadata-only, so it is allowed regardless of run state.
     if (intentId && artifactId && httpMethod === 'POST' && path?.endsWith('/verify')) {
-      const data = body ? JSON.parse(body) : {};
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const artifact = await fetchArtifactRow(g, intentId, artifactId);
-      if (!artifact) return response(404, { error: 'Artifact not found' });
-      const responder = getResponder(event);
-      const result = await verifyArtifact({
-        g,
-        intentId,
-        artifactId: artifact.id,
-        verifiedBy: responder.sub,
-        verifiedByName: responder.displayName,
-        note: typeof data.note === 'string' ? data.note : '',
-      });
-      const summary = `${responder.displayName || 'Someone'} verified "${artifact.title || artifact.id}" against the upstream edit`;
-      await store
-        .appendEvent({
-          executionId: intentId,
-          type: 'v2.artifact.verified',
-          actor: responder.displayName || responder.sub,
-          summary,
-        })
-        .catch((err) => logger.error('Verify event append failed', err));
-      await broadcastToIntentChannel(intentId, {
-        action: 'agent.note',
-        intentId,
+      return await handleArtifactVerify({
+        event,
+        body,
         projectId,
-        noteType: 'v2.artifact.verified',
-        summary,
+        intentId,
+        artifactId,
+        g,
+        response,
       });
-      return response(200, { artifactId: artifact.id, verifiedAt: result.verifiedAt });
     }
 
-    // POST .../artifacts/{artifactId}/quorum-edit — start a Quorum-supported
-    // edit: the user describes the change; Quorum analyzes the downstream
-    // impact, proposes a per-artifact update plan (human-approved), then
-    // applies it. Driven by a durable orchestrator flow; this endpoint only
-    // records the request and hands off.
     if (intentId && artifactId && httpMethod === 'POST' && path?.endsWith('/quorum-edit')) {
-      const data = body ? JSON.parse(body) : {};
-      const changeDescription =
-        typeof data.changeDescription === 'string' ? data.changeDescription.trim() : '';
-      if (!changeDescription) {
-        return response(400, { error: 'changeDescription is required' });
-      }
-      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-      if (!records.meta || records.meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const blockReason = editBlockReason({
-        meta: records.meta,
-        quorumEdits: records.quorumEdits ?? [],
-      });
-      if (blockReason) {
-        return response(409, {
-          error:
-            blockReason === 'execution_active'
-              ? `Intent is ${records.meta.status} — wait for the stage to park or finish before editing artifacts`
-              : 'A Quorum edit is already in progress for this intent',
-          code: blockReason,
-        });
-      }
-      const artifact = await fetchArtifactRow(g, intentId, artifactId);
-      if (!artifact) return response(404, { error: 'Artifact not found' });
-      if (artifact.supersededAt) {
-        return response(409, { error: 'Artifact is superseded — edit its replacement instead' });
-      }
-      if (!ORCHESTRATOR_FN()) {
-        return response(500, { error: 'V2_ORCHESTRATOR_FUNCTION not configured' });
-      }
-      const responder = getResponder(event);
-      const newEditId = `qe-${randomUUID()}`;
-      const row = await store.createQuorumEdit({
-        executionId: intentId,
-        editId: newEditId,
-        artifactId: artifact.id,
-        artifactType: artifact.artifactType,
-        artifactTitle: artifact.title,
-        changeDescription,
-        requestedBy: responder.sub,
-        requestedByName: responder.displayName,
-      });
-      const summary = `${responder.displayName || 'Someone'} asked Quorum to edit "${artifact.title || artifact.id}"`;
-      await store
-        .appendEvent({
-          executionId: intentId,
-          type: 'v2.quorum_edit.requested',
-          actor: responder.displayName || responder.sub,
-          summary,
-        })
-        .catch((err) => logger.error('Quorum edit event append failed', err));
-      await broadcastToIntentChannel(intentId, {
-        action: 'agent.note',
-        intentId,
+      return await handleArtifactQuorumEdit({
+        event,
+        body,
         projectId,
-        noteType: 'v2.quorum_edit.updated',
-        summary,
-      });
-      try {
-        await invokeOrchestrator({
-          action: 'quorum-edit',
-          intentId,
-          executionId: intentId,
-          editId: newEditId,
-        });
-      } catch (err) {
-        // The hand-off never reached a live orchestrator — fail the session so
-        // it doesn't strand in PLANNING (which would block future edits).
-        await store
-          .updateQuorumEdit({
-            executionId: intentId,
-            editId: newEditId,
-            state: 'FAILED',
-            fields: { failureReason: 'orchestrator_dispatch_failed', completedAt: true },
-          })
-          .catch(() => {});
-        throw err;
-      }
-      return response(202, mapQuorumEdit(row));
-    }
-
-    // POST .../quorum-edits/{editId}/decision — approve or reject Quorum's
-    // update plan. Approve optionally narrows the plan to a subset of
-    // artifacts. CAS on AWAITING_APPROVAL (a double decision loses), then the
-    // suspended durable callback is completed — the same resume-by-callback
-    // pattern as gate answers.
-    if (intentId && editId && httpMethod === 'POST' && path?.endsWith('/decision')) {
-      const data = body ? JSON.parse(body) : {};
-      const decision =
-        data.decision === 'approve' ? 'approve' : data.decision === 'reject' ? 'reject' : null;
-      if (!decision) {
-        return response(400, { error: 'decision must be "approve" or "reject"' });
-      }
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const edit = await store.getQuorumEdit(intentId, editId);
-      if (!edit) return response(404, { error: 'Quorum edit not found' });
-      if (edit.state !== 'AWAITING_APPROVAL' || !edit.callbackId) {
-        return response(409, { error: `Quorum edit is ${edit.state}, not awaiting approval` });
-      }
-      const responder = getResponder(event);
-      // Only plan items can be approved — a fabricated id is dropped, never
-      // forwarded to the apply step.
-      const planIds = (edit.plan?.items ?? []).map((i) => i.artifactId);
-      const planIdSet = new Set(planIds);
-      const approvedArtifactIds =
-        decision === 'approve'
-          ? Array.isArray(data.approvedArtifactIds)
-            ? data.approvedArtifactIds.filter((id) => planIdSet.has(id))
-            : planIds
-          : [];
-      const updated = await store.updateQuorumEdit({
-        executionId: intentId,
-        editId,
-        state: decision === 'approve' ? 'APPLYING' : 'REJECTED',
-        fromStates: ['AWAITING_APPROVAL'],
-        fields: {
-          decidedBy: responder.sub,
-          decidedByName: responder.displayName,
-          decidedAt: true,
-          approvedArtifactIds,
-          ...(decision === 'reject' ? { completedAt: true } : {}),
-        },
-      });
-      if (!updated) {
-        return response(409, { error: 'Quorum edit was already decided' });
-      }
-      // Wake the suspended orchestrator with the decision.
-      await resumeDurableCallback(edit.callbackId, {
-        decision,
-        approvedArtifactIds,
-        decidedBy: responder.sub,
-        decidedByName: responder.displayName,
-      });
-      const summary = `${responder.displayName || 'Someone'} ${decision === 'approve' ? `approved Quorum's update plan (${approvedArtifactIds.length} artifact(s))` : "rejected Quorum's update plan"}`;
-      await store
-        .appendEvent({
-          executionId: intentId,
-          type: 'v2.quorum_edit.decided',
-          actor: responder.displayName || responder.sub,
-          summary,
-        })
-        .catch((err) => logger.error('Quorum decision event append failed', err));
-      await broadcastToIntentChannel(intentId, {
-        action: 'agent.note',
         intentId,
-        projectId,
-        noteType: 'v2.quorum_edit.updated',
-        summary,
-      });
-      return response(200, mapQuorumEdit(updated));
-    }
-
-    // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/answer
-    if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/answer')) {
-      const data = body ? JSON.parse(body) : {};
-      const gate = await store.getHumanTask(intentId, humanTaskId);
-      if (!gate) return response(404, { error: 'Gate not found' });
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const answerStatus = data.status ?? 'answered';
-      if (!isHumanTaskAnswerStatus(answerStatus)) {
-        return response(400, {
-          error: 'status must be answered, approved, or rejected',
-          code: 'invalid_gate_status',
-        });
-      }
-      // A validation gate that withheld an option (a blocking finding withholds
-      // `approve`) must not record that option: the engine would re-run the
-      // stage while the gate row and its badge said "approved".
-      const offered =
-        gate.kind === 'validation' && Array.isArray(gate.options) && gate.options.length > 0
-          ? gate.options
-          : null;
-      if (offered) {
-        const choice = parseChoice(data.answer, GATE_CHOICES);
-        const chosen = choice ?? (answerStatus === 'approved' ? 'approve' : null);
-        if (chosen && !offered.includes(chosen)) {
-          return response(400, {
-            error: `This gate offers ${offered.join(', ')}; "${chosen}" is not one of them`,
-            code: 'gate_choice_not_offered',
-          });
-        }
-        // Orchestrator code that predates the loop-back reads a rejected answer
-        // as request-changes; any other status would be misread on a rollback.
-        if (chosen === LOOP_BACK_OPTION && answerStatus !== 'rejected') {
-          return response(400, {
-            error: 'A loop-back answer must be recorded with status "rejected"',
-            code: 'loop_back_status_invalid',
-          });
-        }
-        // The engine applies a grant on the parsed decision alone, so a row whose
-        // status says it was not approved must not carry one.
-        if (chosen === GRANT_AUTONOMY_OPTION && answerStatus !== 'approved') {
-          return response(400, {
-            error: 'A grant-autonomy answer must be recorded with status "approved"',
-            code: 'grant_autonomy_status_invalid',
-          });
-        }
-      }
-      // A loop-back is recordable ONLY on the gate the ENGINE offered it on, and
-      // `loopBackTarget` is the only proof of that offer: `awaitEngineGate` writes it
-      // when, and only when, the walk resolved a target. The branch above covers
-      // validation gates with a stored option list; this covers every other gate,
-      // because `loop-back` in a `question` gate's `freeText` is read as the choice
-      // by the same parser the orchestrator and the stage runner use, and would
-      // otherwise re-enter a stage as a fresh run on nothing but typed text.
-      if (
-        parseChoice(data.answer, [LOOP_BACK_OPTION]) === LOOP_BACK_OPTION &&
-        !gate.loopBackTarget
-      ) {
-        return response(400, {
-          error: 'This gate did not offer a loop-back',
-          code: 'loop_back_not_offered',
-        });
-      }
-      // The same parser the orchestrator reads the answer with, so an answer the
-      // engine treats as an override is held to the override's requirements here.
-      const overrideChosen =
-        parseChoice(data.answer, ['override-and-approve']) === 'override-and-approve' ||
-        (Array.isArray(data.answer?.perQuestion) &&
-          data.answer.perQuestion.some(
-            (entry) =>
-              typeof entry?.answer === 'string' &&
-              entry.answer.trim().toLowerCase() === 'override-and-approve',
-          ));
-      if (overrideChosen) {
-        const reason = typeof data.answer?.reason === 'string' ? data.answer.reason.trim() : '';
-        if (!reason) {
-          return response(400, {
-            error: 'A non-blank reason is required to override blocking findings',
-            code: 'override_reason_required',
-          });
-        }
-        if (reason.length > OVERRIDE_REASON_MAX) {
-          return response(400, {
-            error: `Override reason must be at most ${OVERRIDE_REASON_MAX} characters`,
-            code: 'override_reason_too_long',
-          });
-        }
-        data.answer = { ...data.answer, reason };
-      }
-      // A live Quorum edit is mutating this intent's artifacts; answering the
-      // gate would resume the parked stage RIGHT INTO those writes. The run is
-      // already parked — waiting for the edit to finish costs nothing (mirror
-      // of the /start guard).
-      const answerBlockingEdit = activeQuorumEdit(
-        await store.listQuorumEdits(intentId).catch(() => []),
-      );
-      if (answerBlockingEdit) {
-        return response(409, {
-          error:
-            'A Quorum artifact edit is in progress — wait for it to finish (or reject its plan) before answering, so the resumed stage sees the final documents',
-          code: 'quorum_edit_active',
-        });
-      }
-      // Answer THIS specific gate (CAS on pending). D3: a stage can leave more
-      // than one pending gate; answer the one addressed by the URL, never blindly
-      // META.pendingHumanTaskId.
-      const responder = getResponder(event);
-      const steeringMessage = typeof data.steering === 'string' ? data.steering.trim() : '';
-      const answerInput = {
-        executionId: intentId,
-        humanTaskId,
-        status: answerStatus,
-        answer: data.answer ?? null,
-        answeredBy: responder.sub,
-        answeredByName: responder.displayName,
-        ifOrchestratorRunId: gate.orchestratorRunId ?? null,
-        ifStageCallbackId: gate.stageCallbackId ?? null,
-        stageInstanceId: gate.stageInstanceId ?? null,
-      };
-      let answerResult;
-      try {
-        answerResult = steeringMessage
-          ? await store.answerHumanTaskWithSteering({
-              ...answerInput,
-              steering: {
-                kind: 'gate-steer',
-                message: steeringMessage,
-                targetGateId: humanTaskId,
-                createdBy: responder.sub,
-                createdByName: responder.displayName,
-              },
-            })
-          : await store.answerHumanTask(answerInput);
-      } catch (error) {
-        // The answer transaction also checks META, which running workers write
-        // constantly. A conflict that outlasts the store's retries committed
-        // nothing, so the same answer can simply be sent again.
-        if (!isTransactionConflict(error)) throw error;
-        return response(409, {
-          error: 'The intent was busy saving other changes. Send the answer again.',
-          code: 'gate_answer_conflict',
-          retryable: true,
-        });
-      }
-      const answered = steeringMessage ? answerResult?.answered : answerResult;
-      if (!answered) {
-        return response(409, { error: 'Gate already answered or not pending' });
-      }
-      // Optional course correction riding on the answer (docs/v2-steering.md):
-      // its STEER row and HUMAN decision were committed atomically above, so an
-      // early orchestrator recovery cannot observe one without the other.
-      const steer = steeringMessage ? answerResult.steering : null;
-      if (steeringMessage) {
-        await store
-          .appendEvent({
-            executionId: intentId,
-            type: 'v2.steering.recorded',
-            stageInstanceId: gate.stageInstanceId ?? null,
-            actor: responder.displayName || responder.sub,
-            summary: `${responder.displayName || 'Someone'} added a course correction with their answer`,
-          })
-          .catch((err) => logger.error('Steering event append failed', err));
-        await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-          logger.error('Steering graph mirror failed', err),
-        );
-      }
-      await syncAnsweredQuestionVertex({
+        artifactId,
         g,
-        intentId,
-        gate,
-        answer: answered.answer,
-        responder,
-        answeredAt: answered.answeredAt,
-      }).catch((err) => logger.error('Question graph sync failed', err));
-      await linkQuestionToStageArtifacts(g, intentId, gate).catch((err) =>
-        logger.error('Question artifact link sync failed', err),
-      );
-      // Resume the suspended orchestrator ONLY if this gate is the one the
-      // durable run actually parked on (it carries the callbackId). Answering an
-      // older sibling gate just records the durable Q&A — the run is parked on a
-      // different callback. SendDurableExecutionCallbackSuccess resumes the
-      // EXISTING execution; a fresh Invoke would start a new one.
-      // Binding can finish after the initial GET. ALL_NEW from the answer CAS
-      // is the authoritative callback owner at the instant the answer commits.
-      if (answered.callbackId) {
-        try {
-          await resumeDurableCallback(answered.callbackId, answered.answer);
-          await (
-            store.markGateCallbackConsumed?.({
-              executionId: intentId,
-              humanTaskId,
-              callbackId: answered.callbackId,
-            }) ?? Promise.resolve()
-          ).catch((markErr) =>
-            logger.error('Gate callback consumption marker write failed', markErr),
-          );
-        } catch (err) {
-          if (isCallbackTimeoutError(err)) {
-            await repairExpiredDurableExecution({
-              executionId: intentId,
-              projectId,
-              meta,
-              actor: responder.displayName || responder.sub,
-              summary: `${responder.displayName || 'Someone'} answered after the durable execution expired; the run was marked failed and can be restarted`,
-            }).catch((repairErr) =>
-              logger.error('Durable callback expiry repair failed', repairErr),
-            );
-            return response(409, {
-              error: 'Durable execution expired before this answer could resume the run',
-              code: 'durable_execution_expired',
-            });
-          }
-          await store
-            .appendEvent({
-              executionId: intentId,
-              type: 'v2.gate.resume_failed',
-              stageInstanceId: gate.stageInstanceId ?? null,
-              actor: responder.displayName || responder.sub,
-              summary: `Gate answer was recorded, but the durable callback could not be completed: ${err?.message ?? 'unknown error'}`,
-            })
-            .catch((eventErr) => logger.error('Gate resume failure event append failed', eventErr));
-          // The answer is already durable; this makes the NEED TO RESUME durable
-          // too. Without it the run sits WAITING with no pending gate and no
-          // action able to wake it — the one known indefinite-wait path.
-          await store
-            .updateExecution({
-              executionId: intentId,
-              resumeRequired: {
-                humanTaskId,
-                callbackId: answered.callbackId,
-                answeredAt: answered.answeredAt ?? null,
-              },
-            })
-            .catch((metaErr) => logger.error('Gate resume marker write failed', metaErr));
-          return response(503, {
-            error:
-              'Gate answer was recorded, but the durable callback could not be completed. Use Resume run to retry.',
-            code: 'durable_callback_resume_failed',
-            retryable: true,
-          });
-        }
-      }
-      return response(200, {
-        ...mapHumanTask(answered),
-        steering: steer ? mapSteering(steer) : null,
+        response,
       });
     }
 
-    // POST /projects/{projectId}/intents/{intentId}/resume
-    // Re-attempt the durable callback for an answer that was recorded but whose
-    // resume failed (META.resumeRequired, set by the answer path above). This is
-    // the one-click recovery for the only known indefinite-WAITING path: the
-    // answer is already durable, so resuming never needs new human input.
-    //
-    // IDEMPOTENT: nothing to resume is a 200, not an error, so a double click or
-    // a retried request is harmless. An expired callback runs the same repair the
-    // answer path runs, which lands the intent in FAILED — recoverable by the
-    // existing rewind API — instead of leaving it parked forever.
+    if (intentId && editId && httpMethod === 'POST' && path?.endsWith('/decision')) {
+      return await handleQuorumEditDecision({ event, body, projectId, intentId, editId, response });
+    }
+
+    if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/answer')) {
+      return await handleGateAnswer({ event, body, projectId, intentId, humanTaskId, g, response });
+    }
+
     if (intentId && !humanTaskId && httpMethod === 'POST' && path?.endsWith('/resume')) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      // Every gate is judged with the rule the intent detail uses for the banner
-      // (resumeOwed), so the button and this route always agree: concurrent
-      // lanes can each owe a resume, and the marker only records the latest one
-      // (or none, when its own write failed).
-      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-      const stagesByInstance = new Map(
-        (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
-      );
-      const owed = (records.humanTasks ?? [])
-        .filter((gate) =>
-          resumeOwed({
-            meta,
-            gate,
-            stageRow: stagesByInstance.get(gate.stageInstanceId) ?? null,
-          }),
-        )
-        .toSorted((a, b) => String(a.answeredAt ?? '').localeCompare(String(b.answeredAt ?? '')));
-      const marker = meta.resumeRequired ?? null;
-      const responder = getResponder(event);
-      const markConsumed = (gate) =>
-        (
-          store.markGateCallbackConsumed?.({
-            executionId: intentId,
-            humanTaskId: gate.humanTaskId,
-            callbackId: gate.callbackId,
-          }) ?? Promise.resolve()
-        ).catch((markErr) =>
-          logger.error('Gate callback consumption marker write failed', markErr),
-        );
-      let resumed = 0;
-      let retryable = null;
-      for (const gate of owed) {
-        try {
-          await resumeDurableCallback(gate.callbackId, gate.answer ?? null);
-        } catch (err) {
-          if (isCallbackTimeoutError(err)) {
-            const failed = await repairExpiredDurableExecution({
-              executionId: intentId,
-              projectId,
-              meta,
-              actor: responder.displayName || responder.sub,
-              summary: `${responder.displayName || 'Someone'} retried the resume after the durable execution expired; the run was marked failed and can be rewound`,
-            }).catch((repairErr) => {
-              logger.error('Durable callback expiry repair failed', repairErr);
-              return null;
-            });
-            // The marker is cleared either way: the resume can never succeed now,
-            // and leaving it set would offer the human a button that cannot work.
-            await store
-              .updateExecution({ executionId: intentId, resumeRequired: null })
-              .catch((metaErr) => logger.error('Resume marker clear failed', metaErr));
-            return response(409, {
-              error: 'Durable execution expired before this answer could resume the run',
-              code: 'durable_execution_expired',
-              intent: mapIntent(failed ?? { ...meta, status: 'FAILED' }),
-            });
-          }
-          // The callback is gone or already completed: the first send was
-          // delivered even though it reported an error. Nothing is owed.
-          if (isMissingDurableCallbackError(err)) {
-            await markConsumed(gate);
-            continue;
-          }
-          logger.error('Gate resume retry failed', err);
-          retryable ??= gate;
-          continue;
-        }
-        await markConsumed(gate);
-        resumed += 1;
-        await store
-          .appendEvent({
-            executionId: intentId,
-            type: 'v2.gate.resumed',
-            stageInstanceId: gate.stageInstanceId ?? null,
-            actor: responder.displayName || responder.sub,
-            summary: `${responder.displayName || 'Someone'} resumed the run after a failed gate callback`,
-          })
-          .catch((eventErr) => logger.error('Gate resumed event append failed', eventErr));
-      }
-      // The marker is cleared once nothing it could stand for is still owed;
-      // the conditional write keeps a marker a concurrent answer just set.
-      const current =
-        marker && !retryable
-          ? await store
-              .updateExecution({
-                executionId: intentId,
-                resumeRequired: null,
-                ifResumeRequiredFor: marker.humanTaskId,
-              })
-              .catch((metaErr) => {
-                if (metaErr?.name !== 'ConditionalCheckFailedException') {
-                  logger.error('Resume marker clear failed', metaErr);
-                }
-                return meta;
-              })
-          : meta;
-      if (retryable) {
-        return response(503, {
-          error: 'The durable callback could not be completed. Try again in a moment.',
-          code: 'durable_callback_resume_failed',
-          retryable: true,
-        });
-      }
-      return response(200, { intent: mapIntent(current ?? meta), resumed: resumed > 0 });
+      return await handleResumeIntent({ event, projectId, intentId, response });
     }
 
-    // POST /projects/{projectId}/intents/{intentId}/gates/{humanTaskId}/revise
-    // Correct an already-given answer (docs/v2-steering.md). The original answer
-    // is immutable — the correction is a STEER row delivered at the next
-    // deterministic injection point (gate resume or fresh stage start).
     if (intentId && humanTaskId && httpMethod === 'POST' && path?.endsWith('/revise')) {
-      const data = body ? JSON.parse(body) : {};
-      const message = typeof data.message === 'string' ? data.message.trim() : '';
-      if (!message) return response(400, { error: 'message is required' });
-      const gate = await store.getHumanTask(intentId, humanTaskId);
-      if (!gate) return response(404, { error: 'Gate not found' });
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      if (gate.status === 'pending') {
-        return response(409, { error: 'Gate is still pending — answer it instead of revising' });
-      }
-      if (['SUCCEEDED', 'CANCELLED'].includes(meta.status)) {
-        return response(409, { error: `Intent is ${meta.status}; nothing left to steer` });
-      }
-      const responder = getResponder(event);
-      const steer = await store.createSteering({
-        executionId: intentId,
-        kind: 'revision',
-        message,
-        targetGateId: humanTaskId,
-        createdBy: responder.sub,
-        createdByName: responder.displayName,
-      });
-      await store.markGateRevised({ executionId: intentId, humanTaskId, steerId: steer.steerId });
-      await store
-        .appendEvent({
-          executionId: intentId,
-          type: 'v2.gate.revised',
-          stageInstanceId: gate.stageInstanceId ?? null,
-          actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} revised their answer to "${questionText(gate.questions)}"`,
-        })
-        .catch((err) => logger.error('Revise event append failed', err));
-      await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-        logger.error('Steering graph mirror failed', err),
-      );
-      // Tell the caller when the correction will reach the agent: a WAITING run
-      // delivers on the pending gate's resume; otherwise at the next stage start.
-      const delivery = meta.status === 'WAITING' ? 'next-resume' : 'next-stage-start';
-      return response(201, { ...mapSteering(steer), delivery });
+      return await handleGateRevise({ event, body, projectId, intentId, humanTaskId, g, response });
     }
 
-    // POST /projects/{projectId}/intents/{intentId}/start
-    // Optional body { skipStageIds } (DRAFT only): replace the intent's skip
-    // overlay at the moment of launch — the DRAFT screen is where the user
-    // reviews the run before starting, so it is the natural last chance to
-    // (de)select CONDITIONAL stages. Same validation as create: only accepted
-    // when the run's snapshotted stageSkipping is 'enabled', and the plan must
-    // resolve with the overlay applied. FAILED/CREATED restarts never touch
-    // the overlay (the prior run's plan holds).
     if (intentId && httpMethod === 'POST' && path?.endsWith('/start')) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      // Startable states: a fresh DRAFT, a FAILED run the user wants to retry, or
-      // a CREATED run whose hand-off never reached a live orchestrator (stranded —
-      // see the rollback below). init-ws is idempotent in the runtime, so a restart
-      // re-runs cleanly. RUNNING/WAITING/SUCCEEDED are rejected (already live/done).
-      const STARTABLE = new Set(['DRAFT', 'FAILED', 'CREATED']);
-      if (!STARTABLE.has(meta.status)) {
-        return response(409, { error: `Intent is ${meta.status}, cannot start` });
-      }
-      if (meta.status === 'DRAFT' && activePendingAttachments(meta).length > 0) {
-        return response(409, {
-          error:
-            'Attachment uploads are still being processed — retry when they appear in the list',
-        });
-      }
-      // A live Quorum artifact edit is mutating this intent's artifacts —
-      // starting a run underneath it would race the apply step.
-      const liveQuorumEdit = activeQuorumEdit(
-        await store.listQuorumEdits(intentId).catch(() => []),
-      );
-      if (liveQuorumEdit) {
-        return response(409, {
-          error: 'A Quorum artifact edit is in progress — wait for it to finish before starting',
-          code: 'quorum_edit_active',
-        });
-      }
-      if (!meta.prompt) {
-        return response(400, { error: 'Intent has no prompt; define it before starting' });
-      }
-      // Skip-overlay / composed-grid override at launch (DRAFT only — a restart
-      // re-enters the prior run's pinned plan). `skipStageIds: []` explicitly
-      // clears skips picked at create; `composedGrid: null` reverts to the
-      // named-scope projection; an absent field leaves the create-time
-      // snapshot. Both overrides are validated TOGETHER against the pinned
-      // plan below — a grid and an overlay that are individually fine can
-      // still starve each other's stages.
-      const startData = body ? JSON.parse(body) : {};
-      let selectedAgentCli = meta.agentCli ?? null;
-      let selectedCredentialBinding = meta.credentialBinding ?? null;
-      if (meta.status === 'DRAFT') {
-        selectedAgentCli = typeof startData.agentCli === 'string' ? startData.agentCli.trim() : '';
-        if (!selectedAgentCli) {
-          return response(400, {
-            error: 'Select an agent CLI before starting the intent',
-            code: 'agent_cli_required',
-          });
-        }
-        const resolved = await resolveSelectedAgentCredential(
-          {
-            projectId,
-            userId: sub,
-            agentCli: selectedAgentCli,
-            runtimeCapabilities: meta.environment,
-          },
-          { ssm },
-        );
-        if (resolved.error) {
-          return response(resolved.error.statusCode, resolved.error.body);
-        }
-        selectedCredentialBinding = resolved.credentialBinding;
-      }
-      let skipOverride; // undefined = untouched
-      let gridOverride; // undefined = untouched
-      if (startData.composedGrid !== undefined) {
-        if (meta.status !== 'DRAFT') {
-          return response(409, {
-            error: 'composedGrid can only be changed before the first start (DRAFT)',
-          });
-        }
-        const { value, error: gridError } = normalizeComposedGrid(startData.composedGrid);
-        if (gridError) {
-          return response(400, { error: gridError });
-        }
-        gridOverride = value; // null clears, object replaces
-      }
-      if (startData.skipStageIds !== undefined) {
-        if (meta.status !== 'DRAFT') {
-          return response(409, {
-            error: 'skipStageIds can only be changed before the first start (DRAFT)',
-          });
-        }
-        if (!Array.isArray(startData.skipStageIds)) {
-          return response(400, { error: 'skipStageIds must be an array of stage ids' });
-        }
-        const normalized = normalizeSkipStageIds(startData.skipStageIds);
-        if (normalized && meta.stageSkipping !== 'enabled') {
-          return response(400, {
-            error: 'Stage skipping is disabled for this intent — skipStageIds is not accepted',
-          });
-        }
-        skipOverride = normalized; // null clears, array replaces
-      }
-      if (skipOverride !== undefined || gridOverride !== undefined) {
-        const effectiveGrid = gridOverride !== undefined ? gridOverride : meta.composedGrid;
-        // The grid absorbs redundant overlay skips (composed-grid.js) — the
-        // pruned overlay is what launches, so the pinned combination always
-        // resolves for the orchestrator and the container alike.
-        const effectiveSkips = pruneSkipsForGrid(
-          skipOverride !== undefined ? skipOverride : meta.skipStageIds,
-          effectiveGrid,
-        );
-        if (effectiveGrid) skipOverride = effectiveSkips;
-        const planCheck = await intentMethodology.loadPlan(meta, {
-          skipStageIds: effectiveSkips ?? null,
-          composedGrid: effectiveGrid ?? null,
-        });
-        if (!planCheck.valid) {
-          return response(400, {
-            error:
-              gridOverride !== undefined
-                ? `The composed stage grid is not runnable for workflow "${meta.workflowId}"`
-                : `The requested stage skips are not runnable for workflow "${meta.workflowId}"`,
-            errors: planCheck.errors ?? [],
-          });
-        }
-      }
-      const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
-      if (sourceControlBlocked) return sourceControlBlocked;
-      const mcpLaunch = await prepareMcpLaunch(g, meta);
-      if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
-      // Flip <current> → CREATED (CAS on the observed status) so a double-start
-      // can't launch two runs, then hand off to the orchestrator (init-ws + run the
-      // plan). If the hand-off throws, roll back to the prior status — otherwise the
-      // intent strands in CREATED (the orchestrator never ran) and never retries.
-      const priorStatus = meta.status;
-      const starter = getResponder(event);
-      const durableExecutionName = durableExecutionNameForIntent(intentId);
-      let updated;
-      try {
-        updated = await store.updateExecution({
-          executionId: intentId,
-          projectId,
-          status: 'CREATED',
-          fromStatus: priorStatus,
-          ifAttachmentRevision: Number(meta.attachmentRevision ?? 0),
-          startedAt: meta.startedAt,
-          durableExecutionName,
-          durableExecutionArn: null,
-          orchestratorStartedAt: null,
-          orchestratorExpiresAt: null,
-          // Clear any stale failure from a prior attempt as we re-enter the pipeline.
-          failureReason: null,
-          failure: null,
-          startedBy: starter.sub,
-          starterName: starter.displayName,
-          starterEmail: starter.email,
-          ...mcpLaunch.update,
-          ...(priorStatus === 'DRAFT'
-            ? {
-                agentCli: selectedAgentCli,
-                credentialBinding: selectedCredentialBinding,
-              }
-            : {}),
-          // Launch-time skip override (validated above; undefined = untouched).
-          ...(skipOverride !== undefined ? { skipStageIds: skipOverride } : {}),
-          ...(gridOverride !== undefined ? { composedGrid: gridOverride } : {}),
-        });
-      } catch (error) {
-        if (error?.name === 'ConditionalCheckFailedException') {
-          return response(409, { error: 'Intent changed while starting — refresh and retry' });
-        }
-        throw error;
-      }
-      try {
-        const invoked = await invokeOrchestrator(
-          { action: 'start', intentId, executionId: intentId },
-          { durableExecutionName },
-        );
-        if (invoked?.durableExecutionArn) {
-          await store
-            .updateExecution({
-              executionId: intentId,
-              durableExecutionArn: invoked.durableExecutionArn,
-            })
-            .catch((err) => logger.error('Durable execution ARN stamp failed', err));
-        }
-      } catch (err) {
-        await store.updateExecution({
-          executionId: intentId,
-          projectId,
-          status: priorStatus,
-          fromStatus: 'CREATED',
-          startedAt: meta.startedAt,
-          ...(priorStatus === 'DRAFT'
-            ? {
-                agentCli: meta.agentCli ?? null,
-                credentialBinding: meta.credentialBinding ?? null,
-              }
-            : {}),
-        });
-        throw err;
-      }
-      return response(202, mapIntent(updated));
+      return await handleStartIntent({ event, body, projectId, intentId, sub, g, response });
     }
 
-    // POST /projects/{projectId}/intents/{intentId}/cancel
-    // Retire a run that is parked (WAITING), stranded (CREATED) or FAILED. A
-    // RUNNING stage cannot be cancelled mid-turn (steering is deterministic —
-    // docs/v2-steering.md); wait for it to park or finish. Supersedes every
-    // pending gate, wakes the suspended orchestrator with a cancel sentinel
-    // (it sees the superseded gate and exits without touching META), then
-    // flips META → CANCELLED.
     if (intentId && httpMethod === 'POST' && path?.endsWith('/cancel')) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const CANCELLABLE = new Set(['WAITING', 'CREATED', 'FAILED']);
-      if (!CANCELLABLE.has(meta.status)) {
-        return response(409, { error: `Intent is ${meta.status}, cannot cancel` });
-      }
-      const responder = getResponder(event);
-      await retireParkedRun(intentId, `cancelled by ${responder.displayName || responder.sub}`);
-      // The run is over — free the warm microVM now instead of waiting for the
-      // idle reap (the persistent mount survives for a later rewind relaunch).
-      await stopRuntimeSessions(intentId, meta);
-      // Cancelling withdraws a construction autonomy grant, so a later rewind
-      // relaunches the intent gated. The grant's provenance keeps who gave it and
-      // gains who withdrew it. An intent without a grant writes nothing extra.
-      const revokesAutonomy = meta.constructionGateAutonomy === 'autonomous';
-      const updated = await store.updateExecution({
-        executionId: intentId,
-        projectId,
-        status: 'CANCELLED',
-        fromStatus: meta.status,
-        startedAt: meta.startedAt,
-        pendingHumanTaskId: null,
-        // A recorded answer whose callback failed is moot once the run ends.
-        resumeRequired: null,
-        completedAt: new Date().toISOString(),
-        ...(revokesAutonomy
-          ? {
-              constructionGateAutonomy: null,
-              constructionGateAutonomyGrant: {
-                ...meta.constructionGateAutonomyGrant,
-                revokedAt: new Date().toISOString(),
-                revokedBy: responder.sub,
-                revokedByName: responder.displayName || null,
-                revokedSource: 'cancel',
-              },
-            }
-          : {}),
-      });
-      await store
-        .appendEvent({
-          executionId: intentId,
-          type: 'v2.execution.cancelled',
-          actor: responder.displayName || responder.sub,
-          summary: `Run cancelled by ${responder.displayName || 'a project member'}`,
-        })
-        .catch((err) => logger.error('Cancel event append failed', err));
-      return response(200, mapIntent(updated));
+      return await handleCancelIntent({ event, projectId, intentId, response });
     }
 
-    // DELETE /projects/{projectId}/intents/{intentId}
-    // Permanently remove an intent: the Neptune subgraph (anchor + everything
-    // it CONTAINS + discussion threads), the entire EXEC#<id> DynamoDB
-    // partition, and the intent-scoped realtime Yjs documents. Owner/admin
-    // only (destructive, matches repo removal). A RUNNING intent is refused —
-    // its durable orchestrator + AgentCore session are live and would write
-    // into the deleted partition; any other non-terminal status is first
-    // retired exactly like cancel (supersede pending gates, wake the parked
-    // orchestrator with a cancel sentinel) so nothing resumes afterwards.
-    // Deletion order is deliberate: Yjs docs → Neptune → DynamoDB (META last),
-    // so a partial failure leaves the intent listed and the delete retryable.
-    // ── Composer (Adaptive Workflows) ────────────────────────────────────────
-    // "LLM proposes, engine disposes": a compose request only ever produces a
-    // COMPOSE row carrying a proposal + the plan resolver's authoritative
-    // verdict. Applying a proposal is a SEPARATE human action (the DRAFT PATCH
-    // above / the recompose path), which validates again.
-
-    // POST .../compose-report-upload — presigned PUT for an external analysis
-    // report (report-mode compose input). DRAFT only; the key is namespaced
-    // under this intent so a report can never be smuggled across intents.
     if (intentId && httpMethod === 'POST' && path?.endsWith('/compose-report-upload')) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      if (meta.status !== 'DRAFT') {
-        return response(409, { error: `Intent is ${meta.status}, compose applies to DRAFT only` });
-      }
-      if (!ARTIFACTS_BUCKET()) {
-        return response(503, { error: 'Report uploads are not configured' });
-      }
-      const key = `${composeReportPrefix(intentId)}${randomUUID()}.json`;
-      const uploadUrl = await getSignedUrl(
-        s3,
-        new PutObjectCommand({
-          Bucket: ARTIFACTS_BUCKET(),
-          Key: key,
-          ContentType: 'application/json',
-        }),
-        { expiresIn: 300 },
-      );
-      return response(200, { uploadUrl, key, expiresIn: 300 });
+      return await handleComposeReportUpload({ projectId, intentId, response });
     }
 
     if (intentId && httpMethod === 'POST' && path?.endsWith('/attachments/upload')) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId)
-        return response(404, { error: 'Intent not found' });
-      if (meta.status !== 'DRAFT')
-        return response(409, { error: 'Attachments can only be changed while DRAFT' });
-      if (!ARTIFACTS_BUCKET())
-        return response(503, { error: 'Attachment uploads are not configured' });
-      const data = body ? JSON.parse(body) : {};
-      const descriptors = Array.isArray(data.attachments) ? data.attachments : [];
-      const current = Array.isArray(meta.attachments) ? meta.attachments : [];
-      const pending = activePendingAttachments(meta);
-      if (!descriptors.length) return response(400, { error: 'Provide at least one attachment' });
-      if (current.length + pending.length + descriptors.length > MAX_ATTACHMENTS) {
-        return response(400, { error: `Maximum ${MAX_ATTACHMENTS} attachments per intent` });
-      }
-      const validated = descriptors.map(validateAttachmentDescriptor);
-      const invalid = validated.find((entry) => entry.error);
-      if (invalid) return response(400, { error: invalid.error });
-      const incomingBytes = validated.reduce((sum, entry) => sum + entry.value.size, 0);
-      const existingBytes = [...current, ...pending].reduce(
-        (sum, attachment) => sum + Number(attachment.size ?? 0),
-        0,
-      );
-      if (existingBytes + incomingBytes > MAX_ATTACHMENT_TOTAL_BYTES) {
-        return response(400, { error: 'Attachments cannot exceed 25 MB in total' });
-      }
-      const expiresAt = new Date(Date.now() + ATTACHMENT_UPLOAD_TTL_SECONDS * 1000).toISOString();
-      const allocated = validated.map(({ value }) => {
-        const attachmentId = randomUUID();
-        return {
-          attachmentId,
-          filename: value.filename,
-          mimeType: value.mimeType,
-          size: value.size,
-          s3Key: attachmentStagingKey(intentId, attachmentId, value.extension),
-          expiresAt,
-          uploadedBy: sub,
-        };
-      });
-      try {
-        await store.updateExecution({
-          executionId: intentId,
-          fromStatus: 'DRAFT',
-          ifAttachmentRevision: Number(meta.attachmentRevision ?? 0),
-          attachments: current,
-          pendingAttachmentUploads: [...pending, ...allocated],
-        });
-      } catch (error) {
-        if (error?.name === 'ConditionalCheckFailedException') {
-          return response(409, {
-            error: 'Attachments changed by another collaborator — refresh and retry',
-          });
-        }
-        throw error;
-      }
-      const uploads = await Promise.all(
-        allocated.map(async (attachment) => {
-          const post = await createPresignedPost(s3, {
-            Bucket: ARTIFACTS_BUCKET(),
-            Key: attachment.s3Key,
-            Expires: ATTACHMENT_UPLOAD_TTL_SECONDS,
-            Fields: { 'Content-Type': attachment.mimeType },
-            Conditions: [
-              ['eq', '$Content-Type', attachment.mimeType],
-              ['content-length-range', attachment.size, attachment.size],
-            ],
-          });
-          return { ...attachment, ...post, expiresIn: ATTACHMENT_UPLOAD_TTL_SECONDS };
-        }),
-      );
-      return response(200, { uploads });
+      return await handleAttachmentUpload({ body, projectId, intentId, sub, response });
     }
 
     if (intentId && httpMethod === 'GET' && path?.endsWith('/attachments')) {
-      let meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId)
-        return response(404, { error: 'Intent not found' });
-      meta = await attachmentCleanup.retryPendingDeletions(meta);
-      return response(200, {
-        attachments: mapIntent(meta).attachments,
-        attachmentRevision: Number(meta.attachmentRevision ?? 0),
-      });
+      return await handleListAttachments({ projectId, intentId, response });
     }
 
     if (intentId && httpMethod === 'DELETE' && path?.match(/\/attachments\/[^/]+$/)) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId)
-        return response(404, { error: 'Intent not found' });
-      if (meta.status !== 'DRAFT')
-        return response(409, { error: 'Attachments can only be changed while DRAFT' });
-      const attachmentId = path.split('/').at(-1);
-      const attachmentRevision = Number(event.queryStringParameters?.attachmentRevision);
-      if (!Number.isInteger(attachmentRevision) || attachmentRevision < 0) {
-        return response(400, { error: 'attachmentRevision must be a non-negative integer' });
-      }
-      const current = Array.isArray(meta.attachments) ? meta.attachments : [];
-      const pending = activePendingAttachments(meta);
-      const pendingDeletions = pendingAttachmentDeletions(meta);
-      const attachment = current.find((entry) => entry.attachmentId === attachmentId);
-      if (!attachment) {
-        const retry = pendingDeletions.find((entry) => entry.attachmentId === attachmentId);
-        if (!retry) return response(404, { error: 'Attachment not found' });
-        const cleaned = await attachmentCleanup.retryPendingDeletions(meta);
-        return response(200, {
-          attachments: mapIntent(cleaned).attachments,
-          attachmentRevision: cleaned.attachmentRevision,
-        });
-      }
-      let updated;
-      try {
-        updated = await store.updateExecution({
-          executionId: intentId,
-          fromStatus: 'DRAFT',
-          ifAttachmentRevision: attachmentRevision,
-          attachments: current.filter((entry) => entry.attachmentId !== attachmentId),
-          pendingAttachmentUploads: pending,
-          pendingAttachmentDeletions: [...pendingDeletions, attachment],
-        });
-      } catch (error) {
-        if (error?.name === 'ConditionalCheckFailedException') {
-          return response(409, {
-            error: 'Attachments changed by another collaborator — refresh and retry',
-          });
-        }
-        throw error;
-      }
-      updated = await attachmentCleanup.retryPendingDeletions(updated);
-      await broadcastToIntentChannel(intentId, {
-        action: 'intent.attachments',
-        intentId,
-        projectId,
-      }).catch(() => {});
-      return response(200, {
-        attachments: mapIntent(updated).attachments,
-        attachmentRevision: updated.attachmentRevision,
-      });
+      return await handleDeleteAttachment({ event, path, projectId, intentId, response });
     }
 
-    // POST .../compose — start a composer session for this intent.
-    // Body: { instructions?, reportKey?, repoSignals?, mode? }. Modes:
-    //   front  (default) — DRAFT only, composed from the draft text;
-    //   report           — DRAFT only, derived when a reportKey rides along;
-    //   inflight         — a parked (WAITING) or FAILED run: propose
-    //                      EXECUTE/SKIP flips for pending stages, with the
-    //                      run's frozen progress enforced by the compose job.
-    //                      The proposal applies via POST .../recompose.
-    // Deterministic-first: when the Admin bypass is enabled and exactly one
-    // stock scope's keywords match the draft text, a front compose completes
-    // WITHOUT any LLM call.
     if (intentId && httpMethod === 'POST' && path?.endsWith('/compose')) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const data = body ? JSON.parse(body) : {};
-      const reportKey =
-        typeof data.reportKey === 'string' && data.reportKey ? data.reportKey : null;
-      const mode = data.mode === 'inflight' ? 'inflight' : reportKey ? 'report' : 'front';
-      let requestedCli = meta.agentCli ?? null;
-      let credentialBinding = meta.credentialBinding ?? null;
-      if (mode === 'inflight') {
-        if (!['WAITING', 'FAILED'].includes(meta.status)) {
-          return response(409, {
-            error: `Intent is ${meta.status} — in-flight compose needs a parked or failed run`,
-          });
-        }
-        if (meta.constructionAutonomyMode === 'autonomous') {
-          return response(409, {
-            error:
-              'Construction is running autonomously — recompose is disabled until the swarm finishes or autonomy drops back to gated',
-            code: 'autonomous_construction',
-          });
-        }
-        if (!requestedCli) {
-          return response(409, {
-            error: 'This intent has no pinned agent CLI',
-            code: 'agent_cli_required',
-          });
-        }
-      } else if (meta.status !== 'DRAFT') {
-        return response(409, { error: `Intent is ${meta.status}, compose applies to DRAFT only` });
-      } else {
-        requestedCli = typeof data.agentCli === 'string' ? data.agentCli.trim() : '';
-        if (!requestedCli) {
-          return response(400, {
-            error: 'Select an agent CLI before composing with AI',
-            code: 'agent_cli_required',
-          });
-        }
-        const resolved = await resolveSelectedAgentCredential(
-          {
-            projectId,
-            userId: sub,
-            agentCli: requestedCli,
-            runtimeCapabilities: meta.environment,
-          },
-          { ssm },
-        );
-        if (resolved.error) {
-          return response(resolved.error.statusCode, resolved.error.body);
-        }
-        credentialBinding = resolved.credentialBinding;
-      }
-      if (!meta.prompt && !meta.title) {
-        return response(400, { error: 'Give the intent a prompt (or title) before composing' });
-      }
-      const instructions =
-        typeof data.instructions === 'string' && data.instructions.trim()
-          ? data.instructions.trim().slice(0, 4000)
-          : null;
-      if (reportKey && !reportKey.startsWith(composeReportPrefix(intentId))) {
-        return response(400, { error: 'reportKey does not belong to this intent' });
-      }
-      // Advisory workspace signals, gathered client-side through the existing
-      // authenticated git-provider routes (branch lists, trees). Bounded and
-      // shape-checked only — runtime workspace-detection stays authoritative.
-      const repoSignals =
-        data.repoSignals && typeof data.repoSignals === 'object' && !Array.isArray(data.repoSignals)
-          ? JSON.parse(JSON.stringify(data.repoSignals).slice(0, 8192))
-          : null;
-      const responder = getResponder(event);
-      const composeId = randomUUID();
-      const intentText = [meta.title, meta.prompt].filter(Boolean).join('\n\n');
-
-      // Deterministic pre-pass: a CLEAN single-scope keyword match (front mode,
-      // no steering instructions) resolves without the LLM — unless the Admin
-      // switch forces every compose through the composer agent.
-      if (mode === 'front' && !instructions && (await fetchComposeLlmBypass()) === 'enabled') {
-        const scopeBlocks = meta.methodologyRelease
-          ? await loadReleaseClosure({
-              s3,
-              bucket: ARTIFACTS_BUCKET(),
-              methodologyRelease: meta.methodologyRelease,
-              ddb,
-              tableName: BLOCKS_TABLE(),
-            })
-              .then((closure) =>
-                resolveMethodologyLibrary({
-                  closure,
-                  ddb,
-                  tableName: BLOCKS_TABLE(),
-                  workflowId: meta.workflowId,
-                  workflowVersion: meta.workflowVersion,
-                  methodologyPins: meta.methodologyPins,
-                }),
-              )
-              .then((resolved) => resolved.blocksByType.SCOPE ?? [])
-              .catch(() => [])
-          : await listMergedBlocks(ddb, BLOCKS_TABLE(), 'SCOPE').catch(() => []);
-        const match = matchScopeByKeywords({ text: intentText, scopes: scopeBlocks });
-        if (match) {
-          const planCheck = await intentMethodology.loadPlan(meta, {
-            scope: match.scopeId,
-            skipStageIds: null,
-            composedGrid: null,
-          });
-          if (planCheck.valid) {
-            const row = await store.createCompose({
-              executionId: intentId,
-              composeId,
-              mode,
-              state: 'PENDING',
-              source: 'match',
-              requestedBy: responder.sub,
-              requestedByName: responder.displayName,
-              instructions,
-            });
-            const completed = await store.updateCompose({
-              executionId: intentId,
-              composeId,
-              state: 'COMPLETED',
-              fromStates: ['PENDING'],
-              fields: {
-                proposal: {
-                  mode: 'matched',
-                  scope: match.scopeId,
-                  grid: null,
-                  rationale: [`keyword match: ${match.matched.join(', ')}`],
-                  confidence: 1,
-                },
-                validation: {
-                  valid: true,
-                  errors: [],
-                  warnings: planCheck.warnings ?? [],
-                  summary: planCheck.plan?.summary ?? null,
-                },
-              },
-            });
-            await store
-              .appendEvent({
-                executionId: intentId,
-                type: 'v2.compose.completed',
-                actor: 'composer',
-                summary: `Deterministic keyword match proposed scope "${match.scopeId}"`,
-              })
-              .catch(() => {});
-            await broadcastToIntentChannel(intentId, {
-              action: 'compose.updated',
-              intentId,
-              projectId,
-              compose: mapCompose(completed ?? row),
-            });
-            return response(201, mapCompose(completed ?? row));
-          }
-          // A matched-but-unrunnable scope falls through to the composer.
-        }
-      }
-
-      const composeRuntimeTarget = runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN());
-      if (!composeRuntimeTarget.agentRuntimeArn) {
-        return response(503, { error: 'Composer runtime is not configured' });
-      }
-      // Report excerpt: read + bound the uploaded report server-side so the
-      // container payload stays small and the container needs no S3 grant.
-      let reportExcerpt = null;
-      if (reportKey) {
-        try {
-          const obj = await s3.send(
-            new GetObjectCommand({ Bucket: ARTIFACTS_BUCKET(), Key: reportKey }),
-          );
-          const text = await obj.Body.transformToString();
-          reportExcerpt = text.slice(0, 24 * 1024);
-        } catch {
-          return response(400, { error: 'Report not found — upload it first' });
-        }
-      }
-      // In-flight context: the run's frozen progress, computed from its own
-      // stage rows. `frozenGrid` pins what already happened (the compose job
-      // rejects any proposal flipping it); `progressContext` grounds the
-      // composer in the live state instead of letting it guess.
-      let frozenGrid = null;
-      let progressContext = null;
-      if (mode === 'inflight') {
-        const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-        const byStage = new Map();
-        for (const stageRow of records.stages ?? []) {
-          if (!stageRow.stageId) continue;
-          if (!byStage.has(stageRow.stageId)) byStage.set(stageRow.stageId, new Set());
-          byStage.get(stageRow.stageId).add(stageRow.state);
-        }
-        frozenGrid = {};
-        const lines = [];
-        for (const [stageId, states] of byStage) {
-          const ran = ['SUCCEEDED', 'RUNNING', 'WAITING_FOR_HUMAN', 'FAILED'].some((s) =>
-            states.has(s),
-          );
-          frozenGrid[stageId] = ran ? 'EXECUTE' : 'SKIP';
-          lines.push(`- ${stageId}: ${[...states].join('/')}`);
-        }
-        progressContext = lines.length ? lines.join('\n') : '(no stage has run yet)';
-      }
-      const row = await store.createCompose({
-        executionId: intentId,
-        composeId,
-        mode,
-        state: 'PENDING',
-        source: 'llm',
-        requestedBy: responder.sub,
-        requestedByName: responder.displayName,
-        instructions,
-        reportKey,
-      });
-      try {
-        const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
-          purpose: 'compose',
-          projectId,
-          executionId: intentId,
-          credentialBinding,
-          agentCli: requestedCli,
-          runtimeCapabilities: meta.environment,
-        });
-        const res = await agentcore.send(
-          new InvokeAgentRuntimeCommand({
-            ...composeRuntimeTarget,
-            // A FRESH throwaway session per compose, never the intent's own
-            // session. Compose is stateless (no workspace/conversation to
-            // preserve), and dispatching it to `aidlc-intent-<id>` had two
-            // failure modes: an EXISTING intent microVM kept serving the
-            // image it was booted with (zombie-session field incident — a
-            // redeploy never reached composes for drafts that had composed
-            // once), and it spawned the intent's long-lived session early,
-            // pinning the future RUN to compose-time code.
-            runtimeSessionId: composeSessionIdFor(composeId),
-            contentType: 'application/json',
-            accept: 'application/json',
-            payload: Buffer.from(
-              JSON.stringify({
-                command: 'compose-plan-start',
-                projectId,
-                intentId,
-                executionId: intentId,
-                composeId,
-                mode,
-                workflowId: meta.workflowId,
-                workflowVersion: meta.workflowVersion,
-                prompt: intentText,
-                requestedCli,
-                ...(credentialBinding ? { credentialBinding } : {}),
-                ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
-                ...(instructions ? { instructions } : {}),
-                ...(repoSignals ? { repoSignals } : {}),
-                ...(reportExcerpt ? { reportExcerpt } : {}),
-                ...(frozenGrid && Object.keys(frozenGrid).length ? { frozenGrid } : {}),
-                ...(progressContext ? { progressContext } : {}),
-                ...(meta.methodologyRelease ? { methodologyRelease: meta.methodologyRelease } : {}),
-                // The settings this intent already runs with, and the scope
-                // whose own values they override. The composer is grounded in
-                // the EFFECTIVE values rather than the subset a member changed,
-                // which is what lets the annex forbid it reading them off disk.
-                ...(meta.aidlcSettings ? { aidlcSettings: meta.aidlcSettings } : {}),
-                ...(composePolicyScope(meta) ? { policyScope: composePolicyScope(meta) } : {}),
-                ...(meta.methodologyRelease && meta.methodologyPins
-                  ? { methodologyPins: meta.methodologyPins }
-                  : {}),
-              }),
-            ),
-          }),
-        );
-        const text = res.response ? await res.response.transformToString() : '';
-        const accepted = text ? JSON.parse(text) : {};
-        if (accepted.ok === false) {
-          throw new Error(accepted.reason ?? 'compose dispatch refused');
-        }
-      } catch (err) {
-        // The accept failed — terminalize the row so the UI never spins on a
-        // compose no container is running.
-        await store
-          .updateCompose({
-            executionId: intentId,
-            composeId,
-            state: 'FAILED',
-            fromStates: ['PENDING'],
-            fields: { failureReason: `dispatch failed: ${err.message}` },
-          })
-          .catch(() => {});
-        return response(503, { error: `Compose dispatch failed: ${err.message}` });
-      }
-      return response(202, mapCompose(row));
+      return await handleComposeIntent({ event, body, projectId, intentId, sub, response });
     }
 
-    // GET .../composes — the intent's composer sessions (the compose page
-    // seeds from this, then follows compose.updated broadcasts).
     if (intentId && httpMethod === 'GET' && path?.endsWith('/composes')) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const rows = await store.listComposes(intentId);
-      return response(200, { composes: rows.map(mapCompose) });
+      return await handleListComposes({ projectId, intentId, response });
     }
 
-    // PATCH /projects/{projectId}/intents/{intentId} — DRAFT-only header edit.
-    // The collaborative draft page auto-saves the shared prompt/title and the
-    // scope / composed-grid / skip selections here (the Yjs doc is transport;
-    // this row is durability — Yjs docs evaporate ~60s after the last client).
-    // Everything is re-validated exactly like create; a non-DRAFT intent is
-    // immutable through this route (its plan is pinned by the running/finished
-    // execution).
     if (intentId && httpMethod === 'PATCH') {
-      let meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const data = body ? JSON.parse(body) : {};
-      // The settings path normalises against this row and diffs the timeline
-      // against it, so on that path the row has to be the exact pre-image this
-      // write replaces — it is re-read CONSISTENTLY rather than letting a
-      // replication lag become a refusal. A body that MENTIONS the field pays
-      // for that read whatever it carries: whether `aidlcSettings: null` clears
-      // a recorded override or asks for nothing (see `settingsRequested` below)
-      // is decided by the row, so a lagging read must not be what decides it.
-      // Only this path pays: a save that neither mentions settings nor finds any
-      // recorded keeps the single eventually consistent read it has always made,
-      // which is the save every unpinned, 2.3.3, 2.8.2 and 2.9.0 draft makes.
-      if (data.aidlcSettings !== undefined || meta.aidlcSettings) {
-        meta = (await store.getExecution(intentId, { consistentRead: true })) ?? meta;
-      }
-      // A body that carries `aidlcSettings: null` for an intent that has none
-      // asks for nothing: it is not a settings change, and treating it as one
-      // is what would put every draft that has no settings — every unpinned,
-      // 2.3.3, 2.8.2 and 2.9.0 draft — on the settings path, with its extra
-      // plan resolution, its revision pre-check and an `aidlcSettings`
-      // attribute on a META row that never had one.
-      const settingsRequested =
-        data.aidlcSettings !== undefined && !(data.aidlcSettings === null && !meta.aidlcSettings);
-      if (meta.status !== 'DRAFT') {
-        // A settings change after the run started is refused by name: the
-        // dialect annex tells the agent a human changes settings on the intent,
-        // and this is the endpoint saying a human cannot either, once it is
-        // running. Its own code, because "the draft is closed" and "this
-        // setting is now part of a running plan" are different refusals.
-        if (settingsRequested) {
-          return response(409, {
-            error: `Intent is ${meta.status}; its AI-DLC settings were locked when the run started`,
-            code: 'settings_locked',
-          });
-        }
-        return response(409, {
-          error: `Intent is ${meta.status}, only DRAFT intents are editable`,
-        });
-      }
-      const patch = {};
-      let authoredSettings = null;
-      let settingsDropped = [];
-      let settingsScope = null;
-      let settingsChanged = false;
-      if (data.title !== undefined) {
-        if (data.title !== null && typeof data.title !== 'string') {
-          return response(400, { error: 'title must be a string or null' });
-        }
-        patch.title = data.title === null ? null : data.title.trim() || null;
-      }
-      if (data.prompt !== undefined) {
-        if (data.prompt !== null && typeof data.prompt !== 'string') {
-          return response(400, { error: 'prompt must be a string or null' });
-        }
-        patch.prompt = data.prompt === null ? null : data.prompt.trim() || null;
-      }
-      if (data.composedGrid !== undefined) {
-        const { value, error: gridError } = normalizeComposedGrid(data.composedGrid);
-        if (gridError) return response(400, { error: gridError });
-        patch.composedGrid = value; // null clears
-      }
-      // The stock scope a composed grid runs on. Verified against the pinned
-      // workflow's own scope vocabulary below, together with the grid itself.
-      if (data.policyScope !== undefined) {
-        if (
-          data.policyScope !== null &&
-          (typeof data.policyScope !== 'string' || !data.policyScope)
-        ) {
-          return response(400, { error: 'policyScope must be a non-empty scope name or null' });
-        }
-        patch.policyScope = data.policyScope || null; // null clears
-      }
-      if (data.skipStageIds !== undefined) {
-        if (data.skipStageIds !== null && !Array.isArray(data.skipStageIds)) {
-          return response(400, { error: 'skipStageIds must be an array of stage ids or null' });
-        }
-        const normalized = normalizeSkipStageIds(data.skipStageIds ?? []);
-        if (normalized && meta.stageSkipping !== 'enabled') {
-          return response(400, {
-            error: 'Stage skipping is disabled for this intent — skipStageIds is not accepted',
-          });
-        }
-        patch.skipStageIds = normalized; // null clears
-      }
-      if (data.scope !== undefined) {
-        if (typeof data.scope !== 'string' || !data.scope) {
-          return response(400, { error: 'scope must be a non-empty string' });
-        }
-        patch.scope = data.scope;
-      }
-      // Per-intent AI-DLC settings travel with the selection they belong to, in
-      // this one body, under this one CAS — which is what makes them
-      // unorderable against it. A caller that sends settings WITHOUT the
-      // selection is refused by name rather than having them validated against
-      // a snapshot that may describe a different selection: that is the whole
-      // mechanism by which a stale read could silently authorise a setting the
-      // current scope does not offer. The collaborative page always sends the
-      // full selection, so this is invisible in normal use.
-      if (settingsRequested && data.scope === undefined && data.composedGrid === undefined) {
-        return response(400, {
-          error:
-            'Send the scope or the composed grid in the same request as aidlcSettings — settings are validated against the selection they belong to',
-          code: 'selection_required_with_settings',
-        });
-      }
-      if (Object.keys(patch).length === 0) {
-        return response(400, { error: 'Nothing to update' });
-      }
-      // Plan re-validation when the projection inputs change. The effective
-      // combination (patched value where supplied, current META otherwise) must
-      // resolve — mirrors create so a broken draft can never reach Start.
-      if (
-        patch.scope !== undefined ||
-        patch.composedGrid !== undefined ||
-        patch.policyScope !== undefined ||
-        patch.skipStageIds !== undefined ||
-        settingsRequested
-      ) {
-        const effScope = patch.scope ?? meta.scope;
-        const effGrid =
-          patch.composedGrid !== undefined ? patch.composedGrid : (meta.composedGrid ?? null);
-        // The grid absorbs redundant overlay skips (composed-grid.js): a
-        // shared-draft flow can legitimately pair "deselect X" with a grid
-        // that later flips X to SKIP — persist the pruned overlay so the
-        // pinned combination always resolves.
-        const effSkips = pruneSkipsForGrid(
-          patch.skipStageIds !== undefined ? patch.skipStageIds : (meta.skipStageIds ?? null),
-          effGrid,
-        );
-        if (effGrid && (patch.skipStageIds !== undefined || patch.composedGrid !== undefined)) {
-          patch.skipStageIds = effSkips;
-        }
-        if (!effGrid) {
-          const scopes = await intentMethodology.loadScopes(meta);
-          if (!scopes.includes(effScope)) {
-            return response(400, {
-              error: `Unknown scope "${effScope}" for workflow "${meta.workflowId}"`,
-              scopes,
-            });
-          }
-        }
-        // A base scope belongs to a GRID, so clearing the grid clears it in the
-        // SAME write. A row that kept the previous base would apply it to no
-        // grid: every later save and Start would be refused, and no client
-        // could repair it, because the field only travels with a grid. An
-        // explicitly sent base scope without a grid is still a 400, because
-        // that is a caller describing a selection that names its scope
-        // directly.
-        let effPolicyScope =
-          patch.policyScope !== undefined ? patch.policyScope : (meta.policyScope ?? null);
-        if (!effGrid && effPolicyScope) {
-          if (patch.policyScope) {
-            return response(400, {
-              error: 'policyScope applies to a composed stage grid; send the scope itself instead',
-            });
-          }
-          effPolicyScope = null;
-          patch.policyScope = null;
-        }
-        // Which settings EXIST is decided by the selection, so the authored map
-        // is resolved from the selection in THIS body — never from a stored
-        // snapshot that may describe a different one — and the settings are
-        // normalised against it before anything is stored or re-validated.
-        //
-        // A selection change that carries NO settings normalises the recorded
-        // ones too, in the same write: the run honours whatever META holds, so
-        // a scope that does not author a recorded override must not leave it
-        // there to be honoured. The withdrawal is recorded by the same write.
-        const selectionChanged =
-          patch.scope !== undefined ||
-          patch.composedGrid !== undefined ||
-          patch.policyScope !== undefined;
-        settingsChanged = settingsRequested || (selectionChanged && Boolean(meta.aidlcSettings));
-        if (settingsChanged) {
-          const authoredCheck = await intentMethodology.loadPlan(meta, {
-            scope: effScope,
-            skipStageIds: effSkips ?? null,
-            composedGrid: effGrid ?? null,
-            policyScope: effPolicyScope,
-            intentSettings: null,
-          });
-          if (!authoredCheck.valid) {
-            return response(400, {
-              error: `The requested draft changes are not runnable for workflow "${meta.workflowId}"`,
-              errors: authoredCheck.errors ?? [],
-            });
-          }
-          authoredSettings = authoredCheck.plan?.aidlcSettingsAuthored ?? {};
-          const normalized = normalizeAidlcSettings({
-            settings: settingsRequested ? data.aidlcSettings : meta.aidlcSettings,
-            authored: authoredSettings,
-          });
-          if (normalized.error) return response(400, normalized.error);
-          patch.aidlcSettings = normalized.value;
-          settingsDropped = normalized.dropped ?? [];
-        }
-        const planCheck = await intentMethodology.loadPlan(meta, {
-          scope: effScope,
-          skipStageIds: effSkips ?? null,
-          composedGrid: effGrid ?? null,
-          policyScope: effPolicyScope,
-          ...(patch.aidlcSettings !== undefined ? { intentSettings: patch.aidlcSettings } : {}),
-        });
-        if (!planCheck.valid) {
-          return response(400, {
-            error: `The requested draft changes are not runnable for workflow "${meta.workflowId}"`,
-            errors: planCheck.errors ?? [],
-          });
-        }
-        // The base is honoured ONLY on a catalog that authors the per-intent
-        // settings, so the catalog's own answer — carried beside the plan this
-        // resolution already produced — decides what happens to it here.
-        //
-        // On any other library the base resolves nothing the run reads, so it
-        // is DROPPED rather than refused and rather than stored: the page
-        // records the base for every stock scope, and an unpinned, 2.3.3,
-        // 2.8.2 or 2.9.0 draft must keep both the save it always made and the
-        // row it always had. Dropping it also repairs a row an older bundle
-        // left behind. Where the base IS honoured it has to name a real scope
-        // block, or a customized grid would quietly run with no policy at all.
-        if (effPolicyScope && !planCheck.aidlcSettingsAware) {
-          effPolicyScope = null;
-          patch.policyScope = null;
-        } else if (effPolicyScope) {
-          const scopes = await intentMethodology.loadScopes(meta);
-          if (!scopes.includes(effPolicyScope)) {
-            return response(400, {
-              error: `Unknown policyScope "${effPolicyScope}" for workflow "${meta.workflowId}"`,
-              scopes,
-            });
-          }
-        }
-        patch.planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
-        settingsScope = effPolicyScope ?? effScope;
-      }
-      if (!Number.isSafeInteger(data.ifDraftRevision) || data.ifDraftRevision < 0) {
-        return response(428, {
-          error: 'Read the edit state before saving',
-          code: 'edit_precondition_required',
-        });
-      }
-      // The settings were normalised against the selection in this body and the
-      // timeline diff is taken from the row read above, so that row has to be
-      // the exact pre-image this CAS replaces. The read is consistent on this
-      // path, so this is a real concurrent edit rather than a replication lag,
-      // and it is refused here rather than producing a correct write with a
-      // timeline entry describing a change nobody made.
-      if (settingsChanged && (meta.draftRevision ?? 0) !== data.ifDraftRevision) {
-        return response(409, {
-          error: 'Draft changed while saving — retry from the current document',
-          code: 'edit_conflict',
-        });
-      }
-      let updated;
-      try {
-        updated = await store.updateExecution({
-          executionId: intentId,
-          // CAS on DRAFT so a concurrent Start can never race a header edit
-          // into a launched run.
-          fromStatus: 'DRAFT',
-          ifDraftRevision: data.ifDraftRevision,
-          ...patch,
-        });
-      } catch (err) {
-        if (err?.name === 'ConditionalCheckFailedException') {
-          return response(409, {
-            error: 'Draft changed while saving — retry from the current document',
-            code: 'edit_conflict',
-          });
-        }
-        throw err;
-      }
-      // One timeline event per changed key, from the pre-image this write
-      // replaced, with the authenticated caller of THIS request as the actor.
-      // Because the diff comes from the row the CAS condition bound, the audit
-      // cannot attribute a change this write did not make. Appended after the
-      // successful write, best-effort with a logged failure — the same contract
-      // the existing event appends have, and not a transactional-durability
-      // claim.
-      if (settingsChanged) {
-        const editor = getResponder(event);
-        for (const summary of describeAidlcSettingsChange({
-          previous: meta.aidlcSettings ?? null,
-          next: patch.aidlcSettings ?? null,
-          authored: authoredSettings,
-          dropped: settingsDropped,
-          scope: settingsScope,
-        })) {
-          await store
-            .appendEvent({
-              executionId: intentId,
-              type: 'v2.intent.settings.changed',
-              actor: editor.displayName || editor.sub,
-              summary,
-            })
-            .catch((err) => logger.error('AI-DLC settings event append failed', err));
-        }
-      }
-      return response(200, {
-        ...mapIntent(updated),
-        // The settings this selection does not author, so the page can say
-        // which choice the scope change withdrew. Omitted when nothing was
-        // dropped, which is every save of every intent that has no settings.
-        ...(settingsDropped.length
-          ? { aidlcSettingsDropped: settingsDropped.map(({ key }) => key) }
-          : {}),
-      });
+      return await handleUpdateIntent({ event, body, projectId, intentId, response });
     }
 
     if (intentId && httpMethod === 'DELETE' && path?.endsWith(`/intents/${intentId}`)) {
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      if (auth.role !== 'owner' && auth.role !== 'admin') {
-        return response(403, { error: 'Only project owners and admins can delete intents' });
-      }
-      // The two-pass, intent_id-guarded cascade (Yjs → Neptune → DynamoDB) lives
-      // in shared/intent-deletion so the projects lambda reuses it verbatim on a
-      // project delete. force:false → a RUNNING run is refused (IntentRunningError
-      // → 409) instead of deleted out from under its live orchestrator.
-      const responder = getResponder(event);
-      try {
-        await deleteIntentCascade({
-          cleanupDeadline,
-          g,
-          store,
-          ddb,
-          agentcore,
-          lambdaClient,
-          intentId,
-          meta,
-          yjsTable: process.env.YJS_DOCUMENTS_TABLE,
-          agentcoreRuntimeTarget: runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN()),
-          sessionCleanupStore,
-          artifactsBucket: ARTIFACTS_BUCKET(),
-          actor: responder.displayName || responder.sub,
-          force: false,
-        });
-      } catch (err) {
-        if (err instanceof IntentRunningError) {
-          return response(409, {
-            error:
-              'Intent is RUNNING, cannot delete — wait for it to park or finish, or cancel it first',
-          });
-        }
-        if (err instanceof SessionReleaseHandoffError) {
-          // Nothing was removed: the intent still owns its workspace sessions.
-          logger.error('Intent delete: workspace release could not be handed off', err, {
-            intentId,
-            sessionIds: err.sessionIds,
-          });
-          return response(503, {
-            error: 'Could not release the intent workspaces right now; nothing was deleted. Retry.',
-            code: err.code,
-          });
-        }
-        throw err;
-      }
-
-      logger.info('Intent deleted', {
-        intentId,
-        deletedBy: responder.sub,
+      return await handleDeleteIntent({
+        event,
         projectId,
-        priorStatus: meta.status,
+        intentId,
+        auth,
+        g,
+        response,
+        cleanupDeadline,
       });
-      return response(204, {});
     }
 
-    // POST /projects/{projectId}/intents/{intentId}/derive
-    // Manual graph-projection backfill (platform admin): re-run the
-    // derive-artifacts command over ALL of the intent's current artifacts —
-    // e.g. to project intents that predate the derivation feature, or to apply
-    // enrichment after flipping the Admin toggle. Idempotent (the command
-    // upserts by deterministic ids and supersedes stale rows) and safe to run
-    // repeatedly; refused while RUNNING to keep out of a live stage's way.
     if (intentId && httpMethod === 'POST' && path?.endsWith('/derive')) {
-      const denied = requirePlatformAdmin(event);
-      if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const deriveRuntimeTarget = runtimeTargetInput(meta, AGENTCORE_RUNTIME_ARN());
-      if (!deriveRuntimeTarget.agentRuntimeArn) {
-        return response(500, { error: 'Agent runtime is not configured' });
-      }
-      if (meta.status === 'RUNNING') {
-        return response(409, { error: 'Intent is RUNNING — the run derives after each stage' });
-      }
-      const payload = {
-        command: 'derive-artifacts',
-        projectId,
-        intentId,
-        executionId: intentId,
-        // No stageInstanceId / artifactTypes: the whole intent is the target.
-        enrichment: meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
-        ...(meta.agentCli ? { requestedCli: meta.agentCli } : {}),
-        ...(meta.cliModels ? { cliModels: meta.cliModels } : {}),
-        ...(meta.tierModels ? { tierModels: meta.tierModels } : {}),
-      };
-      try {
-        const agentCredentialGrant = await issueInvocationAgentCredentialGrant({
-          purpose: 'execution',
-          projectId,
-          executionId: intentId,
-          credentialBinding: meta.credentialBinding,
-          agentCli: meta.agentCli,
-          runtimeCapabilities: meta.environment,
-        });
-        const res = await agentcore.send(
-          new InvokeAgentRuntimeCommand({
-            ...deriveRuntimeTarget,
-            runtimeSessionId: runtimeSessionIdFor(intentId),
-            contentType: 'application/json',
-            accept: 'application/json',
-            payload: Buffer.from(
-              JSON.stringify({
-                ...payload,
-                ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
-              }),
-            ),
-          }),
-        );
-        const text = res.response ? await res.response.transformToString() : '';
-        const out = text ? JSON.parse(text) : {};
-        if (out.ok === false) {
-          return response(422, {
-            error: out.reason ?? 'derive_failed',
-            detail: out.detail ?? null,
-          });
-        }
-        return response(200, {
-          ok: true,
-          artifacts: out.artifacts ?? [],
-          sections: out.sections ?? 0,
-          items: out.items ?? 0,
-          citations: out.citations ?? 0,
-          enrichment: out.enrichment ?? 'off',
-          enriched: out.enriched ?? 0,
-        });
-      } catch (err) {
-        logger.error('[derive] runtime invoke failed', err);
-        return response(502, { error: 'Failed to invoke the derive runtime' });
-      }
+      return await handleDeriveIntent({ event, projectId, intentId, response });
     }
 
-    // POST /projects/{projectId}/intents/{intentId}/repair
-    // Recover a parallel section whose stage callbacks became orphaned. This is
-    // intentionally narrower than rewind: merged units remain merged, pending
-    // dependents remain pending, and every active lane in the affected section
-    // is replayed from the section start so a sibling that consumed the wrong
-    // gate answer cannot be integrated.
     if (intentId && httpMethod === 'POST' && path?.endsWith('/repair')) {
-      if (auth.role !== 'owner' && auth.role !== 'admin') {
-        return response(403, { error: 'Only project owners and admins can repair intents' });
-      }
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      if (!['RUNNING', 'WAITING', 'FAILED'].includes(meta.status)) {
-        return response(409, { error: `Intent is ${meta.status}; no active run can be repaired` });
-      }
-
-      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-      const pendingByStage = new Map(
-        (records.humanTasks ?? [])
-          .filter((gate) => gate.status === 'pending' && gate.stageInstanceId)
-          .map((gate) => [gate.stageInstanceId, gate]),
-      );
-      const orphaned = (records.stages ?? []).filter(
-        (stage) =>
-          stage.state === 'WAITING_FOR_HUMAN' &&
-          stage.unitSlug &&
-          !pendingByStage.has(stage.stageInstanceId),
-      );
-      const activeReviewStates = new Set([
-        'PR_DRAFT',
-        'RECONCILING',
-        'PR_READY',
-        'ADDRESSING_FEEDBACK',
-        'MERGING',
-      ]);
-      const activeUnits = records.unitPlan?.units?.length
-        ? activePlanUnits(records.unitPlan, records.units)
-        : (records.units ?? []);
-      const prUnits = activeUnits.filter(
-        (unit) =>
-          !hasUnitSkipDecision(unit, records.unitPlan) &&
-          activeReviewStates.has(unit.state) &&
-          (records.unitPrs ?? []).some(
-            (pr) =>
-              Number(pr.sectionIndex) === Number(unit.sectionIndex) &&
-              pr.unitSlug === unit.slug &&
-              pr.number != null,
-          ),
-      );
-      if (orphaned.length === 0 && prUnits.length === 0) {
-        return response(409, {
-          error: 'No orphaned parallel lane waits or recoverable PR reviews were detected',
-          code: 'repair_not_needed',
-        });
-      }
-      const sectionIndexes = [
-        ...new Set(
-          [
-            ...orphaned.map((stage) => stage.sectionIndex),
-            ...prUnits.map((unit) => unit.sectionIndex),
-          ].filter(
-            (index) => index !== null && index !== undefined && Number.isInteger(Number(index)),
-          ),
-        ),
-      ];
-      if (sectionIndexes.length !== 1) {
-        return response(409, {
-          error: 'Repair currently requires all orphaned lanes to belong to one section',
-          sections: sectionIndexes,
-        });
-      }
-      const sectionIndex = Number(sectionIndexes[0]);
-      const repairableStates = new Set([
-        'READY',
-        'RUNNING',
-        'PR_DRAFT',
-        'RECONCILING',
-        'PR_READY',
-        'ADDRESSING_FEEDBACK',
-        'MERGING',
-        'FAILED',
-        'BLOCKED',
-      ]);
-      const repairUnits = activeUnits.filter(
-        (unit) =>
-          Number(unit.sectionIndex) === sectionIndex &&
-          !hasUnitSkipDecision(unit, records.unitPlan) &&
-          repairableStates.has(unit.state),
-      );
-      const repairSlugs = [...new Set(repairUnits.map((unit) => unit.slug))];
-      if (repairSlugs.length === 0) {
-        return response(409, { error: 'No active lanes are available to repair' });
-      }
-
-      const planResult = await intentMethodology.loadPlan(meta);
-      if (!planResult.valid || !planResult.plan) {
-        return response(409, {
-          error: 'Execution plan cannot be resolved for repair',
-          errors: planResult.errors ?? [],
-        });
-      }
-      const sectionStages = planResult.plan.stages.filter(
-        (stage) => Number(stage.parallelSection) === sectionIndex,
-      );
-      if (sectionStages.length === 0) {
-        return response(409, { error: `Parallel section ${sectionIndex} is not in the plan` });
-      }
-      const planNamespace =
-        planResult.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
-      const sectionInstances = sectionStages.flatMap((stage) =>
-        repairSlugs.map((slug) => ({
-          stage,
-          slug,
-          stageInstanceId: planStageInstanceId(planNamespace, stage.stageId, slug, sectionIndex),
-        })),
-      );
-      const stagesByInstance = new Map(
-        (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
-      );
-      const completedStageStates = new Set(['SUCCEEDED', 'SKIPPED']);
-      const resetInstances = sectionInstances.filter((instance) => {
-        const row = stagesByInstance.get(instance.stageInstanceId);
-        return row && !completedStageStates.has(row.state);
-      });
-      const responder = getResponder(event);
-      const repairId = `repair-${randomUUID()}`;
-      const repairReason = `Recover durable parallel work in section ${sectionIndex}`;
-      const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
-      if (sourceControlBlocked) return sourceControlBlocked;
-
-      // Reconcile provider truth before retiring the old execution. A merged PR
-      // is accepted only when the exact reviewed head is reachable from the
-      // intent branch; open drafts are retained for the resumed lane.
-      const repairPrs = (records.unitPrs ?? []).filter(
-        (pr) => Number(pr.sectionIndex) === sectionIndex && repairSlugs.includes(pr.unitSlug),
-      );
-      const remotePrs = new Map();
-      try {
-        for (const pr of repairPrs) {
-          if (pr.state === 'UNCHANGED' || pr.number == null) continue;
-          const provider =
-            pr.provider || meta.repoProviders?.[pr.repository] || meta.gitProvider || 'github';
-          const status = await sourceControlOperation({
-            projectId,
-            provider,
-            repo: pr.repository,
-            operation: 'pr-status',
-            args: { number: pr.number },
-          });
-          if (!status?.state) {
-            throw new Error(`${pr.repository}#${pr.number}: provider status unavailable`);
-          }
-          let mergedHeadIsAncestor = null;
-          if (status.state === 'merged') {
-            const reviewedHead = pr.readyHeadSha ?? pr.headSha ?? status.headSha;
-            mergedHeadIsAncestor =
-              Boolean(reviewedHead) &&
-              Boolean(
-                await sourceControlOperation({
-                  projectId,
-                  provider,
-                  repo: pr.repository,
-                  operation: 'is-ancestor',
-                  args: {
-                    ancestorSha: reviewedHead,
-                    descendantRef: pr.targetBranch ?? meta.branch,
-                  },
-                }),
-              );
-          }
-          remotePrs.set(pr.sk, { status, mergedHeadIsAncestor });
-        }
-      } catch (error) {
-        logger.error('Repair provider reconciliation failed', error);
-        return response(502, {
-          error: 'Pull request state could not be reconciled; repair made no changes',
-          code: 'provider_reconciliation_failed',
-        });
-      }
-
-      const mcpLaunch = await prepareMcpLaunch(g, meta);
-      if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
-      let priorDurableExecutionArn = meta.durableExecutionArn ?? null;
-      if (!priorDurableExecutionArn && meta.durableExecutionName && ORCHESTRATOR_FN()) {
-        const listed = await lambdaClient.send(
-          new ListDurableExecutionsByFunctionCommand({
-            ...parseFunctionAndQualifier(ORCHESTRATOR_FN()),
-            DurableExecutionName: meta.durableExecutionName,
-            MaxItems: 1,
-          }),
-        );
-        priorDurableExecutionArn = listed.DurableExecutions?.[0]?.DurableExecutionArn ?? null;
-      }
-
-      await store.updateExecution({
-        executionId: intentId,
-        projectId,
-        status: 'FAILED',
-        fromStatus: meta.status,
-        startedAt: meta.startedAt,
-        pendingHumanTaskId: null,
-        resumeRequired: null,
-        failureReason: 'lane_repair_in_progress',
-        completedAt: null,
-        orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
-      });
-      if (priorDurableExecutionArn) {
-        try {
-          await lambdaClient.send(
-            new StopDurableExecutionCommand({
-              DurableExecutionArn: priorDurableExecutionArn,
-              Error: {
-                ErrorType: 'LaneRepair',
-                ErrorMessage: repairReason,
-                ErrorData: JSON.stringify({ repairId, sectionIndex, repairSlugs }),
-              },
-            }),
-          );
-        } catch (error) {
-          if (!['ResourceNotFoundException', 'ConflictException'].includes(error?.name)) {
-            await store
-              .updateExecution({
-                executionId: intentId,
-                projectId,
-                failureReason: 'lane_repair_durable_stop_failed',
-              })
-              .catch(() => {});
-            await store
-              .appendEvent({
-                executionId: intentId,
-                type: 'v2.execution.repair_failed',
-                actor: responder.displayName || responder.sub,
-                summary: `Could not stop the prior durable execution: ${error?.message ?? 'unknown error'}`,
-              })
-              .catch(() => {});
-            return response(502, {
-              error: 'The old durable execution could not be stopped; repair did not relaunch',
-              code: 'durable_stop_failed',
-            });
-          }
-        }
-      }
-
-      const archivedArtifacts = await archiveArtifactsForStages({
-        g,
-        intentId,
-        stageInstanceIds: resetInstances.map((instance) => instance.stageInstanceId),
-        restartId: repairId,
-        reason: repairReason,
-        actor: responder.displayName || responder.sub,
-      });
-      await retireParkedRun(intentId, repairReason);
-      await stopRuntimeSessions(intentId, meta, {
-        sectionIndexes: [sectionIndex],
-        unitSlugs: repairSlugs,
-      });
-
-      await mapWithConcurrency(resetInstances, 12, async ({ stage, slug, stageInstanceId }) => {
-        const reset = await store.resetStageRow({
-          executionId: intentId,
-          stageInstanceId,
-          preservePendingCodeCommitRefs: true,
-        });
-        if (!reset) return;
-        await store
-          .appendEvent({
-            executionId: intentId,
-            type: 'v2.stage.reset',
-            stageInstanceId,
-            unitSlug: slug,
-            sectionIndex,
-            actor: responder.displayName || responder.sub,
-            summary: `Stage ${stage.stageId} [unit ${slug}] reset by lane repair`,
-          })
-          .catch(() => {});
-      });
-      const reconciledPrs = await mapWithConcurrency(repairPrs, 8, async (pr) => {
-        if (pr.state === 'UNCHANGED' || pr.number == null) return pr;
-        const remote = remotePrs.get(pr.sk);
-        const status = remote.status;
-        let state;
-        let repositoryOutcome = null;
-        if (status.state === 'merged') {
-          state = remote.mergedHeadIsAncestor ? 'MERGED' : 'FAILED';
-          repositoryOutcome = remote.mergedHeadIsAncestor ? 'merged' : 'ready_head_not_on_intent';
-        } else if (status.state === 'closed') {
-          state = 'CLOSED';
-          repositoryOutcome = 'closed_without_merge';
-        } else {
-          const stillReady =
-            !status.draft &&
-            pr.readyHeadSha &&
-            status.headSha === pr.readyHeadSha &&
-            (!pr.targetSha || !status.targetSha || status.targetSha === pr.targetSha);
-          state = stillReady ? 'READY' : 'DRAFT';
-        }
-        return store.updateUnitPr({
-          executionId: intentId,
-          sectionIndex,
-          slug: pr.unitSlug,
-          repository: pr.repository,
-          state,
-          fields: {
-            providerId: status.providerId ?? pr.providerId ?? null,
-            number: status.number ?? pr.number,
-            url: status.url ?? pr.url,
-            sourceBranch: status.sourceBranch ?? pr.sourceBranch,
-            targetBranch: status.targetBranch ?? pr.targetBranch,
-            headSha: status.headSha ?? pr.headSha ?? null,
-            targetSha: status.targetSha ?? pr.targetSha ?? null,
-            readyHeadSha: state === 'READY' || state === 'MERGED' ? pr.readyHeadSha : null,
-            mergeable: status.mergeable ?? null,
-            repositoryOutcome,
-          },
-        });
-      });
-      const prsByUnit = new Map();
-      for (const pr of reconciledPrs.filter(Boolean)) {
-        const rows = prsByUnit.get(pr.unitSlug) ?? [];
-        rows.push(pr);
-        prsByUnit.set(pr.unitSlug, rows);
-      }
-      await mapWithConcurrency(repairSlugs, 8, async (slug) => {
-        const prs = prsByUnit.get(slug) ?? [];
-        const changed = prs.filter((pr) => pr.state !== 'UNCHANGED');
-        const constructionComplete = sectionStages.every((stage) => {
-          const stageInstanceId = planStageInstanceId(
-            planNamespace,
-            stage.stageId,
-            slug,
-            sectionIndex,
-          );
-          return completedStageStates.has(stagesByInstance.get(stageInstanceId)?.state);
-        });
-        const fullyMerged =
-          changed.length > 0 &&
-          changed.every((pr) => pr.state === 'MERGED') &&
-          prs.every((pr) => pr.state === 'MERGED' || pr.state === 'UNCHANGED');
-        const resumeReview =
-          constructionComplete &&
-          changed.some((pr) => pr.state === 'DRAFT' || pr.state === 'READY') &&
-          !changed.some((pr) => pr.state === 'CLOSED' || pr.state === 'FAILED');
-        return store.updateUnitState({
-          executionId: intentId,
-          sectionIndex,
-          slug,
-          state: fullyMerged ? 'MERGED' : resumeReview ? 'PR_DRAFT' : 'PENDING',
-          fields: {
-            failureReason: null,
-            blockedOn: null,
-            integrationOwner: false,
-            recoveryPreserveCompleted: true,
-            blockedReason: fullyMerged
-              ? null
-              : resumeReview
-                ? 'Resuming existing pull request after durable recovery'
-                : 'Replaying unfinished work after durable recovery',
-            ...(fullyMerged ? { mergedAt: true } : {}),
-          },
-        });
-      });
-      await store
-        .appendEvent({
-          executionId: intentId,
-          type: 'v2.execution.lanes_repaired',
-          actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} recovered section ${sectionIndex}; reconciled ${repairPrs.length} pull request(s), preserved completed stages, and relaunched unfinished lanes [${repairSlugs.join(', ')}] (${archivedArtifacts.length} artifact version(s) archived)`,
-        })
-        .catch(() => {});
-
-      const fromStageId = sectionStages[0].stageId;
-      const durableExecutionName = durableExecutionNameForIntent(intentId);
-      await store.deleteWorkflowCheckpoint(intentId);
-      const updated = await store.updateExecution({
-        executionId: intentId,
-        projectId,
-        status: 'CREATED',
-        fromStatus: 'FAILED',
-        startedAt: meta.startedAt,
-        durableExecutionName,
-        durableExecutionArn: null,
-        orchestratorStartedAt: null,
-        orchestratorExpiresAt: null,
-        pendingHumanTaskId: null,
-        resumeRequired: null,
-        failureReason: null,
-        failure: null,
-        completedAt: null,
-        rewindFromStageId: fromStageId,
-        startedBy: responder.sub,
-        starterName: responder.displayName,
-        starterEmail: responder.email,
-        ...mcpLaunch.update,
-      });
-      try {
-        const invoked = await invokeOrchestrator(
-          {
-            action: 'start',
-            intentId,
-            executionId: intentId,
-            startAtStageId: fromStageId,
-          },
-          { durableExecutionName },
-        );
-        if (invoked?.durableExecutionArn) {
-          await store
-            .updateExecution({
-              executionId: intentId,
-              durableExecutionArn: invoked.durableExecutionArn,
-            })
-            .catch((error) => logger.error('Repair durable execution ARN stamp failed', error));
-        }
-      } catch (error) {
-        await store.updateExecution({
-          executionId: intentId,
-          projectId,
-          status: 'FAILED',
-          fromStatus: 'CREATED',
-          startedAt: meta.startedAt,
-          pendingHumanTaskId: null,
-          failureReason: 'lane_repair_relaunch_failed',
-          durableExecutionArn: null,
-        });
-        throw error;
-      }
-      return response(202, {
-        intent: mapIntent(updated),
-        repair: {
-          repairId,
-          sectionIndex,
-          laneSlugs: repairSlugs,
-          archivedArtifactCount: archivedArtifacts.length,
-          fromStageId,
-        },
-      });
+      return await handleRepairIntent({ event, projectId, intentId, auth, g, response });
     }
 
-    // POST /projects/{projectId}/intents/{intentId}/rewind
-    // Restart the run from an earlier stage with corrective guidance
-    // (docs/v2-steering.md). Rejected while RUNNING (409) — steering is only
-    // applied at deterministic points, so wait for the stage to park or finish.
-    // Resets the target stage + everything after it in run order (attempt+1),
-    // supersedes the artifacts those stages produced (kept for lineage), records
-    // the guidance as a rewind STEER row (injected into the restarted stage's
-    // prompt), and relaunches the orchestrator at that stage.
     if (intentId && httpMethod === 'POST' && path?.endsWith('/rewind')) {
-      const data = body ? JSON.parse(body) : {};
-      const requestedFromStageId = typeof data.fromStageId === 'string' ? data.fromStageId : '';
-      // Guidance is OPTIONAL: with guidance this is a steering rewind (a
-      // correction the restarted stage consumes at entry); without it, a plain
-      // retry — same reset + relaunch mechanics, no steering row.
-      const guidance = typeof data.guidance === 'string' ? data.guidance.trim() : '';
-      if (!requestedFromStageId) return response(400, { error: 'fromStageId is required' });
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const REWINDABLE = new Set(['SUCCEEDED', 'FAILED', 'WAITING', 'CANCELLED']);
-      if (!REWINDABLE.has(meta.status)) {
-        return response(409, {
-          error: `Intent is ${meta.status}, cannot rewind — wait for the stage to park or finish`,
-        });
-      }
-      // Resolve the pinned plan to find the rewind point + the downstream set.
-      // The intent's skip overlay rides along — EXCEPT the rewind target
-      // itself: rewinding TO a stage that was deselected at create UN-skips it
-      // (the shrunken overlay is persisted on META below, so every later
-      // recompute agrees). Upstream calls this "Add [Skipped Stage]".
-      const priorSkipIds = Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [];
-      const unskipping = priorSkipIds.includes(requestedFromStageId);
-      const rewindSkipIds = priorSkipIds.filter((id) => id !== requestedFromStageId);
-      const planResult = await intentMethodology.loadPlan(meta, { skipStageIds: rewindSkipIds });
-      if (!planResult.valid || !planResult.plan) {
-        return response(409, {
-          error: 'Execution plan cannot be resolved',
-          errors: planResult.errors,
-        });
-      }
-      const stages = planResult.plan.stages;
-      let idx = stages.findIndex((s) => s.stageId === requestedFromStageId);
-      if (idx < 0) {
-        // The plan is scope-projected: a stage the workflow places but the
-        // run's scope does not EXECUTE is not a rewind target — running it
-        // would execute a stage the scope deliberately (or accidentally, see
-        // zero_scope_placement) excludes. 409 with the wiring hint instead of
-        // pretending the stage does not exist.
-        if ((planResult.plan.outOfScopeStageIds ?? []).includes(requestedFromStageId)) {
-          return response(409, {
-            error: planResult.plan.composed
-              ? `Stage "${requestedFromStageId}" is SKIP in this intent's composed grid — recompose it to EXECUTE before rewinding to it`
-              : `Stage "${requestedFromStageId}" is not executed in scope "${meta.scope}" — wire it to EXECUTE for this scope in the workflow composer before rewinding to it`,
-          });
-        }
-        return response(400, {
-          error: `Unknown stage "${requestedFromStageId}"`,
-          stages: stages.map((s) => s.stageId),
-        });
-      }
-      const planNamespace =
-        planResult.plan.namespace ?? `${meta.workflowId}@${meta.workflowVersion}`;
-      let unitPlan = null;
-      let fromStageId = requestedFromStageId;
-
-      // A partial parallel section cannot be relaunched in its middle when the
-      // walking skeleton is the only lane that reached the requested stage.
-      // The orchestrator's rewind guard correctly requires every earlier
-      // per-unit instance to be terminal, so normalize such retries to the
-      // section's first stage instead of launching a run that immediately
-      // fails rewind_upstream_incomplete.
-      const requestedStage = stages[idx];
-      if (requestedStage.parallelSection != null) {
-        const firstSectionIdx = stages.findIndex(
-          (stage) => stage.parallelSection === requestedStage.parallelSection,
-        );
-        const priorSectionStages = firstSectionIdx >= 0 ? stages.slice(firstSectionIdx, idx) : [];
-        if (priorSectionStages.length > 0) {
-          unitPlan = await store.getUnitPlan(intentId).catch(() => null);
-          const unitSlugs = (unitPlan?.units ?? []).map((unit) => unit.slug);
-          let incomplete = unitSlugs.length === 0;
-          for (const stage of priorSectionStages) {
-            if (incomplete) break;
-            for (const laneSlug of unitSlugs) {
-              const row = await store
-                .getStage(
-                  intentId,
-                  planStageInstanceId(
-                    planNamespace,
-                    stage.stageId,
-                    laneSlug,
-                    stage.parallelSection,
-                  ),
-                )
-                .catch(() => null);
-              if (!row || (row.state !== 'SUCCEEDED' && row.state !== 'SKIPPED')) {
-                incomplete = true;
-                break;
-              }
-            }
-          }
-          if (incomplete && firstSectionIdx >= 0) {
-            idx = firstSectionIdx;
-            fromStageId = stages[firstSectionIdx].stageId;
-          }
-        }
-      }
-      const resetStages = stages.slice(idx);
-      // Per-unit instance expansion (docs/v2-parallel.md WP4): a `forEach:
-      // unit-of-work` stage has one STAGE row (and one artifact provenance id)
-      // PER UNIT — a rewind must reset every lane's instance, and the touched
-      // lanes themselves, or the relaunch would see stale terminal rows.
-      const sectionStages = resetStages.filter((s) => s.parallelSection != null);
-      if (sectionStages.length && !unitPlan) {
-        unitPlan = await store.getUnitPlan(intentId).catch(() => null);
-      }
-      const unitSlugs = (unitPlan?.units ?? []).map((u) => u.slug);
-      const resetInstances = resetStages.flatMap((stage) =>
-        stage.parallelSection != null
-          ? unitSlugs.map((laneSlug) => ({
-              stage,
-              unitSlug: laneSlug,
-              sectionIndex: stage.parallelSection,
-              stageInstanceId: planStageInstanceId(
-                planNamespace,
-                stage.stageId,
-                laneSlug,
-                stage.parallelSection,
-              ),
-            }))
-          : [
-              {
-                stage,
-                unitSlug: null,
-                sectionIndex: null,
-                stageInstanceId: stage.stageInstanceId,
-              },
-            ],
-      );
-      const responder = getResponder(event);
-      const priorStatus = meta.status;
-      const restartId = `restart-${randomUUID()}`;
-      const restartReason = guidance
-        ? `Rewind to ${fromStageId}: ${guidance}`
-        : `Retry from ${fromStageId}`;
-      const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
-      if (sourceControlBlocked) return sourceControlBlocked;
-
-      const mcpLaunch = await prepareMcpLaunch(g, meta);
-      if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
-      // Artifact history is a hard precondition for a restart. Snapshot before
-      // META, gates, stage rows, lanes, or sessions are touched; a Neptune
-      // failure leaves the run exactly where it was and no relaunch occurs.
-      const archivedArtifacts = await archiveArtifactsForStages({
-        g,
-        intentId,
-        stageInstanceIds: resetInstances.map((instance) => instance.stageInstanceId),
-        restartId,
-        reason: restartReason,
-        actor: responder.displayName || responder.sub,
-      });
-
-      // Make interrupted cleanup recoverable before touching gates, sessions,
-      // or stage rows. A Lambda timeout used to leave META WAITING on a gate
-      // already superseded by the first cleanup step, with no action capable
-      // of waking it. FAILED remains rewindable, so a repeated request can
-      // safely finish an interrupted reset.
-      try {
-        await store.updateExecution({
-          executionId: intentId,
-          projectId,
-          status: 'FAILED',
-          fromStatus: priorStatus,
-          startedAt: meta.startedAt,
-          pendingHumanTaskId: null,
-          resumeRequired: null,
-          failureReason: 'rewind_in_progress',
-          completedAt: null,
-          ifOrchestratorRunId: meta.orchestratorRunId,
-          orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
-        });
-      } catch (error) {
-        if (error?.name === 'ConditionalCheckFailedException') {
-          return response(409, {
-            error:
-              'Execution changed while preparing rewind. Refresh and review the restart point again.',
-            code: 'execution_changed',
-          });
-        }
-        throw error;
-      }
-      // Retire a parked run first so the woken orchestrator exits quietly (its
-      // gate is superseded) instead of racing the relaunch.
-      await retireParkedRun(intentId, `rewound to ${fromStageId}`);
-      // Stop the live session(s) so the relaunch gets a fresh microVM on the
-      // CURRENT runtime image (zombie-session field incident) — the persistent
-      // workspace mount survives and is re-attached by session id.
-      await stopRuntimeSessions(intentId, meta, {
-        sectionIndexes: [...new Set(sectionStages.map((s) => s.parallelSection))],
-        unitSlugs,
-      });
-      // Record the guidance BEFORE resetting/relaunching: the restarted stage
-      // reads pending steering at entry, so the correction can never be missed.
-      // A guidance-less retry records no steering row — there is nothing to
-      // inject; the stage simply re-runs.
-      const steer = guidance
-        ? await store.createSteering({
-            executionId: intentId,
-            kind: 'rewind',
-            message: guidance,
-            targetStageId: fromStageId,
-            createdBy: responder.sub,
-            createdByName: responder.displayName,
-          })
-        : null;
-      await mapWithConcurrency(
-        resetInstances,
-        12,
-        async ({ stage, unitSlug: laneSlug, sectionIndex, stageInstanceId }) => {
-          const reset = await store.resetStageRow({
-            executionId: intentId,
-            stageInstanceId,
-            // A guidance-less restart is a retry of the same work. Preserve any
-            // commits made before failure so the clean retry can still project
-            // their CodeFiles. Guided rewinds intentionally replace prior work.
-            preservePendingCodeCommitRefs: !guidance,
-          });
-          if (reset) {
-            await store
-              .appendEvent({
-                executionId: intentId,
-                type: 'v2.stage.reset',
-                stageInstanceId,
-                unitSlug: laneSlug,
-                sectionIndex,
-                actor: responder.displayName || responder.sub,
-                summary: `Stage ${stage.stageId}${laneSlug ? ` [unit ${laneSlug}]` : ''} reset for rewind (attempt ${reset.attempt + 1})`,
-              })
-              .catch(() => {});
-          }
-        },
-      );
-      // Reset the touched lanes so the relaunch re-walks them (state PENDING,
-      // stale verdict fields cleared). Unconditional — a rewind overrides any
-      // lane state; the UNIT rows are the lane-level view, never audit (the
-      // per-instance STAGE rows + EVENT feed keep the history).
-      if (sectionStages.length && unitSlugs.length) {
-        const sectionIndexes = [...new Set(sectionStages.map((stage) => stage.parallelSection))];
-        const lanes = sectionIndexes.flatMap((sectionIndex) =>
-          unitSlugs.map((slug) => ({ sectionIndex, slug })),
-        );
-        await mapWithConcurrency(lanes, 12, ({ sectionIndex, slug }) =>
-          store
-            .updateUnitState({
-              executionId: intentId,
-              sectionIndex,
-              slug,
-              state: 'PENDING',
-              fields: { failureReason: null, blockedOn: null, completionSkip: null },
-            })
-            .catch((err) => logger.error('Unit lane reset failed', err, { sectionIndex, slug })),
-        );
-      }
-      if (steer) {
-        await mirrorSteeringVertex({ g, intentId, steer }).catch((err) =>
-          logger.error('Steering graph mirror failed', err),
-        );
-      }
-      await store
-        .appendEvent({
-          executionId: intentId,
-          type: 'v2.execution.rewound',
-          actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} ${steer ? 'rewound the run to' : 'retried the run from'} ${fromStageId}${fromStageId !== requestedFromStageId ? ` (requested ${requestedFromStageId}; restarted the incomplete unit section from its first stage)` : ''}${unskipping ? ' (un-skipped: it was deselected at creation)' : ''} (${resetInstances.length} stage instance(s) reset, ${archivedArtifacts.length} artifact(s) archived)`,
-        })
-        .catch((err) => logger.error('Rewind event append failed', err));
-      // Relaunch at the rewind point. Same CAS + rollback discipline as /start.
-      const durableExecutionName = durableExecutionNameForIntent(intentId);
-      await store.deleteWorkflowCheckpoint(intentId);
-      const updated = await store.updateExecution({
-        executionId: intentId,
-        projectId,
-        status: 'CREATED',
-        fromStatus: 'FAILED',
-        startedAt: meta.startedAt,
-        durableExecutionName,
-        durableExecutionArn: null,
-        orchestratorStartedAt: null,
-        orchestratorExpiresAt: null,
-        pendingHumanTaskId: null,
-        resumeRequired: null,
-        failureReason: null,
-        failure: null,
-        completedAt: null,
-        rewindFromStageId: fromStageId,
-        startedBy: responder.sub,
-        starterName: responder.displayName,
-        starterEmail: responder.email,
-        // Un-skip: the rewind target leaves the intent's skip overlay so the
-        // relaunch (and every later plan recompute) actually runs it.
-        ...(unskipping ? { skipStageIds: rewindSkipIds.length ? rewindSkipIds : null } : {}),
-        ...mcpLaunch.update,
-      });
-      try {
-        const invoked = await invokeOrchestrator(
-          {
-            action: 'start',
-            intentId,
-            executionId: intentId,
-            startAtStageId: fromStageId,
-          },
-          { durableExecutionName },
-        );
-        if (invoked?.durableExecutionArn) {
-          await store
-            .updateExecution({
-              executionId: intentId,
-              durableExecutionArn: invoked.durableExecutionArn,
-            })
-            .catch((err) => logger.error('Durable execution ARN stamp failed', err));
-        }
-      } catch (err) {
-        await store.updateExecution({
-          executionId: intentId,
-          projectId,
-          status: 'FAILED',
-          fromStatus: 'CREATED',
-          startedAt: meta.startedAt,
-          pendingHumanTaskId: null,
-          failureReason: 'rewind_relaunch_failed',
-          durableExecutionArn: null,
-        });
-        throw err;
-      }
-      return response(202, {
-        intent: mapIntent(updated),
-        steering: steer ? mapSteering(steer) : null,
-        restart: {
-          requestedFromStageId,
-          fromStageId,
-          sectionRestarted: fromStageId !== requestedFromStageId,
-        },
-      });
+      return await handleRewindIntent({ event, body, projectId, intentId, g, response });
     }
 
-    // POST /projects/{projectId}/intents/{intentId}/recompose
-    // In-flight reshape (Adaptive Workflows): replace the run's projection
-    // with a new composed EXECUTE/SKIP grid and relaunch at the first
-    // not-yet-done stage — the retire-and-relaunch path (rewind mechanics)
-    // that handles BOTH directions (skip and un-skip of pending stages).
-    // Guardrails, mirroring upstream:
-    //   - only a parked (WAITING) or FAILED run — never mid-turn;
-    //   - never while construction runs autonomously (finish the swarm or
-    //     drop back to gated first);
-    //   - the PAST is frozen: completed/skipped stages must keep their fate
-    //     in the new grid (reshaping the past is rewind's job);
-    //   - unit-lane stages are frozen once the unit plan is promoted (lanes
-    //     are reshaped at the fan-out approval's skip matrix);
-    //   - the new grid must resolve STRICTLY (no starved required inputs).
     if (intentId && httpMethod === 'POST' && path?.endsWith('/recompose')) {
-      const data = body ? JSON.parse(body) : {};
-      const meta = await store.getExecution(intentId);
-      if (!meta || meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const RECOMPOSABLE = new Set(['WAITING', 'FAILED']);
-      if (!RECOMPOSABLE.has(meta.status)) {
-        return response(409, {
-          error: `Intent is ${meta.status}, cannot recompose — wait for the run to park or fail`,
-        });
-      }
-      if (meta.constructionAutonomyMode === 'autonomous') {
-        return response(409, {
-          error:
-            'Construction is running autonomously — recompose is disabled until the swarm finishes or autonomy drops back to gated',
-          code: 'autonomous_construction',
-        });
-      }
-      const { value: newGrid, error: gridError } = normalizeComposedGrid(data.composedGrid);
-      if (gridError) return response(400, { error: gridError });
-      if (!newGrid) return response(400, { error: 'composedGrid is required' });
-      const newScope =
-        typeof data.scope === 'string' && data.scope ? data.scope : (meta.scope ?? 'composed');
-      // The grid absorbs redundant overlay skips (composed-grid.js): entries
-      // the new grid already excludes leave the standing overlay — persisted
-      // below with the grid so every later recompute of this run resolves.
-      const priorSkipIds =
-        pruneSkipsForGrid(Array.isArray(meta.skipStageIds) ? meta.skipStageIds : [], newGrid) ?? [];
-      // The stages the new projection would run: EXECUTE entries minus the
-      // intent's standing skip overlay. Computed straight off the grid so the
-      // frozen-past check below can answer BEFORE plan resolution (a frozen
-      // violation is a clearer verdict than the starvation error it causes).
-      const skipOverlay = new Set(priorSkipIds);
-      const newStageIds = new Set(
-        Object.entries(newGrid)
-          .filter(([id, v]) => v === 'EXECUTE' && !skipOverlay.has(id))
-          .map(([id]) => id),
-      );
-
-      // Frozen-past enforcement, from the run's own stage rows: a stage that
-      // ran (or is running/parked) must stay EXECUTE; a stage the run already
-      // SKIPPED must stay out of the projection. Per-unit rows collapse onto
-      // their stageId — any unit having run the stage freezes it.
-      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-      const rowsByStageId = new Map();
-      for (const row of records.stages ?? []) {
-        if (!row.stageId) continue;
-        if (!rowsByStageId.has(row.stageId)) rowsByStageId.set(row.stageId, []);
-        rowsByStageId.get(row.stageId).push(row);
-      }
-      const violations = [];
-      for (const [stageId, rows] of rowsByStageId) {
-        const states = new Set(rows.map((r) => r.state));
-        const ran = ['SUCCEEDED', 'RUNNING', 'WAITING_FOR_HUMAN', 'FAILED'].some((s) =>
-          states.has(s),
-        );
-        if (ran && !newStageIds.has(stageId)) {
-          violations.push(`"${stageId}" already ran — it cannot flip to SKIP (rewind instead)`);
-        }
-        if (!ran && states.has('SKIPPED') && newStageIds.has(stageId)) {
-          violations.push(`"${stageId}" was skipped earlier in this run — rewind to it to un-skip`);
-        }
-      }
-      // Unit lanes: once the unit plan is promoted the per-unit stages are
-      // scheduled state — their membership can only change via rewind.
-      const unitPlan = await store.getUnitPlan(intentId).catch(() => null);
-      if (unitPlan) {
-        const currentPlanResult = await intentMethodology.loadPlan(meta, {
-          skipStageIds: priorSkipIds,
-        });
-        const currentSectionIds = new Set(
-          (currentPlanResult.plan?.stages ?? [])
-            .filter((s) => s.parallelSection != null)
-            .map((s) => s.stageId),
-        );
-        for (const stageId of currentSectionIds) {
-          if (!newStageIds.has(stageId)) {
-            violations.push(
-              `"${stageId}" fans out per unit and the unit plan is already promoted — reshape units at the fan-out approval`,
-            );
-          }
-        }
-      }
-      if (violations.length > 0) {
-        return response(409, {
-          error: 'Recompose violates the run\u2019s frozen state',
-          violations,
-        });
-      }
-
-      // Strict resolution of the NEW projection (starved required inputs are
-      // hard errors mid-run — a stage must never park waiting for an input
-      // nothing will write).
-      const planResult = await intentMethodology.loadPlan(meta, {
-        scope: newScope,
-        composedGrid: newGrid,
-        skipStageIds: priorSkipIds,
-        strict: true,
-      });
-      if (!planResult.valid || !planResult.plan) {
-        return response(400, {
-          error: 'The recomposed grid is not runnable',
-          errors: planResult.errors ?? [],
-        });
-      }
-      const newPlan = planResult.plan;
-
-      // Relaunch point: the first stage of the NEW plan that has neither
-      // succeeded nor been skipped. Nothing pending = nothing to relaunch.
-      const doneStates = new Set(['SUCCEEDED', 'SKIPPED']);
-      const fromStage = newPlan.stages.find((s) => {
-        const rows = rowsByStageId.get(s.stageId) ?? [];
-        return rows.length === 0 || rows.some((r) => !doneStates.has(r.state));
-      });
-      if (!fromStage) {
-        return response(409, {
-          error: 'Nothing left to run under the recomposed grid — every remaining stage is done',
-        });
-      }
-      const responder = getResponder(event);
-      const sourceControlBlocked = await sourceControlLaunchGuard(meta, response);
-      if (sourceControlBlocked) return sourceControlBlocked;
-      const mcpLaunch = await prepareMcpLaunch(g, meta);
-      if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
-      // Reset the relaunch stage's non-terminal instances (a parked/failed
-      // stage re-runs from scratch, attempt+1).
-      const resetIds = (rowsByStageId.get(fromStage.stageId) ?? [])
-        .filter((r) => !doneStates.has(r.state))
-        .map((r) => r.stageInstanceId)
-        .filter(Boolean);
-      const recomposeRestartId = `restart-${randomUUID()}`;
-      await archiveArtifactsForStages({
-        g,
-        intentId,
-        stageInstanceIds: resetIds,
-        restartId: recomposeRestartId,
-        reason: `Recompose from ${fromStage.stageId}`,
-        actor: responder.displayName || responder.sub,
-      });
-
-      // Retire only after every affected artifact was durably snapshotted.
-      try {
-        await store.updateExecution({
-          executionId: intentId,
-          fromStatus: meta.status,
-          ifOrchestratorRunId: meta.orchestratorRunId,
-          orchestratorRunId: `retired-${randomBytes(8).toString('hex')}`,
-        });
-      } catch (error) {
-        if (error?.name === 'ConditionalCheckFailedException') {
-          return response(409, {
-            error:
-              'Execution changed while preparing recompose. Refresh and review the stage selection again.',
-            code: 'execution_changed',
-          });
-        }
-        throw error;
-      }
-      await retireParkedRun(intentId, `recomposed from ${fromStage.stageId}`);
-      await stopRuntimeSessions(intentId, meta);
-      for (const stageInstanceId of resetIds) {
-        await store.resetStageRow({ executionId: intentId, stageInstanceId }).catch(() => {});
-      }
-      await store
-        .appendEvent({
-          executionId: intentId,
-          type: 'v2.execution.recomposed',
-          actor: responder.displayName || responder.sub,
-          summary: `${responder.displayName || 'Someone'} recomposed the run (${newPlan.summary.executedStages} of ${newPlan.summary.totalStages} stages, scope label "${newScope}") — relaunching at ${fromStage.stageId}`,
-        })
-        .catch((err) => logger.error('Recompose event append failed', err));
-      const priorStatus = meta.status;
-      const durableExecutionName = durableExecutionNameForIntent(intentId);
-      await store.deleteWorkflowCheckpoint(intentId);
-      const updated = await store.updateExecution({
-        executionId: intentId,
-        projectId,
-        status: 'CREATED',
-        fromStatus: priorStatus,
-        startedAt: meta.startedAt,
-        durableExecutionName,
-        durableExecutionArn: null,
-        orchestratorStartedAt: null,
-        orchestratorExpiresAt: null,
-        pendingHumanTaskId: null,
-        failureReason: null,
-        failure: null,
-        completedAt: null,
-        rewindFromStageId: fromStage.stageId,
-        scope: newScope,
-        composedGrid: newGrid,
-        // Persist the pruned overlay (see priorSkipIds above) so META never
-        // pins a skip the new grid already excludes.
-        skipStageIds: priorSkipIds.length ? priorSkipIds : null,
-        planWarnings: planResult.warnings?.length ? planResult.warnings : null,
-        startedBy: responder.sub,
-        starterName: responder.displayName,
-        starterEmail: responder.email,
-        ...mcpLaunch.update,
-      });
-      try {
-        const invoked = await invokeOrchestrator(
-          {
-            action: 'start',
-            intentId,
-            executionId: intentId,
-            startAtStageId: fromStage.stageId,
-          },
-          { durableExecutionName },
-        );
-        if (invoked?.durableExecutionArn) {
-          await store
-            .updateExecution({
-              executionId: intentId,
-              durableExecutionArn: invoked.durableExecutionArn,
-            })
-            .catch((err) => logger.error('Durable execution ARN stamp failed', err));
-        }
-      } catch (err) {
-        await store.updateExecution({
-          executionId: intentId,
-          projectId,
-          status: priorStatus,
-          fromStatus: 'CREATED',
-          startedAt: meta.startedAt,
-        });
-        throw err;
-      }
-      return response(202, mapIntent(updated));
+      return await handleRecomposeIntent({ event, body, projectId, intentId, g, response });
     }
 
     if (intentId && httpMethod === 'GET') {
-      // Lightweight preflight for autosaves: no graph projection or workflow reads.
-      // Membership was checked above; an artifact is always looked up within this intent.
       if (event.queryStringParameters?.editState) {
-        const meta = await store.getExecution(intentId, { consistentRead: true });
-        if (!meta || meta.projectId !== projectId)
-          return response(404, { error: 'Intent not found' });
-        const requested = event.queryStringParameters.editState;
-        if (requested === 'draft')
-          return response(200, { draftRevision: meta.draftRevision ?? 0, status: meta.status });
-        const artifact = await fetchArtifactRow(g, intentId, requested);
-        if (!artifact) return response(404, { error: 'Artifact not found' });
-        return response(200, {
-          editRevision: artifact.editRevision,
-          collaborationEpoch: artifact.collaborationEpoch,
-        });
+        return await handleIntentEditState({ event, projectId, intentId, g, response });
       }
-      // GET /projects/{projectId}/intents/{intentId}/graph — the intent's
-      // Neptune knowledge subgraph (artifacts + typed relations + questions +
-      // discussions + the project knowledge corpus) for the KnowledgeGraph
-      // view. Same membership check as the detail DTO.
       if (path?.endsWith('/graph')) {
-        const meta = await store.getExecution(intentId);
-        if (!meta || meta.projectId !== projectId) {
-          return response(404, { error: 'Intent not found' });
-        }
-        return response(200, await fetchKnowledgeGraph(g, { projectId, intentId }));
+        return await handleIntentGraph({ projectId, intentId, g, response });
       }
-
-      // GET /projects/{projectId}/intents/{intentId}/audit — aggregated process
-      // and graph-read evidence for improving future runs.
       if (path?.endsWith('/audit')) {
-        const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-        if (!records.meta || records.meta.projectId !== projectId) {
-          return response(404, { error: 'Intent not found' });
-        }
-        return response(200, buildIntentAudit({ records }));
+        return await handleIntentAudit({ projectId, intentId, response });
       }
-
-      // GET /projects/{projectId}/intents/{intentId}/outputs — the agent
-      // transcript, fetched lazily per activity pane instead of riding the
-      // detail DTO (a long run's transcript is megabytes; the DTO is polled).
-      // Query params:
-      //   stageInstanceId — that stage's chunks; the literal "intent" selects
-      //     the stage-less workspace/init bucket; absent = ALL chunks.
-      //   afterSeq — only chunks with seq > afterSeq (incremental catch-up
-      //     after a websocket-live pane is seeded).
       if (path?.endsWith('/outputs')) {
-        const meta = await store.getExecution(intentId);
-        if (!meta || meta.projectId !== projectId) {
-          return response(404, { error: 'Intent not found' });
-        }
-        const qs = event.queryStringParameters ?? {};
-        const rawStage = qs.stageInstanceId ?? undefined;
-        const afterSeq = qs.afterSeq != null && qs.afterSeq !== '' ? Number(qs.afterSeq) : null;
-        if (afterSeq != null && !Number.isFinite(afterSeq)) {
-          return response(400, { error: 'afterSeq must be a number' });
-        }
-        const rows = await store.getOutputs(intentId, {
-          // "intent" is the UI's bucket key for stage-less (init-ws) output.
-          ...(rawStage !== undefined
-            ? { stageInstanceId: rawStage === 'intent' ? null : rawStage, filterByStage: true }
-            : {}),
-          afterSeq,
-        });
-        return response(200, {
-          outputs: rows.map((o) => ({
-            seq: o.seq,
-            stageInstanceId: o.stageInstanceId ?? null,
-            unitSlug: o.unitSlug ?? null,
-            sectionIndex: o.sectionIndex ?? null,
-            kind: o.kind,
-            content: o.content,
-            timestamp: o.timestamp,
-            ...(o.display ? { display: o.display } : {}),
-          })),
-        });
+        return await handleIntentOutputs({ event, projectId, intentId, response });
       }
-
-      // GET single — assembled detail DTO. Outputs are deliberately EXCLUDED
-      // (see /outputs above): they dominate the partition's size and the UI
-      // fetches them lazily per pane. `outputs: []` keeps the DTO shape stable.
-      const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
-      if (!records.meta || records.meta.projectId !== projectId) {
-        return response(404, { error: 'Intent not found' });
-      }
-      const completion = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(records.meta.status)
-        ? await assessExecutionCompletion({ records, loadPlan: intentMethodology.loadPlan })
-        : unitCompletion(records);
-      const artifacts = await fetchArtifacts(g, intentId);
-      const pullRequests = await fetchPullRequests(g, intentId);
-      const stagesByInstance = new Map(
-        (records.stages ?? []).map((stage) => [stage.stageInstanceId, stage]),
-      );
-      const gates = records.humanTasks.map((task) => ({
-        ...mapHumanTask(task),
-        resumeAvailable: resumeOwed({
-          meta: records.meta,
-          gate: task,
-          stageRow: stagesByInstance.get(task.stageInstanceId) ?? null,
-        }),
-      }));
-      const answerEvents = await buildGateAnswerEvents(g, gates);
-      const priceFor = await getPriceResolver();
-      return response(200, {
-        intent: mapIntent(records.meta),
-        stages: records.stages.map(mapStage),
-        // Activity feed: lifecycle events (workspace init, failures, completion)
-        // newest-last in emit order, so the UI can show what's happening — init-ws
-        // is otherwise invisible (it creates no stage row).
-        events: [
-          ...(records.events ?? []).map((e) => ({
-            eventId: e.eventId,
-            type: e.eventType,
-            stageInstanceId: e.stageInstanceId ?? null,
-            unitSlug: e.unitSlug ?? null,
-            sectionIndex: e.sectionIndex ?? null,
-            actor: e.actor ?? null,
-            summary: e.summary ?? null,
-            timestamp: e.timestamp,
-            // A WHITELIST of `detail` fields the timeline renders — never the
-            // whole object, which carries verbatim agent text and internal ids.
-            // Today: the dissent round counters, so the feed can say "round 1/2"
-            // instead of an unqualified "Maintained dissent".
-            ...timelineEventDetail(e.detail),
-          })),
-          ...answerEvents,
-        ].toSorted((a, b) => String(a.timestamp).localeCompare(String(b.timestamp))),
-        gates,
-        steering: (records.steering ?? []).map(mapSteering),
-        metrics: mapMetricsWithCost(records.metrics, records.stages, priceFor),
-        outputs: [],
-        sensorRuns: records.sensorRuns.map((s) => ({
-          sensorRunId: s.sensorRunId,
-          stageInstanceId: s.stageInstanceId ?? null,
-          unitSlug: s.unitSlug ?? null,
-          sectionIndex: s.sectionIndex ?? null,
-          sensorId: s.sensorId,
-          result: s.result,
-          severity: s.severity,
-          held: s.held,
-          // The sensor's structured verdict (missing artifacts, unreferenced
-          // upstreams, violations …). Surfaced so the UI can explain WHY a
-          // non-PASS verdict fired — an advisory INCONCLUSIVE still matters even
-          // though it did not hold the stage.
-          detail: s.detail ?? null,
-          timestamp: s.timestamp,
-        })),
-        artifacts,
-        // Fan-in PR record(s) — a run-level output, surfaced as a work product.
-        pullRequests,
-        // Quorum-supported artifact edit sessions (post-hoc document editing):
-        // plan approval + progress render from these rows.
-        quorumEdits: (records.quorumEdits ?? []).map(mapQuorumEdit),
-        // Composer sessions (proposal + authoritative validation) — the
-        // compose page renders these; compose.updated broadcasts keep it live.
-        composes: (records.composes ?? []).map(mapCompose),
-        // Unit lanes (docs/v2-parallel.md WP4): the promoted UNITPLAN snapshot
-        // + the live UNIT lane rows, so the UI can render the lane board and
-        // attribute per-unit stage instances. Both null/empty pre-promotion.
-        unitCompletion: completion,
-        unitPlan: mapUnitPlan(records.unitPlan),
-        units: (records.units ?? []).map(mapUnit),
-        unitPrs: (records.unitPrs ?? []).map(mapUnitPr),
-        feedbackBatches: (records.feedbackBatches ?? []).map(mapFeedbackBatch),
-      });
+      return await handleGetIntent({ projectId, intentId, g, response });
     }
 
-    // GET /projects/{projectId}/metrics — usage + cost rolled up across every
-    // intent in the project. Reads each execution's METRIC#/STAGE# rows (bounded,
-    // fanned out concurrently), aggregates per intent, then rolls up: token
-    // counts + cost summed, gauges (context %) peaked. `anyUnpriced` flags that a
-    // model (newer / Kiro) couldn't be priced so the UI can caveat the total.
     if (httpMethod === 'GET' && !intentId && path?.endsWith('/intents/metrics')) {
-      const metas = await store.listProjectExecutions({ projectId });
-      const priceFor = await getPriceResolver();
-      const perIntent = await Promise.all(
-        metas.map(async (meta) => {
-          const records = await store.getExecutionRecords(meta.executionId ?? meta.intentId, {
-            includeOutputs: false,
-          });
-          const summary = summarizeExecutionMetrics(records.metrics, records.stages, priceFor);
-          return {
-            intentId: meta.intentId ?? meta.executionId,
-            title: meta.title ?? null,
-            status: meta.status ?? null,
-            metrics: summary.metrics,
-            cost: summary.cost,
-          };
-        }),
-      );
-      const withUsage = perIntent.filter(
-        (p) => Object.keys(p.metrics).length > 0 || p.cost.hasCostedSamples,
-      );
-      const projectMetrics = rollupAggregates(withUsage.map((p) => p.metrics));
-      const totalCost = withUsage.reduce((s, p) => s + p.cost.totalCost, 0);
-      const anyUnpriced = withUsage.some((p) => p.cost.hasCostedSamples && !p.cost.priced);
-      // Kiro credit-priced dollars are estimates (overage rate) — flag them so
-      // the UI can caveat the project total instead of presenting it as billing.
-      const anyEstimated = withUsage.some((p) => p.cost.estimated);
-      return response(200, {
-        perIntent: withUsage,
-        project: {
-          metrics: projectMetrics,
-          cost: { totalCost, currency: 'USD', anyUnpriced, anyEstimated },
-        },
-      });
+      return await handleProjectMetrics({ projectId, response });
     }
 
     if (httpMethod === 'GET') {
-      // GET list — META rows for the project, newest first.
-      const status = event.queryStringParameters?.status || null;
-      const metas = await store.listProjectExecutions({ projectId, status });
-      return response(200, metas.map(mapIntent));
+      return await handleListIntents({ event, projectId, response });
     }
 
     if (httpMethod === 'POST') {
-      // Create a DRAFT intent (no Neptune anchor yet — init-ws makes it at Start).
-      const data = body ? JSON.parse(body) : {};
-      if (!data.title && !data.prompt) {
-        return response(400, { error: 'title or prompt is required' });
-      }
-      const cfg = await fetchProjectConfig(g, projectId);
-      if (!cfg) {
-        return response(400, { error: 'Project is not a v2 project' });
-      }
-      const newIntentId = randomUUID();
-      // Pin the workflow version now (reproducibility) — project pin wins, else
-      // resolve the workflow's current latest version.
-      const workflowId = cfg.workflowId;
-      let workflowVersion = cfg.workflowVersion ?? (await resolveWorkflowVersion(workflowId));
-      if (!workflowVersion) {
-        return response(400, { error: `Workflow "${workflowId}" has no published version` });
-      }
-      // Scope is chosen per-intent (a project can hold features, bugfixes, …).
-      // It must be one of the pinned workflow's offered scopes — a free-typed
-      // scope would be rejected by buildExecutionPlan when the orchestrator runs.
-      // OPTIONAL at create: the DRAFT-first flow creates the intent as soon as
-      // a title/prompt exists and picks the projection on the draft page, so an
-      // absent scope defaults to the workflow's conventional default ("feature"
-      // when offered, else the first offered scope). With a composed grid the
-      // grid IS the projection and `scope` degrades to the provenance label of
-      // whatever base it was composed from (possibly a custom name) — the
-      // resolver validates the grid instead.
-      const { value: composedGrid, error: composedGridError } = normalizeComposedGrid(
-        data.composedGrid,
-      );
-      if (composedGridError) {
-        return response(400, { error: composedGridError });
-      }
-      // The stock scope the grid was built from. A grid's own `scope` is a
-      // provenance label that names no SCOPE block, so this is what carries the
-      // per-scope policy and the settings a member may choose. Verified against
-      // the pinned release's own scope vocabulary below, never taken on trust.
-      let policyScope = null;
-      if (data.policyScope !== undefined && data.policyScope !== null) {
-        if (typeof data.policyScope !== 'string' || !data.policyScope) {
-          return response(400, { error: 'policyScope must be a non-empty scope name or null' });
-        }
-        policyScope = data.policyScope;
-      }
-      // Per-intent release selection. The registry is the
-      // ONLY selection gate; it is consulted here and nowhere in the execution
-      // path, so demoting a release never changes what an existing intent runs.
-      //
-      // The flag is the hard boundary. While it is off no registry row is read
-      // at all, so an unpinned create stays byte-identical to its pre-#482 form.
-      // A non-string value is a client bug, not an opt-out: silently ignoring it
-      // would create the intent on the stable channel (or unpinned) while the
-      // caller believes it asked for a specific release.
-      if (
-        Object.hasOwn(data, 'methodologyReleaseId') &&
-        data.methodologyReleaseId !== null &&
-        typeof data.methodologyReleaseId !== 'string'
-      ) {
-        return response(400, {
-          error: 'methodologyReleaseId must be a string or null',
-          code: 'release_selection_invalid',
-        });
-      }
-      const requestedReleaseId =
-        typeof data.methodologyReleaseId === 'string' && data.methodologyReleaseId
-          ? data.methodologyReleaseId
-          : null;
-      // Construction Autonomy Mode, frozen onto the intent at create. The human
-      // typing this create request IS the grant, which is what upstream's
-      // human-presence guard exists to prove — so the field is accepted here and
-      // nowhere an unattended run could reach. Absent and null both leave the
-      // intent gated; a malformed value is a client bug, not an opt-out, because
-      // silently dropping it would run a gated intent while the caller believes
-      // it asked for autonomy.
-      if (
-        Object.hasOwn(data, 'constructionGateAutonomy') &&
-        data.constructionGateAutonomy !== null &&
-        !CONSTRUCTION_AUTONOMY_MODES.includes(data.constructionGateAutonomy)
-      ) {
-        return response(400, {
-          error: `constructionGateAutonomy must be one of ${CONSTRUCTION_AUTONOMY_MODES.join(', ')}, or null`,
-          code: 'construction_autonomy_mode_invalid',
-        });
-      }
-      // Only `autonomous` is a grant. `gated` is the default every intent already
-      // has, so it is stored as no grant and accepted on any release.
-      const requestedAutonomyMode =
-        data.constructionGateAutonomy === 'autonomous' ? 'autonomous' : null;
-      if (requestedReleaseId && AIDLC_RELEASE_PINNING() !== 'on') {
-        return response(400, {
-          error: 'Per-intent AI-DLC release selection is disabled',
-          code: 'release_selection_disabled',
-        });
-      }
-      let selectedRelease = null;
-      if (AIDLC_RELEASE_PINNING() === 'on') {
-        try {
-          // A null id falls back to the stable channel; an unset stable channel
-          // returns null, which keeps today's derive-the-pin-from-the-ref path.
-          selectedRelease = await resolveSelectableRelease({
-            ddb,
-            tableName: BLOCKS_TABLE(),
-            releaseId: requestedReleaseId,
-          });
-        } catch (error) {
-          // Never substitute a different release than the one requested.
-          if (isReleaseRegistryError(error)) {
-            return response(400, { error: error.message, code: error.code });
-          }
-          throw error;
-        }
-      }
-      let selectedReleasePin = selectedRelease ? releasePinFromRecord(selectedRelease) : null;
-      // Allowed, but loud: the intent pins a closure an older importer produced,
-      // so it misses every field later mappers learned until an admin upgrades
-      // the record (PATCH /aidlc-releases/{releaseId} {importerRevision}).
-      if (selectedRelease?.importerStale === true) {
-        logger.warn('AI-DLC release selected for a new intent has a stale importer closure', {
-          releaseId: selectedRelease.releaseId,
-          importerRevision: selectedRelease.importerRevision,
-          currentImporterRevision: AIDLC_RELEASE_IMPORTER_REVISION,
-        });
-      }
-      // Every create-time resolution (scope vocabulary AND the plan check) runs
-      // against the selected release, so an intent is validated against exactly
-      // the methodology it will run rather than the current SYSTEM catalog.
-      let selectedReleaseOptions = selectedReleasePin
-        ? { methodologyRelease: selectedReleasePin, s3, bucket: ARTIFACTS_BUCKET() }
-        : {};
-      let scope = data.scope;
-      if (!composedGrid) {
-        const scopes = await loadWorkflowScopes({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId,
-          workflowVersion,
-          ...selectedReleaseOptions,
-        });
-        if (!scope) {
-          scope = scopes.includes('feature') ? 'feature' : (scopes[0] ?? null);
-          if (!scope) {
-            return response(400, {
-              error: `Workflow "${workflowId}" offers no scopes — cannot default one`,
-            });
-          }
-        } else if (!scopes.includes(scope)) {
-          return response(400, {
-            error: `Unknown scope "${scope}" for workflow "${workflowId}"`,
-            scopes,
-          });
-        }
-      } else if (!scope) {
-        scope = 'composed';
-      }
-      // A base scope describes a GRID, so a caller that names its scope directly
-      // is describing a selection that has no base — refused here, before any
-      // catalog is consulted, because that is the body being wrong rather than
-      // the library having nothing to resolve. Whether the base means anything
-      // at all is the catalog's answer, so it is decided after the plan below.
-      if (policyScope && !composedGrid) {
-        return response(400, {
-          error: 'policyScope applies to a composed stage grid; send the scope itself instead',
-        });
-      }
-      // Per-intent stage deselection (shared/stage-skip.js): only accepted when
-      // stage skipping is EFFECTIVELY enabled (project override over platform
-      // setting), and validated structurally by the plan resolver below
-      // (CONDITIONAL-only, in-scope, never initialization). The effective mode
-      // is snapshotted onto META either way — it also gates the run's
-      // gate-time "skip to stage X" options.
-      const stageSkipping = effectiveStageSkipping(
-        await fetchPlatformStageSkipping(),
-        cfg.stageSkipping,
-      );
-      const rawSkipStageIds = normalizeSkipStageIds(data.skipStageIds);
-      if (rawSkipStageIds && stageSkipping !== 'enabled') {
-        return response(400, {
-          error: 'Stage skipping is disabled for this project — skipStageIds is not accepted',
-        });
-      }
-      // The grid absorbs redundant overlay skips (composed-grid.js): an
-      // overlay entry the grid already excludes would otherwise fail the
-      // resolver's skip_stage_not_in_scope guard on every later recompute.
-      const skipStageIds = pruneSkipsForGrid(rawSkipStageIds, composedGrid);
-      if (selectedReleasePin) {
-        // Capture the current user forks before release mode replaces the
-        // mutable SYSTEM library with the immutable closure. SYSTEM coordinates
-        // are intentionally discarded; only user-tenant versions can overlay it.
-        const currentPlan = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId,
-          workflowVersion,
-          scope,
-          ...(skipStageIds ? { skipStageIds } : {}),
-          ...(composedGrid ? { composedGrid } : {}),
-        });
-        const methodologyPins = await snapshotUserMethodologyPins(currentPlan.methodologyPins);
-        if (methodologyPins) {
-          selectedReleaseOptions = { ...selectedReleaseOptions, methodologyPins };
-        }
-      }
-      // Resolve the full execution plan NOW, before any row is written. The
-      // plan is a pure function of (workflow@pinnedVersion, scope, skip
-      // overlay), so a pass here holds for the whole intent lifetime — this
-      // turns a structurally broken scope (or an illegal skip) into a
-      // synchronous 400 instead of a post-init-ws `plan_invalid` failure
-      // (after a git clone + Neptune anchor were burnt).
-      // Non-fatal `warnings` (scope-shortcut degradations: inputs whose
-      // producer is out of scope, sections downgraded to once-per-workflow)
-      // are persisted on the intent so the UI can surface the degraded run.
-      let planCheck = await loadExecutionPlan({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        workflowId,
-        workflowVersion,
-        scope,
-        ...(skipStageIds ? { skipStageIds } : {}),
-        ...(composedGrid ? { composedGrid } : {}),
-        ...(policyScope ? { policyScope } : {}),
-        ...selectedReleaseOptions,
-      });
-      // A stable channel is an implicit default, so an overlay it cannot apply
-      // must degrade the way the no-channel path degrades rather than blocking
-      // every create in the space: the intent continues as if no channel were
-      // set, so it may still auto-pin the deployment-ref release below. An
-      // explicitly requested release stays strict. The base release is
-      // verified first, so a corrupt closure is never mistaken for an
-      // incompatible user fork.
-      let skippedStableReleaseId = null;
-      if (
-        !planCheck.valid &&
-        selectedReleasePin &&
-        !requestedReleaseId &&
-        selectedReleaseOptions.methodologyPins
-      ) {
-        const baseReleasePlan = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId,
-          workflowVersion,
-          scope,
-          ...(skipStageIds ? { skipStageIds } : {}),
-          ...(composedGrid ? { composedGrid } : {}),
-          methodologyRelease: selectedReleasePin,
-          s3,
-          bucket: ARTIFACTS_BUCKET(),
-        });
-        if (baseReleasePlan.valid) {
-          logger.warn(
-            'Stable AI-DLC release is incompatible with the user overlay; falling back to the deployment ref',
-            {
-              releaseId: selectedReleasePin.releaseId,
-              errors: planCheck.errors ?? [],
-            },
-          );
-          skippedStableReleaseId = selectedReleasePin.releaseId;
-          selectedReleasePin = null;
-          selectedReleaseOptions = {};
-          planCheck = await loadExecutionPlan({
-            ddb,
-            tableName: BLOCKS_TABLE(),
-            workflowId,
-            workflowVersion,
-            scope,
-            ...(skipStageIds ? { skipStageIds } : {}),
-            ...(composedGrid ? { composedGrid } : {}),
-          });
-        }
-      }
-      if (!planCheck.valid) {
-        return response(400, {
-          error: composedGrid
-            ? `The composed stage grid is not runnable for workflow "${workflowId}"`
-            : skipStageIds
-              ? `Scope "${scope}" with the requested stage skips is not runnable for workflow "${workflowId}"`
-              : `Scope "${scope}" is not runnable for workflow "${workflowId}"`,
-          errors: planCheck.errors ?? [],
-        });
-      }
-      workflowVersion = planCheck.workflowVersion ?? workflowVersion;
-      // The base is honoured ONLY on a catalog that authors the per-intent
-      // settings, and that catalog's own answer travels beside the plan this
-      // resolution already produced — the same gate the save and `validate-grid`
-      // apply, read from the resolution rather than re-derived.
-      //
-      // On any other library the base resolves nothing the run reads, so it is
-      // DROPPED rather than refused and rather than stored: the page records a
-      // base for every stock scope, and an unpinned, 2.3.3, 2.8.2 or 2.9.0
-      // intent must be created with the row it always had. Where the base IS
-      // honoured it has to name a real scope block, or a customized grid would
-      // quietly run with no policy at all.
-      if (policyScope && !planCheck.aidlcSettingsAware) {
-        policyScope = null;
-      } else if (policyScope) {
-        const scopes = await loadWorkflowScopes({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId,
-          workflowVersion,
-          ...selectedReleaseOptions,
-        });
-        if (!scopes.includes(policyScope)) {
-          return response(400, {
-            error: `Unknown policyScope "${policyScope}" for workflow "${workflowId}"`,
-            scopes,
-          });
-        }
-      }
-      // Per-intent AI-DLC settings at create. The selection they are validated
-      // against is in this same body, so they are normalised against the plan
-      // just resolved from it: a setting the pinned release's chosen scope does
-      // not author is dropped, and a value outside the registry's own value set
-      // is refused by name.
-      const createdSettings = normalizeAidlcSettings({
-        settings: data.aidlcSettings ?? null,
-        authored: planCheck.plan?.aidlcSettingsAuthored ?? {},
-      });
-      if (createdSettings.error) return response(400, createdSettings.error);
-      const aidlcSettings = createdSettings.value;
-      let planWarnings = planCheck.warnings?.length ? planCheck.warnings : null;
-      if (aidlcSettings) {
-        const settingsCheck = await loadExecutionPlan({
-          ddb,
-          tableName: BLOCKS_TABLE(),
-          workflowId,
-          workflowVersion,
-          scope,
-          ...(skipStageIds ? { skipStageIds } : {}),
-          ...(composedGrid ? { composedGrid } : {}),
-          ...(policyScope ? { policyScope } : {}),
-          intentSettings: aidlcSettings,
-          ...selectedReleaseOptions,
-        });
-        if (!settingsCheck.valid) {
-          return response(400, {
-            error: `The requested AI-DLC settings are not runnable for workflow "${workflowId}"`,
-            errors: settingsCheck.errors ?? [],
-          });
-        }
-        planWarnings = settingsCheck.warnings?.length ? settingsCheck.warnings : null;
-      }
-      // The capability map of the plan the intent will actually run. Only a
-      // release-mode plan resolves one, which is exactly the boundary the autonomy
-      // grant needs: an unpinned intent has no authored protocol to honour.
-      // Re-stamped below if the deployment-ref auto-pin replaces this plan.
-      let resolvedCapabilities = planCheck.plan?.capabilities ?? null;
-      let aidlcRepoRef = null;
-      // A selected release IS the source of truth for the ref, so the network
-      // lookup of the deployment ref is skipped: resolving an unrelated ref
-      // could 503 a create that does not depend on it.
-      if (!selectedReleasePin && AIDLC_REPO_REF()) {
-        try {
-          aidlcRepoRef = await resolveAidlcRepoRef(AIDLC_REPO_REF());
-        } catch (error) {
-          return response(503, {
-            error: 'The configured AI-DLC repository ref could not be resolved',
-            detail: error.message,
-          });
-        }
-      }
-      if ((planCheck.methodologySourceRefs ?? []).length > 1) {
-        return response(409, {
-          error: 'The selected workflow combines blocks from multiple AI-DLC revisions',
-          refs: planCheck.methodologySourceRefs,
-        });
-      }
-      aidlcRepoRef = planCheck.methodologySourceRefs?.[0] ?? aidlcRepoRef;
-      // Issue #482: bind the intent to the immutable release published for the
-      // resolved SHA, so a later SYSTEM reseed cannot change what it runs. A
-      // ref with no published manifest is NOT an error — the intent stays on
-      // the legacy DynamoDB path exactly as before.
-      let methodologyRelease = null;
-      // The pin set to persist. In release mode it is recomputed from the
-      // release-mode plan, so it never carries the SYSTEM-tenant pins the
-      // DynamoDB resolver produces (see v2-workflow-plan.js).
-      let methodologyPins = planCheck.methodologyPins;
-      if (selectedReleasePin) {
-        // An explicitly selected (or stable-channel) release. Its SHA
-        // is the intent's ref, and the pin is stamped from the registry record
-        // the plan was just validated against.
-        methodologyRelease = selectedReleasePin;
-        aidlcRepoRef = selectedRelease.sourceSha;
-      } else if (AIDLC_RELEASE_PINNING() === 'on' && aidlcRepoRef && ARTIFACTS_BUCKET()) {
-        // The registry decides eligibility, so it is asked first. The manifest is
-        // read only once a row exists: the role has no s3:ListBucket, so a GET
-        // for a ref that was never imported answers 403 AccessDenied, which is
-        // indistinguishable from a real permissions failure.
-        let eligibleRelease = null;
-        let ineligibleCode = null;
-        try {
-          const deploymentProfile = profileFor(aidlcRepoRef);
-          if (deploymentProfile?.upstreamRef === aidlcRepoRef) {
-            // A published closure is evidence, not authorization. Only pin it
-            // when the registry has explicitly made this exact closure visible
-            // and selectable and its recorded authored behavior is still
-            // honoured by this runtime.
-            eligibleRelease = await resolveSelectableRelease({
-              ddb,
-              tableName: BLOCKS_TABLE(),
-              releaseId: deploymentProfile.releaseId,
-            });
-            await assertReleaseCapabilitiesHonoured({
-              release: eligibleRelease,
-              s3,
-              bucket: ARTIFACTS_BUCKET(),
-            });
-          }
-        } catch (error) {
-          // Only a genuine "not registered / not eligible" answer may fall back
-          // to an unpinned intent. A throttled registry read or an unverifiable
-          // capability record means the lookup could not be completed, and
-          // downgrading that to "does not exist" would silently unpin intents.
-          if (!isAutoPinIneligible(error)) {
-            logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
-            return response(503, {
-              error: 'The published AI-DLC release could not be resolved',
-              code: 'release_resolution_failed',
-            });
-          }
-          ineligibleCode = error.code;
-          eligibleRelease = null;
-        }
-        if (eligibleRelease) {
-          try {
-            // The manifest is addressed by this runtime's importer revision. After
-            // a revision bump the eligible row still describes the previous
-            // revision until the release is re-imported, and the new-revision
-            // manifest does not exist yet (a 403 without s3:ListBucket). That is
-            // the same half-finished re-import as a closure mismatch below, so it
-            // is detected from the row alone, before S3 is touched.
-            if (Number(eligibleRelease.importerRevision) !== AIDLC_RELEASE_IMPORTER_REVISION) {
-              throw new ReleaseRegistryError(
-                'release_registry_skew',
-                'The eligible registry row was imported under a different importer revision',
-                {
-                  details: {
-                    releaseId: eligibleRelease.releaseId,
-                    fields: ['importerRevision'],
-                    registeredImporterRevision: eligibleRelease.importerRevision,
-                    currentImporterRevision: AIDLC_RELEASE_IMPORTER_REVISION,
-                  },
-                },
-              );
-            }
-            const manifest = await readReleaseManifest({
-              s3,
-              bucket: ARTIFACTS_BUCKET(),
-              sha: aidlcRepoRef,
-              importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
-            });
-            if (!manifest) {
-              throw new ReleaseRegistryError(
-                'release_not_published',
-                `The registered release ${eligibleRelease.releaseId} has no published manifest`,
-              );
-            }
-            // AUTO-PIN. Everything above was validated against the SYSTEM
-            // DynamoDB library, which is NOT what a pinned intent will run.
-            // Re-resolve the scope vocabulary and the plan against the closure
-            // before committing to the pin: if the release cannot reproduce
-            // them, the intent is created UNPINNED (today's behaviour) rather
-            // than stamped with a pin that would fail on its first run. A 201
-            // followed by a permanent 409 at execution time is the one outcome
-            // this path must never produce.
-            const candidatePin = methodologyReleasePinFromManifest(manifest);
-            const registeredPin = releasePinFromRecord(eligibleRelease);
-            const skewedFields = Object.keys(candidatePin).filter(
-              (key) => candidatePin[key] !== registeredPin[key],
-            );
-            if (skewedFields.length > 0) {
-              throw new ReleaseRegistryError(
-                'release_registry_skew',
-                'The deployment-ref closure does not match its eligible registry row',
-                { details: { releaseId: eligibleRelease.releaseId, fields: skewedFields } },
-              );
-            }
-            // Scope discovery maps a permanent resolution failure to an empty
-            // vocabulary, so read the closure first: without this an unreadable
-            // closure is indistinguishable from an incompatible scope.
-            await loadReleaseClosure({
-              s3,
-              bucket: ARTIFACTS_BUCKET(),
-              methodologyRelease: candidatePin,
-              ddb,
-              tableName: BLOCKS_TABLE(),
-            });
-            const candidateMethodologyPins = await snapshotUserMethodologyPins(
-              planCheck.methodologyPins,
-            );
-            const candidateOptions = {
-              methodologyRelease: candidatePin,
-              s3,
-              bucket: ARTIFACTS_BUCKET(),
-              ...(candidateMethodologyPins ? { methodologyPins: candidateMethodologyPins } : {}),
-            };
-            const releaseScopes = composedGrid
-              ? null
-              : await loadWorkflowScopes({
-                  ddb,
-                  tableName: BLOCKS_TABLE(),
-                  workflowId,
-                  workflowVersion,
-                  ...candidateOptions,
-                });
-            const releasePlan =
-              releaseScopes && !releaseScopes.includes(scope)
-                ? { valid: false, errors: [{ code: 'scope_not_in_release', scope }] }
-                : await loadExecutionPlan({
-                    ddb,
-                    tableName: BLOCKS_TABLE(),
-                    workflowId,
-                    workflowVersion,
-                    scope,
-                    ...(skipStageIds ? { skipStageIds } : {}),
-                    ...(composedGrid ? { composedGrid } : {}),
-                    ...candidateOptions,
-                  });
-            if (releasePlan.valid) {
-              methodologyRelease = candidatePin;
-              methodologyPins = releasePlan.methodologyPins;
-              resolvedCapabilities = releasePlan.plan?.capabilities ?? null;
-              workflowVersion = releasePlan.workflowVersion ?? workflowVersion;
-              if (skippedStableReleaseId) {
-                logger.info(
-                  'Stable AI-DLC release was skipped; intent auto-pinned to the deployment-ref release',
-                  { releaseId: candidatePin.releaseId, skippedReleaseId: skippedStableReleaseId },
-                );
-              }
-            } else if (
-              (releasePlan.errors ?? []).some((error) =>
-                String(error.code ?? '').startsWith('release_'),
-              )
-            ) {
-              return response(503, {
-                error: 'The published AI-DLC release could not be verified',
-                code: 'release_resolution_failed',
-              });
-            } else {
-              logger.warn(
-                'The published AI-DLC release cannot reproduce this plan; intent stays unpinned',
-                {
-                  aidlcRepoRef,
-                  releaseId: manifest.releaseId,
-                  scope,
-                  errors: releasePlan.errors ?? [],
-                },
-              );
-            }
-          } catch (error) {
-            // A row and a manifest that describe different closures of the same
-            // release, or a row at another importer revision, mean a re-import
-            // under a new importer revision is only half done. Both closures are readable, so this is not an integrity
-            // failure: the intent stays unpinned until the registry catches up.
-            if (isReleaseRegistryError(error) && error.code === 'release_registry_skew') {
-              logger.warn(
-                'Deployment-ref AI-DLC release does not match its registry row; intent stays unpinned',
-                { aidlcRepoRef, code: error.code, ...error.details },
-              );
-            } else {
-              // Otherwise the registry says this closure is eligible, so any
-              // failure to read or verify it (a denied or corrupt manifest, a
-              // missing catalog) is an integrity problem, never a reason to
-              // quietly unpin the intent.
-              logger.error('AI-DLC release lookup failed', error, { aidlcRepoRef });
-              return response(503, {
-                error: 'The published AI-DLC release could not be resolved',
-                code: 'release_resolution_failed',
-              });
-            }
-          }
-        } else {
-          logger.warn('No eligible AI-DLC release for the resolved ref; intent stays unpinned', {
-            aidlcRepoRef,
-            importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
-            code: ineligibleCode,
-          });
-        }
-      }
-      // Optional per-repo base-branch override (see validateBaseBranches) —
-      // validated against THIS intent's repo set before anything is written.
-      const { value: baseBranches, error: baseBranchesError } = validateBaseBranches(
-        data.baseBranches,
-        cfg.repos,
-      );
-      if (baseBranchesError) {
-        return response(400, { error: baseBranchesError });
-      }
-      // Optional provenance — when the intent is kicked off from a tracker
-      // issue, record which one. The imported text rides in `prompt`; this is
-      // only the back-link. Validated against the project's actual bindings.
-      const source = normalizeSource(data.source, cfg.trackers);
-      // Branch: caller override wins; otherwise derive a readable slug from
-      // the title/prompt, de-duplicated against the project's existing intents
-      // (best-effort — the listing is capped, and a stale duplicate only means
-      // two intents share a branch name candidate, not data corruption).
-      let branch = data.branch || null;
-      if (!branch) {
-        const existing = await store.listProjectExecutions({ projectId, limit: 1000 });
-        const taken = new Set(existing.map((m) => m.branch).filter(Boolean));
-        branch = branchForIntent({
-          title: data.title,
-          prompt: data.prompt,
-          intentId: newIntentId,
-          taken,
-        });
-      }
-      let environment;
-      try {
-        environment = await resolveEnvironmentSnapshot({
-          ddb,
-          tableName: process.env.ENVIRONMENT_REGISTRY_TABLE,
-          environmentId: cfg.environmentId,
-          fallback: {
-            revisionId: `core-${process.env.CORE_RUNTIME_VERSION || '1'}`,
-            runtimeArn: AGENTCORE_RUNTIME_ARN(),
-            runtimeVersion: process.env.CORE_RUNTIME_VERSION || '1',
-            imageDigest: process.env.CORE_IMAGE_DIGEST || null,
-            compatibilityVersion: process.env.RUNTIME_COMPATIBILITY_VERSION || '1',
-            verification: { status: 'PASSED', source: 'core-runtime' },
-          },
-        });
-      } catch (error) {
-        if (isEnvironmentResolutionError(error)) {
-          return response(409, { error: error.message, code: error.code });
-        }
-        throw error;
-      }
-      // Refuse a strategy the space's providers cannot honour now, before the
-      // execution exists, rather than failing its first unit lane later.
-      const prStrategy = effectivePrStrategy(await fetchPlatformPrStrategy(), cfg.prStrategy);
-      try {
-        assertPrStrategySupported(
-          prStrategy,
-          (cfg.repos ?? []).map((repo) =>
-            sharedRepoProvider(repo, cfg.gitProvider, cfg.repoProviders),
-          ),
-        );
-      } catch (error) {
-        if (error.code !== 'PR_STRATEGY_UNSUPPORTED') throw error;
-        return response(409, { error: error.message, code: error.code });
-      }
-      // Refuse the grant the resolved methodology cannot honour, before the
-      // execution exists. An unpinned intent, or a release whose closure ships no
-      // construction protocol, has no authored autonomy to reproduce — accepting
-      // the field there would persist a grant the gate walk ignores, which reads
-      // to the operator as autonomy that silently never happened.
-      if (
-        requestedAutonomyMode &&
-        !constructionAutonomyApplies({ capabilities: resolvedCapabilities ?? {} })
-      ) {
-        return response(400, {
-          error:
-            'constructionGateAutonomy needs an AI-DLC release whose methodology authors the construction autonomy protocol',
-          code: 'construction_autonomy_unavailable',
-        });
-      }
-      const meta = await store.createExecution({
-        executionId: newIntentId,
-        projectId,
-        intentId: newIntentId,
-        status: 'DRAFT',
-        workflowId,
-        workflowVersion,
-        aidlcRepoRef,
-        methodologyPins,
-        methodologyRelease,
-        scope,
-        startedBy: sub,
-        title: data.title || null,
-        prompt: data.prompt || null,
-        branch,
-        baseBranch: data.baseBranch || cfg.baseBranch,
-        baseBranches,
-        repos: cfg.repos,
-        repoProviders: cfg.repoProviders,
-        gitProvider: cfg.gitProvider,
-        cliModels: cfg.cliModels,
-        tierModels: cfg.tierModels,
-        mcpServersByTier: cfg.mcpServersByTier,
-        customRules: cfg.customRules,
-        environment,
-        deriveEnrichment: await fetchDeriveEnrichment(),
-        parkReleaseSeconds: cfg.parkReleaseSeconds,
-        maxParallelUnits: cfg.maxParallelUnits,
-        prStrategy,
-        constructionGateAutonomy: requestedAutonomyMode,
-        constructionGateAutonomyGrant: requestedAutonomyMode
-          ? {
-              source: 'create',
-              grantedAt: new Date().toISOString(),
-              grantedBy: sub,
-              grantedByName: getResponder(event).displayName || null,
-            }
-          : null,
-        stageSkipping,
-        skipStageIds,
-        composedGrid,
-        policyScope,
-        aidlcSettings,
-        source,
-        planWarnings,
-      });
-      if (aidlcSettings) {
-        const creator = getResponder(event);
-        for (const summary of describeAidlcSettingsChange({
-          previous: null,
-          next: aidlcSettings,
-          authored: planCheck.plan?.aidlcSettingsAuthored ?? {},
-          scope,
-        })) {
-          await store
-            .appendEvent({
-              executionId: newIntentId,
-              type: 'v2.intent.settings.changed',
-              actor: creator.displayName || creator.sub,
-              summary,
-            })
-            // Non-fatal, but NOT silent: the event is the audit record of who
-            // changed a setting, so losing it must leave a trace.
-            .catch((err) => logger.error('AI-DLC settings event append failed', err));
-        }
-      }
-      return response(201, mapIntent(meta));
+      return await handleCreateIntent({ event, body, projectId, sub, g, response });
     }
 
     return response(405, { error: 'Method not allowed' });
