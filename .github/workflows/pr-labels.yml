@@ -1,0 +1,90 @@
+name: PR Labels
+
+# pull_request_target runs with a write token, including on PRs from forks.
+# Never check out or execute PR code here: the labeler reads
+# .github/labeler.yml from the base branch through the API, the size step
+# only reads the PR's file list, and the fix step only reads the PR title.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # Title edits must not cancel a running file-based labeling.
+  group: pr-labels-${{ github.event.pull_request.number }}-${{ github.event.action == 'edited' && 'title' || 'files' }}
+  cancel-in-progress: true
+
+jobs:
+  area:
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/labeler@bf12e9b00b37c5c0ca2b87b79b2daf7891dbda13 # v7.0.0
+
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            // Conventional Commits title: "fix: ..." or "fix(scope): ...".
+            const pr = context.payload.pull_request;
+            const isFix = /^fix(\([^)]*\))?!?:/i.test(pr.title);
+            const hasLabel = pr.labels.some((label) => label.name === 'fix');
+            if (isFix && !hasLabel) {
+              await github.rest.issues.addLabels({ ...context.repo, issue_number: pr.number, labels: ['fix'] });
+            } else if (!isFix && hasLabel) {
+              await github.rest.issues.removeLabel({ ...context.repo, issue_number: pr.number, name: 'fix' });
+            }
+
+  size:
+    if: github.event.action != 'edited'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            // Lockfiles and generated files would make every dependency PR XL.
+            const IGNORED = [
+              /(^|\/)package-lock\.json$/,
+              /^uv\.lock$/,
+              /^frontend\/public\/dev\/agent-output-fixtures\.json$/,
+            ];
+            // [label, exclusive upper bound of changed lines]
+            const SIZES = [
+              ['size/XS', 50],
+              ['size/S', 200],
+              ['size/M', 1000],
+              ['size/L', 3000],
+              ['size/XL', Infinity],
+            ];
+
+            const pr = context.payload.pull_request;
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            const changes = files
+              .filter((file) => !IGNORED.some((pattern) => pattern.test(file.filename)))
+              .reduce((total, file) => total + file.changes, 0);
+            const [size] = SIZES.find(([, max]) => changes < max);
+            core.info(`${changes} changed lines (lockfiles and generated files excluded): ${size}`);
+
+            const current = pr.labels.map((label) => label.name);
+            for (const name of current.filter((n) => n.startsWith('size/') && n !== size)) {
+              await github.rest.issues.removeLabel({ ...context.repo, issue_number: pr.number, name });
+            }
+            if (!current.includes(size)) {
+              await github.rest.issues.addLabels({
+                ...context.repo,
+                issue_number: pr.number,
+                labels: [size],
+              });
+            }

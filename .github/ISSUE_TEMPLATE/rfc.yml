@@ -1,6 +1,7 @@
 name: RFC (Design Proposal)
 description: Propose a significant design change
 title: '[RFC]: '
+type: Feature
 labels: ['rfc']
 body:
   - type: markdown
