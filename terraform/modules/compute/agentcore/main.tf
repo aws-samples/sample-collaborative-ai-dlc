@@ -136,9 +136,9 @@ module "dynamodb_kms_runtime_access" {
 
   kms_key_arn = var.kms_key_arn
   dns_suffix  = local.dns_suffix
-  role_names = merge({
+  role_names = merge(local.runtime_direct_data_access ? {
     agentcore = aws_iam_role.agentcore.name
-    }, local.mcp_gateway_enabled ? {
+    } : {}, local.mcp_gateway_enabled ? {
     mcp_tools = aws_iam_role.mcp_tools[0].name
     } : {}, local.engine_data_enabled ? {
     engine_data = aws_iam_role.engine_data[0].name
@@ -438,13 +438,14 @@ resource "aws_iam_role_policy" "agentcore" {
         },
         {
           # Git and agent credentials are fetched just-in-time from the broker.
-          # Provider review operations use the token-owning source-control service.
+          # Provider review operations use the token-owning source-control service
+          # (only its `runtime` alias once runtime grants are enforced).
           Effect = "Allow"
           Action = ["lambda:InvokeFunction"]
-          Resource = [
-            local.credential_broker_function_arn,
-            local.source_control_function_arn,
-          ]
+          Resource = concat(
+            [local.credential_broker_function_arn],
+            local.runtime_direct_data_access ? [local.source_control_function_arn] : [],
+          )
         },
         {
           # General runtime hardening: application credentials cannot assume another role.
@@ -458,6 +459,12 @@ resource "aws_iam_role_policy" "agentcore" {
           Action   = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:CreateLogGroup"]
           Resource = "arn:${local.partition}:logs:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:log-group:/aws/bedrock-agentcore/*"
         },
+      ],
+      # Direct data access for runtimes on the pre-engine-data path. Removed
+      # once runtime grants are enforced: engine-data and the credential broker
+      # then serve every one of these reads and writes under a grant. (A filter,
+      # not a conditional: the statement shapes differ and would not unify.)
+      [for statement in [
         {
           # Business graph (Neptune) read + write.
           Effect   = "Allow"
@@ -483,8 +490,8 @@ resource "aws_iam_role_policy" "agentcore" {
           Action   = ["s3:GetObject", "s3:GetObjectVersion", "s3:ListBucket"]
           Resource = [var.artifacts_bucket_arn, "${var.artifacts_bucket_arn}/*"]
         },
-      ],
-      var.websocket_execution_arn != "" ? [
+      ] : statement if local.runtime_direct_data_access],
+      local.runtime_direct_data_access && var.websocket_execution_arn != "" ? [
         {
           # Push live output/questions to the realtime websocket.
           Effect   = "Allow"
@@ -492,7 +499,7 @@ resource "aws_iam_role_policy" "agentcore" {
           Resource = "${var.websocket_execution_arn}/*"
         },
       ] : [],
-      [
+      local.runtime_direct_data_access ? [
         {
           # Read non-secret agent model settings. Agent credentials are resolved
           # only through the credential broker using a signed invocation grant.
@@ -516,6 +523,8 @@ resource "aws_iam_role_policy" "agentcore" {
             "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
           ]
         },
+      ] : [],
+      [
         {
           # Async stage invocation (docs/v2-parallel.md WP1): the run-stage-start
           # background job completes/heartbeats the durable callback the
@@ -765,22 +774,25 @@ locals {
     AWS_SDK_UA_APP_ID             = var.aws_sdk_ua_app_id
     V2_WORKSPACE_DIR              = "/mnt/workspace"
     V2_PROCESS_TABLE              = aws_dynamodb_table.v2_executions.name
-    BLOCKS_TABLE                  = var.blocks_table_name
-    ARTIFACTS_BUCKET              = var.artifacts_bucket_name
-    NEPTUNE_ENDPOINT              = var.neptune_endpoint
-    CONNECTIONS_TABLE             = var.connections_table_name
-    WEBSOCKET_ENDPOINT            = var.websocket_endpoint
     AIDLC_REPO_REF                = var.aidlc_repo_ref
     BEDROCK_MODEL                 = var.bedrock_model
     BEDROCK_REGION                = var.bedrock_region
     AWS_REGION                    = var.aws_region
     CREDENTIAL_BROKER_FUNCTION    = "${var.project_name}-credential-broker-${var.environment}"
     SOURCE_CONTROL_FUNCTION       = "${var.project_name}-source-control-${var.environment}"
-    MCP_SECRETS_SSM_PREFIX        = "/${var.project_name}/${var.environment}"
     RUNTIME_COMPATIBILITY_VERSION = "1"
     POWERTOOLS_SERVICE_NAME       = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL          = var.powertools_log_level
-    }, local.mcp_gateway_enabled ? {
+    }, local.runtime_direct_data_access ? {
+    # Only the direct clients read these; engine-data and the broker own them
+    # once runtime grants are enforced.
+    BLOCKS_TABLE           = var.blocks_table_name
+    ARTIFACTS_BUCKET       = var.artifacts_bucket_name
+    NEPTUNE_ENDPOINT       = var.neptune_endpoint
+    CONNECTIONS_TABLE      = var.connections_table_name
+    WEBSOCKET_ENDPOINT     = var.websocket_endpoint
+    MCP_SECRETS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
+    } : {}, local.mcp_gateway_enabled ? {
     AIDLC_MCP_GATEWAY_URL    = aws_bedrockagentcore_gateway.mcp[0].gateway_url
     AIDLC_MCP_GATEWAY_TARGET = aws_bedrockagentcore_gateway_target.aidlc[0].name
     } : {}, local.engine_data_enabled ? {

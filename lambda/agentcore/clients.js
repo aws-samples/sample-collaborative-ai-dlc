@@ -24,7 +24,7 @@ import {
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
 import { ENGINE_DATA_DENIED_ERROR } from '../shared/engine-data-ops.js';
-import { realtimeAccessFor } from './engine-data-client.js';
+import { directGraphTripwire, realtimeAccessFor } from './engine-data-client.js';
 import { currentGatewayGrant } from './mcp/gateway-context.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'clients' } });
@@ -175,7 +175,8 @@ export const sendStageCallbackHeartbeat = async (
 };
 
 // Open a Neptune (or local gremlin-server) traversal source. wss+SigV4 in prod;
-// plain ws for the test container.
+// plain ws for the test container. Refused with engine data enabled: graph
+// access then belongs to engine-data.
 //
 // Each call returns an INDEPENDENT connection the caller OWNS and MUST close
 // (via closeGraphSource in mcp/graph-writer.js). There is deliberately no module
@@ -185,6 +186,7 @@ export const sendStageCallbackHeartbeat = async (
 // the process hit EMFILE ("too many open files") and the next stage crashed.
 // Ownership + closeGraphSource is the fix.
 export const openGraph = async () => {
+  if (process.env.ENGINE_DATA_FUNCTION) return directGraphTripwire()();
   const endpoint = process.env.NEPTUNE_ENDPOINT;
   const port = process.env.GREMLIN_PORT ?? '8182';
   const protocol = process.env.GREMLIN_PROTOCOL ?? 'wss';

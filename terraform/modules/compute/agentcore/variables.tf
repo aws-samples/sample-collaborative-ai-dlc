@@ -223,3 +223,9 @@ variable "enable_engine_data" {
   type        = bool
   default     = false
 }
+
+variable "enforce_runtime_grants" {
+  description = "Whether the credential broker refuses the pre-engine-data runtime request shapes. With enable_engine_data, also removes the runtime role's direct Neptune, DynamoDB, S3, SSM and websocket access and its grant on the unqualified source-control function"
+  type        = bool
+  default     = false
+}

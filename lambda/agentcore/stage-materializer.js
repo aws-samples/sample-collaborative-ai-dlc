@@ -639,11 +639,17 @@ export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }
 
 const GATEWAY_PROXY_ENTRY = new URL('./mcp/gateway-proxy.js', import.meta.url).pathname;
 
+const localMcpDisabled = (message) =>
+  Object.assign(new Error(message), { code: 'MCP_LOCAL_SERVER_DISABLED' });
+
 // With the Gateway enabled the runtime bridge runs the proxy instead of the
 // local server. A missing grant fails closed: falling back to the local server
 // would silently restore direct data access the deployment opted out of.
 export const mcpServerLaunch = ({ mcpEntry, trustedEnv, env, grant }) => {
-  if (!env.AIDLC_MCP_GATEWAY_URL) return { entry: mcpEntry, trustedEnv };
+  if (!env.AIDLC_MCP_GATEWAY_URL) {
+    if (env.ENGINE_DATA_FUNCTION) throw localMcpDisabled('Engine data requires the MCP Gateway');
+    return { entry: mcpEntry, trustedEnv };
+  }
   if (!grant) {
     throw Object.assign(new Error('Gateway MCP requires a control-plane grant'), {
       code: 'GATEWAY_GRANT_MISSING',
@@ -662,7 +668,13 @@ export const mcpServerLaunch = ({ mcpEntry, trustedEnv, env, grant }) => {
 
 const prepareMcpEnvironment = async ({ mcpEntry, scope, env }) => {
   const session = currentCredentialSession();
-  if (!session) return env; // Pure/local harness callers own their process lifetime.
+  if (!session) {
+    // Without the bridge the CLI would spawn the local server itself.
+    if (env.AIDLC_MCP_GATEWAY_URL || env.ENGINE_DATA_FUNCTION) {
+      throw localMcpDisabled('Gateway MCP requires a credential session');
+    }
+    return env; // Pure/local harness callers own their process lifetime.
+  }
   const launch = mcpServerLaunch({
     mcpEntry,
     trustedEnv: buildMcpConfig({ mcpEntry, scope, env }).mcpServers.aidlc.env,

@@ -377,7 +377,7 @@ variable "enable_engine_data" {
 }
 
 variable "enforce_runtime_grants" {
-  description = "Retire the pre-engine-data runtime request shapes at the credential broker: Git credential and agent credential requests then always require the Gateway grant (and invocation accounting). While false, requests that carry the new authority fields are still fully verified, and legacy-shape requests from runtimes started before enable_engine_data are served the legacy way and logged as LEGACY_RUNTIME_REQUEST. Turn on only after that count has drained to zero. Requires enable_engine_data."
+  description = "Retire the pre-engine-data runtime request shapes at the credential broker: Git credential and agent credential requests then always require the Gateway grant (and invocation accounting). While false, requests that carry the new authority fields are still fully verified, and legacy-shape requests from runtimes started before enable_engine_data are served the legacy way and logged as LEGACY_RUNTIME_REQUEST. Also removes the AgentCore runtime role's direct Neptune, DynamoDB, S3, SSM, websocket and DynamoDB KMS access, its direct-client environment and its grant on the unqualified source-control function (managed environments share the role); turning it off restores them. Turn on only after that count has drained to zero and every core and managed runtime image carries the engine-data client. Requires enable_engine_data."
   type        = bool
   default     = false
 }
