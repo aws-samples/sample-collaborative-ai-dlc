@@ -89,7 +89,7 @@ GitHub provides additional document on [forking a repository](https://help.githu
 
 Looking at the existing issues is a great way to find something to contribute on. Issues have a type (Feature, Bug or Task) and labels grouped by prefix: `area/*` for the technical area, `topic/*` for the functional domain, `nfr/*` for non-functional concerns based on the AWS Well-Architected pillars, and `status/*` for triage state. Looking at any 'good first issue' or 'help wanted' issues is a great place to start.
 
-Pull requests are labeled automatically: `area/*` from the changed paths and `size/*` from the number of changed lines (lockfiles excluded).
+Pull requests are labeled automatically: `area/*` from the changed paths, `size/*` from the number of changed lines (lockfiles excluded), and `fix` when the title starts with `fix:` or `fix(scope):`.
 
 ## Code of Conduct
 
