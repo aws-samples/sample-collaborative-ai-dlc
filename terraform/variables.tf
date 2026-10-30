@@ -78,6 +78,12 @@ variable "lambda_vpc_scope" {
   }
 }
 
+variable "vpc_block_public_access_exclusion" {
+  description = "Exclude the private subnets (bidirectional) and the NAT gateway subnets (egress-only) from account-level VPC Block Public Access. Required when the account enables Block Public Access in either mode: CloudFront VPC origins cannot reach the internal Yjs ALB otherwise, and in bidirectional mode the NAT gateways lose internet egress."
+  type        = bool
+  default     = false
+}
+
 variable "bedrock_model" {
   description = "Bedrock inference profile ID for the primary model. E.g. us.anthropic.claude-sonnet-4-6"
   type        = string
