@@ -20,6 +20,7 @@ import { Logger } from '@aws-lambda-powertools/logger';
 import { spawn } from 'node:child_process';
 import { childEnvironment } from './environment.js';
 import { currentCredentialSession } from '../credential-session.js';
+import { currentRuntimeEnv } from '../runtime-env.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'spawn' } });
 const usesPosixProcessGroups = process.platform !== 'win32';
@@ -157,7 +158,12 @@ export const runChild = ({
     }
     // A persona session or a credential-session child leads its own group.
     const detached = (grouped || Boolean(session)) && usesPosixProcessGroups;
-    const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
+    // Platform runtime env (runtime-env.js) first: the invocation's env wins.
+    const mergedEnv = childEnvironment(
+      { ...currentRuntimeEnv(), ...env },
+      process.env,
+      session?.credentialEnvironment,
+    );
     let child;
     try {
       child = spawnFn(command, args, {
@@ -291,7 +297,12 @@ export const captureChild = ({
       return;
     }
     const detached = Boolean(session) && process.platform !== 'win32';
-    const mergedEnv = childEnvironment(env, process.env, session?.credentialEnvironment);
+    // Platform runtime env (runtime-env.js) first: the invocation's env wins.
+    const mergedEnv = childEnvironment(
+      { ...currentRuntimeEnv(), ...env },
+      process.env,
+      session?.credentialEnvironment,
+    );
     let child;
     try {
       child = spawnFn(command, args, {
