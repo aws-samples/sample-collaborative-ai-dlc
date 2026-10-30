@@ -372,6 +372,15 @@ const mapIssueToTrackerIssue = (i, siteHost) => {
     },
     createdAt: fields.created || '',
     updatedAt: fields.updated || '',
+    // Where the issue sits in the hierarchy (Epic, Initiative, ...), so the
+    // picker can show it. JPD items have no parent; they use issue links.
+    parent: fields.parent?.key
+      ? {
+          resourceId: fields.parent.key,
+          title: fields.parent.fields?.summary || '',
+          entityType: fields.parent.fields?.issuetype?.name || null,
+        }
+      : null,
   };
 };
 
@@ -479,7 +488,7 @@ const escapeJqlString = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\
 // prefix-match term only; the plain `text ~` term keeps the user's input.
 const TEXT_SEARCH_SYNTAX = /[+\-&|!(){}[\]^~*?\\:"/]/g;
 
-// Matches an issue key such as ARC-1341 (Jira keys start with a letter).
+// Matches an issue key such as PROJ-1341 (Jira keys start with a letter).
 const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 
 // Search terms. `text ~` matches whole words only, so "auth" never found
@@ -493,8 +502,22 @@ const buildSearchClause = (q) => {
   return `(${clauses.join(' OR ')})`;
 };
 
-const buildJql = (projectKey, { state, q, types }) => {
-  const parts = [`project = "${escapeJqlString(projectKey)}"`];
+// Children of an issue. Software projects use the parent field (Initiative >
+// Epic > Story > Sub-task), within the bound project. Product Discovery items
+// are joined by issue links (an idea and the work items that deliver it), and
+// that delivery work usually sits in other projects, so linked items are not
+// limited to the bound project; Jira still applies the user's permissions.
+const scopeClauses = (projectKey, parentKey, projectTypeKey) => {
+  const project = `project = "${escapeJqlString(projectKey)}"`;
+  if (!parentKey) return [project];
+  if (projectTypeKey === 'product_discovery') {
+    return [`issue in linkedIssues("${escapeJqlString(parentKey)}")`];
+  }
+  return [project, `parent = "${escapeJqlString(parentKey)}"`];
+};
+
+const buildJql = (projectKey, { state, q, types, parentKey, projectTypeKey }) => {
+  const parts = scopeClauses(projectKey, parentKey, projectTypeKey);
   if (state === 'closed') parts.push('statusCategory = Done');
   else if (state !== 'all') parts.push('statusCategory != Done');
   if (types && types.length > 0) {
@@ -512,20 +535,28 @@ const buildJql = (projectKey, { state, q, types }) => {
 const ISSUE_TYPE_TTL_MS = 10 * 60 * 1000;
 const issueTypeCache = new Map();
 
-const projectIssueTypes = async (ctx, projectKey) => {
+const projectMeta = async (ctx, projectKey) => {
   const cacheKey = `${ctx.baseUrl}|${projectKey}`;
   const hit = issueTypeCache.get(cacheKey);
-  if (hit && hit.expiresAt > Date.now()) return hit.names;
+  if (hit && hit.expiresAt > Date.now()) return hit.meta;
   const r = await jiraFetch(ctx, `/rest/api/3/project/${encodeURIComponent(projectKey)}`);
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     throw new ProviderError(r.status, data.errorMessages?.[0] || 'Failed to load Jira issue types');
   }
-  const names = (Array.isArray(data.issueTypes) ? data.issueTypes : [])
-    .map((t) => t?.name)
-    .filter((n) => typeof n === 'string' && n);
-  issueTypeCache.set(cacheKey, { names, expiresAt: Date.now() + ISSUE_TYPE_TTL_MS });
-  return names;
+  // Highest level first (Initiative, Epic, ..., Sub-task), then by name.
+  const issueTypes = (Array.isArray(data.issueTypes) ? data.issueTypes : [])
+    .filter((t) => typeof t?.name === 'string' && t.name)
+    .map((t) => ({
+      name: t.name,
+      iconUrl: t.iconUrl || null,
+      hierarchyLevel: Number.isFinite(t.hierarchyLevel) ? t.hierarchyLevel : 0,
+      subtask: t.subtask === true,
+    }))
+    .toSorted((a, b) => b.hierarchyLevel - a.hierarchyLevel || a.name.localeCompare(b.name));
+  const meta = { projectTypeKey: data.projectTypeKey || null, issueTypes };
+  issueTypeCache.set(cacheKey, { meta, expiresAt: Date.now() + ISSUE_TYPE_TTL_MS });
+  return meta;
 };
 
 const parseTypes = (raw) =>
@@ -541,7 +572,8 @@ const parseTypes = (raw) =>
     : [];
 
 // Issue fields every list call asks for.
-const ISSUE_LIST_FIELDS = 'summary,status,labels,reporter,created,updated,description,issuetype';
+const ISSUE_LIST_FIELDS =
+  'summary,status,labels,reporter,created,updated,description,issuetype,parent';
 
 const DEFAULT_PER_PAGE = 30;
 const MAX_PER_PAGE = 100;
@@ -671,19 +703,40 @@ const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) 
     nextPageToken: null,
   };
 
-  let types = [];
+  const parentKey =
+    typeof opts.parent === 'string' && ISSUE_KEY.test(opts.parent.trim())
+      ? opts.parent.trim().toUpperCase()
+      : null;
+  if (opts.parent && !parentKey) throw new ProviderError(400, 'Invalid parent issue key');
+
   const requestedTypes = parseTypes(opts.type);
+  const withTypes = opts.withTypes === '1' || opts.withTypes === true;
+  // The project's issue types feed the picker's type filter, and the project
+  // type decides how children are found. Fetched only when needed; cached.
+  const meta =
+    requestedTypes.length > 0 || parentKey || withTypes ? await projectMeta(ctx, projectKey) : null;
+  const firstPageExtras =
+    withTypes && !pageToken
+      ? { issueTypes: meta.issueTypes, projectTypeKey: meta.projectTypeKey }
+      : {};
+
+  let types = [];
   if (requestedTypes.length > 0) {
-    const known = await projectIssueTypes(ctx, projectKey);
-    const byLower = new Map(known.map((n) => [n.toLowerCase(), n]));
+    const byLower = new Map(meta.issueTypes.map((t) => [t.name.toLowerCase(), t.name]));
     types = requestedTypes.map((t) => byLower.get(t.toLowerCase())).filter(Boolean);
     // The project has none of the requested types (say, Ideas in a software
     // project): that is an empty list, not a JQL error.
-    if (types.length === 0) return empty;
+    if (types.length === 0) return { ...empty, ...firstPageExtras };
   }
 
   const q = typeof opts.q === 'string' ? opts.q.trim() : '';
-  const jql = buildJql(projectKey, { state, q, types });
+  const jql = buildJql(projectKey, {
+    state,
+    q,
+    types,
+    parentKey,
+    projectTypeKey: meta?.projectTypeKey ?? null,
+  });
   const params = new URLSearchParams({
     jql,
     maxResults: String(perPage),
@@ -701,10 +754,10 @@ const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) 
   const rawItems = Array.isArray(data.issues) ? data.issues : [];
   let items = rawItems.map((i) => mapIssueToTrackerIssue(i, ctx.siteHost));
 
-  // Typing a key (ARC-1341) should find that issue. Text search doesn't index
+  // Typing a key (PROJ-1341) should find that issue. Text search doesn't index
   // keys, and `key = X` fails the whole JQL query when X doesn't exist, so
   // look it up directly and put it first. Only on the first page.
-  if (!pageToken && ISSUE_KEY.test(q)) {
+  if (!pageToken && !parentKey && ISSUE_KEY.test(q)) {
     const exact = await findIssueByKey(ctx, projectKey, q.toUpperCase(), { state, types });
     if (exact) items = [exact, ...items.filter((i) => i.resourceId !== exact.resourceId)];
   }
@@ -712,7 +765,16 @@ const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) 
   const nextPageToken = typeof data.nextPageToken === 'string' ? data.nextPageToken : null;
   const hasNext = data.isLast === true ? false : !!nextPageToken;
 
-  return { items, page, perPage, hasNext, hasPrev, totalCount: null, nextPageToken };
+  return {
+    items,
+    page,
+    perPage,
+    hasNext,
+    hasPrev,
+    totalCount: null,
+    nextPageToken,
+    ...firstPageExtras,
+  };
 };
 
 const getIssue = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId) => {

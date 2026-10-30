@@ -3,8 +3,23 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
-import { AlertCircle, CheckCircle2, CircleDot, Loader2, Search } from 'lucide-react';
-import { trackersService, type IssuePageResult, type TrackerIssue } from '@/services/trackers';
+import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronRight,
+  CircleDot,
+  CornerDownRight,
+  ListTree,
+  Loader2,
+  Search,
+} from 'lucide-react';
+import {
+  trackersService,
+  type IssuePageResult,
+  type IssueStateFilter,
+  type TrackerIssue,
+  type TrackerIssueType,
+} from '@/services/trackers';
 import { ApiError } from '@/services/api';
 import type { Project, TrackerBinding } from '@/services/projects';
 import { getTrackerProvider } from '@/lib/trackerProviders';
@@ -20,6 +35,29 @@ interface Props {
 }
 
 const PER_PAGE = 30;
+
+// Jira projects define their own issue types (Spike, Defect, Initiative,
+// Idea, ...), so the type filter lists what the bound project has,
+// loaded with the first page. Hierarchy levels: 2+ Initiative and above,
+// 1 Epic, 0 Story/Task/Bug/Idea, -1 Sub-task.
+const levelLabel = (t: TrackerIssueType) =>
+  t.subtask || t.hierarchyLevel < 0
+    ? 'Sub-task level'
+    : t.hierarchyLevel >= 1
+      ? 'Parent level'
+      : 'Standard';
+
+// One step of a drill-down: the issue whose children (or linked items) are shown.
+interface Crumb {
+  resourceId: string;
+  title: string;
+}
+
+const STATE_LABEL: Record<IssueStateFilter, string> = {
+  open: 'open',
+  closed: 'closed',
+  all: '',
+};
 
 const formatError = (err: unknown): string => {
   if (err instanceof ApiError) {
@@ -40,7 +78,30 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
     [trackers, bindingId],
   );
 
-  const [state, setState] = useState<'open' | 'closed'>('open');
+  const [state, setState] = useState<IssueStateFilter>('open');
+  const [jiraType, setJiraType] = useState('');
+  const isJira = binding?.provider === 'jira-cloud';
+  // Issue types and project type of the bound Jira project, keyed by binding.
+  const [projectInfo, setProjectInfo] = useState<{
+    bindingId: string;
+    issueTypes: TrackerIssueType[];
+    projectTypeKey: string | null;
+  } | null>(null);
+  const issueTypes = useMemo(
+    () => (projectInfo?.bindingId === binding?.id ? projectInfo.issueTypes : []),
+    [projectInfo, binding?.id],
+  );
+  const isDiscovery =
+    projectInfo?.bindingId === binding?.id && projectInfo.projectTypeKey === 'product_discovery';
+  // Drill-down trail: [] is the whole project; the last entry is being browsed.
+  const [trail, setTrail] = useState<Crumb[]>([]);
+  const parentKey = trail.at(-1)?.resourceId;
+  // Linked items sit in other projects with their own types, so no Type filter.
+  const showTypeFilter = isJira && !(isDiscovery && trail.length > 0);
+  // 'all', types and drill-down only exist for Jira; don't send them elsewhere.
+  const effectiveState: IssueStateFilter = !isJira && state === 'all' ? 'open' : state;
+  const effectiveType = showTypeFilter && jiraType ? jiraType : undefined;
+  const effectiveParent = isJira ? parentKey : undefined;
   const [searchInput, setSearchInput] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [issues, setIssues] = useState<TrackerIssue[]>([]);
@@ -50,7 +111,37 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
   const [error, setError] = useState<string | null>(null);
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const iteratorRef = useRef<AsyncGenerator<IssuePageResult> | null>(null);
+  // The current request and the binding it is for. A response from any other
+  // iterator is superseded and dropped.
+  const requestRef = useRef<{
+    iter: AsyncGenerator<IssuePageResult>;
+    bindingId: string;
+  } | null>(null);
+
+  // A new binding starts at the top level with no type filter.
+  useEffect(() => {
+    setTrail([]);
+    setJiraType('');
+  }, [binding?.id]);
+
+  const typeByName = useMemo(() => new Map(issueTypes.map((t) => [t.name, t])), [issueTypes]);
+  // Software projects nest through the parent field, so anything above
+  // sub-task level can have children. Discovery items are joined by links.
+  const canDrill = (issue: TrackerIssue) => {
+    if (!isJira) return false;
+    if (isDiscovery) return true;
+    const t = issue.entityType ? typeByName.get(issue.entityType) : undefined;
+    return !!t && !t.subtask && t.hierarchyLevel >= 0;
+  };
+  const drillLabel = isDiscovery ? 'Linked items' : 'Children';
+  // The type and search that found the parent would hide its children
+  // (type=Epic AND parent=PROJ-5 is empty), so they are cleared.
+  const drillInto = (issue: TrackerIssue) => {
+    setTrail([...trail, { resourceId: issue.resourceId, title: issue.title }]);
+    setJiraType('');
+    setSearchInput('');
+    setDebouncedQuery('');
+  };
 
   const chrome = useMemo(() => {
     if (!binding) return null;
@@ -68,27 +159,42 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
   }, [searchInput]);
 
   const pullNextPage = useCallback(
-    async (iter: AsyncGenerator<IssuePageResult>, append: boolean) => {
+    async (
+      request: { iter: AsyncGenerator<IssuePageResult>; bindingId: string },
+      append: boolean,
+    ) => {
+      const current = () => requestRef.current === request;
       if (append) setLoadingMore(true);
       else {
         setLoading(true);
         setError(null);
       }
       try {
-        const { value, done } = await iter.next();
+        const { value, done } = await request.iter.next();
+        if (!current()) return;
         if (done || !value) {
           setHasNext(false);
           return;
         }
         setIssues((prev) => (append ? [...prev, ...value.items] : value.items));
         setHasNext(!value.done);
+        if (value.issueTypes) {
+          setProjectInfo({
+            bindingId: request.bindingId,
+            issueTypes: value.issueTypes,
+            projectTypeKey: value.projectTypeKey ?? null,
+          });
+        }
       } catch (err) {
+        if (!current()) return;
         setError(formatError(err));
         if (!append) setIssues([]);
         setHasNext(false);
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
+        if (current()) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
     },
     [],
@@ -100,24 +206,35 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
     const iter = trackersService.listIssuePages(
       project.id,
       binding.id,
-      state,
+      effectiveState,
       debouncedQuery || undefined,
       PER_PAGE,
       abortController.signal,
+      isJira ? { type: effectiveType, parent: effectiveParent, withTypes: true } : {},
     );
-    iteratorRef.current = iter;
+    const request = { iter, bindingId: binding.id };
+    requestRef.current = request;
     setIssues([]);
     setHasNext(false);
-    pullNextPage(iter, false);
+    pullNextPage(request, false);
     return () => {
       abortController.abort();
-      iteratorRef.current = null;
+      if (requestRef.current === request) requestRef.current = null;
     };
-  }, [project.id, binding, state, debouncedQuery, pullNextPage]);
+  }, [
+    project.id,
+    binding,
+    isJira,
+    effectiveState,
+    effectiveType,
+    effectiveParent,
+    debouncedQuery,
+    pullNextPage,
+  ]);
 
   const loadMore = useCallback(() => {
-    if (loading || loadingMore || !hasNext || !iteratorRef.current) return;
-    pullNextPage(iteratorRef.current, true);
+    if (loading || loadingMore || !hasNext || !requestRef.current) return;
+    pullNextPage(requestRef.current, true);
   }, [loading, loadingMore, hasNext, pullNextPage]);
 
   useEffect(() => {
@@ -180,22 +297,101 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
             type="button"
             variant={state === 'closed' ? 'secondary' : 'ghost'}
             size="sm"
-            className="h-7 rounded-l-none gap-1"
+            className={cn('h-7 gap-1', isJira ? 'rounded-none' : 'rounded-l-none')}
             onClick={() => setState('closed')}
           >
             <CheckCircle2 className="h-3 w-3" /> Closed
           </Button>
+          {isJira && (
+            <Button
+              type="button"
+              variant={state === 'all' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-7 rounded-l-none"
+              onClick={() => setState('all')}
+            >
+              All
+            </Button>
+          )}
         </div>
         <div className="relative flex-1">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
           <Input
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            placeholder={`Search ${chrome.resourceLabel}s…`}
+            placeholder={
+              isJira
+                ? `Search ${chrome.resourceLabel}s or type a key…`
+                : `Search ${chrome.resourceLabel}s…`
+            }
+            aria-label={`Search ${chrome.resourceLabel}s`}
             className="pl-8 h-7 text-xs"
           />
         </div>
       </div>
+
+      {isJira && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {showTypeFilter && (
+            <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              Type
+              <select
+                value={jiraType}
+                onChange={(e) => setJiraType(e.target.value)}
+                className="h-7 rounded-md border bg-background px-2 text-xs text-foreground"
+                aria-label="Issue type"
+              >
+                <option value="">All types</option>
+                {(['Parent level', 'Standard', 'Sub-task level'] as const).map((group) => {
+                  const inGroup = issueTypes.filter((t) => levelLabel(t) === group);
+                  return inGroup.length === 0 ? null : (
+                    <optgroup key={group} label={group}>
+                      {inGroup.map((t) => (
+                        <option key={t.name} value={t.name}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+              </select>
+            </label>
+          )}
+          {trail.length > 0 && (
+            <nav aria-label="Hierarchy" className="flex items-center gap-1 text-[11px] flex-wrap">
+              <button
+                type="button"
+                className="text-primary hover:underline"
+                onClick={() => setTrail([])}
+              >
+                All
+              </button>
+              {trail.map((c, i) => (
+                <span key={c.resourceId} className="flex items-center gap-1">
+                  <ChevronRight className="h-3 w-3 text-muted-foreground" aria-hidden />
+                  {i === trail.length - 1 ? (
+                    <span aria-current="location" className="font-medium" title={c.title}>
+                      {c.resourceId}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="text-primary hover:underline"
+                      title={c.title}
+                      onClick={() => setTrail(trail.slice(0, i + 1))}
+                    >
+                      {c.resourceId}
+                    </button>
+                  )}
+                </span>
+              ))}
+              <span className="text-muted-foreground">
+                · {isDiscovery ? 'linked items' : 'children'}
+              </span>
+            </nav>
+          )}
+        </div>
+      )}
 
       <div className="max-h-64 min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-0.5 lg:max-h-none lg:basis-0">
         {error ? (
@@ -214,9 +410,12 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
           </div>
         ) : issues.length === 0 ? (
           <p className="text-xs text-muted-foreground py-4 text-center">
-            {debouncedQuery
-              ? `No ${state} issues match "${debouncedQuery}".`
-              : `No ${state} issues.`}
+            {(() => {
+              const noun = [STATE_LABEL[effectiveState], effectiveType, 'issues']
+                .filter(Boolean)
+                .join(' ');
+              return debouncedQuery ? `No ${noun} match "${debouncedQuery}".` : `No ${noun}.`;
+            })()}
           </p>
         ) : (
           <>
@@ -224,32 +423,61 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
               const isSelected =
                 selected?.bindingId === binding.id && selected?.resourceId === issue.resourceId;
               return (
-                <button
+                <div
                   key={`${binding.id}#${issue.resourceId}`}
-                  type="button"
-                  onClick={() => onSelect(issue, binding)}
                   className={cn(
-                    'w-full text-left border rounded-md p-2.5 transition-colors hover:bg-accent/40',
+                    'flex items-stretch border rounded-md transition-colors',
                     isSelected && 'border-primary bg-primary/[0.04] ring-1 ring-primary/30',
                   )}
                 >
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {issue.entityType && (
-                      <Badge variant="secondary" className="text-[9px] h-4 px-1.5">
-                        {issue.entityType}
-                      </Badge>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(issue, binding)}
+                    aria-pressed={isSelected}
+                    className="flex-1 min-w-0 text-left p-2.5 rounded-md hover:bg-accent/40"
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {issue.entityIconUrl && (
+                        <img src={issue.entityIconUrl} alt="" className="h-3.5 w-3.5 shrink-0" />
+                      )}
+                      {issue.entityType && (
+                        <Badge variant="secondary" className="text-[9px] h-4 px-1.5">
+                          {issue.entityType}
+                        </Badge>
+                      )}
+                      <span className="text-sm font-medium truncate">
+                        {/^\d+$/.test(issue.resourceId) ? `#${issue.resourceId}` : issue.resourceId}{' '}
+                        {issue.title}
+                      </span>
+                      {isSelected && <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />}
+                    </div>
+                    {issue.parent && !parentKey && (
+                      <p className="text-[11px] text-muted-foreground mt-0.5 flex items-center gap-1 min-w-0">
+                        <CornerDownRight className="h-3 w-3 shrink-0" aria-hidden />
+                        <span className="truncate">
+                          {issue.parent.entityType ? `${issue.parent.entityType} ` : ''}
+                          {issue.parent.resourceId} {issue.parent.title}
+                        </span>
+                      </p>
                     )}
-                    <span className="text-sm font-medium truncate">
-                      {/^\d+$/.test(issue.resourceId) ? `#${issue.resourceId}` : issue.resourceId}{' '}
-                      {issue.title}
-                    </span>
-                    {isSelected && <CheckCircle2 className="h-3.5 w-3.5 text-primary shrink-0" />}
-                  </div>
-                  <p className="text-[11px] text-muted-foreground mt-0.5">
-                    Opened by {issue.author.handle} ·{' '}
-                    {new Date(issue.createdAt).toLocaleDateString()}
-                  </p>
-                </button>
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      Opened by {issue.author.handle} ·{' '}
+                      {new Date(issue.createdAt).toLocaleDateString()}
+                    </p>
+                  </button>
+                  {canDrill(issue) && (
+                    <button
+                      type="button"
+                      onClick={() => drillInto(issue)}
+                      className="shrink-0 px-2.5 border-l text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent/40 rounded-r-md flex flex-col items-center justify-center gap-0.5"
+                      aria-label={`${drillLabel} of ${issue.resourceId}`}
+                      title={`${drillLabel} of ${issue.resourceId}`}
+                    >
+                      <ListTree className="h-3.5 w-3.5" aria-hidden />
+                      {drillLabel}
+                    </button>
+                  )}
+                </div>
               );
             })}
             {hasNext && (

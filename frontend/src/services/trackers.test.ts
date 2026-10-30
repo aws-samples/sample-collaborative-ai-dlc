@@ -1,7 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 const get = vi.fn();
-vi.mock('./api', () => ({ api: { get: (...a: unknown[]) => get(...a) } }));
+vi.mock('./api', () => ({
+  api: { get: (...a: unknown[]) => get(...a) },
+  ApiError: class ApiError extends Error {},
+}));
 
 import { trackersService } from './trackers';
 
@@ -34,5 +37,15 @@ describe('trackersService.listIssuePages', () => {
     }
 
     expect(pages).toEqual([['PROJ-7', 'PROJ-9'], ['PROJ-3']]);
+  });
+
+  it('yields nothing for a request aborted while in flight', async () => {
+    const controller = new AbortController();
+    get.mockImplementationOnce(async () => {
+      controller.abort();
+      return { items: [], hasNext: false, nextPageToken: null, totalCount: null };
+    });
+    const iter = trackersService.listIssuePages('p1', 'b1', 'open', 'x', 30, controller.signal);
+    expect(await iter.next()).toEqual({ value: undefined, done: true });
   });
 });

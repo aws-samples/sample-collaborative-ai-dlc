@@ -588,6 +588,90 @@ describe('jira-cloud — provider methods', () => {
       expect(jqlOf(fetchMock.mock.calls[2])).toContain('issuetype in ("Idea")');
     });
 
+    const projectMeta = (projectTypeKey, issueTypes) => okResponse({ projectTypeKey, issueTypes });
+
+    it('returns every project issue type, highest level first, when asked', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          projectMeta('software', [
+            { name: 'Sub-task', subtask: true, hierarchyLevel: -1, iconUrl: 'st' },
+            { name: 'Story', hierarchyLevel: 0, iconUrl: 's' },
+            { name: 'Spike', hierarchyLevel: 0, iconUrl: 'sp' },
+            { name: 'Initiative', hierarchyLevel: 2, iconUrl: 'i' },
+            { name: 'Epic', hierarchyLevel: 1, iconUrl: 'e' },
+          ]),
+        )
+        .mockResolvedValueOnce(okResponse({ issues: [], nextPageToken: 'c2' }));
+      const page = await jiraProvider.listIssues(ctx(), 'META1', { withTypes: '1' });
+      expect(page.projectTypeKey).toBe('software');
+      expect(page.issueTypes.map((t) => t.name)).toEqual([
+        'Initiative',
+        'Epic',
+        'Spike',
+        'Story',
+        'Sub-task',
+      ]);
+      expect(page.issueTypes.at(-1)).toEqual({
+        name: 'Sub-task',
+        iconUrl: 'st',
+        hierarchyLevel: -1,
+        subtask: true,
+      });
+    });
+
+    it('does not look up issue types for a plain list', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      const page = await jiraProvider.listIssues(ctx(), 'META2', {});
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(page.issueTypes).toBeUndefined();
+    });
+
+    it('lists the children of a software issue through the parent field', async () => {
+      fetchMock
+        .mockResolvedValueOnce(projectMeta('software', [{ name: 'Epic', hierarchyLevel: 1 }]))
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'SW1', { parent: 'sw1-10', q: 'SW1-11' });
+      const jql = jqlOf(fetchMock.mock.calls[1]);
+      expect(jql).toContain('parent = "SW1-10"');
+      expect(jql).toContain('project = "SW1"');
+      // A key typed while browsing children doesn't trigger the direct lookup.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('lists the linked items of a Product Discovery issue', async () => {
+      fetchMock
+        .mockResolvedValueOnce(projectMeta('product_discovery', [{ name: 'Idea' }]))
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'JPD1', { parent: 'JPD1-3', state: 'all' });
+      const jql = jqlOf(fetchMock.mock.calls[1]);
+      expect(jql).toContain('issue in linkedIssues("JPD1-3")');
+      // Delivery work linked to an idea usually sits in another project.
+      expect(jql).not.toContain('project =');
+    });
+
+    it('rejects a malformed parent key', async () => {
+      await expect(
+        jiraProvider.listIssues(ctx(), 'PROJ', { parent: 'x" OR 1=1' }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("maps an issue's parent", async () => {
+      const child = issueFixture({ key: 'PROJ-50' });
+      child.fields.parent = {
+        key: 'PROJ-5',
+        fields: { summary: 'Login epic', issuetype: { name: 'Epic' } },
+      };
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [child], isLast: true }));
+      const page = await jiraProvider.listIssues(ctx(), 'PROJ', {});
+      expect(page.items[0].parent).toEqual({
+        resourceId: 'PROJ-5',
+        title: 'Login epic',
+        entityType: 'Epic',
+      });
+      expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get('fields')).toContain('parent');
+    });
+
     it('forwards an opaque pageToken cursor when provided', async () => {
       fetchMock.mockResolvedValueOnce(okResponse({ issues: [], nextPageToken: 'cursor-2' }));
       const result = await jiraProvider.listIssues(ctx(), 'PROJ', { pageToken: 'cursor-1' });

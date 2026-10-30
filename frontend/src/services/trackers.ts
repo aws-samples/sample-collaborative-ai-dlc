@@ -26,6 +26,27 @@ export interface TrackerIssue {
   author: { handle: string; avatarUrl?: string };
   createdAt: string;
   updatedAt: string;
+  // Jira: the issue's parent (Epic, Initiative, ...). Absent elsewhere.
+  parent?: { resourceId: string; title: string; entityType: string | null } | null;
+}
+
+// A Jira project's issue type, as listed for the picker's type filter.
+export interface TrackerIssueType {
+  name: string;
+  iconUrl: string | null;
+  // 2 Initiative, 1 Epic, 0 Story/Task/Bug/Idea, -1 Sub-task.
+  hierarchyLevel: number;
+  subtask: boolean;
+}
+
+// Jira-only list filters.
+export interface IssueFilters {
+  // Comma-separated issue type names, e.g. "Epic,Story".
+  type?: string;
+  // Only the children (software) or linked items (Product Discovery) of this key.
+  parent?: string;
+  // Return the project's issue types with the first page.
+  withTypes?: boolean;
 }
 
 export interface TrackerIssuePage {
@@ -39,6 +60,10 @@ export interface TrackerIssuePage {
   // (Jira Cloud since Atlassian's CHANGE-2046 deprecated `startAt`/`total`).
   // Page-number providers like GitHub leave this null.
   nextPageToken?: string | null;
+  // First page only, when requested with withTypes.
+  issueTypes?: TrackerIssueType[];
+  // software, business, service_desk or product_discovery.
+  projectTypeKey?: string | null;
 }
 
 export interface TrackerComment {
@@ -101,6 +126,9 @@ export interface JiraCallbackResult {
 
 const CACHE_TTL_MS = 60_000;
 
+// 'all' and the issue-type filter are honoured by Jira Cloud only.
+export type IssueStateFilter = 'open' | 'closed' | 'all';
+
 interface CacheEntry {
   expiresAt: number;
   page: TrackerIssuePage;
@@ -111,12 +139,14 @@ const cache = new Map<string, CacheEntry>();
 const cacheKey = (
   projectId: string,
   bindingId: string,
-  state: 'open' | 'closed',
+  state: IssueStateFilter,
   q: string | undefined,
   page: number,
   perPage: number,
   pageToken?: string | null,
-) => `${projectId}/${bindingId}|${state}|${q ?? ''}|${page}|${perPage}|${pageToken ?? ''}`;
+  filters: IssueFilters = {},
+) =>
+  `${projectId}/${bindingId}|${state}|${q ?? ''}|${page}|${perPage}|${pageToken ?? ''}|${filters.type ?? ''}|${filters.parent ?? ''}|${filters.withTypes ? 1 : 0}`;
 
 const cacheGet = (key: string): TrackerIssuePage | undefined => {
   const entry = cache.get(key);
@@ -136,6 +166,8 @@ export interface IssuePageResult {
   items: TrackerIssue[];
   totalCount: number | null;
   done: boolean;
+  issueTypes?: TrackerIssueType[];
+  projectTypeKey?: string | null;
 }
 
 export const trackersService = {
@@ -171,19 +203,23 @@ export const trackersService = {
   async listIssues(
     projectId: string,
     bindingId: string,
-    state: 'open' | 'closed' = 'open',
+    state: IssueStateFilter = 'open',
     q?: string,
     page = 1,
     perPage = 30,
     pageToken: string | null = null,
+    filters: IssueFilters = {},
   ): Promise<TrackerIssuePage> {
-    const key = cacheKey(projectId, bindingId, state, q, page, perPage, pageToken);
+    const key = cacheKey(projectId, bindingId, state, q, page, perPage, pageToken, filters);
     const hit = cacheGet(key);
     if (hit) return hit;
 
     const params = new URLSearchParams({ state, page: String(page), perPage: String(perPage) });
     if (q) params.set('q', q);
     if (pageToken) params.set('pageToken', pageToken);
+    if (filters.type) params.set('type', filters.type);
+    if (filters.parent) params.set('parent', filters.parent);
+    if (filters.withTypes) params.set('withTypes', '1');
     const result = await api.get<TrackerIssuePage>(
       `/projects/${projectId}/trackers/${bindingId}/issues?${params.toString()}`,
     );
@@ -194,10 +230,11 @@ export const trackersService = {
   async *listIssuePages(
     projectId: string,
     bindingId: string,
-    state: 'open' | 'closed' = 'open',
+    state: IssueStateFilter = 'open',
     q?: string,
     perPage = 30,
     signal?: AbortSignal,
+    filters: IssueFilters = {},
   ): AsyncGenerator<IssuePageResult> {
     let page = 1;
     let hasNext = true;
@@ -214,13 +251,22 @@ export const trackersService = {
         page,
         perPage,
         pageToken,
+        filters,
       );
+      // Aborted while the request was in flight: the caller has moved on.
+      if (signal?.aborted) return;
       hasNext = result.hasNext;
       pageToken = result.nextPageToken ?? null;
       page++;
       const items = result.items.filter((i) => !seen.has(i.resourceId));
       for (const i of items) seen.add(i.resourceId);
-      yield { items, totalCount: result.totalCount, done: !hasNext };
+      yield {
+        items,
+        totalCount: result.totalCount,
+        done: !hasNext,
+        issueTypes: result.issueTypes,
+        projectTypeKey: result.projectTypeKey,
+      };
     }
   },
 

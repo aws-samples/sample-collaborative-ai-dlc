@@ -33,6 +33,18 @@ If the project has one or more trackers bound (GitHub Issues, GitLab Issues, Jir
 
 You can edit the imported prompt freely before starting.
 
+#### Finding a Jira issue
+
+For a Jira Cloud binding the panel follows the bound project's own issue types and hierarchy:
+
+- **Search** matches whole words in any text field, the start of a word in the summary (`auth` finds "authentication"), and an issue key such as `PROJ-7`, which is listed first. Results are newest-updated first.
+- **Issue type** lists the project's types grouped by level: **Parent level** (for example Initiative and Epic), **Standard** (Story, Task, Bug) and **Sub-task level**. **All types** lists every issue, as before.
+- **State** offers **All** next to **Open** and **Closed**.
+- Each issue shows its parent, for example `Epic PROJ-5 Login` under a story.
+- **Children** on an issue above the sub-task level lists the issues whose parent it is, with a breadcrumb back up. Opening it clears the type filter and search, which found the parent and would otherwise hide its children. In a Jira Product Discovery project, which joins items by issue links rather than the parent field, the button is **Linked items** and lists the linked issues, including delivery work in other projects you can see. There is no type filter there, as linked items have their own projects' types.
+
+GitHub and GitLab bindings are unchanged.
+
 ### AI-DLC version
 
 Shown when the platform offers selectable AI-DLC releases. Pick a release, or keep the default. The intent stays on the chosen version and is never migrated automatically. When the chosen release supports it, an **Autonomous construction** checkbox lets the remaining construction stages run without stopping for approval; the first construction stage, plan approvals, and failures still stop and ask.

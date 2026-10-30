@@ -1042,6 +1042,10 @@ export const handler = async (event, context) => {
           pageToken: queryStringParameters?.pageToken,
           // Issue-type filter (Jira Cloud only: Epic, Story, Idea, ...).
           type: queryStringParameters?.type,
+          // Children of this issue (Jira Cloud only).
+          parent: queryStringParameters?.parent,
+          // Ask for the project's issue types alongside the first page.
+          withTypes: queryStringParameters?.withTypes,
         };
         const issues = await provider.listIssues(ctx, binding.externalProjectKey, options);
         return response(200, issues);
