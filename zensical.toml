@@ -31,6 +31,7 @@ nav = [
     "using-the-platform/workflows.md",
     "using-the-platform/platform-settings.md",
     "using-the-platform/discussions.md",
+    "using-the-platform/notification-events.md",
     "using-the-platform/real-time-collaboration.md",
     "using-the-platform/git-integration.md",
   ] },

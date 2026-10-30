@@ -397,3 +397,21 @@ variable "iam_permissions_boundary_arn" {
   type        = string
   default     = ""
 }
+
+variable "notification_events_enabled" {
+  description = "Create an EventBridge bus and publish notification events to it"
+  type        = bool
+  default     = false
+}
+
+variable "notification_event_bus_name" {
+  description = "Name of the notification event bus. Empty uses <project>-<environment>-events"
+  type        = string
+  default     = ""
+}
+
+variable "notification_event_source" {
+  description = "EventBridge source of the notification events"
+  type        = string
+  default     = "collaborative-ai-dlc"
+}
