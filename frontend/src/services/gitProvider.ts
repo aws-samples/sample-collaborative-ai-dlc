@@ -173,6 +173,9 @@ export interface GitProviderService {
   getAuthUrl: () => Promise<{ url: string }>;
   getStatus: () => Promise<GitProviderStatus>;
   listRepos: () => Promise<GitRepo[]>;
+  // Implemented only by providers that can search server-side (GitLab), for
+  // projects the capped `listRepos` result leaves out.
+  searchRepos?: (q: string) => Promise<GitRepo[]>;
   disconnect: () => Promise<unknown>;
 }
 
@@ -199,6 +202,9 @@ export const gitlabService: GitProviderService = {
   getAuthUrl: () => api.get<{ url: string }>('/gitlab/auth'),
   getStatus: () => api.get<GitProviderStatus>('/gitlab/status'),
   listRepos: () => api.get<GitRepo[]>('/gitlab/repos'),
+  // The unfiltered list is capped server-side, so the picker also sends its
+  // search text for GitLab to match across every project the user can push to.
+  searchRepos: (q: string) => api.get<GitRepo[]>(`/gitlab/repos?q=${encodeURIComponent(q)}`),
   disconnect: () => api.delete('/gitlab/disconnect'),
 };
 

@@ -255,12 +255,13 @@ export const createGitHandler = (provider, routes) => {
         return response(200, { connected: !!Item, provider: Item?.provider });
       }
 
-      // GET /{provider}/repos
+      // GET /{provider}/repos[?q=search] — providers that support server-side
+      // search (GitLab) filter by q; the others ignore it.
       if (httpMethod === 'GET' && path.endsWith('/repos')) {
         if (!userId) return response(401, { error: 'Unauthorized' });
         const { ctx } = await resolveRouteCtx(userId);
         if (!ctx) return response(400, { error: `${providerLabel} not connected` });
-        const repos = await provider.listRepos(ctx);
+        const repos = await provider.listRepos(ctx, { search: queryStringParameters?.q });
         return response(200, repos);
       }
 

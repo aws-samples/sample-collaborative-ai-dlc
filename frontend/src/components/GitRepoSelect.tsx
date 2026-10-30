@@ -15,6 +15,10 @@ import {
 // connection), passed in through `repos`.
 type RepoSource = 'oauth' | 'github-app' | 'codecommit-role';
 
+// GitLab ignores shorter search terms.
+const MIN_SERVER_SEARCH_LENGTH = 3;
+const SERVER_SEARCH_DEBOUNCE_MS = 300;
+
 interface BaseProps {
   provider: GitProvider;
   exclude?: string[];
@@ -65,17 +69,53 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
       .finally(() => setFetching(false));
   }, [provider, repoSource]);
 
+  // Providers that cap the unfiltered list (GitLab: large group trees exceed
+  // it) expose `searchRepos`; a typed search is sent there and the matches are
+  // merged into the list. Merging, rather than replacing, keeps earlier
+  // selections resolvable.
+  const searchRepos =
+    repoSource === 'oauth' ? getGitProviderService(provider).searchRepos : undefined;
+  const [searching, setSearching] = useState(false);
+  useEffect(() => {
+    const term = search.trim();
+    if (!searchRepos || term.length < MIN_SERVER_SEARCH_LENGTH) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setSearching(true);
+      searchRepos(term)
+        .then((matches) => {
+          if (cancelled) return;
+          setFetched((current) => {
+            const known = new Set(current.map((r) => r.id));
+            const added = matches.filter((r) => !known.has(r.id));
+            return added.length ? [...current, ...added] : current;
+          });
+        })
+        // The unfiltered list is still usable, so a failed search is not fatal.
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) setSearching(false);
+        });
+    }, SERVER_SEARCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      setSearching(false);
+    };
+  }, [search, searchRepos]);
+
   const excludeSet = useMemo(() => new Set(props.exclude ?? []), [props.exclude]);
 
   const filtered = useMemo(() => {
     const available = repos.filter((r) => !excludeSet.has(r.fullName));
-    if (!search) return available;
-    const q = search.toLowerCase();
-    return available.filter(
-      (r) =>
-        r.fullName.toLowerCase().includes(q) ||
-        repoDisplayName(provider, r.fullName).toLowerCase().includes(q),
-    );
+    // Every word must appear, so "emu steering" matches ".../emu/utilities/
+    // steering-docs" the same way GitLab's namespace search does.
+    const words = search.toLowerCase().split(/\s+/).filter(Boolean);
+    if (words.length === 0) return available;
+    return available.filter((r) => {
+      const names = `${r.fullName} ${repoDisplayName(provider, r.fullName)}`.toLowerCase();
+      return words.every((w) => names.includes(w));
+    });
   }, [repos, excludeSet, search, provider]);
 
   if (loading) return <div className="text-sm text-gray-500">Loading repositories...</div>;
@@ -107,7 +147,11 @@ export function GitRepoSelect(props: GitRepoSelectProps) {
         <div className="max-h-60 overflow-y-auto border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
           {filtered.length === 0 ? (
             <div className="px-3 py-4 text-sm text-gray-500 text-center">
-              {repos.length === 0 ? 'No repositories available' : 'No matching repositories'}
+              {searching
+                ? 'Searching...'
+                : repos.length === 0
+                  ? 'No repositories available'
+                  : 'No matching repositories'}
             </div>
           ) : (
             filtered.map((repo) => (
