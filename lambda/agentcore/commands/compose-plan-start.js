@@ -38,13 +38,13 @@ import {
   scopeAidlcSettings,
 } from '../../shared/intent-aidlc-settings.js';
 import { resolveCliSelection } from './discussion-assist-start.js';
-import { closeGraphSource } from '../mcp/graph-writer.js';
 import {
   hasInvokeToken,
   invokeDialectAnnex,
   invokesCheckpointLog,
   neutralizeTokens,
 } from '../stage-materializer.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 
 const logger = new Logger({
   persistentKeys: { component: 'agentcore', module: 'compose-plan-start' },
@@ -351,6 +351,7 @@ const buildComposePrompt = ({
 
 export const createComposePlanStart = ({
   openGraph,
+  openEngineGraph,
   store,
   broadcast = async () => {},
   availableClis = [],
@@ -439,7 +440,7 @@ export const createComposePlanStart = ({
     };
 
     const job = runCredentialJob(async () => {
-      let g;
+      let graph;
       try {
         const { workflow, library } = await loadLibraryFn({
           workflowId,
@@ -513,13 +514,12 @@ export const createComposePlanStart = ({
           settingsAware,
         });
 
-        g = await openGraph();
-        const inheritedSelection = await resolveCliSelection({
-          store,
-          g,
+        graph = await engineGraphOpener({ openEngineGraph, openGraph })({
           projectId,
           intentId,
+          executionId: intentId,
         });
+        const inheritedSelection = await resolveCliSelection({ store, graph, intentId });
         const requestedCli = explicitlyRequestedCli ?? inheritedSelection.requestedCli;
         const cliModels = explicitlySelectedModels ?? inheritedSelection.cliModels;
         // The throwaway working directory MUST exist before the spawn — Node
@@ -637,7 +637,7 @@ export const createComposePlanStart = ({
           fields: { failureReason: err?.message ?? 'compose job crashed' },
         }).catch(() => {});
       } finally {
-        await closeGraphSource(g);
+        await closeEngineGraph(graph);
         activeJobs.delete(key);
         busy?.leave();
       }

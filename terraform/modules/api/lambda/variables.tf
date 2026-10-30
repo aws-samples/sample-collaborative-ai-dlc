@@ -404,6 +404,12 @@ variable "enable_mcp_gateway" {
   default     = false
 }
 
+variable "enable_engine_data" {
+  description = "Whether the engine's data access (process state, graph, catalog, blobs, realtime) goes through the engine-data Lambda; the intents Lambda then signs execution grants (static, for plan-time counts)"
+  type        = bool
+  default     = false
+}
+
 variable "gateway_grant_key_arn" {
   description = "KMS key that signs AgentCore MCP Gateway grants (used only when enable_mcp_gateway is true)"
   type        = string

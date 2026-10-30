@@ -3,7 +3,8 @@
 // The unit tests above it inject a loader and an object reader, so they cannot
 // see whether the reader calls the real resolver correctly. These publish a real
 // release bundle (built from a real compatibility fixture, with real sensor and
-// helper bodies) into an in-memory object store and drive the reader's DEFAULT
+// helper bodies) into an in-memory object store and drive the reader through
+// the engine catalog's `loadScriptClosure` — the production
 // `loadReleaseClosure` / `resolveRuntimeFile`. What they pin:
 //
 //   - a well-formed pin resolves its closure instead of being rejected before
@@ -34,6 +35,7 @@ import {
   resolveMethodologyLibrary,
 } from '../../shared/release-resolver.js';
 import { buildExecutionPlan } from '../../shared/v2-execution-plan.js';
+import { createEngineCatalog } from '../../shared/engine-catalog.js';
 import {
   createReleaseScriptClosureReader,
   releaseOwnedSensorPredicate,
@@ -156,13 +158,13 @@ const overlayRow = {
   scriptRef: buildScriptRef(OVERLAY_SCRIPT),
 };
 
-const readerFor = (sensorsById, { resolveRuntimeFile } = {}) =>
+const readerFor = (sensorsById, { loadScriptClosure } = {}) =>
   createReleaseScriptClosureReader({
     methodologyRelease: pin,
     releaseOwnsSensor: releaseOwnedSensorPredicate(sensorsById),
-    s3,
-    bucket: () => BUCKET,
-    ...(resolveRuntimeFile ? { resolveRuntimeFile } : {}),
+    loadScriptClosure:
+      loadScriptClosure ??
+      createEngineCatalog({ s3, ddb, bucket: BUCKET, blocksTable: TABLE }).loadScriptClosure,
   });
 
 const TYPE_CHECK_SENSOR = Object.freeze({
@@ -421,9 +423,9 @@ describe('a user SENSOR overlay in a pinned intent', () => {
     const resolved = await resolvedLibrary();
     const read = [];
     const reader = readerFor(resolved.library.sensorsById, {
-      resolveRuntimeFile: async ({ repoPath }) => {
-        read.push(repoPath);
-        return { content: '' };
+      loadScriptClosure: async ({ sensorId }) => {
+        read.push(sensorId);
+        return [];
       },
     });
 

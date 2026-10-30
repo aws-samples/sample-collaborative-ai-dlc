@@ -369,3 +369,9 @@ variable "enable_mcp_gateway" {
   type        = bool
   default     = false
 }
+
+variable "enable_engine_data" {
+  description = "Route the AgentCore engine's data access (process state, knowledge graph, methodology catalog, custom-rule and attachment blobs, intent broadcasts) through the grant-verifying engine-data Lambda. The intents Lambda also signs execution grants. Requires enable_mcp_gateway."
+  type        = bool
+  default     = false
+}

@@ -19,8 +19,7 @@ import { runCredentialJob } from '../credential-session.js';
 // "slow model" from "dead container".
 
 import { Logger } from '@aws-lambda-powertools/logger';
-import { closeGraphSource } from '../mcp/graph-writer.js';
-import { fetchDownstreamClosure } from '../../shared/artifact-edit.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { runOneShotPrompt, extractJsonObject } from '../cli/one-shot.js';
 import { quorumCliModels } from '../model-resolver.js';
 import {
@@ -29,6 +28,7 @@ import {
   bounded,
   sanitizePlan,
   fetchArtifactForEdit,
+  fetchClosureForEdit,
   makeProgressEmitter,
 } from './quorum-edit-shared.js';
 
@@ -77,13 +77,14 @@ export const buildPlanPrompt = ({ artifact, changeDescription, downstream, reque
 
 export const createQuorumEditPlanStart = ({
   openGraph,
+  openEngineGraph,
   store,
   broadcast = async () => {},
   availableClis = [],
   oneShot = runOneShotPrompt,
   // Graph collaborators — injectable so the suite exercises the job without a
   // gremlin server (same seam style as derive-artifacts' createWriter).
-  fetchClosure = fetchDownstreamClosure,
+  fetchClosure = fetchClosureForEdit,
   fetchArtifact = fetchArtifactForEdit,
   sendCallbackSuccess,
   sendCallbackHeartbeat = async () => {},
@@ -124,7 +125,7 @@ export const createQuorumEditPlanStart = ({
 
     const job = runCredentialJob(async () => {
       let heartbeatTimer = null;
-      let g;
+      let graph;
       let result;
       try {
         heartbeatTimer = setInterval(() => {
@@ -141,19 +142,23 @@ export const createQuorumEditPlanStart = ({
           editId,
         });
         try {
-          g = await openGraph();
-          const artifact = await fetchArtifact(g, intentId, artifactId);
+          graph = await engineGraphOpener({ openEngineGraph, openGraph })({
+            projectId,
+            intentId,
+            executionId,
+          });
+          const artifact = await fetchArtifact(graph, intentId, artifactId);
           if (!artifact) {
             result = { ok: false, reason: 'artifact_not_found' };
           } else {
             await progress(
               `Analyzing downstream impact of editing "${artifact.title || artifactId}"…`,
             );
-            const closure = await fetchClosure({ g, intentId, artifactId });
+            const closure = await fetchClosure({ graph, intentId, artifactId });
             // The plan prompt needs each downstream doc's content (bounded).
             const downstream = [];
             for (const d of closure) {
-              const row = await fetchArtifact(g, intentId, d.id);
+              const row = await fetchArtifact(graph, intentId, d.id);
               downstream.push({ ...d, content: row?.content ?? '' });
             }
             await progress(
@@ -216,7 +221,7 @@ export const createQuorumEditPlanStart = ({
         return result;
       } finally {
         if (heartbeatTimer) clearInterval(heartbeatTimer);
-        await closeGraphSource(g);
+        await closeEngineGraph(graph);
         activeJobs.delete(key);
         busy?.leave();
       }

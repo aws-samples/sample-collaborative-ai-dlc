@@ -359,21 +359,45 @@ const shouldShowWorkspaceSetup = (stages = []) => {
   return nextExecutable?.phase === 'construction';
 };
 
-const loadCustomRules = async ({ s3, bucket, harness, distributionFiles, customRules = [] }) => {
+// Rule refs come from a stored checkpoint or a fresh pin. Either way only the
+// exported intent's project rules, at the exact key the projects Lambda writes
+// and pinned to an object version, are read; anything else fails the export.
+const loadCustomRules = async ({
+  s3,
+  bucket,
+  harness,
+  distributionFiles,
+  projectId,
+  customRules = [],
+}) => {
   const files = new Map();
   if (customRules.length === 0) return files;
+  if (typeof projectId !== 'string' || !projectId || projectId.includes('/')) {
+    throw new Error('native-export: custom rules need the exported project id');
+  }
+  const prefix = `custom-rules/${projectId}/`;
   const rulesDir = resolveRulesDir({ distributionFiles, harness });
   for (const rule of customRules) {
     const key = String(rule?.s3Key ?? '');
-    const filename = String(rule?.filename ?? key.split('/').at(-1) ?? '');
-    if (!key.startsWith('custom-rules/') || !/^[A-Za-z0-9._-]+\.md$/i.test(filename)) {
+    const basename = key.startsWith(prefix) ? key.slice(prefix.length) : '';
+    const filename = String(rule?.filename ?? basename);
+    if (
+      !basename ||
+      filename !== basename ||
+      !/^[A-Za-z0-9._-]+\.md$/i.test(filename) ||
+      filename === '.' ||
+      filename === '..'
+    ) {
       throw new Error(`native-export: invalid custom rule reference ${key || filename}`);
+    }
+    if (typeof rule.versionId !== 'string' || !rule.versionId) {
+      throw new Error(`native-export: custom rule ${filename} is not pinned to an object version`);
     }
     const body = await readObject({
       s3,
       bucket,
       key,
-      versionId: rule.versionId ?? null,
+      versionId: rule.versionId,
     });
     if (body.length > 100 * 1024) {
       throw new Error(`native-export: custom rule ${filename} exceeds the 100 KB limit`);
@@ -616,6 +640,7 @@ const createNativeExport = async ({
     bucket,
     harness,
     distributionFiles,
+    projectId: projection.intent.projectId,
     customRules: projection.intent.customRules,
   });
   const projected = projectNativeWorkspace({

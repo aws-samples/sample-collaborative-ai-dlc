@@ -32,7 +32,7 @@
 //   { ok: false, reason: 'dag_absent'|'dag_malformed'|'dag_cyclic', detail }
 //   { ok: false, reason: 'promotion_failed', detail } — infra error
 
-import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { parseBoltDag } from '../../shared/v2-sensor-contract.js';
 import { effectiveSkeleton, skeletonProblem } from '../../shared/unit-completion.js';
 
@@ -55,14 +55,8 @@ export const promoteUnits = async (payload, deps) => {
     stageInstanceId = null,
     sectionIndexes = [null],
   } = payload ?? {};
-  const {
-    store,
-    openGraph,
-    broadcast = async () => {},
-    clock,
-    // Injectable for tests; production binds the real writer factory.
-    createWriter = createGraphWriter,
-  } = deps;
+  const { store, broadcast = async () => {} } = deps;
+  const openEngineGraph = engineGraphOpener(deps);
   if (!intentId || !executionId) {
     return { ok: false, reason: 'missing_identity' };
   }
@@ -74,22 +68,15 @@ export const promoteUnits = async (payload, deps) => {
       .catch(() => {});
 
   let graph;
-  let g;
   try {
-    g = await openGraph();
-    graph = createWriter({
-      g,
-      scope: { projectId, intentId, executionId, stageInstanceId },
-      ...(clock ? { clock } : {}),
-    });
+    graph = await openEngineGraph({ projectId, intentId, executionId, stageInstanceId });
   } catch (e) {
-    await closeGraphSource(g);
     await event('v2.units.promotion_failed', `graph unavailable: ${e.message}`);
     return { ok: false, reason: 'promotion_failed', detail: `graph unavailable: ${e.message}` };
   }
 
   // Close the graph connection on every exit (release its fd — see
-  // closeGraphSource). The long-lived session process reuses this command.
+  // closeEngineGraph). The long-lived session process reuses this command.
   try {
     // 1+2. Read + re-parse the DAG artifact.
     const rows = await graph.lookupArtifacts({
@@ -165,7 +152,7 @@ export const promoteUnits = async (payload, deps) => {
       // Re-resolve item↔item traceability now that the UnitOfWork vertices
       // exist: StoryMapEntry/Contract items derived BEFORE promotion could not
       // wire IMPLEMENTS/EXPOSES/CONSUMES_CONTRACT edges to units yet.
-      if (graph.resolveDerivedItemEdges) await graph.resolveDerivedItemEdges();
+      await graph.resolveDerivedItemEdges({});
     } catch (e) {
       await event('v2.units.mirror_failed', e.message);
     }
@@ -192,6 +179,6 @@ export const promoteUnits = async (payload, deps) => {
     await event('v2.units.promotion_failed', e.message);
     return { ok: false, reason: 'promotion_failed', detail: e.message };
   } finally {
-    await closeGraphSource(g);
+    await closeEngineGraph(graph);
   }
 };

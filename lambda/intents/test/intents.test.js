@@ -2,7 +2,7 @@ import { __durableHandler as runOrchestrator } from '../../v2-orchestrator/index
 import { createProcessStore } from '../../shared/v2-process-store.js';
 import { unitPlanIdentity } from '../../shared/unit-completion.js';
 import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { generateKeyPairSync, randomUUID, sign as cryptoSign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
@@ -41,6 +41,8 @@ import {
   ListObjectVersionsCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { KMSClient, SignCommand } from '@aws-sdk/client-kms';
+import { verifyGatewayGrant } from '../../shared/gateway-grant.js';
 // Used to compute the deterministic stage-instance ids the rewind flow resets/supersedes.
 import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
 import { buildFromFiles } from '../../shared/block-mappers.js';
@@ -99,6 +101,18 @@ const ddbMock = mockClient(DynamoDBDocumentClient);
 const lambdaMock = mockClient(LambdaClient);
 const ssmMock = mockClient(SSMClient);
 const agentcoreMock = mockClient(BedrockAgentCoreClient);
+// The Gateway is enabled for this suite: runtime dispatches carry a grant the
+// real issuer signs through a mocked KMS with a local P-256 key.
+const GATEWAY_GRANT_KEY_ID = 'arn:aws:kms:eu-west-1:111111111111:key/gateway-test';
+const gatewayKey = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+const kmsMock = mockClient(KMSClient);
+kmsMock.on(SignCommand).callsFake(({ Message }) => ({
+  Signature: cryptoSign('sha256', Buffer.from(Message), gatewayKey.privateKey),
+}));
+const verifiedGatewayGrant = (token) =>
+  verifyGatewayGrant(token, {
+    publicKeyFor: async (kid) => (kid === GATEWAY_GRANT_KEY_ID ? gatewayKey.publicKey : null),
+  });
 let sourceControlReviewComments = [];
 let sourceControlValidationResponse = { ready: true, repositories: [] };
 const s3Mock = mockClient(S3Client);
@@ -476,6 +490,7 @@ beforeAll(async () => {
   vi.stubEnv('AGENT_CREDENTIAL_GRANT_SECRET', 'g'.repeat(48));
   vi.stubEnv('YJS_DOCUMENTS_TABLE', 'yjs-test');
   vi.stubEnv('ARTIFACTS_BUCKET', 'artifacts-test');
+  vi.stubEnv('GATEWAY_GRANT_KEY_ID', GATEWAY_GRANT_KEY_ID);
   const imported = await import('../index.js');
   handler = imported.handler;
 
@@ -2833,6 +2848,14 @@ describe('POST /compose — composer sessions', () => {
       });
       expect(typeof payload.agentCredentialGrant).toBe('string');
       expect(payload.prompt).toContain('Do something ambiguous');
+      // A DRAFT compose is execution-scoped on the intent's own execution id.
+      await expect(verifiedGatewayGrant(payload.gatewayGrant)).resolves.toMatchObject({
+        mode: 'execution',
+        projectId,
+        intentId: intent.id,
+        executionId: intent.id,
+        stageId: null,
+      });
     } finally {
       delete process.env.AGENTCORE_RUNTIME_ARN;
     }
@@ -6028,6 +6051,13 @@ describe('POST /derive — manual graph-projection backfill', () => {
       requestedCli: 'claude',
       cliModels: { claude: 'us.anthropic.claude-haiku-4-5' },
     });
+    const { gatewayGrant } = JSON.parse(Buffer.from(call.payload).toString('utf8'));
+    await expect(verifiedGatewayGrant(gatewayGrant)).resolves.toMatchObject({
+      mode: 'execution',
+      projectId,
+      intentId: 'i-done',
+      executionId: 'i-done',
+    });
   });
 
   it('maps a command-level failure to 422', async () => {
@@ -7786,6 +7816,36 @@ describe('PUT /artifacts/{id}/content (simple edit)', () => {
     expect(trends.staleReason).toContain('edit:mr');
     // Audit event landed in the feed.
     expect(detail.events.some((e) => e.type === 'v2.artifact.edited')).toBe(true);
+  });
+
+  it('re-derives the edited document with an execution-scoped gateway grant', async () => {
+    process.env.AGENTCORE_RUNTIME_ARN = 'arn:aws:bedrock-agentcore:eu:1:runtime/x';
+    try {
+      agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+        response: { transformToString: async () => JSON.stringify({ ok: true }) },
+      });
+      const sub = `u-${randomUUID()}`;
+      const { projectId, intent } = await seedEditFixture(sub);
+      const res = await putContent(sub, projectId, intent.id, 'mr', '# EU focus');
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).derived).toBe(true);
+      const call = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input;
+      const payload = JSON.parse(Buffer.from(call.payload).toString());
+      expect(payload).toMatchObject({
+        command: 'derive-artifacts',
+        projectId,
+        intentId: intent.id,
+        artifactTypes: ['market-research'],
+      });
+      await expect(verifiedGatewayGrant(payload.gatewayGrant)).resolves.toMatchObject({
+        mode: 'execution',
+        projectId,
+        intentId: intent.id,
+        executionId: intent.id,
+      });
+    } finally {
+      delete process.env.AGENTCORE_RUNTIME_ARN;
+    }
   });
 
   it('409s while a stage is genuinely executing (block-while-running policy)', async () => {

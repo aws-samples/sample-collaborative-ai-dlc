@@ -23,6 +23,13 @@ export const isRetryableGraphAuthError = (err) => {
   );
 };
 
+// A socket the server or network already dropped: the cached source is dead and
+// the next call must open a new one.
+export const isGraphConnectionError = (err) =>
+  /websocket is not open|connection (?:closed|reset|refused)|socket hang up|econnreset|econnrefused|epipe|not connected|closed websocket/i.test(
+    errorText(err),
+  );
+
 export const createGraphManager = ({
   openGraph,
   createWriter,
@@ -31,9 +38,9 @@ export const createGraphManager = ({
   now = () => Date.now(),
   maxAgeMs = DEFAULT_MAX_AGE_MS,
   isRetryable = isRetryableGraphAuthError,
+  isConnectionLost = isGraphConnectionError,
 } = {}) => {
   if (!openGraph) throw new Error('createGraphManager requires openGraph');
-  if (!createWriter) throw new Error('createGraphManager requires createWriter');
   if (!closeGraphSource) throw new Error('createGraphManager requires closeGraphSource');
 
   let g = null;
@@ -49,23 +56,31 @@ export const createGraphManager = ({
     if (current) await closeGraphSource(current);
   };
 
-  const ensureWriter = async ({ force = false } = {}) => {
+  const ensureGraph = async ({ force = false } = {}) => {
     if (force || (g && maxAgeMs > 0 && now() - openedAt >= maxAgeMs)) {
       await closeCurrent();
     }
-    if (writer) return writer;
+    if (g) return g;
     if (!opening) {
       opening = (async () => {
         const nextG = await openGraph();
         g = nextG;
         openedAt = now();
-        writer = createWriter({ g: nextG, scope });
-        return writer;
+        return nextG;
       })().finally(() => {
         opening = null;
       });
     }
     return opening;
+  };
+
+  const ensureWriter = async (options) => {
+    const source = await ensureGraph(options);
+    if (!writer) {
+      if (!createWriter) throw new Error('createGraphManager requires createWriter');
+      writer = createWriter({ g: source, scope });
+    }
+    return writer;
   };
 
   const withWriter = async (fn) => {
@@ -78,5 +93,23 @@ export const createGraphManager = ({
     }
   };
 
-  return { withWriter, close: closeCurrent };
+  // The connection alone, for a caller that builds its own scoped objects per
+  // call (engine-data builds a writer from each request's verified grant, so no
+  // scope survives between requests). An auth rejection or a dropped socket
+  // invalidates the connection; the call itself is replayed only when the
+  // caller says replaying it is safe, since a mutation that failed mid-way may
+  // already have partly applied.
+  const withGraph = async (fn, { retryAuth = false } = {}) => {
+    try {
+      return await fn(await ensureGraph());
+    } catch (err) {
+      const authRejected = isRetryable(err);
+      if (!authRejected && !isConnectionLost(err)) throw err;
+      await closeCurrent();
+      if (!authRejected || !retryAuth) throw err;
+      return fn(await ensureGraph({ force: true }));
+    }
+  };
+
+  return { withWriter, withGraph, close: closeCurrent };
 };

@@ -308,10 +308,9 @@ describe('quorum-edit-apply-start', () => {
     });
     // Target + the ONE approved update were written with quorum provenance.
     expect(collab.applyEdit.mock.calls.map(([a]) => a.artifactId)).toEqual(['a1', 'a2']);
-    expect(collab.applyEdit.mock.calls[0][0]).toMatchObject({
-      origin: 'quorum',
-      editRef: 'qedit:qe-1',
-    });
+    // Quorum origin/actor and the qedit ref are fixed by the graph operation;
+    // the job only names the edit.
+    expect(collab.applyEdit.mock.calls[0][0]).toMatchObject({ editId: 'qe-1' });
     // The WHOLE closure was marked stale before rehabilitation (a4 stays).
     expect(collab.markStale.mock.calls[0][0].artifactIds).toEqual(['a2', 'a3', 'a4']);
     // Verify-unaffected carried Quorum's rationale as the note.

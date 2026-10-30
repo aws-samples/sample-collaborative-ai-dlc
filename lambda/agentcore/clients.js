@@ -23,6 +23,8 @@ import {
 } from '@aws-sdk/client-apigatewaymanagementapi';
 import { QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { parseLambdaPayload } from '../shared/lambda-payload.js';
+import { ENGINE_DATA_DENIED_ERROR } from '../shared/engine-data-ops.js';
+import { realtimeAccessFor } from './engine-data-client.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'clients' } });
 
@@ -216,9 +218,29 @@ const apiClientFor = (endpoint) => {
 // `intent:<intentId>` (the v2 realtime channel). The connection query drains
 // LastEvaluatedKey — a Query page caps at 1MB and truncation would silently
 // stop broadcasting to the connections past the first page.
-export const broadcastToIntent = async (intentId, payload) => {
-  const connectionsTable = process.env.CONNECTIONS_TABLE;
-  const websocketEndpoint = process.env.WEBSOCKET_ENDPOINT;
+//
+// With engine data enabled the fan-out is engine-data's realtime.broadcastIntent:
+// it derives the channel from the invocation's grant and owns the connection
+// query and posts. The runtime still never throws into the engine; a denial is
+// logged apart from a delivery failure, and nothing falls back to a direct call.
+export const broadcastToIntent = async (
+  intentId,
+  payload,
+  { env = process.env, realtime } = {},
+) => {
+  if (env.ENGINE_DATA_FUNCTION) {
+    if (!intentId) return;
+    try {
+      await (realtime ?? realtimeAccessFor({ env })).broadcastIntent(payload);
+    } catch (err) {
+      const fields = { action: payload?.action ?? null, error: err?.name, code: err?.code ?? null };
+      if (err?.name === ENGINE_DATA_DENIED_ERROR) logger.warn('intent broadcast denied', fields);
+      else logger.error('intent broadcast failed', fields);
+    }
+    return;
+  }
+  const connectionsTable = env.CONNECTIONS_TABLE;
+  const websocketEndpoint = env.WEBSOCKET_ENDPOINT;
   if (!connectionsTable || !websocketEndpoint || !intentId) return;
   try {
     const items = [];

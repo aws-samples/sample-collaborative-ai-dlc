@@ -34,6 +34,10 @@ const DENIAL_TEXT = {
   lane_outside_grant: 'Tool call denied: this session is limited to its own unit lane.',
 };
 const DEFAULT_DENIAL_TEXT = 'Tool call denied.';
+// Grant modes that may open an MCP tool session. Any other verified mode (an
+// `execution` grant for engine data access) is signed for a different use and
+// must never reach a tool handler.
+const TOOL_GRANT_MODES = new Set(['stage', 'conflict', 'discussion']);
 
 export class ToolAccessDenied extends Error {
   constructor(reason, auditScope = {}) {
@@ -137,6 +141,9 @@ export const createToolGateway = ({
       throw new ToolAccessDenied(
         error?.code === 'GATEWAY_GRANT_EXPIRED' ? 'grant_expired' : 'grant_invalid',
       );
+    }
+    if (!TOOL_GRANT_MODES.has(grant?.mode)) {
+      throw new ToolAccessDenied('grant_mode_not_allowed', scopeAudit({ grant }));
     }
     let context;
     try {

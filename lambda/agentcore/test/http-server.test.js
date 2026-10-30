@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createBusyTracker, dispatchInvocation, createServer } from '../http-server.js';
+import {
+  createBusyTracker,
+  dispatchInvocation,
+  createServer,
+  processStoreFor,
+  graphAccessFor,
+} from '../http-server.js';
 import { createRecordLearningHandler } from '../http-server.js';
 import { AGENT_AUTH_MODES, COMMANDS, commandDefinition } from '../command-registry.js';
 
@@ -35,10 +41,15 @@ describe('dispatchInvocation', () => {
   });
 
   it('keeps routing and authentication metadata in one command registry', () => {
-    expect(COMMANDS['init-ws']).toEqual({ handler: 'initWs', agentAuth: false });
+    expect(COMMANDS['init-ws']).toEqual({
+      handler: 'initWs',
+      agentAuth: false,
+      grantScope: 'execution',
+    });
     expect(COMMANDS['run-stage']).toEqual({
       handler: 'runStage',
       agentAuth: AGENT_AUTH_MODES.EXECUTION,
+      grantScope: 'stage',
     });
     expect(COMMANDS['compose-plan-start'].agentAuth).toBe(AGENT_AUTH_MODES.COMPOSE);
     expect(COMMANDS['discussion-assist-start'].agentAuth).toBe(AGENT_AUTH_MODES.DISCUSSION);
@@ -137,6 +148,49 @@ describe('dispatchInvocation', () => {
     });
     expect(result.body.payloadKeys).not.toContain('gatewayGrant');
     expect(seen).toBe('gw-grant');
+    expect(currentGatewayGrant()).toBeNull();
+  });
+
+  it('relays an execution grant to engine-only commands and their background work', async () => {
+    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
+    const prepareInvocation = vi.fn();
+    let background;
+    const handlerFor = (name) =>
+      vi.fn(async (payload) => {
+        // A detached job started inside the invocation keeps the grant.
+        background = new Promise((resolve) => setTimeout(() => resolve(currentGatewayGrant()), 1));
+        return { ok: true, name, seen: currentGatewayGrant(), payloadKeys: Object.keys(payload) };
+      });
+    for (const [command, handler] of [
+      ['init-ws', 'initWs'],
+      ['record-pr', 'recordPr'],
+      ['quorum-edit-apply-start', 'quorumEditApplyStart'],
+    ]) {
+      const result = await dispatchInvocation({
+        payload: { command, intentId: 'i1', gatewayGrant: `grant-${command}` },
+        handlers: { [handler]: handlerFor(handler) },
+        prepareInvocation: command === 'init-ws' ? prepareInvocation : vi.fn(async () => ({})),
+      });
+      expect(result.body).toMatchObject({ ok: true, seen: `grant-${command}` });
+      expect(result.body.payloadKeys).not.toContain('gatewayGrant');
+      await expect(background).resolves.toBe(`grant-${command}`);
+      expect(currentGatewayGrant()).toBeNull();
+    }
+    expect(prepareInvocation).not.toHaveBeenCalled();
+  });
+
+  it('prepares credentials under the invocation grant', async () => {
+    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
+    let seenByPrepare = null;
+    await dispatchInvocation({
+      payload: { command: 'run-stage', executionId: 'e1', gatewayGrant: 'gw-grant' },
+      handlers: { runStage: vi.fn(async () => ({ ok: true })) },
+      prepareInvocation: vi.fn(async () => {
+        seenByPrepare = currentGatewayGrant();
+        return {};
+      }),
+    });
+    expect(seenByPrepare).toBe('gw-grant');
     expect(currentGatewayGrant()).toBeNull();
   });
 
@@ -419,5 +473,68 @@ describe('createServer (http)', () => {
     const res = await fetch(`http://127.0.0.1:${port}/nope`);
     expect(res.status).toBe(404);
     server.close();
+  });
+});
+
+describe('processStoreFor', () => {
+  const local = { kind: 'local' };
+  const deps = {
+    ddb: 'ddb',
+    createLocal: vi.fn(() => local),
+    createRemote: vi.fn(() => ({ kind: 'remote' })),
+    misconfigured: vi.fn(() => ({ kind: 'misconfigured' })),
+  };
+
+  it('keeps the local store when engine-data is off', () => {
+    expect(processStoreFor({ ...deps, env: { V2_PROCESS_TABLE: 't' } })).toBe(local);
+    expect(deps.createLocal).toHaveBeenCalledWith({ ddb: 'ddb', tableName: 't' });
+  });
+
+  it('routes the store to engine-data under the current grant', async () => {
+    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
+    const store = processStoreFor({
+      ...deps,
+      env: { ENGINE_DATA_FUNCTION: 'fn', AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp' },
+    });
+    expect(store).toEqual({ kind: 'remote' });
+    expect(deps.createRemote).toHaveBeenCalledWith({ grant: currentGatewayGrant });
+  });
+
+  it('fails closed when engine-data is on but the MCP still runs locally', () => {
+    expect(processStoreFor({ ...deps, env: { ENGINE_DATA_FUNCTION: 'fn' } })).toEqual({
+      kind: 'misconfigured',
+    });
+  });
+});
+
+describe('graphAccessFor', () => {
+  const openGraph = vi.fn(async () => ({}));
+  const REMOTE_ENV = { ENGINE_DATA_FUNCTION: 'fn', AIDLC_MCP_GATEWAY_URL: 'https://gw/mcp' };
+
+  it('keeps the direct graph and runs the engine operations locally when engine-data is off', () => {
+    const local = vi.fn();
+    const access = graphAccessFor({ env: {}, openGraph, createLocal: () => local });
+    expect(access).toEqual({ engineData: false, openGraph, openEngineGraph: local });
+  });
+
+  it('routes engine graph operations to engine-data and trips any direct graph open', async () => {
+    const { currentGatewayGrant } = await import('../mcp/gateway-context.js');
+    const remote = vi.fn();
+    const createRemote = vi.fn(() => remote);
+    const access = graphAccessFor({ env: REMOTE_ENV, openGraph, createRemote });
+    expect(access.engineData).toBe(true);
+    expect(access.openEngineGraph).toBe(remote);
+    expect(createRemote).toHaveBeenCalledWith({ grant: currentGatewayGrant });
+    await expect(access.openGraph()).rejects.toMatchObject({ code: 'ENGINE_DATA_GRAPH_DIRECT' });
+    expect(openGraph).not.toHaveBeenCalled();
+  });
+
+  it('fails closed without the MCP Gateway instead of falling back to the direct graph', async () => {
+    const access = graphAccessFor({ env: { ENGINE_DATA_FUNCTION: 'fn' }, openGraph });
+    await expect(access.openEngineGraph({ intentId: 'i1' })).rejects.toMatchObject({
+      code: 'ENGINE_DATA_MISCONFIGURED',
+    });
+    await expect(access.openGraph()).rejects.toMatchObject({ code: 'ENGINE_DATA_GRAPH_DIRECT' });
+    expect(openGraph).not.toHaveBeenCalled();
   });
 });

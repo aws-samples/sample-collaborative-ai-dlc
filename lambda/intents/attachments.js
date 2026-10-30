@@ -4,11 +4,13 @@ import {
   ListObjectVersionsCommand,
 } from '@aws-sdk/client-s3';
 import { Logger } from '@aws-lambda-powertools/logger';
+import { MAX_ATTACHMENT_BYTES, attachmentCommittedKey } from '../shared/intent-attachment-keys.js';
+
+export { MAX_ATTACHMENT_BYTES, attachmentCommittedKey };
 
 const logger = new Logger({ persistentKeys: { component: 'intent-attachments' } });
 
 export const MAX_ATTACHMENTS = 50;
-export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5MB
 export const MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024; // 25MB across all files
 export const ATTACHMENT_UPLOAD_TTL_SECONDS = 300;
 
@@ -30,10 +32,6 @@ const attachmentTypes = new Map([
 // Builds the short-lived upload object's intent-scoped staging key.
 export const attachmentStagingKey = (intentId, attachmentId, extension) =>
   `intent-attachments/staging/${intentId}/${attachmentId}${extension}`;
-
-// Builds the immutable committed object's intent-scoped key.
-export const attachmentCommittedKey = (intentId, attachmentId, extension) =>
-  `intent-attachments/committed/${intentId}/${attachmentId}${extension}`;
 
 const containsControlCharacter = (value) =>
   [...value].some((character) => {

@@ -20,7 +20,7 @@
 //     the runtime with { command: "repair-structure", projectId, intentId,
 //     executionId, artifactTypes?, requestedCli?, cliModels? }.
 
-import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import { runOneShotPrompt } from '../cli/one-shot.js';
 import { REGISTRY, extractArtifactStructure } from '../../shared/artifact-extractors.js';
 import { renderStructureContract } from '../../shared/artifact-structure-contract.js';
@@ -62,13 +62,11 @@ export const repairStructure = async (payload, deps) => {
     cliModels = null,
   } = payload ?? {};
   const {
-    openGraph,
     store,
     broadcast = async () => {},
     availableClis = [],
     oneShot = runOneShotPrompt,
     deriveArtifacts = null,
-    createWriter = createGraphWriter,
     env = process.env,
   } = deps;
   if (!intentId || !executionId) return { ok: false, reason: 'missing_identity' };
@@ -76,10 +74,9 @@ export const repairStructure = async (payload, deps) => {
   const event = (type, summary) =>
     store?.appendEvent?.({ executionId, type, actor: 'agentcore', summary }).catch(() => {});
 
-  let g;
+  let graph;
   try {
-    g = await openGraph();
-    const graph = createWriter({ g, scope: { projectId, intentId, executionId } });
+    graph = await engineGraphOpener(deps)({ projectId, intentId, executionId });
     const rows = currentArtifacts(
       await graph.getIntentGraph({ includeContent: true, includeSuperseded: true }),
     );
@@ -188,6 +185,6 @@ export const repairStructure = async (payload, deps) => {
     await event('v2.repair.failed', e.message);
     return { ok: false, reason: 'repair_failed', detail: e.message };
   } finally {
-    await closeGraphSource(g);
+    await closeEngineGraph(graph);
   }
 };

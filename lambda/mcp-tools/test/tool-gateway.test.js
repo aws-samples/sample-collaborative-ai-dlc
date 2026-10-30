@@ -66,6 +66,7 @@ const setup = ({
   row = stageRow(),
   intentOwned = true,
   writerOverrides = {},
+  createStore = () => ({ getExecution: async () => execution, getStage: async () => row }),
 } = {}) => {
   const writer = {
     getArtifact: vi.fn(async ({ id }) => ({ id, title: 'A' })),
@@ -97,7 +98,7 @@ const setup = ({
   const closeGraphSource = vi.fn(async () => {});
   const handler = createToolGateway({
     verifyGrant,
-    createStore: () => ({ getExecution: async () => execution, getStage: async () => row }),
+    createStore,
     openGraph,
     closeGraphSource,
     createGraphWriter: () => writer,
@@ -261,6 +262,38 @@ describe('MCP tools gateway target', () => {
     expect(writer.getArtifact).not.toHaveBeenCalled();
     expect(writer.createArtifact).not.toHaveBeenCalled();
     expect(createProcessBridge).not.toHaveBeenCalled();
+  });
+
+  it('denies an execution-scoped engine grant before any handler or store access', async () => {
+    const createStore = vi.fn();
+    const { handler, writer, audit, createProcessBridge, openGraph } = setup({ createStore });
+    const grant = await grantFor({
+      mode: 'execution',
+      projectId: 'p-1',
+      intentId: 'i-1',
+      executionId: 'e-1',
+    });
+    denied(
+      await call(handler, {
+        tool: 'get_artifact',
+        args: { id: 'a-1' },
+        grant,
+        session: encodeGatewaySession(authorSession),
+      }),
+    );
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: 'deny',
+        reason: 'grant_mode_not_allowed',
+        mode: 'execution',
+        executionId: 'e-1',
+        grantId: 'grant-1',
+      }),
+    );
+    expect(createStore).not.toHaveBeenCalled();
+    expect(openGraph).not.toHaveBeenCalled();
+    expect(createProcessBridge).not.toHaveBeenCalled();
+    expect(writer.getArtifact).not.toHaveBeenCalled();
   });
 
   it('allows the checkpoint tool the signed policy adds for the owning session', async () => {

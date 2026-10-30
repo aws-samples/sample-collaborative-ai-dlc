@@ -454,6 +454,7 @@ describe('native workflow export', () => {
           Buffer.from(JSON.stringify({ harnessDir: '.codex', rulesSubdir: 'aidlc-rules' })),
         ],
       ]),
+      projectId: 'p1',
       customRules: [
         {
           filename: 'standards.md',
@@ -463,6 +464,96 @@ describe('native workflow export', () => {
       ],
     });
     expect(files.get('.codex/aidlc-rules/custom--standards.md').toString()).toBe('Always test.\n');
+  });
+
+  it.each([
+    [
+      'another project key',
+      { filename: 'standards.md', s3Key: 'custom-rules/p2/standards.md', versionId: 'v-1' },
+    ],
+    [
+      'a nested key',
+      { filename: 'standards.md', s3Key: 'custom-rules/p1/x/standards.md', versionId: 'v-1' },
+    ],
+    [
+      'a mismatched filename',
+      { filename: 'other.md', s3Key: 'custom-rules/p1/standards.md', versionId: 'v-1' },
+    ],
+    ['no versionId', { filename: 'standards.md', s3Key: 'custom-rules/p1/standards.md' }],
+    [
+      'an empty versionId',
+      { filename: 'standards.md', s3Key: 'custom-rules/p1/standards.md', versionId: '' },
+    ],
+  ])('refuses a custom rule ref with %s before reading S3', async (_label, rule) => {
+    const s3 = { send: vi.fn(async () => ({ Body: Buffer.from('foreign\n') })) };
+    await expect(
+      loadCustomRules({
+        s3,
+        bucket: 'artifacts',
+        harness: 'codex',
+        distributionFiles: new Map([
+          [
+            '.codex/tools/data/harness.json',
+            Buffer.from(JSON.stringify({ harnessDir: '.codex', rulesSubdir: 'aidlc-rules' })),
+          ],
+        ]),
+        projectId: 'p1',
+        customRules: [rule],
+      }),
+    ).rejects.toThrow(/^native-export: /);
+    expect(s3.send).not.toHaveBeenCalled();
+  });
+
+  it('fails an export whose checkpoint pins another project rule', async () => {
+    const { archive, manifest } = await distribution();
+    const ruleReads = [];
+    const s3 = {
+      send: vi.fn(async (command) => {
+        if (command instanceof PutObjectCommand) return {};
+        if (command.input.Key.startsWith('custom-rules/')) {
+          ruleReads.push(command.input.Key);
+          return { Body: Buffer.from('foreign\n') };
+        }
+        return {
+          Body: command.input.Key.endsWith('codex.manifest.json') ? manifest : archive,
+        };
+      }),
+    };
+    await expect(
+      createNativeExport({
+        s3,
+        bucket: 'artifacts',
+        upstreamRef: REF,
+        harness: 'codex',
+        now: '2026-08-11T12:00:00.000Z',
+        presign: vi.fn().mockResolvedValue('https://download.example/export.zip'),
+        projection: {
+          intent: {
+            projectId: 'project-1',
+            intentId: 'intent-1',
+            title: 'Payment service',
+            prompt: 'Add payments',
+            scope: 'feature',
+            workflowId: 'aidlc-v2',
+            workflowVersion: 4,
+            createdAt: '2026-08-11T10:00:00.000Z',
+            customRules: [
+              {
+                filename: 'secrets.md',
+                s3Key: 'custom-rules/project-2/secrets.md',
+                versionId: 'v-1',
+              },
+            ],
+          },
+          stages: [{ stageId: 'intent-capture', phase: 'ideation' }],
+          stageRows: [],
+          artifacts: [],
+          humanTasks: [],
+          repositories: [],
+        },
+      }),
+    ).rejects.toThrow(/^native-export: invalid custom rule reference custom-rules\/project-2\//);
+    expect(ruleReads).toEqual([]);
   });
 
   it('stores a projected native workspace and returns a signed download', async () => {

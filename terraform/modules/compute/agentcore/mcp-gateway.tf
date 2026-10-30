@@ -19,10 +19,14 @@ locals {
     for f in sort(fileset("${path.module}/../../../../lambda/shared", "**/*.{js,mjs,cjs,json}")) :
     filesha256("${path.module}/../../../../lambda/shared/${f}")
   ]))
-  gateway_grant_signer_role_arns = [
+  gateway_grant_signer_role_arns = concat([
     "arn:${local.partition}:iam::${data.aws_caller_identity.current.account_id}:role${var.iam_role_path}${var.project_name}-v2-orchestrator-${var.environment}",
     "arn:${local.partition}:iam::${data.aws_caller_identity.current.account_id}:role${var.iam_role_path}${var.project_name}-discussions-${var.environment}",
-  ]
+    # The intents Lambda dispatches derive and compose runs, which carry
+    # execution grants only engine-data consumes.
+    ], var.enable_engine_data ? [
+    "arn:${local.partition}:iam::${data.aws_caller_identity.current.account_id}:role${var.iam_role_path}${var.project_name}-intents-${var.environment}",
+  ] : [])
   mcp_gateway_tools_json = file("${local.mcp_tools_dir}/gateway-tools.json")
   mcp_gateway_headers    = ["x-aidlc-grant", "x-aidlc-session"]
 }

@@ -17,6 +17,13 @@ const artifact = (overrides = {}) => ({
   ...overrides,
 });
 
+// Head lookups answered from the same rows the fake writer lists.
+const withHeads = (writer) =>
+  Object.assign(writer, {
+    getCurrentHeads: async ({ id }) =>
+      currentArtifacts(await writer.getIntentGraph({})).filter((a) => a.id === id),
+  });
+
 describe('currentArtifacts', () => {
   it('filters superseded artifacts and returns a stable order', () => {
     expect(
@@ -57,7 +64,7 @@ describe('deriveArtifacts', () => {
     const broadcast = vi.fn(async () => {});
     const out = await deriveArtifacts(
       { projectId: 'p', intentId: 'i', executionId: 'e', stageInstanceId: 'si-1' },
-      { openGraph: async () => ({}), createWriter: () => writer, store, broadcast },
+      { openGraph: async () => ({}), createWriter: () => withHeads(writer), store, broadcast },
     );
     expect(out).toMatchObject({
       ok: true,
@@ -66,10 +73,8 @@ describe('deriveArtifacts', () => {
       items: 1,
       enrichment: 'off',
     });
-    expect(writer.getIntentGraph).toHaveBeenCalledWith({
-      includeContent: true,
-      includeSuperseded: true,
-    });
+    // The listing carries no bodies; each target's body is read on its own.
+    expect(writer.getIntentGraph.mock.calls[0][0]).toEqual({ includeSuperseded: true });
     expect(writer.mirrorArtifactDerivations).toHaveBeenCalledTimes(1);
     expect(store.appendEvent.mock.calls[0][0].type).toBe('v2.derive.completed');
     expect(broadcast.mock.calls[0][0]).toMatchObject({ action: 'agent.derived', sectionCount: 1 });
@@ -127,7 +132,12 @@ describe('deriveArtifacts', () => {
         stageInstanceId: 'si-1',
         artifactTypes: ['stories'],
       },
-      { openGraph: async () => ({}), createWriter: () => writer, store, broadcast: async () => {} },
+      {
+        openGraph: async () => ({}),
+        createWriter: () => withHeads(writer),
+        store,
+        broadcast: async () => {},
+      },
     );
     expect(out.ok).toBe(true);
     // This stage's own stories, plus what it changed of earlier stages' work.
@@ -173,7 +183,12 @@ describe('deriveArtifacts', () => {
     const store = { appendEvent: vi.fn(async () => {}) };
     const out = await deriveArtifacts(
       { projectId: 'p', intentId: 'i', executionId: 'e' },
-      { openGraph: async () => ({}), createWriter: () => writer, store, broadcast: async () => {} },
+      {
+        openGraph: async () => ({}),
+        createWriter: () => withHeads(writer),
+        store,
+        broadcast: async () => {},
+      },
     );
     expect(out).toMatchObject({ ok: true, itemEdges: 4 });
     // Intent-wide sweep: once per derive run, not per artifact.
@@ -199,7 +214,12 @@ describe('deriveArtifacts', () => {
     const store = { appendEvent: vi.fn(async () => {}) };
     const out = await deriveArtifacts(
       { projectId: 'p', intentId: 'i', executionId: 'e' },
-      { openGraph: async () => ({}), createWriter: () => writer, store, broadcast: async () => {} },
+      {
+        openGraph: async () => ({}),
+        createWriter: () => withHeads(writer),
+        store,
+        broadcast: async () => {},
+      },
     );
     expect(out).toMatchObject({ ok: true, itemEdges: 0 });
     expect(
@@ -269,7 +289,7 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
     }));
     const out = await deriveArtifacts(basePayload, {
       openGraph: async () => ({}),
-      createWriter: () => writer,
+      createWriter: () => withHeads(writer),
       store,
       oneShot,
       availableClis: ['claude'],
@@ -312,7 +332,7 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
     const oneShot = vi.fn();
     const out = await deriveArtifacts(basePayload, {
       openGraph: async () => ({}),
-      createWriter: () => writer,
+      createWriter: () => withHeads(writer),
       store: makeStore(),
       oneShot,
       availableClis: ['claude'],
@@ -328,7 +348,7 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
     const oneShot = vi.fn(async () => ({ ok: false, reason: 'no_cli', text: '', metrics: null }));
     const out = await deriveArtifacts(basePayload, {
       openGraph: async () => ({}),
-      createWriter: () => writer,
+      createWriter: () => withHeads(writer),
       store,
       oneShot,
       availableClis: [],
@@ -344,7 +364,7 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
     const oneShot = vi.fn(async () => ({ ok: true, text: 'sorry, no json', metrics: null }));
     const out = await deriveArtifacts(basePayload, {
       openGraph: async () => ({}),
-      createWriter: () => writer,
+      createWriter: () => withHeads(writer),
       store: makeStore(),
       oneShot,
       availableClis: ['claude'],
@@ -358,7 +378,12 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
     const oneShot = vi.fn();
     const out = await deriveArtifacts(
       { ...basePayload, enrichment: 'off' },
-      { openGraph: async () => ({}), createWriter: () => writer, store: makeStore(), oneShot },
+      {
+        openGraph: async () => ({}),
+        createWriter: () => withHeads(writer),
+        store: makeStore(),
+        oneShot,
+      },
     );
     expect(out).toMatchObject({ ok: true, enrichment: 'off' });
     expect(oneShot).not.toHaveBeenCalled();
