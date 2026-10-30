@@ -8,10 +8,15 @@ version: 2
 #
 # Terraform has no Dependabot security-update support, so its entry was
 # removed; re-add a scheduled entry if provider version bumps are wanted.
+#
+# Explicit `labels` replace Dependabot's defaults, so it no longer creates
+# ecosystem labels such as `github_actions`. Every PR gets `dependencies`,
+# `nfr/security` (only security updates are enabled) and the matching `area/*`.
 
 updates:
   - package-ecosystem: 'npm'
     directory: '/'
+    labels: ['dependencies', 'nfr/security', 'area/backend']
     schedule:
       interval: 'weekly'
       day: 'monday'
@@ -24,6 +29,7 @@ updates:
 
   - package-ecosystem: 'npm'
     directory: '/frontend'
+    labels: ['dependencies', 'nfr/security', 'area/frontend']
     schedule:
       interval: 'weekly'
       day: 'monday'
@@ -41,6 +47,7 @@ updates:
   - package-ecosystem: 'npm'
     directories:
       - '/lambda/yjs-server'
+    labels: ['dependencies', 'nfr/security', 'area/backend']
     schedule:
       interval: 'weekly'
       day: 'monday'
@@ -53,6 +60,7 @@ updates:
 
   - package-ecosystem: 'github-actions'
     directory: '/'
+    labels: ['dependencies', 'nfr/security', 'area/ci']
     schedule:
       interval: 'weekly'
       day: 'monday'
