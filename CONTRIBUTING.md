@@ -64,14 +64,9 @@ If you want a fast inner-loop preview locally, install [`semgrep`](https://semgr
 
 The [internal testing guide](docs/development/testing.md) documents the deterministic AgentCore test project and the manual, credentialed local E2E for Claude, Kiro, and OpenCode. The E2E runs real models and is not part of CI.
 
-## Automated PR review signals
-
-PR comments combine the existing advisory quality metrics with a deterministic, fixed repository map.
-Both sections can be collapsed. Red map markers identify changed files; green identifies static links,
-not confirmed runtime impact. See [PR review signals](docs/development/pr-impact-map.md) for scope,
-coverage states and fork workflow permissions.
-
 ## Contributing via Pull Requests
+
+See [PR review signals](docs/development/pr-quality.md) for the automated quality metrics, repository map and fork workflow behavior.
 
 Contributions via pull requests are much appreciated. Before sending us a pull request, please ensure that:
 

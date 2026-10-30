@@ -4,7 +4,7 @@ import { parseArgs } from 'node:util';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { analysisMap, loadFrame, nestedPicture } from './frame.mjs';
+import { loadFrame, nestedPicture } from './frame.mjs';
 import { digestOf, loadAnchors } from './anchors.mjs';
 import { evidenceOf } from './evidence.mjs';
 import { guardRead } from './reader-guard.mjs';
@@ -137,14 +137,12 @@ export async function render({
     { gatherFacts, parseNumstat },
     { graphOf, reachOf, isTest },
     { readChange, textsOf },
-    { layoutOf },
     { fieldOf },
     { inksOf },
   ] = await Promise.all([
     load('hooks/engine/git.ts'),
     load('hooks/engine/graph.ts'),
     load('hooks/engine/symbols.ts'),
-    load('hooks/render/layout.ts'),
     load('hooks/render/field.ts'),
     load('hooks/render/palette.ts'),
   ]);
@@ -188,7 +186,6 @@ export async function render({
   const flags = changeFlags(status);
   const changes = parseNumstat(numstat).map((change) => ({ ...change, ...flags.get(change.path) }));
   const graph = graphOf(facts.edges);
-  const knownMap = analysisMap(frame, [...facts.lines.keys(), ...changes.map(({ path }) => path)]);
   const read = await readChange(
     runGit,
     repo,
@@ -254,10 +251,7 @@ export async function render({
   };
   const picture = await nestedPicture({
     frame,
-    facts,
     weather,
-    map: knownMap,
-    layoutOf,
     fieldOf,
     inks: inksOf('paper', 'truecolor'),
     anchors,
@@ -276,7 +270,6 @@ export async function render({
     tool: { name: 'isobar', revision: ISOBAR_REVISION },
     summary,
     files: changes,
-    reach: evidence.reachByCause.map(({ path, of, hop }) => ({ path, of, hop })),
     evidence,
     provenance: {
       mapDigest,

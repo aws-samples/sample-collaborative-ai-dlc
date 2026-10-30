@@ -19,7 +19,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-      actions: read
     steps:
       # Only the trusted controller is checked out. PR objects are fetched as
       # data by collect.mjs; never install dependencies or execute code from them.
@@ -46,35 +45,11 @@ jobs:
         run: |
           git clone --filter=blob:none --no-checkout https://github.com/r3al1tym/isobar.git "$RUNNER_TEMP/isobar-engine"
           git -C "$RUNNER_TEMP/isobar-engine" checkout --detach 2ec719904ac7dc30de08e152e4622fe8e02fa57a
-      - name: Find existing measured quality report
-        id: previous
-        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const { legacyQualityArtifact } = await import(
-              `${process.env.GITHUB_WORKSPACE}/scripts/pr-impact/publish.mjs`
-            );
-            const previous = await legacyQualityArtifact({ github, context });
-            if (previous) {
-              core.setOutput('run', previous.runId);
-              core.setOutput('artifact', previous.artifactName);
-              core.setOutput('quality-run', JSON.stringify(previous.qualityRun));
-            }
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: steps.previous.outputs.artifact != ''
-        continue-on-error: true
-        with:
-          name: ${{ steps.previous.outputs.artifact }}
-          path: ${{ runner.temp }}/previous-quality
-          run-id: ${{ steps.previous.outputs.run }}
-          github-token: ${{ github.token }}
       - name: Compute static review signals
         env:
           ISOBAR_UPSTREAM: ${{ runner.temp }}/isobar-engine
           ISOBAR_PYTHON: ${{ runner.temp }}/isobar-venv/bin/python
           REVIEW_REPORT_DIRECTORY: ${{ runner.temp }}/review-report
-          LEGACY_QUALITY_PATH: ${{ runner.temp }}/previous-quality/comparison.json
-          LEGACY_QUALITY_RUN: ${{ steps.previous.outputs.quality-run }}
         run: node --import ./scripts/pr-impact/node_modules/tsx/dist/loader.mjs scripts/pr-impact/collect.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

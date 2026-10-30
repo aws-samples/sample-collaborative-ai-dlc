@@ -38,7 +38,6 @@ nav = [
     "development/demo-deployment.md",
     "development/testing.md",
     "development/pr-quality.md",
-    "development/pr-impact-map.md",
   ] },
   { "Roadmap" = "roadmap/index.md" },
 ]

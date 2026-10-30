@@ -1,11 +1,10 @@
 import { execFile } from 'node:child_process';
-import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { compareRevisions } from '../compare-complexity.mjs';
 import { render } from './render.mjs';
-import { coverageMeasurements, validateQualitySnapshot } from './publish.mjs';
 
 const execute = promisify(execFile);
 const sha = (value) => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
@@ -69,9 +68,6 @@ export async function collectReviewSignals({
   upstream,
   python,
   output,
-  legacyQualityPath,
-  legacyQualityRun,
-  warn = console.warn,
   git = async (args) =>
     (
       await execute(
@@ -106,7 +102,7 @@ export async function collectReviewSignals({
     throw new Error('Contributor source replaced the controller checkout');
   const mergeBaseSha = (await git(['merge-base', metadata.baseSha, metadata.headSha])).trim();
   if (!sha(mergeBaseSha)) throw new Error('No valid PR merge base');
-  let quality = await compare({
+  const quality = await compare({
     cwd,
     base: metadata.baseSha,
     pr: metadata.headSha,
@@ -114,32 +110,6 @@ export async function collectReviewSignals({
   });
   if (quality.pr !== metadata.headSha || quality.mergeBase !== mergeBaseSha)
     throw new Error('Quality revision mismatch');
-  let qualityRun;
-  if (legacyQualityPath && legacyQualityRun) {
-    try {
-      const stat = await lstat(legacyQualityPath);
-      if (!stat.isFile() || stat.size > 20 * 1024 * 1024)
-        throw new Error('Previous quality report is not a bounded regular file');
-      const previous = validateQualitySnapshot(
-        JSON.parse(await readFile(legacyQualityPath, 'utf8')),
-      );
-      if (
-        previous.pr !== metadata.headSha ||
-        previous.mergeBase !== mergeBaseSha ||
-        previous.baseRef !== metadata.baseRef ||
-        !positive(legacyQualityRun.id) ||
-        !positive(legacyQualityRun.attempt)
-      ) {
-        throw new Error('Previous quality report belongs to another comparison');
-      }
-      if (coverageMeasurements(previous) > coverageMeasurements(quality)) {
-        quality = previous;
-        qualityRun = legacyQualityRun;
-      }
-    } catch (error) {
-      warn(`Previous quality report unavailable: ${error.message}`);
-    }
-  }
   await mkdir(resolve(output, 'quality'), { recursive: true });
   await writeFile(
     resolve(output, 'quality/comparison.json'),
@@ -158,7 +128,7 @@ export async function collectReviewSignals({
   });
   if (impact.headSha !== metadata.headSha || impact.mergeBaseSha !== mergeBaseSha)
     throw new Error('Map revision mismatch');
-  const context = { ...metadata, mergeBaseSha, ...(qualityRun ? { qualityRun } : {}) };
+  const context = { ...metadata, mergeBaseSha };
   await writeFile(resolve(output, 'context.json'), `${JSON.stringify(context, null, 2)}\n`);
   return { context, quality, impact };
 }
@@ -172,9 +142,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     upstream: resolve(process.env.ISOBAR_UPSTREAM),
     python: resolve(process.env.ISOBAR_PYTHON),
     output: resolve(process.env.REVIEW_REPORT_DIRECTORY),
-    legacyQualityPath: process.env.LEGACY_QUALITY_PATH,
-    legacyQualityRun: process.env.LEGACY_QUALITY_RUN
-      ? JSON.parse(process.env.LEGACY_QUALITY_RUN)
-      : undefined,
   });
 }

@@ -255,7 +255,7 @@ function identity(context) {
   return { owner, repo, repository };
 }
 
-// The read-only target producer may recover JSON from a legacy bot report.
+// The publisher recovers JSON from a legacy bot report under the shared lock.
 // Comment Markdown never supplies measurements or a publication destination.
 export async function legacyQualityArtifact({ github, context }) {
   if (context.eventName !== 'pull_request_target') return null;
@@ -349,12 +349,7 @@ function validateProducer({ context, metadata, attempt, repo }) {
       Number.isSafeInteger(metadata.runAttempt) &&
       metadata.runAttempt > 0 &&
       Number.isSafeInteger(metadata.headRepositoryId) &&
-      metadata.headRepositoryId > 0 &&
-      (metadata.qualityRun === undefined ||
-        (Number.isSafeInteger(metadata.qualityRun?.id) &&
-          metadata.qualityRun.id > 0 &&
-          Number.isSafeInteger(metadata.qualityRun.attempt) &&
-          metadata.qualityRun.attempt > 0)),
+      metadata.headRepositoryId > 0,
     'producer context',
   );
   const pr = context.payload.pull_request;
@@ -641,6 +636,40 @@ async function writeComment(github, repo, expected, existing, body) {
   }
 }
 
+async function publishSnapshot({
+  github,
+  context,
+  repo,
+  expected,
+  existing,
+  quality,
+  impact,
+  png,
+  mapSha,
+  run,
+  qualityRun,
+  staticRun,
+  now,
+}) {
+  const updatedAt = now();
+  const content = { context, expected, quality, impact, run, qualityRun, staticRun, updatedAt };
+  commentBody({ ...content, assetSha: '0'.repeat(40) });
+  if (!(await currentPr(github, repo, expected))) return { published: false, reason: 'stale PR' };
+  const assetSha = await storeAssets({
+    github,
+    repo,
+    prNumber: expected.prNumber,
+    impact,
+    quality,
+    png,
+    mapSha,
+  });
+  if (!(await currentPr(github, repo, expected)))
+    return { published: false, reason: 'stale PR before comment write' };
+  await writeComment(github, repo, expected, existing, commentBody({ ...content, assetSha }));
+  return { published: true, prNumber: expected.prNumber, assetSha };
+}
+
 export async function publishReviewSignals({
   github,
   context,
@@ -701,76 +730,50 @@ export async function publishReviewSignals({
   )
     return { published: false, reason: 'older run' };
   const saved = await loadReviewSnapshot({ github, context, existing, expected, warn });
-  let qualityRun = expected.qualityRun ?? saved?.metadata.qualityRun;
+  let qualityRun = saved?.metadata.qualityRun;
   if (
     saved &&
-    (newerSourceRun(saved.metadata.qualityRun, expected.qualityRun) ||
-      coverageMeasurements(saved.quality) > coverageMeasurements(quality))
+    (qualityRun || coverageMeasurements(saved.quality) > coverageMeasurements(quality))
   ) {
     if (saved.quality || coverageMeasurements(quality) > 0) quality = saved.quality;
-    qualityRun = saved.metadata.qualityRun;
   }
   if (existing && !previousMetadata) {
     const stamp = existing.body.match(/<!-- quality-run:(\d+):(\d+) -->/);
     const legacyRun = stamp && { id: Number(stamp[1]), attempt: Number(stamp[2]) };
-    if (validSourceRun(legacyRun) && newerSourceRun(legacyRun, expected.qualityRun)) {
+    if (validSourceRun(legacyRun)) {
       const selected = await legacyQualityArtifact({ github, context });
-      if (!selected) return { published: false, reason: 'newer legacy quality requires recovery' };
-      if (newerSourceRun(selected.qualityRun, expected.qualityRun)) {
-        if (!loadLegacyQuality)
-          return { published: false, reason: 'newer legacy quality requires recovery' };
-        try {
-          const recovered = validateQualitySnapshot(await loadLegacyQuality(selected));
-          requireValue(
-            recovered.pr === expected.headSha &&
-              recovered.mergeBase === expected.mergeBaseSha &&
-              recovered.baseRef === expected.baseRef,
-            'latest legacy quality context',
-          );
-          quality = recovered;
-          qualityRun = selected.qualityRun;
-        } catch (error) {
-          warn(`Latest legacy quality unavailable: ${error.message}`);
-          return { published: false, reason: 'newer legacy quality requires recovery' };
-        }
+      if (!selected || !loadLegacyQuality)
+        return { published: false, reason: 'newer legacy quality requires recovery' };
+      try {
+        const recovered = validateQualitySnapshot(await loadLegacyQuality(selected));
+        requireValue(
+          recovered.pr === expected.headSha &&
+            recovered.mergeBase === expected.mergeBaseSha &&
+            recovered.baseRef === expected.baseRef,
+          'latest legacy quality context',
+        );
+        quality = recovered;
+        qualityRun = selected.qualityRun;
+      } catch (error) {
+        warn(`Latest legacy quality unavailable: ${error.message}`);
+        return { published: false, reason: 'newer legacy quality requires recovery' };
       }
     }
   }
-  commentBody({
-    context,
-    expected,
-    assetSha: '0'.repeat(40),
-    quality,
-    impact,
-    run,
-    qualityRun,
-    staticRun,
-    updatedAt: now(),
-  });
-  if (!(await currentPr(github, repo, expected))) return { published: false, reason: 'stale PR' };
-  const assetSha = await storeAssets({
+  return publishSnapshot({
     github,
-    repo,
-    prNumber: expected.prNumber,
-    impact,
-    quality,
-    png,
-  });
-  if (!(await currentPr(github, repo, expected)))
-    return { published: false, reason: 'stale PR before comment write' };
-  const body = commentBody({
     context,
+    repo,
     expected,
-    assetSha,
+    existing,
     quality,
     impact,
+    png,
     run,
     qualityRun,
     staticRun,
-    updatedAt: now(),
+    now,
   });
-  await writeComment(github, repo, expected, existing, body);
-  return { published: true, prNumber: expected.prNumber, assetSha };
 }
 
 export async function enrichReviewSignals({
@@ -813,38 +816,19 @@ export async function enrichReviewSignals({
   )
     return true;
   const qualityRun = { id: run.id, attempt: run.run_attempt };
-  commentBody({
-    context,
-    expected,
-    assetSha: '0'.repeat(40),
-    quality: report ?? null,
-    impact: saved.impact,
-    run,
-    qualityRun,
-    staticRun: saved.metadata.staticRun,
-    updatedAt: now(),
-  });
-  if (!(await currentPr(github, repo, expected))) return true;
-  const assetSha = await storeAssets({
+  await publishSnapshot({
     github,
-    repo,
-    prNumber: pr.number,
-    impact: saved.impact,
-    quality: report ?? null,
-    mapSha: saved.mapSha,
-  });
-  if (!(await currentPr(github, repo, expected))) return true;
-  const body = commentBody({
     context,
+    repo,
     expected,
-    assetSha,
+    existing,
     quality: report ?? null,
     impact: saved.impact,
+    mapSha: saved.mapSha,
     run,
     qualityRun,
     staticRun: saved.metadata.staticRun,
-    updatedAt: now(),
+    now,
   });
-  await writeComment(github, repo, expected, existing, body);
   return true;
 }

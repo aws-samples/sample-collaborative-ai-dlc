@@ -26,7 +26,6 @@ test('contributor source never becomes the controller checkout or an executable 
   assert.deepEqual(workflow.jobs.analyze.permissions, {
     contents: 'read',
     'pull-requests': 'read',
-    actions: 'read',
   });
   for (const step of workflow.jobs.analyze.steps.filter((s) =>
     s.uses?.startsWith('actions/checkout@'),

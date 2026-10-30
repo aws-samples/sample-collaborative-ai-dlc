@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { analysisMap, frameLayout, loadFrame, nestedPicture } from '../pr-impact/frame.mjs';
+import { frameLayout, loadFrame, nestedPicture } from '../pr-impact/frame.mjs';
 import { loadAnchors } from '../pr-impact/anchors.mjs';
 
 const raw = JSON.parse(readFileSync(new URL('../../.isobar/map.json', import.meta.url), 'utf8'));
@@ -11,7 +11,6 @@ test('the authored hierarchy retains all 15 parents and 42 scoped children', () 
   assert.equal(frame.sections.length, 15);
   assert.equal(frame.leaves.length, 42);
   assert.equal(new Set(frame.leaves.map(({ id }) => id)).size, 42);
-  assert.equal(frame.legend.flatMap(({ children }) => children).length, 42);
 });
 
 test('static ownership separates archived reads, live discussions, and live agent administration', () => {
@@ -49,13 +48,10 @@ test('change markers have fixed strength; anchors survive neighbours', async () 
   const strengths = [];
   const picture = await nestedPicture({
     frame,
-    facts: { lines: new Map() },
     anchors,
     evidence: { changes, reachByCause: [], annotations: [{ key: 'A', path: paths[0] }] },
     weather: { cells: paths.map((path) => ({ path, region: owner, risk: 0.99 })) },
-    map: analysisMap(frame, paths),
     inks: { paper: 0, radar: [], rain: [] },
-    layoutOf: () => ({ cols: 2, rows: 1 }),
     fieldOf: (local, weather) => {
       seen.push(new Map(local.points));
       strengths.push(weather.cells[0].risk);
@@ -69,6 +65,19 @@ test('change markers have fixed strength; anchors survive neighbours', async () 
   assert.deepEqual(strengths, [0.5, 0.5]);
   assert.equal(leaf.markers[0].key, 'A');
   assert.ok(leaf.markers.every((marker) => !('band' in marker)));
+  const solo = await nestedPicture({
+    frame,
+    anchors,
+    evidence: { changes: [changes[0]], reachByCause: [], annotations: [] },
+    weather: { cells: [{ path: paths[0], region: owner }] },
+    inks: { paper: 0, radar: [], rain: [] },
+    fieldOf: () => ({ level: [16, 8, 0, 1] }),
+  });
+  const soloLeaf = solo.panels.flatMap((p) => p.children).find((l) => l.id === owner);
+  assert.deepEqual(
+    { x: leaf.markers[0].x, y: leaf.markers[0].y },
+    { x: soloLeaf.markers[0].x, y: soloLeaf.markers[0].y },
+  );
 });
 
 test('documentation markers use the fixed lighter pilot treatment', async () => {
@@ -78,7 +87,6 @@ test('documentation markers use the fixed lighter pilot treatment', async () => 
   let strength;
   const picture = await nestedPicture({
     frame,
-    facts: { lines: new Map() },
     anchors,
     evidence: {
       changes: [
@@ -88,9 +96,7 @@ test('documentation markers use the fixed lighter pilot treatment', async () => 
       annotations: [],
     },
     weather: { cells: [{ path, region: leafId, risk: 1 }] },
-    map: analysisMap(frame, [path]),
     inks: { paper: 0, radar: [], rain: [] },
-    layoutOf: () => ({ cols: 2, rows: 1 }),
     fieldOf: (_local, weather) => {
       strength = weather.cells[0].risk;
       return { level: [16, 8, 0, 1] };
@@ -114,21 +120,31 @@ test('longest authored parent and child selectors win; unknown paths get an hone
   assert.equal(frame.assign('unknown-service/new.ts').leaf.id, 'repository-other');
 });
 
-test('expanded analysis map does not lose leaves or retarget them as a PR changes', () => {
-  const before = frameLayout(frame);
-  const sourceBefore = JSON.stringify(frame.source);
-  const files = [
-    'lambda/agentcore/commands/run-stage.js',
-    'lambda/agentcore/test/run-stage.test.js',
-  ];
-  const first = analysisMap(frame, files);
-  const next = analysisMap(frame, [...files, 'lambda/shared/v2-process-store.js']);
-  assert.equal(first.regions.length, 42);
-  assert.equal(next.regions.length, 42);
-  assert.deepEqual(first.regions.find(({ id }) => id === 'agentcore-commands').paths, [files[0]]);
-  assert.deepEqual(next.regions.find(({ id }) => id === 'agentcore-commands').paths, [files[0]]);
-  assert.deepEqual(frameLayout(frame), before);
-  assert.equal(JSON.stringify(frame.source), sourceBefore);
+test('static reach adds a green overlay without moving a changed-file marker', async () => {
+  const path = 'lambda/shared/v2-process-store.js';
+  const target = 'lambda/shared/v2-process-keys.js';
+  const anchors = loadAnchors({ version: 1, baselineSha: 'a'.repeat(40), files: {} }, frame);
+  const leafId = frame.assign(path).leaf.id;
+  assert.equal(frame.assign(target).leaf.id, leafId);
+  const change = { path, leafId, anchor: anchors.get(path), role: 'source', status: 'modified' };
+  const draw = (reachByCause) =>
+    nestedPicture({
+      frame,
+      anchors,
+      evidence: { changes: [change], reachByCause, annotations: [] },
+      weather: { cells: [{ path, region: leafId }] },
+      inks: { paper: 0, radar: [], rain: [] },
+      fieldOf: () => ({ level: [16, 8, 0, 1] }),
+    });
+  const plain = await draw([]);
+  const reached = await draw([
+    { path: target, isChanged: false, evidence: 'name-match', targetRole: 'source' },
+  ]);
+  const leafOf = (picture) =>
+    picture.panels.flatMap((panel) => panel.children).find((leaf) => leaf.id === leafId);
+  assert.deepEqual(leafOf(reached).markers, leafOf(plain).markers);
+  assert.ok(leafOf(reached).heat.wet.some(Boolean));
+  assert.ok(!leafOf(plain).heat.wet.some(Boolean));
 });
 
 test('every child rectangle stays within its parent and has room for labels and heat', () => {

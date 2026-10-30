@@ -1,3 +1,5 @@
+import { pixelAnchor } from './anchors.mjs';
+
 const ID = /^[a-z][a-z0-9-]{0,63}$/;
 const text = (value, max) =>
   typeof value === 'string' && value.length > 0 && value.length <= max && !/[\p{C}]/u.test(value);
@@ -111,28 +113,7 @@ export function loadFrame(source) {
       bestMatch(path, section.children) ?? section.children.find(({ fallback }) => fallback);
     return { section, leaf };
   };
-  const legend = sections.map((section) => ({
-    id: section.id,
-    name: section.name,
-    description: section.blurb,
-    layer: layers.find(({ id }) => id === section.layer).name,
-    children: section.children.map((child) => ({
-      id: child.id,
-      name: child.name,
-      description: child.blurb,
-    })),
-  }));
-  return { source, layers, sections, leaves, assign, legend };
-}
-
-export function analysisMap(frame, files) {
-  const owned = new Map(frame.leaves.map(({ id }) => [id, []]));
-  for (const path of new Set(files)) owned.get(frame.assign(path).leaf.id).push(path);
-  return {
-    ...frame.source,
-    layers: frame.layers,
-    regions: frame.leaves.map((leaf) => ({ ...leaf, weight: 1, paths: owned.get(leaf.id) })),
-  };
+  return { layers, sections, leaves, assign };
 }
 
 // A continuous atlas: every leaf tiles its parent, and every parent tiles its
@@ -141,11 +122,9 @@ export function frameLayout(frame) {
   const width = 2400;
   const margin = 12;
   const panels = [];
-  const bands = [];
   let y = 52;
   for (const layer of frame.layers) {
     const sections = frame.sections.filter((section) => section.layer === layer.id);
-    bands.push({ name: layer.name, description: layer.blurb, x: margin, y });
     const available = width - 2 * margin;
     const total = sections.reduce((sum, section) => sum + section.width, 0);
     let x = margin;
@@ -183,30 +162,18 @@ export function frameLayout(frame) {
   return {
     width,
     height: y + 52,
-    bands,
     panels,
     mapRect: { x: margin, y: 52, w: width - 2 * margin, h: y - 52 },
   };
 }
 
-export async function nestedPicture({
-  frame,
-  facts,
-  weather,
-  map,
-  layoutOf,
-  fieldOf,
-  inks,
-  anchors,
-  evidence,
-}) {
+export async function nestedPicture({ frame, weather, fieldOf, inks, anchors, evidence }) {
   const layout = frameLayout(frame);
   // Blob radius and final pixel grain are independent: larger visible hotspots,
   // still sampled to fine 4 px cells by the PNG renderer.
   const sample = 7;
   for (const panel of layout.panels) {
     for (const leaf of panel.children) {
-      const region = map.regions.find(({ id }) => id === leaf.id);
       const cells = weather.cells.filter(({ region: owner }) => owner === leaf.id);
       const reach = evidence.reachByCause.filter(
         (r) =>
@@ -214,26 +181,24 @@ export async function nestedPicture({
           !r.isChanged &&
           r.evidence !== 'transit-import',
       );
-      leaf.changed = cells.length;
-      leaf.reached = new Set(reach.map(({ path }) => path)).size;
       // The ownership rectangle is all field. Thin boundaries and glyph halos
       // are drawn afterward; they never become padded miniature pictures.
       leaf.body = { ...leaf.rect };
       check(leaf.body.h >= 24, `label space for ${leaf.name}`);
       if (!cells.length && !reach.length) continue;
-      const local = layoutOf(
-        { ...map, layers: [{ id: region.layer, name: '', blurb: '' }], regions: [region] },
-        region.paths,
-        facts.lines,
-        Math.floor(leaf.body.w / sample),
-        Math.max(2, Math.floor(leaf.body.h / (2 * sample))),
-      );
-      local.points = new Map(
-        region.paths.map((path) => {
-          const p = anchors.get(path);
-          return [path, { x: p.x * local.cols, y: p.y * local.rows * 2 }];
-        }),
-      );
+      const cols = Math.floor(leaf.body.w / sample);
+      const rows = Math.max(2, Math.floor(leaf.body.h / (2 * sample)));
+      const local = {
+        cols,
+        rows,
+        cells: [],
+        points: new Map(
+          cells.map(({ path }) => {
+            const p = anchors.get(path);
+            return [path, { x: p.x * cols, y: p.y * rows * 2 }];
+          }),
+        ),
+      };
       const w = local.cols,
         h = local.rows * 2;
       const level = new Uint8Array(w * h),
@@ -303,8 +268,7 @@ export async function nestedPicture({
         .filter((c) => c.leafId === leaf.id)
         .map((c) => ({
           path: c.path,
-          x: leaf.body.x + c.anchor.x * leaf.body.w,
-          y: leaf.body.y + c.anchor.y * leaf.body.h,
+          ...pixelAnchor(c.anchor, leaf.body),
           status: c.status,
           role: c.role,
           key: evidence.annotations.find((a) => a.path === c.path)?.key,

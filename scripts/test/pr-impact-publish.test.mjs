@@ -7,6 +7,7 @@ import test from 'node:test';
 import { publishComplexityComment } from '../publish-complexity-comment.mjs';
 import {
   COMMENT_MARKER,
+  enrichReviewSignals,
   legacyQualityArtifact,
   publishReviewSignals,
   reviewMetadata,
@@ -501,6 +502,37 @@ test('head change after asset upload prevents a stale comment update', async (t)
   assert.equal(f.comments.length, 0);
 });
 
+test('publication preflight rejects an invalid render before asset or comment writes', async (t) => {
+  const f = await fixture(t);
+  f.now = () => 'invalid-update-time';
+  await assert.rejects(() => publishReviewSignals(f), /Invalid review update time/);
+  assert.deepEqual(f.writes, []);
+});
+
+test('enrichment still handles a head change after asset upload without replacing the comment', async (t) => {
+  const f = await fixture(t);
+  await publishReviewSignals(f);
+  const original = f.comments[0].body;
+  f.writes.length = 0;
+  const updateRef = f.github.rest.git.updateRef;
+  f.github.rest.git.updateRef = async (input) => {
+    await updateRef(input);
+    f.pr.head.sha = 'f'.repeat(40);
+  };
+  const handled = await enrichReviewSignals({
+    github: f.github,
+    context: f.context,
+    pr: f.pr,
+    run: { id: 124, run_attempt: 1 },
+    report: quality(true),
+    existing: f.comments[0],
+  });
+  assert.equal(handled, true);
+  assert.ok(f.writes.some((write) => write.action === 'ref'));
+  assert.ok(f.writes.every((write) => write.action !== 'comment'));
+  assert.equal(f.comments[0].body, original);
+});
+
 test('oversized quality tables retain the published map, credits, revision and artifact link', async (t) => {
   const f = await fixture(t);
   const large = quality();
@@ -582,9 +614,10 @@ test('legacy recovery selects the latest successful artifact and keeps approved 
     qualityRun: { id: 120, attempt: 2 },
   });
   assert.deepEqual(f.writes, []);
-  f.metadata.qualityRun = selected.qualityRun;
-  await f.writeContext();
-  await f.writeQuality(quality(true));
+  f.loadLegacyQuality = async (artifact) => {
+    assert.deepEqual(artifact, selected);
+    return quality(true);
+  };
   await publishReviewSignals(f);
   assert.equal(f.comments.length, 1);
   assert.match(f.comments[0].body, /100.0% → 50.0%/);
@@ -595,9 +628,8 @@ test('legacy recovery selects the latest successful artifact and keeps approved 
 test('recovered quality retains its older base tip when the head, target and merge base match', async (t) => {
   const f = await fixture(t);
   const recovered = { ...quality(true), base: 'e'.repeat(40) };
-  f.metadata.qualityRun = { id: 120, attempt: 1 };
-  await f.writeContext();
-  await f.writeQuality(recovered);
+  legacyRun(f);
+  f.loadLegacyQuality = async () => recovered;
   assert.equal((await publishReviewSignals(f)).published, true);
   assert.match(f.comments[0].body, /100.0% → 50.0%/);
   const pinned = reviewMetadata(f.comments[0]);
@@ -616,8 +648,11 @@ test('earlier static run attaches its map after a later coverage run publishes t
   await f.enrich(quality(true), 124);
   assert.match(f.comments[0].body, /100.0% → 50.0%/);
   assert.doesNotMatch(f.comments[0].body, /PR impact map/);
-  f.metadata.qualityRun = { id: 124, attempt: 1 };
-  await f.writeContext();
+  const state = legacyRun(f, 124);
+  state.run.run_attempt = 1;
+  state.jobs.pop();
+  state.artifacts.pop();
+  f.loadLegacyQuality = async () => quality(true);
   assert.equal((await publishReviewSignals(f)).published, true);
   assert.equal(f.comments.length, 1);
   assert.match(f.comments[0].body, /100.0% → 50.0%/);
@@ -626,7 +661,7 @@ test('earlier static run attaches its map after a later coverage run publishes t
   assert.deepEqual(reviewMetadata(f.comments[0]).qualityRun, { id: 124, attempt: 1 });
 });
 
-test('first map refreshes coverage that arrived after read-only artifact selection', async (t) => {
+test('first map recovers coverage that arrived after static collection', async (t) => {
   const f = await fixture(t);
   await f.enrich(quality(true), 124);
   legacyRun(f, 124);
@@ -643,14 +678,15 @@ test('first map refreshes coverage that arrived after read-only artifact selecti
   assert.match(f.comments[0].body, /!\[PR impact map\]/);
 });
 
-test('a later comment-only attempt reuses the already recovered coverage producer', async (t) => {
+test('a later comment-only attempt recovers the latest successful coverage producer', async (t) => {
   const f = await fixture(t);
   const state = legacyRun(f, 124);
   state.run.run_attempt = 3;
   f.comments[0].body = `${COMMENT_MARKER}\n<!-- quality-run:124:3 -->\nExisting quality table`;
-  f.metadata.qualityRun = { id: 124, attempt: 2 };
-  await f.writeContext();
-  await f.writeQuality(quality(true));
+  f.loadLegacyQuality = async (selected) => {
+    assert.equal(selected.artifactName, 'pr-quality-2');
+    return quality(true);
+  };
   assert.equal((await publishReviewSignals(f)).published, true);
   assert.match(f.comments[0].body, /100.0% → 50.0%/);
   assert.deepEqual(reviewMetadata(f.comments[0]).qualityRun, { id: 124, attempt: 2 });

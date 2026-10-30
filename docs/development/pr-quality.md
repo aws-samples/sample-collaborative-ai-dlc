@@ -1,13 +1,13 @@
-# PR quality reports
+# PR review signals
 
-CI updates one PR comment with cognitive-complexity, dependency counts, and branch-coverage changes
-for source files changed between the merge base and PR commit. Findings are advisory: functions above 15 appear
+One automatically computed, deterministic PR comment combines quality metrics and an
+[Isobar](https://github.com/r3al1tym/isobar) repository map. Both sections open by default and can be collapsed independently.
+Quality metrics cover source files changed between the merge base and PR commit. Findings are advisory: functions above 15 appear
 when complexity or coverage worsens, or when the function is new/unmatched.
 Unchanged debt is omitted; improvements appear in the same table.
 When no source files are analyzed, or no findings, improvements, or analysis warnings remain,
-the quality section is omitted. CI posts no standalone quality comment and removes its previous report
-if present. A combined [Isobar map](pr-impact-map.md) can remain useful, including for infrastructure,
-CI or documentation changes.
+the quality section is omitted. Without a map, CI removes its previous quality-only comment.
+The map can remain visible for infrastructure, CI or documentation changes.
 
 ## Reading the table
 
@@ -36,6 +36,14 @@ Rows are sorted 🟣 → 🔴 → 🟠 → 🟢. The first 10 are visible, or al
 the remaining rows appear under “Show more”. GitHub comment size limits still apply; artifacts contain all results.
 Coverage diagnostics stay in the artifacts; the comment shows one notice if measurements are unavailable or incomplete.
 
+## Reading the map
+
+The atlas stays fixed across PRs. Red marks changed files; green marks static name matches or import links.
+These links show possible reach, not proven runtime impact or a risk grade.
+A/B identify changed files described in Signals; they need not match the first functions in the quality table.
+The Legend explains marker shapes, test/documentation colors and solid/dotted links.
+Terraform/IAM, CI and documentation changes can have a map even when production JS/TS metrics do not apply.
+
 ## CI
 
 Backend and frontend suites run independently at both revisions when their source, tests, or configuration change.
@@ -45,13 +53,23 @@ Each `coverage-base-*` / `coverage-pr-*` artifact contains the requested suites'
 Dependency analysis failures leave only those counts unknown. Partial reruns reuse artifacts only when their producers
 were not rerun; missing or stale results are reported explicitly.
 
-[PR Review Signals](pr-impact-map.md) adds an automatic static report for allowed normal fork events
-without approving contributor code execution. Tests and coverage keep their existing approval policy.
-Completed coverage enriches the same comment using default-branch publisher code; contributor code
-is never executed with the publisher token.
+`PR Review Signals` uses `pull_request_target` and the trusted default-branch controller.
+It reads contributor Git objects as data without checking out or executing contributor code.
+For supported fork events, the static report can run before contributor-code approval, subject to
+[GitHub's event policies](https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target).
+The existing `PR Quality` workflow uses `pull_request`; its tests retain the fork-approval policy.
+Approved coverage runs enrich the same comment through a trusted publisher; later static updates preserve valid measurements.
+The target workflow activates once it exists on the default branch; existing PRs update on their next supported event.
+
 Artifacts are retained for seven days: `complexity-*` lists every function in changed files with
 base/PR scores and coverage; `dependencies-*` lists their direct production importers.
 Both include Markdown and JSON. `pr-quality-*` holds the data used to publish the comment.
+`review-signals-*` contains the map PNG, static evidence and quality JSON.
+
+The fixed atlas and file positions live in `.isobar/map.json` and `.isobar/anchors.json`.
+The `pr-impact-assets` branch stores images and validated snapshots; comments link to an immutable asset commit.
+Updates replace the same bot comment with one image. Full results remain in the linked artifacts when the display is shortened.
+Run `npm run test:release` when changing the atlas or reporting tools.
 
 ## Local use
 

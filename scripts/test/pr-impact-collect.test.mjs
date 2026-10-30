@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -18,10 +18,8 @@ const metadata = {
   headRepositoryId: 456,
 };
 const mergeBase = 'd'.repeat(40);
-function qualityReport(measured = false) {
-  const coverage = measured
-    ? { status: 'measured', total: 1, covered: 1, uncovered: 0, percent: 100 }
-    : { status: 'unknown' };
+function qualityReport() {
+  const coverage = { status: 'unknown' };
   return {
     schemaVersion: 1,
     base: metadata.baseSha,
@@ -140,6 +138,8 @@ test('fetches immutable PR objects without checkout or PR dependency execution',
       JSON.parse(await readFile(join(output, 'context.json'), 'utf8')),
       result.context,
     );
+    assert.equal(result.context.qualityRun, undefined);
+    assert.equal(result.quality.files[0].after[0].coverage.status, 'unknown');
     assert.equal(
       JSON.parse(await readFile(join(output, 'quality/comparison.json'), 'utf8')).pr,
       metadata.headSha,
@@ -168,42 +168,4 @@ test('a PR advancing during fetch produces no report and no analysis', async () 
     args[1] === 'refs/pr-review/head' ? `${'e'.repeat(40)}\n` : real(args);
   await assert.rejects(collectReviewSignals(options), /PR advanced/);
   assert.equal(calls.length, 0);
-});
-
-test('first map retains available measured coverage from the same legacy comparison', async () => {
-  const output = await mkdtemp(join(tmpdir(), 'review-collect-'));
-  try {
-    const previous = qualityReport(true);
-    const legacyQualityPath = join(output, 'previous.json');
-    await writeFile(legacyQualityPath, JSON.stringify(previous));
-    const qualityRun = { id: 42, attempt: 3 };
-    const { options } = fixture(output, { legacyQualityPath, legacyQualityRun: qualityRun });
-    const result = await collectReviewSignals(options);
-    assert.equal(result.quality.files[0].after[0].coverage.percent, 100);
-    assert.deepEqual(result.context.qualityRun, qualityRun);
-  } finally {
-    await rm(output, { recursive: true, force: true });
-  }
-});
-
-test('stale legacy coverage cannot enrich a different head and does not block the static map', async () => {
-  const output = await mkdtemp(join(tmpdir(), 'review-collect-'));
-  try {
-    const previous = { ...qualityReport(true), pr: 'e'.repeat(40) };
-    const legacyQualityPath = join(output, 'previous.json');
-    await writeFile(legacyQualityPath, JSON.stringify(previous));
-    const warnings = [];
-    const { options, calls } = fixture(output, {
-      legacyQualityPath,
-      legacyQualityRun: { id: 42, attempt: 1 },
-      warn: (warning) => warnings.push(warning),
-    });
-    const result = await collectReviewSignals(options);
-    assert.equal(result.quality.files[0].after[0].coverage.status, 'unknown');
-    assert.equal(result.context.qualityRun, undefined);
-    assert.equal(calls[1][0], 'render');
-    assert.match(warnings[0], /another comparison/);
-  } finally {
-    await rm(output, { recursive: true, force: true });
-  }
 });
