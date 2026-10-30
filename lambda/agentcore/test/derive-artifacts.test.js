@@ -75,6 +75,77 @@ describe('deriveArtifacts', () => {
     expect(broadcast.mock.calls[0][0]).toMatchObject({ action: 'agent.derived', sectionCount: 1 });
   });
 
+  it('also derives artifacts this stage changed, whatever their type or creator', async () => {
+    const decisions = artifact({
+      id: 'decision-log',
+      artifact_type: 'decisions',
+      created_by_stage_instance_id: 'si-earlier',
+      updated_by_stage_instance_id: 'si-1',
+      content: [
+        '## Decisions',
+        '',
+        '```yaml',
+        'decisions:',
+        '  - id: dec-session-tokens',
+        '    title: Use short-lived session tokens',
+        '    status: proposed',
+        '```',
+      ].join('\n'),
+    });
+    const writer = {
+      getIntentGraph: vi.fn(async () => [
+        artifact(),
+        artifact({ id: 'reqs-art', artifact_type: 'requirements' }),
+        artifact({ id: 'other-stage', created_by_stage_instance_id: 'si-2' }),
+        artifact({
+          id: 'earlier-stories',
+          created_by_stage_instance_id: 'si-earlier',
+          updated_by_stage_instance_id: 'si-1',
+        }),
+        artifact({
+          id: 'untouched-log',
+          artifact_type: 'decisions',
+          created_by_stage_instance_id: 'si-other',
+          updated_by_stage_instance_id: 'si-2',
+        }),
+        decisions,
+      ]),
+      mirrorArtifactDerivations: vi.fn(async ({ artifact: a, extraction }) => ({
+        artifactId: a.id,
+        sections: extraction.sections.length,
+        items: extraction.items.length,
+        citations: 0,
+        superseded: 0,
+      })),
+    };
+    const store = { appendEvent: vi.fn(async () => {}) };
+    const out = await deriveArtifacts(
+      {
+        projectId: 'p',
+        intentId: 'i',
+        executionId: 'e',
+        stageInstanceId: 'si-1',
+        artifactTypes: ['stories'],
+      },
+      { openGraph: async () => ({}), createWriter: () => writer, store, broadcast: async () => {} },
+    );
+    expect(out.ok).toBe(true);
+    // This stage's own stories, plus what it changed of earlier stages' work.
+    // Not its undeclared requirements, and nothing other stages created or
+    // last changed.
+    expect([...out.artifacts].toSorted()).toEqual([
+      'decision-log',
+      'earlier-stories',
+      'stories-art',
+    ]);
+    const log = writer.mirrorArtifactDerivations.mock.calls.find(
+      ([call]) => call.artifact.id === 'decision-log',
+    );
+    expect(log[0].extraction.items).toEqual([
+      expect.objectContaining({ slug: 'dec-session-tokens', label: 'Decision' }),
+    ]);
+  });
+
   it('returns missing identity without opening the graph', async () => {
     const openGraph = vi.fn();
     await expect(deriveArtifacts({}, { openGraph })).resolves.toEqual({

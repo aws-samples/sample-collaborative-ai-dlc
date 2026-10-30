@@ -180,6 +180,7 @@ const RESERVED_PROPS = new Set([
   'intent_id',
   'created_by_execution_id',
   'created_by_stage_instance_id',
+  'updated_by_stage_instance_id',
   'section_index',
   'unit_slug',
   'stage_attempt',
@@ -684,6 +685,8 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
       title: String(title ?? ''),
       content: String(content ?? ''),
       ...stamp(),
+      // Written afresh: no later stage has changed this content yet.
+      updated_by_stage_instance_id: '',
       id: canonicalId,
       artifact_type: artifactType,
       artifact_logical_key: logicalKey,
@@ -879,6 +882,10 @@ export const createGraphWriter = ({ g, scope = {}, clock } = {}) => {
     for (const [k, v] of Object.entries(clean)) q = q.property(cardinality.single, k, v);
     if (Object.hasOwn(clean, 'content') || rehabilitating) {
       q = q.property(cardinality.single, 'collaboration_epoch', randomUUID());
+    }
+    // The stage that last changed the content re-derives it (derive-artifacts.js).
+    if (Object.hasOwn(clean, 'content') && scope.stageInstanceId) {
+      q = q.property(cardinality.single, 'updated_by_stage_instance_id', scope.stageInstanceId);
     }
     await q.next();
     // An updated artifact is current again (rewind rehabilitation) and no

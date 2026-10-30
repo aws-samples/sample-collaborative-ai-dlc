@@ -151,6 +151,8 @@ export const deriveArtifacts = async (payload, deps) => {
     }
     const typeFilter = artifactTypes ? new Set(artifactTypes) : null;
     const targets = all.filter((a) => {
+      // What this stage changed of another stage's work (update_artifact), whatever its type.
+      if (stageInstanceId && a.updated_by_stage_instance_id === stageInstanceId) return true;
       if (typeFilter && !typeFilter.has(a.artifact_type)) return false;
       if (stageInstanceId && a.created_by_stage_instance_id !== stageInstanceId) return false;
       return true;
