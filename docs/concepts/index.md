@@ -46,7 +46,7 @@ Most AI coding tools today are local and individual. They excel at personal prod
 - Visibility into what others (humans and agents) are doing
 - No manual syncing of markdown files, skill configs, or local state
 
-AIDLC Collaborative is collaborative-first. Intent progress, artifacts, gates, and discussions stream to every project member in real time; presence and shared editing run over Yjs CRDT. Multiple agents execute concurrently. All state lives in shared infrastructure, not on individual machines.
+AIDLC Collaborative is collaborative-first. Intent progress, artifacts, gates, and discussions stream to every space member in real time; presence and shared editing run over Yjs CRDT. Multiple agents execute concurrently. All state lives in shared infrastructure, not on individual machines.
 
 ### Tool-agnostic architecture
 
@@ -63,7 +63,7 @@ For a visual overview of how these layers fit together in the current implementa
 
 ## The lifecycle
 
-Work is organized around **intents**. An intent is the unit of agent work: a title and a prompt scoped to a project. Starting an intent executes a **workflow** — an ordered plan of stages, grouped into phases, composed from a library of methodology building blocks.
+Work is organized around **intents**. An intent is the unit of agent work: a title and a prompt scoped to a space. Starting an intent executes a **workflow** — an ordered plan of stages, grouped into phases, composed from a library of methodology building blocks.
 
 ```mermaid
 graph LR
@@ -99,7 +99,7 @@ You start an intent by writing a prompt (or importing a tracker issue), reviewin
 
 !!! note "Retired v1 lifecycle"
 
-    Earlier releases organized work around **sprints** with a fixed Inception → Construction → Review pipeline running on an ECS worker pool. That runtime has been removed; v1 projects are read-only — their history stays viewable, but new sprints and v1 agent runs can no longer be started. All new work runs as v2 intents on the Bedrock AgentCore runtime.
+    Earlier releases organized work around **sprints** with a fixed Inception → Construction → Review pipeline running on an ECS worker pool. That runtime has been removed; the v1 sprint lifecycle is read-only — its history stays viewable, but new sprints and v1 agent runs can no longer be started. All new work runs as v2 intents on the Bedrock AgentCore runtime.
 
 Read about how it works in detail:
 

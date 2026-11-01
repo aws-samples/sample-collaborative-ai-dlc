@@ -70,9 +70,9 @@ version, and verification result used by the intent. It is the measurement
 surface for tuning context efficiency and confirming which immutable runtime
 executed a run.
 
-## Project-level metrics
+## Space-level metrics
 
-The project page aggregates the same usage and cost metrics across all intents, next to the intent list. Model attribution is stamped server-side, and anything that couldn't be priced is flagged rather than shown as $0.
+The space page aggregates the same usage and cost metrics across all intents, next to the intent list. Model attribution is stamped server-side, and anything that couldn't be priced is flagged rather than shown as $0.
 
 ## Human gates
 

@@ -32,7 +32,7 @@ deterministically.
 
 ```mermaid
 graph TD
-  PROJECT["Project"]
+  PROJECT["Project<br/>space"]
   INTENT["Intent"]
   ARTIFACT["Artifact<br/>canonical Markdown"]
   SECTION["Section<br/>derived heading"]
@@ -133,20 +133,20 @@ revision.
 
 #### Scope and authored knowledge
 
-| Vertex              | Scope         | Purpose                                                      |
-| ------------------- | ------------- | ------------------------------------------------------------ |
-| `Project`           | Platform      | Membership and the shared knowledge boundary.                |
-| `Intent`            | Project       | Anchor for one unit of requested agent work.                 |
-| `Artifact`          | Intent        | Canonical Markdown output produced by a stage.               |
-| `ArtifactVersion`   | Artifact      | Immutable history for a logical artifact head.               |
-| `Question`          | Intent        | Agent question, structured answer, and answering provenance. |
-| `Steering`          | Intent        | Human course correction, revision, or redirect.              |
-| `Discussion`        | Intent/entity | Thread attached to an entity in the intent graph.            |
-| `DiscussionMessage` | Discussion    | Durable message in a discussion thread.                      |
-| `PullRequest`       | Intent        | Final intent-level pull request.                             |
-| `UnitPullRequest`   | Intent/unit   | Pull request produced by an individual construction lane.    |
-| `TeamKnowledge`     | Project       | Reusable knowledge injected into relevant agent runs.        |
-| `LearningRule`      | Project       | Reusable team or project learning guardrail.                 |
+| Vertex              | Scope         | Purpose                                                                                                                        |
+| ------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `Project`           | Platform      | A space: membership and the shared knowledge boundary. The vertex label and the `projectId` key keep the space's earlier name. |
+| `Intent`            | Project       | Anchor for one unit of requested agent work.                                                                                   |
+| `Artifact`          | Intent        | Canonical Markdown output produced by a stage.                                                                                 |
+| `ArtifactVersion`   | Artifact      | Immutable history for a logical artifact head.                                                                                 |
+| `Question`          | Intent        | Agent question, structured answer, and answering provenance.                                                                   |
+| `Steering`          | Intent        | Human course correction, revision, or redirect.                                                                                |
+| `Discussion`        | Intent/entity | Thread attached to an entity in the intent graph.                                                                              |
+| `DiscussionMessage` | Discussion    | Durable message in a discussion thread.                                                                                        |
+| `PullRequest`       | Intent        | Final intent-level pull request.                                                                                               |
+| `UnitPullRequest`   | Intent/unit   | Pull request produced by an individual construction lane.                                                                      |
+| `TeamKnowledge`     | Project       | Reusable knowledge injected into relevant agent runs.                                                                          |
+| `LearningRule`      | Project       | Reusable team or project learning guardrail.                                                                                   |
 
 #### Derived structure
 
@@ -181,8 +181,8 @@ validation, agent authoring instructions, and graph reads.
 | `HAS_MESSAGE`    | A discussion contains a durable message.                                                          |
 | `HAS_PR`         | An intent produced a final pull request.                                                          |
 | `HAS_UNIT_PR`    | An intent produced a unit-level pull request.                                                     |
-| `HAS_KNOWLEDGE`  | A project owns reusable team knowledge.                                                           |
-| `HAS_LEARNING`   | A project owns a reusable learning rule.                                                          |
+| `HAS_KNOWLEDGE`  | A space owns reusable team knowledge.                                                             |
+| `HAS_LEARNING`   | A space owns a reusable learning rule.                                                            |
 | `HAS_VERSION`    | A logical artifact head retains an immutable historical version.                                  |
 
 #### Artifact relationships
@@ -343,7 +343,7 @@ The table has three global secondary indexes:
 
 | Index  | Key pattern                                                                      | Access pattern                                                                                      |
 | ------ | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `GSI1` | `PROJECT#<projectId>` / `STATUS#<status>#STARTED#<timestamp>#EXEC#<executionId>` | List a project's executions by status and start time.                                               |
+| `GSI1` | `PROJECT#<projectId>` / `STATUS#<status>#STARTED#<timestamp>#EXEC#<executionId>` | List a space's executions by status and start time.                                                 |
 | `GSI2` | `EXEC#<executionId>` / `TYPE#<type>#STATE#<state>#<id>`                          | Find records of one type and state within an execution, such as pending human gates or ready units. |
 | `GSI3` | Sparse operational keys                                                          | Find cross-execution maintenance work without scanning the table.                                   |
 
@@ -362,7 +362,7 @@ not by database-level foreign keys:
 
 | Identifier                    | DynamoDB role                                                  | Neptune role                                                      |
 | ----------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `projectId`                   | Project execution index and captured configuration.            | Project scope, membership, knowledge, and learnings.              |
+| `projectId`                   | Space execution index and captured configuration.              | Space scope, membership, knowledge, and learnings.                |
 | `intentId`                    | Associates the execution header with the user's intent.        | Anchors the intent knowledge subgraph.                            |
 | `executionId`                 | Owns the execution-table partition.                            | Provenance field on artifacts created by that run.                |
 | `stageInstanceId`             | Identifies a stage row and its callbacks, output, and metrics. | Provenance field on artifacts produced by the stage.              |

@@ -5,7 +5,7 @@ AIDLC Collaborative integrates with external systems on two independent axes:
 - **Code host** — GitHub, GitLab, Bitbucket or AWS CodeCommit. The repository is cloned into the agent workspace and all code changes flow back as a pull request (GitHub / Bitbucket / CodeCommit) or merge request (GitLab).
 - **Issue trackers** — GitHub Issues, GitLab Issues, and Jira Cloud. An intent can be started from any tracker issue; the issue's title, body, and comments become the intent's brief for the agent.
 
-A project can attach one or more repositories and zero or more trackers. Repository authorization is configured explicitly per project in **Project Settings**.
+A space can attach one or more repositories and zero or more trackers. Repository authorization is configured explicitly per space in **Space Settings**.
 
 GitHub and GitLab each span both axes: a single connection serves as the code host **and** backs that provider's issue tracker (GitHub Issues / GitLab Issues), so you authenticate once per provider. Bitbucket and CodeCommit are code hosts only. Jira Cloud is a tracker only.
 
@@ -13,7 +13,7 @@ GitHub and GitLab each span both axes: a single connection serves as the code ho
 
 Before users can connect their accounts, an administrator registers OAuth apps with each provider and pastes the credentials into the platform. See [Setup → Configure provider OAuth apps](../getting-started/setup.md#configure-provider-oauth-apps) for the full walkthrough. Admin pages require the Cognito `platform-admin` group.
 
-The status of each provider is visible in **Admin → Trackers**. Until a provider shows **Configured**, the corresponding **Connect** button in Project Settings stays disabled with a hint pointing back to the admin panel.
+The status of each provider is visible in **Admin → Trackers**. Until a provider shows **Configured**, the corresponding **Connect** button in Space Settings stays disabled with a hint pointing back to the admin panel.
 
 ### Static egress IPs
 
@@ -25,50 +25,50 @@ Set it to `"all"` to place every Lambda function in the private subnets. This in
 
 Development environments have one address; production environments have two, and both must be allow-listed to avoid intermittent provider failures. These addresses are printed after applying the Terraform configuration.
 
-### Project-bound authentication
+### Space-bound authentication
 
 GitHub OAuth and GitHub App configuration remain available at the same time. There is no platform-wide runtime mode:
 
-- A project owner or admin selects **GitHub OAuth** or **GitHub App** for that project's GitHub repositories.
-- A project may use only one GitHub authentication type, but different projects may choose differently.
-- OAuth delegation is explicit. The owner/admin can delegate only their own connected identity and must confirm that the project may act through it.
+- A space owner or admin selects **GitHub OAuth** or **GitHub App** for that space's GitHub repositories.
+- A space may use only one GitHub authentication type, but different spaces may choose differently.
+- OAuth delegation is explicit. The owner/admin can delegate only their own connected identity and must confirm that the space may act through it.
 - For GitHub App bindings, the platform discovers and stores the installation for each repository. No global installation ID is configured.
 - GitLab repositories use an explicitly delegated GitLab OAuth connection.
 - CodeCommit repositories use an **IAM role** the repository's account owner creates and trusts the platform with (no OAuth, no personal connection). The platform assumes it per request with a session policy narrowed to the one repository and the actions that request needs. See [CodeCommit](#codecommit) below.
 
-Every repository is verified before any binding is written. Existing repository-backed projects remain unbound after upgrade and cannot start until an owner/admin completes this step. Repository-free projects are unaffected.
+Every repository is verified before any binding is written. Existing repository-backed spaces remain unbound after upgrade and cannot start until an owner/admin completes this step. Repository-free spaces are unaffected.
 
 ## Connecting your account
 
-Each user connects their own GitHub / GitLab / Atlassian account once. A personal connection is available for repository discovery, but a project uses it only after an owner/admin explicitly delegates it.
+Each user connects their own GitHub / GitLab / Atlassian account once. A personal connection is available for repository discovery, but a space uses it only after an owner/admin explicitly delegates it.
 
-- **GitHub**: from the dashboard (or the project-creation flow), click **Connect GitHub** and approve the OAuth flow. The connection requests `repo`, `workflow`, and `read:user` so the engine can also push workflow-file changes. After upgrading an older connection that lacks `workflow`, click **Reauthorize GitHub** when prompted. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
-- **GitLab**: choose **GitLab** as the provider in the project-creation flow, then click **Connect GitLab** and approve the OAuth flow. The required `api` scope covers repository writes, including `.gitlab-ci.yml`; GitLab has no separate workflow-file scope. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
-- **Bitbucket**: choose **Bitbucket** as the provider in the project-creation flow, then click **Connect Bitbucket** and approve the OAuth flow. The connection requests the `account`, `email`, `repository`, `repository:write`, `pullrequest` and `pullrequest:write` scopes (the `email` scope is used for commit attribution). The button stays disabled until your administrator has configured Bitbucket OAuth credentials. Bitbucket access tokens are short-lived (~2h); the platform refreshes them automatically from the stored refresh token, so you don't need to reconnect periodically.
-- **AWS CodeCommit**: there is nothing to connect on your account. Choose **AWS CodeCommit** in the project-creation flow and follow the role handshake described in [CodeCommit](#codecommit).
-- **Jira Cloud**: open **Project Settings → Trackers → Connect Jira Cloud**. After the Atlassian consent screen, if your account has access to multiple Atlassian sites you'll be asked to pick one. The chosen site is remembered; you can disconnect and reconnect later to change it.
+- **GitHub**: from the dashboard (or the space-creation flow), click **Connect GitHub** and approve the OAuth flow. The connection requests `repo`, `workflow`, and `read:user` so the engine can also push workflow-file changes. After upgrading an older connection that lacks `workflow`, click **Reauthorize GitHub** when prompted. The button stays disabled if your administrator hasn't configured GitHub OAuth credentials yet.
+- **GitLab**: choose **GitLab** as the provider in the space-creation flow, then click **Connect GitLab** and approve the OAuth flow. The required `api` scope covers repository writes, including `.gitlab-ci.yml`; GitLab has no separate workflow-file scope. The button stays disabled until your administrator has configured GitLab OAuth credentials. GitLab access tokens are short-lived; the platform refreshes them automatically using the stored refresh token, so you don't need to reconnect periodically.
+- **Bitbucket**: choose **Bitbucket** as the provider in the space-creation flow, then click **Connect Bitbucket** and approve the OAuth flow. The connection requests the `account`, `email`, `repository`, `repository:write`, `pullrequest` and `pullrequest:write` scopes (the `email` scope is used for commit attribution). The button stays disabled until your administrator has configured Bitbucket OAuth credentials. Bitbucket access tokens are short-lived (~2h); the platform refreshes them automatically from the stored refresh token, so you don't need to reconnect periodically.
+- **AWS CodeCommit**: there is nothing to connect on your account. Choose **AWS CodeCommit** in the space-creation flow and follow the role handshake described in [CodeCommit](#codecommit).
+- **Jira Cloud**: open **Space Settings → Trackers → Connect Jira Cloud**. After the Atlassian consent screen, if your account has access to multiple Atlassian sites you'll be asked to pick one. The chosen site is remembered; you can disconnect and reconnect later to change it.
 
-A connection is scoped to its provider: connecting GitHub does not satisfy a GitLab project (and vice versa). Each project uses the connection matching its selected code host.
+A connection is scoped to its provider: connecting GitHub does not satisfy a GitLab-backed space (and vice versa). Each space uses the connection matching its selected code host.
 
 ## Selecting a code repository
 
-1. Click **Create new Project** in the project overview.
+1. Click **New Space** on the dashboard.
 2. Choose the code host — **GitHub**, **GitLab**, **Bitbucket** or **AWS CodeCommit**.
 3. For GitHub, choose the authentication type: **GitHub App** (uses the platform App's installations — no personal connection needed) or **My GitHub OAuth identity** (delegates your own connection). GitLab and Bitbucket always delegate your OAuth identity. On the OAuth paths the platform prompts you to connect if no active connection exists. CodeCommit uses an IAM role instead (see below).
-4. Pick the repository (GitHub / Bitbucket / CodeCommit) or project (GitLab) that should back the collaborative project. On the App path the picker lists the repositories the App is installed on; on the OAuth paths it lists your own; on the CodeCommit path it lists what the role can see in the chosen region.
-5. Confirm the binding (OAuth delegation requires an explicit confirmation). If verification fails, the project is created unbound — rebind it in **Project Settings → Repositories** before starting intents.
+4. Pick the repository (GitHub / Bitbucket / CodeCommit) or project (GitLab) that should back the space. On the App path the picker lists the repositories the App is installed on; on the OAuth paths it lists your own; on the CodeCommit path it lists what the role can see in the chosen region.
+5. Confirm the binding (OAuth delegation requires an explicit confirmation). If verification fails, the space is created unbound — rebind it in **Space Settings → Repositories** before starting intents.
 
-The repository is cloned into the agent workspace and becomes available to the agents while an intent executes. Additional repositories can be added later in **Project Settings → Repositories**; the project binding must then be reverified.
+The repository is cloned into the agent workspace and becomes available to the agents while an intent executes. Additional repositories can be added later in **Space Settings → Repositories**; the space binding must then be reverified.
 
 ### CodeCommit
 
-CodeCommit has no OAuth. A space reaches its repositories through an IAM role that lives in the AWS account owning them, and that role trusts the platform's execution roles under your personal **external ID**. The whole handshake happens in the project-creation flow (and again under **Project Settings → Repositories** to rebind):
+CodeCommit has no OAuth. A space reaches its repositories through an IAM role that lives in the AWS account owning them, and that role trusts the platform's execution roles under your personal **external ID**. The whole handshake happens in the space-creation flow (and again under **Space Settings → Repositories** to rebind):
 
 1. Choose **AWS CodeCommit**. The form shows a trust policy: the three platform principals (credential broker, source-control API, CodeCommit connector) and your external ID, of the form `aidlc:<uuid>`. The platform mints it the first time you open the form and shows you the same one every time after that. Copy it.
 2. In the repository account, create an IAM role with that trust policy and the permissions policy the form shows below it (also in [Setup → CodeCommit](../getting-started/setup.md#codecommit-code-host)), with the repository ARN replaced by the repositories this space may use. It allows `ListRepositories` on `"*"` (the only resource that action accepts) and the platform's repository actions on those repositories only; no `codecommit:*`. The role policy only sets the outer bound: every call the platform makes is narrowed to **one repository ARN** by a session policy — `GitPull` plus the read API for reads, `GitPush` plus the pull request / merge / branch API for writes, and `ListRepositories` only while connecting.
 3. Paste the role ARN, pick the repositories' region (the form lists every commercial Region where CodeCommit is available) and click **Test connection**. The platform assumes the role with the discover-only policy and lists the repositories it can see; pick the ones the space uses.
 
-The external ID is what stops another user (or another tenant) from using your role: the platform resolves it from your own connection, never from a request, so knowing your role ARN and external ID does not let anyone else list or bind your repositories. When a project admin re-verifies an existing binding, the platform keeps the external ID that project already uses for the role. Listing new repositories always uses your own external ID, so a co-admin who wants to add repositories needs the role to trust theirs too (IAM accepts a list of values in `sts:ExternalId`). The platform's own IAM policy also refuses to assume any role unless an `aidlc:*` external ID is presented. Keep the trust policy exactly as shown; rotating the role or removing the trust invalidates every binding on it, which the settings page reports.
+The external ID is what stops another user (or another tenant) from using your role: the platform resolves it from your own connection, never from a request, so knowing your role ARN and external ID does not let anyone else list or bind your repositories. When a space admin re-verifies an existing binding, the platform keeps the external ID that space already uses for the role. Listing new repositories always uses your own external ID, so a co-admin who wants to add repositories needs the role to trust theirs too (IAM accepts a list of values in `sts:ExternalId`). The platform's own IAM policy also refuses to assume any role unless an `aidlc:*` external ID is presented. Keep the trust policy exactly as shown; rotating the role or removing the trust invalidates every binding on it, which the settings page reports.
 
 Repository identity is the **ARN** (region and account are part of it), so CodeCommit repositories appear as `name (region)` and link to the regional console. Commits made by the engine carry the committer configured on the binding (CodeCommit has no user-identity API to discover one).
 
@@ -84,15 +84,15 @@ All git operations are owned by the engine — agents never run git and never ho
 - The engine commits and pushes after every stage, so work is durable even if a run is cancelled.
 - On success, the pull/merge request opens from the intent branch onto the base branch.
 
-## Binding a tracker to a project
+## Binding a tracker to a space
 
-A tracker binding tells the platform which external project to list issues from when starting an intent. The same collaborative project can be bound to multiple trackers — for example, GitHub Issues for the platform's own bug tracker plus Jira Cloud for the team's product backlog.
+A tracker binding tells the platform which external project to list issues from when starting an intent. The same space can be bound to multiple trackers — for example, GitHub Issues for the platform's own bug tracker plus Jira Cloud for the team's product backlog.
 
-In **Project Settings → Trackers**:
+In **Space Settings → Trackers**:
 
-- **GitHub Issues**: click **Add GitHub Issues for `<owner>/<repo>`**. The repository name comes from the project's code-host setting. Shown for GitHub-backed projects.
-- **GitLab Issues**: click **Add GitLab Issues for `<group>/<project>`**. The project path comes from the project's code-host setting. Shown for GitLab-backed projects.
-- **Jira Cloud**: click **Add Jira project**, pick the Jira project to bind, and confirm. You can repeat this to bind multiple Jira projects to the same collaborative project.
+- **GitHub Issues**: click **Add GitHub Issues for `<owner>/<repo>`**. The repository name comes from the space's code-host setting. Shown for GitHub-backed spaces.
+- **GitLab Issues**: click **Add GitLab Issues for `<group>/<project>`**. The project path comes from the space's code-host setting. Shown for GitLab-backed spaces.
+- **Jira Cloud**: click **Add Jira project**, pick the Jira project to bind, and confirm. You can repeat this to bind multiple Jira projects to the same space.
 
 Jira account authorization is shared across your spaces. **Add Jira project** refreshes expired access tokens automatically. If an administrator has changed the OAuth client ID, or your authorization has been revoked, this action starts Atlassian authorization and returns you to the same space with the project picker open. Atlassian may require consent or site selection.
 
@@ -100,9 +100,9 @@ Cancelling Atlassian site selection returns you to the originating space and cle
 
 When using **Add Jira project**, connections created before the platform recorded their OAuth client ID require this authorization once per user, even if their access token has not expired. Existing issue and comment operations continue using and refreshing these older connections without requiring this migration. The new authorization records the issuing client ID for future reuse. Rotating only the client secret keeps the existing connection and uses the new secret on the next token refresh. Existing project bindings are preserved. An authorization already in progress when the app credentials change may need to be started again.
 
-You can also enable the matching git-issues tracker in one step at project creation by checking **Enable GitHub/GitLab issue integration**.
+You can also enable the matching git-issues tracker in one step at space creation by checking **Enable GitHub/GitLab issue integration**.
 
-When a project has more than one tracker bound, the project page renders a tab strip above the issue list — one tab per binding, labeled with the provider and external project key.
+When a space has more than one tracker bound, the space page renders a tab strip above the issue list — one tab per binding, labeled with the provider and external project key.
 
 ## Starting an intent from an issue
 
@@ -112,7 +112,7 @@ On the **New Intent** page, use the **Import from tracker** panel to browse open
 - The issue body and any comments are imported into the intent prompt (Jira's ADF body is converted to Markdown server-side; comments are appended in chronological order)
 - A polymorphic link back to the originating tracker resource is stored so the intent can reference it
 
-On read-only v1 projects, issues that were already linked to a sprint keep their **Open sprint** link, scoped per binding so the same numeric ID across two trackers (`PROJ-1` vs `OTHER-1`) doesn't collide. New sprints can no longer be started from issues.
+Issues that were already linked to a read-only v1 sprint keep their **Open sprint** link, scoped per binding so the same numeric ID across two trackers (`PROJ-1` vs `OTHER-1`) doesn't collide. New sprints can no longer be started from issues.
 
 ### Delivery updates
 
@@ -124,20 +124,20 @@ Jira delivery comments require `write:jira-work`. For connections created before
 
 ## Reconnecting a tracker
 
-If an OAuth token or refresh token is revoked, every dependent project source-control binding is marked invalid. Reconnect the personal account, then have a project owner/admin explicitly rebind the affected repositories. Removing the delegating member or uninstalling a GitHub App installation also invalidates dependent bindings.
+If an OAuth token or refresh token is revoked, every dependent space source-control binding is marked invalid. Reconnect the personal account, then have a space owner/admin explicitly rebind the affected repositories. Removing the delegating member or uninstalling a GitHub App installation also invalidates dependent bindings.
 
 For GitLab and Bitbucket specifically, routine token expiry does **not** require reconnecting: their short-lived access tokens are refreshed automatically from the stored refresh token. A reconnect is only needed if that refresh token itself is revoked.
 
 ## Migrating from legacy issue integration
 
-If your install pre-dates the tracker provider abstraction (issue #194), some projects may still carry the old `issue_integration_enabled` boolean and the GitHub-specific `issue_number` / `issue_url` fields on their sprints. The platform reads both shapes side-by-side, so legacy projects keep rendering exactly as before — but they cannot bind a Jira project (or any future provider) until they're migrated onto the new shape.
+If your install pre-dates the tracker provider abstraction (issue #194), some spaces may still carry the old `issue_integration_enabled` boolean and the GitHub-specific `issue_number` / `issue_url` fields on their sprints. The platform reads both shapes side-by-side, so legacy spaces keep rendering exactly as before — but they cannot bind a Jira project (or any future provider) until they're migrated onto the new shape.
 
-Migration is **always optional** and **fully reversible-by-omission**: nothing is deleted. The legacy fields, the dual-shape readers, the migration banner, the per-project endpoint, and the bulk Lambda all stay deployed indefinitely. There is no deprecation cycle.
+Migration is **always optional** and **fully reversible-by-omission**: nothing is deleted. The legacy fields, the dual-shape readers, the migration banner, the per-space endpoint, and the bulk Lambda all stay deployed indefinitely. There is no deprecation cycle.
 
 Three paths exist, all idempotent and equivalent:
 
-- **Per project, in-product**: open the affected project's page or settings. A "Migrate to the new tracker data model" banner appears for owners and admins. Click **Migrate now**. The banner self-dismisses on success.
-- **Bulk, from the Admin page**: open **Admin → Trackers → Tracker Migration**. The card displays a count of projects + sprints still on the legacy shape; click **Migrate all** to convert everything in one shot. Re-clicking is a no-op.
+- **Per space, in-product**: open the affected space's page or settings. A "Migrate to the new tracker data model" banner appears for owners and admins. Click **Migrate now**. The banner self-dismisses on success.
+- **Bulk, from the Admin page**: open **Admin → Trackers → Tracker Migration**. The card displays a count of spaces and sprints still on the legacy shape; click **Migrate all** to convert everything in one shot. Re-clicking is a no-op.
 - **Bulk, from the CLI**: invoke the `migrate-tracker-fields` Lambda directly for installs that prefer shell access. Supports a `{"dryRun": true}` payload for previewing.
 
   ```bash
@@ -146,7 +146,7 @@ Three paths exist, all idempotent and equivalent:
     --payload '{"dryRun":true}' --cli-binary-format raw-in-base64-out /tmp/out.json
   ```
 
-All three paths share the same shared core (`lambda/shared/tracker-migration.js`), so they cannot drift. After migrating, [GitHub Issues](#binding-a-tracker-to-a-project) and [Jira Cloud](#binding-a-tracker-to-a-project) bindings can be added on the affected project's settings page like any other.
+All three paths share the same shared core (`lambda/shared/tracker-migration.js`), so they cannot drift. After migrating, [GitHub Issues](#binding-a-tracker-to-a-space) and [Jira Cloud](#binding-a-tracker-to-a-space) bindings can be added on the affected space's settings page like any other.
 
 Why nothing is removed: this is open source. Downstream forks are on their own upgrade timelines, and we cannot tell when (or whether) a fork has finished migrating its own data. Removing the safety nets would risk silently emptying sprint pages on installs that haven't yet caught up, so they stay forever.
 
@@ -157,6 +157,6 @@ The platform supports two delivery strategies:
 - **Intent PR** — completed unit branches are engine-merged into the intent branch. After shared stages pass, one pull request (GitHub / Bitbucket / CodeCommit) or merge request (GitLab) opens from intent to base.
 - **PR per unit** — every changed repository gets a draft unit-to-intent PR/MR. Draft reviews may happen concurrently, but the platform promotes one dependency-ready unit at a time after reconciling it with the latest intent branch. The final intent-to-base PR/MR still opens after all units and shared stages complete.
 
-In the intent view, each unit card shows repository-specific review state and links. Project members can open **Address feedback**, select up to 20 current human-authored comments, and queue a targeted revision. The backend refetches selected comments by provider ID, records their versions, and ignores provider comments unless a member explicitly selects them. The agent does not automatically resolve discussion threads.
+In the intent view, each unit card shows repository-specific review state and links. Space members can open **Address feedback**, select up to 20 current human-authored comments, and queue a targeted revision. The backend refetches selected comments by provider ID, records their versions, and ignores provider comments unless a member explicitly selects them. The agent does not automatically resolve discussion threads.
 
 If a unit PR closes without merging, or only part of a multi-repository unit merges, the run enters halt-and-ask with retry, skip, and abort outcomes. Already merged work is preserved.

@@ -209,7 +209,7 @@ making is the administrator's call, taken with the table below in hand.
 2.11.0 renames Change Control to **Guard Policy** (adding a third value, `off`)
 and adds **Plan Approval**, **collaborators** and **`existing_code`** as scope
 settings. All four are mapped by the importer, resolved onto the per-stage
-policy, and choosable per intent by a project member before the run starts.
+policy, and choosable per intent by a space member before the run starts.
 Guard Policy `off` means no change-control reopen; **it never removes a human
 approval gate**, and that invariant is asserted for every 2.11 scope and stage.
 
@@ -335,10 +335,10 @@ scripts, and the `command` each sensor declares (a `runtime: sh` command runs
 through `sh -c`), run in the agent runtime with the runtime's own role and no
 separate sandbox. That is how a user's script sensor runs too, but the blast
 radius is wider: a user's sensor runs only in that user's intents, while a
-promoted fork is offered to every project in the deployment. Only a platform
+promoted fork is offered to every space in the deployment. Only a platform
 admin can promote a fork, the guard refuses a fork that authors behavior this
 build has no handler for, and promotion is not revoked once granted. Promote
-only a fork whose sources you would run as your own sensors in every project.
+only a fork whose sources you would run as your own sensors in every space.
 
 Because the registry reevaluates content evidence against the current handler
 registry, adding a handler can make an existing import promotable without
@@ -634,7 +634,7 @@ gate. Only the lead session can ask the human: no persona session, the
 integrator included, is given `ask_question`, and judgment-class objections are
 quoted at the validation gate instead.
 
-`get_team_knowledge` and `record_team_knowledge` use the project's shared
+`get_team_knowledge` and `record_team_knowledge` use the space's shared
 knowledge. Persona identity scopes authorship; it does not create a private
 knowledge namespace for each persona. Identity checks apply through supported
 tool calls; they are workflow controls, not an isolation boundary against a

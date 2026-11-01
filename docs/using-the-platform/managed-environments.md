@@ -3,7 +3,7 @@
 Platform administrators control the software available inside intent runtimes.
 The platform ships one protected **Standard** environment and a catalog of tool
 definitions. Administrators publish exact tool versions, compose those versions
-into environments, and publish environment revisions that project owners can
+into environments, and publish environment revisions that space owners can
 assign.
 
 Standard provides the protected AgentCore runtime plus Node.js and Python.
@@ -22,11 +22,11 @@ Choose the path that matches your task:
 
 | Goal                                              | What to do                                                                                                                                                               |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Use the built-in Node.js and Python runtime       | Use **Standard**. New projects use it unless a [different default](#set-the-default-environment-for-new-spaces) is set.                                                  |
+| Use the built-in Node.js and Python runtime       | Use **Standard**. New spaces use it unless a [different default](#set-the-default-environment-for-new-spaces) is set.                                                    |
 | Create a Java, Go, Rust, Maven, or Gradle runtime | [Publish the required shipped tool versions](#publish-and-recommend-tools), [create an environment](#create-an-environment), then [publish it](#publish-an-environment). |
 | Add another SDK or CLI                            | [Add and verify a tool](#add-a-new-tool), publish its exact version, then include it in an environment.                                                                  |
 | Upgrade a tool without changing existing runs     | [Add the new tool version](#add-or-update-a-tool-version), create and publish a new environment revision, then create new intents.                                       |
-| Make an environment available to a project        | [Assign the published environment](#select-an-environment-for-a-project) before creating the intent.                                                                     |
+| Make an environment available to a space          | [Assign the published environment](#select-an-environment-for-a-space) before creating the intent.                                                                       |
 | Diagnose a failed or blocked build                | Review [tool failures and security findings](#review-failures-and-security-findings) or [environment build evidence](#what-an-environment-build-verifies).               |
 
 The normal flow is:
@@ -36,13 +36,13 @@ flowchart LR
     T["Publish exact tool versions"] --> E["Build an environment revision"]
     S["Standard<br/>Node.js + Python"] --> E
     E --> P["Publish the environment"]
-    P --> A["Assign it to a project"]
+    P --> A["Assign it to a space"]
     A --> I["Create an intent<br/>runtime snapshot is pinned"]
 ```
 
 Publishing a newer tool or environment revision never changes an existing
 intent. New intents snapshot the currently published revision of the
-project-assigned environment.
+space-assigned environment.
 
 ## Detailed guide
 
@@ -54,8 +54,8 @@ The managed build views are under **Admin -> Environments** and require the
 - **Tools** imports, builds, verifies, publishes, and recommends tool versions.
 - **Environments** composes published tool versions into runtime images.
 
-Project Owners and Admins select a published environment under **Project
-Settings -> Environment**. Project Members can see the assignment but cannot
+Space Owners and Admins select a published environment under **Space
+Settings -> Environment**. Space Members can see the assignment but cannot
 change it.
 
 ### The object model
@@ -67,7 +67,7 @@ change it.
 | **Tool version**         | An immutable, verified ARM64 tool artifact for one exact version.                                                                                |
 | **Environment**          | A named toolchain based on one published environment.                                                                                            |
 | **Environment revision** | An immutable image recipe and runtime created from exact tool-version and base-revision snapshots.                                               |
-| **Project assignment**   | The environment whose current published revision will be used by new intents.                                                                    |
+| **Space assignment**     | The environment whose current published revision will be used by new intents.                                                                    |
 | **Intent snapshot**      | The exact environment revision, image digest, runtime target, compatibility version, and verification result captured when an intent is created. |
 
 The important invariants are:
@@ -78,7 +78,7 @@ The important invariants are:
 - Publishing or recommending a tool version never rewrites an existing
   environment revision.
 - Publishing a new environment revision affects new intents for assigned
-  projects. Existing intents stay pinned to their original runtime target.
+  spaces. Existing intents stay pinned to their original runtime target.
 
 ### Shipped tool definitions
 
@@ -97,7 +97,7 @@ The scheduled bootstrap queues independent initial versions for import. Maven
 and Gradle remain drafts until Java has a published recommended version because
 their own functional checks require Java.
 
-These are catalog entries only. They do not create project-selectable
+These are catalog entries only. They do not create space-selectable
 environments by themselves.
 
 ### Tool-version lifecycle
@@ -745,11 +745,11 @@ active intent snapshots reference its runtime artifacts.
 
 After publication:
 
-- The environment appears in **Project Settings -> Environment**.
-- New intents in projects already assigned to that environment use the newly
+- The environment appears in **Space Settings -> Environment**.
+- New intents in spaces already assigned to that environment use the newly
   published revision.
 - Existing intents continue using their snapshotted revision and endpoint.
-- Draft, failed, and ready revisions do not affect project execution until one
+- Draft, failed, and ready revisions do not affect space execution until one
   is published.
 
 ### Update an environment
@@ -789,12 +789,12 @@ newer base is required or the pinned digest is unavailable, use **Rebuild on
 Latest Base** instead.
 
 A failed attempt never replaces the currently published revision and never
-changes project assignments.
+changes space assignments.
 
-### Select an environment for a project
+### Select an environment for a space
 
-1. Open the project.
-2. Open **Project Settings -> Environment**.
+1. Open the space.
+2. Open **Space Settings -> Environment**.
 3. Select a published environment.
 4. Review its included tools, exact published revision, image digest, and
    runtime compatibility version.
@@ -804,7 +804,7 @@ changes project assignments.
 Compatibility warnings compare detected repository stacks with the tools in
 the selected environment. They are advisory; assignment is still allowed.
 
-New projects are assigned the [default environment](#set-the-default-environment-for-new-spaces),
+New spaces are assigned the [default environment](#set-the-default-environment-for-new-spaces),
 which is Standard unless a platform administrator has chosen another.
 
 The assignment stores the environment ID, not a mutable container reference.
@@ -820,7 +820,7 @@ published revision and snapshots:
 - Verification result.
 - Resolved tool versions.
 
-Changing the project assignment affects only intents created afterward.
+Changing the space assignment affects only intents created afterward.
 Running, waiting, rewound, cancelled, and resumed intents continue to target
 their original snapshotted runtime and endpoint.
 
@@ -828,7 +828,7 @@ Choose the environment before creating the intent that should use it.
 
 ### Set the default environment for new spaces
 
-New spaces (projects) use Standard unless a platform administrator chooses
+New spaces use Standard unless a platform administrator chooses
 another default:
 
 1. Open **Admin -> Environments -> Environments**.
@@ -863,10 +863,10 @@ Platform administrators can also read and change the setting with `GET` and
 Intent details and audit output show the immutable environment snapshot used by
 the run. Use those values when diagnosing a difference between two runs:
 
-- A project may have been reassigned after the older intent was created.
+- A space may have been reassigned after the older intent was created.
 - A newer revision may have been published for the same environment ID.
 - A tool recommendation may have changed without that tool version being
   incorporated into the published environment.
 
-The project setting describes what the next intent will use. The intent
+The space setting describes what the next intent will use. The intent
 snapshot describes what that specific intent actually uses.

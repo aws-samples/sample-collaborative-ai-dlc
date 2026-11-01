@@ -1,12 +1,12 @@
 # Creating Intents
 
-An **intent** is the unit of agent work: a title and a prompt, scoped to a project, executed by the project's workflow. This page covers creating, starting, and managing intents. For what happens after you start one, see [Observing intents](intent-observability.md).
+An **intent** is the unit of agent work: a title and a prompt, scoped to a space, executed by the space's workflow. This page covers creating, starting, and managing intents. For what happens after you start one, see [Observing intents](intent-observability.md).
 
 Creating an intent takes two steps. **New Intent** captures the title and prompt and creates a draft. On the **Compose** page, which teammates can edit with you live, you then pick the agent CLI, scope, and stages, and start the intent.
 
 ## Step 1: New Intent
 
-Inside a project, choose **New Intent**. This page has these fields:
+Inside a space, choose **New Intent**. This page has these fields:
 
 ### Title
 
@@ -25,7 +25,7 @@ You can keep refining the prompt with your teammates on the Compose page.
 
 ### Import from tracker
 
-If the project has one or more trackers bound (GitHub Issues, GitLab Issues, Jira Cloud), a tracker panel appears next to the form. Browse open issues and pick one to seed the intent:
+If the space has one or more trackers bound (GitHub Issues, GitLab Issues, Jira Cloud), a tracker panel appears next to the form. Browse open issues and pick one to seed the intent:
 
 - The issue title becomes the intent title.
 - The issue body and all comments are imported into the prompt (Jira's rich-text body is converted to Markdown; comments are appended chronologically).
@@ -57,14 +57,14 @@ Only repositories where you explicitly picked a branch are overridden; all other
 
 Choose **Continue to Compose**. The platform creates the intent in **DRAFT** state and opens its Compose page.
 
-Select the desired published environment in **Project Settings -> Environment**
-before creating the intent. Reassigning the project or publishing a newer
+Select the desired published environment in **Space Settings -> Environment**
+before creating the intent. Reassigning the space or publishing a newer
 revision afterward does not change an existing intent's image, runtime, or
-endpoint. See [Managed tools and environments](managed-environments.md#select-an-environment-for-a-project).
+endpoint. See [Managed tools and environments](managed-environments.md#select-an-environment-for-a-space).
 
 ## Step 2: Compose
 
-The Compose page is where a draft is finished and started. It is **collaborative**: anyone who opens the same draft edits it with you live, and the header shows how many others are editing. Opening a draft intent from the project page always brings you here.
+The Compose page is where a draft is finished and started. It is **collaborative**: anyone who opens the same draft edits it with you live, and the header shows how many others are editing. Opening a draft intent from the space page always brings you here.
 
 The title and prompt from step 1 stay editable. The page also has:
 
@@ -145,8 +145,8 @@ After an intent starts, you can download a point-in-time native AI-DLC workspace
 
 Running intents export their latest completed workflow checkpoint, so work from the active stage is not included. The handoff is one-way: local decisions, artifacts, and code changes do not synchronize back to the intent. See [Exporting a workspace](exporting-workspaces.md) for the archive contents and setup steps.
 
-## The project intent list
+## The space intent list
 
-The project page lists all intents with live status (Running, Waiting for input, Completed, Failed), created/updated timestamps, and sorting. The global dashboard surfaces each project's latest intent and floats projects with active work to the top.
+The space page lists all intents with live status (Running, Waiting for input, Completed, Failed), created/updated timestamps, and sorting. The global dashboard surfaces each space's latest intent and floats spaces with active work to the top.
 
 Owners and admins can delete non-running intents from the list; deletion removes the intent's artifacts, process history, and discussions.

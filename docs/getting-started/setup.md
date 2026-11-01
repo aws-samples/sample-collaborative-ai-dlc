@@ -437,7 +437,7 @@ terraform -chdir=terraform output -raw application_domain
 
 #### GitHub (code host + GitHub Issues)
 
-Configure OAuth and GitHub App independently. They remain enabled simultaneously, and each project chooses its authentication type.
+Configure OAuth and GitHub App independently. They remain enabled simultaneously, and each space chooses its authentication type.
 
 For **GitHub OAuth**:
 
@@ -453,14 +453,14 @@ The connection requests `repo`, `workflow`, and `read:user`. Existing users must
 
 For **GitHub App**:
 
-1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, **Issues: Read & write**, and metadata read access. No callback URL or webhook is needed. **Workflows: Read & write** is recommended but optional — without it a binding still verifies, but the agent cannot create or modify files under `.github/workflows/` and the project settings page shows a warning.
+1. Create a [GitHub App](https://github.com/settings/apps) with repository permissions **Contents: Read & write**, **Pull requests: Read & write**, **Issues: Read & write**, and metadata read access. No callback URL or webhook is needed. **Workflows: Read & write** is recommended but optional — without it a binding still verifies, but the agent cannot create or modify files under `.github/workflows/` and the space settings page shows a warning.
 2. Generate a **private key** (PEM) and note the **App ID**.
-3. Install the App on each personal account or organization whose repositories projects may bind.
-4. In the deployed app, open **Admin → Source Control → GitHub**, paste the App ID and private key, then click **Save**. Installation IDs are discovered per repository when a project is bound.
+3. Install the App on each personal account or organization whose repositories spaces may bind.
+4. In the deployed app, open **Admin → Source Control → GitHub**, paste the App ID and private key, then click **Save**. Installation IDs are discovered per repository when a space is bound.
 
-### Project-bound source control
+### Space-bound source control
 
-Existing projects must be explicitly bound by an owner/admin before intents can run against their repositories. During a credential incident, invalidate the affected project bindings (or revoke the token at the provider) — unbound or invalid bindings block repository-backed starts via the launch guard.
+Existing spaces must be explicitly bound by an owner/admin before intents can run against their repositories. During a credential incident, invalidate the affected space bindings (or revoke the token at the provider) — unbound or invalid bindings block repository-backed starts via the launch guard.
 
 #### GitLab (code host + GitLab Issues)
 
@@ -617,7 +617,7 @@ Available Cognito groups:
 | `member`            | Regular platform user                                                                                                                         |
 | `approver`, `owner` | Legacy v1 groups, kept for existing installs; no longer checked by the v2 authorization model                                                 |
 
-Day-to-day access to a project's intents, discussions, and settings is governed by **project membership** (owner / admin / member roles managed per project in **Project Settings → Members**), not by Cognito groups — see [Projects and settings](../using-the-platform/projects.md).
+Day-to-day access to a space's intents, discussions, and settings is governed by **space membership** (owner / admin / member roles managed per space in **Space Settings → Members**), not by Cognito groups — see [Spaces and settings](../using-the-platform/projects.md).
 
 ## Set up the frontend
 
@@ -735,11 +735,11 @@ A domain change needs both steps: Terraform updates the distribution and the OAu
 
 ### One-time tracker-data migration (only relevant for installs with pre-#194 data)
 
-If you're upgrading an install that ran before issue #194 (tracker provider abstraction) landed, existing projects keep working without intervention — but to bind Jira (or any future tracker) to them, their sprint and project records need a one-time backfill onto the new polymorphic shape.
+If you're upgrading an install that ran before issue #194 (tracker provider abstraction) landed, existing spaces keep working without intervention — but to bind Jira (or any future tracker) to them, their sprint and space records need a one-time backfill onto the new polymorphic shape.
 
 Operators have two equivalent paths, both idempotent:
 
-- **Admin UI**: open **Admin → Trackers → Tracker Migration** in the deployed app. The card displays a live count of legacy projects + sprints; click **Migrate all** when ready.
+- **Admin UI**: open **Admin → Trackers → Tracker Migration** in the deployed app. The card displays a live count of legacy spaces and sprints; click **Migrate all** when ready.
 - **CLI**: invoke the `migrate-tracker-fields` Lambda directly. Supports a dry-run for previewing.
 
   ```bash

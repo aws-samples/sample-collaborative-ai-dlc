@@ -69,9 +69,9 @@ requires at least one configured `platform-admin` mapping. That validation
 cannot prove that a real person is assigned, so verify an SSO administrator in
 `hybrid` mode before switching to `sso-only`.
 
-Project membership is assigned to the Cognito broker identity, not to an email
+Space membership is assigned to the Cognito broker identity, not to an email
 address or upstream username. A federated user must complete one successful
-sign-in before appearing in **Project Settings → Members**. The member picker
+sign-in before appearing in **Space Settings → Members**. The member picker
 labels local Cognito accounts separately from enterprise identities and excludes
 identities that are disabled or do not pass the configured access gate.
 

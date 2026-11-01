@@ -52,7 +52,7 @@ An assumption denial is reported as an IAM access error, including when credenti
 
 ## Renewal and expiry
 
-The broker redeems a signed five-minute handoff grant, checks the pinned connection and execution, and assumes the exact role with an inference-only session policy. The resulting STS credentials last up to one hour. Renewal uses a separate signed audience bound to that connection, purpose, project and execution, with a fixed eight-hour deadline measured from the original grant. Renewal cannot switch roles, retrieve keys, or slide that deadline.
+The broker redeems a signed five-minute handoff grant, checks the pinned connection and execution, and assumes the exact role with an inference-only session policy. The resulting STS credentials last up to one hour. Renewal uses a separate signed audience bound to that connection, purpose, space and execution, with a fixed eight-hour deadline measured from the original grant. Renewal cannot switch roles, retrieve keys, or slide that deadline.
 
 Each invocation's generic credential session owns an authenticated loopback AWS container-credential endpoint. Claude Code, OpenCode and Codex use their credential providers to acquire fresh credentials while the same process continues. STS credentials and renewal tokens stay in memory. Only the local endpoint and its random authorization token enter the trusted credential environment. The built-in MCP bridge retains application AWS identity in the runtime; it is not passed through the CLI.
 
