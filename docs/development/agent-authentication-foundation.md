@@ -308,7 +308,7 @@ in the process table. They re-read only referenced authoritative records and the
 matching auxiliary execution prefixes. Personal fingerprints contain only that
 user's identities, including when a discovery invocation uses several bindings.
 Scoped HTTP reviews do not scan the process table, enumerate SSM scopes, enumerate
-Neptune projects, or scan the environment registry. Platform reviews retain the
+spaces in Neptune, or scan the environment registry. Platform reviews retain the
 explicit global inventory path. Scoped revisions and activity counters prevent an
 unrelated space change or selection from invalidating a personal review. Selection,
 invocation accounting, and execution binding writes update references atomically.

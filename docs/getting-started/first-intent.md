@@ -1,6 +1,6 @@
 # Your first intent
 
-This guide walks you through creating a project and running your first intent end to end — from a one-line prompt to a pull request.
+This guide walks you through creating a space and running your first intent end to end — from a one-line prompt to a pull request.
 
 Before starting, make sure you have completed the [Setup](setup.md) steps, have an effective personal, space, or platform agent credential, and can access your deployed application.
 
@@ -8,25 +8,25 @@ Before starting, make sure you have completed the [Setup](setup.md) steps, have 
 
 Open your deployed application URL (the CloudFront domain from your deployment). Sign in with your Cognito credentials.
 
-## Create a project
+## Create a space
 
-From the dashboard, choose **Create new Project**:
+From the dashboard, choose **New Space**:
 
 1. Enter a name.
 2. Choose the code host — **GitHub**, **GitLab**, **Bitbucket**, or **AWS CodeCommit** — and connect it if prompted (in GitHub App mode there is nothing to connect).
-3. Pick the repository that should back the project.
+3. Pick the repository that should back the space.
 4. Optionally check **Enable GitHub/GitLab issue integration** to bind the repository's issue tracker in the same step.
 
-Projects group related intents together. Each project has its own repositories, members, tracker bindings, and runtime settings — see [Projects and settings](../using-the-platform/projects.md).
+Spaces group related intents together. Each space has its own repositories, members, tracker bindings, and runtime settings — see [Spaces and settings](../using-the-platform/projects.md).
 
 ## Create an intent
 
 Creating an intent takes two steps.
 
-Inside your project, choose **New Intent** and fill in:
+Inside your space, choose **New Intent** and fill in:
 
 - **Title** — for example, "Add user authentication". This also names the git branch (`aidlc/add-user-authentication`).
-- **Prompt** — what you want built, in free-form text. If the project has a tracker bound, you can instead pick an issue from the **Import from tracker** panel; its title, body, and comments are imported for you.
+- **Prompt** — what you want built, in free-form text. If the space has a tracker bound, you can instead pick an issue from the **Import from tracker** panel; its title, body, and comments are imported for you.
 - **AI-DLC version** (shown when the platform offers selectable releases) — keep the default unless you need a specific release.
 - **Base branch** (optional) — defaults to each repository's default branch; expand the section to pick a different base per repository.
 

@@ -101,8 +101,8 @@ OCI digests and retains the protected base entrypoint, command, user, port, and
 health behavior. Confirm the projected and actual compressed image sizes stay
 below the configured AgentCore image limit.
 
-Create projects with small repositories that exercise each selected toolchain.
-In **Project Settings -> Environment**, assign each published environment and
+Create spaces with small repositories that exercise each selected toolchain.
+In **Space Settings -> Environment**, assign each published environment and
 start a new intent. Confirm the intent detail and audit views show the exact
 environment revision, image digest, runtime version, endpoint, compatibility
 version, tool snapshots, and passed verification result.
@@ -110,7 +110,7 @@ version, tool snapshots, and passed verification result.
 To verify immutable intent targeting:
 
 1. Start an intent and record its environment revision and runtime endpoint.
-2. Change the project's environment assignment.
+2. Change the space's environment assignment.
 3. Resume, rewind, cancel, and stop the original intent.
 4. Confirm its detail and audit views retain the original revision and
    endpoint, while a newly created intent uses the new assignment.
@@ -130,7 +130,7 @@ Inspect failures through the UI or the resource outputs above. Critical and
 High findings must stop at security review until a platform administrator
 accepts them. The findings and acceptance record must remain visible after
 publication. Image build, container validation, and AgentCore endpoint failures
-must leave the previous published revision and project assignments unchanged.
+must leave the previous published revision and space assignments unchanged.
 
 When testing is complete, delete the test intents and retire the catalog-backed
 test environments in the UI. Environment and tool images are retained while
@@ -325,13 +325,13 @@ its user record before the access gate runs. It must be marked **access denied**
 must not have an effective Admin badge, and must not appear in a space's
 **Add member** user list.
 
-As a space owner, open **Project Settings -> Members** and verify:
+As a space owner, open **Space Settings -> Members** and verify:
 
 1. Both admitted federated users appear as **DisposableCognito** identities.
 2. The local administrator appears separately as a **Cognito account**.
 3. The denied user does not appear.
 4. Adding the test member allows that identity to open the space after sign-in.
-5. The assigned project role is reflected in the available settings and
+5. The assigned space role is reflected in the available settings and
    discussion controls.
 6. A discussion message posted by the test member is rendered as that user's
    own message, not as another member's message.

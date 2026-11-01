@@ -17,7 +17,7 @@ Federated users show their identity provider and effective mapped roles, but
 their role control is read-only because the external IdP is authoritative. See
 [Enterprise SSO](../getting-started/enterprise-sso.md#role-and-access-mapping).
 
-Day-to-day project access is _not_ managed here — it lives in each project's [Members tab](projects.md#members).
+Day-to-day space access is _not_ managed here — it lives in each space's [Members tab](projects.md#members).
 
 ## Agents
 
@@ -25,7 +25,7 @@ Everything the agent runtime needs to run:
 
 - **Platform Agent Credentials** — fallback **Bedrock Bearer Token** (used by Claude Code, OpenCode, and Codex) and **Kiro API Key** values. Platform admins manage these SecureString parameters; a personal or space credential takes precedence. See [Credential hierarchy](#credential-hierarchy) and [Prerequisites → Agent authentication](../getting-started/prerequisites.md#agent-authentication).
 - **Agent CLIs** — enable or disable each agent CLI (Kiro, Claude Code, OpenCode, Codex) for the whole platform. A disabled CLI is greyed out on the intent compose page and in **Space Settings → Agent**, and the API rejects selecting it (`agent_cli_disabled`) when an intent starts, when you compose a draft with AI, or when a draft discussion assist runs. At least one CLI must stay enabled. Intents that already started on a CLI keep using it after it is disabled. All CLIs are enabled by default. Operators can pre-seed the set for a new deployment with the `disabled_clis` Terraform variable. Terraform applies that value only on first creation; after that, this switch owns it. A default model (including the `codex_model` Terraform default) only pins which model a CLI uses; it does not enable the CLI.
-- **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode, Codex), selected from a dropdown of models discovered from the runtime (or "No default — use CLI built-in"). Codex uses Bedrock's OpenAI models with exact `openai.*` IDs (e.g. `openai.gpt-5.5`) — the chosen model must be available in the deployment Region. Projects can override these per-CLI in [Project Settings → Agent](projects.md#agent).
+- **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode, Codex), selected from a dropdown of models discovered from the runtime (or "No default — use CLI built-in"). Codex uses Bedrock's OpenAI models with exact `openai.*` IDs (e.g. `openai.gpt-5.5`) — the chosen model must be available in the deployment Region. Spaces can override these per-CLI in [Space Settings → Agent](projects.md#agent).
 - **Graph Enrichment** — a switch controlling whether the platform adds LLM-generated summaries to derived artifacts in the knowledge graph (`llm` or `off`). The setting takes effect for the _next_ intent, never mid-run; enrichment spend is metered and surfaced on each intent's Audit page.
 
 ### Credential hierarchy
@@ -52,7 +52,7 @@ The environment area contains two administrator views:
 
 - **Environments** — compose exact published tool versions over a protected
   base, build and scan the resulting ARM64 image, validate its AgentCore
-  runtime, and publish it for project assignment.
+  runtime, and publish it for space assignment.
 - **Tools** — import, verify, publish, and recommend immutable tool versions.
   Java, Go, Rust, Maven, and Gradle are shipped as tool definitions rather than
   predefined environments. Administrators can add other tools such as .NET.
@@ -64,15 +64,15 @@ recommended tool versions change.
 See [Managed tools and environments](managed-environments.md) for the complete
 administrator workflow: adding a tool, source provenance, build verification,
 security review, publication and recommendation, environment composition and
-updates, project assignment, and intent pinning.
+updates, space assignment, and intent pinning.
 
 ## Source Control
 
 Platform-wide code-host configuration:
 
-- **GitHub** — GitHub OAuth app status and GitHub App identity/private-key configuration are shown simultaneously. Projects choose OAuth or App independently; there is no global mode or installation ID. See [Git integration → Project-bound authentication](git-integration.md#project-bound-authentication).
+- **GitHub** — GitHub OAuth app status and GitHub App identity/private-key configuration are shown simultaneously. Spaces choose OAuth or App independently; there is no global mode or installation ID. See [Git integration → Space-bound authentication](git-integration.md#space-bound-authentication).
 - **GitLab** — the GitLab OAuth app credentials.
-- **Default PR strategy** — **Intent PR** opens only the final intent-to-base review; **PR per unit** also opens draft unit-to-intent reviews and integrates them in dependency order. Projects may inherit or override this default. The default is **Intent PR**.
+- **Default PR strategy** — **Intent PR** opens only the final intent-to-base review; **PR per unit** also opens draft unit-to-intent reviews and integrates them in dependency order. Spaces may inherit or override this default. The default is **Intent PR**.
 
 ## Trackers
 

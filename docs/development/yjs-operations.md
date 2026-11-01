@@ -259,12 +259,12 @@ quota, or throttling problem.
 
 ## Deletion and snapshot retention
 
-Deleting an intent, project, or legacy sprint first writes a permanent scope
+Deleting an intent, space, or legacy sprint first writes a permanent scope
 tombstone. A strongly consistent scan fences all matching documents, including
 arbitrary artifact ids, epochs, and legacy names, before deleting their metadata.
 The marker stores a compare-and-swap scan cursor so an interrupted deletion resumes
 instead of rescanning from the beginning. Scans process at most 128 records per
-page. Project scopes and child intents share a ten-second cleanup budget; snapshot
+page. Space scopes and child intents share a ten-second cleanup budget; snapshot
 purges also check that budget between pages. An incomplete API deletion returns
 409 `deletion_pending`, including when a child intent needs more time. Retry it
 shortly. The business cascade proceeds after document fencing and snapshot purge
@@ -316,8 +316,8 @@ Terraform's `tests/yjs.tftest.hcl` uses mock providers to verify standalone,
 manual, and automatic settings and reject unsafe configurations. The Terraform
 CI workflow uses a temporary local backend so these checks need no AWS account.
 
-For deployment measurements, create a disposable test intent, supply its project
-and intent IDs, and use a Cognito ID token that remains valid for the run. Set
+For deployment measurements, create a disposable test intent, supply its space
+and intent IDs (`YJS_LOAD_PROJECT_ID` and `YJS_LOAD_INTENT_ID`), and use a Cognito ID token that remains valid for the run. Set
 the token through your local secret-handling mechanism; do not commit it:
 
 ```bash

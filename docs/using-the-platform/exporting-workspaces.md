@@ -67,7 +67,7 @@ After the download starts, the setup dialog shows commands tailored to the archi
 3. Start the selected harness, or open the directory in Kiro IDE.
 4. Run the displayed AI-DLC continuation command inside the agent session.
 
-For multi-repository projects, keep the cloned repositories as immediate children of the exported workspace. When offered, the workspace-sync command reads `repos.json` and creates this layout automatically.
+For multi-repository spaces, keep the cloned repositories as immediate children of the exported workspace. When offered, the workspace-sync command reads `repos.json` and creates this layout automatically.
 
 The download URL is short-lived and expires after 15 minutes. Create another export if the download no longer starts.
 
