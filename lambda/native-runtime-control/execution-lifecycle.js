@@ -400,6 +400,28 @@ export const reconcileNativeRecovery = async ({
     if (recoveryReadRejected(error)) return requireRecovery('RESTORE_FAILED');
     const failureClass = statusReadFailure(error);
     if (!failureClass) throw error;
+    if (workspace && phase === 'recover' && error?.name === 'RuntimeClientError') {
+      // AgentCore can replace the runtime's HTTP rejection with an opaque SDK
+      // error. Do not infer its code from the message. A cold predecessor status
+      // still observes the current EFS binding and workflow before any CLI spawn.
+      // Use that observation only to deny recovery, never to acknowledge a
+      // successor, replay input, or infer success from the prior publication.
+      await check();
+      let predecessor;
+      try {
+        predecessor = await status({ predecessor: true });
+      } catch {
+        // A successor may already own the session, or this read may also be
+        // unavailable. Neither permits a verdict about the old workspace.
+      }
+      await check();
+      if (predecessor?.recovered === true && priorBoundary(state.row, predecessor)) {
+        if (predecessor.workflowResumeState === 'not_created')
+          return requireRecovery('INTAKE_UNAVAILABLE');
+        if (predecessor.workflowResumeState === 'unavailable')
+          return requireRecovery('WORKFLOW_STATE_UNAVAILABLE');
+      }
+    }
     // Recovery deduplicates the exact episode/generation/checkpoint. An
     // unreadable acknowledgement or status does not prove restore failure.
     // Recheck authority and yield the lease; the next worker repeats only

@@ -128,6 +128,7 @@ export const createNativeExecutionSupervisor =
         if (
           activity &&
           input.payload.command === 'native-status' &&
+          nativeWriterGeneration(input.execution) === nativeWriterGeneration(state.row) &&
           report?.capabilities?.includes('activity-v1')
         ) {
           checkReportIdentity(state.row, report);
@@ -164,7 +165,7 @@ export const createNativeExecutionSupervisor =
               });
           }
         }
-        observation = { phase, ...nativeDiagnosticReport(state.row, report) };
+        observation = { phase, ...nativeDiagnosticReport(input.execution, report) };
         observe({ ...observation, stage: 'report', code: 'REPORT_OBSERVED' });
         return report;
       } catch (error) {
@@ -372,17 +373,30 @@ export const createNativeExecutionSupervisor =
       });
       return manifest;
     };
-    const status = async () => {
-      workflowResumeState = undefined;
+    const status = async ({ predecessor = false } = {}) => {
+      if (
+        predecessor &&
+        (!nativeWorkspaceRecovery(state.row.configuration) ||
+          state.row.status !== 'RECOVERING' ||
+          state.row.recovery.phase !== 'RESTORING' ||
+          state.row.stopConfirmation?.writerGeneration !== state.row.recovery.previousGeneration ||
+          state.row.stopConfirmation.runtimeSessionId !== state.row.runtimeSessionId)
+      )
+        fail('NATIVE_EXECUTION_RUNTIME_MISMATCH');
+      const writer = predecessor
+        ? { ...state.row, writerGeneration: state.row.recovery.previousGeneration }
+        : state.row;
+      if (!predecessor) workflowResumeState = undefined;
       const report = await observedInvoke({
-        execution: state.row,
-        payload: { command: 'native-status', ...writerPayload(state.row) },
+        execution: writer,
+        payload: { command: 'native-status', ...writerPayload(writer) },
       });
-      checkReportIdentity(state.row, report);
+      checkReportIdentity(writer, report);
       // Only a fresh status response from this exact writer can establish the
       // current filesystem phase. Published files and earlier observations
       // cannot prove that an interrupted turn did or did not create a workflow.
       if (
+        !predecessor &&
         nativeWorkspaceRecovery(state.row.configuration) &&
         ['created', 'not_created', 'unavailable'].includes(report.workflowResumeState)
       )

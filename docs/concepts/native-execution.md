@@ -1334,6 +1334,83 @@ checks the saved plan against locked current state. Frontend and runtime source
 are unchanged. No agent deployment, operator fault or new recovery confirmation
 was performed; deployment and the remaining live NE-02 checks are still pending.
 
+**Verified controller deployment and opaque resume rejection, 2026-11-02:**
+the user deployed `f0ca575cae75441b1400d043c1ab0fc42965714b`.
+Fresh `solution-read` evidence verifies account **746558295630**, region
+**us-east-1**, all **eight** distinct native bundles across **nine** Lambda
+functions, and all five authority aliases at version **17**. Every downloaded ZIP
+entry matches the reviewed build. The frontend entry, main bundle and native
+creation/service bundles still match the earlier **522-file** deployment proof.
+The base runtime image remains
+`sha256:534ccfd547671cee197ae10e3700fccd4b9ec51cc16d099f7cdafddbab568a2b`;
+the earlier installed-image and Claude **2.1.296** verification remains applicable.
+Both fault executions retain their accepted
+`sha256:074c50086bee10ca4d086fa3df0a9f87251a684bfa34df6ec67cf08cd65f6eeb`
+image, model, package, application commit and EFS bindings. Their executable
+endpoints remain ready at runtime version **2**.
+
+The stop repair advances the existing confirmations from `FENCING` to
+`RESTORING`, with writer generation **2** reserved and its fence active. The
+missing intent adds event `native-400` at **15:19:53.534 UTC**; the wrong intent
+adds `native-507` at **15:21:07.457 UTC**. All **69** and **68** prior records
+outside `EXECUTION`, respectively, retain their canonical hashes. The original
+publication, accepted answer, retention classification and predecessor stop proof
+remain unchanged. Reserving generation 2 is not evidence of a new CLI admission.
+
+Both browser status refreshes still show **“Resuming in a fresh session”**.
+Their public GET responses report `RECOVERING`; neither workspace rejection has
+passed. Scoped execution logs now report `RuntimeClientError`, HTTP **424**, on
+`native-resume`, followed by the existing short retry decision. The correct
+executable runtime log groups contain boot telemetry and no new harness lifecycle
+boundary in the inspected window. Runtime request IDs, selected log metadata,
+browser receipts/screenshots and before/after authority hashes are preserved
+under `.native-evidence/ne02-2026-11-02-deployed-f0ca575c/`. These reads do not
+recover the original SDK error body or prove its hidden runtime rejection code.
+
+A local reproduction composes the real runtime server and filesystem checks, an
+AgentCore HTTP error envelope, the actual SDK deserializer, public recovery API,
+conditional authority and fence. A missing project and a replacement project
+both return runtime HTTP **409** with `native_execution_workspace_invalid`.
+When that JSON is replaced by an opaque SDK error, both tests remain
+`RECOVERING`, reproducing the observed stall. The two failing controls are
+preserved separately from passing repair validation. This establishes the local
+contract defect; the exact hidden cause of the live 424 remains unverified until
+the repaired controller obtains a current workspace observation.
+
+The focused controller repair uses the existing `native-status` operation to
+read the positively stopped predecessor after an opaque resume error. It accepts
+only a cold response with the exact predecessor identity, writer, publication and
+interaction as evidence for a **negative** verdict. Its workflow observation is
+computed from current EFS state. An unavailable workflow blocks recovery;
+verified intake blocks it as intake. A created workflow, unreadable response,
+foreign identity or stale boundary never acknowledges a successor or grants
+recovery. The read does not ingest the predecessor's activity, replay its answer,
+read a private checkpoint or change the pinned image. Authority is rechecked
+around the read; the ordinary fence and confirmed-stop path still closes any
+runtime opened during diagnosis.
+
+Validation passes **239 focused tests** and the owning
+`npx vitest run --project=native-runtime-control` suite:
+**1,477 tests across 52 files**. Coverage includes both real filesystem faults
+through HTTP/SDK, preserved work and answers, no new runtime owner or model turn,
+foreign/stale observations, a cancellation race, and a lost acknowledgement
+after a real inert subprocess turn without replay. All eight deployment bundles
+build. Lint, the changed-file secret scan and architecture/dependency checks
+pass; dependency warnings remain **17**, with zero errors. Formatting and the
+documentation build are recorded with the final candidate evidence.
+
+The repair is **local and undeployed** at this boundary. Its single user handoff,
+`handoff/deploy-workspace-observation.sh` in that evidence directory, selects
+profile `solution`, verifies the existing ECR helper and uses
+`scripts/deploy-terraform.sh dev --phase all --skip-seed` with a fresh
+candidate-specific plan. The preserved plans and inspection receipts remain
+unchanged. No frontend deployment, image change, repeated workspace fault or
+additional recovery confirmation is needed. The queued recoveries must be
+verified again after the controller deployment. Missing/wrong browser rejection
+remain **FAIL** at the observed stall; repaired live rejection, game
+publication/playability and active-tool recovery remain open. NE-02 stays
+unchecked, and the expired October 27 active-tool stop command remains unusable.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item

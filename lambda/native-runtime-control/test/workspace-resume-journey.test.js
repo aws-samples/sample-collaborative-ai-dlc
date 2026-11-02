@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
+import { createServer } from 'node:http';
+import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
 import { expect, it, vi } from 'vitest';
 import { createNativeExecutor } from '../../agentcore/native/executor.js';
 import { createNativeRuntimeServer } from '../../agentcore/native/runtime-server.js';
@@ -33,12 +35,17 @@ it.each([
   'delivered',
   'uncertain',
   'wrong-workspace',
+  'missing-workspace-sdk',
+  'wrong-workspace-sdk',
+  'resume-sdk-ack-loss',
   'wrong-config',
   'unconfirmed-stop',
   'resume-owner-loss',
   'resume-running-owner-loss',
 ])('workspace recovery preserves work and never replays %s input', async (scenario) => {
   const interruptRunningResume = scenario === 'resume-running-owner-loss';
+  const opaqueWorkspaceRejection = scenario.endsWith('-workspace-sdk');
+  const sdkTransport = opaqueWorkspaceRejection || scenario === 'resume-sdk-ack-loss';
   const f = executionFixture({
     harness: 'claude',
     recoveryMode: NATIVE_WORKSPACE_RECOVERY,
@@ -207,6 +214,10 @@ it.each([
   let runtime = create();
   let server;
   let servedRuntime;
+  let gateway;
+  let sdk;
+  let loseGatewayAck = scenario === 'resume-sdk-ack-loss';
+  const rejectedReports = [];
   const invokeHttp = async ({ execution, payload }) => {
     if (servedRuntime !== runtime) {
       if (server) await new Promise((resolve) => server.close(resolve));
@@ -218,10 +229,52 @@ it.each([
       await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
       servedRuntime = runtime;
     }
+    if (sdkTransport && !sdk) {
+      // AgentCore replaces a runtime HTTP error with RuntimeClientError. Its
+      // documented message retains the status, not the runtime's JSON code.
+      // Exercise the actual runtime server, wire response and SDK deserializer.
+      gateway = createServer(async (request, response) => {
+        const chunks = [];
+        for await (const chunk of request) chunks.push(chunk);
+        const input = JSON.parse(Buffer.concat(chunks).toString());
+        const result = await fetch(`http://127.0.0.1:${server.address().port}/invocations`, {
+          method: 'POST',
+          body: Buffer.concat(chunks),
+        });
+        const body = await result.text();
+        const lostAcknowledgement =
+          result.ok && input.command === 'native-resume' && loseGatewayAck;
+        if (lostAcknowledgement) loseGatewayAck = false;
+        if (!result.ok || lostAcknowledgement) {
+          rejectedReports.push({ status: result.status, report: JSON.parse(body) });
+          response.writeHead(424, {
+            'content-type': 'application/json',
+            'x-amzn-errortype': 'RuntimeClientError',
+          });
+          response.end(
+            JSON.stringify({
+              message: lostAcknowledgement
+                ? 'Runtime acknowledgement unavailable'
+                : `Received error (${result.status}) from runtime. Please check your CloudWatch logs for more information`,
+            }),
+          );
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(body);
+      });
+      await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+      sdk = new BedrockAgentCoreClient({
+        endpoint: `http://127.0.0.1:${gateway.address().port}`,
+        region: 'us-east-1',
+        credentials: { accessKeyId: 'local-only', secretAccessKey: 'local-only' },
+        maxAttempts: 1,
+      });
+    }
     return invokeNativeExecutionRuntime({
       execution,
       payload,
-      runtime: {
+      runtime: sdk ?? {
         async send(command) {
           const response = await fetch(`http://127.0.0.1:${server.address().port}/invocations`, {
             method: 'POST',
@@ -236,7 +289,7 @@ it.each([
       },
     });
   };
-  let loseResumeAck = !interruptRunningResume;
+  let loseResumeAck = !interruptRunningResume && !sdkTransport;
   let loseAnswerAck = scenario === 'uncertain';
   const invocations = [];
   let lastRuntimeError;
@@ -256,7 +309,7 @@ it.each([
     invoke: async ({ execution, payload }) => {
       invocations.push(payload);
       const report = await (
-        scenario === 'resume-owner-loss' || interruptRunningResume
+        scenario === 'resume-owner-loss' || interruptRunningResume || sdkTransport
           ? invokeHttp({ execution, payload })
           : runtime[
               {
@@ -406,9 +459,9 @@ it.each([
     await expect(api.recover(f.prepared, request, recheck)).rejects.toMatchObject({
       code: 'NATIVE_EXECUTION_INVALID',
     });
-    if (scenario === 'wrong-workspace') {
+    if (scenario === 'wrong-workspace' || opaqueWorkspaceRejection) {
       await fs.rename(project, join(root, 'wrong-project'));
-      await fs.mkdir(project, { mode: 0o700 });
+      if (scenario !== 'missing-workspace-sdk') await fs.mkdir(project, { mode: 0o700 });
     }
     if (scenario === 'wrong-config') {
       const path = join(root, '.native-control/workspace.json');
@@ -432,11 +485,34 @@ it.each([
       text: reply.text,
       requestId: reply.requestId,
     });
-    if (['wrong-workspace', 'wrong-config'].includes(scenario)) {
+    if (['wrong-workspace', 'wrong-config'].includes(scenario) || opaqueWorkspaceRejection) {
       await settle('RECOVERY_REQUIRED');
-      expect(f.row().recovery.reason).toBe('WORKSPACE_UNAVAILABLE');
+      expect(f.row().recovery.reason).toBe(
+        opaqueWorkspaceRejection ? 'WORKFLOW_STATE_UNAVAILABLE' : 'WORKSPACE_UNAVAILABLE',
+      );
       expect(f.row().recovery.canRecover).toBe(false);
       expect(modelTurns).toBe(priorModelTurns);
+      if (opaqueWorkspaceRejection) {
+        expect(rejectedReports).toContainEqual({
+          status: 409,
+          report: { ok: false, code: 'native_execution_workspace_invalid' },
+        });
+        expect(f.row().publication).toEqual(first);
+        expect(await f.store.response(f.row(), reply.interactionId)).toMatchObject({
+          commandId: accepted.response.id,
+          text: reply.text,
+          requestId: reply.requestId,
+          actorId: ACTOR,
+        });
+        expect(f.row().stopConfirmation.writerGeneration).toBe(2);
+        expect((await fence.read(firstIdentity)).state).toBe('FENCED');
+        expect(await fs.readdir(join(root, '.native-control'))).not.toContain('writer-2');
+        expect(await fs.readFile(join(root, 'wrong-project/unfinished.md'), 'utf8')).toBe(
+          'Unpublished work must survive.\n',
+        );
+        expect(forbiddenPrivate).not.toHaveBeenCalled();
+        expect(memory.writes.some((key) => key.startsWith('native-recovery/'))).toBe(false);
+      }
       return;
     }
     if (interruptRunningResume) {
@@ -552,7 +628,7 @@ it.each([
       interactionContentSha256: firstRow.interactionContentSha256,
     });
     expect(history.response.text).toBe(reply.text);
-    expect(history.retained.delivery).toBe(coldResume ? 'undelivered' : scenario);
+    expect(history.retained.delivery).toBe(coldResume || sdkTransport ? 'undelivered' : scenario);
     expect(history.publication).toBeNull(); // Fresh resume did not consume the old answer.
     const resumes = invocations.filter((input) => input.command === 'native-resume');
     expect(resumes.length).toBeGreaterThanOrEqual(2); // Lost ACK or another confirmed episode.
@@ -565,7 +641,7 @@ it.each([
       .split('\n')
       .map(JSON.parse);
     expect(effects.filter((event) => event.prompt === reply.text)).toHaveLength(
-      scenario === 'undelivered' || coldResume ? 0 : 1,
+      scenario === 'undelivered' || coldResume || sdkTransport ? 0 : 1,
     );
     expect(effects.at(-1).prompt).toBe('/aidlc --resume');
     expect(effects.at(-1).prompt).not.toContain(reply.text);
@@ -583,6 +659,8 @@ it.each([
     if (runtime.isBusy())
       await runtime.cancel({ ...firstIdentity, writerGeneration: f.row().writerGeneration });
     await runtime.settle();
+    sdk?.destroy();
+    if (gateway) await new Promise((resolve) => gateway.close(resolve));
     if (server) await new Promise((resolve) => server.close(resolve));
     await fs.rm(base, { recursive: true, force: true });
   }

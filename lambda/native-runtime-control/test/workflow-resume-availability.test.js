@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { RuntimeClientError } from '@aws-sdk/client-bedrock-agentcore';
 import { describe, expect, it, vi } from 'vitest';
 import { createNativeExecutionSupervisor } from '../execution-worker.js';
 import { nativeExecutionView } from '../execution-api.js';
@@ -90,6 +91,105 @@ const fixture = async (workflowResumeState) => {
 };
 
 describe('created-workflow recovery availability', () => {
+  it.each([
+    ['missing workflow', { workflowResumeState: 'unavailable' }, 'WORKFLOW_STATE_UNAVAILABLE'],
+    ['returned to intake', { workflowResumeState: 'not_created' }, 'INTAKE_UNAVAILABLE'],
+    ['created workflow', { workflowResumeState: 'created' }, null],
+    ['unknown observation', { workflowResumeState: undefined }, null],
+    ['unrecognized observation', { workflowResumeState: 'invalid' }, null],
+    ['active predecessor', { recovered: false }, null],
+    ['foreign writer', { writerGeneration: 2 }, null],
+    ['foreign attempt', { attemptId: '55555555-5555-4555-8555-555555555555' }, null],
+    ['foreign session', { runtimeSessionId: '55555555-5555-4555-8555-555555555555' }, null],
+    ['foreign publication', { receipt: { id: 'f'.repeat(64) } }, null],
+    ['foreign interaction', { interaction: { id: 'f'.repeat(64) } }, null],
+    ['foreign sequence', { sequence: 99 }, null],
+    ['unreadable predecessor', null, null],
+  ])(
+    'uses a fresh predecessor read only to deny an opaque resume: %s',
+    async (_, patch, reason) => {
+      const f = await fixture('created');
+      await f.reconcile(f.identity);
+      await f.recover();
+      await f.reconcile(f.identity);
+      const before = f.row();
+      const immutable = [...f.rows].filter(([, row]) => row.sk !== 'EXECUTION');
+      const activity = {
+        cursor: vi.fn(),
+        ingest: vi.fn(),
+      };
+      const currentReport = f.ports.invoke.getMockImplementation();
+      f.ports.invoke.mockImplementation(async (input) => {
+        if (input.payload.command === 'native-resume' || patch === null)
+          throw new RuntimeClientError({
+            $metadata: { httpStatusCode: 424 },
+            message: 'Private response mentions native_execution_workspace_invalid',
+          });
+        expect(input.payload).toEqual({
+          command: 'native-status',
+          ...executionIdentity(before),
+          writerGeneration: 1,
+        });
+        return {
+          ...(await currentReport(input)),
+          workflowResumeState: 'unavailable',
+          capabilities: ['activity-v1'],
+          ...patch,
+        };
+      });
+      const reconcile = createNativeExecutionSupervisor({ ...f.ports, activity });
+      expect(await reconcile(f.identity)).toMatchObject(
+        reason
+          ? { pending: false, status: 'RECOVERY_REQUIRED', reason }
+          : { pending: true, status: 'RECOVERING' },
+      );
+      expect(activity.cursor).not.toHaveBeenCalled();
+      expect(activity.ingest).not.toHaveBeenCalled();
+      expect(f.row().publication).toEqual(before.publication);
+      expect(f.row().workspaceResume).toEqual(before.workspaceResume);
+      for (const [key, row] of immutable) expect(f.rows.get(key)).toEqual(row);
+      expect(f.ports.invoke.mock.calls.map(([input]) => input.payload.command)).toEqual([
+        'native-status',
+        'native-resume',
+        'native-status',
+      ]);
+      expect(await f.store.response(f.row(), f.accepted.response.interactionId)).toMatchObject(
+        f.accepted.response,
+      );
+      if (reason) {
+        expect(f.row()).toMatchObject({
+          recovery: { reason, canRecover: false },
+          stopConfirmation: { writerGeneration: 2 },
+        });
+        expect((await f.ports.fence.read(executionIdentity(f.row()))).state).toBe('FENCED');
+      } else {
+        expect(f.row().recovery).toEqual(before.recovery);
+        expect(f.row().stopConfirmation).toEqual(before.stopConfirmation);
+        expect(f.ports.stop).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
+  it('rechecks authority after the predecessor observation before blocking recovery', async () => {
+    const f = await fixture('created');
+    await f.reconcile(f.identity);
+    await f.recover();
+    await f.reconcile(f.identity);
+    const currentReport = f.ports.invoke.getMockImplementation();
+    f.ports.invoke.mockImplementation(async (input) => {
+      if (input.payload.command === 'native-resume')
+        throw new RuntimeClientError({ $metadata: { httpStatusCode: 424 }, message: 'opaque' });
+      const report = { ...(await currentReport(input)), workflowResumeState: 'unavailable' };
+      await f.api.cancel(f.prepared, f.recheck);
+      return report;
+    });
+    await expect(f.reconcile(f.identity)).rejects.toMatchObject({
+      code: 'NATIVE_EXECUTION_LEASE_LOST',
+    });
+    expect(f.row()).toMatchObject({ status: 'CANCEL_REQUESTED', cancelRequested: true });
+    expect(f.ports.stop).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['not_created', 'INTAKE_UNAVAILABLE'],
     ['unavailable', 'WORKFLOW_STATE_UNAVAILABLE'],
