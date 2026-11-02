@@ -80,6 +80,221 @@ const fixture = async ({ generation = 2 } = {}) => {
   };
 };
 
+describe('confirmed workspace predecessor stop', () => {
+  it.each([1, 2])(
+    'uses writer %s stop evidence when the member confirms after the session is gone',
+    async (generation) => {
+      const f = await fixture({ generation });
+      const original = f.row();
+      const gone = Object.assign(new Error('previously stopped session no longer exists'), {
+        name: 'ResourceNotFoundException',
+        $metadata: { httpStatusCode: 404 },
+      });
+      const runtime = {
+        send: vi
+          .fn()
+          .mockResolvedValueOnce({
+            $metadata: { httpStatusCode: 200 },
+            statusCode: 200,
+            runtimeSessionId: original.runtimeSessionId,
+          })
+          .mockRejectedValue(gone),
+      };
+      const reconcile = createNativeExecutionSupervisor({
+        ...f.ports,
+        stop: (input) => stopNativeExecutionSession({ ...input, runtime }),
+      });
+      await expect(reconcile(f.identity)).resolves.toMatchObject({
+        status: 'RECOVERY_REQUIRED',
+        reason: 'DELIVERY_UNCERTAIN',
+      });
+      const stopped = f.row();
+      expect(stopped.stopConfirmation).toEqual({
+        writerGeneration: generation,
+        runtimeSessionId: original.runtimeSessionId,
+        confirmedAt: f.now(),
+      });
+      expect(runtime.send).toHaveBeenCalledTimes(1);
+      f.tick(6 * 24 * 60 * 60 * 1000);
+      const request = {
+        requestId: randomUUID(),
+        recoveryId: stopped.recovery.id,
+        confirmWorkspaceResume: true,
+      };
+      await f.api.recover(f.prepared, request, f.recheck);
+      await expect(reconcile(f.identity)).resolves.toMatchObject({
+        pending: true,
+        status: 'RECOVERING',
+      });
+      expect(f.row()).toMatchObject({
+        writerGeneration: generation + 1,
+        recovery: { id: request.recoveryId, phase: 'RESTORING' },
+        publication: original.publication,
+        stopConfirmation: stopped.stopConfirmation,
+      });
+      // The persistent proof belongs to the same writer/session. Confirmation
+      // fences and rechecks ownership but never repeats that completed stop.
+      expect(runtime.send).toHaveBeenCalledTimes(1);
+      expect(f.ports.fence.suspend).toHaveBeenLastCalledWith(
+        executionIdentity(stopped),
+        expect.objectContaining({
+          writerGeneration: generation,
+          recoveryId: request.recoveryId,
+        }),
+      );
+      expect(f.ports.fence.activate).not.toHaveBeenCalled();
+      expect(f.ports.credentials).not.toHaveBeenCalled();
+      expect(f.ports.invoke.mock.calls.map(([input]) => input.payload.command)).toEqual([
+        'native-status',
+      ]);
+      expect(f.row().response).toBeUndefined();
+      expect(await f.store.response(original, f.accepted.response.interactionId)).toEqual(
+        f.accepted.response,
+      );
+      const after = f.row();
+      await f.api.recover(f.prepared, request, f.recheck);
+      expect(f.row()).toEqual(after);
+    },
+  );
+
+  it.each([
+    [1, 'missing'],
+    [1, 'unconfirmed'],
+    [1, 'wrong-session'],
+    [2, 'missing'],
+    [2, 'unconfirmed'],
+    [2, 'wrong-session'],
+  ])('requires a positive current stop for writer %s (%s)', async (generation, result) => {
+    const f = await fixture({ generation });
+    const before = f.row();
+    const runtime = {
+      send: vi.fn(async () => {
+        if (result === 'missing')
+          throw Object.assign(new Error('no positive stop evidence'), {
+            name: 'ResourceNotFoundException',
+            $metadata: { httpStatusCode: 404 },
+          });
+        return {
+          $metadata: { httpStatusCode: 200 },
+          statusCode: result === 'unconfirmed' ? 202 : 200,
+          runtimeSessionId: result === 'wrong-session' ? randomUUID() : before.runtimeSessionId,
+        };
+      }),
+    };
+    const reconcile = createNativeExecutionSupervisor({
+      ...f.ports,
+      stop: (input) => stopNativeExecutionSession({ ...input, runtime }),
+    });
+    await expect(reconcile(f.identity)).rejects.toMatchObject(
+      result === 'missing'
+        ? { name: 'ResourceNotFoundException' }
+        : { code: 'NATIVE_EXECUTION_STOP_UNCONFIRMED' },
+    );
+    expect(runtime.send).toHaveBeenCalledTimes(1);
+    expect(f.row().writerGeneration).toBe(generation);
+    expect(f.row().stopConfirmation).toEqual(before.stopConfirmation);
+    expect(f.row().status).toBe(before.status);
+    expect(f.row().publication).toEqual(before.publication);
+    expect(f.ports.fence.activate).not.toHaveBeenCalled();
+    expect(f.ports.credentials).not.toHaveBeenCalled();
+    await expect(
+      f.api.recover(
+        f.prepared,
+        {
+          requestId: randomUUID(),
+          recoveryId: randomUUID(),
+          confirmWorkspaceResume: true,
+        },
+        f.recheck,
+      ),
+    ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CONFLICT' });
+    expect(await f.store.response(before, f.accepted.response.interactionId)).toEqual(
+      f.accepted.response,
+    );
+  });
+
+  it.each(['cancel', 'lease-takeover'])(
+    'rechecks %s after fencing even with a confirmed predecessor stop',
+    async (change) => {
+      const f = await fixture({ generation: 1 });
+      await f.reconcile(f.identity);
+      const stopped = f.row();
+      await f.api.recover(
+        f.prepared,
+        {
+          requestId: randomUUID(),
+          recoveryId: stopped.recovery.id,
+          confirmWorkspaceResume: true,
+        },
+        f.recheck,
+      );
+      const suspend = f.ports.fence.suspend.getMockImplementation();
+      let successor;
+      f.ports.fence.suspend.mockImplementationOnce(async (...args) => {
+        const result = await suspend(...args);
+        if (change === 'cancel') await f.api.cancel(f.prepared, f.recheck);
+        else {
+          f.tick();
+          expect((await f.store.claim(f.bindingIdentity)).kind).toBe('claimed');
+        }
+        successor = f.row();
+        return result;
+      });
+      await expect(f.reconcile(f.identity)).rejects.toMatchObject({
+        code: 'NATIVE_EXECUTION_LEASE_LOST',
+      });
+      expect(f.row()).toEqual(successor);
+      expect(f.row().writerGeneration).toBe(1);
+      expect(f.row().stopConfirmation).toEqual(stopped.stopConfirmation);
+      if (change === 'cancel') {
+        expect(f.row()).toMatchObject({ status: 'CANCEL_REQUESTED', epoch: 2 });
+        expect(f.row().workspaceResume).toBeUndefined();
+      }
+      expect(f.ports.stop).toHaveBeenCalledTimes(1);
+      expect(f.ports.fence.activate).not.toHaveBeenCalled();
+      expect(f.ports.credentials).not.toHaveBeenCalled();
+      expect(f.ports.invoke).toHaveBeenCalledTimes(1);
+      expect(await f.store.response(stopped, f.accepted.response.interactionId)).toEqual(
+        f.accepted.response,
+      );
+    },
+  );
+
+  it('does not bypass the Stop adapter runtime pin check with a prior confirmation', async () => {
+    const f = await fixture({ generation: 1 });
+    await f.reconcile(f.identity);
+    const stopped = f.row();
+    await f.api.recover(
+      f.prepared,
+      {
+        requestId: randomUUID(),
+        recoveryId: stopped.recovery.id,
+        confirmWorkspaceResume: true,
+      },
+      f.recheck,
+    );
+    const runtime = { send: vi.fn() };
+    const reconcile = createNativeExecutionSupervisor({
+      ...f.ports,
+      preparationStore: {
+        get: async () => ({ ...f.prepared, runtimeArn: `${f.prepared.runtimeArn}changed` }),
+      },
+      stop: (input) => stopNativeExecutionSession({ ...input, runtime }),
+    });
+    await expect(reconcile(f.identity)).rejects.toMatchObject({
+      code: 'NATIVE_EXECUTION_RUNTIME_MISMATCH',
+    });
+    expect(runtime.send).not.toHaveBeenCalled();
+    expect(f.row()).toMatchObject({
+      writerGeneration: 1,
+      recovery: { phase: 'FENCING' },
+      stopConfirmation: stopped.stopConfirmation,
+    });
+    expect(f.ports.fence.activate).not.toHaveBeenCalled();
+    expect(f.ports.credentials).not.toHaveBeenCalled();
+  });
+});
+
 describe('workspace recovery control diagnostics', () => {
   it.each(['NoSuchKey', 'NotFound'])(
     'does not report an expected absent fence (%s) as a failed control operation',
@@ -108,7 +323,6 @@ describe('workspace recovery control diagnostics', () => {
     'image-policy',
     'fence-read',
     'fence-suspend',
-    'stop',
     'authority-recovery-stopped',
   ])('identifies a failed %s without advancing the fenced writer', async (operation) => {
     const f = await fixture({ generation: 1 });
@@ -138,8 +352,8 @@ describe('workspace recovery control diagnostics', () => {
     const canary = 'private-command-provider-body-and-credentials-do-not-log';
     const requestId = randomUUID();
     const error = Object.assign(new Error(canary), {
-      name: operation === 'stop' ? 'ResourceNotFoundException' : 'AccessDeniedException',
-      $metadata: { httpStatusCode: operation === 'stop' ? 404 : 403, requestId },
+      name: 'AccessDeniedException',
+      $metadata: { httpStatusCode: 403, requestId },
       providerBody: canary,
     });
     const denied = vi.fn(async () => {
@@ -158,11 +372,6 @@ describe('workspace recovery control diagnostics', () => {
     if (operation === 'fence-read') ports.fence.read = denied;
     if (operation === 'fence-suspend') ports.fence.suspend = denied;
     if (operation === 'authority-recovery-stopped') ports.store.recoveryStopped = denied;
-    if (operation === 'stop') {
-      // Exercise the real Stop adapter: a missing-session SDK error is not a
-      // positive stop receipt, even when an earlier stop was confirmed.
-      ports.stop = (input) => stopNativeExecutionSession({ ...input, runtime: { send: denied } });
-    }
     const lines = [];
     ports.diagnostics = createNativeExecutionDiagnostics({
       scope: f.identity,

@@ -335,13 +335,28 @@ export const reconcileNativeRecovery = async ({
       }),
     );
     await check();
-    // Same AWS session IDs are reusable. A stable per-episode stop token
-    // prevents an old retry from stopping a replacement generation.
-    const stopped = await controlCall('stop', () =>
-      stop({ draft, execution: state.row, recoveryId: recovery.id }),
-    );
+    // Workspace confirmation already requires a durable, validated stop for
+    // this predecessor. Reuse that proof after fencing and rechecking ownership:
+    // repeating Stop days later can return 404 for the completed session.
+    // A different generation/session, or checkpoint recovery without that
+    // proof, must still obtain an exact positive response.
+    const confirmation = state.row.stopConfirmation;
+    const alreadyStopped =
+      workspace &&
+      confirmation?.writerGeneration === recovery.previousGeneration &&
+      confirmation?.runtimeSessionId === state.row.runtimeSessionId &&
+      state.row.target?.runtimeArn === draft.runtimeArn;
+    let stopped;
+    if (!alreadyStopped) {
+      stopped = await controlCall('stop', () =>
+        stop({ draft, execution: state.row, recoveryId: recovery.id }),
+      );
+    }
     await check();
-    if (stopped?.confirmed !== true || stopped.runtimeSessionId !== state.row.runtimeSessionId)
+    if (
+      !alreadyStopped &&
+      (stopped?.confirmed !== true || stopped.runtimeSessionId !== state.row.runtimeSessionId)
+    )
       fail('NATIVE_EXECUTION_STOP_UNCONFIRMED');
     state.row = await controlCall('authority-recovery-stopped', () =>
       store.recoveryStopped({ row: state.row }),

@@ -1644,6 +1644,13 @@ export const createNativeExecutionStore = ({
               ? { workflowResumeState: row.recovery.workflowResumeState }
               : {}),
           };
+        // Cancelling FENCING discards only the proposed successor command.
+        // Its writer was never admitted; accepted answers remain in the ledger.
+        if (
+          row.recovery?.phase === 'FENCING' &&
+          row.workspaceResume?.writerGeneration > nativeWriterGeneration(row)
+        )
+          delete next.workspaceResume;
         try {
           return await commit(row, next, 'cancel');
         } catch (error) {

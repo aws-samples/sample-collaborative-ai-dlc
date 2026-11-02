@@ -1158,6 +1158,89 @@ unavailability and intake rejection retain their prior passes. Missing/wrong
 rejection, game publication/playability and fresh active-tool recovery remain
 open; NE-02 stays unchecked.
 
+**Verified deployment and confirmed-stop repair, 2026-11-02:** the user deployed
+`d0529c735d6c52e57b07ada90d35d44eec44f219`. Scoped `solution-read` reads first
+reconfirmed account `746558295630` and region `us-east-1`. All **522** deployed
+frontend files, including the entry document, match the local deployment
+output. All entries in the **six** native Lambda packages match a fresh build
+of that candidate; the **five** authority aliases also match. The new base
+runtime image is source tag `d2dff54e22d80b4f`, immutable digest
+`sha256:534ccfd547671cee197ae10e3700fccd4b9ec51cc16d099f7cdafddbab568a2b`.
+The deployed image pins agree. A network-disabled, read-only check of that
+exact image verifies **267** shipped source modules and Claude Code
+**2.1.296**, with zero model calls or CLI sessions. The parser repair and scoped
+controller diagnostics are now deployed; this image inspection is not a new
+game-publication or recovery proof.
+
+Both existing fault intents correctly retain their accepted runtime image
+`sha256:074c50086bee10ca4d086fa3df0a9f87251a684bfa34df6ec67cf08cd65f6eeb`,
+runtime endpoint, EFS access point, configuration and application source pins.
+The current image policy permits these referenced recovery executions without
+retargeting them to the new base image. Fresh positive qualification must use
+the newly verified image.
+
+The deployed diagnostics establish why both browser recovery confirmations
+stall: the controller repeats `StopRuntimeSession` despite an authoritative
+positive stop for the exact predecessor writer and session. That repeated
+operation returns **HTTP 404** before workspace validation. The missing case
+records request `2bda201d-9ea0-40a5-ad7a-bd66e9eb87d3` at
+`2026-11-02T13:34:08.315Z`; the wrong case records
+`3f51da5d-887a-4076-9d13-d3849597460e` at `2026-11-02T13:34:59.139Z`.
+The allowlisted diagnostic reports the service error name as `unknown`;
+private provider response bodies were not collected. The exact provider reason
+beyond the stop operation and HTTP status is therefore unverified.
+
+At `13:39:22Z`, the missing and wrong cases remain `RECOVERING / FENCING`,
+authority revisions **368** and **479**, actual writer **1**. All **69** missing
+and **68** wrong records other than mutable `EXECUTION` match their preceding
+authority snapshots; fence bytes and versions also match. Accepted answers,
+retention facts, publications, predecessor-stop evidence and source/session
+identities are unchanged. No new writer, publication or checkpoint is observed.
+The earlier missing-project inspection and wrong-project fault receipt still
+establish the isolated filesystem faults and preserved quarantines. No fault,
+inspection, recovery confirmation or model turn was initiated in this follow-up.
+The browser rejection checks remain **FAIL: stalled before workspace validation**.
+
+The focused controller repair reuses the validated stop confirmation only for
+the same EFS predecessor generation, session and prepared runtime, after fencing
+and fresh ownership checks. A missing, unconfirmed, wrong-session or different
+generation stop still needs an exact positive response; an HTTP 404 never
+becomes stop evidence. Checkpoint recovery retains its existing stop requirement.
+The real public recovery API, store, supervisor and Stop adapter reproduce the
+six-day delayed-confirmation failure for both writer generations **1** and **2**.
+Both regression cases fail against the deployed implementation and pass with
+the repair. Cancellation and lease takeover after fencing still prevent the old
+worker from advancing.
+
+The cancellation regression also exposed an invalid authority transition:
+cancelling during `FENCING` retained a resume command for a successor writer that
+was never admitted. The store now removes only that proposed command during
+cancellation. Its accepted-answer ledger, publications and positive predecessor
+stop remain intact; a command for an already admitted writer is preserved.
+This is local regression evidence, not a live cancellation result.
+
+Final local validation passes **178** focused tests and all **1,460** controller
+tests in **52** files with
+`npm test -- --project=native-runtime-control --maxWorkers=4`. An earlier full
+run recorded **1,459** passes and one five-second DynamoDB Local test timeout;
+that failed log is preserved. The final run uses the existing timeout and all
+tests. All eight native controller bundles build. Lint, module boundaries and
+native architecture checks pass, with their existing warnings recorded.
+Formatting, the scoped secret scan, `git diff --check`,
+`uv sync --group docs --locked` and `uv run --no-sync zensical build` also pass.
+
+Evidence is under `.native-evidence/ne02-2026-11-02-deployed-d0529c73/`, including
+deployed byte comparisons, installed-image hashes, scoped diagnostics, authority
+comparisons, the failing reproductions and final validation logs. The next
+dependency is user deployment of the controller repair, followed by verification
+of the queued recoveries and their visible workspace rejections. Frontend and
+runtime source are unchanged by this repair; the verified new base image remains
+the deployment target. Do not repeat either filesystem fault or the already
+accepted recovery confirmations. Waiting recovery, temporary Kiro unavailability
+and intake rejection retain their earlier passes. Fresh game publication,
+playability and active-tool recovery remain open; the expired October 27 barrier
+is unusable. NE-02 remains unchecked and NE-03 must wait.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
