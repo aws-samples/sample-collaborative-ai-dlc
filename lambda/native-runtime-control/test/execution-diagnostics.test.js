@@ -130,6 +130,62 @@ const payload = {
 };
 
 describe('native controller diagnostic privacy boundary', () => {
+  it('retains bounded control-service status and error classifications without error bodies', () => {
+    const s = sinks();
+    const getter = vi.fn(() => {
+      throw Error(CANARY);
+    });
+    const error = Object.assign(new Error(CANARY), {
+      name: 'ResponseError',
+      code: 'EBUSY',
+      statusCode: 499,
+      statusAttributes: { body: CANARY },
+    });
+    s.diagnostics({ operation: 'authorization', ...nativeDiagnosticError(error) });
+    expect(s.events()[0]).toMatchObject({
+      operation: 'authorization',
+      errorName: 'ResponseError',
+      errorCode: 'EBUSY',
+      serviceStatusCode: 499,
+    });
+    Object.defineProperty(error, 'statusCode', { get: getter });
+    s.diagnostics(nativeDiagnosticError(error));
+    s.diagnostics({ serviceStatusCode: 600 });
+    expect(s.events()[1].serviceStatusCode).toBeUndefined();
+    expect(s.events()[2].serviceStatusCode).toBeUndefined();
+    expect(getter).not.toHaveBeenCalled();
+    s.assertPrivate();
+  });
+
+  it('bounds control operation metadata without reading arbitrary fields or getters', () => {
+    const s = sinks();
+    const getter = vi.fn(() => {
+      throw Error(CANARY);
+    });
+    s.diagnostics({
+      phase: 'recover',
+      stage: 'call',
+      code: 'CALL_FAILED',
+      operation: 'stop',
+      command: CANARY,
+      get payload() {
+        return getter();
+      },
+    });
+    s.diagnostics({ operation: CANARY });
+    s.diagnostics(Object.defineProperty({}, 'operation', { get: getter }));
+    expect(s.events()[0]).toMatchObject({
+      phase: 'recover',
+      stage: 'call',
+      code: 'CALL_FAILED',
+      operation: 'stop',
+    });
+    expect(s.events()[1].operation).toBe('unknown');
+    expect(s.events()[2].operation).toBeUndefined();
+    expect(getter).not.toHaveBeenCalled();
+    s.assertPrivate();
+  });
+
   it.each(['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE'])(
     'records recovery reason %s without leaking raw workflow data or invoking getters',
     (reason) => {

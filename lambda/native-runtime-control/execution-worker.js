@@ -84,15 +84,34 @@ export const createNativeExecutionSupervisor =
     now = Date.now,
   }) =>
   async (identity) => {
-    const initial = await store.get(identity);
+    const state = { row: undefined };
+    const observe = (value) => emitNativeExecutionDiagnostic(diagnostics, value);
+    const controlCall = async (operation, call) => {
+      try {
+        return await call();
+      } catch (error) {
+        observe({
+          phase: state.row?.status === 'RECOVERING' ? 'recover' : 'unknown',
+          stage: 'call',
+          code: 'CALL_FAILED',
+          operation,
+          controlStatus: state.row?.status,
+          writerGeneration: state.row?.writerGeneration,
+          ...nativeDiagnosticError(error),
+        });
+        throw error;
+      }
+    };
+    const initial = await controlCall('authority-read', () => store.get(identity));
     if (!initial) return { pending: false, status: 'missing' };
-    const claim = await store.claim({ ...identity, bindingId: initial.bindingId });
+    const claim = await controlCall('authority-claim', () =>
+      store.claim({ ...identity, bindingId: initial.bindingId }),
+    );
     if (claim.kind !== 'claimed') return { pending: claim.kind === 'busy', status: claim.kind };
-    const state = { row: claim.row };
-    const draft = await preparationStore.get(identity);
+    state.row = claim.row;
+    const draft = await controlCall('preparation-read', () => preparationStore.get(identity));
     let observation = {};
     let workflowResumeState;
-    const observe = (value) => emitNativeExecutionDiagnostic(diagnostics, value);
     const observedInvoke = async (input) => {
       const phase = nativeDiagnosticPhase(input.payload.command);
       if (
@@ -155,7 +174,7 @@ export const createNativeExecutionSupervisor =
       }
     };
     const current = async ({ allowCancelled = false } = {}) => {
-      const latest = await store.get(identity);
+      const latest = await controlCall('authority-read', () => store.get(identity));
       if (
         !latest ||
         latest.bindingId !== state.row.bindingId ||
@@ -172,7 +191,7 @@ export const createNativeExecutionSupervisor =
     };
     const check = async () => {
       await current();
-      await authorize({ draft, execution: state.row });
+      await controlCall('authorization', () => authorize({ draft, execution: state.row }));
       await current();
     };
     const advance = async (patch, stopped) => {
@@ -189,7 +208,7 @@ export const createNativeExecutionSupervisor =
       return { stoppedSessionId: stopped.runtimeSessionId };
     };
     const yieldPending = async (status = state.row.status) => {
-      state.row = await store.release({ row: state.row });
+      state.row = await controlCall('authority-release', () => store.release({ row: state.row }));
       return { pending: true, status };
     };
     const requireRecovery = async (requestedReason, deniedResumeObservation) => {
@@ -391,7 +410,9 @@ export const createNativeExecutionSupervisor =
         ['REQUESTED', 'UPGRADING', 'DISPATCHING', 'RUNNING', 'RECOVERING'].includes(
           state.row.status,
         ) &&
-        (await imagePolicy.revocation(state.row.configuration.image.digest))
+        (await controlCall('image-policy', () =>
+          imagePolicy.revocation(state.row.configuration.image.digest),
+        ))
       ) {
         observe({ stage: 'decision', code: 'IMAGE_REVOKED', controlStatus: state.row.status });
         await current();
@@ -401,12 +422,13 @@ export const createNativeExecutionSupervisor =
         return { pending: false, status: 'FAILED', failureCode: 'native_execution_image_revoked' };
       }
       if (['DISPATCHING', 'RUNNING', 'RECOVERING'].includes(state.row.status) && fence.read) {
-        let savedFence;
-        try {
-          savedFence = await fence.read(executionIdentity(state.row));
-        } catch (error) {
-          if (!['NoSuchKey', 'NotFound'].includes(error?.name)) throw error;
-        }
+        const savedFence = await controlCall('fence-read', async () => {
+          try {
+            return await fence.read(executionIdentity(state.row));
+          } catch (error) {
+            if (!['NoSuchKey', 'NotFound'].includes(error?.name)) throw error;
+          }
+        });
         if (
           savedFence?.state === 'FENCED' &&
           savedFence.writerGeneration === nativeWriterGeneration(state.row) &&
@@ -458,6 +480,7 @@ export const createNativeExecutionSupervisor =
           status,
           observe,
           credentials,
+          controlCall,
         });
       }
       if (state.row.status === 'DISPATCHING') {

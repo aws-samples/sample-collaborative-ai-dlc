@@ -303,6 +303,7 @@ export const reconcileNativeRecovery = async ({
   status,
   observe,
   credentials,
+  controlCall = (_operation, call) => call(),
 }) => {
   const recovery = state.row.recovery;
   const workspace = nativeWorkspaceRecovery(state.row.configuration);
@@ -325,28 +326,36 @@ export const reconcileNativeRecovery = async ({
     throw error;
   }
   if (recovery.phase === 'FENCING') {
-    await fence.suspend(executionIdentity(state.row), {
-      writerGeneration: recovery.previousGeneration,
-      recoveryId: recovery.id,
-      reason: recovery.reason,
-      ...(workspace ? { workflowResumeState: recovery.workflowResumeState } : {}),
-    });
+    await controlCall('fence-suspend', () =>
+      fence.suspend(executionIdentity(state.row), {
+        writerGeneration: recovery.previousGeneration,
+        recoveryId: recovery.id,
+        reason: recovery.reason,
+        ...(workspace ? { workflowResumeState: recovery.workflowResumeState } : {}),
+      }),
+    );
     await check();
     // Same AWS session IDs are reusable. A stable per-episode stop token
     // prevents an old retry from stopping a replacement generation.
-    const stopped = await stop({ draft, execution: state.row, recoveryId: recovery.id });
+    const stopped = await controlCall('stop', () =>
+      stop({ draft, execution: state.row, recoveryId: recovery.id }),
+    );
     await check();
     if (stopped?.confirmed !== true || stopped.runtimeSessionId !== state.row.runtimeSessionId)
       fail('NATIVE_EXECUTION_STOP_UNCONFIRMED');
-    state.row = await store.recoveryStopped({ row: state.row });
+    state.row = await controlCall('authority-recovery-stopped', () =>
+      store.recoveryStopped({ row: state.row }),
+    );
     return yieldPending();
   }
-  await fence.activate(executionIdentity(state.row), {
-    writerGeneration: nativeWriterGeneration(state.row),
-    recoveryId: recovery.id,
-    checkpointId: workspace ? null : state.row.recoveryCheckpoint.id,
-    ...(workspace ? { recoveryMode: state.row.configuration.recoveryMode } : {}),
-  });
+  await controlCall('fence-activate', () =>
+    fence.activate(executionIdentity(state.row), {
+      writerGeneration: nativeWriterGeneration(state.row),
+      recoveryId: recovery.id,
+      checkpointId: workspace ? null : state.row.recoveryCheckpoint.id,
+      ...(workspace ? { recoveryMode: state.row.configuration.recoveryMode } : {}),
+    }),
+  );
   await check();
   let report;
   let phase = 'recover';

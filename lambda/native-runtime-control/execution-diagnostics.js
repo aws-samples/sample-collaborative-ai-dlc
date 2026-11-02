@@ -9,6 +9,19 @@ import {
 
 const PHASES = new Set(['start', 'continue', 'status', 'recover', 'resume', 'unknown']);
 const STAGES = new Set(['sdk', 'http', 'body', 'report', 'call', 'decision']);
+const OPERATIONS = new Set([
+  'authority-read',
+  'authority-claim',
+  'authority-release',
+  'preparation-read',
+  'authorization',
+  'image-policy',
+  'fence-read',
+  'fence-suspend',
+  'fence-activate',
+  'stop',
+  'authority-recovery-stopped',
+]);
 const CODES = new Set([
   'SDK_FAILURE',
   'CONTENT_TYPE_INVALID',
@@ -47,7 +60,10 @@ const STATUSES = new Set([
 const RUNTIME_CODES = new Set(NATIVE_RUNTIME_FAILURE_CODES);
 const ERROR_CODES = new Set([
   'NATIVE_EXECUTION_RUNTIME_UNAVAILABLE',
+  'NATIVE_EXECUTION_UNAVAILABLE',
   'NATIVE_EXECUTION_RUNTIME_MISMATCH',
+  'NATIVE_EXECUTION_FORBIDDEN',
+  'NATIVE_EXECUTION_SOURCE_CHANGED',
   'NATIVE_EXECUTION_LEASE_LOST',
   'NATIVE_EXECUTION_STOP_UNCONFIRMED',
   'NATIVE_EXECUTION_CANCELLED',
@@ -63,6 +79,12 @@ const ERROR_CODES = new Set([
   'ECONNREFUSED',
   'ETIMEDOUT',
   'EPIPE',
+  'EBUSY',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+  'EMFILE',
+  'ENFILE',
+  'ENETUNREACH',
   ...RUNTIME_CODES,
 ]);
 const ERROR_NAMES = new Set([
@@ -84,6 +106,16 @@ const ERROR_NAMES = new Set([
   'InternalServerException',
   'NoSuchKey',
   'NotFound',
+  'PreconditionFailed',
+  'InvalidRequest',
+  'SlowDown',
+  'CredentialsProviderError',
+  'TokenProviderError',
+  'ExpiredTokenException',
+  'UnrecognizedClientException',
+  'SignatureDoesNotMatch',
+  'TransactionCanceledException',
+  'ResponseError',
 ]);
 const REASONS = new Set([
   'SESSION_LOST',
@@ -164,6 +196,9 @@ export const nativeDiagnosticError = (error) => {
     ...(requestId(own(metadata, 'requestId'))
       ? { awsRequestId: requestId(own(metadata, 'requestId')) }
       : {}),
+    ...(httpStatus(own(error, 'statusCode')) !== undefined
+      ? { serviceStatusCode: httpStatus(own(error, 'statusCode')) }
+      : {}),
   };
 };
 
@@ -241,6 +276,7 @@ export const emitNativeExecutionDiagnostic = (sink, input) => {
       ['reason', REASONS],
       ['controlStatus', CONTROL_STATUSES],
       ['failureClass', READ_FAILURES],
+      ['operation', OPERATIONS],
     ]) {
       if (own(input, key) !== undefined) value[key] = enumeration(values, own(input, key));
     }
@@ -255,6 +291,8 @@ export const emitNativeExecutionDiagnostic = (sink, input) => {
     }
     const status = httpStatus(own(input, 'httpStatus'));
     if (status !== undefined) value.httpStatus = status;
+    const serviceStatus = httpStatus(own(input, 'serviceStatusCode'));
+    if (serviceStatus !== undefined) value.serviceStatusCode = serviceStatus;
     const id = requestId(own(input, 'awsRequestId'));
     if (id !== undefined) value.awsRequestId = id;
     for (const key of [

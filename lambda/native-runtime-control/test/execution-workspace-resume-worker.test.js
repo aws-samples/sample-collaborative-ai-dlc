@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
-import { createNativeExecutionSupervisor } from '../execution-worker.js';
+import {
+  createNativeExecutionSupervisor,
+  stopNativeExecutionSession,
+} from '../execution-worker.js';
+import { createNativeExecutionDiagnostics } from '../execution-diagnostics.js';
 import { executionIdentity } from '../execution-runtime.js';
 import { nativeWriterGeneration } from '../execution-store.js';
 import { NATIVE_WORKSPACE_RECOVERY } from '../../shared/native-recovery-mode.js';
@@ -75,6 +79,130 @@ const fixture = async ({ generation = 2 } = {}) => {
     reconcile: createNativeExecutionSupervisor(ports),
   };
 };
+
+describe('workspace recovery control diagnostics', () => {
+  it.each(['NoSuchKey', 'NotFound'])(
+    'does not report an expected absent fence (%s) as a failed control operation',
+    async (name) => {
+      const f = await fixture();
+      f.ports.fence.read.mockRejectedValueOnce(Object.assign(new Error('absent'), { name }));
+      const events = [];
+      const reconcile = createNativeExecutionSupervisor({
+        ...f.ports,
+        diagnostics: (event) => events.push(event),
+      });
+      expect(await reconcile(f.identity)).toMatchObject({
+        status: 'RECOVERY_REQUIRED',
+        reason: 'DELIVERY_UNCERTAIN',
+      });
+      expect(events.some((event) => event.operation === 'fence-read')).toBe(false);
+      expect(f.ports.stop).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    'authority-read',
+    'authority-claim',
+    'preparation-read',
+    'authorization',
+    'image-policy',
+    'fence-read',
+    'fence-suspend',
+    'stop',
+    'authority-recovery-stopped',
+  ])('identifies a failed %s without advancing the fenced writer', async (operation) => {
+    const f = await fixture({ generation: 1 });
+    const claimed = await f.store.claim(f.bindingIdentity);
+    const stopped = await f.store.recoveryRequired({
+      row: claimed.row,
+      reason: 'SESSION_LOST',
+      workflowResumeState: 'created',
+      stoppedSessionId: claimed.row.runtimeSessionId,
+    });
+    await f.store.recover({
+      ...f.bindingIdentity,
+      request: {
+        requestId: randomUUID(),
+        recoveryId: stopped.recovery.id,
+        confirmWorkspaceResume: true,
+      },
+    });
+    const before = f.row();
+    f.ports.fence.read.mockResolvedValue({
+      state: 'FENCED',
+      writerGeneration: 1,
+      recoveryId: before.recovery.id,
+      reason: 'SESSION_LOST',
+      workflowResumeState: 'created',
+    });
+    const canary = 'private-command-provider-body-and-credentials-do-not-log';
+    const requestId = randomUUID();
+    const error = Object.assign(new Error(canary), {
+      name: operation === 'stop' ? 'ResourceNotFoundException' : 'AccessDeniedException',
+      $metadata: { httpStatusCode: operation === 'stop' ? 404 : 403, requestId },
+      providerBody: canary,
+    });
+    const denied = vi.fn(async () => {
+      throw error;
+    });
+    const ports = {
+      ...f.ports,
+      store: { ...f.store },
+      preparationStore: { ...f.preparationStore },
+    };
+    if (operation === 'authority-read') ports.store.get = denied;
+    if (operation === 'authority-claim') ports.store.claim = denied;
+    if (operation === 'preparation-read') ports.preparationStore.get = denied;
+    if (operation === 'authorization') ports.authorize = denied;
+    if (operation === 'image-policy') ports.imagePolicy = { revocation: denied };
+    if (operation === 'fence-read') ports.fence.read = denied;
+    if (operation === 'fence-suspend') ports.fence.suspend = denied;
+    if (operation === 'authority-recovery-stopped') ports.store.recoveryStopped = denied;
+    if (operation === 'stop') {
+      // Exercise the real Stop adapter: a missing-session SDK error is not a
+      // positive stop receipt, even when an earlier stop was confirmed.
+      ports.stop = (input) => stopNativeExecutionSession({ ...input, runtime: { send: denied } });
+    }
+    const lines = [];
+    ports.diagnostics = createNativeExecutionDiagnostics({
+      scope: f.identity,
+      logger: { info: (line) => lines.push(line) },
+    });
+    const reconcile = createNativeExecutionSupervisor(ports);
+    await expect(reconcile(f.identity)).rejects.toBe(error);
+    expect(denied).toHaveBeenCalledTimes(1);
+    expect(lines.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        event: 'native_execution_diagnostic',
+        scopeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        phase: ['authority-read', 'authority-claim'].includes(operation) ? 'unknown' : 'recover',
+        stage: 'call',
+        code: 'CALL_FAILED',
+        operation,
+        errorName: error.name,
+        errorCode: 'unknown',
+        httpStatus: error.$metadata.httpStatusCode,
+        awsRequestId: requestId,
+      }),
+    ]);
+    expect(lines.join('\n')).not.toContain(canary);
+    expect(lines.join('\n')).not.toContain(before.runtimeSessionId);
+    expect(lines.join('\n')).not.toContain(f.identity.projectId);
+    expect(f.row()).toMatchObject({
+      status: 'RECOVERING',
+      writerGeneration: 1,
+      recovery: { id: before.recovery.id, phase: 'FENCING' },
+      publication: before.publication,
+      stopConfirmation: before.stopConfirmation,
+    });
+    expect(ports.fence.activate).not.toHaveBeenCalled();
+    expect(ports.credentials).not.toHaveBeenCalled();
+    expect(ports.invoke).not.toHaveBeenCalled();
+    expect(await f.store.response(before, f.accepted.response.interactionId)).toEqual(
+      f.accepted.response,
+    );
+  });
+});
 
 describe('interrupted acknowledged workspace resume', () => {
   it('requires another confirmed recovery without replaying the accepted answer', async () => {

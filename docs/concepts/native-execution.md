@@ -974,6 +974,111 @@ both browser rejection proofs **BLOCKED**. Waiting recovery retains its earlier
 pass; parser deployment, game publication/playability and a fresh active-tool
 proof remain open. NE-02 stays unchecked.
 
+**Verified inspections and browser recovery attempt, 2026-11-02:** both corrected
+inspections from `a7c4ddf2` now pass every verifier check, with confirmed diagnostic
+stops. They establish the filesystem state independently of the earlier failed
+receipts, which remain unchanged.
+
+| Isolated intent                                | Verified filesystem observation                                                                     | Remaining qualification                                                              |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| Missing `f3cc998d-e457-4e4c-948c-985a2da1eb39` | Project absent; original inode `-6973646241848332581` preserved in the original nonce's quarantine. | Browser attempt **FAIL**: recovery remains in `FENCING` before workspace validation. |
+| Wrong `33ab1cb2-8f74-4c41-aff2-71c27b3cb8fe`   | Original project inode `5919596651590142328` still present; no quarantine or replacement.           | Wrong-project fault and browser rejection **NOT RUN**.                               |
+
+The missing inspection's root is `1538196158438670172`, machine inode is
+`-3605233117112043272`, and quarantine inode is `8140747515712229876`.
+The quarantined project's inode exactly matches the recorded original.
+The wrong inspection's root is `-4931017981954711920`; its project and machine
+inodes are positive. Its **569-byte** stdout SHA-256,
+`fb8c7205a92a701b4442817385f99f226e3faf708932722dc0219f8b83d37068`,
+exactly matches the previously rejected response. This confirms the signed-root
+projection defect with live evidence. The missing project's recorded signed
+inode also establishes why the later unsigned inspection validator rejected
+that identity. The original missing mutation receipt remains failed; its
+discarded response bytes are not recovered or replaced by a fabricated receipt.
+The independent successful inspection now proves that the original was
+quarantined and remains preserved.
+
+Before the browser action, scoped `solution-read` checks reconfirmed account
+`746558295630`, region `us-east-1`, authority revisions **313 / 470**, writer
+**1**, resource/configuration pins and predecessor-stop evidence. All five
+deployment owners still match implementation `526837eb`; the immutable runtime
+image remains
+`sha256:074c50086bee10ca4d086fa3df0a9f87251a684bfa34df6ec67cf08cd65f6eeb`.
+Neither the approved application source pin nor the accepted configuration was
+changed.
+
+The signed-in browser submitted exactly one explicit fresh-session confirmation
+for the missing intent. The public recovery POST returned **202** at
+`2026-11-02T10:08:31.606Z`, request
+`5c6d6d6e-3ee0-4df2-bfd6-a0523a526bc7`, recovery episode
+`8587ede1-0565-412a-8822-f6ef2701e9e5`. At the authoritative read at
+`11:01:16.721Z`, revision **328** was still `RECOVERING / FENCING`, with actual
+writer **1**. The browser continued displaying “Resuming in a fresh session”;
+it did not display the required missing-workspace rejection. A later scoped read
+at `12:05:20.761Z` still showed `FENCING`, revision **344**, writer **1** and the
+same publication. Scoped runtime lifecycle reads through `12:05:32.884Z` found
+no new turn.
+
+The before/after comparison finds identical canonical hashes for all **67**
+pre-existing immutable records. Only the recovery event and
+the answer-retention observation were added. Both publication records, the
+output cursor, accepted responses and the exact S3 fence version/bytes remain
+unchanged. Publication
+`b8e6edd41cc2d5599e2c19b624b19d6eb05a108a9da935e6c3ae688e462a9894`,
+CLI identity `347e5f42-5c6a-4020-8935-c773de24cf7f`, AWS session
+`588f4912-f5cc-433d-9d18-b90fd2298dfc` and EFS binding
+`abf4667b-b37e-49e2-a02b-de4da8e17644` remain the predecessors. No new writer,
+publication or runtime turn was observed. No private checkpoint is recorded.
+These safety observations do not substitute for the missing browser rejection.
+
+The original revision visibly retains answer
+`89de5291-d7d0-48f0-aa62-7fae7a6ebe36`, actor
+`e4787488-c071-709b-50c7-f2cd87682d0b`, accepted at
+`2026-10-27T12:55:32.904Z`. Its immutable text hash and acceptance identity are
+unchanged. The new retention fact records `delivery: undelivered`; the historical
+view says it was not sent again, with no delivery timestamp, resulting
+publication or recorded approval. No new answer or workflow consent was sent.
+
+The deployed retry log retains only a generic code, without the execution scope,
+failing control operation or SDK error type. Scoped logs cannot establish the
+cause of this stalled recovery. A bounded local correction now records
+allowlisted operation/error/status metadata and the existing scope hash for
+failures during authority reads, authorization, fencing and predecessor stop.
+It preserves the original errors and every ownership/stop check; a
+`ResourceNotFoundException` is still not positive stop evidence. This is a
+diagnostic correction, not a claimed live repair of the unidentified failure.
+
+The final owning-project command, `npm test -- --project=native-runtime-control`,
+passes **1,450** tests on Node **24.21.0** with local Gremlin and DynamoDB
+containers. Earlier logs retain the sandbox loopback failures and the
+standalone configuration's missing-DynamoDB-endpoint failure with dummy test
+credentials. The final root-project run supplies the correct local endpoints.
+Lint passes with the existing **82** warnings, dependency checks with **17**
+warnings, and architecture checks with **0** violations. The secret scan passes;
+unrelated `.worktrees` are excluded from the scoped lint/secret checks.
+
+Fresh evidence is under
+`.native-evidence/ne02-2026-11-02-workspace-rejection/`, including the token-free
+public request capture, actual UI screenshots and authority/fence comparisons.
+The single user-run handoff is
+`handoff/run-wrong-workspace-fault.sh` in that directory. It pins the reviewed
+checkout, original command and successful inspection hashes, rechecks the
+unchanged wrong-case authority at revision **470**, preserves the original in
+the nonce-scoped quarantine, creates only the intended empty replacement and
+verifies its diagnostic stop. It writes fresh result filenames and never repeats
+the missing fault. **63** local checks exercise its real generated command,
+streamed consumer, signed metadata, preserved files, authority guards and
+terminal verifier; a successful inspection cannot be labeled a successful fault.
+These are synthetic filesystem/SDK checks, not live fault qualification.
+
+The user runs that one wrong-project action with their existing dev operator
+profile. It requires no deployment. The parser correction `3280c8b4` and the new
+control diagnostics remain undeployed; deployment and renewed live verification
+are subsequent work. Waiting recovery, temporary Kiro unavailability and intake
+rejection retain their earlier passes. Missing/wrong browser rejection, game
+publication/playability and fresh active-tool recovery remain open. The expired
+October 27 active-tool stop command must not be reused. NE-02 stays unchecked.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
