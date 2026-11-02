@@ -1079,6 +1079,85 @@ rejection retain their earlier passes. Missing/wrong browser rejection, game
 publication/playability and fresh active-tool recovery remain open. The expired
 October 27 active-tool stop command must not be reused. NE-02 stays unchecked.
 
+**Verified wrong-project fault and browser attempt, 2026-11-02:** the user ran the
+single guarded wrong-project handoff. Its receipt and terminal verifier pass
+every check. The original project inode `5919596651590142328` is preserved in
+`.ne02-quarantine-957535fc-5e38-43ad-985b-af115f6cead6/project`; the empty replacement
+has the different inode `-7351887095847076373`. Root, machine, workspace record,
+configuration, attempt, writer and nonce match the successful inspection and
+prepared command. The diagnostic stop is confirmed with token
+`e8b8eaa5-29ce-433a-a975-bd041d61f573`. The new receipt's SHA-256 is
+`1d93b9727d2bfba2b2908790885c0e6eea7aec11810d0b349aa9de5b84fb3d8b`.
+All earlier receipts, including the failed missing mutation, remain unchanged.
+The agent independently verified this receipt without invoking any operator
+action.
+
+Scoped reads reconfirmed the account, region, runtime endpoint, accepted image,
+EFS access point and stopped writer before the browser action. All **67**
+authority records and the S3 fence matched the preceding wrong-case handoff.
+The signed-in browser then submitted exactly one explicit fresh-session
+confirmation for `33ab1cb2-8f74-4c41-aff2-71c27b3cb8fe`. Its public recovery POST
+returned **202** at `2026-11-02T13:11:35.415Z`, request
+`f5744c21-2e24-43af-9050-105964ad6448`, recovery episode
+`c87b2c44-fd08-4a07-8ef9-4beec42b1297`. No answer or workflow approval was sent.
+
+The wrong-workspace browser qualification is **FAIL**. At `13:15:22.751Z`,
+authority revision **473** was still `RECOVERING / FENCING`, with actual writer
+**1**; the planned writer **2** was not admitted. The browser displayed
+“Resuming in a fresh session” instead of the required workspace rejection.
+Scoped lifecycle reads through `13:15:25.308Z` found no new runtime turn.
+The missing case also remained in `FENCING`, revision **361**, writer **1**, at
+`13:15:27.605Z`. Both filesystem faults are established, but neither browser
+rejection has passed. No additional fault or recovery retry was performed.
+
+For the wrong case, all **66** pre-existing records other than the mutable
+`EXECUTION` record have identical canonical hashes. Only the expected recovery
+event and answer-retention fact were added; no record was deleted. Both
+publications, the output cursor, accepted responses, S3 fence bytes/version and
+predecessor-stop evidence remain unchanged. The retained publication is
+`24b6d3c1a8c25c1dde39ad9e542efe1964d58949365709cc173cda802c006be6`,
+CLI identity `327a7b7d-b62e-4a4e-923c-0b6313ea3b8d`, AWS session
+`f71491ca-9c59-444a-afa1-2e4b98e17091` and EFS binding
+`c5193bbe-843d-47e2-ad99-ded5933c60b1`. No new writer, publication or CLI identity
+was observed; no private checkpoint is recorded.
+
+The original revision visibly retains answer
+`167f809d-46bb-4724-888e-c52037835307`, actor
+`e4787488-c071-709b-50c7-f2cd87682d0b`, accepted at
+`2026-10-27T12:55:36.769Z`. Its immutable response, text hash and acceptance facts
+are unchanged. The original dispatch classification was `pending`; the new
+retention fact is `delivery: undelivered`, without a delivery timestamp,
+resulting publication or recorded approval. Recovery intentionally clears the
+mutable pending-response/dispatch pointers while preserving this ledger.
+That removal prevents automatic replay; it does not delete the accepted answer.
+The original-revision browser card explicitly says the answer was not sent again.
+
+Fresh package metadata still matches the five previously verified deployment
+owners from `526837eb`, with runtime digest
+`sha256:074c50086bee10ca4d086fa3df0a9f87251a684bfa34df6ec67cf08cd65f6eeb`.
+The parser repair `3280c8b4` and control diagnostics `ef69e016` remain undeployed.
+The generic deployed retry log still does not establish the failing operation.
+The next dependency is user deployment of that candidate's backend and fresh
+runtime image, followed by deployed alignment and scoped failure diagnosis.
+A backend-only deployment retaining the old image cannot qualify the parser
+repair. Existing executions retain their accepted pins; renewed positive game
+qualification must accept the newly verified image digest.
+
+Evidence is under `.native-evidence/ne02-2026-11-02-wrong-rejection/`, including
+the fault-receipt reconciliation, token-free public request/response metadata,
+actual browser screenshots and before/after authority comparisons. **17**
+checks of those captured records pass; they establish preservation, not the
+missing browser rejection. Local evaluation of the actual Terraform source-hash
+expressions verifies all **272** runtime source hashes against the parser
+candidate and still yields tag `d2dff54e22d80b4f`. This is a source-derived tag,
+not a built or deployed digest. The documentation-only follow-up does not repeat
+unaffected application suites. Markdown formatting, the scoped secret scan,
+`git diff --check`, evidence-script syntax, `uv sync --group docs --locked` and
+`uv run --no-sync zensical build` pass. Waiting recovery, temporary Kiro
+unavailability and intake rejection retain their prior passes. Missing/wrong
+rejection, game publication/playability and fresh active-tool recovery remain
+open; NE-02 stays unchecked.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
