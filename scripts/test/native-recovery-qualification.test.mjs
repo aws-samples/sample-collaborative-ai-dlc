@@ -3,7 +3,7 @@ import { spawn, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 import { constants } from 'node:fs';
@@ -22,6 +22,7 @@ import {
   barrierSource,
   barrierCommand,
   runWorkspaceOperation,
+  validWorkspaceInode,
   workspaceCommand,
 } from '../lib/native-recovery-qualification.mjs';
 
@@ -988,6 +989,332 @@ function readOnlyPorts(fixture) {
   return { ...fixture.ports, fs: readOnly };
 }
 
+async function generatedCommandFixture(t, signed = 'project') {
+  const f = await filesystemFixture(t);
+  const inodes = {};
+  for (const [index, name] of ['root', 'project', 'machine'].entries()) {
+    const original = f.workspace.nodes[name].ino;
+    // Include IDs above Number.MAX_SAFE_INTEGER and the high bit exposed by
+    // Node's BigInt64Array. The actual filesystem remains the same fixture.
+    const raw =
+      signed === name || signed === 'all'
+        ? (1n << 63n) + BigInt(index + 1)
+        : 9007199254740993n + BigInt(index);
+    inodes[original] = String(raw);
+    f.workspace.nodes[name].ino = String(new BigInt64Array([raw])[0]);
+  }
+  await fs.writeFile(join(f.control, 'workspace.json'), JSON.stringify(f.workspace), {
+    mode: 0o600,
+  });
+  const config = join(f.root, 'command-fixture.json');
+  const settings = { root: f.root, procRoot: f.procRoot, inodes, readOnly: true };
+  const execute = async (input, overrides = {}) => {
+    await fs.writeFile(config, JSON.stringify({ ...settings, ...overrides }), { mode: 0o600 });
+    const child = spawn('/bin/sh', ['-c', workspaceCommand(input)], {
+      timeout: 10_000,
+      env: {
+        PATH: `${dirname(process.execPath)}:${process.env.PATH}`,
+        NODE_OPTIONS: `--import=${new URL('./fixtures/native-recovery-preload.mjs', import.meta.url).href}`,
+        NE02_FILESYSTEM_FIXTURE: config,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    const exitCode = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', resolve);
+    });
+    assert.equal(stderr, '');
+    const raw = JSON.parse(stdout);
+    return {
+      raw,
+      stdout,
+      exitCode,
+      response: () =>
+        response(raw, {
+          stream: events(
+            { chunk: { contentStart: {} } },
+            { chunk: { contentDelta: { stdout: stdout.slice(0, 163) } } },
+            { chunk: { contentDelta: { stdout: stdout.slice(163) } } },
+            { chunk: { contentStop: { status: 'COMPLETED', exitCode } } },
+          ),
+        }),
+    };
+  };
+  const run = async (input, overrides) => {
+    const command = await execute(input, overrides);
+    const observation = {};
+    const result = await readCommandResponse(command.response(), input, observation);
+    return { ...command, result, observation };
+  };
+  return { ...f, inodes, execute, run };
+}
+
+test('generated command and streamed consumer preserve signed NFS IDs for original, missing and replacement projects', async (t) => {
+  for (const signed of ['none', 'root', 'project', 'machine', 'all']) {
+    for (const layout of ['original', 'missing', 'replacement']) {
+      await t.test(`${signed}/${layout}`, async (child) => {
+        const f = await generatedCommandFixture(child, signed);
+        const original = f.workspace.nodes.project.ino;
+        const quarantine = join(f.root, `.ne02-quarantine-${nonce}`);
+        const source = await fs.readFile(join(f.project, 'src/game.js'));
+        const workspace = await fs.readFile(join(f.control, 'workspace.json'));
+        const owner = await fs.readFile(join(f.owner, 'owner.json'));
+        if (layout !== 'original') {
+          await fs.mkdir(quarantine, { mode: 0o700 });
+          await fs.rename(f.project, join(quarantine, 'project'));
+          if (layout === 'replacement') await fs.mkdir(f.project, { mode: 0o700 });
+          if (signed === 'all') {
+            f.inodes[String((await fs.lstat(quarantine, { bigint: true })).ino)] = String(
+              (1n << 63n) + 77n,
+            );
+            if (layout === 'replacement')
+              f.inodes[String((await fs.lstat(f.project, { bigint: true })).ino)] = String(
+                (1n << 63n) + 78n,
+              );
+          }
+        }
+        const { result, observation, exitCode } = await f.run(
+          operation('inspect-workspace', false),
+        );
+        assert.equal(result.ok, true, JSON.stringify(result));
+        assert.equal(exitCode, 0);
+        assert.equal(observation.phase, 'verified');
+        assert.equal(result.rootInode, f.workspace.nodes.root.ino);
+        assert.equal(result.projectInode, original);
+        assert.equal(result.machineInode, f.workspace.nodes.machine.ino);
+        assert.equal(result.quarantinedProjectInode, layout === 'original' ? null : original);
+        if (layout === 'missing') assert.equal(result.observedProjectInode, null);
+        else if (layout === 'original') assert.equal(result.observedProjectInode, original);
+        else assert.notEqual(result.observedProjectInode, original);
+        assert.equal(result.workspaceSha256, sha(workspace));
+        assert.equal(result.ownerSha256, sha(owner));
+        const retained = layout === 'original' ? f.project : join(quarantine, 'project');
+        assert.deepEqual(await fs.readFile(join(retained, 'src/game.js')), source);
+        assert.equal(
+          await fs.readlink(join(retained, 'node_modules/.bin/fixture')),
+          '../fixture/bin.js',
+        );
+        assert.deepEqual(await fs.readFile(join(f.control, 'workspace.json')), workspace);
+        assert.deepEqual(await fs.readFile(join(f.owner, 'owner.json')), owner);
+      });
+    }
+  }
+});
+
+test('inode validation retains exact signed and unsigned 64-bit representations and rejects coercion', () => {
+  for (const value of [
+    '0',
+    '9007199254740993',
+    '-9007199254740993',
+    '-9223372036854775808',
+    '18446744073709551615',
+  ])
+    assert.equal(validWorkspaceInode(value), true, value);
+  for (const value of [
+    undefined,
+    null,
+    123,
+    123n,
+    '1e3',
+    '+1',
+    '-0',
+    '01',
+    ' 1',
+    '-9223372036854775809',
+    '18446744073709551616',
+  ])
+    assert.equal(validWorkspaceInode(value), false, String(value));
+  const input = operation('inspect-workspace', false);
+  for (const key of [
+    'rootInode',
+    'projectInode',
+    'machineInode',
+    'observedProjectInode',
+    'quarantineInode',
+    'quarantinedProjectInode',
+  ]) {
+    const observation = {};
+    assert.throws(
+      () =>
+        projectWorkspaceReport(
+          { ...remoteReport(input), [key]: 9007199254740992 },
+          input,
+          observation,
+        ),
+      { code: 'runtime_response_invalid' },
+    );
+    assert.equal(observation.reportCheck, key);
+  }
+});
+
+test('generated inspections reject actual guard violations and serialize the exact bounded validation check', async (t) => {
+  for (const [change, check, subject] of [
+    ['adjacent-inode', 'workspace_node_identity', 'root'],
+    ['unsigned-alias', 'workspace_node_identity', 'root'],
+    ['wrong-config', 'owner_configuration'],
+    ['wrong-identity', 'workspace_identity'],
+    ['malformed-inode', 'workspace_project_inode'],
+    ['next-writer', 'next_writer_absent'],
+    ['symlink', 'directory_type', 'quarantine'],
+    ['mode', 'directory_mode', 'machine'],
+    ['owner-file-absent', 'file_open', 'owner_record'],
+    ['wrong-original', 'layout_original_inode'],
+    ['nfs', 'nfs_mount'],
+    ['active-harness', 'harness_inactive'],
+  ]) {
+    await t.test(change, async (child) => {
+      const f = await generatedCommandFixture(child, 'all');
+      const quarantine = join(f.root, `.ne02-quarantine-${nonce}`);
+      if (change === 'adjacent-inode')
+        f.workspace.nodes.root.ino = String(BigInt(f.workspace.nodes.root.ino) + 1n);
+      if (change === 'unsigned-alias')
+        f.workspace.nodes.root.ino = String(BigInt.asUintN(64, BigInt(f.workspace.nodes.root.ino)));
+      if (change === 'wrong-config') {
+        const owner = JSON.parse(await fs.readFile(join(f.owner, 'owner.json')));
+        owner.configurationSha256 = '0'.repeat(64);
+        await fs.writeFile(join(f.owner, 'owner.json'), JSON.stringify(owner), { mode: 0o600 });
+      }
+      if (change === 'wrong-identity') f.workspace.identity = { ...identity, bindingId: nonce };
+      if (change === 'malformed-inode')
+        f.workspace.nodes.project.ino = 'PRIVATE_INVALID_RECORD_MUST_NOT_ESCAPE';
+      if (change === 'next-writer') await fs.mkdir(join(f.control, 'writer-2'), { mode: 0o700 });
+      if (change === 'symlink') await fs.symlink(f.project, quarantine);
+      if (change === 'mode') await fs.chmod(join(f.root, 'machine'), 0o755);
+      if (change === 'owner-file-absent')
+        await fs.rename(join(f.owner, 'owner.json'), join(f.owner, 'preserved-owner.json'));
+      if (change === 'wrong-original')
+        await fs.mkdir(join(quarantine, 'project'), { recursive: true, mode: 0o700 });
+      if (change === 'active-harness') {
+        const pid = 20;
+        const dir = join(f.procRoot, String(pid));
+        await fs.mkdir(dir);
+        await fs.writeFile(
+          join(dir, 'stat'),
+          `${pid} (fixture) S 1 ${Array(17).fill('0').join(' ')} 12345\n`,
+        );
+        await fs.writeFile(join(dir, 'cmdline'), '/usr/local/bin/claude\0--print\0');
+      }
+      await fs.writeFile(join(f.control, 'workspace.json'), JSON.stringify(f.workspace), {
+        mode: 0o600,
+      });
+      const { result, observation, stdout, exitCode } = await f.run(
+        operation('inspect-workspace', false),
+        { badMount: change === 'nfs' },
+      );
+      assert.equal(result.ok, false);
+      assert.equal(exitCode, 1);
+      assert.equal(
+        observation.phase,
+        'verified',
+        'a valid failure report remains a failed inspection',
+      );
+      assert.equal(result.validation.check, check);
+      assert.equal(result.validation.subject, subject);
+      assert.equal(result.quarantined, undefined);
+      assert.ok(!stdout.includes('PRIVATE_INVALID_RECORD_MUST_NOT_ESCAPE'));
+      if (change === 'owner-file-absent') assert.equal(result.validation.filesystemCode, 'ENOENT');
+      if (change === 'adjacent-inode')
+        assert.equal(
+          BigInt(result.validation.inodes.recorded_root) - BigInt(result.validation.inodes.root),
+          1n,
+        );
+    });
+  }
+});
+
+test('the operator consumes real generated inspection streams and stops diagnostics on success and guard rejection', async (t) => {
+  for (const denied of [false, true]) {
+    await t.test(denied ? 'guard-denial' : 'signed-success', async (child) => {
+      const workspace = await generatedCommandFixture(child, 'all');
+      if (denied) await fs.mkdir(join(workspace.control, 'writer-2'), { mode: 0o700 });
+      const f = operatorFixture('RECOVERY_REQUIRED');
+      f.ports.command = async (_row, input) => (await workspace.execute(input)).response();
+      const result = await runOperator(options('inspect-workspace'), f.ports);
+      assert.equal(result.ok, !denied);
+      assert.equal(result.commandResponse.phase, 'verified');
+      assert.equal(result.diagnosticStop.confirmed, true);
+      if (denied) {
+        assert.equal(result.code, 'next_writer_exists');
+        assert.equal(result.workspace.validation.check, 'next_writer_absent');
+      } else assert.equal(result.workspace.projectInode, workspace.workspace.nodes.project.ino);
+    });
+  }
+});
+
+test('generated missing and wrong fault reports retain signed inode identity through serialization', async (t) => {
+  for (const action of ['missing-project', 'wrong-project']) {
+    await t.test(action, async (child) => {
+      const f = await generatedCommandFixture(child, 'all');
+      const workspace = await fs.readFile(join(f.control, 'workspace.json'));
+      const owner = await fs.readFile(join(f.owner, 'owner.json'));
+      const { result } = await f.run(operation(action, false), { readOnly: false });
+      assert.equal(result.ok, true);
+      assert.equal(result.quarantined, true);
+      assert.equal(result.projectInode, f.workspace.nodes.project.ino);
+      const inspection = await f.run(operation('inspect-workspace', false));
+      assert.equal(inspection.result.ok, true);
+      assert.equal(inspection.result.quarantinedProjectInode, result.projectInode);
+      assert.equal(inspection.result.observedProjectInode === null, action === 'missing-project');
+      assert.deepEqual(await fs.readFile(join(f.control, 'workspace.json')), workspace);
+      assert.deepEqual(await fs.readFile(join(f.owner, 'owner.json')), owner);
+      assert.equal(
+        await fs.readFile(join(f.root, `.ne02-quarantine-${nonce}`, 'project/src/game.js'), 'utf8'),
+        'export const paused = true;\n',
+      );
+    });
+  }
+});
+
+test('failure validation projection strips unknown metadata and rejects arbitrary diagnostic strings', async () => {
+  const input = operation('inspect-workspace', false);
+  const bad = {
+    schemaVersion: 1,
+    action: input.action,
+    nonce,
+    ok: false,
+    code: 'workspace_invalid',
+    quarantined: false,
+    validation: {
+      check: 'workspace_node_identity',
+      subject: 'root',
+      inodes: {
+        root: '-9223372036854775807',
+        recorded_root: '-9223372036854775806',
+        private: 'PRIVATE_SHOULD_NOT_ESCAPE',
+      },
+      stdout: 'PRIVATE_SHOULD_NOT_ESCAPE',
+    },
+  };
+  const report = await readCommandResponse(response(bad), input);
+  assert.equal(report.ok, false);
+  assert.equal(report.quarantined, undefined);
+  assert.ok(!JSON.stringify(report).includes('PRIVATE_SHOULD_NOT_ESCAPE'));
+  for (const field of ['check', 'subject', 'filesystemCode']) {
+    const observation = {};
+    await assert.rejects(
+      readCommandResponse(
+        response({
+          ...bad,
+          validation: { ...bad.validation, [field]: 'PRIVATE_SHOULD_NOT_ESCAPE' },
+        }),
+        input,
+        observation,
+      ),
+      { code: 'runtime_response_invalid' },
+    );
+    assert.equal(observation.reportCheck, 'failure_validation');
+    assert.ok(!JSON.stringify(observation).includes('PRIVATE_SHOULD_NOT_ESCAPE'));
+  }
+});
+
 test('workspace inspection distinguishes untouched, missing and wrong projects without mutating original work', async (t) => {
   for (const fault of [null, 'missing-project', 'wrong-project']) {
     await t.test(fault ?? 'original-present', async (child) => {
@@ -1076,7 +1403,7 @@ test('workspace inspection refuses changed owner evidence, a successor writer an
         readOnlyPorts(f),
       );
       assert.equal(result.ok, false);
-      assert.equal(result.quarantined, false);
+      assert.equal(result.quarantined, undefined, 'inspection does not report a mutation outcome');
       assert.equal(
         result.code,
         fault === 'next-writer'

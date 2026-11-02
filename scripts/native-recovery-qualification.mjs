@@ -22,6 +22,11 @@ import {
   barrierCommand,
   qualificationCode,
   qualificationError,
+  validWorkspaceInode,
+  WORKSPACE_VALIDATION_CHECKS,
+  WORKSPACE_VALIDATION_SUBJECTS,
+  WORKSPACE_INODE_FIELDS,
+  WORKSPACE_FILESYSTEM_CODES,
   workspaceCommand,
 } from './lib/native-recovery-qualification.mjs';
 
@@ -287,7 +292,12 @@ export function validateResources({ row, binding }, options, { actual, endpoint,
 
 // Never return raw stdout/stderr, bootstrap bodies, SDK exceptions or unknown
 // fields. The fixed remote command itself emits this small metadata schema.
-export function projectWorkspaceReport(value, input) {
+export function projectWorkspaceReport(value, input, observation = {}) {
+  const requireReport = (condition, check) => {
+    observation.reportCheck = check;
+    if (!condition) fail('runtime_response_invalid');
+  };
+  observation.reportCheck = 'identity';
   if (
     value?.schemaVersion !== 1 ||
     typeof value.ok !== 'boolean' ||
@@ -296,16 +306,49 @@ export function projectWorkspaceReport(value, input) {
   )
     fail('runtime_response_invalid');
   const report = { schemaVersion: 1, ok: value.ok, action: value.action, nonce: value.nonce };
-  if (!value.ok)
+  if (!value.ok) {
+    const validation = value.validation;
+    if (validation !== undefined) {
+      requireReport(
+        WORKSPACE_VALIDATION_CHECKS.includes(validation?.check) &&
+          (validation.subject === undefined ||
+            WORKSPACE_VALIDATION_SUBJECTS.includes(validation.subject)) &&
+          (validation.filesystemCode === undefined ||
+            WORKSPACE_FILESYSTEM_CODES.includes(validation.filesystemCode)),
+        'failure_validation',
+      );
+      const inodes = {};
+      if (validation.inodes !== undefined) {
+        requireReport(
+          validation.inodes !== null &&
+            typeof validation.inodes === 'object' &&
+            !Array.isArray(validation.inodes),
+          'failure_validation',
+        );
+        for (const field of WORKSPACE_INODE_FIELDS) {
+          if (validation.inodes[field] === undefined) continue;
+          requireReport(validWorkspaceInode(validation.inodes[field]), 'failure_validation');
+          inodes[field] = validation.inodes[field];
+        }
+      }
+      report.validation = {
+        check: validation.check,
+        ...(validation.subject ? { subject: validation.subject } : {}),
+        ...(validation.filesystemCode ? { filesystemCode: validation.filesystemCode } : {}),
+        inodes,
+      };
+    }
     return {
       ...report,
       code: qualificationCode(value),
-      quarantined: value.quarantined === true,
+      ...(negative(input.action) ? { quarantined: value.quarantined === true } : {}),
     };
+  }
   for (const key of ['rootInode', 'projectInode', 'machineInode']) {
-    if (!/^\d{1,24}$/.test(value[key] ?? '')) fail('runtime_response_invalid');
+    requireReport(validWorkspaceInode(value[key]), key);
     report[key] = value[key];
   }
+  observation.reportCheck = 'configuration';
   if (
     !SHA.test(value.workspaceSha256 ?? '') ||
     value.configurationSha256 !== input.configurationSha256
@@ -315,10 +358,10 @@ export function projectWorkspaceReport(value, input) {
   report.configurationSha256 = value.configurationSha256;
   if (input.action === 'inspect-workspace') {
     for (const key of ['observedProjectInode', 'quarantineInode', 'quarantinedProjectInode']) {
-      if (value[key] !== null && !/^\d{1,24}$/.test(value[key] ?? ''))
-        fail('runtime_response_invalid');
+      requireReport(value[key] === null || validWorkspaceInode(value[key]), key);
       report[key] = value[key];
     }
+    observation.reportCheck = 'workspace_layout';
     if (
       !SHA.test(value.ownerSha256 ?? '') ||
       (report.quarantinedProjectInode !== null &&
@@ -338,11 +381,11 @@ export function projectWorkspaceReport(value, input) {
     if (value.quarantined !== true) fail('runtime_response_invalid');
     report.quarantined = true;
     if (input.action === 'wrong-project') {
-      if (
-        !/^\d{1,24}$/.test(value.replacementInode ?? '') ||
-        value.replacementInode === value.projectInode
-      )
-        fail('runtime_response_invalid');
+      requireReport(
+        validWorkspaceInode(value.replacementInode) &&
+          value.replacementInode !== value.projectInode,
+        'replacementInode',
+      );
       report.replacementInode = value.replacementInode;
     }
     return report;
@@ -487,7 +530,7 @@ export async function readCommandResponse(response, input, observation = {}) {
     fail('runtime_response_invalid');
   }
   observation.phase = 'report';
-  const report = projectWorkspaceReport(value, input);
+  const report = projectWorkspaceReport(value, input, observation);
   observation.phase = 'exit';
   if (stop.exitCode !== (report.ok ? 0 : 1)) fail('runtime_response_invalid');
   observation.phase = 'verified';

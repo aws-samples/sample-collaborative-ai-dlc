@@ -893,6 +893,87 @@ earlier parser correction still requires user deployment, and game publication,
 browser playability, interrupted-tool recovery and both workspace rejections
 remain open. NE-02 stays unchecked.
 
+**Inspection receipts and contract correction, 2026-11-02:** the user ran the
+inspection handoff from `1128a1bd`. All three diagnostic stops are confirmed,
+but neither workspace inspection passed. The five new result/verifier files and
+the original failed mutation receipt remain byte-for-byte unchanged.
+
+| Inspection               | Actual command response                                                                                       | Qualification consequence                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Missing, implicit Accept | Request `162b81f0-a4ee-4d1c-bee7-75df589acffa`: verified event stream, exit **1**, `workspace_invalid`.       | The command rejected a workspace invariant; the first mutation's outcome remains unknown. |
+| Missing, explicit Accept | Request `eb2d77ad-2176-408d-82c7-b6d6ca91da24`: identical **154-byte** stdout and failure.                    | Explicit Accept did not resolve this failure.                                             |
+| Wrong, explicit Accept   | Request `e7dff25d-f893-4977-8859-f21ed77a54e5`: exit **0**, **569-byte** JSON, rejected at report projection. | Command completion alone did not establish a valid inspection receipt.                    |
+
+The two missing-case stdout hashes are both
+`21f7371b0c9b0a4ea5092cc455bb77ecc4989fddb31b9a8df450bf26f44a5515`.
+The wrong-case stdout hash is
+`fb8c7205a92a701b4442817385f99f226e3faf708932722dc0219f8b83d37068`.
+Scoped runtime logs match all three **22,586-byte** generated commands exactly.
+Their respective diagnostic streams record `SIGTERM` at `09:02:06.446Z`,
+`09:02:27.835Z` and `09:02:36.008Z`. Neither the retained responses nor these logs
+contain the actual inode values or the missing command's failed invariant.
+The wrong response's discarded JSON cannot be recovered from the retained hash.
+The missing receipt's generic `quarantined: false` describes that inspection's
+local mutation flag; it does not establish that the earlier fault left the
+original project in place.
+
+The executable-command investigation reproduced a concrete inode contract
+defect. The native executor persists `String(lstat(..., { bigint: true }).ino)`,
+which can be negative when Node exposes the file ID through `BigInt64Array`.
+The operator helper accepted only unsigned digits. A signed project inode
+therefore returned `workspace_invalid` inside the generated command; a signed
+root or machine inode reached the JSON response and was rejected as
+`runtime_response_invalid`. The real shell command, embedded functions,
+serialization and streamed consumer reproduced both failure shapes. All three
+unsigned layout controls passed before the repair; all twelve signed layout
+cases failed. These reproductions identify the code defect, but do not recover
+the missing live invariant, identify the wrong response's particular inode
+field, or establish either live project's current location.
+
+The helper and response projector now validate canonical full-width inode
+strings without numeric coercion or changing recorded identities. Comparisons
+remain exact: adjacent large IDs and unsigned aliases of recorded signed IDs
+are rejected. Owner, configuration, package, epoch, writer, NFS, predecessor-stop
+and no-active-harness checks remain enforced. Failed inspections identify the
+specific validation check and fixed subject, with bounded observed/recorded
+inode metadata and allowlisted filesystem error codes. Report projection records
+the field it rejects. Arbitrary paths, stdout, stderr, private records and SDK
+exceptions are not returned. Inspection failures no longer expose a
+`quarantined` mutation flag.
+
+All **79** focused tests pass on Node **24.21.0**. Generated-command coverage uses
+real temporary files, permissions, links, renames and readback, with simulated
+NFS mount/process metadata and signed file IDs; it is not live EFS proof. It
+covers original, quarantined-missing and replacement projects, guard failures,
+the actual operator consumer and diagnostic cleanup. The separate terminal
+verifier passes **46** checks using generated serialized reports across five
+filesystem layouts, denied receipts and the preserved live failures. These
+synthetic results never qualify a workspace fault.
+
+The full release-script run passes **350 of 352** tests. The same sandbox
+loopback failure passes when rerun with loopback access; the metadata check
+passes against the unchanged **46** tracked release inputs after the root run
+also scanned unrelated `.worktrees` manifests. The full root run remains
+explicitly not green. Lint, dependency, architecture, formatting and secret
+checks pass. No runtime or frontend source changed.
+
+Current scoped reads still show authority revisions **313** and **470**, writer
+**1**, the same publications, accepted answers, EFS bindings and confirmed stops.
+The five deployment owners and execution-authority alias still match deployed
+`526837eb` and image
+`sha256:074c50086bee10ca4d086fa3df0a9f87251a684bfa34df6ec67cf08cd65f6eeb`.
+Fresh evidence and a guarded, two-inspection handoff are under
+`.native-evidence/ne02-2026-11-02-inspection-contract/`. It preserves all failed
+receipts, uses the original nonce-scoped quarantines, writes distinct output
+files, and repeats neither fault nor the resolved Accept comparison. The
+inspection runs from the corrected checkout without redeploying the runtime.
+User execution remains necessary because no operator profile is authorized for
+the agent. No browser recovery is submitted while filesystem state is unknown.
+The missing mutation remains **UNKNOWN**, the wrong mutation **NOT RUN**, and
+both browser rejection proofs **BLOCKED**. Waiting recovery retains its earlier
+pass; parser deployment, game publication/playability and a fresh active-tool
+proof remain open. NE-02 stays unchecked.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
