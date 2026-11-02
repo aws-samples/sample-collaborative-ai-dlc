@@ -283,7 +283,9 @@ export async function runWorkspaceOperation(
   };
   try {
     if (
-      !['inspect', 'missing-project', 'wrong-project'].includes(input.action) ||
+      !['inspect', 'inspect-workspace', 'missing-project', 'wrong-project'].includes(
+        input.action,
+      ) ||
       !Number.isSafeInteger(input.writerGeneration) ||
       input.writerGeneration < 1 ||
       !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
@@ -309,8 +311,10 @@ export async function runWorkspaceOperation(
       ['machine', `${root}/machine`],
       ['control', control],
       ['owner', ownerDirectory],
-    ])
+    ]) {
+      if (name === 'project' && input.action === 'inspect-workspace') continue;
       nodes[name] = await privateDirectory(path);
+    }
     if (inspectMount) await inspectMount();
     else
       requireNfsMount(
@@ -332,8 +336,11 @@ export async function runWorkspaceOperation(
       owner.configurationSha256 !== input.configurationSha256 ||
       workspace.configurationSha256 !== input.configurationSha256 ||
       workspace.packageId !== input.packageId ||
+      !/^\d{1,24}$/.test(workspace.nodes?.project?.ino ?? '') ||
       ['root', 'project', 'machine'].some(
-        (key) => String(nodes[key].ino) !== workspace.nodes?.[key]?.ino,
+        (key) =>
+          !(key === 'project' && input.action === 'inspect-workspace') &&
+          String(nodes[key].ino) !== workspace.nodes?.[key]?.ino,
       )
     )
       fail('workspace_invalid');
@@ -359,7 +366,7 @@ export async function runWorkspaceOperation(
       action: input.action,
       nonce: input.nonce,
       rootInode: String(nodes.root.ino),
-      projectInode: String(nodes.project.ino),
+      projectInode: workspace.nodes.project.ino,
       machineInode: String(nodes.machine.ino),
       workspaceSha256: sha(workspaceBytes),
       configurationSha256: input.configurationSha256,
@@ -450,6 +457,43 @@ export async function runWorkspaceOperation(
         throw error;
       });
       if (info && isClaude(info.argv)) fail('active_harness');
+    }
+    if (input.action === 'inspect-workspace') {
+      const optionalDirectory = async (path) => {
+        try {
+          return await privateDirectory(path);
+        } catch (error) {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        }
+      };
+      const paths = [project, quarantine, `${quarantine}/project`];
+      const observed = [];
+      for (const path of paths) observed.push(await optionalDirectory(path));
+      const [currentProject, quarantineDirectory, original] = observed;
+      if (
+        (original &&
+          (!quarantineDirectory || String(original.ino) !== workspace.nodes.project.ino)) ||
+        (currentProject &&
+          (original
+            ? String(currentProject.ino) === workspace.nodes.project.ino
+            : String(currentProject.ino) !== workspace.nodes.project.ino))
+      )
+        fail('workspace_invalid');
+      if (quarantineDirectory && (await fs.readdir(quarantine)).some((name) => name !== 'project'))
+        fail('workspace_invalid');
+      await unchanged();
+      for (let index = 0; index < paths.length; index++) {
+        const after = await optionalDirectory(paths[index]);
+        if (after?.ino !== observed[index]?.ino) fail('workspace_invalid');
+      }
+      return {
+        ...result,
+        ownerSha256: sha(ownerBytes),
+        observedProjectInode: currentProject ? String(currentProject.ino) : null,
+        quarantineInode: quarantineDirectory ? String(quarantineDirectory.ino) : null,
+        quarantinedProjectInode: original ? String(original.ino) : null,
+      };
     }
     await absent(quarantine, 'quarantine_exists');
     await unchanged();

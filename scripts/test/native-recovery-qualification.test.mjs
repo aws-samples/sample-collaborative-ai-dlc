@@ -6,7 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
+import { constants } from 'node:fs';
+import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
 import {
+  livePorts,
   parseQualificationArgs,
   projectWorkspaceReport,
   readBootstrapResponse,
@@ -118,7 +121,12 @@ const stateFixture = (status = 'RUNNING') => {
       cancelRequested: false,
       ...(status === 'RECOVERY_REQUIRED'
         ? {
-            recovery: { id: recoveryId, canRecover: true, reason: 'SESSION_LOST' },
+            recovery: {
+              id: recoveryId,
+              canRecover: true,
+              reason: 'SESSION_LOST',
+              workflowResumeState: 'created',
+            },
             stopConfirmation: {
               runtimeSessionId: identity.runtimeSessionId,
               writerGeneration: 1,
@@ -167,7 +175,15 @@ const remoteReport = (input = operation()) => ({
           : {}),
       }
     : {}),
-  ...(input.action !== 'inspect' ? { quarantined: true } : {}),
+  ...(input.action === 'inspect-workspace'
+    ? {
+        ownerSha256: 'b'.repeat(64),
+        observedProjectInode: '200',
+        quarantineInode: null,
+        quarantinedProjectInode: null,
+      }
+    : {}),
+  ...(['missing-project', 'wrong-project'].includes(input.action) ? { quarantined: true } : {}),
   ...(input.action === 'wrong-project' ? { replacementInode: '400' } : {}),
 });
 async function* events(...values) {
@@ -613,6 +629,129 @@ test('failure to stop the diagnostic VM prevents a successful negative-case repo
   assert.equal(result.code, 'stop_unconfirmed');
 });
 
+test('workspace inspection uses only the stopped created workflow and cleans up its diagnostic session', async () => {
+  const input = options('inspect-workspace');
+  assert.equal(parseQualificationArgs(args(input.action)).action, input.action);
+  const f = operatorFixture('RECOVERY_REQUIRED');
+  const before = structuredClone(f.state());
+  const result = await runOperator(input, f.ports);
+  assert.equal(result.ok, true);
+  assert.equal(result.workspace.action, 'inspect-workspace');
+  assert.equal(result.workspace.observedProjectInode, result.workspace.projectInode);
+  assert.equal(result.workspace.quarantinedProjectInode, null);
+  assert.equal(result.workspace.quarantined, undefined);
+  assert.equal(result.diagnosticStop.confirmed, true);
+  assert.deepEqual(f.state(), before);
+  assert.deepEqual(
+    f.calls.map((call) => call.kind),
+    ['bootstrap', 'command', 'stop'],
+  );
+  for (const action of ['inspect-workspace', 'missing-project', 'wrong-project']) {
+    for (const workflowResumeState of ['intake_only', 'unavailable', undefined]) {
+      const rejected = operatorFixture('RECOVERY_REQUIRED');
+      rejected.state().row.recovery.workflowResumeState = workflowResumeState;
+      assert.equal((await runOperator(options(action), rejected.ports)).code, 'authority_mismatch');
+      assert.deepEqual(rejected.calls, []);
+    }
+  }
+});
+
+test('live command transport explicitly requests the AWS binary event stream with the exact session and endpoint', async (t) => {
+  const f = operatorFixture('RECOVERY_REQUIRED');
+  const input = operation('inspect-workspace', false);
+  const requests = [];
+  t.mock.method(BedrockAgentCoreClient.prototype, 'send', async (command, configuration) => {
+    requests.push(command);
+    assert.ok(configuration.abortSignal instanceof AbortSignal);
+    return response(remoteReport(input));
+  });
+  const ports = await livePorts(options(input.action));
+  const result = await readCommandResponse(await ports.command(f.state().row, input), input);
+  assert.equal(result.ok, true);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].constructor.name, 'InvokeAgentRuntimeCommandCommand');
+  assert.deepEqual(requests[0].input, {
+    agentRuntimeArn: f.state().row.target.runtimeArn,
+    qualifier: f.state().row.target.endpoint,
+    runtimeSessionId: identity.runtimeSessionId,
+    contentType: 'application/json',
+    accept: 'application/vnd.amazon.eventstream',
+    body: { command: workspaceCommand(input), timeout: 30 },
+  });
+});
+
+test('an invalid response after a fault invocation preserves uncertainty and confirms diagnostic stop', async () => {
+  const f = operatorFixture('RECOVERY_REQUIRED');
+  f.ports.command = async (row, input) => {
+    f.calls.push({ kind: 'command', row, input });
+    return response(remoteReport(input), {
+      runtimeSessionId: undefined,
+      contentType: 'application/json',
+      privateHeader: 'DO_NOT_RETURN_PRIVATE_MATERIAL',
+    });
+  };
+  const result = await runOperator(options('missing-project'), f.ports);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'runtime_response_invalid');
+  assert.equal(result.failurePhase, 'command_response');
+  assert.equal(result.commandAttempted, true);
+  assert.equal(result.workspaceMutation, 'unknown');
+  assert.equal(result.workspace, undefined);
+  assert.equal(result.commandResponse.phase, 'headers');
+  assert.equal(result.commandResponse.httpStatus, 200);
+  assert.equal(result.commandResponse.statusCode, 200);
+  assert.equal(result.commandResponse.sessionIdPresent, false);
+  assert.equal(result.commandResponse.sessionIdMatches, false);
+  assert.equal(result.commandResponse.contentType, 'application/json');
+  assert.equal(result.commandResponse.eventCount, 0);
+  assert.equal(result.diagnosticStop.confirmed, true);
+  assert.equal(JSON.stringify(result).includes('DO_NOT_RETURN'), false);
+  assert.deepEqual(
+    f.calls.map((call) => call.kind),
+    ['bootstrap', 'command', 'stop'],
+  );
+});
+
+test('response diagnostics distinguish stream, JSON, report and exit failures without retaining private output', async () => {
+  const input = operation('inspect-workspace', false);
+  const good = remoteReport(input);
+  for (const [phase, stream] of [
+    ['event', events({ runtimeClientError: { message: 'DO_NOT_RETURN_PRIVATE_MATERIAL' } })],
+    [
+      'json',
+      events(
+        { chunk: { contentDelta: { stdout: 'DO_NOT_RETURN_PRIVATE_MATERIAL' } } },
+        { chunk: { contentStop: { status: 'COMPLETED', exitCode: 0 } } },
+      ),
+    ],
+    ['report', response({ ...good, nonce: 'DO_NOT_RETURN_PRIVATE_MATERIAL' }).stream],
+    [
+      'exit',
+      events(
+        { chunk: { contentDelta: { stdout: JSON.stringify(good) } } },
+        { chunk: { contentStop: { status: 'COMPLETED', exitCode: 1 } } },
+      ),
+    ],
+  ]) {
+    const observation = {};
+    await assert.rejects(readCommandResponse(response(good, { stream }), input, observation), {
+      code: 'runtime_response_invalid',
+    });
+    assert.equal(observation.phase, phase);
+    assert.equal(JSON.stringify(observation).includes('DO_NOT_RETURN'), false);
+  }
+  for (const changed of [
+    { observedProjectInode: 'bad' },
+    { ownerSha256: 'bad' },
+    { quarantinedProjectInode: good.projectInode, quarantineInode: null },
+    { quarantinedProjectInode: good.projectInode, quarantineInode: '600' },
+    { observedProjectInode: '600', quarantinedProjectInode: null },
+  ])
+    assert.throws(() => projectWorkspaceReport({ ...good, ...changed }, input), {
+      code: 'runtime_response_invalid',
+    });
+});
+
 test('runtime report projection strips unknown metadata and never returns raw runtime output', async () => {
   const input = operation();
   const value = remoteReport(input);
@@ -817,6 +956,142 @@ async function filesystemFixture(t, withBarrier = false) {
   fixture.ports = { root, procRoot, inspectMount: async () => {} };
   return fixture;
 }
+
+function readOnlyPorts(fixture) {
+  const readOnly = { ...fs };
+  for (const name of [
+    'appendFile',
+    'chmod',
+    'chown',
+    'copyFile',
+    'cp',
+    'link',
+    'mkdir',
+    'mkdtemp',
+    'rename',
+    'rm',
+    'rmdir',
+    'symlink',
+    'truncate',
+    'unlink',
+    'utimes',
+    'writeFile',
+  ])
+    readOnly[name] = () => assert.fail(`inspection attempted ${name}`);
+  readOnly.open = async (path, flags) => {
+    assert.equal(
+      flags & (constants.O_WRONLY | constants.O_RDWR | constants.O_CREAT | constants.O_TRUNC),
+      0,
+    );
+    return fs.open(path, flags);
+  };
+  return { ...fixture.ports, fs: readOnly };
+}
+
+test('workspace inspection distinguishes untouched, missing and wrong projects without mutating original work', async (t) => {
+  for (const fault of [null, 'missing-project', 'wrong-project']) {
+    await t.test(fault ?? 'original-present', async (child) => {
+      const f = await filesystemFixture(child);
+      const source = await fs.readFile(join(f.project, 'src/game.js'));
+      const workspace = await fs.readFile(join(f.control, 'workspace.json'));
+      const owner = await fs.readFile(join(f.owner, 'owner.json'));
+      const originalInode = String((await fs.lstat(f.project, { bigint: true })).ino);
+      if (fault) {
+        const mutation = await runWorkspaceOperation(operation(fault, false), f.ports);
+        assert.equal(mutation.ok, true);
+        assert.equal(mutation.quarantined, true);
+      }
+      const input = operation('inspect-workspace', false);
+      const observation = await runWorkspaceOperation(input, readOnlyPorts(f));
+      assert.equal(observation.ok, true, JSON.stringify(observation));
+      const report = projectWorkspaceReport(observation, input);
+      assert.equal(report.projectInode, originalInode);
+      assert.equal(report.workspaceSha256, sha(workspace));
+      assert.equal(report.ownerSha256, sha(owner));
+      assert.equal(report.quarantined, undefined, 'inspection is not a mutation receipt');
+      if (fault) {
+        assert.equal(report.quarantinedProjectInode, originalInode);
+        assert.match(report.quarantineInode, /^\d+$/);
+        assert.equal(report.observedProjectInode === null, fault === 'missing-project');
+        if (fault === 'wrong-project') assert.notEqual(report.observedProjectInode, originalInode);
+      } else {
+        assert.equal(report.observedProjectInode, originalInode);
+        assert.equal(report.quarantineInode, null);
+        assert.equal(report.quarantinedProjectInode, null);
+      }
+      const retainedProject = fault
+        ? join(f.root, `.ne02-quarantine-${nonce}`, 'project')
+        : f.project;
+      assert.deepEqual(await fs.readFile(join(retainedProject, 'src/game.js')), source);
+      assert.deepEqual(await fs.readFile(join(f.control, 'workspace.json')), workspace);
+      assert.deepEqual(await fs.readFile(join(f.owner, 'owner.json')), owner);
+      assert.equal(
+        await fs.readlink(join(retainedProject, 'node_modules/.bin/fixture')),
+        '../fixture/bin.js',
+      );
+    });
+  }
+});
+
+test('an empty partial quarantine or an absent original stays explicit and is never repaired by inspection', async (t) => {
+  const f = await filesystemFixture(t);
+  const quarantine = join(f.root, `.ne02-quarantine-${nonce}`);
+  await fs.mkdir(quarantine, { mode: 0o700 });
+  const input = operation('inspect-workspace', false);
+  let result = projectWorkspaceReport(await runWorkspaceOperation(input, readOnlyPorts(f)), input);
+  assert.equal(result.observedProjectInode, result.projectInode);
+  assert.match(result.quarantineInode, /^\d+$/);
+  assert.equal(result.quarantinedProjectInode, null);
+  assert.equal(
+    (await runWorkspaceOperation(operation('missing-project', false), f.ports)).code,
+    'quarantine_exists',
+  );
+  // Preserve this fixture's original elsewhere to simulate unknown loss. The
+  // inspector must report absence without finding or recreating another project.
+  await fs.rename(f.project, join(f.root, 'unrelated-preserved-original'));
+  result = projectWorkspaceReport(await runWorkspaceOperation(input, readOnlyPorts(f)), input);
+  assert.equal(result.observedProjectInode, null);
+  assert.equal(result.quarantinedProjectInode, null);
+  assert.deepEqual(await fs.readdir(quarantine), []);
+});
+
+test('workspace inspection refuses changed owner evidence, a successor writer and unsafe quarantine identities', async (t) => {
+  for (const fault of ['symlink', 'wrong-original', 'owner', 'next-writer', 'active-harness']) {
+    await t.test(fault, async (child) => {
+      const f = await filesystemFixture(child, fault === 'active-harness');
+      const quarantine = join(f.root, `.ne02-quarantine-${nonce}`);
+      if (fault === 'symlink') await fs.symlink(f.project, quarantine);
+      if (fault === 'wrong-original') {
+        await fs.mkdir(quarantine, { mode: 0o700 });
+        await fs.mkdir(join(quarantine, 'project'), { mode: 0o700 });
+      }
+      if (fault === 'owner')
+        await fs.writeFile(
+          join(f.owner, 'owner.json'),
+          JSON.stringify({ schemaVersion: 1, identity: { ...identity, attemptId: nonce } }),
+        );
+      if (fault === 'next-writer') await fs.mkdir(join(f.control, 'writer-2'), { mode: 0o700 });
+      const result = await runWorkspaceOperation(
+        operation('inspect-workspace', false),
+        readOnlyPorts(f),
+      );
+      assert.equal(result.ok, false);
+      assert.equal(result.quarantined, false);
+      assert.equal(
+        result.code,
+        fault === 'next-writer'
+          ? 'next_writer_exists'
+          : fault === 'active-harness'
+            ? 'active_harness'
+            : 'workspace_invalid',
+      );
+      assert.equal(
+        String((await fs.lstat(f.project, { bigint: true })).ino),
+        f.workspace.nodes.project.ino,
+      );
+    });
+  }
+});
 
 test('active process inspection verifies real file hashes and dependency links without exposing names or bytes', async (t) => {
   const f = await filesystemFixture(t, true);

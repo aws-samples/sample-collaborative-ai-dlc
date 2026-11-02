@@ -808,6 +808,91 @@ NE-02 remains unchecked. Preserve these runs and deploy the runtime correction
 before starting a fresh, matching positive proof. NE-03 and full Kiro
 qualification remain in their existing sequence.
 
+**Workspace-fault follow-up, 2026-11-02:** the user ran the prepared handoff after
+a machine reboot. It stopped at the first helper: `missing-operator-result.json`
+reports `ok: false`, `runtime_response_invalid`, and
+`diagnosticStop.confirmed: true`, without a workspace receipt. Its original
+1,331 bytes remain unchanged, SHA-256
+`f02e94345522b8fdc2fba793d1ac0a0e6e059793ccd0426d47667a295b3e7061`.
+The script's exit-on-error behavior prevented the missing-result verifier and
+wrong-project command from running. Neither fault has a successful verified
+operator result.
+
+Scoped reads with `solution-read` reverified account `746558295630`,
+`us-east-1`, both accepted runtime version **2** endpoints, their EFS access
+points and the original immutable image
+`sha256:074c50086bee10ca4d086fa3df0a9f87251a684bfa34df6ec67cf08cd65f6eeb`.
+The API, authority, execution worker, provisioner and wakeup package hashes and
+image settings still match deployed `526837eb`; the execution-authority alias
+remains version **15**. All 272 runtime source hashes still match the locally
+validated parser correction `3280c8b4`. Its expected image tag
+`d2dff54e22d80b4f` remains a source-derived build identity, not a deployed digest.
+
+The missing-case runtime log records command request
+`ff81f1fe-8353-4881-ba9c-1517ca3871ac` at `08:05:32.500Z`.
+The logged command matches the original fixed **20,655-byte** helper command
+exactly. The same diagnostic log stream records `SIGTERM` at
+`08:05:33.511Z`, corroborating the helper's checked stop acknowledgement.
+These observations establish receipt of the command and diagnostic stop, not
+the outcome of the rename or quarantine. The old helper discarded which
+response-validation check failed and returned no filesystem observation.
+The exact response-contract mismatch and the first mutation's outcome remain
+unknown; the command must not simply be rerun.
+
+Both authority records are unchanged from their October 27 expiry evidence:
+
+| Case            | Intent                                 | Preserved boundary                                                                                        |
+| --------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Missing project | `f3cc998d-e457-4e4c-948c-985a2da1eb39` | Revision **313**, writer **1**, publication **2**, accepted answer `89de5291-d7d0-48f0-aa62-7fae7a6ebe36` |
+| Wrong project   | `33ab1cb2-8f74-4c41-aff2-71c27b3cb8fe` | Revision **470**, writer **1**, publication **2**, accepted answer `167f809d-46bb-4724-888e-c52037835307` |
+
+Both remain `RECOVERY_REQUIRED` with the same created-workflow recovery episode,
+confirmed predecessor stop, session and EFS binding. Publication, interaction,
+accepted member, acceptance time, answer hashes and the original `pending`
+delivery classification are unchanged. No new writer or publication is recorded.
+This is preservation evidence, not the waiting case's separate retained,
+undelivered-answer proof.
+
+The local operator helper now records bounded response metadata and failure
+phase without retaining raw stdout, stderr, headers or SDK exceptions. It
+explicitly requests the documented binary event-stream response format while
+keeping acknowledgement, session, completion, scope and exit checks enforced.
+This transport change is not yet a live fix for the unidentified mismatch.
+The new `inspect-workspace` action requires a stopped, created workflow and
+checks the recorded owner, project inode and original nonce's quarantine.
+It reports intact, missing, replacement or partial-quarantine observations
+without moving, deleting or repairing project files. Like the existing fault
+helpers, it bootstraps only `native-status` and confirms its diagnostic stop.
+Only user execution or a separately authorized operator profile may run it;
+`solution-read` remains rejected.
+
+The signed-in dev browser was reopened after the reboot. No browser recovery
+was submitted against an unverified fault. Missing-workspace mutation status
+remains **UNKNOWN**, the wrong-workspace fault is **NOT RUN**, and both browser
+rejection proofs remain **BLOCKED** on verified filesystem observations.
+The exact, guarded inspection handoff and fresh evidence are under
+`.native-evidence/ne02-2026-11-02-workspace-faults/`. The handoff preserves the
+failed result and writes distinct inspection receipts; an inspection is not a
+replacement success receipt for the failed mutation. A read-only control uses
+the previous response-format request so its diagnostics can be compared with
+the explicit event-stream request. Each diagnostic stop must be confirmed before
+the handoff starts another session for that intent.
+
+**Local helper validation, Node 24.21.0:** all **42** focused helper tests pass.
+The full release-script run passes **313 of 315** tests. Its local HTTP fixture
+passes separately with loopback access after the sandbox's `EPERM`; the release
+metadata check passes against a byte-identical snapshot of all **46** tracked
+release inputs after the root check also scanned unrelated `.worktrees`
+manifests. Those worktrees remain untouched, and the full root run is not
+reported as green. Lint and dependency checks report their existing **82** and
+**17** warnings with no errors; the architecture check reports no violations.
+Formatting, the secret scan and the documentation build pass. The inspection
+receipt verifier passes **27** synthetic checks; these establish no live outcome.
+No runtime, frontend or application source changed in this follow-up. The
+earlier parser correction still requires user deployment, and game publication,
+browser playability, interrupted-tool recovery and both workspace rejections
+remain open. NE-02 stays unchecked.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item

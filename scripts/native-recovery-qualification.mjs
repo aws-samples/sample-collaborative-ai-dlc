@@ -27,13 +27,21 @@ import {
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const SHA = /^[a-f0-9]{64}$/;
-const ACTIONS = ['barrier-command', 'inspect', 'stop', 'missing-project', 'wrong-project'];
+const ACTIONS = [
+  'barrier-command',
+  'inspect',
+  'stop',
+  'inspect-workspace',
+  'missing-project',
+  'wrong-project',
+];
 const LIMIT = 64 * 1024;
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const fail = (code) => {
   throw qualificationError(code);
 };
 const negative = (action) => ['missing-project', 'wrong-project'].includes(action);
+const diagnostic = (action) => action === 'inspect-workspace' || negative(action);
 const send = (client, command) =>
   client.send(command, { abortSignal: AbortSignal.timeout(45_000) });
 const destination = (row) => ({
@@ -46,7 +54,7 @@ export const USAGE = `node scripts/native-recovery-qualification.mjs --action AC
   --expected-account ACCOUNT --region REGION --table TABLE --project-id UUID \\
   --intent-id UUID --attempt-id UUID --writer-generation INTEGER --nonce UUID \\
   [--marker-sha256 SHA256]
-Actions: inspect, stop, missing-project, wrong-project.
+Actions: inspect, stop, inspect-workspace, missing-project, wrong-project.
 Requires explicit operator authorization. solution-read is not accepted.
 Use dedicated qualification intents; do not confirm resume while a fault command is running.
 No command deploys or changes the authority record. Quarantined original files are retained.
@@ -62,10 +70,13 @@ change alone does not establish that the change was unpublished.
 stop requires RUNNING with the live tool barrier. inspect also accepts a published
 AWAITING_USER boundary when --marker-sha256 pins the original pre-stop marker bytes.
 It then reports retained evidence without claiming that the old process is alive.
-Ordinary inspect never bootstraps a session. Missing/wrong-project actions require
-RECOVERY_REQUIRED and a current confirmed stop.
-They bootstrap only native-status, quarantine project, and stop the diagnostic VM with
-a fresh token. They preserve .native-control, machine, the EFS mount and durable history.`;
+Ordinary inspect never bootstraps a session. inspect-workspace and missing/wrong-project
+require RECOVERY_REQUIRED, a created workflow and a current confirmed stop.
+They bootstrap only native-status and stop the diagnostic VM with a fresh token.
+inspect-workspace only reads project/quarantine identity; it never creates, moves or
+removes either directory. Use it with the original nonce after an ambiguous fault result.
+Missing/wrong-project quarantine project. They preserve .native-control, machine,
+the EFS mount and durable history. Never retry a fault while its outcome is unknown.`;
 
 export function parseQualificationArgs(args) {
   const { values } = parseArgs({
@@ -156,10 +167,11 @@ export function validateState(state, options) {
     !SHA.test(state.runtimeConfigurationSha256 ?? '')
   )
     fail('authority_mismatch');
-  if (negative(options.action)) {
+  if (diagnostic(options.action)) {
     if (
       row.status !== 'RECOVERY_REQUIRED' ||
       row.recovery?.canRecover !== true ||
+      row.recovery?.workflowResumeState !== 'created' ||
       !UUID.test(row.recovery?.id ?? '') ||
       row.stopConfirmation?.runtimeSessionId !== row.runtimeSessionId ||
       row.stopConfirmation?.writerGeneration !== options.writerGeneration ||
@@ -301,6 +313,27 @@ export function projectWorkspaceReport(value, input) {
     fail('runtime_response_invalid');
   report.workspaceSha256 = value.workspaceSha256;
   report.configurationSha256 = value.configurationSha256;
+  if (input.action === 'inspect-workspace') {
+    for (const key of ['observedProjectInode', 'quarantineInode', 'quarantinedProjectInode']) {
+      if (value[key] !== null && !/^\d{1,24}$/.test(value[key] ?? ''))
+        fail('runtime_response_invalid');
+      report[key] = value[key];
+    }
+    if (
+      !SHA.test(value.ownerSha256 ?? '') ||
+      (report.quarantinedProjectInode !== null &&
+        (report.quarantineInode === null ||
+          report.quarantinedProjectInode !== report.projectInode)) ||
+      (report.observedProjectInode === report.projectInode &&
+        report.quarantinedProjectInode !== null) ||
+      (report.observedProjectInode !== null &&
+        report.observedProjectInode !== report.projectInode &&
+        report.quarantinedProjectInode === null)
+    )
+      fail('runtime_response_invalid');
+    report.ownerSha256 = value.ownerSha256;
+    return report;
+  }
   if (input.action !== 'inspect') {
     if (value.quarantined !== true) fail('runtime_response_invalid');
     report.quarantined = true;
@@ -376,7 +409,31 @@ export function projectWorkspaceReport(value, input) {
   return report;
 }
 
-export async function readCommandResponse(response, input) {
+export async function readCommandResponse(response, input, observation = {}) {
+  // Keep failure location and bounded protocol metadata, never header values,
+  // stdout/stderr, arbitrary event keys or SDK exception messages.
+  Object.assign(observation, {
+    phase: 'headers',
+    httpStatus: Number.isSafeInteger(response?.$metadata?.httpStatusCode)
+      ? response.$metadata.httpStatusCode
+      : null,
+    statusCode: Number.isSafeInteger(response?.statusCode) ? response.statusCode : null,
+    sessionIdPresent: typeof response?.runtimeSessionId === 'string',
+    sessionIdMatches: response?.runtimeSessionId === input.identity.runtimeSessionId,
+    contentType: [
+      'application/vnd.amazon.eventstream',
+      'application/json',
+      'text/event-stream',
+    ].includes(response?.contentType)
+      ? response.contentType
+      : 'other_or_absent',
+    streamPresent: Boolean(response?.stream),
+    eventCount: 0,
+    stdoutBytes: 0,
+    stderrBytes: 0,
+  });
+  if (UUID.test(response?.$metadata?.requestId ?? ''))
+    observation.requestId = response.$metadata.requestId;
   if (
     response?.$metadata?.httpStatusCode !== 200 ||
     response.statusCode !== 200 ||
@@ -388,6 +445,19 @@ export async function readCommandResponse(response, input) {
   let size = 0;
   let stop;
   for await (const event of response.stream) {
+    observation.phase = 'event';
+    observation.eventCount++;
+    observation.lastEventType =
+      [
+        'chunk',
+        'accessDeniedException',
+        'internalServerException',
+        'resourceNotFoundException',
+        'runtimeClientError',
+        'serviceQuotaExceededException',
+        'throttlingException',
+        'validationException',
+      ].find((key) => event[key] !== undefined) ?? 'unknown';
     if (!event.chunk || stop) fail('runtime_response_invalid');
     const { contentDelta, contentStop } = event.chunk;
     for (const key of ['stdout', 'stderr']) {
@@ -395,21 +465,32 @@ export async function readCommandResponse(response, input) {
       if (text === undefined) continue;
       if (typeof text !== 'string') fail('runtime_response_invalid');
       size += Buffer.byteLength(text);
+      observation[`${key}Bytes`] += Buffer.byteLength(text);
       if (size > LIMIT) fail('runtime_output_limit');
       if (key === 'stderr' && text) fail('runtime_command_failed');
       if (key === 'stdout') stdout += text;
     }
-    if (contentStop) stop = contentStop;
+    if (contentStop) {
+      stop = contentStop;
+      observation.completed = stop.status === 'COMPLETED';
+      observation.exitCode = Number.isSafeInteger(stop.exitCode) ? stop.exitCode : null;
+    }
   }
+  observation.phase = 'completion';
   if (stop?.status !== 'COMPLETED') fail('runtime_command_failed');
+  observation.stdoutSha256 = hash(stdout);
   let value;
+  observation.phase = 'json';
   try {
     value = JSON.parse(stdout);
   } catch {
     fail('runtime_response_invalid');
   }
+  observation.phase = 'report';
   const report = projectWorkspaceReport(value, input);
+  observation.phase = 'exit';
   if (stop.exitCode !== (report.ok ? 0 : 1)) fail('runtime_response_invalid');
+  observation.phase = 'verified';
   return report;
 }
 
@@ -456,6 +537,8 @@ export async function runOperator(options, ports) {
   let initial;
   let fingerprint;
   let bootstrapAttempted = false;
+  let phase = 'account';
+  report.commandAttempted = false;
   const diagnosticToken = randomUUID();
   const checked = async () => {
     const state = validateState(await ports.readState(), options);
@@ -467,17 +550,20 @@ export async function runOperator(options, ports) {
   };
   try {
     if ((await ports.account()) !== options.account) fail('account_mismatch');
+    phase = 'authority';
     initial = await checked();
     fingerprint = stateFingerprint(initial);
     report.pins = pins(initial);
-    if (negative(options.action)) {
+    if (diagnostic(options.action)) {
       const state = await checked();
       bootstrapAttempted = true;
+      phase = 'bootstrap';
       await readBootstrapResponse(await ports.bootstrap(state.row), state.row);
     }
+    phase = 'authority';
     const state = await checked();
     const input = {
-      action: negative(options.action) ? options.action : 'inspect',
+      action: diagnostic(options.action) ? options.action : 'inspect',
       nonce: options.nonce,
       identity: executionIdentity(state.row),
       writerGeneration: options.writerGeneration,
@@ -486,10 +572,17 @@ export async function runOperator(options, ports) {
       requireBarrier: state.row.status === 'RUNNING',
       markerSha256: options.markerSha256,
     };
-    report.workspace = await readCommandResponse(await ports.command(state.row, input), input);
+    phase = 'command';
+    report.commandAttempted = true;
+    const response = await ports.command(state.row, input);
+    phase = 'command_response';
+    report.commandResponse = {};
+    report.workspace = await readCommandResponse(response, input, report.commandResponse);
     if (!report.workspace.ok) fail(report.workspace.code);
+    phase = 'authority';
     await checked();
     if (options.action === 'stop') {
+      phase = 'stop';
       const current = await checked();
       const token = hash(JSON.stringify({ fingerprint, nonce: options.nonce, action: 'stop' }));
       if (report.workspace.barrier && report.workspace.barrier.deadline - Date.now() < 15_000)
@@ -502,6 +595,9 @@ export async function runOperator(options, ports) {
     report.ok = true;
   } catch (error) {
     report.code = qualificationCode(error);
+    report.failurePhase = phase;
+    if (negative(options.action) && report.commandAttempted && !report.workspace)
+      report.workspaceMutation = 'unknown';
   } finally {
     if (bootstrapAttempted) {
       try {
@@ -660,6 +756,9 @@ export async function livePorts(options) {
         runtime,
         new InvokeAgentRuntimeCommandCommand({
           ...destination(row),
+          contentType: 'application/json',
+          // Pin the format consumed by the SDK's command-stream decoder.
+          accept: 'application/vnd.amazon.eventstream',
           body: { command: workspaceCommand(input), timeout: 30 },
         }),
       ),
