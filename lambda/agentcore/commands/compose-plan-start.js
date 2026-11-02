@@ -543,6 +543,7 @@ export const createComposePlanStart = ({
               stageInstanceId: null,
               metrics: { ...out.metrics, composeCalls: 1 },
               resolvedModel: out.model ?? null,
+              creditRate: out.creditRate ?? null,
             })
             .catch(() => {});
         }

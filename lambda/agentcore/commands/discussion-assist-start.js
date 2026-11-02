@@ -437,6 +437,17 @@ export const createDiscussionAssistStart = ({
           cwd,
           ...cliContext,
         });
+        if (out.metrics) {
+          await store
+            ?.recordMetric?.({
+              executionId: intentId,
+              stageInstanceId: null,
+              metrics: { ...out.metrics, discussionAssistCalls: 1 },
+              resolvedModel: out.model ?? null,
+              creditRate: out.creditRate ?? null,
+            })
+            .catch(() => {});
+        }
         let message;
         if (out.ok) {
           message = await updateAssistMessage({
@@ -447,16 +458,6 @@ export const createDiscussionAssistStart = ({
             content: out.text,
             status: 'completed',
           });
-          if (out.metrics) {
-            await store
-              ?.recordMetric?.({
-                executionId: intentId,
-                stageInstanceId: null,
-                metrics: { ...out.metrics, discussionAssistCalls: 1 },
-                resolvedModel: out.model ?? null,
-              })
-              .catch(() => {});
-          }
           await store
             ?.appendEvent?.({
               executionId: intentId,

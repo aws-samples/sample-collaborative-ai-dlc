@@ -84,7 +84,7 @@ import {
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-grid.js';
 import { matchScopeByKeywords } from '../shared/compose-match.js';
-import { makePriceResolver, costForMetrics } from '../shared/model-pricing.js';
+import { makePriceResolver, costForMetrics, modelFamily } from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import {
@@ -6894,10 +6894,17 @@ const mapMetricsWithCost = (metrics = [], stages = [], priceFor) => {
   const modelByStage = new Map(stages.map((s) => [s.stageInstanceId, s.resolvedModel ?? null]));
   return metrics.map((m) => {
     const model = m.resolvedModel ?? modelByStage.get(m.stageInstanceId) ?? null;
+    const cacheInput = (m.metrics?.tokensCacheRead ?? 0) + (m.metrics?.tokensCacheWrite ?? 0);
     return {
       metricId: m.metricId,
       stageInstanceId: m.stageInstanceId ?? null,
-      metrics: m.metrics ?? {},
+      // Claude's stored input count excludes cache tokens. The UI's input and
+      // total counts include them; cost below still uses the billing categories.
+      // Codex already includes cached tokens in its input count.
+      metrics:
+        cacheInput > 0 && modelFamily(model)?.startsWith('claude-')
+          ? { ...m.metrics, tokensInput: (m.metrics?.tokensInput ?? 0) + cacheInput }
+          : (m.metrics ?? {}),
       timestamp: m.timestamp,
       model,
       cost: costForMetrics(m.metrics ?? {}, model, priceFor, m.creditRate ?? null),
@@ -6922,6 +6929,7 @@ const summarizeExecutionMetrics = (metrics = [], stages = [], priceFor) => {
   const costed = mapped.filter(
     (m) =>
       (m.metrics?.tokensInput ?? 0) + (m.metrics?.tokensOutput ?? 0) > 0 ||
+      (m.metrics?.tokensCacheRead ?? 0) + (m.metrics?.tokensCacheWrite ?? 0) > 0 ||
       (m.metrics?.credits ?? 0) > 0,
   );
   const creditPricedStages = new Set(

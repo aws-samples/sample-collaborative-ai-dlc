@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { dispatchPersona, composePersonaPrompt } from '../persona-dispatch.js';
 import { INVOKE_DIALECT_ANNEX } from '../stage-materializer.js';
@@ -51,6 +51,49 @@ const baseDeps = (overrides = {}) => ({
 });
 
 describe('dispatchPersona — role: reviewer', () => {
+  it.each(['reviewer', 'support'])(
+    'records %s usage using that persona model even on failure',
+    async (role) => {
+      const store = { recordMetric: vi.fn(async () => ({ metricId: 'm1' })) };
+      const publish = vi.fn();
+      await dispatchPersona({
+        ...baseDeps(),
+        role,
+        persona: 'Review this',
+        brief: 'Inspect the change',
+        agentBlock: { modelOverride: 'us.anthropic.claude-haiku-4-5' },
+        personaScope: { agentRef: 'helper' },
+        store,
+        publish,
+        spawnFn: () => ({
+          on: (event, cb) => event === 'close' && setImmediate(() => cb(1)),
+          stdin: { end() {} },
+          stdout: {
+            on: (event, cb) =>
+              event === 'data' &&
+              cb(
+                Buffer.from(
+                  JSON.stringify({
+                    type: 'result',
+                    usage: { input_tokens: 10, output_tokens: 2 },
+                  }),
+                ),
+              ),
+          },
+        }),
+      });
+      expect(store.recordMetric).toHaveBeenCalledExactlyOnceWith({
+        executionId: 'exec-blind-e1',
+        stageInstanceId: 'si-blind-1',
+        unitSlug: null,
+        sectionIndex: null,
+        resolvedModel: 'us.anthropic.claude-haiku-4-5',
+        metrics: { tokensInput: 10, tokensOutput: 2 },
+      });
+      expect(publish).toHaveBeenCalledOnce();
+    },
+  );
+
   const reviewerArgs = (overrides = {}) => ({
     ...baseDeps(),
     role: 'reviewer',

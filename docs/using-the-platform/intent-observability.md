@@ -32,7 +32,23 @@ The default intent view is the **workbench** — the working surface for humans:
 The **Observability** button opens the intent's execution dashboard:
 
 - **Initial prompt** — the final user-authored draft that started the intent, preserved read-only with a copy action.
-- **Usage & activity** — aggregated token usage, a context-window gauge, and cost for the whole intent. Costs are computed per stage from live model pricing; Kiro runs show estimated cost derived from credits.
+- **Usage & activity** — aggregated token usage and cost for the whole intent. Costs are computed per stage from live model pricing; Kiro runs show estimated cost derived from credits.
+
+  Token usage comes from CLI output, including lead, repair, reviewer, support, and
+  conflict-resolution calls. Claude input totals include uncached input, cache reads,
+  and cache writes; **Usage details** shows the cache counts separately. Costs apply
+  the corresponding cache rates, including one-hour writes when the CLI reports
+  them. Codex reports cumulative thread totals, so resumed calls subtract the
+  saved thread usage and record only the new usage. Kiro credits use the captured
+  overage rate and remain an estimate.
+
+  Usage is recorded when each invocation ends, including reported usage on failure
+  or before a human pause. If a CLI stops without reporting usage, the runtime
+  does not guess it. Older self-reported samples remain in history; this change
+  does not reconstruct missing usage from earlier runs. The agent-facing
+  `collect_metric` tool has been removed. Context-window gauges remain visible
+  for historical samples that include them.
+
 - **Execution progress** — the stage pipeline in three switchable views (your choice is remembered):
   - **Diagram** — a phase-grouped flow diagram with per-phase progress.
   - **Graph** — the workflow scope graph with live stage status overlaid.

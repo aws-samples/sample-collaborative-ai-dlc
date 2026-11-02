@@ -181,6 +181,7 @@ export const createQuorumEditPlanStart = ({
                   stageInstanceId: `qedit-${editId}`,
                   metrics: { ...out.metrics, quorumEditCalls: 1 },
                   resolvedModel: out.model ?? null,
+                  creditRate: out.creditRate ?? null,
                 })
                 .catch(() => {});
             }

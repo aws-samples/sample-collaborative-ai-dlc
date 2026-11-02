@@ -341,16 +341,30 @@ describe('deriveArtifacts — llm enrichment (fail-open)', () => {
 
   it('skips an unparseable answer without writing props', async () => {
     const writer = makeWriter();
-    const oneShot = vi.fn(async () => ({ ok: true, text: 'sorry, no json', metrics: null }));
+    const store = makeStore();
+    const oneShot = vi.fn(async () => ({
+      ok: true,
+      text: 'sorry, no json',
+      metrics: { credits: 0.5 },
+      creditRate: 0.04,
+      model: 'claude-opus-4.6',
+    }));
     const out = await deriveArtifacts(basePayload, {
       openGraph: async () => ({}),
       createWriter: () => writer,
-      store: makeStore(),
+      store,
       oneShot,
       availableClis: ['claude'],
     });
     expect(out).toMatchObject({ ok: true, enriched: 0 });
     expect(writer.applyArtifactEnrichment).not.toHaveBeenCalled();
+    expect(store.recordMetric).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metrics: { credits: 0.5, enrichmentCalls: 1 },
+        resolvedModel: 'claude-opus-4.6',
+        creditRate: 0.04,
+      }),
+    );
   });
 
   it('never calls the one-shot when the mode is off', async () => {

@@ -203,7 +203,7 @@ export const OUTPUT_CONTRACT = [
   '',
   '- Record EVERY business artifact via `create_artifact`; wire links with',
   '  `link_artifacts`. Output not written through a tool is DISCARDED.',
-  '- Finish with a `send_output` summary and `collect_metric` for usage.',
+  '- Finish with a `send_output` summary.',
   '- Do exactly THIS stage. Do not start other stages or invent status.',
 ].join('\n');
 

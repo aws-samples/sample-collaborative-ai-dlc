@@ -95,10 +95,6 @@ const stubBridge = () => ({
     this.calls.push(['recordProjectType', args]);
     return args;
   },
-  collectMetric(args) {
-    this.calls.push(['collectMetric', args]);
-    return { metricId: 'm1' };
-  },
   emitStageNote(args) {
     this.calls.push(['emitStageNote', args]);
     return { eventId: 'e1' };
@@ -185,7 +181,6 @@ describe('buildToolHandlers — routing + envelopes', () => {
     expect(graph.withWriter).toHaveBeenCalledTimes(1);
 
     await handlers.send_output({ content: 'hi' });
-    await handlers.collect_metric({ metrics: { tokens: 1 } });
     await handlers.emit_stage_note({ summary: 'note' });
     expect(graph.withWriter).toHaveBeenCalledTimes(1);
   });
@@ -290,10 +285,12 @@ describe('buildToolHandlers — routing + envelopes', () => {
   });
 
   it('surfaces a generic error message as isError', async () => {
-    bridge.collectMetric = () => {
+    bridge.sendOutput = () => {
       throw new Error('ddb down');
     };
-    const env = await buildToolHandlers({ writer, bridge }).collect_metric({ metrics: {} });
+    const env = await buildToolHandlers({ writer, bridge }).send_output({
+      content: 'hi',
+    });
     expect(env.isError).toBe(true);
     expect(env.content[0].text).toBe('ddb down');
   });
@@ -305,11 +302,10 @@ describe('role gating', () => {
     const reader = handlersForRole(h, 'reader');
     expect(Object.keys(reader).toSorted()).toEqual([...READ_TOOLS].toSorted());
     expect(reader.create_artifact).toBeUndefined();
-    expect(reader.collect_metric).toBeUndefined();
     expect(reader.submit_review).toBeUndefined();
   });
 
-  it('reviewer gets the clean-room subset only — reads, metrics, and verdict submit', () => {
+  it('reviewer gets the clean-room subset only — reads and verdict submit', () => {
     const h = buildToolHandlers({ writer: stubWriter(), bridge: stubBridge() });
     const reviewer = handlersForRole(h, 'reviewer');
     expect(Object.keys(reviewer).toSorted()).toEqual([...REVIEWER_TOOLS].toSorted());
@@ -321,7 +317,6 @@ describe('role gating', () => {
     // Same for learning rules: read-only for a reviewer.
     expect(reviewer.get_learning_rules).toBeDefined();
     expect(reviewer.record_learning_rule).toBeUndefined();
-    expect(reviewer.collect_metric).toBeDefined();
     expect(reviewer.submit_review).toBeDefined();
   });
 

@@ -134,6 +134,15 @@ describe('summarizeCost', () => {
     expect(out?.priced).toBe(false);
   });
 
+  it('keeps cache-only spending in the unpriced verdict', () => {
+    expect(
+      summarizeCost([
+        cs('s1', { tokensInput: 1000 }, { totalCost: 3, priced: true }),
+        cs('s2', { tokensCacheRead: 1000 }, { totalCost: 0, priced: false }),
+      ]),
+    ).toMatchObject({ totalCost: 3, priced: false });
+  });
+
   it('covers an unpriced Kiro token sample with the same stage credit estimate', () => {
     const out = summarizeCost([
       // Agent-reported tokens on a Kiro model — unpriced on their own …

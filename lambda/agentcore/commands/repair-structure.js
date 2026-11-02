@@ -121,6 +121,7 @@ export const repairStructure = async (payload, deps) => {
             stageInstanceId: `repair-${intentId}`,
             metrics: { ...out.metrics, structureRepairCalls: 1 },
             resolvedModel: out.model ?? null,
+            creditRate: out.creditRate ?? null,
           })
           .catch(() => {});
       }
