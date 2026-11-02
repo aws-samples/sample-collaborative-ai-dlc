@@ -1583,9 +1583,11 @@ export const gitResultForCommitRefs = async ({
       if (traversed.exitCode !== 0) return false;
       return traversed.stdout.trim().split(/\s+/).slice(1).join(' ') === parents.join(' ');
     };
-    if (executionId && !(await hasDiffContext())) {
+    let ready = await hasDiffContext();
+    let deepen = null;
+    if (executionId && !ready) {
       const sourceRepo = repos.find((r) => (typeof r === 'string' ? r : r.url) === repo);
-      await deepenUntil({
+      deepen = await deepenUntil({
         dir,
         repo,
         projectId,
@@ -1600,6 +1602,16 @@ export const gitResultForCommitRefs = async ({
         git,
         withGitCredential,
       });
+      ready = await hasDiffContext();
+    }
+    // Without its parent context diff-tree still succeeds, listing the whole
+    // tree; fail instead so the caller records the provenance as unknown.
+    if (!ready) {
+      throw new Error(
+        `could not read parked-stage commit ${repo}@${sha.slice(0, 8)}: ${
+          deepen?.ok === false ? deepen.reason : 'commit history not available'
+        }`,
+      );
     }
     const diff = await git(
       ['diff-tree', '--root', '--format=', '--name-only', '-r', '-z', sha, '--'],

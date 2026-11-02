@@ -2355,6 +2355,67 @@ describe('shallow checkouts deepen on demand', () => {
     ]);
   });
 
+  describe('refuses a whole-tree diff when the boundary commit cannot be deepened', () => {
+    // A first stage commit on an unmoved main: without deepening,
+    // diff-tree --root would also report the untouched f1.txt and f2.txt.
+    const boundaryCommit = async () => {
+      const { remote, seed } = await deepRemote(2);
+      await forkOnRemote(seed, remote, 'aidlc/i1', 0, 's.txt');
+      const stored = (await git(['rev-parse', 'aidlc/i1'], seed)).stdout.trim();
+      const workspaceDir = await shallowClone(remote);
+      return { remote, stored, workspaceDir };
+    };
+
+    it('when the history fetch fails', async () => {
+      const { remote, stored, workspaceDir } = await boundaryCommit();
+      await expect(
+        gitResultForCommitRefs({
+          commitRefs: [{ repo: 'o/r', sha: stored }],
+          repos: ['o/r'],
+          workspaceDir,
+          projectId: 'p1',
+          executionId: 'e1',
+          urlsFor: () => laneUrls(remote),
+          git: async (args, opts) =>
+            args[0] === 'fetch'
+              ? { exitCode: 128, stdout: '', stderr: 'fatal: unable to access' }
+              : runGit(args, opts),
+        }),
+      ).rejects.toThrow(/deepen_failed/);
+      expect(await isShallowRepository({ dir: workspaceDir })).toBe(true);
+    });
+
+    it('when credentials are unavailable', async () => {
+      const { stored, workspaceDir } = await boundaryCommit();
+      // No network URL: withAuthenticatedRemote resolves a credential, as it
+      // does in production, and here that resolution fails.
+      await expect(
+        gitResultForCommitRefs({
+          commitRefs: [{ repo: 'o/r', sha: stored }],
+          repos: ['o/r'],
+          workspaceDir,
+          projectId: 'p1',
+          executionId: 'e1',
+          urlsFor: () => ({}),
+          withGitCredential: async () => {
+            throw Object.assign(new Error('no credential'), { code: 'CREDENTIAL_UNAVAILABLE' });
+          },
+        }),
+      ).rejects.toThrow(/credential_unavailable/);
+    });
+
+    it('when there is no credential context to deepen with', async () => {
+      const { stored, workspaceDir } = await boundaryCommit();
+      await expect(
+        gitResultForCommitRefs({
+          commitRefs: [{ repo: 'o/r', sha: stored }],
+          repos: ['o/r'],
+          workspaceDir,
+        }),
+      ).rejects.toThrow(/commit history not available/);
+    });
+  });
+
   it('reads a genuine root commit from a shallow clone without deepening', async () => {
     const { remote, seed } = await deepRemote(3);
     await git(['checkout', '--orphan', 'aidlc/orphan'], seed);
