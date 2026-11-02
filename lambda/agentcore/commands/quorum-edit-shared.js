@@ -6,6 +6,7 @@
 import { flattenVertexMap } from '../../shared/graph-rows.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 import { renderStructureContract } from '../../shared/artifact-structure-contract.js';
+import { htmlArtifactRefusal } from '../../shared/html-artifact.js';
 
 // Bounded content windows: Quorum edits are coordinated document rewrites,
 // not whole-corpus analysis. A document beyond the rewrite limit is refused
@@ -59,6 +60,8 @@ export const checkRewriteStructure = ({ artifactType, artifactId, before, after 
   if (prev.sections.length >= 2 && next.sections.length === 0) {
     problems.push('every section heading was removed');
   }
+  const htmlRefusal = htmlArtifactRefusal(artifactType, after);
+  if (htmlRefusal) problems.push(htmlRefusal);
   return {
     ok: problems.length === 0,
     problems,

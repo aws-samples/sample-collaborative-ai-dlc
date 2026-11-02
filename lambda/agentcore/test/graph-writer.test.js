@@ -345,6 +345,21 @@ describe('createArtifact', () => {
     expect(await g.V().has('Artifact', 'id', 'ok').hasNext()).toBe(true);
   });
 
+  it('accepts HTML only for visual artifact types, on create and on update', async () => {
+    await seedIntent();
+    const html = '<!doctype html><html><body><h2>Login</h2><h2>Home</h2></body></html>';
+    await writer.createArtifact({ artifactType: 'wireframes', id: 'wf', content: html });
+    await expect(
+      writer.createArtifact({ artifactType: 'requirements', id: 'req', content: html }),
+    ).rejects.toThrow(/`requirements` must be markdown/);
+    expect(await g.V().has('Artifact', 'id', 'req').hasNext()).toBe(false);
+
+    await writer.createArtifact({ artifactType: 'scope-document', id: 'scope', content: '## A' });
+    await expect(writer.updateArtifact({ id: 'scope', props: { content: html } })).rejects.toThrow(
+      /`scope-document` must be markdown/,
+    );
+  });
+
   it('does not gate unregistered artifact types on YAML (no structured block)', async () => {
     await seedIntent();
     // `design` is not in the extraction registry — a stray broken fence must not block it.
