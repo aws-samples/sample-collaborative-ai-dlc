@@ -1289,6 +1289,51 @@ The nine existing ECR deployment tests, formatting, scoped secret scan,
 remains applicable; live deployment and all remaining NE-02 qualification
 requirements are still pending.
 
+**Saved-plan credentials and interrupted-package cleanup, 2026-11-02:** the
+standalone ECR helper is now installed. The subsequent bare `terraform apply`
+failed during S3 backend credential resolution. The user-run wrapper's
+`AWS_PROFILE=solution` export is scoped to its child process tree and does not
+configure a later command entered in the parent terminal. The backend does not
+store a profile. No new apply is claimed from this error.
+
+The saved plan
+`terraform/ne02-2026-11-02-ecr-7115d5e72c8f.tfplan`, SHA-256
+`db2d5e7b583e510434d611457326d0693fd7205e8a3b5024c7b16db1265423d5`,
+and its original JSON are preserved. At **15:10 UTC**, `solution-read` confirmed
+the plan's lineage and state serial **1383** still match the remote state.
+Actual authority, execution and credential package bytes still match the
+previous deployment, so the controller stop repair remains undeployed.
+
+Replaying the ordinary plan inspector against that exact JSON reproduced another
+blocker before apply: it rejected **18 deposed local packaging instances** as
+native service removals. Every one has a retained current instance at the same
+address, and this plan deletes no AWS resource. The focused inspector repair
+allows cleanup only for the three existing package-helper type/name pairs, with
+a nonempty deposed identifier and a matching managed current instance that
+survives. Whole-helper removal, missing or different current instances, resident
+service deletion, storage deletion and runtime-image retention remain guarded.
+The unchanged saved plan now passes the repaired inspector.
+
+The **33** focused tests pass, including the separate authenticated apply script,
+deposed cleanup and its rejection controls. The full release suite reports
+**356 passed / 1 failed**: its release-metadata scan enters the pre-existing
+untracked `.worktrees/` checkouts and rejects their package versions. Those
+checkouts remain untouched. Lint and dependency checks pass with existing
+warnings; formatting, the changed-file secret scan and documentation build pass.
+The broad root secret scan was stopped after **148 seconds** because its scope
+includes the unrelated untracked checkouts; it is not recorded as a pass.
+Existing controller/runtime tests are not repeated for this deployment-tooling-only
+change.
+
+Evidence and the single user-run apply handoff are under
+`.native-evidence/ne02-2026-11-02-apply-credentials/`. The handoff sets the
+operator profile and region for the complete process tree, selects the installed
+ECR helper, preserves the original plan/JSON and applies an identical plan copy
+through `scripts/deploy-terraform.sh --phase apply --skip-seed`. Terraform still
+checks the saved plan against locked current state. Frontend and runtime source
+are unchanged. No agent deployment, operator fault or new recovery confirmation
+was performed; deployment and the remaining live NE-02 checks are still pending.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item

@@ -100,21 +100,50 @@ const nativeRemovalVerified = (plan.resource_changes || []).some(
 );
 // The Lambda module replaces these local build helpers when package content
 // changes. They do not remove resident services or retained run data. Keep the
-// exception limited to known helper replacements; outright removal still needs
-// the native decommission preflight.
+// exception limited to known helper replacements and cleanup of their deposed
+// instances; outright removal still needs the native decommission preflight.
 const nativePackageHelpers = new Map([
   ['terraform_data', 'package_filename_for_hash'],
   ['null_resource', 'archive'],
   ['local_file', 'archive_plan'],
 ]);
+const isNativePackageHelper = (change) =>
+  nativePackageHelpers.has(change.type) && nativePackageHelpers.get(change.type) === change.name;
 const replacesNativePackageHelper = (change) =>
-  change.change?.actions?.includes('create') &&
-  nativePackageHelpers.has(change.type) &&
-  nativePackageHelpers.get(change.type) === change.name;
+  change.change?.actions?.includes('create') && isNativePackageHelper(change);
+const currentChanges = new Map(
+  (plan.resource_changes || [])
+    .filter((change) => !change.deposed)
+    .map((change) => [change.address, change]),
+);
+const removesDeposedPackageHelper = (change) => {
+  if (
+    !isNativePackageHelper(change) ||
+    change.mode !== 'managed' ||
+    typeof change.deposed !== 'string' ||
+    change.deposed.length === 0 ||
+    !isDeepStrictEqual(change.change?.actions, ['delete'])
+  )
+    return false;
+
+  // Interrupted create-before-destroy applies can leave an old instance for a
+  // later plan to delete. Require the same helper's current instance to survive.
+  const current = currentChanges.get(change.address);
+  return (
+    current?.mode === 'managed' &&
+    current.type === change.type &&
+    current.name === change.name &&
+    current.change?.after != null &&
+    (current.change.actions.includes('create') ||
+      isDeepStrictEqual(current.change.actions, ['no-op']) ||
+      isDeepStrictEqual(current.change.actions, ['update']))
+  );
+};
 const removesProtectedNativeService = (change) =>
   change.address.startsWith('module.native_runs[') &&
   !nativeRemovalVerified &&
-  !replacesNativePackageHelper(change);
+  !replacesNativePackageHelper(change) &&
+  !removesDeposedPackageHelper(change);
 
 const rejected = (plan.resource_changes || []).filter(
   (change) =>

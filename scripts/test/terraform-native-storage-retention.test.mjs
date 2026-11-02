@@ -16,6 +16,9 @@ function inspect(
     name = address.split('.').at(-1).replace(/\[.*$/, ''),
     proof,
     additionalChanges = [],
+    deposed,
+    before,
+    after,
   } = {},
 ) {
   const directory = mkdtempSync(join(tmpdir(), 'aidlc-efs-retention-'));
@@ -27,9 +30,11 @@ function inspect(
         resource_changes: [
           {
             address,
+            mode: 'managed',
             type,
             name,
-            change: { actions },
+            ...(deposed === undefined ? {} : { deposed }),
+            change: { actions, before, after },
           },
           ...additionalChanges,
           ...(proof
@@ -96,6 +101,117 @@ test('native package helper removal still requires the decommission preflight', 
   for (const helper of packageHelpers) {
     const result = inspect(['delete'], helper);
     assert.equal(result.status, 1, helper.address);
+  }
+});
+
+const currentHelper = (helper, actions = ['no-op']) => ({
+  ...helper,
+  mode: 'managed',
+  name: helper.address.split('.').at(-1).replace(/\[.*$/, ''),
+  change: { actions, before: { id: 'current' }, after: { id: 'current' } },
+});
+
+test('allows deposed package cleanup after an interrupted replacement with a surviving current instance', () => {
+  for (const helper of packageHelpers) {
+    for (const actions of [
+      ['no-op'],
+      ['update'],
+      ['create'],
+      ['create', 'delete'],
+      ['delete', 'create'],
+    ]) {
+      const result = inspect(['delete'], {
+        ...helper,
+        deposed: '517e965e',
+        before: { id: 'old' },
+        after: null,
+        additionalChanges: [currentHelper(helper, actions)],
+      });
+      assert.equal(result.status, 0, `${helper.address} ${actions}: ${result.stderr}`);
+    }
+  }
+});
+
+test('deposed cleanup cannot stand in for a missing, deleted or different current helper', () => {
+  for (const helper of packageHelpers) {
+    const current = currentHelper(helper);
+    for (const changes of [
+      [],
+      [{ ...current, deposed: 'other-old-instance' }],
+      [{ ...current, address: current.address.replace('[0]', '[1]') }],
+      [{ ...current, type: 'aws_lambda_function' }],
+      [{ ...current, name: 'retained_manifest' }],
+      [{ ...current, mode: 'data' }],
+      [{ ...current, change: { actions: ['delete'], after: null } }],
+      [{ ...current, change: { actions: ['forget'], after: null } }],
+      [{ ...current, change: { actions: ['no-op'], after: null } }],
+    ]) {
+      const result = inspect(['delete'], {
+        ...helper,
+        deposed: '517e965e',
+        before: { id: 'old' },
+        after: null,
+        additionalChanges: changes,
+      });
+      assert.equal(result.status, 1, `${helper.address}: ${JSON.stringify(changes)}`);
+    }
+    for (const deposed of [undefined, '', 123]) {
+      const result = inspect(['delete'], {
+        ...helper,
+        deposed,
+        additionalChanges: [current],
+      });
+      assert.equal(result.status, 1, `${helper.address}: ${deposed}`);
+    }
+  }
+});
+
+test('deposed resident services and unrelated local records still require decommission proof', () => {
+  for (const resource of [
+    {
+      type: 'terraform_data',
+      address: 'module.native_runs[0].terraform_data.runtime_dependencies',
+    },
+    {
+      type: 'aws_lambda_function',
+      address: 'module.native_runs[0].module.api.aws_lambda_function.this[0]',
+    },
+    {
+      type: 'aws_efs_file_system',
+      address: 'module.native_runs[0].aws_efs_file_system.runs',
+    },
+  ]) {
+    const result = inspect(['delete'], {
+      ...resource,
+      deposed: '517e965e',
+      additionalChanges: [currentHelper(resource)],
+    });
+    assert.equal(result.status, 1, resource.address);
+  }
+});
+
+test('deposed package cleanup does not permit deleting storage or the current helper in the same plan', () => {
+  const helper = packageHelpers[0];
+  for (const other of [
+    {
+      address: 'module.native_runs[0].aws_s3_bucket.publications',
+      type: 'aws_s3_bucket',
+      name: 'publications',
+      change: { actions: ['delete'] },
+    },
+    {
+      ...currentHelper(packageHelpers[1]),
+      change: { actions: ['delete'], after: null },
+    },
+  ]) {
+    const result = inspect(['delete'], {
+      ...helper,
+      deposed: '517e965e',
+      additionalChanges: [currentHelper(helper), other],
+    });
+    assert.equal(result.status, 1);
+    assert.ok(result.stderr.includes(other.address), result.stderr);
+    assert.ok(!result.stderr.includes(helper.address), result.stderr);
   }
 });
 

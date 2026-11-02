@@ -113,6 +113,9 @@ let args = process.argv.slice(2);
 if (args[0].startsWith('-chdir=')) process.chdir(args.shift().slice(7));
 const command = args[0];
 assert.equal(process.cwd(), ${JSON.stringify(join(directory, 'terraform'))});
+if (process.env.EXPECTED_AWS_PROFILE) {
+  assert.equal(process.env.AWS_PROFILE, process.env.EXPECTED_AWS_PROFILE);
+}
 if (command === 'output') {
   assert.ok(fs.existsSync(${JSON.stringify(join(directory, 'applied'))}));
   const outputs = { environment: 'prod', aws_region: 'eu-central-1',
@@ -254,6 +257,46 @@ test('the script retains protected-resource destruction rejection before apply',
   assert.equal(result.status, 1);
   assert.match(result.stderr, /protected persistent resources would be destroyed/);
   assert.equal(events(fixture).includes('apply'), false);
+});
+
+test('separate apply cleans up a deposed native package through the authenticated script', (t) => {
+  const fixture = deploymentFixture(t);
+  const helper = {
+    address: 'module.native_runs[0].module.packages["api"].local_file.archive_plan[0]',
+    mode: 'managed',
+    type: 'local_file',
+    name: 'archive_plan',
+  };
+  write(
+    fixture.env.PLAN_JSON,
+    JSON.stringify({
+      resource_changes: [
+        {
+          ...helper,
+          change: { actions: ['no-op'], before: { id: 'current' }, after: { id: 'current' } },
+        },
+        {
+          ...helper,
+          deposed: '517e965e',
+          change: { actions: ['delete'], before: { id: 'old' }, after: null },
+        },
+      ],
+    }),
+  );
+  write(fixture.env.AIDLC_PLAN_FILE, 'saved plan');
+  const result = run(
+    fixture,
+    'scripts/deploy-terraform.sh prod --phase apply --skip-seed --plan-file "$AIDLC_PLAN_FILE"',
+    {
+      AIDLC_KEEP_PLAN: '1',
+      AWS_PROFILE: 'deployment-profile',
+      EXPECTED_AWS_PROFILE: 'deployment-profile',
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(events(fixture), ['show', 'apply', 'inventory']);
+  assert.equal(readFileSync(fixture.env.AIDLC_PLAN_FILE, 'utf8'), 'saved plan');
+  assert.equal(readFileSync(fixture.env.ECR_TEST_LOG, 'utf8').split('\n')[0], 'login');
 });
 
 const olderRelease = (t) => {
