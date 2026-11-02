@@ -409,8 +409,11 @@ const main = async () => {
       activeJobs: stageJobs,
     })(p);
   // Async workspace initialization: init-ws as a background job so a large
-  // clone is not bounded by the orchestrator Lambda's function timeout.
+  // clone is not bounded by the orchestrator Lambda's function timeout. The
+  // job maps live for the container, not the request, so a dispatch retry
+  // sees the running or finished job.
   const initJobs = new Map();
+  const initCompletedJobs = new Map();
   handlers.initWsStart = (p) =>
     createInitWsStart({
       initWs: (q) => handlers.initWs(q),
@@ -418,6 +421,7 @@ const main = async () => {
       sendCallbackHeartbeat: sendStageCallbackHeartbeat,
       busy,
       activeJobs: initJobs,
+      completedJobs: initCompletedJobs,
     })(p);
   const discussionJobs = new Map();
   handlers.discussionAssistStart = (p, context) =>

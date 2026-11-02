@@ -327,6 +327,22 @@ describe('createInitWsStart', () => {
       expect(sent).toHaveLength(1);
     });
 
+    it('answers alreadyCompleted when each request builds its own handler over the shared maps', async () => {
+      // http-server.js builds createInitWsStart per request, so the retry
+      // only sees the finished job through the container-lifetime maps.
+      const { deps, sent, beats } = makeDeps();
+      const shared = { activeJobs: new Map(), completedJobs: new Map() };
+      await createInitWsStart({ ...deps, ...shared })(basePayload);
+      await flush();
+
+      const retry = await createInitWsStart({ ...deps, ...shared })(basePayload);
+
+      expect(retry).toMatchObject({ ok: true, accepted: true, alreadyCompleted: true });
+      expect(deps.initWs).toHaveBeenCalledOnce();
+      expect(beats).toEqual(['cb-init']);
+      expect(sent).toHaveLength(1);
+    });
+
     it('starts a new job for a DIFFERENT callback once the previous one finished', async () => {
       const { deps } = makeDeps();
       const start = createInitWsStart(deps);
