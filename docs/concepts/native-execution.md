@@ -1241,6 +1241,54 @@ and intake rejection retain their earlier passes. Fresh game publication,
 playability and active-tool recovery remain open; the expired October 27 barrier
 is unusable. NE-02 remains unchecked and NE-03 must wait.
 
+**Interrupted controller deployment and ECR helper diagnosis, 2026-11-02:** the
+user ran the `bfdc4d65` handoff. Terraform apply failed while configuring private
+ECR authentication for the AgentCore and Yjs Docker providers. The failed plan
+`terraform/ne02-2026-11-02-stop-bfdc4d65e3ba.tfplan` remains preserved with SHA-256
+`f4d12310fee4bc0a7301d1f42590cb65634d2d0b7f190c7cf1b466fda678ba17`.
+The handoff correctly rejected reuse of that path.
+
+The required `/usr/local/bin/docker-credential-ecr-login` symlink points to
+`/Applications/Docker.app/Contents/Resources/bin/docker-credential-ecr-login`,
+which is absent. Docker itself is reachable. The locked Docker provider
+**3.9.0** replaces credential-helper errors with “couldn't find registry config”
+when reading `config_file_content`. Its actual installed binary reproduces the
+same error with the missing helper; the same isolated Terraform fixture plans
+successfully with a working helper returning synthetic credentials. This test
+uses a nonexistent Docker socket with the daemon check disabled, performs no
+apply and makes no AWS calls. The original provider diagnostic does not retain
+the underlying error, and the time or cause of the helper's removal is unknown.
+
+Fresh `solution-read` evidence confirms all **six** native Lambda packages still
+have their previously deployed bytes. The authority, execution worker and
+credential packages therefore still lack the `bfdc4d65` repair. The deployed
+base image remains
+`sha256:534ccfd547671cee197ae10e3700fccd4b9ec51cc16d099f7cdafddbab568a2b`.
+Normalized Terraform state comparison shows changes to eight local package-hash
+records, with no changed AWS resource attributes in that state comparison.
+The partial state also retains **18** deposed local packaging instances; a fresh
+plan must reconcile them. No state repair or deployment was run by the agent.
+
+Both fault executions remain `RECOVERING / FENCING`, writer **1**, at revisions
+**377** and **484**. All **69** missing-case and **68** wrong-case non-execution
+records, fence bytes/version and positive stop confirmations remain unchanged.
+No new publication, checkpoint or accepted-answer replay is observed.
+The workspace rejection checks remain stalled before validation.
+
+Evidence and a new single-command user handoff are under
+`.native-evidence/ne02-2026-11-02-ecr-auth/`. The handoff installs the standalone
+Homebrew ECR helper when needed, selects its executable explicitly, checks
+private ECR authentication without printing credentials, and runs the reviewed
+backend deployment with a fresh plan. Six local preflight cases cover valid,
+malformed, empty, wrong-user, expired and missing-helper responses, including
+suppression of private output. An initial shell fixture incorrectly rejected
+helper input without a newline; its failure is preserved and the corrected
+actual-provider control passes. Runtime and frontend source are unchanged.
+The nine existing ECR deployment tests, formatting, scoped secret scan,
+`git diff --check` and documentation build pass. Existing controller validation
+remains applicable; live deployment and all remaining NE-02 qualification
+requirements are still pending.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
