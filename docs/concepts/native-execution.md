@@ -2088,14 +2088,65 @@ user-executed handoff is
 It pins the reviewed commit, source/configuration/evidence hashes, account and
 profile, and preserves a new deployment plan and receipts.
 
-The repair is local and undeployed. After the operator's deployment, compare
-actual packages and image pins, then inspect this exact execution and retained
-publication before deciding whether further tool-only observation is necessary.
+At the end of this fresh-run stage, the repair was local and undeployed. The
+operator handoff required comparison of actual packages and image pins, then
+inspection of this exact execution and retained publication before deciding
+whether further tool-only observation was necessary.
 Do not answer its human gate, replay a saved response, redrive a queue manually
 or repeat a workspace fault. Evidence is under
 `.native-evidence/ne03-2026-11-03-fresh-run/`. The selected Claude fresh-run
 contracts pass; the worker repair's deployed behavior remains unverified.
 Generated-output quality remains outside the verdict; NE-04 has not started.
+
+### NE-03 worker deployment and preserved-result verification — 2026-11-03
+
+The operator's deployment receipt records
+`aeb031f43e9e126c7137d07d09fb068523d63c9e` finished at **13:54:13 UTC**.
+Independent read-only inspection confirms that all **nine** deployed native
+Lambda packages match the candidate's pinned bundle entries and service
+checksums. All functions are active with successful updates; the five authority
+aliases point to verified version **20**, without weighted routing. Only the
+execution and cancellation program bundles differ from deployed `558f552c`;
+the inspected function configuration is unchanged.
+
+The existing ECR tag **`a8baca084128c883`** still resolves to
+**`sha256:a0d0eb04dfa2cad5f0d1ad0363d610369f732127f0143ca05ec03b73dbe26200`**.
+Every function image pin and the existing execution endpoint agree. All **523**
+served frontend files still match the independently built baseline. The runtime
+and frontend source inputs are unchanged, so no image build, installed-image
+requalification or frontend deployment was repeated. The tightened IAM policies
+and all **12** existing runtime/image/EFS/role checks pass.
+
+The preserved fixture remains **AWAITING_USER** with its original attempt,
+writer, epoch, turn, runtime/CLI session, configuration, publication and
+interaction. The production readers verify the same immutable manifest, all
+**24** file versions, source baseline and interaction. Its **31** authority keys
+are unchanged; all **30** non-execution rows match exactly, including both ready
+export records and all **25** immutable history rows. The only changed baseline
+row is the mutable execution pointer, whose observed version/timestamp update
+predates deployment at **13:36:58 UTC**. No row or fence change occurred during
+the browser inspection. The browser's authenticated read returns **200** with
+the same publication and interaction; it still renders the original three
+choices and free text, with the human gate unanswered. The earlier **348**
+immutable records and **10** saved response rows also remain unchanged.
+
+Scoped execution/cancellation-worker and runtime log reads cover
+**13:54:13–14:00:28 UTC** after deployment. They contain **zero scoped events**,
+including no observed `EBUSY` recurrence. This is a quiet observation window
+while the fixture awaits a human reply; it provides neither a live warm-connection
+probe nor causal proof for the earlier delivery delay. The successful delivery
+before this deployment and the local connection regression remain separate
+evidence. No new workflow progress is needed to repeat NE-03's passed tool
+contracts.
+
+The requested deployment and preservation checks pass. Evidence and exact
+observation limits are under
+`.native-evidence/ne03-2026-11-03-deployed-aeb031f4/`. This stage changes
+documentation only. No Start, answer, runtime invocation, recovery, queue
+redrive, workspace fault or cloud mutation was performed by the verifier.
+Generated-output quality remains outside the verdict. No operator action is
+required for these checks; **NE-04 has not started**. Kiro remains deferred to
+NE-18.
 
 ## Integration and simplification checklist
 
@@ -2143,7 +2194,7 @@ with previous native development executions.
       planner or build a migration path for development runs. **Done when:** one
       EFS recovery path remains, no runtime turn depends on a private snapshot,
       publication/history/export still work, and shared platform behavior is intact.
-      **Completed locally 2026-11-03:** the implementation and validation record
+      **Completed 2026-11-03:** the implementation and validation record
       above remove the private stack and its exclusive callers/permissions; the
       full backend/frontend, isolated release, packaging and Terraform checks pass.
       The subsequent packaged-image qualification passes 155 Linux regressions
@@ -2151,10 +2202,12 @@ with previous native development executions.
       of `558f552c` is independently verified, including the actual registry image's
       installed checks, tightened IAM and frontend bytes. The fresh Claude
       application run verifies Start, runtime/EFS pins, immutable admission,
-      unanswered human-gate delivery, history and export. The recorded controller
-      observation delay led to a local worker connection repair that still needs
-      deployment and live confirmation; NE-02's deployed bytes are not reused as
-      proof of this change.
+      unanswered human-gate delivery, history and export. The subsequent worker
+      connection repair `aeb031f4` is independently verified as deployed, with
+      the same image/frontend and preserved publication/history/answers. Its
+      scoped post-deployment window is quiet; live warm-connection behavior and
+      causality for the earlier observation delay are not claimed. NE-02's
+      deployed bytes are not reused as proof of this change.
 - [ ] **NE-04 — Simplify runtime turn ownership.** Give preparation, harness execution,
       publication and cancellation an explicit per-turn context. Separate interaction
       decoding from execution coordination and remove state made redundant by
