@@ -105,6 +105,9 @@ interface IntentContextValue {
   detail: IntentDetail | null;
   compiled: CompiledWorkflow | null;
   loading: boolean;
+  /** True once `detail` comes from a successful load of the current intent,
+   *  false while it is still the cached copy shown on intent change. */
+  fresh: boolean;
   error: string | null;
 
   // Workflow phase metadata (from the full Workflow object, not compiled DTO).
@@ -314,6 +317,8 @@ export function IntentProvider({
   const [outputVersion, setOutputVersion] = useState(0);
 
   const [selectedStageId, setSelectedStageId] = useState<string | null>(null);
+  // Cache key of the intent whose detail was last loaded from the API.
+  const [freshKey, setFreshKey] = useState<string | null>(null);
   const [agentFocus, setAgentFocus] = useState<AgentFocusRequest | null>(null);
   const focusSeq = useRef(0);
 
@@ -333,6 +338,7 @@ export function IntentProvider({
       const dto = await intentsService.get(projectId, intentId);
       if (activeIntentRef.current !== intentId) return;
       setDetail(dto);
+      setFreshKey(intentCacheKey(projectId, intentId));
       setError(null);
       setLiveGates(new Map(dto.gates.map((g) => [g.humanTaskId, g])));
 
@@ -936,6 +942,7 @@ export function IntentProvider({
     return (compiled?.graph.edges ?? []).filter((e) => ids.has(e.from) && ids.has(e.to));
   }, [compiled, stageRows]);
 
+  const fresh = projectId && intentId ? freshKey === intentCacheKey(projectId, intentId) : false;
   const gates = useMemo(() => [...liveGates.values()], [liveGates]);
   const pendingGates = useMemo(() => gates.filter((g) => g.status === 'pending'), [gates]);
   const steering = useMemo(() => detail?.steering ?? [], [detail]);
@@ -1002,6 +1009,7 @@ export function IntentProvider({
         detail,
         compiled,
         loading,
+        fresh,
         error,
         workflowPhases,
         phaseNameOf,

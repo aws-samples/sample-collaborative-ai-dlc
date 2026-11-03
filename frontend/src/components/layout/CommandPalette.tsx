@@ -17,6 +17,7 @@ import {
   Search,
   Plus,
   LayoutDashboard,
+  Inbox,
   Network,
   Shield,
   Activity,
@@ -67,6 +68,10 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             <LayoutDashboard className="mr-2 h-4 w-4" />
             Dashboard
             <CommandShortcut>Go</CommandShortcut>
+          </CommandItem>
+          <CommandItem onSelect={() => runCommand(() => navigate('/my-work'))}>
+            <Inbox className="mr-2 h-4 w-4" />
+            My work
           </CommandItem>
           {isPlatformAdmin && (
             <CommandItem onSelect={() => runCommand(() => navigate('/admin'))}>

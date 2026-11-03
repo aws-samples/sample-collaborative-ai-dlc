@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
+import userEvent from '@testing-library/user-event';
 
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({ isPlatformAdmin: false }),
@@ -418,5 +419,37 @@ describe('AppSidebar Space-level attention removal', () => {
     const spaceHasIcon = spaceBtn.querySelector('.lucide-message-circle-question-mark');
     expect(spaceHasIcon).toBeNull();
     expect(allQuestionIcons.length).toBeGreaterThan(0);
+  });
+});
+
+describe('AppSidebar My work entry', () => {
+  function Location() {
+    return <div data-testid="location">{useLocation().pathname}</div>;
+  }
+  const renderAt = (path: string) =>
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <AppSidebar />
+        <Location />
+      </MemoryRouter>,
+    );
+
+  it('navigates to /my-work and is marked current there', async () => {
+    renderAt('/dashboard');
+    const myWork = screen.getByRole('button', { name: 'My work' });
+    expect(myWork).not.toHaveAttribute('aria-current');
+    await userEvent.click(myWork);
+    expect(screen.getByTestId('location')).toHaveTextContent('/my-work');
+    expect(screen.getByRole('button', { name: 'My work' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('sits above an unchanged Spaces button that still opens the dashboard', async () => {
+    renderAt('/my-work');
+    const myWork = screen.getByRole('button', { name: 'My work' });
+    const spaces = screen.getByRole('button', { name: 'Spaces' });
+    expect(myWork.compareDocumentPosition(spaces) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sort spaces' })).toBeInTheDocument();
+    await userEvent.click(spaces);
+    expect(screen.getByTestId('location')).toHaveTextContent('/dashboard');
   });
 });

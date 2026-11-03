@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act, waitFor } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import { MemoryRouter, Routes, Route, useNavigate } from 'react-router';
 
 // Capture the realtime callback so tests can push events into the provider.
 let capturedOnEvent: ((e: Record<string, unknown>) => void) | null = null;
@@ -630,6 +630,63 @@ describe('IntentContext', () => {
     });
     renderProvider();
     await waitFor(() => expect(screen.getByTestId('phase-path')).toHaveTextContent('01'));
+  });
+
+  it('fresh: false for cached or switched detail, true only after a successful load', async () => {
+    function FreshProbe() {
+      const { fresh, detail: current } = useIntent();
+      const navigate = useNavigate();
+      return (
+        <div>
+          <div data-testid="fresh">{String(fresh)}</div>
+          <div data-testid="title">{current?.intent.title ?? 'none'}</div>
+          <button onClick={() => navigate('/space/p1/intent/i2')}>to i2</button>
+          <button onClick={() => navigate('/space/p1/intent/i1')}>to i1</button>
+        </div>
+      );
+    }
+    const deferred = () => {
+      let resolve!: (v: unknown) => void;
+      let reject!: (e: unknown) => void;
+      const promise = new Promise((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    };
+    get.mockResolvedValueOnce(detail({ title: 'One' }));
+    render(
+      <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+        <Routes>
+          <Route
+            path="/space/:projectId/intent/:intentId"
+            element={
+              <IntentProvider>
+                <FreshProbe />
+              </IntentProvider>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByTestId('fresh')).toHaveTextContent('true'));
+
+    // Switching from a fresh intent: false at once, true when its load lands.
+    const second = deferred();
+    get.mockReturnValueOnce(second.promise);
+    act(() => screen.getByText('to i2').click());
+    expect(screen.getByTestId('fresh')).toHaveTextContent('false');
+    await act(async () => second.resolve(detail({ id: 'i2', executionId: 'i2', title: 'Two' })));
+    await waitFor(() => expect(screen.getByTestId('fresh')).toHaveTextContent('true'));
+
+    // Back to i1: its cached detail renders, still not fresh; a failed load keeps it false.
+    const third = deferred();
+    get.mockReturnValueOnce(third.promise);
+    act(() => screen.getByText('to i1').click());
+    expect(screen.getByTestId('title')).toHaveTextContent('One');
+    expect(screen.getByTestId('fresh')).toHaveTextContent('false');
+    await act(async () => third.reject(new Error('boom')));
+    expect(screen.getByTestId('fresh')).toHaveTextContent('false');
   });
 
   it('currentPhasePath falls back to raw value when workflowPhases lacks the id', async () => {

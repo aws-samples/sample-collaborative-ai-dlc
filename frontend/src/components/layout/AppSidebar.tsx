@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Eye,
   History,
+  Inbox,
   LayoutDashboard,
   ListFilter,
   Loader2,
@@ -181,6 +182,7 @@ export function AppSidebar() {
   );
 
   const isOnDashboard = location.pathname === '/dashboard';
+  const isOnMyWork = location.pathname === '/my-work';
   const isOnAdmin = location.pathname === '/admin';
   const isOnWorkflows = location.pathname.startsWith('/workflows');
   const isOnBlocks = location.pathname.startsWith('/blocks');
@@ -277,7 +279,22 @@ export function AppSidebar() {
 
   return (
     <div className="flex h-full w-full flex-col bg-sidebar text-sidebar-foreground">
-      <div className="flex items-center gap-1 px-3 pt-3 pb-1">
+      <div className="flex items-center gap-1 px-3 pt-3">
+        <button
+          onClick={() => navigate('/my-work')}
+          aria-current={isOnMyWork ? 'page' : undefined}
+          className={cn(
+            'flex flex-1 items-center gap-2.5 px-3 py-2 text-[13px] font-medium transition-colors rounded-md text-left min-w-0',
+            isOnMyWork
+              ? 'bg-sidebar-accent text-sidebar-foreground'
+              : 'text-sidebar-foreground/80 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground',
+          )}
+        >
+          <Inbox className="h-4 w-4 shrink-0" />
+          <span className="flex-1 truncate">My work</span>
+        </button>
+      </div>
+      <div className="flex items-center gap-1 px-3 pt-0.5 pb-1">
         <button
           onClick={() => navigate('/dashboard')}
           className={cn(

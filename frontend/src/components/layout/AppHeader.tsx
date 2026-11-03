@@ -244,6 +244,9 @@ function buildBreadcrumbs(
   if (pathname === '/dashboard') {
     return [{ label: 'Spaces' }];
   }
+  if (pathname === '/my-work') {
+    return [{ label: 'My work' }];
+  }
 
   // Observability
   if (pathname === '/observability') {
