@@ -905,4 +905,7 @@ export const createNativeExecutionWorker =
     return { batchItemFailures: failures };
   };
 
-export const handler = (event, context) => createNativeExecutionWorker()(event, context);
+// SDK connection pools belong to the warm worker; execution state remains per record.
+let worker;
+export const handler = (event, context) =>
+  (worker ??= createNativeExecutionWorker())(event, context);

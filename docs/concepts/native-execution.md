@@ -2016,6 +2016,87 @@ checks, initial browser-access failure and source hashes are under
 checks do not claim a live model or new AgentCore/EFS execution. No production
 implementation changed during verification, and NE-04 has not started.
 
+### NE-03 fresh application check and worker connection repair — 2026-11-03
+
+After browser access was enabled, one fresh Claude intent,
+`0c886f19-89da-4c1c-927a-b48bed4a634b`, was created and prepared through the
+application. Start returned **202** at **13:15:28 UTC**, with request
+`bf48b75e-1fcb-49f7-bcb9-35d2713269d7`. The fixture requests one small Markdown
+document and explicitly excludes application implementation, builds, playability
+and output-quality checks. No workflow answer, recovery confirmation, repeated
+Start or operator fault was submitted.
+
+The new execution has attempt `34b956ba-fbbe-4d6c-8cfc-93954acd0314`,
+epoch/writer/turn **1**, and configuration hash
+`473bde9a4ccce2b0c64f8b70ea13a57f019ae7d49c465abff4394d6abaa1c3f3`.
+Twelve independent read-only checks pass for its pinned image, execution endpoint,
+role, EFS mount/access point, environment and permissions. It uses the verified
+registry image above and `efs-workspace-v1`; its schema-3 fence has no private
+checkpoint. The runtime installed AI-DLC **2.11.1**, launched Claude and uploaded
+the turn's **24-file, 53,294-byte** public result at **13:21:44 UTC**.
+
+The exact public manifest and every referenced file version pass the production
+publication reader's identity, length and hash verification. Its manifest also
+references the preserved one-file source baseline, which independently passes.
+These initial **29 immutable object reads** established uploaded bytes separately
+from authority admission. No generated file was interpreted or executed.
+Previous **348 immutable records** and **10 saved response rows** remain unchanged.
+Unauthenticated reads of the new intent and publication both return **401**;
+additional member-role combinations were not exercised.
+
+**Fresh application delivery: PASS after delayed reconciliation.** Scoped worker
+diagnostics first recorded **`EBUSY` at `authority-read`** while the authority
+remained `RUNNING` and the browser showed harness setup. An ordinary retry
+observed `publication_ready` and completed authority admission at
+**13:30:00.938 UTC**, about eight minutes after the upload. This happened with
+the original deployed bytes, before any repair deployment, without another
+Start, operator action or response replay.
+
+The exact publication is now admitted with its separately verified immutable
+interaction. The browser displays `AWAITING_USER`, all three AI-DLC plan choices
+and free text, and the same proposal in history. Its first human gate remains
+unanswered. Publication `STOPPED` metadata is not treated as workflow completion.
+The member-created result archive downloads successfully and contains all
+**24** published files plus the platform provenance manifest; every file's bytes,
+length and hash match. Individual-file delivery is checked against the same
+publication. Signed download capabilities are used without AWS credentials and
+are not retained. The first create/prepare observations use UI, resource timing
+and authority records; detailed page-context network capture began before Start.
+
+The worker entry point created a new set of SDK clients on every Lambda
+invocation. A real SDK transport probe against a loopback authority endpoint
+reproduces **64 open connections after 64 warm polls**. The repair retains the
+worker and its SDK connection pools for the warm Lambda lifetime while execution
+state, authorization, supervisor and graph connection remain scoped to each
+queued record. Both execution and cancellation probes now use **one connection
+across 64 distinct identities**, without failures or identity leakage. All
+**1,374 native controller tests** pass. Lint, formatting, scoped secret checks,
+all **409** native architecture modules, local documentation links and the docs
+build also pass. This establishes a connection accumulation defect and its local
+repair; attributing the observed deployed `EBUSY` failures to that defect still
+requires deployment and live confirmation. The successful retry does not prove
+the repair or erase the observed delivery delay.
+
+Independent packaging compares all nine native functions with deployed
+`558f552c`: only the execution and cancellation bundles change. All **268 runtime
+image inputs** retain their existing hashes and produce ECR tag
+`a8baca084128c883`; frontend, runtime, shared source, dependencies and Terraform
+are unchanged. The repair therefore needs the ordinary controller deployment,
+without rebuilding the runtime image or publishing the frontend. The guarded
+user-executed handoff is
+`.native-evidence/ne03-2026-11-03-fresh-run/handoff/deploy-worker-connections.sh`.
+It pins the reviewed commit, source/configuration/evidence hashes, account and
+profile, and preserves a new deployment plan and receipts.
+
+The repair is local and undeployed. After the operator's deployment, compare
+actual packages and image pins, then inspect this exact execution and retained
+publication before deciding whether further tool-only observation is necessary.
+Do not answer its human gate, replay a saved response, redrive a queue manually
+or repeat a workspace fault. Evidence is under
+`.native-evidence/ne03-2026-11-03-fresh-run/`. The selected Claude fresh-run
+contracts pass; the worker repair's deployed behavior remains unverified.
+Generated-output quality remains outside the verdict; NE-04 has not started.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -2068,8 +2149,11 @@ with previous native development executions.
       The subsequent packaged-image qualification passes 155 Linux regressions
       and the existing Claude/Codex/OpenCode installed scopes. Coordinated deployment
       of `558f552c` is independently verified, including the actual registry image's
-      installed checks, tightened IAM and frontend bytes. A fresh application run
-      remains pending browser access; NE-02's deployed bytes are not reused as
+      installed checks, tightened IAM and frontend bytes. The fresh Claude
+      application run verifies Start, runtime/EFS pins, immutable admission,
+      unanswered human-gate delivery, history and export. The recorded controller
+      observation delay led to a local worker connection repair that still needs
+      deployment and live confirmation; NE-02's deployed bytes are not reused as
       proof of this change.
 - [ ] **NE-04 — Simplify runtime turn ownership.** Give preparation, harness execution,
       publication and cancellation an explicit per-turn context. Separate interaction
