@@ -79,8 +79,18 @@ export default function MyWork() {
     [projects],
   );
 
-  const { items, unavailable, status, error, accessLost, hasMore, loadingMore, refresh, loadMore } =
-    usePendingQuestions({ projectId: spaceParam, kinds: typeFilter?.kinds ?? null });
+  const {
+    items,
+    unavailable,
+    status,
+    error,
+    stale,
+    accessLost,
+    hasMore,
+    loadingMore,
+    refresh,
+    loadMore,
+  } = usePendingQuestions({ projectId: spaceParam, kinds: typeFilter?.kinds ?? null });
 
   const [accessLostNotice, setAccessLostNotice] = useState(false);
   const setFilter = (key: 'space' | 'type', value: string) => {
@@ -233,7 +243,9 @@ export default function MyWork() {
             )}
             {error && (
               <p role="alert" className="text-sm text-destructive">
-                Couldn't load more questions: {error}
+                {stale
+                  ? `Couldn't refresh, so this list may be out of date: ${error}`
+                  : `Couldn't load more questions: ${error}`}
               </p>
             )}
             {hasMore && (

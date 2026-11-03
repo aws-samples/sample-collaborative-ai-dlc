@@ -291,6 +291,40 @@ describe('usePendingQuestions', () => {
     expect(result.current.accessLost).toBe(false);
   });
 
+  it('a failed poll keeps the loaded list and reports the error inline', async () => {
+    list.mockResolvedValueOnce(page(['a', 'b'], { nextCursor: 'c1' }));
+    const { result } = renderHook(() => usePendingQuestions({}));
+    await flush();
+    list.mockRejectedValueOnce(new ApiError(503, 'Service unavailable'));
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(result.current.status).toBe('ready');
+    expect(result.current.items.map((i) => i.id)).toEqual(['a', 'b']);
+    expect(result.current.hasMore).toBe(true);
+    expect(result.current.stale).toBe(true);
+    expect(result.current.error).toBe('Service unavailable');
+
+    list.mockResolvedValueOnce(page(['b']));
+    act(() => result.current.refresh());
+    await flush();
+    expect(result.current.items.map((i) => i.id)).toEqual(['b']);
+    expect(result.current.stale).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('a failed refresh with nothing loaded is a page error', async () => {
+    const { result } = renderHook(() => usePendingQuestions({}));
+    await flush();
+    expect(result.current.items).toEqual([]);
+    list.mockRejectedValueOnce(new ApiError(503, 'Service unavailable'));
+    act(() => result.current.refresh());
+    await flush();
+    expect(result.current.status).toBe('error');
+    expect(result.current.stale).toBe(false);
+  });
+
   it('removes listeners and the poll on unmount', async () => {
     const removeWindow = vi.spyOn(window, 'removeEventListener');
     const removeDocument = vi.spyOn(document, 'removeEventListener');

@@ -9,6 +9,7 @@ type HookResult = {
   unavailable: UnavailableSpace[];
   status: 'loading' | 'ready' | 'error';
   error: string | null;
+  stale: boolean;
   accessLost: boolean;
   hasMore: boolean;
   loadingMore: boolean;
@@ -70,6 +71,7 @@ const setHook = (over: Partial<HookResult> = {}) => {
     unavailable: [],
     status: 'ready',
     error: null,
+    stale: false,
     accessLost: false,
     hasMore: false,
     loadingMore: false,
@@ -285,5 +287,14 @@ describe('MyWork page', () => {
     renderPage();
     await userEvent.click(screen.getByRole('button', { name: 'Load more' }));
     expect(loadMore).toHaveBeenCalled();
+  });
+
+  it('keeps the list and says it may be out of date when a refresh fails', () => {
+    setHook({ items: [question()], stale: true, error: 'Service unavailable' });
+    renderPage();
+    expect(screen.getByRole('list', { name: 'Pending questions' })).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      "Couldn't refresh, so this list may be out of date: Service unavailable",
+    );
   });
 });

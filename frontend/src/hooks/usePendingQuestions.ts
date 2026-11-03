@@ -27,6 +27,8 @@ interface State {
   nextCursor: string | null;
   status: PendingQuestionsStatus;
   error: string | null;
+  /** The last refresh failed; `items` are from the last successful load. */
+  stale: boolean;
   accessLost: boolean;
   loadingMore: boolean;
 }
@@ -38,6 +40,7 @@ const initialState = (scopeKey: string): State => ({
   nextCursor: null,
   status: 'loading',
   error: null,
+  stale: false,
   accessLost: false,
   loadingMore: false,
 });
@@ -111,7 +114,13 @@ export function usePendingQuestions({
           setState({ ...initialState(stampScope), status: 'ready', accessLost: true });
           return;
         }
-        setState({ ...initialState(stampScope), status: 'error', error: errorMessage(error) });
+        // A failed background refresh keeps the list already shown and reports
+        // the error inline; only a first load with nothing to show is a page error.
+        setState((prev) =>
+          prev.scopeKey === stampScope && prev.status === 'ready' && prev.items.length > 0
+            ? { ...prev, loadingMore: false, stale: true, error: errorMessage(error) }
+            : { ...initialState(stampScope), status: 'error', error: errorMessage(error) },
+        );
       });
   }, []);
 
@@ -211,6 +220,7 @@ export function usePendingQuestions({
     unavailable: view.unavailable,
     status: view.status,
     error: view.error,
+    stale: view.stale,
     accessLost: view.accessLost,
     hasMore: Boolean(view.nextCursor),
     loadingMore: view.loadingMore,
