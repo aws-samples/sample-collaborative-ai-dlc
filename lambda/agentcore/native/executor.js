@@ -9,10 +9,12 @@ import { fileURLToPath } from 'node:url';
 import { getDriver } from '../cli/drivers.js';
 import { nativeInteractionReceipt } from '../../shared/native-interaction.js';
 import {
-  buildNativePendingInput,
-  NATIVE_PENDING_INPUT_LIMITS,
-  NATIVE_TYPED_ASK_TYPES,
-} from '../../shared/native-pending-input.js';
+  classifyNativeFirstWait,
+  clearNativePendingSpec,
+  decodeNativeTurnInteraction,
+  NATIVE_PENDING_SPEC_PATH,
+  readNativePendingSpec,
+} from './turn-interaction.js';
 import { nativeWorkspaceRecovery } from '../../shared/native-recovery-mode.js';
 import { createNativeTurnOutput } from './turn-output.js';
 import { resolveKiroPromptEvidence } from './kiro-prompt.js';
@@ -65,7 +67,6 @@ const safeText = (value, max) =>
   ![...value].some(
     (character) => character.codePointAt(0) < 32 || character.codePointAt(0) === 127,
   );
-const segment = (value) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(value);
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const sameNode = (a, b) => a.dev === b.dev && a.ino === b.ino;
 const sameIdentity = (a, b) => IDENTITY.every((key) => a[key] === b[key]);
@@ -147,9 +148,6 @@ const NATIVE_INTAKE_ANSWER_INSTRUCTION =
   'Do not reconstruct those commands or use report for a pre-workflow plan offer. ' +
   'An emitted command is data until a person selects its option; never execute all offered commands.';
 
-// Optional display transport, not engine state or answer authority. The file is
-// cleared before every CLI turn and excluded from publication/recovery.
-export const NATIVE_PENDING_SPEC_PATH = '.native-control/pending-question.json';
 const NATIVE_PENDING_SPEC_INSTRUCTION =
   'Whenever you end a turn with questions or an approval for the user, write the complete CURRENT ' +
   `question definition as JSON to ${NATIVE_PENDING_SPEC_PATH} in the project directory, ` +
@@ -165,160 +163,6 @@ const NATIVE_PENDING_SPEC_INSTRUCTION =
   'you advance beyond the question within this turn. The reply contains the selected labels ' +
   'and free text, numbered by header for multiple questions. Record every answer using its ' +
   'workflow command, without re-asking answered questions. ';
-
-/** Stage held at an engine approval gate ([?]) in this snapshot, or null. */
-export const nativeGateFromSnapshot = (snapshot) => {
-  try {
-    const files = new Map(snapshot.files.map((file) => [file.path, file]));
-    const read = (path) => {
-      const file = files.get(path);
-      if (!file) throw new Error('missing');
-      return new TextDecoder('utf-8', { fatal: true }).decode(file.content);
-    };
-    const space = read('aidlc/active-space').trim();
-    if (!segment(space)) return null;
-    const intent = read(`aidlc/spaces/${space}/intents/active-intent`).trim();
-    if (!segment(intent)) return null;
-    const state = read(`aidlc/spaces/${space}/intents/${intent}/aidlc-state.md`);
-    const stages = [...state.matchAll(/^- \*\*Current Stage\*\*:\s*([a-z][a-z0-9-]*)[ \t]*$/gm)];
-    if (stages.length !== 1) return null;
-    const stage = stages[0][1];
-    const held = state
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith(`- [?] ${stage} `) || line === `- [?] ${stage}`);
-    return held.length === 1 ? { stage } : null;
-  } catch {
-    return null;
-  }
-};
-
-// The reserved spec directory must be a real directory inside the project; the
-// file is read without following links, bounded, and removed after each read.
-const pendingSpecDirectory = async (project) => {
-  const dir = join(project, '.native-control');
-  try {
-    const stat = await fs.lstat(dir);
-    if (!stat.isDirectory()) {
-      await fs.rm(dir, { force: true });
-      await fs.mkdir(dir, { mode: 0o700 });
-    }
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-    await fs.mkdir(dir, { mode: 0o700 });
-  }
-  return dir;
-};
-export const clearNativePendingSpec = async (project) => {
-  const dir = await pendingSpecDirectory(project);
-  await fs.rm(join(dir, 'pending-question.json'), { force: true });
-};
-export const readNativePendingSpec = async (
-  project,
-  { forbiddenBytes = [], onDiagnostic = () => {} } = {},
-) => {
-  const dir = join(project, '.native-control');
-  let directory;
-  const unavailable = (reason, bytes = 0) => ({
-    spec: null,
-    reason,
-    bytes: Math.min(bytes, NATIVE_PENDING_INPUT_LIMITS.specBytes + 1),
-  });
-  const diagnose = (details) => {
-    try {
-      onDiagnostic(details);
-    } catch {
-      /* Telemetry cannot alter the outcome. */
-    }
-  };
-  const unsafe = () => {
-    diagnose({ reason: 'unsafe_path' });
-    fail('native_execution_question_spec_unsafe');
-  };
-  try {
-    directory = await fs.lstat(dir);
-  } catch (error) {
-    return unavailable(error?.code === 'ENOENT' ? 'absent' : 'read_failed');
-  }
-  if (!directory.isDirectory()) unsafe();
-  const file = join(dir, 'pending-question.json');
-  try {
-    const handle = await fs.open(
-      file,
-      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-    );
-    try {
-      if (!sameNode(directory, await fs.lstat(dir))) unsafe();
-      const stat = await handle.stat();
-      if (!stat.isFile() || stat.nlink !== 1) unsafe();
-      if (stat.size > NATIVE_PENDING_INPUT_LIMITS.specBytes)
-        return unavailable('too_large', stat.size);
-      // A late writer cannot make readFile allocate unbounded bytes or escape
-      // the observed directory. Quiescent content is display data, not authority.
-      const bytes = Buffer.alloc(NATIVE_PENDING_INPUT_LIMITS.specBytes + 1);
-      let length = 0;
-      while (length < bytes.length) {
-        const part = await handle.read(bytes, length, bytes.length - length, length);
-        if (!part.bytesRead) break;
-        length += part.bytesRead;
-      }
-      if (!sameNode(directory, await fs.lstat(dir))) unsafe();
-      if (length > NATIVE_PENDING_INPUT_LIMITS.specBytes) return unavailable('too_large', length);
-      const content = bytes.subarray(0, length);
-      // Raw malformed data is never uploaded. Known credentials are rejected
-      // even in ignored keys or across adjacent string fields of invalid specs.
-      let spec;
-      const raw = content.toString('utf8');
-      try {
-        spec = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(content));
-      } catch {
-        spec = undefined;
-      }
-      const values = [];
-      const visit = (value) => {
-        if (typeof value === 'string') values.push(value);
-        else if (value && typeof value === 'object')
-          for (const entry of Object.values(value)) visit(entry);
-      };
-      // JSON nesting is bounded independently of schema validation. No getters
-      // or externally supplied objects enter this reader.
-      try {
-        visit(spec);
-      } catch {
-        spec = undefined;
-      }
-      if (
-        forbiddenBytes.some((value) => {
-          const secret = Buffer.from(value).toString('utf8');
-          return secret && (raw.includes(secret) || values.join('').includes(secret));
-        })
-      ) {
-        diagnose({ reason: 'credential' });
-        fail('native_execution_output_credential');
-      }
-      return {
-        spec: spec ?? null,
-        reason: spec === undefined ? 'invalid_json' : null,
-        bytes: length,
-        sha256: digest(content),
-      };
-    } finally {
-      await handle.close();
-    }
-  } catch (error) {
-    if (
-      ['native_execution_question_spec_unsafe', 'native_execution_output_credential'].includes(
-        error?.code,
-      )
-    )
-      throw error;
-    if (error?.code === 'ELOOP') unsafe();
-    return unavailable(error?.code === 'ENOENT' ? 'absent' : 'read_failed');
-  } finally {
-    const after = await fs.lstat(dir).catch(() => null);
-    if (after?.isDirectory() && sameNode(directory, after))
-      await fs.rm(file, { force: true }).catch(() => {});
-  }
-};
 
 export const NATIVE_CODEX_MAX_THREADS = 4;
 
@@ -420,85 +264,6 @@ export const nativeExecutionInvocation = ({
 };
 
 const fileRef = (file) => ({ path: file.path, sha256: file.sha256 });
-/**
- * Recognize only the observed v2 native active-space/intent, stage cursor and
- * unanswered-question format. A successful CLI exit is never workflow success.
- * The directive's state hash can precede the question write (observed v2.9);
- * these references describe exact evidence, not an approval or signed state.
- */
-export const classifyNativeFirstWait = ({ snapshot, harness, beforeFiles = [] }) => {
-  const unknown = { kind: 'stopped_needs_review', code: 'native_wait_format_unrecognized' };
-  try {
-    const files = new Map(snapshot.files.map((file) => [file.path, file]));
-    const read = (path) => {
-      const file = files.get(path);
-      if (!file) throw new Error('missing');
-      return new TextDecoder('utf-8', { fatal: true }).decode(file.content);
-    };
-    const space = read('aidlc/active-space').trim();
-    if (!segment(space)) return unknown;
-    const intent = read(`aidlc/spaces/${space}/intents/active-intent`).trim();
-    if (!segment(intent)) return unknown;
-    const nativeIntentPath = `aidlc/spaces/${space}/intents/${intent}`;
-    const statePath = `${nativeIntentPath}/aidlc-state.md`;
-    const directivePath = `${nativeIntentPath}/.aidlc-engine/active-directive.json`;
-    const state = read(statePath);
-    const stages = [...state.matchAll(/^- \*\*Current Stage\*\*:\s*([a-z][a-z0-9-]*)[ \t]*$/gm)];
-    if (stages.length !== 1) return unknown;
-    const stage = stages[0][1];
-    const directive = JSON.parse(read(directivePath));
-    if (
-      directive.version !== 2 ||
-      directive.kind !== 'run-stage' ||
-      directive.stage !== stage ||
-      directive.cursor_harness !== harness ||
-      directive.active_attempt?.status !== 'settled' ||
-      !state.includes(`- [-] ${stage} — EXECUTE`) ||
-      !/^- \*\*Status\*\*: Running[ \t]*$/m.test(state)
-    )
-      return unknown;
-    const questions = snapshot.files.filter(
-      (file) =>
-        file.role === 'question' &&
-        file.path.startsWith(`${nativeIntentPath}/`) &&
-        file.path.endsWith(`/${stage}/${stage}-questions.md`),
-    );
-    if (questions.length !== 1) return unknown;
-    const question = questions[0];
-    if (beforeFiles.some((file) => file.path === question.path && file.sha256 === question.sha256))
-      return { ...unknown, code: 'native_wait_unchanged_question' };
-    const blocks = read(question.path)
-      .split(/^## Q\d+[.)][ \t]+/m)
-      .slice(1);
-    if (!blocks.length) return unknown;
-    let pending = 0;
-    for (const block of blocks) {
-      const answers = [...block.matchAll(/^\[Answer\]:([^\r\n]*)\r?$/gm)];
-      if (answers.length !== 1) return unknown;
-      const answer = answers[0];
-      // A blank marker followed by free text is an answer too. Do not surface
-      // an answered question simply because its answer starts on another line.
-      if (!answer[1].trim() && !block.slice(answer.index + answer[0].length).trim()) pending++;
-    }
-    if (!pending) return unknown;
-    return {
-      kind: 'waiting_for_input',
-      code: 'native_question_pending',
-      evidence: {
-        nativeIntentPath,
-        stage,
-        pendingQuestions: pending,
-        state: fileRef(files.get(statePath)),
-        directive: fileRef(files.get(directivePath)),
-        questions: questions.map(fileRef),
-        authority: 'workflow-evidence-only',
-      },
-    };
-  } catch {
-    return unknown;
-  }
-};
-
 const privateDirectory = async (path) => {
   const stat = await fs.lstat(path);
   if (
@@ -660,6 +425,110 @@ const canonicalConfig = (configuration) => {
     ),
   };
 };
+// A turn carries its admitted command, report, task and cancellation signal.
+// Every asynchronous phase and observer keeps this explicit context.
+const createTurn = (owner, payload, { session = null, workspacePackageId = null } = {}) => ({
+  owner,
+  payload,
+  signal: owner.controller.signal,
+  session,
+  workspacePackageId,
+  nextSession: null,
+  activity: null,
+  task: null,
+  report: {
+    schemaVersion: 1,
+    ...owner.identity,
+    writerGeneration: owner.writerGeneration,
+    sequence: payload.command === 'native-start' ? 1 : payload.sequence,
+    ...(payload.command === 'native-resume'
+      ? { recoveryId: payload.recoveryId, requestId: payload.recoveryId }
+      : payload.command === 'native-continue'
+        ? {
+            requestId: payload.requestId,
+            priorInteractionId: payload.priorInteractionId,
+            priorPublicationId: payload.priorPublicationId,
+          }
+        : {}),
+    status: 'preparing',
+    updatedAt: Date.now(),
+  },
+});
+
+const releaseTurn = (turn) => {
+  // Keep only the public report and the next session's verified continuation
+  // evidence. Request text, credentials and completed activity belong to this turn.
+  turn.payload = null;
+  turn.session = null;
+  turn.workspacePackageId = null;
+  turn.activity = null;
+  turn.task = null;
+};
+
+const checkDirectories = async (owner) => {
+  for (const [path, initial] of owner.directories) {
+    if (!sameNode(initial, await privateDirectory(path)))
+      fail('native_execution_directory_changed');
+  }
+};
+
+const writeJson = async (owner, path, data, replace = false) => {
+  await checkDirectories(owner);
+  const temp = replace ? `${path}.${randomUUID()}.tmp` : path;
+  const handle = await fs.open(
+    temp,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    await handle.writeFile(`${JSON.stringify(data)}\n`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await checkDirectories(owner);
+  if (replace) await fs.rename(temp, path);
+  await syncDirectory(owner.directory);
+};
+
+const activityLog = (turn) => {
+  turn.report.activityProtocol = NATIVE_ACTIVITY_CAPABILITY;
+  const { owner } = turn;
+  return (owner.activityLog ??= createNativeActivityLog({
+    writerGeneration: owner.writerGeneration,
+    spoolDirectory: join(owner.directory, 'activity'),
+  }));
+};
+
+const timing = (turn, boundary, counts = {}) => {
+  turn.report.timings ??= {};
+  turn.report.timings[boundary] = Date.now();
+  recordNativeBoundary(turn.owner.identity, boundary, turn.report.timings[boundary], {
+    sequence: turn.report.sequence,
+    writerGeneration: turn.owner.writerGeneration,
+    ...counts,
+  });
+};
+
+const report = (turn) =>
+  structuredClone({
+    ...turn.report,
+    recovered: false,
+    capabilities: [NATIVE_ACTIVITY_CAPABILITY],
+  });
+
+const persist = (turn) =>
+  writeJson(turn.owner, join(turn.owner.directory, 'status.json'), turn.report, true);
+
+const setStatus = async (turn, status, extra = {}) => {
+  turn.report = { ...turn.report, ...extra, status, updatedAt: Date.now() };
+  await persist(turn);
+};
+
+const checkCancelled = (turn) => {
+  if (turn.signal.aborted) fail('native_execution_cancelled');
+};
+
 /**
  * Required production ports:
  * prepare({payload,root,project,home,signal}) -> {
@@ -727,12 +596,9 @@ export const createNativeExecutor = ({
   const control = join(root, '.native-control');
   const directoryForGeneration = (generation) =>
     join(control, generation === 1 ? 'first-turn' : `writer-${generation}`);
-  let ownerDirectory = directoryForGeneration(1);
   const project = join(root, 'project');
-  let current = null;
-  let launching = false;
-  let task = null;
-  let poisoned = false;
+  let activeOwner = null;
+  let admitting = false;
   const generationOf = (value) => {
     const generation = value?.writerGeneration;
     if (!Number.isSafeInteger(generation) || generation < 1)
@@ -750,12 +616,22 @@ export const createNativeExecutor = ({
       fail('native_execution_scope_mismatch');
     return identityOf(value);
   };
-  const checkDirectories = async () => {
-    for (const [path, initial] of current.directories) {
-      if (!sameNode(initial, await privateDirectory(path)))
-        fail('native_execution_directory_changed');
-    }
-  };
+  const createOwner = ({
+    identity,
+    writerGeneration,
+    configurationSha256,
+    directories,
+    controller = new AbortController(),
+  }) => ({
+    identity,
+    writerGeneration,
+    configurationSha256,
+    directories,
+    directory: directoryForGeneration(writerGeneration),
+    controller,
+    poisoned: false,
+    turn: null,
+  });
   const assertCreatedWorkflow = async () => {
     const state = await observeNativeWorkflowResumeState({ project });
     if (state !== 'created')
@@ -796,81 +672,33 @@ export const createNativeExecutor = ({
       return 'unavailable';
     }
   };
-  const writeJson = async (path, data, replace = false) => {
-    await checkDirectories();
-    const temp = replace ? `${path}.${randomUUID()}.tmp` : path;
-    const handle = await fs.open(
-      temp,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-      0o600,
-    );
-    try {
-      await handle.writeFile(`${JSON.stringify(data)}\n`);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await checkDirectories();
-    if (replace) await fs.rename(temp, path);
-    await syncDirectory(ownerDirectory);
-  };
-  const activityLog = () => {
-    current.report.activityProtocol = NATIVE_ACTIVITY_CAPABILITY;
-    return (current.activity ??= createNativeActivityLog({
-      writerGeneration: current.writerGeneration,
-      spoolDirectory: join(ownerDirectory, 'activity'),
-    }));
-  };
-  const timing = (boundary, counts = {}) => {
-    current.report.timings ??= {};
-    current.report.timings[boundary] = Date.now();
-    recordNativeBoundary(current.identity, boundary, current.report.timings[boundary], {
-      sequence: current.report.sequence,
-      writerGeneration: current.writerGeneration,
-      ...counts,
-    });
-  };
-  const report = () =>
-    structuredClone({
-      ...current.report,
-      recovered: false,
-      capabilities: [NATIVE_ACTIVITY_CAPABILITY],
-    });
-  const persist = () => writeJson(join(ownerDirectory, 'status.json'), current.report, true);
-  const setStatus = async (status, extra = {}) => {
-    current.report = { ...current.report, ...extra, status, updatedAt: Date.now() };
-    await persist();
-  };
-  const checkCancelled = () => {
-    if (current.controller.signal.aborted) fail('native_execution_cancelled');
-  };
-  const run = async (invocation, commandEnv, model = false) => {
-    checkCancelled();
+  const run = async (turn, invocation, commandEnv, model = false) => {
+    checkCancelled(turn);
     const options = {
       ...invocation,
       cwd: project,
       env: commandEnv,
       timeoutMs: model ? null : 300_000,
       outputLimitAction: model ? 'truncate' : 'terminate',
-      signal: current.controller.signal,
+      signal: turn.signal,
     };
     if (model && assertActive) {
       await assertActive({
-        identity: { ...current.identity },
-        writerGeneration: current.writerGeneration,
-        signal: current.controller.signal,
+        identity: { ...turn.owner.identity },
+        writerGeneration: turn.owner.writerGeneration,
+        signal: turn.signal,
       });
     }
     // Keep the next spawn in this continuation: adding an await here would
     // reopen a local scheduling gap after the latest cancellation observation.
-    checkCancelled();
-    if (model) timing('harnessLaunched');
+    checkCancelled(turn);
+    if (model) timing(turn, 'harnessLaunched');
     const result = await commandRunner(options);
     if (result.cleanupComplete !== true) {
-      poisoned = true;
+      turn.owner.poisoned = true;
       fail('native_execution_cleanup_incomplete');
     }
-    checkCancelled();
+    checkCancelled(turn);
     if (
       result.exitCode !== 0 ||
       result.signal ||
@@ -881,31 +709,31 @@ export const createNativeExecutor = ({
       fail(model ? 'native_execution_command_failed' : 'native_execution_initialization_failed');
     return result;
   };
-  // Preparation owns package/harness installation; it returns the exact one-turn context.
-  const prepareNativeTurn = async (payload, onActivity) => {
-    timing('preparationStarted');
-    const signal = current.controller.signal;
+  // Preparation owns package/harness installation and returns this turn's execution inputs.
+  const prepareNativeTurn = async (turn) => {
+    const { owner, payload, signal } = turn;
+    timing(turn, 'preparationStarted');
     const continuing = payload.command !== 'native-start';
     if (payload.command === 'native-resume') {
       const resumed = await prepareRecovery({
         payload,
         root,
         project,
-        home: current.home,
+        home: owner.home,
         signal,
       });
-      if (resumed?.package?.packageId !== current.workspacePackageId)
+      if (resumed?.package?.packageId !== turn.workspacePackageId)
         fail('native_execution_workspace_invalid');
-      current.package = resumed.package;
+      owner.package = resumed.package;
     }
     const prepared = continuing
       ? await prepareContinuation({ payload, signal })
-      : await prepare({ payload, root, project, home: current.home, signal });
-    if (!continuing) current.sourceBaseline = prepared?.sourceBaseline ?? null;
-    timing('preparationCompleted');
-    checkCancelled();
-    await checkDirectories();
-    const pkg = continuing ? current.package : prepared?.package;
+      : await prepare({ payload, root, project, home: owner.home, signal });
+    if (!continuing) owner.sourceBaseline = prepared?.sourceBaseline ?? null;
+    timing(turn, 'preparationCompleted');
+    checkCancelled(turn);
+    await checkDirectories(owner);
+    const pkg = continuing ? owner.package : prepared?.package;
     const configuration = payload.configuration;
     if (
       !pkg ||
@@ -942,32 +770,32 @@ export const createNativeExecutor = ({
           harness: configuration.harness,
         });
     } catch (error) {
-      current.report.initializationChecks = [{ id: 'harness-layout', status: 'failed' }];
-      current.report.initializationBaselineReason =
+      turn.report.initializationChecks = [{ id: 'harness-layout', status: 'failed' }];
+      turn.report.initializationBaselineReason =
         nativeInitializationBaselineReason(error?.baselineReason) ?? 'baseline-read-failed';
       fail('native_execution_initialization_unverified');
     }
     const forbiddenBytes = [
-      ...(current.forbiddenBytes ?? []),
+      ...(owner.forbiddenBytes ?? []),
       ...[prepared.authEnv.AWS_BEARER_TOKEN_BEDROCK, prepared.authEnv.KIRO_API_KEY].filter(Boolean),
       ...(prepared.forbiddenBytes ?? []),
     ];
-    const activityTurn = activityLog().turn({
-      sequence: current.report.sequence,
+    const activityTurn = activityLog(turn).turn({
+      sequence: turn.report.sequence,
       harness: configuration.harness,
       model: configuration.model,
       forbiddenBytes,
       signal,
-      onObservation: timing,
+      onObservation: (boundary, counts) => timing(turn, boundary, counts),
     });
-    onActivity(activityTurn);
+    turn.activity = activityTurn;
     activityTurn.lifecycle({ title: 'Preparing native harness' });
-    timing('installationStarted');
+    timing(turn, 'installationStarted');
     // Kept only in the hot owner for subsequent credential leak checks.
     // Never serialize these values into local status, messages or Git.
-    current.forbiddenBytes = [...new Set(forbiddenBytes)];
+    owner.forbiddenBytes = [...new Set(forbiddenBytes)];
     const baseEnv = {
-      HOME: current.home,
+      HOME: owner.home,
       TMPDIR: '/tmp',
       PATH: `${join(root, 'machine/bin')}:${HOST_PATH}`,
       LANG: 'C.UTF-8',
@@ -1031,12 +859,12 @@ export const createNativeExecutor = ({
       ]) {
         const { phase, title, ...command } = invocation;
         activityTurn.lifecycle({ title });
-        timing(`${phase}Started`);
-        await run(command, baseEnv);
-        timing(`${phase}Completed`);
+        timing(turn, `${phase}Started`);
+        await run(turn, command, baseEnv);
+        timing(turn, `${phase}Completed`);
       }
     if (!continuing) {
-      timing('initializationVerificationStarted');
+      timing(turn, 'initializationVerificationStarted');
       activityTurn.lifecycle({ title: 'Verifying workflow installation' });
       const inspection = await inspectInitialization({
         projectDirectory: project,
@@ -1046,12 +874,12 @@ export const createNativeExecutor = ({
         harnessBaseline,
       });
       if (inspection?.ok !== true) {
-        current.report.initializationChecks = nativeInitializationCheckStatuses(inspection?.checks);
+        turn.report.initializationChecks = nativeInitializationCheckStatuses(inspection?.checks);
         fail('native_execution_initialization_unverified');
       }
-      await checkDirectories();
+      await checkDirectories(owner);
       if (configuration.harness === 'claude') await configureNativeClaudeSessionEnd(project);
-      current.package = structuredClone(pkg);
+      owner.package = structuredClone(pkg);
       const nodes = {};
       for (const [name, path] of [
         ['root', root],
@@ -1059,50 +887,33 @@ export const createNativeExecutor = ({
         ['machine', join(root, 'machine')],
       ]) {
         await privateDirectory(path);
-        // NFS st_dev belongs to the current client mount, not the surviving
+        // NFS st_dev belongs to the owner client mount, not the surviving
         // EFS directory. Persist its full-width file ID, never that device ID.
         nodes[name] = { ino: String((await fs.lstat(path, { bigint: true })).ino) };
       }
-      await writeJson(join(control, 'workspace.json'), {
+      await writeJson(owner, join(control, 'workspace.json'), {
         schemaVersion: 1,
-        identity: current.identity,
-        configurationSha256: current.configurationSha256,
+        identity: owner.identity,
+        configurationSha256: owner.configurationSha256,
         packageId: pkg.packageId,
-        sourceBaseline: current.sourceBaseline,
+        sourceBaseline: owner.sourceBaseline,
         nodes,
       });
-      timing('initializationVerificationCompleted');
+      timing(turn, 'initializationVerificationCompleted');
     }
-    timing('installationCompleted');
-    return {
-      payload,
-      signal,
-      continuing: payload.command === 'native-continue',
-      pkg,
-      configuration,
-      forbiddenBytes,
-      activityTurn,
-      auth,
-      baseEnv,
-    };
+    timing(turn, 'installationCompleted');
+    return { pkg, forbiddenBytes, auth, baseEnv };
   };
 
   // One turn returns quiescent output. No publication or recovery head is admitted here.
-  const runNativeTurn = async ({
-    payload,
-    signal,
-    continuing,
-    pkg,
-    configuration,
-    forbiddenBytes,
-    activityTurn,
-    auth,
-    baseEnv,
-  }) => {
+  const runNativeTurn = async (turn, { pkg, forbiddenBytes, auth, baseEnv }) => {
+    const { owner, payload, signal, activity: activityTurn } = turn;
+    const configuration = payload.configuration;
+    const continuing = payload.command === 'native-continue';
     // A spec from an earlier turn must never describe this turn's question.
     await clearNativePendingSpec(project);
     activityTurn.lifecycle({ title: 'Inspecting workspace' });
-    timing('workspaceBaselineStarted');
+    timing(turn, 'workspaceBaselineStarted');
     const snapshotWorkspace = (phase) =>
       snapshot({
         project,
@@ -1112,15 +923,15 @@ export const createNativeExecutor = ({
         onDiagnostic: (details) => {
           const safe = nativeSnapshotDiagnostic(details);
           if (!safe) return;
-          current.report.snapshotDiagnostic = { ...safe, phase };
-          timing('snapshotRejected', current.report.snapshotDiagnostic);
+          turn.report.snapshotDiagnostic = { ...safe, phase };
+          timing(turn, 'snapshotRejected', turn.report.snapshotDiagnostic);
         },
       });
     let beforeFiles;
     {
       const baseline = await snapshotWorkspace('baseline');
       beforeFiles = baseline.files.map(fileRef);
-      timing('workspaceBaselineCompleted', {
+      timing(turn, 'workspaceBaselineCompleted', {
         files: baseline.files.length,
         bytes: baseline.totalBytes,
       });
@@ -1129,17 +940,17 @@ export const createNativeExecutor = ({
       ...auth,
       ...baseEnv,
       ...(auth.AWS_REGION ? { AWS_REGION: auth.AWS_REGION } : {}),
-      CLAUDE_CONFIG_DIR: join(current.home, '.claude'),
-      CODEX_HOME: join(current.home, '.codex'),
-      XDG_CONFIG_HOME: join(current.home, '.config'),
-      XDG_DATA_HOME: join(current.home, '.data'),
-      XDG_CACHE_HOME: join(current.home, '.cache'),
+      CLAUDE_CONFIG_DIR: join(owner.home, '.claude'),
+      CODEX_HOME: join(owner.home, '.codex'),
+      XDG_CONFIG_HOME: join(owner.home, '.config'),
+      XDG_DATA_HOME: join(owner.home, '.data'),
+      XDG_CACHE_HOME: join(owner.home, '.cache'),
       OPENCODE_DISABLE_AUTOUPDATE: '1',
     };
     const transport = await prepareNativeTransportInstructions({
       harness: configuration.harness,
       project,
-      home: current.home,
+      home: owner.home,
       instructions: nativeTransportInstructions(configuration),
       env: modelEnv,
     });
@@ -1158,32 +969,33 @@ export const createNativeExecutor = ({
         : null;
     const output = createNativeTurnOutput({
       harness: configuration.harness,
-      nativeSessionId: continuing ? current.head.nativeSessionId : null,
+      nativeSessionId: continuing ? turn.session.nativeSessionId : null,
       forbiddenBytes,
       onDiagnostic: (diagnostic) => {
-        current.report.outputDiagnostic = diagnostic;
-        timing('outputRejected', diagnostic);
+        turn.report.outputDiagnostic = diagnostic;
+        timing(turn, 'outputRejected', diagnostic);
       },
     });
-    await setStatus('running', { packageId: pkg.packageId });
+    await setStatus(turn, 'running', { packageId: pkg.packageId });
     activityTurn.lifecycle({ title: 'Agent started' });
     // Recheck after package/credential preparation as well as at admission.
     // No workflow command is used to discover state or answer a pending offer.
     if (payload.command === 'native-resume') await assertCreatedWorkflow();
     const result = await run(
+      turn,
       {
         ...nativeExecutionInvocation({
           harness: configuration.harness,
           model: configuration.model,
           prompt,
           project,
-          nativeSessionId: continuing ? current.head.nativeSessionId : null,
-          promptEvidence: current.promptEvidence,
-          priorAssistantSha256: current.priorAssistantSha256,
+          nativeSessionId: continuing ? turn.session.nativeSessionId : null,
+          promptEvidence: turn.session?.promptEvidence,
+          priorAssistantSha256: turn.session?.priorAssistantSha256,
           ...transport.invocation,
         }),
         onStdoutChunk: (chunk) => {
-          if (!current.report.timings.firstOutput) timing('firstOutput');
+          if (!turn.report.timings.firstOutput) timing(turn, 'firstOutput');
           output.write(chunk);
           return activityTurn.write(chunk);
         },
@@ -1191,14 +1003,14 @@ export const createNativeExecutor = ({
       transport.env,
       true,
     );
-    timing('harnessCompleted');
+    timing(turn, 'harnessCompleted');
     const completed = output.finish();
     activityTurn.lifecycle({ title: 'Checking completed workspace' });
-    await checkDirectories();
+    await checkDirectories(owner);
     const formDiagnostic = (details) => {
-      recordNativeBoundary(current.identity, 'questionPresentation', Date.now(), {
-        sequence: current.report.sequence,
-        writerGeneration: current.writerGeneration,
+      recordNativeBoundary(owner.identity, 'questionPresentation', Date.now(), {
+        sequence: turn.report.sequence,
+        writerGeneration: owner.writerGeneration,
         ...details,
       });
     };
@@ -1206,86 +1018,22 @@ export const createNativeExecutor = ({
       forbiddenBytes,
       onDiagnostic: formDiagnostic,
     });
-    const renderedSpec = rendered.spec;
-    timing('workspaceSnapshotStarted');
+    timing(turn, 'workspaceSnapshotStarted');
     const files = await snapshotWorkspace('final');
-    timing('workspaceSnapshotCompleted', { files: files.files.length, bytes: files.totalBytes });
-    const pendingInput = buildNativePendingInput({
-      gate: nativeGateFromSnapshot(files),
-      spec: renderedSpec,
-      messagesText: completed.messages.map((message) => message.text).join('\n'),
+    timing(turn, 'workspaceSnapshotCompleted', {
+      files: files.files.length,
+      bytes: files.totalBytes,
     });
-    const presentation = pendingInput
-      ? null
-      : {
-          status: 'degraded',
-          reason:
-            rendered.reason ?? (renderedSpec?.version === 3 ? 'unsupported_ask' : 'invalid_schema'),
-        };
-    // Persist only fixed categories/counts in owner status and lifecycle logs;
-    // raw rejected JSON is discarded. The immutable interaction retains the
-    // same degraded condition for UI/history after this owner is gone.
-    current.report.presentation = {
-      reason: presentation?.reason ?? 'structured',
-      bytes: rendered.bytes,
-      ...(rendered.sha256 ? { sha256: rendered.sha256 } : {}),
-      ...(renderedSpec?.version === 3
-        ? {
-            askType: NATIVE_TYPED_ASK_TYPES.includes(renderedSpec.ask?.ask_type)
-              ? renderedSpec.ask.ask_type
-              : 'unknown',
-            responseRoute: ['next', 'command', 'claim'].includes(renderedSpec.ask?.response_route)
-              ? renderedSpec.ask.response_route
-              : 'unknown',
-            suppliedChoices: Array.isArray(renderedSpec.ask?.choices)
-              ? Math.min(renderedSpec.ask.choices.length, 513)
-              : 0,
-            suppliedScopeOptions: Array.isArray(renderedSpec.ask?.scope_commands)
-              ? Math.min(renderedSpec.ask.scope_commands.length, 513)
-              : 0,
-          }
-        : {}),
-      declaredVersion:
-        Number.isSafeInteger(renderedSpec?.version) &&
-        renderedSpec.version >= 0 &&
-        renderedSpec.version <= 3
-          ? renderedSpec.version
-          : 0,
-      suppliedQuestions: Array.isArray(renderedSpec?.questions)
-        ? Math.min(renderedSpec.questions.length, 513)
-        : 0,
-      suppliedOptions: Array.isArray(renderedSpec?.questions)
-        ? Math.min(
-            renderedSpec.questions.reduce(
-              (n, q) => n + (Array.isArray(q?.options) ? q.options.length : 0),
-              0,
-            ),
-            513,
-          )
-        : 0,
-      questions: pendingInput?.questions.length ?? 0,
-      options: pendingInput?.questions.reduce((n, q) => n + q.options.length, 0) ?? 0,
-    };
-    formDiagnostic(current.report.presentation);
-    // A form can render text absent from the prose (prompt, header, descriptions).
-    // Apply the same known-credential boundary before either public upload, also
-    // catching a credential split across adjacent form fields.
-    const formText =
-      completed.messages.map((message) => message.text).join('') +
-      (pendingInput?.questions ?? [])
-        .flatMap((entry) => [
-          entry.header ?? '',
-          entry.prompt,
-          ...entry.options.flatMap((option) => [option.label, option.description ?? '']),
-        ])
-        .join('');
-    if (
-      forbiddenBytes.some((value) => {
-        const secret = Buffer.from(value).toString('utf8');
-        return secret && formText.includes(secret);
-      })
-    )
-      fail('native_execution_output_credential');
+    const { pendingInput, presentation } = decodeNativeTurnInteraction({
+      snapshot: files,
+      rendered,
+      messages: completed.messages,
+      forbiddenBytes,
+      onDiagnostic: (diagnostic) => {
+        turn.report.presentation = diagnostic;
+        formDiagnostic(diagnostic);
+      },
+    });
     const nativeSessionId = completed.nativeSessionId;
     let outcome = classifyNativeFirstWait({
       snapshot: files,
@@ -1297,8 +1045,11 @@ export const createNativeExecutor = ({
       nativeSessionId,
       outputTruncated: result.outputLimitExceeded === true,
     };
-    checkCancelled();
-    await setStatus('publishing', { nativeSessionId, outputTruncated: outcome.outputTruncated });
+    checkCancelled(turn);
+    await setStatus(turn, 'publishing', {
+      nativeSessionId,
+      outputTruncated: outcome.outputTruncated,
+    });
     return {
       completed,
       files,
@@ -1312,17 +1063,20 @@ export const createNativeExecutor = ({
 
   // Public receipts complete before the local head moves.
   const publishNativeTurn = async (
-    { signal, pkg, configuration, activityTurn },
+    turn,
+    { pkg },
     { completed, files, pendingInput, presentation, nativeSessionId, outcome, nextPromptEvidence },
   ) => {
+    const { owner, signal, activity: activityTurn } = turn;
+    const configuration = turn.payload.configuration;
     const publicationOutcome =
       outcome.kind === 'waiting_for_input' ? 'WAITING_FOR_INPUT' : 'STOPPED';
     const questionPath = outcome.evidence?.questions[0]?.path ?? null;
     activityTurn.lifecycle({ title: 'Saving workflow files' });
-    timing('publicationStarted', { files: files.files.length, bytes: files.totalBytes });
+    timing(turn, 'publicationStarted', { files: files.files.length, bytes: files.totalBytes });
     const uploaded = await publish({
-      identity: current.identity,
-      sequence: current.report.sequence,
+      identity: owner.identity,
+      sequence: turn.report.sequence,
       packageId: pkg.packageId,
       nativeSessionId,
       outcome: publicationOutcome,
@@ -1332,17 +1086,17 @@ export const createNativeExecutor = ({
       },
       files: files.files,
       filesystemPolicy: files.filesystemPolicy,
-      ...(current.sourceBaseline ? { sourceBaseline: current.sourceBaseline } : {}),
+      ...(owner.sourceBaseline ? { sourceBaseline: owner.sourceBaseline } : {}),
       questionPath,
       signal,
     });
-    checkCancelled();
-    timing('publicationCompleted', { files: files.files.length, bytes: files.totalBytes });
+    checkCancelled(turn);
+    timing(turn, 'publicationCompleted', { files: files.files.length, bytes: files.totalBytes });
     const publication = uploaded?.receipt;
     if (
       uploaded?.uploaded !== true ||
       !/^[a-f0-9]{64}$/.test(publication?.id ?? '') ||
-      publication.sequence !== current.report.sequence ||
+      publication.sequence !== turn.report.sequence ||
       publication.outcome !== publicationOutcome ||
       publication.nativeSessionId !== nativeSessionId ||
       publication.filesCount !== files.files.length ||
@@ -1376,13 +1130,13 @@ export const createNativeExecutor = ({
       nativeSessionId: publication.nativeSessionId,
       filesCount: publication.filesCount,
     };
-    timing('interactionUploadStarted');
+    timing(turn, 'interactionUploadStarted');
     activityTurn.lifecycle({ title: 'Saving response and form' });
     const interaction = nativeInteractionReceipt(
       await publishInteraction({
-        identity: current.identity,
+        identity: owner.identity,
         packageId: pkg.packageId,
-        sequence: current.report.sequence,
+        sequence: turn.report.sequence,
         harness: configuration.harness,
         nativeSessionId,
         publicationId: receipt.id,
@@ -1391,84 +1145,81 @@ export const createNativeExecutor = ({
         presentation,
         signal,
       }),
-      current.identity,
+      owner.identity,
     );
-    checkCancelled();
+    checkCancelled(turn);
     if (
       interaction.sequence !== receipt.sequence ||
       interaction.publicationId !== receipt.id ||
       interaction.nativeSessionId !== nativeSessionId
     )
       fail('native_execution_interaction_unconfirmed');
-    timing('interactionUploadCompleted');
+    timing(turn, 'interactionUploadCompleted');
     const continuation = {
       promptEvidence: nextPromptEvidence ?? null,
       priorAssistantSha256: kiroAssistantHash(
         completed.messages.map((message) => message.text).join(''),
       ),
     };
-    await setStatus('publication_ready', {
+    await setStatus(turn, 'publication_ready', {
       outcome: publicationOutcome,
       waitEvidence: outcome.evidence ?? null,
       stopCode: outcome.code,
       receipt,
       interaction,
     });
-    checkCancelled();
-    current.head = structuredClone(current.report);
-    current.promptEvidence = continuation.promptEvidence;
-    current.priorAssistantSha256 = continuation.priorAssistantSha256;
+    checkCancelled(turn);
+    turn.nextSession = Object.freeze({ nativeSessionId, ...continuation });
   };
 
-  const execute = async (payload) => {
-    current.executing = true;
-    current.report.timings = { accepted: current.report.updatedAt };
-    recordNativeBoundary(current.identity, 'accepted', current.report.updatedAt, {
-      sequence: current.report.sequence,
-      writerGeneration: current.writerGeneration,
+  const execute = async (turn) => {
+    const { owner } = turn;
+    turn.report.timings = { accepted: turn.report.updatedAt };
+    recordNativeBoundary(owner.identity, 'accepted', turn.report.updatedAt, {
+      sequence: turn.report.sequence,
+      writerGeneration: owner.writerGeneration,
     });
-    let activityTurn;
     try {
-      const prepared = await prepareNativeTurn(payload, (turn) => {
-        activityTurn = turn;
-      });
-      activityTurn = prepared.activityTurn;
-      const result = await runNativeTurn(prepared);
-      await publishNativeTurn(prepared, result);
+      const prepared = await prepareNativeTurn(turn);
+      const result = await runNativeTurn(turn, prepared);
+      await publishNativeTurn(turn, prepared, result);
     } catch (error) {
       // Never expose raw port/subprocess errors (which may contain credentials).
       const code = nativeRuntimeFailureCode(error);
-      current.report = {
-        ...current.report,
-        status: poisoned
+      turn.report = {
+        ...turn.report,
+        status: owner.poisoned
           ? 'stopped_needs_review'
-          : current.controller.signal.aborted || code === 'native_execution_cancelled'
+          : turn.signal.aborted || code === 'native_execution_cancelled'
             ? 'cancelled'
             : 'failed',
         code,
         updatedAt: Date.now(),
       };
-      recordNativeBoundary(current.identity, 'executionFailed', current.report.updatedAt, {
+      recordNativeBoundary(owner.identity, 'executionFailed', turn.report.updatedAt, {
         code,
-        sequence: current.report.sequence,
-        writerGeneration: current.writerGeneration,
+        sequence: turn.report.sequence,
+        writerGeneration: owner.writerGeneration,
       });
       // Unconfirmed subprocess cleanup must halt all subsequent filesystem
       // reads/writes: a surviving writer could race the supervisor.
-      if (!poisoned) {
+      if (!owner.poisoned) {
         try {
-          await persist();
+          await persist(turn);
         } catch {
-          current.report.status = 'stopped_needs_review';
-          current.report.code = 'native_execution_status_unconfirmed';
+          turn.report.status = 'stopped_needs_review';
+          turn.report.code = 'native_execution_status_unconfirmed';
         }
       }
     } finally {
-      activityTurn?.close({
-        failed: current.report.status !== 'publication_ready',
-      });
-      current.executing = false;
+      turn.activity?.close({ failed: turn.report.status !== 'publication_ready' });
+      releaseTurn(turn);
     }
+  };
+  const scheduleTurn = (turn) => {
+    // Every entrypoint reaches this boundary only after durable admission.
+    // Capture this turn, not the owner's next mutable turn pointer.
+    turn.task = new Promise((resolveTask) => setImmediate(() => resolveTask(execute(turn))));
   };
   const readExisting = async (identity, generation = 1) => {
     try {
@@ -1514,23 +1265,26 @@ export const createNativeExecutor = ({
   const status = async (value) => {
     const identity = validateIdentity(value);
     const writerGeneration = generationOf(value);
-    if (current) {
+    if (activeOwner) {
       if (
-        !sameIdentity(current.identity, identity) ||
-        current.writerGeneration !== writerGeneration
+        !sameIdentity(activeOwner.identity, identity) ||
+        activeOwner.writerGeneration !== writerGeneration
       )
         fail('native_execution_owner_conflict');
       const observation = {
         workflowResumeState: await workspaceResumeObservation(
           identity,
-          current.configurationSha256,
+          activeOwner.configurationSha256,
         ),
       };
-      return { ...report(), ...observation };
+      return { ...report(activeOwner.turn), ...observation };
     }
-    const owner = await readExisting(identity, writerGeneration);
+    const savedOwner = await readExisting(identity, writerGeneration);
     const observation = {
-      workflowResumeState: await workspaceResumeObservation(identity, owner.configurationSha256),
+      workflowResumeState: await workspaceResumeObservation(
+        identity,
+        savedOwner.configurationSha256,
+      ),
     };
     // Restore completed upload evidence or fixed initialization diagnostics.
     // Neither is authority or permission to start a new writer on restart.
@@ -1610,7 +1364,8 @@ export const createNativeExecutor = ({
       ...observation,
     };
   };
-  const start = async (input) => {
+  const start = async (value) => {
+    const input = structuredClone(value);
     const identity = validateIdentity(input);
     const writerGeneration = generationOf(input);
     if (
@@ -1622,16 +1377,17 @@ export const createNativeExecutor = ({
       fail('native_execution_request_invalid');
     const configuration = canonicalConfig(input.configuration);
     const configurationSha256 = digest(JSON.stringify(configuration));
-    if (launching) fail('native_execution_busy');
-    if (current) {
+    if (admitting) fail('native_execution_busy');
+    if (activeOwner) {
       if (
-        !sameIdentity(current.identity, identity) ||
-        current.configurationSha256 !== configurationSha256
+        !sameIdentity(activeOwner.identity, identity) ||
+        activeOwner.configurationSha256 !== configurationSha256
       )
         fail('native_execution_owner_conflict');
-      return { ...report(), accepted: true, duplicate: true };
+      return { ...report(activeOwner.turn), accepted: true, duplicate: true };
     }
-    launching = true;
+    const ownerDirectory = directoryForGeneration(writerGeneration);
+    admitting = true;
     try {
       await inspectMount({ workspaceDir: root });
       const directories = new Map([[root, await privateDirectory(root)]]);
@@ -1643,8 +1399,8 @@ export const createNativeExecutor = ({
         directories.set(ownerDirectory, await createPrivateDirectory(ownerDirectory));
       } catch (error) {
         if (error.code !== 'EEXIST') throw error;
-        const owner = await readExisting(identity);
-        if (owner.configurationSha256 !== configurationSha256)
+        const savedOwner = await readExisting(identity);
+        if (savedOwner.configurationSha256 !== configurationSha256)
           fail('native_execution_owner_conflict');
         return {
           schemaVersion: 1,
@@ -1656,22 +1412,15 @@ export const createNativeExecutor = ({
           code: 'native_execution_existing_owner',
         };
       }
-      current = {
+      activeOwner = createOwner({
         identity,
         writerGeneration,
         configurationSha256,
         directories,
-        controller: new AbortController(),
-        report: {
-          schemaVersion: 1,
-          ...identity,
-          writerGeneration,
-          sequence: 1,
-          status: 'preparing',
-          updatedAt: Date.now(),
-        },
-      };
-      await writeJson(join(ownerDirectory, 'owner.json'), {
+      });
+      const turn = createTurn(activeOwner, { ...input, configuration });
+      activeOwner.turn = turn;
+      await writeJson(activeOwner, join(ownerDirectory, 'owner.json'), {
         schemaVersion: 1,
         identity,
         writerGeneration,
@@ -1688,22 +1437,20 @@ export const createNativeExecutor = ({
         join(root, 'machine/bin'),
       ])
         directories.set(path, await createPrivateDirectory(path));
-      current.home = await createFreshHome(identity, writerGeneration, directories);
-      await persist();
-      // Freeze the normalized configuration rather than retaining mutable
-      // caller objects across the acknowledgement/async boundary.
-      const payload = structuredClone({ ...input, configuration });
-      task = new Promise((resolveTask) => setImmediate(() => resolveTask(execute(payload))));
-      return { ...report(), accepted: true, duplicate: false };
+      activeOwner.home = await createFreshHome(identity, writerGeneration, directories);
+      await persist(turn);
+      scheduleTurn(turn);
+      return { ...report(turn), accepted: true, duplicate: false };
     } catch (error) {
-      if (current) {
-        current.report.status = 'stopped_needs_review';
-        current.report.code = 'native_execution_start_incomplete';
+      if (activeOwner) {
+        activeOwner.turn.report.status = 'stopped_needs_review';
+        activeOwner.turn.report.code = 'native_execution_start_incomplete';
+        releaseTurn(activeOwner.turn);
       }
       if (/^native_execution_[a-z_]{1,64}$/.test(error?.code ?? '')) throw error;
       fail('native_execution_start_failed');
     } finally {
-      launching = false;
+      admitting = false;
     }
   };
   const resumeWorkspace = async (value) => {
@@ -1732,20 +1479,20 @@ export const createNativeExecutor = ({
       )
     )
       fail('native_execution_request_invalid');
-    if (launching) fail('native_execution_busy');
-    if (current) {
+    if (admitting) fail('native_execution_busy');
+    if (activeOwner) {
       if (
-        poisoned ||
-        !sameIdentity(current.identity, identity) ||
-        current.writerGeneration !== writerGeneration ||
-        current.configurationSha256 !== configurationSha256 ||
-        current.report.recoveryId !== input.recoveryId ||
-        current.report.sequence !== input.sequence
+        activeOwner.poisoned ||
+        !sameIdentity(activeOwner.identity, identity) ||
+        activeOwner.writerGeneration !== writerGeneration ||
+        activeOwner.configurationSha256 !== configurationSha256 ||
+        activeOwner.turn.report.recoveryId !== input.recoveryId ||
+        activeOwner.turn.report.sequence !== input.sequence
       )
         fail('native_execution_owner_conflict');
-      return { ...report(), accepted: true, duplicate: true };
+      return { ...report(activeOwner.turn), accepted: true, duplicate: true };
     }
-    launching = true;
+    admitting = true;
     try {
       await assertRecoveryAdmission({
         identity,
@@ -1779,7 +1526,7 @@ export const createNativeExecutor = ({
       for (const path of [control, join(root, 'machine/data'), join(root, 'machine/bin')])
         directories.set(path, await privateDirectory(path));
       await assertCreatedWorkflow();
-      ownerDirectory = directoryForGeneration(writerGeneration);
+      const ownerDirectory = directoryForGeneration(writerGeneration);
       // An existing cold owner may already have delivered this resume action.
       // Never reconstruct its ACK or execute it again; require another stopped,
       // explicitly confirmed generation through the authority.
@@ -1802,48 +1549,45 @@ export const createNativeExecutor = ({
           workflowResumeState: await workspaceResumeObservation(identity, configurationSha256),
         };
       }
-      current = {
+      activeOwner = createOwner({
         identity,
         writerGeneration,
         configurationSha256,
         directories,
         controller,
-        sourceBaseline: workspace.sourceBaseline,
-        workspacePackageId: workspace.packageId,
-        report: {
-          schemaVersion: 1,
-          ...identity,
-          writerGeneration,
-          sequence: input.sequence,
-          recoveryId: input.recoveryId,
-          requestId: input.recoveryId,
-          status: 'preparing',
-          updatedAt: Date.now(),
+      });
+      activeOwner.sourceBaseline = workspace.sourceBaseline;
+      const turn = createTurn(
+        activeOwner,
+        { ...input, configuration },
+        {
+          workspacePackageId: workspace.packageId,
         },
-      };
-      await writeJson(join(ownerDirectory, 'owner.json'), {
+      );
+      activeOwner.turn = turn;
+      await writeJson(activeOwner, join(ownerDirectory, 'owner.json'), {
         schemaVersion: 1,
         identity,
         writerGeneration,
         configurationSha256,
       });
       await syncDirectory(control);
-      current.home = await createFreshHome(identity, writerGeneration, directories);
-      await persist();
-      const payload = structuredClone({ ...input, configuration });
-      task = new Promise((resolveTask) => setImmediate(() => resolveTask(execute(payload))));
-      return { ...report(), accepted: true, duplicate: false };
+      activeOwner.home = await createFreshHome(identity, writerGeneration, directories);
+      await persist(turn);
+      scheduleTurn(turn);
+      return { ...report(turn), accepted: true, duplicate: false };
     } catch (error) {
-      if (current) {
-        poisoned = true;
-        current.report.status = 'stopped_needs_review';
-        current.report.code = 'native_execution_workspace_invalid';
+      if (activeOwner) {
+        activeOwner.poisoned = true;
+        activeOwner.turn.report.status = 'stopped_needs_review';
+        activeOwner.turn.report.code = 'native_execution_workspace_invalid';
+        releaseTurn(activeOwner.turn);
       }
       if (error?.code === 'EEXIST') fail('native_execution_existing_owner');
       if (/^native_execution_[a-z_]{1,64}$/.test(error?.code ?? '')) throw error;
       fail('native_execution_workspace_invalid');
     } finally {
-      launching = false;
+      admitting = false;
     }
   };
   const continueTurn = async (value) => {
@@ -1873,14 +1617,14 @@ export const createNativeExecutor = ({
     const configurationSha256 = digest(JSON.stringify(configuration));
     // Cold recovery is observation only. A local record never grants a fresh
     // writer ownership, even if the caller supplies apparently valid receipts.
-    if (!current || poisoned) fail('native_execution_existing_owner');
+    if (!activeOwner || activeOwner.poisoned) fail('native_execution_existing_owner');
     if (
-      !sameIdentity(current.identity, identity) ||
-      current.writerGeneration !== writerGeneration ||
-      current.configurationSha256 !== configurationSha256
+      !sameIdentity(activeOwner.identity, identity) ||
+      activeOwner.writerGeneration !== writerGeneration ||
+      activeOwner.configurationSha256 !== configurationSha256
     )
       fail('native_execution_owner_conflict');
-    if (launching) fail('native_execution_busy');
+    if (admitting) fail('native_execution_busy');
     const requestHash = digest(
       JSON.stringify({
         identity,
@@ -1892,11 +1636,12 @@ export const createNativeExecutor = ({
         textSha256: digest(input.text),
       }),
     );
-    const requestPath = join(ownerDirectory, `request-${input.requestId}.json`);
+    const requestPath = join(activeOwner.directory, `request-${input.requestId}.json`);
     let admissionStarted = false;
-    launching = true;
+    let turn;
+    admitting = true;
     try {
-      await checkDirectories();
+      await checkDirectories(activeOwner);
       let prior;
       try {
         prior = await readLocalRecord(requestPath);
@@ -1913,47 +1658,42 @@ export const createNativeExecutor = ({
           fail('native_execution_reply_conflict');
         return { ...prior.ack, duplicate: true };
       }
-      if (current.controller.signal.aborted) fail('native_execution_cancelled');
-      if (ACTIVE.has(current.report.status)) fail('native_execution_busy');
+      const previous = activeOwner.turn;
+      checkCancelled(previous);
+      if (previous.task) fail('native_execution_busy');
       if (
         typeof prepareContinuation !== 'function' ||
-        current.report.status !== 'publication_ready' ||
-        !current.head ||
-        current.head.sequence + 1 !== input.sequence ||
-        current.head.receipt?.id !== input.priorPublicationId ||
-        current.head.interaction?.id !== input.priorInteractionId
+        previous.report.status !== 'publication_ready' ||
+        !previous.nextSession ||
+        previous.report.sequence + 1 !== input.sequence ||
+        previous.report.receipt?.id !== input.priorPublicationId ||
+        previous.report.interaction?.id !== input.priorInteractionId
       )
         fail('native_execution_reply_conflict');
-      const payload = structuredClone({ ...input, configuration });
-      const next = {
-        schemaVersion: 1,
-        ...identity,
-        writerGeneration,
-        sequence: input.sequence,
-        requestId: input.requestId,
-        priorInteractionId: input.priorInteractionId,
-        priorPublicationId: input.priorPublicationId,
-        status: 'preparing',
-        updatedAt: Date.now(),
-      };
-      const ack = { ...next, accepted: true, duplicate: false };
+      turn = createTurn(
+        activeOwner,
+        { ...input, configuration },
+        { session: previous.nextSession },
+      );
+      const ack = { ...turn.report, accepted: true, duplicate: false };
       // Immutable idempotency record, without reply text or credentials. If
       // later persistence fails it is deliberately not safe to replay a writer.
       admissionStarted = true;
-      await writeJson(requestPath, { requestHash, ack });
-      checkCancelled();
-      current.report = next;
-      await persist();
-      checkCancelled();
-      task = new Promise((resolveTask) => setImmediate(() => resolveTask(execute(payload))));
+      await writeJson(activeOwner, requestPath, { requestHash, ack });
+      checkCancelled(turn);
+      activeOwner.turn = turn;
+      await persist(turn);
+      checkCancelled(turn);
+      scheduleTurn(turn);
       return structuredClone(ack);
     } catch (error) {
       if (admissionStarted) {
         // A request file may already exist even if write/fsync/rename failed.
         // Do not accept its stored ACK or advertise a writer that was never
         // scheduled. Further writes, including automatic replay, are forbidden.
-        poisoned = true;
-        current.report = {
+        activeOwner.poisoned = true;
+        activeOwner.turn = turn;
+        turn.report = {
           schemaVersion: 1,
           ...identity,
           writerGeneration,
@@ -1963,47 +1703,49 @@ export const createNativeExecutor = ({
           code: 'native_execution_reply_admission_unconfirmed',
           updatedAt: Date.now(),
         };
+        releaseTurn(turn);
         fail('native_execution_reply_admission_unconfirmed');
       }
       if (/^native_execution_[a-z_]{1,64}$/.test(error?.code ?? '')) throw error;
       fail('native_execution_start_failed');
     } finally {
-      launching = false;
+      admitting = false;
     }
   };
   const cancel = async (value) => {
     const identity = validateIdentity(value);
-    if (!current) return status(value);
+    if (!activeOwner) return status(value);
     if (
-      !sameIdentity(current.identity, identity) ||
-      current.writerGeneration !== generationOf(value)
+      !sameIdentity(activeOwner.identity, identity) ||
+      activeOwner.writerGeneration !== generationOf(value)
     )
       fail('native_execution_owner_conflict');
-    if (!ACTIVE.has(current.report.status) && current.report.status !== 'publication_ready')
-      return report();
-    current.controller.abort();
-    if (current.report.status === 'publication_ready' && !current.executing && !launching) {
-      current.report = { ...current.report, status: 'cancelled', updatedAt: Date.now() };
+    const turn = activeOwner.turn;
+    if (!ACTIVE.has(turn.report.status) && turn.report.status !== 'publication_ready')
+      return report(turn);
+    activeOwner.controller.abort();
+    if (turn.report.status === 'publication_ready' && !turn.task && !admitting) {
+      turn.report = { ...turn.report, status: 'cancelled', updatedAt: Date.now() };
       // There is no active child or execute() persistence owner at this point.
-      await persist();
-      return report();
+      await persist(turn);
+      return report(turn);
     }
-    current.report = { ...current.report, status: 'cancelling', updatedAt: Date.now() };
+    turn.report = { ...turn.report, status: 'cancelling', updatedAt: Date.now() };
     // execute owns persistence, serialized after child cleanup; do not race it.
-    return report();
+    return report(turn);
   };
   const activity = async (value) => {
     const identity = validateIdentity(value);
     const writerGeneration = generationOf(value);
     if (!Number.isSafeInteger(value.after) || value.after < 0)
       fail('native_execution_request_invalid');
-    if (current) {
+    if (activeOwner) {
       if (
-        !sameIdentity(current.identity, identity) ||
-        current.writerGeneration !== writerGeneration
+        !sameIdentity(activeOwner.identity, identity) ||
+        activeOwner.writerGeneration !== writerGeneration
       )
         fail('native_execution_owner_conflict');
-      return { ...identity, ...activityLog().pull(value.after) };
+      return { ...identity, ...activityLog(activeOwner.turn).pull(value.after) };
     }
     await readExisting(identity, writerGeneration);
     const saved = readNativeActivitySpool({
@@ -2021,10 +1763,11 @@ export const createNativeExecutor = ({
     resume: resumeWorkspace,
     status,
     cancel,
-    isBusy: () => launching || poisoned || (current && ACTIVE.has(current.report.status)) === true,
+    isBusy: () => admitting || activeOwner?.poisoned === true || Boolean(activeOwner?.turn?.task),
     settle: async () => {
-      await task;
-      return current ? report() : null;
+      const turn = activeOwner?.turn;
+      await turn?.task;
+      return turn ? report(turn) : null;
     },
   };
 };

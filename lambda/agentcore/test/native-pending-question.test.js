@@ -6,7 +6,7 @@ import {
   clearNativePendingSpec,
   nativeGateFromSnapshot,
   readNativePendingSpec,
-} from '../native/executor.js';
+} from '../native/turn-interaction.js';
 
 const state = (lines) => Buffer.from(lines.join('\n'));
 const snapshot = (stateLines, space = 'default', intent = 'pipes') => ({

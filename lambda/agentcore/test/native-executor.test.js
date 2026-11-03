@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  classifyNativeFirstWait,
   configureNativeClaudeSessionEnd,
   createNativeExecutor,
   NATIVE_CODEX_MAX_THREADS,
@@ -14,6 +13,7 @@ import {
   nativeWorkspaceResumePrompt,
 } from '../native/executor.js';
 import { runNativeCommand } from '../native/command-runner.js';
+import { classifyNativeFirstWait } from '../native/turn-interaction.js';
 import { inspectNativeInitialization } from '../native/initialization-evidence.js';
 import { nativePublicationScope } from '../../shared/native-publication.js';
 import { nativeAnswerText } from '../../shared/native-pending-input.js';
@@ -313,6 +313,141 @@ describe('native first-turn executor', () => {
     credentials: { model: { provider: 'bedrock', value: 'new-model-credential' } },
     ...changes,
   });
+
+  it('captures the admitted request before asynchronous workspace inspection', async () => {
+    const entered = Promise.withResolvers();
+    const gate = Promise.withResolvers();
+    const { executor, request, ports } = make({
+      ports: {
+        inspectMount: vi.fn(async () => {
+          entered.resolve();
+          await gate.promise;
+        }),
+      },
+    });
+    const submitted = {
+      ...structuredClone(request),
+      credentials: { model: { provider: 'bedrock', value: 'admitted-credential' } },
+    };
+    const expected = structuredClone(submitted);
+    const admission = executor.start(submitted);
+    await entered.promise;
+    submitted.attemptId = randomUUID();
+    submitted.credentials.model.value = 'changed-after-admission';
+    gate.resolve();
+    expect(await admission).toMatchObject({ accepted: true, attemptId: expected.attemptId });
+    expect(await executor.settle()).toMatchObject({ status: 'publication_ready' });
+    expect(ports.prepare.mock.calls[0][0].payload).toEqual(expected);
+  });
+
+  it('keeps completed-turn callbacks from changing the next turn during preparation', async () => {
+    const { executor, request, ports } = make();
+    await executor.start(request);
+    const first = await executor.settle();
+    const original = structuredClone(first);
+    const oldOutput = ports.commandRunner.mock.calls.at(-1)[0].onStdoutChunk;
+    const entered = Promise.withResolvers();
+    const gate = Promise.withResolvers();
+    const prepare = ports.prepareContinuation.getMockImplementation();
+    ports.prepareContinuation.mockImplementation(async (input) => {
+      entered.resolve();
+      await gate.promise;
+      return prepare(input);
+    });
+    await executor.continue(reply(request, first));
+    await entered.promise;
+    try {
+      const before = await executor.status(request);
+      expect(before).toMatchObject({ sequence: 2, status: 'preparing' });
+      expect(before.timings).not.toHaveProperty('firstOutput');
+      expect(() => oldOutput(Buffer.from('delayed adapter output\n'))).toThrow(
+        'native_execution_output_terminal',
+      );
+      expect(await executor.status(request)).toEqual(before);
+      expect(first).toEqual(original);
+    } finally {
+      gate.resolve();
+    }
+    expect(await executor.settle()).toMatchObject({ status: 'publication_ready', sequence: 2 });
+    expect(ports.publish).toHaveBeenCalledTimes(2);
+  });
+
+  it('stays busy while completed publication status is being persisted', async () => {
+    const { executor, request } = make();
+    const busyAtPersistence = [];
+    const stringify = JSON.stringify;
+    // Observe the actual durable status serialization without replacing its
+    // bytes or filesystem operations. The public state can already be ready
+    // while the admitted task still owns fsync and activity teardown.
+    const encoding = vi.spyOn(JSON, 'stringify').mockImplementation((value, ...args) => {
+      if (value?.attemptId === request.attemptId && value.status === 'publication_ready')
+        busyAtPersistence.push(executor.isBusy());
+      return stringify(value, ...args);
+    });
+    try {
+      await executor.start(request);
+      expect(await executor.settle()).toMatchObject({ status: 'publication_ready' });
+    } finally {
+      encoding.mockRestore();
+    }
+    expect(busyAtPersistence).toEqual([true]);
+    expect(executor.isBusy()).toBe(false);
+    expect(
+      JSON.parse(await fs.readFile(join(root, '.native-control/first-turn/status.json'), 'utf8')),
+    ).toMatchObject({ status: 'publication_ready', sequence: 1 });
+    expect(await executor.activity({ ...request, after: 0 })).toMatchObject({ complete: true });
+  });
+
+  it.each(['prepareContinuation', 'publish', 'publishInteraction'])(
+    'cancels the admitted reply during %s without changing the prior publication',
+    async (phase) => {
+      const { executor, request, ports } = make();
+      await executor.start(request);
+      const first = await executor.settle();
+      const original = structuredClone(first);
+      const entered = Promise.withResolvers();
+      const gate = Promise.withResolvers();
+      const port = ports[phase].getMockImplementation();
+      ports[phase].mockImplementation(async (input) => {
+        const result = await port(input);
+        entered.resolve(input.signal);
+        await gate.promise;
+        return result;
+      });
+      await executor.continue(reply(request, first));
+      const signal = await entered.promise;
+      try {
+        expect(executor.isBusy()).toBe(true);
+        expect(await executor.cancel(request)).toMatchObject({
+          sequence: 2,
+          status: 'cancelling',
+        });
+        expect(signal.aborted).toBe(true);
+      } finally {
+        gate.resolve();
+      }
+      const second = await executor.settle();
+      expect(second).toMatchObject({
+        sequence: 2,
+        status: 'cancelled',
+        code: 'native_execution_cancelled',
+      });
+      expect(second).not.toHaveProperty('receipt');
+      expect(second).not.toHaveProperty('interaction');
+      expect(first).toEqual(original);
+      expect(ports.commandRunner).toHaveBeenCalledTimes(phase === 'prepareContinuation' ? 4 : 5);
+      expect(ports.publishInteraction).toHaveBeenCalledTimes(
+        phase === 'publishInteraction' ? 2 : 1,
+      );
+      expect(
+        JSON.parse(await fs.readFile(join(root, '.native-control/first-turn/status.json'), 'utf8')),
+      ).toMatchObject({ sequence: 2, status: 'cancelled' });
+      expect(executor.isBusy()).toBe(false);
+      await expect(executor.continue(reply(request, first))).rejects.toMatchObject({
+        code: 'native_execution_cancelled',
+      });
+    },
+  );
 
   it.each(['codex', 'claude', 'opencode'])(
     'captures plan choices and gate replies in three serial %s turns without duplicate effects',
@@ -1556,6 +1691,15 @@ describe('created-workflow requirement for EFS fresh sessions', () => {
       accepted: true,
       writerGeneration: 2,
     });
+    expect(successor.ports.prepareRecovery).not.toHaveBeenCalled();
+    expect(successor.ports.commandRunner).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(await fs.readFile(join(root, '.native-control/writer-2/status.json'), 'utf8')),
+    ).toMatchObject({
+      recoveryId: input.recoveryId,
+      writerGeneration: 2,
+      sequence: 2,
+    });
     expect(await successor.executor.settle()).toMatchObject({
       status: 'publication_ready',
       sequence: 2,
@@ -1579,6 +1723,52 @@ describe('created-workflow requirement for EFS fresh sessions', () => {
     });
     expect(successor.ports.commandRunner).toHaveBeenCalledOnce();
     expect(successor.ports.prepareRecovery).toHaveBeenCalledOnce();
+  });
+
+  it('cancels an admitted fresh session during recovery preparation and preserves the workspace', async () => {
+    const { first, input, successor } = await workspaceFixture();
+    await writeCreatedWorkflow();
+    const priorStatus = await fs.readFile(join(root, '.native-control/first-turn/status.json'));
+    const unfinished = join(root, 'project/src/unfinished.bin');
+    const bytes = Buffer.from([0, 255, 13, 10]);
+    await fs.writeFile(unfinished, bytes);
+    const entered = Promise.withResolvers();
+    const gate = Promise.withResolvers();
+    const prepare = successor.ports.prepareRecovery.getMockImplementation();
+    successor.ports.prepareRecovery.mockImplementation(async (options) => {
+      entered.resolve(options.signal);
+      await gate.promise;
+      return prepare(options);
+    });
+    expect(await successor.executor.resume(input)).toMatchObject({ accepted: true });
+    const signal = await entered.promise;
+    try {
+      expect(await successor.executor.cancel(input)).toMatchObject({
+        writerGeneration: 2,
+        sequence: 2,
+        status: 'cancelling',
+      });
+      expect(signal.aborted).toBe(true);
+    } finally {
+      gate.resolve();
+    }
+    expect(await successor.executor.settle()).toMatchObject({
+      writerGeneration: 2,
+      sequence: 2,
+      status: 'cancelled',
+      code: 'native_execution_cancelled',
+    });
+    expect(successor.ports.commandRunner).not.toHaveBeenCalled();
+    expect(successor.ports.publish).not.toHaveBeenCalled();
+    expect(await fs.readFile(unfinished)).toEqual(bytes);
+    expect(await fs.readFile(join(root, '.native-control/first-turn/status.json'))).toEqual(
+      priorStatus,
+    );
+    expect(await first.executor.status(first.request)).toMatchObject({
+      writerGeneration: 1,
+      status: 'publication_ready',
+    });
+    expect(successor.executor.isBusy()).toBe(false);
   });
 
   it('rechecks state changed during preparation before starting the fresh CLI', async () => {

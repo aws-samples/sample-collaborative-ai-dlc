@@ -2148,6 +2148,64 @@ Generated-output quality remains outside the verdict. No operator action is
 required for these checks; **NE-04 has not started**. Kiro remains deferred to
 NE-18.
 
+### NE-04 runtime turn ownership — 2026-11-03
+
+Start, reply and EFS resume now create the same explicit turn context after
+validating their admission. Preparation, harness execution, public publication,
+status persistence, cancellation and activity callbacks receive that context.
+The writer retains its identity/configuration/directory pins, installed package,
+activity log and terminal cancellation latch. Each turn owns its admitted
+payload, report, task, activity handle and continuation input. Completing a turn
+releases its payload and transient references; only its public report and the
+minimal verified CLI continuation evidence remain.
+
+There is one current-turn pointer and one admission latch. The separate mutable
+task, executing flag, owner-directory variable and full copied publication head
+are removed. A reply uses the completed report's exact receipt/interaction and
+the frozen continuation evidence. The runtime stays busy until the task finishes
+status persistence and activity teardown. Start copies its input before the
+first asynchronous inspection, and delayed output/diagnostic callbacks retain
+their originating turn rather than modifying a later one. `settle()` likewise
+waits for and returns the turn it observed.
+
+`native/turn-interaction.js` now owns workflow gate/wait recognition, the bounded
+pending-question reader, structured/degraded form decoding and its credential
+checks. The executor coordinates these results without implementing their
+formats. Supported formats, fallback behavior and wire decoding are unchanged;
+NE-07's adapter simplification is separate. Public schema-2 commands, durable
+owner/request/status records, exact publication and interaction receipts,
+writer fencing, fresh-session EFS checks and retained answers remain intact.
+All entrypoints schedule preparation only after durable admission, and the
+final cancellation fence still has no asynchronous gap before model spawn.
+
+Local validation uses Node **24.21.0**:
+
+| Check                                                                           | Result                                                                                         |
+| ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Focused executor, preparation, pending question, runtime HTTP and output suites | **248 passed**, including 7 new regression cases                                               |
+| Full AgentCore and native controller suites                                     | **4,418 passed, 8 skipped** across 152 passing files and 1 skipped file                        |
+| Previous-executor comparison in an isolated source copy                         | All 3 selected new regressions fail as expected against `c420d1f1`; they pass on the candidate |
+| Packaging/qualification and architecture script regressions                     | **28 passed**                                                                                  |
+| Native architecture                                                             | **410 production modules, 0 violations**                                                       |
+| Lint, formatting, scoped secret checks, dependencies and SDK alignment          | **Passed**; existing repository lint/dependency and Smithy-range warnings remain               |
+
+The new tests cover request mutation during admission, late callbacks crossing
+turns, busy status during durable publication persistence, cancellation during
+reply preparation/file publication/interaction publication, and cancellation
+during fresh-session preparation with preserved workspace bytes and predecessor
+status. The existing real local subprocess, HTTP, cancellation/fencing,
+duplicate/lost-acknowledgement, history and export tests remain covered. Skipped
+tests are not counted as proof. Evidence is under
+`.native-evidence/ne04-2026-11-03-turn-ownership/`.
+
+This implementation changes runtime JavaScript and its tests. It introduces no
+frontend, controller, protocol, IAM or dependency-version change. A new runtime
+image is required before deployed NE-04 behavior can be claimed; the previously
+verified `aeb031f4` deployment and image remain NE-03 evidence. Image qualification
+and deployment observations must be recorded separately. No cloud mutation,
+workflow answer, repeated fault or generated-application quality check is part
+of this implementation. NE-05 has not started; Kiro remains deferred to NE-18.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
