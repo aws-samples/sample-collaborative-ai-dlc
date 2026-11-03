@@ -1,0 +1,7 @@
+.md-typeset table:has(.aws-service-category) > thead > tr > th {
+  background-color: color-mix(in srgb, var(--md-code-bg-color), var(--md-default-fg-color) 12%);
+}
+
+.md-typeset tr:has(.aws-service-category) > td {
+  background-color: var(--md-code-bg-color);
+}
