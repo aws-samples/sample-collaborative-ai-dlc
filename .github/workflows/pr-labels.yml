@@ -43,6 +43,7 @@ jobs:
             }
 
   size:
+    needs: area
     if: github.event.action != 'edited'
     runs-on: ubuntu-latest
     timeout-minutes: 5
