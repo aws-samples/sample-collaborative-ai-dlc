@@ -99,6 +99,8 @@ When an agent needs a decision, it calls the `ask_question` MCP tool; when the e
 
 Multiple questions per stage are supported, and a recovered session that lost its conversation (for example after a redeploy) is re-run fresh with the already-answered Q&A injected — you are never asked twice.
 
+`GET /users/me/pending-questions` lists the gates waiting for an answer across every space you belong to, oldest first. A gate counts as waiting only while it belongs to the intent's current run and, for an agent question, the stage's current attempt; answering it, cancelling the intent, or a rewind or re-dispatch removes it. Each gate is open to every member of its space rather than assigned to one person. That rule lives in one place, `answerEligibility` in `lambda/intents/answer-eligibility.js`; answer and revise enforcement is added by #589, which must call the same function from both `POST …/gates/{id}/answer` and `POST …/gates/{id}/revise`.
+
 ## Steering and rewind
 
 You are never locked out of a running intent:
