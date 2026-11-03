@@ -1639,6 +1639,53 @@ New receipts and comparisons are kept separately under
 workspace fault is required. Generated-output quality remains outside the
 completion verdict, and NE-02 remains unchecked.
 
+**Accepted-answer observer repair, 2026-11-03:** the replacement observer became
+ready at **09:17:25.206 UTC**. The member sent the separately reviewed barrier
+answer through the application at **09:18:03.893 UTC**, command
+`9b069c13-3edb-454c-a52e-de398983a894`. The observer then failed before any runtime
+inspection or stop. Its original failure receipt, empty inspection log and
+reviewed sources remain preserved. The process exited; the authority still has
+writer **2** and only the earlier writer **1** stop confirmation.
+
+The local handoff incorrectly required `response.text` on the execution pointer.
+The production store deliberately keeps `textSha256` there and stores the text
+in the immutable response record. A scoped read of both actual records reproduced
+the rejected invariant: the pointer has no text, and its hash matches the
+immutable answer and the exact submitted **3,254-byte** member answer. The old
+failure receipt itself contains only a generic error; this diagnosis comes from
+the reproduced caller contract, not invented exception details.
+
+The corrected handoff pins the hash of the complete reviewed member answer,
+including its nonce and command. Preparation, terminal preflight and observation
+use that same contract. Named failure invariants retain only value types, never
+answer bodies or arbitrary SDK errors. **28** generated-command/consumer checks
+and **11** public-API/store/serialization checks pass. The latter use the existing
+repository execution fixture and production codecs, with local AWS transports;
+they are not live interruption proof. Initial integration-test setup failures
+were corrected without changing production acceptance guards and are retained
+with the final logs.
+
+Meanwhile, turn **6** finished without an operator stop and admitted publication
+`635f714c0238d1a58d9d5b4c2c97c9c96ed603c8824278a4c7f538ee8369ae66`
+with **61** verified opaque files and the same CLI. The member application exposes
+interaction `fb4929871574b97da3a0a1dcb61dce407d082354d1c3e86981bdab39518e5ca4`.
+Its structured form is absent; its published response and free-text reply field
+show the real choice to retry the barrier, continue Code Generation or leave
+the work unchanged. The response reports that the previous barrier ran its full
+150 seconds. No live barrier inspection exists for that attempt, so it remains
+**NOT RUN** for active-tool recovery.
+
+The fresh packet under
+`.native-evidence/ne02-2026-11-03-active-answer-contract/handoff/` pins writer **2**,
+publication **6** and nonce `56ba01dc-2cbd-4e62-a521-0ada621edf6b`. The current
+authority preflight passes. Its **3,474-byte** member answer is prepared but has
+not been submitted; only after user-terminal readiness will it select the real
+retry option, request one small unpublished fixture edit and run the fresh
+barrier. Both earlier nonces are retired. The same stop, fence, process, EFS,
+dependency-link and post-recovery preservation guards remain required.
+No production change or deployment is needed for this local handoff repair.
+Generated-output quality remains excluded and NE-02 stays unchecked.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
