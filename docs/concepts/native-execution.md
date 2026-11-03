@@ -1957,6 +1957,65 @@ The local image ID is not a claim that the eventual registry image is identical.
 No deployment, cloud mutation, previous-workspace fault or NE-04 work was
 performed during this local qualification.
 
+### NE-03 deployed-byte and installed-image verification — 2026-11-03
+
+The user completed the guarded deployment of
+`558f552c59cf0c75cd0307129f2aaba2c365ac95` on
+`feat/native-aidlc-execution`. Its terminal receipts record infrastructure and
+frontend completion at **12:16:58 UTC**. Independent verification used the
+`solution-read` role in account `746558295630`, region `us-east-1`; the deployment
+receipt alone was not treated as a pass.
+
+All **nine native Lambda packages** match independently rebuilt candidate
+bundles, including cancellation's execution-worker bundle. Service ZIP
+checksums agree, functions are active, and their updates succeeded. All **five
+authority aliases** select the matching published authority version without
+weighted routing. All **523 frontend files** match a separate build from the
+candidate, and the deployment's CloudFront invalidation is complete.
+
+ECR tag `a8baca084128c883` resolves to
+`sha256:a0d0eb04dfa2cad5f0d1ad0363d610369f732127f0143ca05ec03b73dbe26200`.
+Every deployed native image URI/digest pin agrees. This registry image differs
+from the earlier local qualification image, so its own installed checks were
+run with fresh, verified AI-DLC **2.11.1**, OpenCode dependency and Linux binding
+fixtures. The **155 Linux regressions** and existing **Claude Code 2.1.296**,
+**Codex 0.162.1** and **OpenCode 1.19.0** installed scopes pass. Each of four
+container checks verifies all **268 packaged production source files**; the
+four removed private recovery modules are absent. Kiro remains **NOT RUN**
+under NE-18. These network-disabled fixtures retain the scope limits described
+above, including OpenCode's unexercised reconciliation/dependency-build branches.
+
+The deployed runtime boundary and execution-worker policy have exactly the
+expected S3 resources for public publications, pinned packages and cancellation
+fences; neither grants access to private recovery bytes. The worker has only its
+expected managed VPC execution policy. The preserved Terraform plan has no
+S3, DynamoDB or EFS resource deletions; its replacement actions concern image,
+local packaging and Terraform coordination resources.
+
+Read-only comparison preserves **348 immutable records** across the earlier
+active-tool, missing-workspace and wrong-workspace fixtures, along with all
+**10 saved response rows**. Their configuration hashes, attempt/session/writer
+identities, turn numbers and publication pointers remain unchanged. The only
+changed baseline records are mutable execution pointers whose recorded
+version/timestamp updates predate this deployment. This is historical-data
+preservation evidence, not a compatibility guarantee for earlier native runs.
+
+**Fresh application run: NOT RUN.** The dev application tab is open, but Chrome
+rejects browser execution because **Allow JavaScript from Apple Events** is
+disabled. The user has been asked to enable that access or perform the
+application check. No fresh intent, model turn, workflow answer, recovery
+confirmation or operator fault has been submitted in this verification stage.
+Once browser access is available, use one fresh, minimal native intent to
+verify the new run's image/EFS pins and actual result admission, member delivery
+and export. Keep generated content opaque and preserve genuine human gates.
+No repeated deployment or workspace fault is needed.
+
+Exact read-only comparisons, the fresh image qualification, preserved-history
+checks, initial browser-access failure and source hashes are under
+`.native-evidence/ne03-2026-11-03-deployed-558f552c/`. The registry/package/IAM
+checks do not claim a live model or new AgentCore/EFS execution. No production
+implementation changed during verification, and NE-04 has not started.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -2007,9 +2066,11 @@ with previous native development executions.
       above remove the private stack and its exclusive callers/permissions; the
       full backend/frontend, isolated release, packaging and Terraform checks pass.
       The subsequent packaged-image qualification passes 155 Linux regressions
-      and the existing Claude/Codex/OpenCode installed scopes. Coordinated
-      deployment and live validation remain explicit handoff work and do not
-      reuse NE-02's deployed bytes as proof of this change.
+      and the existing Claude/Codex/OpenCode installed scopes. Coordinated deployment
+      of `558f552c` is independently verified, including the actual registry image's
+      installed checks, tightened IAM and frontend bytes. A fresh application run
+      remains pending browser access; NE-02's deployed bytes are not reused as
+      proof of this change.
 - [ ] **NE-04 — Simplify runtime turn ownership.** Give preparation, harness execution,
       publication and cancellation an explicit per-turn context. Separate interaction
       decoding from execution coordination and remove state made redundant by
