@@ -7561,6 +7561,118 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
     expect(JSON.parse(adminResult.body)).toMatchObject({ code: 'repair_not_needed' });
   });
 
+  const seedResumingLane = (intentId, callbackConsumedAt) => {
+    seedStageRow(intentId, 'cg', 'auth', 'WAITING_FOR_HUMAN', 1);
+    procStore.get(keyOf(`EXEC#${intentId}`, `STAGE#${siOf('cg', 'auth', 1)}`)).pendingHumanTaskId =
+      'delivered-gate';
+    seedGate(intentId, 'delivered-gate', {
+      status: 'answered',
+      callbackId: 'cb-auth',
+      stageInstanceId: siOf('cg', 'auth', 1),
+    });
+    Object.assign(procStore.get(keyOf(`EXEC#${intentId}`, 'HUMAN#delivered-gate')), {
+      unitSlug: 'auth',
+      sectionIndex: 1,
+      answeredAt: callbackConsumedAt,
+      callbackConsumedAt,
+    });
+    procStore.set(keyOf(`EXEC#${intentId}`, 'UNIT#S1#auth'), {
+      pk: `EXEC#${intentId}`,
+      sk: 'UNIT#S1#auth',
+      type: 'Unit',
+      executionId: intentId,
+      sectionIndex: 1,
+      slug: 'auth',
+      state: 'RUNNING',
+    });
+  };
+
+  it('refuses to repair while a lane is resuming after its answer was delivered', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:live',
+    });
+    seedResumingLane(intent.id, new Date(Date.now() - 30_000).toISOString());
+    lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'RUNNING' });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'lane_resuming',
+      lanes: [{ stageInstanceId: siOf('cg', 'auth', 1), unitSlug: 'auth', sectionIndex: 1 }],
+    });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#auth')).state).toBe('RUNNING');
+    expect(lambdaMock.commandCalls(StopDurableExecutionCommand)).toHaveLength(0);
+    expect(orchestratorInvokes()).toHaveLength(0);
+  });
+
+  it('treats a delivered answer that never resumed as orphaned once the grace window passes', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:live',
+    });
+    seedResumingLane(intent.id, new Date(Date.now() - 11 * 60_000).toISOString());
+    lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'RUNNING' });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body).code).not.toBe('lane_resuming');
+  });
+
+  it('allows repair at once when the run a delivered answer woke has ended', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, {
+      status: 'RUNNING',
+      durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:dead',
+    });
+    seedResumingLane(intent.id, new Date(Date.now() - 30_000).toISOString());
+    lambdaMock.on(GetDurableExecutionCommand).resolves({ Status: 'FAILED' });
+
+    const res = await repair(sub, projectId, intent.id);
+
+    expect(JSON.parse(res.body).code).not.toBe('lane_resuming');
+  });
+
+  it('reports a lane as resuming in the intent detail only while its run is live', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    setStatus(intent.id, { status: 'RUNNING' });
+    seedResumingLane(intent.id, new Date(Date.now() - 30_000).toISOString());
+    const detail = async () =>
+      JSON.parse(
+        (
+          await handler({
+            httpMethod: 'GET',
+            path: `/projects/${projectId}/intents/${intent.id}`,
+            pathParameters: { projectId, intentId: intent.id },
+            ...claims(sub),
+          })
+        ).body,
+      );
+
+    const live = await detail();
+    expect(live.stages.find((s) => s.unitSlug === 'auth')).toMatchObject({ laneResuming: true });
+
+    setStatus(intent.id, { status: 'FAILED' });
+    const failed = await detail();
+    expect(failed.stages.find((s) => s.unitSlug === 'auth')).toMatchObject({ laneResuming: false });
+  });
+
   it('does not treat a legacy wait with no section index as section zero', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

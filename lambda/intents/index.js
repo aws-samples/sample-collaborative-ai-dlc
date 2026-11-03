@@ -54,7 +54,11 @@ import {
 } from '../shared/runtime-session-ids.js';
 import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
 import { createProcessStore, isTransactionConflict } from '../shared/v2-process-store.js';
-import { CONSTRUCTION_AUTONOMY_MODES, isHumanTaskAnswerStatus } from '../shared/v2-process-keys.js';
+import {
+  CONSTRUCTION_AUTONOMY_MODES,
+  isHumanTaskAnswerStatus,
+  isLaneResumeInFlight,
+} from '../shared/v2-process-keys.js';
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
@@ -4419,6 +4423,11 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
       .filter((gate) => gate.status === 'pending' && gate.stageInstanceId)
       .map((gate) => [gate.stageInstanceId, gate]),
   );
+  // A lane whose answer has just woken the run is still WAITING_FOR_HUMAN until
+  // its runtime resumes. Repair would stop that run and discard the answer, so
+  // refuse while any lane is mid-resume and the run is alive.
+  const resumeBlocked = await laneResumeBlocksRepair(meta, records);
+  if (resumeBlocked) return response(409, resumeBlocked);
   const orphaned = (records.stages ?? []).filter(
     (stage) =>
       stage.state === 'WAITING_FOR_HUMAN' &&
@@ -5516,7 +5525,15 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
   const priceFor = await getPriceResolver();
   return response(200, {
     intent: mapIntent(records.meta),
-    stages: records.stages.map(mapStage),
+    stages: records.stages.map((stage) => ({
+      ...mapStage(stage),
+      // Judged here, on the server's clock, with the rule /repair uses.
+      laneResuming: isLaneResumeInFlight({
+        stage,
+        gates: records.humanTasks ?? [],
+        executionStatus: records.meta.status,
+      }),
+    })),
     // Activity feed: lifecycle events (workspace init, failures, completion)
     // newest-last in emit order, so the UI can show what's happening — init-ws
     // is otherwise invisible (it creates no stage row).
@@ -6783,6 +6800,40 @@ const lookupDurableExecutionStatus = async (meta) => {
 };
 
 const DURABLE_TERMINAL_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'TIMED_OUT', 'STOPPED']);
+// The 409 body when repair must wait for a lane that is resuming after its
+// answer, or null. A durable status that can't be read counts as live; the
+// grace window in isLaneResumeInFlight bounds how long that holds.
+const laneResumeBlocksRepair = async (meta, records) => {
+  const pendingStages = new Set(
+    (records.humanTasks ?? [])
+      .filter((gate) => gate.status === 'pending' && gate.stageInstanceId)
+      .map((gate) => gate.stageInstanceId),
+  );
+  const resuming = (records.stages ?? []).filter(
+    (stage) =>
+      !pendingStages.has(stage.stageInstanceId) &&
+      isLaneResumeInFlight({
+        stage,
+        gates: records.humanTasks ?? [],
+        executionStatus: meta.status,
+      }),
+  );
+  if (resuming.length === 0) return null;
+  const durableStatus = await lookupDurableExecutionStatus(meta).catch((error) =>
+    error?.name === 'ResourceNotFoundException' ? 'NOT_FOUND' : 'UNKNOWN',
+  );
+  if (!durableStatus || durableStatus === 'NOT_FOUND') return null;
+  if (DURABLE_TERMINAL_STATUSES.has(durableStatus)) return null;
+  return {
+    error: 'A lane is resuming after an answer. Wait for it to restart before repairing the run.',
+    code: 'lane_resuming',
+    lanes: resuming.map((stage) => ({
+      stageInstanceId: stage.stageInstanceId,
+      unitSlug: stage.unitSlug,
+      sectionIndex: stage.sectionIndex ?? null,
+    })),
+  };
+};
 
 const repairExpiredDurableExecution = async ({
   executionId,

@@ -259,6 +259,31 @@ const humanTaskMatchesOwner = ({
     Number(task.sectionIndex) === Number(sectionIndex)
   );
 };
+// A lane question whose answer was delivered to the run (the answer route
+// completed its durable callback and stamped callbackConsumedAt) leaves the
+// stage WAITING_FOR_HUMAN until the runtime resumes it, which can take a cold
+// start. Within this window that lane is resuming, not orphaned.
+const LANE_RESUME_GRACE_MS = 10 * 60 * 1000;
+const isLaneResumeInFlight = ({ stage, gates = [], executionStatus, now = Date.now() }) => {
+  if (!['RUNNING', 'WAITING'].includes(executionStatus)) return false;
+  if (stage?.state !== 'WAITING_FOR_HUMAN' || !stage.unitSlug) return false;
+  return gates.some((gate) => {
+    if (!isHumanTaskAnswerStatus(gate?.status) || !gate.callbackConsumedAt) return false;
+    if (stage.pendingHumanTaskId && gate.humanTaskId !== stage.pendingHumanTaskId) return false;
+    if (
+      !humanTaskMatchesOwner({
+        task: gate,
+        stageInstanceId: stage.stageInstanceId,
+        unitSlug: stage.unitSlug,
+        sectionIndex: stage.sectionIndex ?? null,
+      })
+    ) {
+      return false;
+    }
+    const deliveredAt = Date.parse(gate.callbackConsumedAt);
+    return Number.isFinite(deliveredAt) && now - deliveredAt < LANE_RESUME_GRACE_MS;
+  });
+};
 // Human steering (course-correction) messages. Immutable once written; a
 // correction of a correction supersedes the old row. Delivery ("consumed") only
 // happens at a deterministic injection point: a gate resume or a fresh stage
@@ -1411,6 +1436,8 @@ export {
   HUMAN_TASK_STATUSES,
   isHumanTaskAnswerStatus,
   humanTaskMatchesOwner,
+  LANE_RESUME_GRACE_MS,
+  isLaneResumeInFlight,
   STEERING_KINDS,
   RECEIPT_KINDS,
   STEERING_STATUSES,
@@ -1486,6 +1513,8 @@ export default {
   HUMAN_TASK_STATUSES,
   isHumanTaskAnswerStatus,
   humanTaskMatchesOwner,
+  LANE_RESUME_GRACE_MS,
+  isLaneResumeInFlight,
   STEERING_KINDS,
   RECEIPT_KINDS,
   STEERING_STATUSES,

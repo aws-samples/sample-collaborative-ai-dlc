@@ -1,7 +1,7 @@
 import type { IntentGate, IntentStage } from '@/services/intents';
 
 export interface LaneWaitStatus {
-  kind: 'input' | 'recovery';
+  kind: 'input' | 'resuming' | 'recovery';
   stageId: string;
   stageInstanceId: string;
   humanTaskId: string | null;
@@ -60,6 +60,17 @@ export function deriveLaneWaits(
         blocker: preview
           ? `${stage.stageId}: ${preview}`
           : `${stage.stageId} is waiting on question ${ownedGate.humanTaskId}.`,
+      };
+    } else if (stage.laneResuming) {
+      // The answer reached the run; the stage stays parked only until its
+      // runtime resumes, which can include a cold start.
+      result[key] = {
+        kind: 'resuming',
+        stageId: stage.stageId,
+        stageInstanceId: stage.stageInstanceId,
+        humanTaskId: stage.pendingHumanTaskId ?? null,
+        since: stage.parkedAt ?? null,
+        blocker: `${stage.stageId} is resuming after the answer.`,
       };
     } else {
       result[key] = {
