@@ -22,7 +22,7 @@ or changes an existing intent.
 
 The built-in profiles are pinned to exact upstream commit SHAs. The allowlist
 includes the current 2.3.3 baseline and the 2.6.18, 2.7.0, 2.8.2, 2.9.0, and
-2.11.0 catalogs. No intermediate release is onboarded: 2.10.0 is not on the
+2.11.0 and 2.11.1 catalogs. No intermediate release is onboarded: 2.10.0 is not on the
 allowlist and registering it is refused as an unknown profile. A custom fork receives a synthesized profile with its own source
 identity; an unknown tag or branch is not treated as an official release.
 
@@ -262,7 +262,20 @@ checkpoint, so the annex offers only what that session has and otherwise says
 the checkpoint cannot be raised there and must be deferred to the stage's own
 session.
 
-2.11.0's sensors run as the release declares them, with one bounded
+### AI-DLC 2.11.1
+
+2.11.1 is a patch release on the 2.11 line. It has the same frontmatter dialect,
+scope settings and sensors as 2.11.0, promotes the same way, and invokes every
+2.11.0 command in the table above. It adds one:
+
+| 2.11.1 behaviour                                                                  | Disposition | What the platform does                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine sensor-<id> --stage` (build-and-test's cross-unit coverage gate, Step 10) | refused     | The platform runs a stage's declared sensors itself, at the stage's gate, and offers no way to run one on request. The agent writes the coverage report the step asks for from the record it can read, says it is agent-derived rather than sensor-verified, and treats every element it cannot confirm as uncovered, so it is surfaced at the gate. |
+
+The bare `engine sensor-<id>` a sensor block declares as its command is a
+different case, unchanged: the platform's sensor plane runs it at the gate.
+
+2.11.0's sensors, and 2.11.1's, run as the release declares them, with one bounded
 difference:
 
 - **Document-sensor routing and script closures.** 2.11 authors its document
@@ -348,7 +361,7 @@ cannot honour; the admin screen explains a refused promotion.
 
 ### Enable pinning and promote a release
 
-A deployment of this build can run 2.8.2, 2.9.0, 2.11.0 or an admin-promoted
+A deployment of this build can run 2.8.2, 2.9.0, 2.11.0, 2.11.1 or an admin-promoted
 fork as follows. Every step is explicit; none happens on its own.
 
 1. Turn release pinning on. In the Terraform variables for the deployment, set

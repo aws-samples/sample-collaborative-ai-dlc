@@ -682,193 +682,218 @@ describe('annex reach, against the prompts the runtime really builds', () => {
 // off the ONE definition the promotion guard uses, never re-derived from a path,
 // so a body type no prompt builder annexes would fail here rather than be
 // quietly admitted.
-describe('AI-DLC 2.11 engine commands, in the real release', () => {
-  const PROFILE = 'v2.11.0';
-  const INVOKE_LINES = JSON.parse(
-    readFileSync(
-      new URL('../../shared/test/fixtures/aidlc-release-invoke-lines.json', import.meta.url),
-      'utf8',
-    ),
-  )[PROFILE];
-  const fixtureFiles = filesFromCompatibilityFixture({
-    profileId: PROFILE,
-    fixture: JSON.parse(
+// 2.11.1 carries every 2.11.0 command plus one: build-and-test's cross-unit
+// coverage gate asks for a sensor run on request (`engine sensor-<id> --stage`).
+const RELEASE_211_ADDED_REFUSED = Object.freeze({
+  'v2.11.0': [],
+  'v2.11.1': ['engine sensor-traceability --stage'],
+});
+for (const PROFILE of Object.keys(RELEASE_211_ADDED_REFUSED)) {
+  describe(`AI-DLC 2.11 engine commands, in the real release (${PROFILE})`, () => {
+    const INVOKE_LINES = JSON.parse(
       readFileSync(
-        new URL(`../../shared/test/fixtures/aidlc-compatibility/${PROFILE}.json`, import.meta.url),
+        new URL('../../shared/test/fixtures/aidlc-release-invoke-lines.json', import.meta.url),
         'utf8',
       ),
-    ),
-  });
-  // Each instructing file is tagged with a unique marker before the import, so
-  // the block the importer made of it can be identified afterwards by the
-  // marker in its body. Reach itself is read off the ONE definition the
-  // promotion guard uses — nothing here re-derives the rule from a path.
-  const PATHS = Object.keys(INVOKE_LINES.files).toSorted();
-  const marker = (path) => `reach-probe-${PATHS.indexOf(path)}-end`;
-  for (const path of PATHS) {
-    expect(fixtureFiles.has(path), path).toBe(true);
-    fixtureFiles.set(
-      path,
-      `${fixtureFiles.get(path)}\n${INVOKE_LINES.files[path].join('\n')}\n${marker(path)}\n`,
-    );
-  }
-  const { catalog, objects } = buildReleaseBundle({ profileId: PROFILE, files: fixtureFiles });
-  const bodyByKey = new Map(objects.map((object) => [object.key, object.body ?? '']));
-  const bodiesOf = (blocks) =>
-    blocks.map((block) => bodyByKey.get(block.bodyRef?.s3Key) ?? '').join('\n');
-  const pathsIn = (blocks) => {
-    const joined = bodiesOf(blocks);
-    return new Set(PATHS.filter((path) => joined.includes(marker(path))));
-  };
-  const CONDUCTOR_PATH = 'core/aidlc-common/conductor.md';
-  // What the promotion guard reads as prompt evidence at all: the bodies of the
-  // blocks a release library resolves, plus the conductor. An upstream protocol,
-  // hook or tool source is NOT evidence — it is the engine's own implementation
-  // and no prompt renders it — so a command named only there was never a
-  // blocker and is not claimed as answered either.
-  const promptEvidence = new Set([
-    ...pathsIn(Object.keys(RELEASE_LIBRARY_TYPES).flatMap((type) => catalog.blocks[type] ?? [])),
-    CONDUCTOR_PATH,
-  ]);
-  const reaching = pathsIn(annexReachingBlocks({ blocks: catalog.blocks }));
-
-  // The fourteen engine commands the real 2.11.0 prompt bodies invoke, verbatim.
-  const REFUSED = Object.freeze([
-    'engine config set',
-    'engine log answer',
-    'engine log decision',
-    'engine orchestrate next',
-    'engine state set-construction-execution',
-    'engine state set-construction-verification-command',
-    'engine testing-posture restore',
-    'engine worktree discard',
-    'engine worktree list',
-    'engine worktree purge',
-    'engine worktree restore',
-  ]);
-  const APPROXIMATED = Object.freeze([
-    'engine audit append-raw',
-    'engine config get',
-    'engine now',
-  ]);
-
-  const filesInvoking = (command) =>
-    Object.entries(INVOKE_LINES.files)
-      .filter(([, lines]) => lines.some((line) => line.includes(`{{INVOKE}} ${command}`)))
-      .map(([path]) => path);
-
-  it('finds all fourteen commands in the release bodies', () => {
-    for (const command of [...REFUSED, ...APPROXIMATED]) {
-      expect(filesInvoking(command), command).not.toEqual([]);
-    }
-  });
-
-  it('answers every refused command by name, and never tells the agent to produce a result', () => {
-    for (const command of REFUSED) {
-      const row = INVOKE_DIALECT_ANNEX.split('\n').find(
-        (line) => line.startsWith('- `') && line.includes(command),
+    )[PROFILE];
+    const fixtureFiles = filesFromCompatibilityFixture({
+      profileId: PROFILE,
+      fixture: JSON.parse(
+        readFileSync(
+          new URL(
+            `../../shared/test/fixtures/aidlc-compatibility/${PROFILE}.json`,
+            import.meta.url,
+          ),
+          'utf8',
+        ),
+      ),
+    });
+    // Each instructing file is tagged with a unique marker before the import, so
+    // the block the importer made of it can be identified afterwards by the
+    // marker in its body. Reach itself is read off the ONE definition the
+    // promotion guard uses — nothing here re-derives the rule from a path.
+    const PATHS = Object.keys(INVOKE_LINES.files).toSorted();
+    const marker = (path) => `reach-probe-${PATHS.indexOf(path)}-end`;
+    for (const path of PATHS) {
+      expect(fixtureFiles.has(path), path).toBe(true);
+      fixtureFiles.set(
+        path,
+        `${fixtureFiles.get(path)}\n${INVOKE_LINES.files[path].join('\n')}\n${marker(path)}\n`,
       );
-      expect(row, command).toBeTruthy();
-      expect(row, command).toMatch(/Refused|Do not run|do not run|unavailable/);
     }
-    // And the annex's standing rules forbid the fabrication every one of those
-    // rows would otherwise invite.
-    expect(INVOKE_DIALECT_ANNEX).toContain('Never claim you ran an engine command');
-    expect(INVOKE_DIALECT_ANNEX).toContain('Never invent a value the engine would have generated');
-    expect(INVOKE_DIALECT_ANNEX).toContain('is a GAP, not a satisfied prerequisite');
-  });
+    const { catalog, objects } = buildReleaseBundle({ profileId: PROFILE, files: fixtureFiles });
+    const bodyByKey = new Map(objects.map((object) => [object.key, object.body ?? '']));
+    const bodiesOf = (blocks) =>
+      blocks.map((block) => bodyByKey.get(block.bodyRef?.s3Key) ?? '').join('\n');
+    const pathsIn = (blocks) => {
+      const joined = bodiesOf(blocks);
+      return new Set(PATHS.filter((path) => joined.includes(marker(path))));
+    };
+    const CONDUCTOR_PATH = 'core/aidlc-common/conductor.md';
+    // What the promotion guard reads as prompt evidence at all: the bodies of the
+    // blocks a release library resolves, plus the conductor. An upstream protocol,
+    // hook or tool source is NOT evidence — it is the engine's own implementation
+    // and no prompt renders it — so a command named only there was never a
+    // blocker and is not claimed as answered either.
+    const promptEvidence = new Set([
+      ...pathsIn(Object.keys(RELEASE_LIBRARY_TYPES).flatMap((type) => catalog.blocks[type] ?? [])),
+      CONDUCTOR_PATH,
+    ]);
+    const reaching = pathsIn(annexReachingBlocks({ blocks: catalog.blocks }));
 
-  it('honours a refused command only where the annex reaches every instructing body', () => {
-    for (const command of REFUSED) {
-      const evidence = filesInvoking(command).filter((path) => promptEvidence.has(path));
-      expect(evidence, `${command} has no prompt-evidence body`).not.toEqual([]);
-      for (const path of evidence) {
-        expect(
-          reaching.has(path) || path === CONDUCTOR_PATH,
-          `${command} is instructed from ${path}, which no annex-bearing prompt renders`,
-        ).toBe(true);
+    // The engine commands the real 2.11 prompt bodies invoke, verbatim: fourteen
+    // in 2.11.0, fifteen in 2.11.1.
+    const REFUSED = Object.freeze([
+      ...RELEASE_211_ADDED_REFUSED[PROFILE],
+      'engine config set',
+      'engine log answer',
+      'engine log decision',
+      'engine orchestrate next',
+      'engine state set-construction-execution',
+      'engine state set-construction-verification-command',
+      'engine testing-posture restore',
+      'engine worktree discard',
+      'engine worktree list',
+      'engine worktree purge',
+      'engine worktree restore',
+    ]);
+    const APPROXIMATED = Object.freeze([
+      'engine audit append-raw',
+      'engine config get',
+      'engine now',
+    ]);
+
+    const filesInvoking = (command) =>
+      Object.entries(INVOKE_LINES.files)
+        // Upstream wraps prose, so a command may continue on the next line (2.11.1
+        // breaks `engine` / `testing-posture restore`); the scanner reads across
+        // the break, and so does this.
+        .filter(([, lines]) =>
+          lines.join(' ').replace(/\s+/g, ' ').includes(`{{INVOKE}} ${command}`),
+        )
+        .map(([path]) => path);
+
+    it('finds every one of those commands in the release bodies', () => {
+      for (const command of [...REFUSED, ...APPROXIMATED]) {
+        expect(filesInvoking(command), command).not.toEqual([]);
       }
-    }
-  });
+    });
 
-  // The guard's evidence boundary, stated rather than assumed: 2.11 names engine
-  // commands in its own protocol and tool sources too, and those are deliberately
-  // not prompt evidence.
-  it('reads no engine command out of a file no prompt renders', () => {
-    const outsideEvidence = PATHS.filter((path) => !promptEvidence.has(path));
-
-    expect(outsideEvidence).not.toEqual([]);
-    expect(outsideEvidence.every((path) => !reaching.has(path))).toBe(true);
-    expect(outsideEvidence.some((path) => path.startsWith('core/aidlc-common/protocols/'))).toBe(
-      true,
-    );
-  });
-
-  // The three approximated families are judged by the SAME reach as a refused
-  // command: their substitute is named only in the annex, so a session that does
-  // not receive it holds the authored step with no answer either way. `annexed`
-  // on the approximated entry is what makes that claim checkable, and it is read
-  // from the entry rather than from the honoured list, which — like #521's four
-  // approximated families — never names them. In the real release every
-  // instructing body of all three reaches an annex-bearing prompt, so they are
-  // honoured here; a release that moves one into a body no builder gates on is
-  // refused by name (release-registry.test.js).
-  it('honours an approximated command only where the annex reaches every instructing body', () => {
-    for (const command of APPROXIMATED) {
-      const evidence = filesInvoking(command).filter((path) => promptEvidence.has(path));
-      expect(evidence, `${command} has no prompt-evidence body`).not.toEqual([]);
-      for (const path of evidence) {
-        expect(
-          reaching.has(path) || path === CONDUCTOR_PATH,
-          `${command} is instructed from ${path}, which no annex-bearing prompt renders`,
-        ).toBe(true);
+    it('answers every refused command by name, and never tells the agent to produce a result', () => {
+      for (const command of REFUSED) {
+        const row = INVOKE_DIALECT_ANNEX.split('\n').find(
+          (line) => line.startsWith('- `') && line.includes(command),
+        );
+        expect(row, command).toBeTruthy();
+        expect(row, command).toMatch(/Refused|Do not run|do not run|unavailable/);
       }
-      expect(
-        INVOKE_FAMILY_FIDELITY.find((entry) => `engine ${entry.family}` === command),
-        command,
-      ).toMatchObject({ handling: 'approximated', annexed: true });
-      expect(INVOKE_DIALECT_ANNEX, command).toContain(`${command} `);
-    }
-  });
+      // And the annex's standing rules forbid the fabrication every one of those
+      // rows would otherwise invite.
+      expect(INVOKE_DIALECT_ANNEX).toContain('Never claim you ran an engine command');
+      expect(INVOKE_DIALECT_ANNEX).toContain(
+        'Never invent a value the engine would have generated',
+      );
+      expect(INVOKE_DIALECT_ANNEX).toContain('is a GAP, not a satisfied prerequisite');
+    });
 
-  // The completeness invariant: a name the promotion guard honours must resolve
-  // to an annex row that refuses it. A name with neither is a failure here, not
-  // a silent pass at promotion time.
-  it('answers by name every command the promotion guard honours', () => {
-    for (const command of ANNEX_HANDLED_ENGINE_COMMANDS) {
-      expect(INVOKE_DIALECT_ANNEX, command).toContain(`${command} `);
-    }
-    expect([...ANNEX_HANDLED_ENGINE_COMMANDS].toSorted()).toEqual(
-      [
-        'engine graph ars',
-        'engine orchestrate',
-        'engine recompose',
-        'engine state',
-        ...REFUSED,
-      ].toSorted(),
-    );
-  });
+    it('honours a refused command only where the annex reaches every instructing body', () => {
+      for (const command of REFUSED) {
+        const evidence = filesInvoking(command).filter((path) => promptEvidence.has(path));
+        expect(evidence, `${command} has no prompt-evidence body`).not.toEqual([]);
+        for (const path of evidence) {
+          expect(
+            reaching.has(path) || path === CONDUCTOR_PATH,
+            `${command} is instructed from ${path}, which no annex-bearing prompt renders`,
+          ).toBe(true);
+        }
+      }
+    });
 
-  // Three refusals are engine MACHINERY rather than a command, so no
-  // `{{INVOKE}}` scanner reports them and only the annex can state them.
-  // The generic "never claim you ran it" rules are not those named answers.
-  it('names the engine machinery it refuses, not only the commands', () => {
-    const section = INVOKE_DIALECT_ANNEX.slice(
-      INVOKE_DIALECT_ANNEX.indexOf('Engine-owned machinery this runtime does not have'),
-      INVOKE_DIALECT_ANNEX.indexOf('Rules that override any engine-flavoured prose'),
-    );
+    // The guard's evidence boundary, stated rather than assumed: 2.11 names engine
+    // commands in its own protocol and tool sources too, and those are deliberately
+    // not prompt evidence.
+    it('reads no engine command out of a file no prompt renders', () => {
+      const outsideEvidence = PATHS.filter((path) => !promptEvidence.has(path));
 
-    expect(section).toContain('The Plan Approval state machine');
-    expect(section).toMatch(/`plan` \/ `revise` \/ `repair` \/ `approved` states/);
-    expect(section).toContain('The review-finding ledger');
-    expect(section).toMatch(/do not invent an id, a status or a disposition/);
-    expect(section).toContain('Unit-preserving replans');
-    expect(section).toContain('a human decides the rewind target');
-  });
+      expect(outsideEvidence).not.toEqual([]);
+      expect(outsideEvidence.every((path) => !reaching.has(path))).toBe(true);
+      expect(outsideEvidence.some((path) => path.startsWith('core/aidlc-common/protocols/'))).toBe(
+        true,
+      );
+    });
 
-  it('answers `doctor` and the CodeKB publication check, which no scanner reports', () => {
-    expect(INVOKE_DIALECT_ANNEX).toContain('doctor');
-    expect(INVOKE_DIALECT_ANNEX).toMatch(/never emit `VALID`\/`INVALID`|never emit VALID/);
-    expect(INVOKE_DIALECT_ANNEX).toContain('codekb-scope-diff --check');
+    // The three approximated families are judged by the SAME reach as a refused
+    // command: their substitute is named only in the annex, so a session that does
+    // not receive it holds the authored step with no answer either way. `annexed`
+    // on the approximated entry is what makes that claim checkable, and it is read
+    // from the entry rather than from the honoured list, which — like #521's four
+    // approximated families — never names them. In the real release every
+    // instructing body of all three reaches an annex-bearing prompt, so they are
+    // honoured here; a release that moves one into a body no builder gates on is
+    // refused by name (release-registry.test.js).
+    it('honours an approximated command only where the annex reaches every instructing body', () => {
+      for (const command of APPROXIMATED) {
+        const evidence = filesInvoking(command).filter((path) => promptEvidence.has(path));
+        expect(evidence, `${command} has no prompt-evidence body`).not.toEqual([]);
+        for (const path of evidence) {
+          expect(
+            reaching.has(path) || path === CONDUCTOR_PATH,
+            `${command} is instructed from ${path}, which no annex-bearing prompt renders`,
+          ).toBe(true);
+        }
+        expect(
+          INVOKE_FAMILY_FIDELITY.find((entry) => `engine ${entry.family}` === command),
+          command,
+        ).toMatchObject({ handling: 'approximated', annexed: true });
+        expect(INVOKE_DIALECT_ANNEX, command).toContain(`${command} `);
+      }
+    });
+
+    // The completeness invariant: a name the promotion guard honours must resolve
+    // to an annex row that refuses it. A name with neither is a failure here, not
+    // a silent pass at promotion time.
+    it('answers by name every command the promotion guard honours', () => {
+      for (const command of ANNEX_HANDLED_ENGINE_COMMANDS) {
+        expect(INVOKE_DIALECT_ANNEX, command).toContain(`${command} `);
+      }
+      expect([...ANNEX_HANDLED_ENGINE_COMMANDS].toSorted()).toEqual(
+        [
+          'engine graph ars',
+          'engine orchestrate',
+          'engine recompose',
+          'engine state',
+          // The honoured set names a family, the release the command it invokes.
+          ...REFUSED.map((command) =>
+            command === 'engine sensor-traceability --stage'
+              ? 'engine sensor-<id> --stage'
+              : command,
+          ),
+          ...(PROFILE === 'v2.11.0' ? ['engine sensor-<id> --stage'] : []),
+        ].toSorted(),
+      );
+    });
+
+    // Three refusals are engine MACHINERY rather than a command, so no
+    // `{{INVOKE}}` scanner reports them and only the annex can state them.
+    // The generic "never claim you ran it" rules are not those named answers.
+    it('names the engine machinery it refuses, not only the commands', () => {
+      const section = INVOKE_DIALECT_ANNEX.slice(
+        INVOKE_DIALECT_ANNEX.indexOf('Engine-owned machinery this runtime does not have'),
+        INVOKE_DIALECT_ANNEX.indexOf('Rules that override any engine-flavoured prose'),
+      );
+
+      expect(section).toContain('The Plan Approval state machine');
+      expect(section).toMatch(/`plan` \/ `revise` \/ `repair` \/ `approved` states/);
+      expect(section).toContain('The review-finding ledger');
+      expect(section).toMatch(/do not invent an id, a status or a disposition/);
+      expect(section).toContain('Unit-preserving replans');
+      expect(section).toContain('a human decides the rewind target');
+    });
+
+    it('answers `doctor` and the CodeKB publication check, which no scanner reports', () => {
+      expect(INVOKE_DIALECT_ANNEX).toContain('doctor');
+      expect(INVOKE_DIALECT_ANNEX).toMatch(/never emit `VALID`\/`INVALID`|never emit VALID/);
+      expect(INVOKE_DIALECT_ANNEX).toContain('codekb-scope-diff --check');
+    });
   });
-});
+}
