@@ -85,7 +85,12 @@ You must also have an AWS account with permissions to manage the following servi
 | Integration   | Amazon Elastic Container Registry (Amazon ECR), Amazon EventBridge, Amazon SQS                                                                                                          |
 | Observability | Amazon CloudWatch (Logs and alarms)                                                                                                                                                     |
 
-At runtime the application also calls Amazon Inspector (managed environment image scan results), the AWS Price List API (Bedrock cost estimates), and Amazon Bedrock (model discovery). If service control policies restrict these services, allow them in the deployment Region.
+At runtime the application also calls Amazon Inspector (managed environment image scan results), the AWS Price List API (Bedrock cost estimates), and Amazon Bedrock (model discovery and invocation). CodeCommit is optional for spaces using it as their code host. If service control policies restrict these calls, permit the Regions actually used:
+
+- **Amazon Inspector:** the deployment Region.
+- **AWS Price List:** `ap-south-1` for deployments in `ap-*` Regions; `us-east-1` for all other deployments.
+- **Amazon Bedrock:** the configured Bedrock Region (`bedrock_region`, defaulting to the deployment Region) and, in IAM mode, the inference Region selected for the platform or space connection. Include any destination Regions required by the chosen cross-Region inference profiles.
+- **AWS CodeCommit:** the repository's Region, using the external access role described in [CodeCommit setup](setup.md#codecommit-code-host).
 
 ## Optional tools
 
@@ -100,9 +105,9 @@ The following are optional. Set them up to enable additional features.
 
 ## Agent authentication
 
-Agents authenticate using API keys configured through the platform UI. The platform supports two options:
+Agents authenticate using API keys or a dedicated Bedrock IAM inference role configured through the platform UI. Platform administrators select **Keys** or **IAM** mode in **Admin → Agents → Platform Agent Credentials**; Kiro uses its own API key in either mode.
 
-An agent CLI cannot reach its model until an effective credential is configured — the Bedrock AgentCore runtime has no IAM-role fallback. A user can provide a personal credential in **Account Settings**, a space owner/admin can provide a shared credential in **Space Settings → Agent**, or a platform admin can provide a fallback in **Admin → Agents**. Resolution is independent per provider and follows `personal > space > platform`.
+An agent CLI cannot reach its model until an effective credential is configured — the Bedrock AgentCore runtime has no IAM-role fallback. For API keys, a user can provide a personal credential in **Account Settings**, a space owner/admin can provide a shared credential in **Space Settings → Agent**, or a platform admin can provide a fallback in **Admin → Agents**. Key resolution is independent per provider and follows `personal > space > platform`.
 
 ### Kiro CLI API key (required for the Kiro CLI driver)
 
@@ -110,17 +115,21 @@ Kiro API keys are turned **off by default**. A Kiro administrator must first ena
 
 Save the key as the **Kiro API Key** at the intended personal, space, or platform scope. AgentCore resolves the selected opaque binding for each invocation and provides the value to Kiro as `KIRO_API_KEY`.
 
-### Amazon Bedrock API key (required for Claude Code, OpenCode, and Codex setups)
+### Amazon Bedrock API key (Keys mode for Claude Code, OpenCode, and Codex)
 
 Generate an Amazon Bedrock API key in the AWS Console (**Amazon Bedrock → API keys → Generate long-term API key**, scoped to your account and region). Save it as the **Bedrock Bearer Token** at the intended personal, space, or platform scope. AgentCore injects the selected value for that invocation as `AWS_BEARER_TOKEN_BEDROCK`.
 
-This token is required for Claude Code, OpenCode, and Codex agents: the Bedrock AgentCore runtime's IAM role intentionally has no Amazon Bedrock model-invocation permissions, so there is no IAM-role fallback. Agents authenticate to Bedrock exclusively through this token.
+This token is required for Claude Code, OpenCode, and Codex agents in **Keys** mode. The Bedrock AgentCore runtime's IAM role intentionally has no Amazon Bedrock model-invocation permissions, so a missing token does not fall back to that role.
 
 For Codex, additionally enable access to the OpenAI models (`openai.gpt-5.*`) in the Bedrock console for your Region — Codex uses Bedrock's OpenAI-compatible Responses API, and the models are Region-limited. See [Use Codex with Amazon Bedrock](https://help.openai.com/en/articles/20001252-use-codex-with-amazon-bedrock). (GPT models are also available through Kiro, but Kiro accesses them via its own API key — no Bedrock model access is involved there.)
 
-### Where these values are stored
+### Amazon Bedrock IAM (alternative to a Bedrock API key)
 
-All credentials are stored in **AWS Systems Manager Parameter Store** as `SecureString` parameters:
+In **IAM** mode, the credential broker assumes a dedicated external inference role and supplies temporary credentials to Claude Code, OpenCode, and Codex. Platform administrators configure a platform connection and optional space overrides; personal Bedrock keys do not apply. The inference account and Region can differ from the deployment. See [Bedrock IAM](../using-the-platform/bedrock-iam.md) for setup, trust policies, and permissions.
+
+### Where API keys are stored
+
+API keys are stored in **AWS Systems Manager Parameter Store** as `SecureString` parameters:
 
 - Platform: `/<project_name>/<environment>/<credential-name>`
 - Space: `/<project_name>/<environment>/projects/<project-id>/agent-credentials/<credential-name>`
@@ -130,7 +139,7 @@ The credential name is `bedrock-bearer-token` or `kiro-api-key`. An unset platfo
 
 ## AWS credentials for deployment
 
-AIDLC Collaborative infrastructure still requires valid AWS credentials for deployment and AWS resource management. Agent CLI model calls do not use ambient AWS credentials; they use the effective Kiro or Bedrock key selected through the hierarchy above.
+AIDLC Collaborative infrastructure still requires valid AWS credentials for deployment and AWS resource management. Agent CLI model calls use the effective Kiro or Bedrock key, or the temporary inference-role credentials in IAM mode.
 
 Without an effective agent credential, users can still browse the application and edit draft intents, but credential-backed AI composition, Quorum assists, and intent start are unavailable.
 
