@@ -1876,9 +1876,10 @@ only subsequent change is its comment. Earlier fixture/runner and cached-backend
 initialization failures are recorded separately from the passing final checks.
 Commit hooks were not rerun; the checks above were executed explicitly.
 
-This implementation has not been installed in a newly built runtime image,
-deployed, or exercised against a live model. Local mocked infrastructure tests
-and bundles do not prove deployed IAM, installed CLI or EFS behavior.
+At this implementation boundary, the change had not been installed in a newly
+built runtime image, deployed, or exercised against a live model. Local mocked
+infrastructure tests and bundles do not prove deployed IAM, installed CLI or EFS
+behavior. The subsequent installed-image checks are recorded below.
 The NE-02 deployed commit `8ffd126762b7e9a292d01523d1feb748c2a056b3` and image
 `sha256:534ccfd547671cee197ae10e3700fccd4b9ec51cc16d099f7cdafddbab568a2b`
 remain historical proof of NE-02, not proof of these deletions.
@@ -1891,6 +1892,70 @@ rewritten. Admission/deployment and any fresh live qualification are operator
 handoff work, outside this local implementation. Generated content remains opaque
 fixture data; application quality and workflow approval are not inferred from
 these tests. NE-04 turn-ownership work is not part of this change.
+
+### NE-03 installed-image qualification — 2026-11-03
+
+The ARM64 runtime image was built locally from a tracked-source archive of
+`c5cd18516216aee3aaa4ab63d85211d2bfa760d6`, with the existing dev
+`ENABLE_NATIVE_INTERACTION_PROBE=true` build argument. Its immutable local image
+identity is
+`sha256:d3d0805e5ac809800b08aacfe5cdc34c5e28030bdc4152e2409d9e0bd5d6689c`.
+No source files were mounted over the packaged runtime during qualification.
+All **268 packaged production files** matched the candidate hashes before each
+of the four container checks, and the four removed private recovery modules
+were absent. The controller used a separately bundled candidate adapter with
+in-memory AWS ports.
+
+Fresh fixture preparation and verification passed for the attested **AI-DLC
+2.11.1** release, **32** frozen OpenCode dependency packages and the locked Linux
+ARM64 test binding. Host tooling used Node **24.21.0**; the image retains its
+Dockerfile-pinned Node **24.19.0**. The existing installed runner completed with
+`--installed-only --packaged-image --cli claude,codex,opencode`, the immutable
+image above and those fresh asset/cache/binding directories.
+
+| Installed check     | Result                                                    |
+| ------------------- | --------------------------------------------------------- |
+| Linux regressions   | **155 passed** across 4 files                             |
+| Claude Code 2.1.296 | **PASS**; 3 CLI sessions and 11 admitted publications     |
+| Codex 0.162.1       | **PASS**; 2 CLI sessions and 10 admitted publications     |
+| OpenCode 1.19.0     | **PASS**; 2 CLI sessions and 7 admitted publications      |
+| Kiro                | **NOT RUN**; full qualification remains deferred to NE-18 |
+
+Each selected CLI passed installed failure, incomplete-output, descendant
+cancellation and login-shell dispatch checks, plus its existing workflow and
+fresh-session transport fixture. Claude exercised the three-choice plan gate,
+replacement sessions and retained workspace. Codex also exercised the fixture's
+dependency rebuild and reconciliation question. The current OpenCode fixture
+does not exercise those two branches; its pass covers its recorded transport
+and gate checks. These results do not expand the advertised release matrix.
+Generated content is opaque fixture data; no generated application's quality
+or playability was qualified.
+
+The containers used **disabled networking**, a deterministic local provider and
+disposable Linux directories. This is installed CLI/package and runtime protocol
+evidence, not an AWS EFS mount, deployed IAM, real-provider or browser result.
+There were no implementation fixes or repeated host backend/frontend suites in
+this stage. Exact build/fixture/matrix commands, timestamps, source hashes and
+results are under
+`.native-evidence/ne03-2026-11-03-image-qualification/`, including
+`qualification-summary.json` and `installed-matrix-result-1.json`.
+
+Deployment remains user-executed. The single handoff is
+`handoff/run-ne03-deploy.sh` in that evidence directory. It checks the final
+candidate commit, clean tracked tree, qualified image, evidence and local
+configuration hashes; selects the existing `solution` profile, dev account and
+`us-east-1`; and verifies the installed ECR credential helper without printing
+credentials. It runs the ordinary Terraform deployment with a new preserved
+plan and `--skip-seed`, then deploys the matching frontend. It refuses a repeated
+attempt and retains phase/output receipts for inspection. Its `--check-only`
+mode performs local checks before any credential or deployment operation.
+
+Wait for both deployment stages before creating a new native run. The returned
+deployment receipt still requires independent comparison of deployed Lambda and
+frontend bytes and the actual ECR image, followed by a fresh-run tool check.
+The local image ID is not a claim that the eventual registry image is identical.
+No deployment, cloud mutation, previous-workspace fault or NE-04 work was
+performed during this local qualification.
 
 ## Integration and simplification checklist
 
@@ -1941,8 +2006,10 @@ with previous native development executions.
       **Completed locally 2026-11-03:** the implementation and validation record
       above remove the private stack and its exclusive callers/permissions; the
       full backend/frontend, isolated release, packaging and Terraform checks pass.
-      Coordinated deployment and installed/live validation remain explicit handoff
-      work and do not reuse NE-02's deployed bytes as proof of this change.
+      The subsequent packaged-image qualification passes 155 Linux regressions
+      and the existing Claude/Codex/OpenCode installed scopes. Coordinated
+      deployment and live validation remain explicit handoff work and do not
+      reuse NE-02's deployed bytes as proof of this change.
 - [ ] **NE-04 — Simplify runtime turn ownership.** Give preparation, harness execution,
       publication and cancellation an explicit per-turn context. Separate interaction
       decoding from execution coordination and remove state made redundant by
