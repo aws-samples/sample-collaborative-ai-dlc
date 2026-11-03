@@ -2198,13 +2198,56 @@ duplicate/lost-acknowledgement, history and export tests remain covered. Skipped
 tests are not counted as proof. Evidence is under
 `.native-evidence/ne04-2026-11-03-turn-ownership/`.
 
-This implementation changes runtime JavaScript and its tests. It introduces no
-frontend, controller, protocol, IAM or dependency-version change. A new runtime
+This implementation changes runtime JavaScript and its tests. Frontend and
+controller source, public protocols, IAM and dependency versions are unchanged. A new runtime
 image is required before deployed NE-04 behavior can be claimed; the previously
 verified `aeb031f4` deployment and image remain NE-03 evidence. Image qualification
 and deployment observations must be recorded separately. No cloud mutation,
 workflow answer, repeated fault or generated-application quality check is part
 of this implementation. NE-05 has not started; Kiro remains deferred to NE-18.
+
+### NE-04 packaged runtime validation — 2026-11-03
+
+Implementation commit `ca0db8f8dcfc4464f7c6e7850732b60b952052c1` was built from
+a tracked-source archive into the immutable local ARM64 image
+`sha256:f32b9a1f3b11947e7c60378d61bbba8d2262f4dfceed228e843335adf8d320e8`.
+The image retains Node **24.19.0** and the existing dev interaction-probe build
+argument. Its runtime entry points and separate interaction decoder import
+successfully. All **269 packaged production files** match the committed
+candidate before each of the four qualification containers; production source
+is read from the image, with no source overlay.
+
+The installed runner passed **162 Linux regressions** across four files and
+the existing installed scopes for **Claude Code 2.1.296**, **Codex 0.162.1** and
+**OpenCode 1.19.0**. Each CLI passed failure/incomplete-output, descendant
+cancellation, login-shell dispatch and the EFS fresh-session transport fixture.
+The qualified transport fixtures admitted 11, 10 and 7 publications respectively.
+This does not expand their existing coverage: the OpenCode fixture does not
+exercise dependency rebuild or the reconciliation-question branch. **Kiro was
+not run**, as defined by NE-18.
+
+These checks use disabled networking, deterministic local providers, disposable
+Linux workspaces, the actual packaged runtime and separate controller adapters
+with in-memory AWS ports. They verify tool contracts, not generated-application
+quality, AWS EFS, deployed IAM, real-provider behavior or browser behavior. The
+reused attested **AI-DLC 2.11.1**, locked Linux binding and **32** cached dependency
+packages were reverified. The prior **145 NE-02** and **65 NE-03** sealed evidence
+files remain unchanged. Source/image identity, commands, logs, comparison
+results and exact boundaries are recorded in
+`.native-evidence/ne04-2026-11-03-turn-ownership/`.
+
+**NE-04 is complete locally and in the installed image. Deployment is pending.**
+The runtime source fingerprint produces Terraform image tag **`0a7e090fc869ab30`**.
+Deploy the new runtime image and ordinary Terraform image-pin/configuration
+updates together; frontend/controller source and IAM are unchanged.
+The user-executed handoff is `handoff/run-ne04-deploy.sh` in this stage's evidence
+directory. Its local check mode and rejection/syntax checks pass **14 checks**.
+It verifies the final branch/commit, clean tracked tree, full runtime source
+file set, image, qualification and configuration hashes; uses the existing
+`solution` dev profile; and preserves a new plan with `--skip-seed`. No frontend
+deployment, workflow answer or repeated workspace fault is needed. A deployment
+receipt still requires independent verification of the registry image, deployed
+pins and preserved state; the local image ID alone does not prove registry bytes.
 
 ## Integration and simplification checklist
 
@@ -2266,12 +2309,18 @@ with previous native development executions.
       scoped post-deployment window is quiet; live warm-connection behavior and
       causality for the earlier observation delay are not claimed. NE-02's
       deployed bytes are not reused as proof of this change.
-- [ ] **NE-04 — Simplify runtime turn ownership.** Give preparation, harness execution,
+- [x] **NE-04 — Simplify runtime turn ownership.** Give preparation, harness execution,
       publication and cancellation an explicit per-turn context. Separate interaction
       decoding from execution coordination and remove state made redundant by
       NE-03. **Done when:** start, reply and resume use the same clear phase
       boundaries without duplicated mutable state; cancellation and durable
       acceptance-before-spawn remain covered.
+      **Completed locally and in the installed image 2026-11-03:** one explicit
+      turn context owns all three entrypoints; interaction decoding is separate,
+      duplicated mutable state is removed, 4,418 host tests and 162 packaged Linux
+      regressions pass, and the installed Claude/Codex/OpenCode scopes pass.
+      Deployment remains pending; the record above distinguishes it from local
+      and installed proof. Generated-output quality is outside the verdict.
 - [ ] **NE-05 — Simplify controller transitions and observation failures.** Make status
       reads, activity catch-up, lost ownership and uncertain dispatch produce explicit
       outcomes under the existing execution authority. Remove the obsolete execution
