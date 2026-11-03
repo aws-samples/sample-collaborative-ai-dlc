@@ -33,7 +33,7 @@ Every space has members with one of three roles, managed in **Space Settings →
 
 Non-members have no access to a space's intents, discussions, or real-time channels.
 
-[My work](my-work.md) lists the questions waiting for an answer in every project you are a member of.
+[My work](my-work.md) lists the questions waiting for an answer in every space you are a member of.
 
 ### The platform-admin role
 
