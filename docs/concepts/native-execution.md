@@ -135,13 +135,13 @@ backend's existing behavior; it does not automatically apply to native intents.
 
 ## Persistent workspace recovery
 
-**EFS is the recovery foundation for new native executions.** The project
+**EFS is the only recovery path for native executions.** The project
 workspace survives loss of the runtime process or coding session. It retains
 workflow files, generated dependencies and unfinished edits so AI-DLC can
 reconcile its own work in a fresh session.
 
-Ordinary turns in the new workspace mode do not capture or export private CLI
-recovery snapshots. Public result publication remains necessary for inspection,
+Native turns do not capture, export, upload or restore private CLI recovery
+snapshots. Public result publication remains necessary for inspection,
 history and delivery. Removing private restore machinery does not remove those
 publications or their integrity checks.
 
@@ -178,10 +178,11 @@ produce an explicit unavailable result. EFS deletion, corruption and disaster
 recovery are outside session-resume coverage; backup and retention policy are
 separate operational concerns.
 
-**Simplification target:** use this one recovery model and remove private exact
-session restore. This remains a pre-release feature; earlier native development
-formats are not a supported compatibility contract. Removal follows proof of the
-complete EFS resume journey and does not change the platform backend's contracts.
+**NE-03 implementation:** private exact session restore has been removed after
+the completed NE-02 tool proof. This remains a pre-release feature; earlier native
+development formats are not a supported compatibility contract. The platform
+backend's checkpoint and recovery contracts remain separate. Local validation and
+the deployment boundary are recorded below.
 
 ## Responsibilities and data flow
 
@@ -1786,6 +1787,111 @@ quarantined fault originals. No deployment, repeated fault or further operator
 action is required. **NE-03 has not started.** Full Kiro qualification remains
 NE-18, and all four harnesses remain required for release.
 
+### NE-03 implementation — 2026-11-03
+
+The local candidate removes the native private CLI snapshot/restore stack. The
+runtime no longer captures a CLI home or session database, exports/imports a CLI
+session, uploads/downloads a private checkpoint, or replaces the project with an
+exact filesystem restore. `session-recovery-files.js`, the private checkpoint
+store/codec, dependency-link and executable-link restore planners, and their
+exclusive tests and qualification fixtures are deleted. Public dependency
+visibility still uses `node-dependencies-v1`, now owned by
+`native-project-files.js`.
+
+Start, reply and resume require the explicit `efs-workspace-v1` pin, command
+schema 2 and writer generation. The runtime has no `native-recover` command;
+missing/unknown modes, obsolete commands and invalid writer requests are rejected
+before executor construction. The controller no longer admits private checkpoint
+receipts, auto-selects an exact restore, or retains checkpoint pointers. Legacy
+native fence readers, the recovery compatibility manifest, and old installed CLI
+archive/restore qualifications are removed. The EFS fence uses schema 3 without
+a checkpoint field. Both the public router and authority require
+`confirmWorkspaceResume: true`; confirmation admits one fresh session and never
+replays an accepted answer. The internal `RESTORING` phase and `RESTORE_FAILED`
+reason remain names for the existing EFS admission/retry transitions; they do not
+invoke filesystem or CLI restoration. New audit facts and UI copy describe fresh
+sessions; recorded historical events are unchanged.
+
+The following paths remain intentional:
+
+- Public result snapshots, immutable versioned publications, public file
+  verification, interaction/answer history, comparison and export. Their
+  `native_snapshot_*` errors describe public file capture only.
+- Pinned methodology-package archive materialization, including its cold-cache
+  `restore` operation. It installs the attested package; it does not restore user
+  work or a CLI session.
+- Shared platform workflow checkpoints and CLI stores used by platform execution
+  and ordinary live-session replies. Native repair checkpoints track scan progress.
+  Diagnostic/debug archives and bounded initialization/probe observations remain
+  separate from recovery authority.
+- EFS workspace identity/configuration pins, current-workflow observation,
+  predecessor stop evidence, writer fencing, and immutable retained answers.
+  Negative assertions against the retired private prefix remain as regression
+  controls; no implementation reads or writes that prefix.
+
+Terraform removes the native runtime boundary's private-checkpoint grant and the
+execution worker's private-checkpoint read grant. Public publication, execution
+fence, EFS and package permissions remain. No npm package or container dependency
+was exclusive to the deleted implementation: Node built-ins, Python, CLI drivers
+and SDK packages still have shared/current callers. Lockfiles and the Dockerfile
+therefore do not change. Installed qualification now targets the surviving EFS
+protocol and retains installed failure/cancellation checks; Kiro qualification
+remains deferred to NE-18.
+
+Implementation commit `ce718ec8450743ce19a46d304036772996042564` follows the verified
+starting commit `a6ebc303cbdd167e3ff2c768368805b11584de8a` on
+`feat/native-aidlc-execution`. Logs, source hashes, the isolated release-test
+manifest and the final checkout identity are recorded in
+`.native-evidence/ne03-2026-11-03-removal/`. Local validation used Node **24.21.0**,
+npm **11.19.0** and Terraform **1.17.0**:
+
+| Check                        | Command or scope                                                                                                                                                                                                                  | Result                                                        |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Full backend                 | `node --no-experimental-webstorage node_modules/vitest/vitest.mjs run --maxWorkers=4`, with the root Docker/Testcontainers setup                                                                                                  | **11,086 passed, 8 skipped**; 382 files passed, 1 skipped     |
+| Full frontend                | `npm --prefix frontend test -- --maxWorkers=4`                                                                                                                                                                                    | **2,099 passed** across 150 files                             |
+| Frontend build               | `npm --prefix frontend run build`                                                                                                                                                                                                 | **Passed**, including TypeScript                              |
+| Release tooling              | `node --test --test-concurrency=4 scripts/test/*.test.mjs` in an isolated, hashed copy of tracked source                                                                                                                          | **358 passed**                                                |
+| Code checks                  | `npm run lint -- --ignore-pattern '.worktrees/**'`, `npm run dep:check`, `npm run sdk:check`                                                                                                                                      | **Passed**; no lint/dependency errors, 16 dependency warnings |
+| Formatting and secrets       | `oxfmt --check` on changed files; `secretlint --secretlintignore .gitignore --no-glob` on all 1,705 existing tracked files; `git diff --cached --check`                                                                           | **Passed**                                                    |
+| Native architecture          | `node scripts/native-architecture.mjs`                                                                                                                                                                                            | **409 production modules, 0 violations**                      |
+| Packaging                    | Bundle all eight native controller entry points with the owning package's esbuild settings; stage the packaged qualification sources and import both EFS protocol entry points                                                    | **Passed**; local bundles/imports only                        |
+| Terraform                    | `terraform -chdir=terraform fmt -check -recursive`; isolated `TF_DATA_DIR`, temporary local backend override, `init -backend=false -lockfile=readonly`, `validate -no-tests`; `test -filter=tests/native-architecture.tftest.hcl` | **Passed**; 2 mocked infrastructure tests; override removed   |
+| Native IAM/deployment wiring | `python3 -m unittest discover -s terraform/modules/compute/native-runs/tests`                                                                                                                                                     | **22 passed**                                                 |
+| Source and documentation     | Changed JavaScript syntax, local Markdown link targets, `uv sync --group docs`, `uv run zensical build`                                                                                                                           | **Passed**                                                    |
+
+The regression suites cover Start/reply/resume boundaries, explicit member
+confirmation, obsolete/unknown request rejection, unavailable workflow/workspace
+cases, predecessor stop and writer fencing, lost acknowledgements, retained
+answers without replay, public file verification, history/download/export and
+shared platform consumers. Existing lint, SDK, provider-deprecation and frontend
+bundle-size warnings remain recorded. The skipped tests are not counted as proof.
+
+The direct checkout release run encountered the pre-existing metadata scanner
+errors in `.worktrees/native-resume-confirmation/package.json` and
+`.worktrees/ne02-fault-qualification/package.json`. The isolated full release run
+preserves those unrelated worktrees and tests the tracked source; its manifest
+records the exact bytes. The subsequent recovery REST test-fixture correction
+is covered by the final full backend run, and the retained dependency fixture's
+only subsequent change is its comment. Earlier fixture/runner and cached-backend
+initialization failures are recorded separately from the passing final checks.
+Commit hooks were not rerun; the checks above were executed explicitly.
+
+This implementation has not been installed in a newly built runtime image,
+deployed, or exercised against a live model. Local mocked infrastructure tests
+and bundles do not prove deployed IAM, installed CLI or EFS behavior.
+The NE-02 deployed commit `8ffd126762b7e9a292d01523d1feb748c2a056b3` and image
+`sha256:534ccfd547671cee197ae10e3700fccd4b9ec51cc16d099f7cdafddbab568a2b`
+remain historical proof of NE-02, not proof of these deletions.
+
+Deployment must coordinate the frontend, authority/API, worker, native runtime
+image and tightened Terraform policies. Use matching new native runs after that
+rollout; there is no migration or compatibility path for earlier development
+executions. Existing records, EFS workspaces and cloud objects are not deleted or
+rewritten. Admission/deployment and any fresh live qualification are operator
+handoff work, outside this local implementation. Generated content remains opaque
+fixture data; application quality and workflow approval are not inferred from
+these tests. NE-04 turn-ownership work is not part of this change.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -1823,7 +1929,7 @@ with previous native development executions.
       preserved answers without replay. The earlier waiting, intake and isolated
       missing/wrong-workspace proofs remain preserved; generated-output quality
       is explicitly excluded.
-- [ ] **NE-03 — Delete the exact native snapshot/restore stack.** After NE-02, remove
+- [x] **NE-03 — Delete the exact native snapshot/restore stack.** After NE-02, remove
       private CLI checkpoint capture, export/import, upload/download and exact
       filesystem/database restore; remove legacy native commands, mode fallbacks,
       decoders, compatibility manifests/branches and obsolete qualification
@@ -1832,6 +1938,11 @@ with previous native development executions.
       planner or build a migration path for development runs. **Done when:** one
       EFS recovery path remains, no runtime turn depends on a private snapshot,
       publication/history/export still work, and shared platform behavior is intact.
+      **Completed locally 2026-11-03:** the implementation and validation record
+      above remove the private stack and its exclusive callers/permissions; the
+      full backend/frontend, isolated release, packaging and Terraform checks pass.
+      Coordinated deployment and installed/live validation remain explicit handoff
+      work and do not reuse NE-02's deployed bytes as proof of this change.
 - [ ] **NE-04 — Simplify runtime turn ownership.** Give preparation, harness execution,
       publication and cancellation an explicit per-turn context. Separate interaction
       decoding from execution coordination and remove state made redundant by
