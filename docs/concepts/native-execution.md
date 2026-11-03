@@ -1539,18 +1539,18 @@ accepted answer and the subsequent routine fixture choices have distinct
 command IDs, actor/acceptance metadata and delivered-history records. Sequence
 2 exposed the real requirements question for created workflow
 `261103-phaser-fixture-scaffold`. The actual requirements gate was then
-approved for the minimal fixture only. The current authority read shows
+approved for the minimal fixture only. The authority read at that stage showed
 **AWAITING_USER**, sequence **4**, writer **1**, no private recovery checkpoint,
 and readiness interaction
 `e6ebb2d1f2cc63619f400ddbcf64094fd3ef56c6266de280432fd5af681a029c`.
-The application visibly asks whether the member/operator is ready for the
-interruption step; this question has not been answered.
+The application visibly asked whether the member/operator was ready for the
+interruption step; this question was unanswered at that stage.
 Controller `CALL_FAILED`/`EBUSY` observations
 delayed admission and dispatch; existing retries progressed without repeated
 Start or answer submissions. The underlying SDK error cause is not established.
 
-The active-tool interruption remains **NOT RUN**. No operator readiness,
-barrier or stop has occurred. The admitted fixture provides the preceding
+At that handoff, the active-tool interruption remained **NOT RUN**. No operator
+readiness, barrier or stop had occurred. The admitted fixture provided the preceding
 publication; the unpublished edit and actual dependency links still require
 direct workspace inspection during the live interruption. The local terminal
 handoff waits for operator readiness, verifies a fresh live barrier and a
@@ -1582,6 +1582,62 @@ identity, unexpected writer generations and a retained response on recovery.
 Syntax checks for the evidence helpers, secret
 checks, canonical-document formatting and the documentation site build pass.
 No application test/build or playability qualification was performed.
+
+**Expired operator readiness, 2026-11-03:** the user ran the reviewed terminal
+observer, but no barrier answer was submitted before its initial 15-minute
+deadline at **08:57:19.083 UTC**. It returned
+`readiness_wait_expired` / `qualificationStatus: NOT_RUN`. Its inspection log
+is empty, and no inspection or stop receipt exists. All original output bytes
+remain preserved. A consistent authority comparison before the next browser
+action found the same writer, publication and turn; all **13** immutable
+publication, interaction and accepted-answer/request records still matched.
+This was a coordination timeout, not an interrupted-tool recovery result.
+
+The next member action was **Not yet**, through the actual readiness question.
+The API accepted command `d0c27e9a-6464-4da1-898a-23945e0760d3` at
+**09:04:53.276 UTC**. Dispatch detected natural session loss before delivery,
+and the controller confirmed writer 1's predecessor stopped. The member then
+explicitly confirmed **Resume in a fresh session** through the browser
+(recovery `cbecd3f4-2ecf-4918-87ca-fe9fa4f38968`). Writer **2** was admitted
+against the same accepted configuration and EFS binding. This refresh does
+not qualify an active-tool interruption.
+
+The refreshed CLI is `0019fe5c-00ce-4c03-8cac-684820772501`. It produced
+publication `d54f882046f128e143ac5bc0e7edeacbb20b8195f0bce9de4dda11f4972a43eb`
+(sequence **5**, **59** verified opaque files) and readiness interaction
+`4193aea11ba9acf2f1a9d9218cfba87eb08f7688deeee248811cbb17a1bcd2ed`.
+The application exposes that new question. The original revision still
+shows the accepted **Not yet** answer, its original member and acceptance
+time, and an explicit retained/undelivered notice. Authority retains the
+matching immutable answer and `delivery: undelivered` observation; writer 2
+has no response pointer to replay. The EFS fence is active for writer 2,
+and writer 1's stop confirmation precedes recovery.
+
+The replacement local handoff under
+`.native-evidence/ne02-2026-11-03-active-readiness/handoff/` removes the initial
+coordination countdown. While the reviewed question remains unanswered, it
+only reads authority; it does not inspect a runtime, start model work or stop
+a session. Its 15-minute observation deadline starts only after the exact
+barrier answer is accepted after operator readiness. The actual foreground
+barrier still lasts at most **150 seconds**, and a stop still requires at least
+**45 seconds** remaining, a live Claude descendant, the exact reviewed writer,
+an unpublished edit and verified dependency links. Old answers, changed pins,
+an expired/dead marker or an uncertain stop result fail closed. The agent
+must remain active to observe the user's terminal readiness and submit the
+separate member answer. The expired handoff and its nonce are not reused.
+The new packet pins writer **2**, publication **5** and nonce
+`162d653d-1e44-4fc0-b232-03547c3a23e2`; its read-only preflight against the
+actual authority passes. No barrier or operator stop has started.
+
+The revised handoff's **28 contract checks** pass. An initial local test used
+inconsistent simulated and real barrier clocks; the test clock was corrected,
+then all checks passed. This is local handoff validation, not a live stop.
+Syntax and secret checks, canonical-document formatting and the documentation
+site build also pass.
+New receipts and comparisons are kept separately under
+`.native-evidence/ne02-2026-11-03-active-readiness/`. No deployment or repeated
+workspace fault is required. Generated-output quality remains outside the
+completion verdict, and NE-02 remains unchecked.
 
 ## Integration and simplification checklist
 
