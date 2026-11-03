@@ -176,7 +176,7 @@ export const persistConnection = async ({ ddb, ssm, userId, clientId, resource, 
 // Connection resolution + auto-refresh, used by every resource call.
 // ---------------------------------------------------------------------------
 
-const getConnectionRow = async (ddb, userId) => {
+export const getConnectionRow = async (ddb, userId) => {
   const { Item } = await ddb.send(
     new GetCommand({
       TableName: requireEnv('TRACKER_CONNECTIONS_TABLE'),
@@ -243,41 +243,82 @@ const requireCurrentOAuthClient = (row, clientId, requireRecordedClientId = fals
   // Only project discovery requires legacy connections to authorize once.
   // Existing issue/comment operations can keep using and refreshing their grant.
   if (row.oauthClientId !== clientId && (row.oauthClientId || requireRecordedClientId)) {
-    throw new ProviderError(401, 'Jira account authorization required for this OAuth app', {
+    const error = new ProviderError(401, 'Jira account authorization required for this OAuth app', {
       reconnect: true,
     });
+    error.code = 'OAUTH_CLIENT_CHANGED';
+    throw error;
   }
+};
+
+const usableTokens = (tokens) =>
+  !!tokens.accessToken && Date.now() < tokens.expiresAt - REFRESH_SAFETY_MARGIN_MS;
+
+// Atlassian allows refresh-token reuse for ten minutes to tolerate concurrent
+// exchanges. If an exchange nevertheless rejects our grant, check SSM before
+// declaring it revoked: another invocation may already have rotated it.
+// https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/#use-a-refresh-token-to-get-another-access-token-and-refresh-token
+const refreshStoredTokens = async ({ ddb, ssm, row }, creds, initialTokens) => {
+  let tokens = initialTokens;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let fresh;
+    try {
+      fresh = await refreshAccessToken({ ...creds, refreshToken: tokens.refreshToken });
+    } catch (error) {
+      if (error.code !== 'REFRESH_FAILED' || !error.extra?.reconnect) throw error;
+      const latest = await readTokens(ssm, row.parameterName);
+      if (
+        latest.refreshToken === tokens.refreshToken &&
+        latest.accessToken === tokens.accessToken
+      ) {
+        error.code = 'JIRA_GRANT_REVOKED';
+        throw error;
+      }
+      if (usableTokens(latest)) return latest;
+      tokens = latest;
+      continue;
+    }
+    const stored = {
+      accessToken: fresh.accessToken,
+      refreshToken: fresh.refreshToken,
+      expiresAt: Date.now() + fresh.expiresIn * 1000,
+    };
+    await writeTokens(ssm, row.parameterName, stored);
+    await updateRowExpiresAt(ddb, row, stored.expiresAt);
+    return stored;
+  }
+  // Repeated concurrent changes are inconclusive, not evidence of revocation.
+  throw new ProviderError(503, 'Jira credentials changed during refresh; retry the operation');
 };
 
 // Returns { accessToken, baseUrl, siteHost, row, parameterName, ddb, ssm }.
 // Refreshes proactively if the cached access token is within the safety
 // margin of expiry. Reactive refresh-on-401 happens inside `jiraFetch`.
-const buildContext = async ({ ddb, ssm, secrets, userId, requireRecordedClientId = false }) => {
-  const row = await getConnectionRow(ddb, userId);
+const buildContext = async ({
+  ddb,
+  ssm,
+  secrets,
+  userId,
+  resolveConnection,
+  externalProjectId,
+  requireRecordedClientId = false,
+}) => {
+  const row = resolveConnection ? await resolveConnection() : await getConnectionRow(ddb, userId);
   const creds = await getOAuthCredentials(secrets);
   requireCurrentOAuthClient(row, creds.clientId, requireRecordedClientId);
   const tokens = await readTokens(ssm, row.parameterName);
   let accessToken = tokens.accessToken;
 
-  if (!tokens.expiresAt || Date.now() >= tokens.expiresAt - REFRESH_SAFETY_MARGIN_MS) {
-    const fresh = await refreshAccessToken({
-      clientId: creds.clientId,
-      clientSecret: creds.clientSecret,
-      refreshToken: tokens.refreshToken,
-    });
-    const expiresAt = Date.now() + fresh.expiresIn * 1000;
-    await writeTokens(ssm, row.parameterName, {
-      accessToken: fresh.accessToken,
-      refreshToken: fresh.refreshToken,
-      expiresAt,
-    });
-    await updateRowExpiresAt(ddb, row, expiresAt);
+  if (!usableTokens(tokens)) {
+    const fresh = await refreshStoredTokens({ ddb, ssm, row }, creds, tokens);
     accessToken = fresh.accessToken;
   }
 
   return {
     userId,
     accessToken,
+    delegated: !!resolveConnection,
+    externalProjectId,
     baseUrl: row.baseUrl,
     siteHost: row.siteHost,
     row,
@@ -314,18 +355,10 @@ const jiraFetch = async (ctx, path, init = {}) => {
   const creds = await getOAuthCredentials(ctx.secrets);
   requireCurrentOAuthClient(ctx.row, creds.clientId);
   const tokens = await readTokens(ctx.ssm, ctx.row.parameterName);
-  const refreshed = await refreshAccessToken({
-    clientId: creds.clientId,
-    clientSecret: creds.clientSecret,
-    refreshToken: tokens.refreshToken,
-  });
-  const expiresAt = Date.now() + refreshed.expiresIn * 1000;
-  await writeTokens(ctx.ssm, ctx.row.parameterName, {
-    accessToken: refreshed.accessToken,
-    refreshToken: refreshed.refreshToken,
-    expiresAt,
-  });
-  await updateRowExpiresAt(ctx.ddb, ctx.row, expiresAt);
+  const refreshed =
+    tokens.accessToken !== ctx.accessToken && usableTokens(tokens)
+      ? tokens
+      : await refreshStoredTokens(ctx, creds, tokens);
   ctx.accessToken = refreshed.accessToken;
 
   r = await fetch(url, {
@@ -358,6 +391,7 @@ const mapIssueToTrackerIssue = (i, siteHost) => {
   const issueType = fields.issuetype || {};
   return {
     resourceId: i.key,
+    externalProjectId: fields.project?.id,
     resourceUrl: url,
     resourceType: 'issue',
     entityType: issueType.name || null,
@@ -573,7 +607,7 @@ const parseTypes = (raw) =>
 
 // Issue fields every list call asks for.
 const ISSUE_LIST_FIELDS =
-  'summary,status,labels,reporter,created,updated,description,issuetype,parent';
+  'summary,status,labels,reporter,created,updated,description,issuetype,parent,project';
 
 const DEFAULT_PER_PAGE = 30;
 const MAX_PER_PAGE = 100;
@@ -628,6 +662,7 @@ const fetchProjectPage = async (ctx, startAt) => {
   else isLast = values.length < limit;
   return {
     projects: values.map((p) => ({
+      id: p.id,
       key: p.key,
       name: p.name,
       displayKey: p.key,
@@ -660,14 +695,17 @@ const listExternalProjects = async ({ ddb, ssm, secrets, userId }) => {
   return projects.slice(0, PROJECT_MAX_RESULTS);
 };
 
+const matchesProject = (ctx, projectKey, project) =>
+  ctx.externalProjectId ? project?.id === ctx.externalProjectId : project?.key === projectKey;
+
 // The issue with this key, if it is in the bound project and passes the
 // list's state and type filters; otherwise null.
 const findIssueByKey = async (ctx, projectKey, key, { state, types }) => {
-  const params = new URLSearchParams({ fields: `${ISSUE_LIST_FIELDS},project` });
+  const params = new URLSearchParams({ fields: ISSUE_LIST_FIELDS });
   const r = await jiraFetch(ctx, `/rest/api/3/issue/${encodeURIComponent(key)}?${params}`);
   if (!r.ok) return null;
   const data = await r.json().catch(() => null);
-  if (!data || data.fields?.project?.key !== projectKey) return null;
+  if (!data || !matchesProject(ctx, projectKey, data.fields?.project)) return null;
   const issue = mapIssueToTrackerIssue(data, ctx.siteHost);
   if (state === 'open' && issue.state !== 'open') return null;
   if (state === 'closed' && issue.state !== 'closed') return null;
@@ -675,11 +713,12 @@ const findIssueByKey = async (ctx, projectKey, key, { state, types }) => {
   return issue;
 };
 
-const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) => {
+const listIssues = async (connection, projectKey, opts = {}) => {
   if (!projectKey) {
     throw new ProviderError(400, 'Invalid externalProjectKey for jira-cloud');
   }
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const ctx = await buildContext(connection);
+  projectKey = ctx.externalProjectId || projectKey;
   const state = ['open', 'closed', 'all'].includes(opts.state) ? opts.state : 'open';
   const page = parsePageNumber(opts.page);
   const perPage = parsePerPage(opts.perPage);
@@ -708,6 +747,7 @@ const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) 
       ? opts.parent.trim().toUpperCase()
       : null;
   if (opts.parent && !parentKey) throw new ProviderError(400, 'Invalid parent issue key');
+  if (parentKey) await requireIssueScope(ctx, projectKey, parentKey, null, false);
 
   const requestedTypes = parseTypes(opts.type);
   const withTypes = opts.withTypes === '1' || opts.withTypes === true;
@@ -777,21 +817,76 @@ const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) 
   };
 };
 
-const getIssue = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId) => {
+const requireIssueScope = async (ctx, projectKey, resourceId, issue, allowLinked = true) => {
+  if (!ctx.delegated) return;
+  if (!issue) {
+    const r = await jiraFetch(
+      ctx,
+      `/rest/api/3/issue/${encodeURIComponent(resourceId)}?fields=project`,
+    );
+    if (!r.ok) throw new ProviderError(r.status, 'Unable to verify Jira issue scope');
+    issue = await r.json();
+  }
+  if (matchesProject(ctx, projectKey, issue.fields?.project)) return;
+  projectKey = ctx.externalProjectId || projectKey;
+  if (allowLinked && (await projectMeta(ctx, projectKey)).projectTypeKey === 'product_discovery') {
+    const params = new URLSearchParams({
+      jql: `project = "${escapeJqlString(projectKey)}" AND issue in linkedIssues("${escapeJqlString(resourceId)}")`,
+      maxResults: '1',
+      fields: 'key',
+    });
+    const r = await jiraFetch(ctx, `/rest/api/3/search/jql?${params}`);
+    if (!r.ok) throw new ProviderError(r.status, 'Unable to verify linked Jira issue');
+    const data = await r.json();
+    if (data.issues?.length) return;
+  }
+  throw new ProviderError(404, 'Issue is outside this tracker binding');
+};
+
+// Binding creation verifies the selected project using the same authenticated
+// context that supplies its site identity. Never trust a client-supplied site.
+export const verifyProject = async (connection, projectKey, expectedProject) => {
+  const ctx = await buildContext({ ...connection, requireRecordedClientId: true });
+  // Bypass the metadata cache when authorizing a new delegation.
+  const r = await jiraFetch(ctx, `/rest/api/3/project/${encodeURIComponent(projectKey)}`);
+  if (!r.ok) throw new ProviderError(r.status, 'Jira project is not accessible');
+  const project = await r.json();
+  if (!project.id) throw new ProviderError(502, 'Jira project identity is missing');
+  // Existing bindings retain identity even after a key rename. For legacy
+  // bindings, Jira resolves the saved key alias during this first delegation.
+  if (expectedProject && expectedProject !== project.id && expectedProject !== projectKey) {
+    const expected = await jiraFetch(
+      ctx,
+      `/rest/api/3/project/${encodeURIComponent(expectedProject)}`,
+    );
+    if (!expected.ok || (await expected.json()).id !== project.id) {
+      throw new ProviderError(400, 'Reconnection must preserve the bound Jira project');
+    }
+  }
+  return {
+    connectionUserId: ctx.row.userId,
+    cloudId: ctx.row.cloudId,
+    externalProjectId: project.id,
+  };
+};
+
+const getIssue = async (connection, projectKey, resourceId) => {
   if (!resourceId) throw new ProviderError(400, 'Missing resourceId');
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const ctx = await buildContext(connection);
   const r = await jiraFetch(ctx, `/rest/api/3/issue/${encodeURIComponent(resourceId)}`);
   if (r.status === 404) throw new ProviderError(404, 'Not found');
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     throw new ProviderError(r.status, data.errorMessages?.[0] || 'Failed to fetch Jira issue');
   }
+  await requireIssueScope(ctx, projectKey, resourceId, data);
   return mapIssueToTrackerIssue(data, ctx.siteHost);
 };
 
-const getIssueDiscussion = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId) => {
+const getIssueDiscussion = async (connection, projectKey, resourceId) => {
   if (!resourceId) throw new ProviderError(400, 'Missing resourceId');
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const ctx = await buildContext(connection);
+  await requireIssueScope(ctx, projectKey, resourceId);
   const r = await jiraFetch(
     ctx,
     `/rest/api/3/issue/${encodeURIComponent(resourceId)}/comment?maxResults=100`,
@@ -805,10 +900,11 @@ const getIssueDiscussion = async ({ ddb, ssm, secrets, userId }, projectKey, res
   return comments.map(mapCommentToTrackerComment);
 };
 
-const addIssueComment = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId, body) => {
+const addIssueComment = async (connection, projectKey, resourceId, body) => {
   if (!resourceId) throw new ProviderError(400, 'Missing resourceId');
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const ctx = await buildContext(connection);
   requireWriteScope(ctx);
+  await requireIssueScope(ctx, projectKey, resourceId);
   const r = await jiraFetch(ctx, `/rest/api/3/issue/${encodeURIComponent(resourceId)}/comment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -821,11 +917,22 @@ const addIssueComment = async ({ ddb, ssm, secrets, userId }, projectKey, resour
   return mapCommentToTrackerComment(data);
 };
 
+const withConnectionErrors =
+  (operation) =>
+  async (connection, ...args) => {
+    try {
+      return await operation(connection, ...args);
+    } catch (error) {
+      if (connection.onConnectionError) return connection.onConnectionError(error);
+      throw error;
+    }
+  };
+
 export const provider = {
   id: 'jira-cloud',
   listExternalProjects,
-  listIssues,
-  getIssue,
-  getIssueDiscussion,
-  addIssueComment,
+  listIssues: withConnectionErrors(listIssues),
+  getIssue: withConnectionErrors(getIssue),
+  getIssueDiscussion: withConnectionErrors(getIssueDiscussion),
+  addIssueComment: withConnectionErrors(addIssueComment),
 };

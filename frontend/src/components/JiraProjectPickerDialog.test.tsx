@@ -25,12 +25,36 @@ beforeEach(() => {
 });
 
 describe('JiraProjectPickerDialog', () => {
+  it('reconnects a renamed project by ID and excludes other projects', async () => {
+    const renamed = { id: '10000', key: 'NEW', name: 'Renamed project' };
+    listExternalProjects.mockResolvedValue([
+      renamed,
+      { id: '20000', key: 'OLD', name: 'Different project' },
+    ]);
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    render(
+      <JiraProjectPickerDialog
+        open
+        projectKey="OLD"
+        projectId="10000"
+        onOpenChange={vi.fn()}
+        onConfirm={onConfirm}
+      />,
+    );
+    await userEvent.click(await screen.findByRole('radio', { name: /Renamed project/ }));
+    expect(screen.queryByText('Different project')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('checkbox'));
+    await userEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    expect(onConfirm).toHaveBeenCalledWith(renamed);
+  });
+
   it('searches by name or key, labels project types and binds the chosen one', async () => {
     const onConfirm = vi.fn().mockResolvedValue(undefined);
     render(<JiraProjectPickerDialog open onOpenChange={vi.fn()} onConfirm={onConfirm} />);
 
     const search = await screen.findByRole('textbox', { name: 'Search Jira projects' });
-    expect(screen.getByText(/Product Discovery/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('checkbox'));
+    expect(screen.getByText(/· Product Discovery/)).toBeInTheDocument();
     // Nothing is preselected, so Add can't bind an unseen first project.
     expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
 
@@ -51,6 +75,7 @@ describe('JiraProjectPickerDialog', () => {
     const onConfirm = vi.fn().mockResolvedValue(undefined);
     render(<JiraProjectPickerDialog open onOpenChange={vi.fn()} onConfirm={onConfirm} />);
     const search = await screen.findByRole('textbox', { name: 'Search Jira projects' });
+    await userEvent.click(screen.getByRole('checkbox'));
     const add = screen.getByRole('button', { name: 'Add' });
 
     await userEvent.click(screen.getByRole('radio', { name: /Engineering/ }));
@@ -75,6 +100,7 @@ describe('JiraProjectPickerDialog', () => {
   it('keeps a selection the search still shows', async () => {
     render(<JiraProjectPickerDialog open onOpenChange={vi.fn()} onConfirm={vi.fn()} />);
     const search = await screen.findByRole('textbox', { name: 'Search Jira projects' });
+    await userEvent.click(screen.getByRole('checkbox'));
     await userEvent.click(screen.getByRole('radio', { name: /Engineering/ }));
     await userEvent.type(search, 'eng');
     expect(screen.getByRole('radio', { name: /Engineering/ })).toBeChecked();
@@ -123,6 +149,8 @@ describe('Jira project picker authorization', () => {
     );
     await screen.findByText(project.name);
     fireEvent.click(screen.getByRole('radio'));
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     await screen.findByText('Failed to save tracker binding');
     expect(onOpenChange).not.toHaveBeenCalled();
@@ -182,6 +210,8 @@ describe('Jira project picker authorization', () => {
     );
     await screen.findByText(project.name);
     fireEvent.click(screen.getByRole('radio'));
+    expect(screen.getByRole('button', { name: 'Add' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox'));
     fireEvent.click(screen.getByRole('button', { name: 'Add' }));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
     expect(onConfirm).toHaveBeenCalledWith(project);

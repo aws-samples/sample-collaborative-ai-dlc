@@ -395,7 +395,7 @@ describe('tracker delivery synchronizer', () => {
 
     expect(store.updateTrackerSync).toHaveBeenCalledWith(
       expect.objectContaining({
-        state: 'BLOCKED',
+        state: 'PR_CREATED',
         fields: expect.objectContaining({
           lastError: expect.objectContaining({
             code: 'MISSING_SCOPES',
@@ -404,9 +404,10 @@ describe('tracker delivery synchronizer', () => {
         }),
       }),
     );
+    expect(store.updateTrackerSync.mock.calls[0][0].fields).not.toHaveProperty('attempts');
     expect(store.appendEvent).toHaveBeenCalledWith(
       expect.objectContaining({
-        type: 'v2.tracker.blocked',
+        type: 'v2.tracker.failed',
         summary: 'Reconnect Jira to resume tracker synchronization',
       }),
     );

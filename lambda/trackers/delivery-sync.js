@@ -169,9 +169,21 @@ const createDeliverySynchronizer = ({
     });
 
   const trackerWriteFailed = async (sync, claimId, error) => {
+    const reconnect =
+      error?.extra?.reconnect === true || error?.code === 'TRACKER_BINDING_NOT_READY';
+    if (reconnect) {
+      // Retaining the nonterminal state releases the claim and moves the record
+      // to the back of the scheduling index. Human repair never consumes the
+      // write retry budget, including for bindings awaiting migration consent.
+      const lastError = { ...sanitizedError(error), reconnect: true };
+      await update(sync, claimId, sync.state, { lastError });
+      if (!sync.lastError?.reconnect || sync.lastError.code !== lastError.code) {
+        await emit(sync, 'v2.tracker.failed', 'Reconnect Jira to resume tracker synchronization');
+      }
+      return { state: sync.state, reconnect: true };
+    }
     const attempts = Number(sync.attempts || 0) + 1;
     const permanent = isPermanentTrackerWriteError(error);
-    const reconnect = error?.extra?.reconnect === true;
     const blocked = permanent || attempts >= maxTrackerWriteAttempts;
     await update(sync, claimId, blocked ? 'BLOCKED' : sync.state, {
       attempts,
@@ -180,13 +192,11 @@ const createDeliverySynchronizer = ({
     await emit(
       sync,
       blocked ? 'v2.tracker.blocked' : 'v2.tracker.failed',
-      reconnect
-        ? 'Reconnect Jira to resume tracker synchronization'
-        : permanent
-          ? 'Tracker synchronization stopped after a non-retryable authorization failure'
-          : blocked
-            ? `Tracker synchronization stopped after ${attempts} failed write attempts`
-            : `Tracker write attempt ${attempts} failed`,
+      permanent
+        ? 'Tracker synchronization stopped after a non-retryable authorization failure'
+        : blocked
+          ? `Tracker synchronization stopped after ${attempts} failed write attempts`
+          : `Tracker write attempt ${attempts} failed`,
     );
     return { blocked, attempts, permanent };
   };

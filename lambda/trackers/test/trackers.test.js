@@ -117,9 +117,33 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
+
+// TinkerGraph defaults to single cardinality; Neptune defaults to set. Check
+// the submitted bytecode so a passing local write also replaces values there.
+const expectSingleCardinalityWrites = (submit, expectedKeys) => {
+  const writes = submit.mock.calls
+    .flatMap(([bytecode]) => bytecode.stepInstructions)
+    .filter(
+      ([step, first, second]) =>
+        step === 'property' && (expectedKeys.includes(first) || expectedKeys.includes(second)),
+    );
+  for (const step of writes) expect(step[1]).toBe(gremlin.process.cardinality.single);
+  expect(new Set(writes.map((step) => step[2]))).toEqual(new Set(expectedKeys));
+};
+
+const DELEGATION_KEYS = [
+  'connection_user_id',
+  'cloud_id',
+  'external_project_id',
+  'external_project_key',
+  'status',
+  'invalid_reason',
+  'delegated_at',
+];
 
 const claims = (sub = 'user-1') => ({
   requestContext: { authorizer: { claims: { sub, email: `${sub}@x` } } },
@@ -1184,6 +1208,7 @@ describe('Jira Cloud — POST /projects/{id}/trackers connection check', () => {
       headers: { origin: 'https://example.com' },
       body: JSON.stringify({
         provider: 'jira-cloud',
+        confirmDelegation: true,
         instance: 'cloud',
         externalProjectKey: 'PROJ',
       }),
@@ -1194,7 +1219,17 @@ describe('Jira Cloud — POST /projects/{id}/trackers connection check', () => {
   });
 
   it('creates a jira-cloud binding when a connection exists', async () => {
+    fetchMock.mockResolvedValue(okResponse({ id: '10000', key: 'PROJ' }));
+    ssmMock.on(GetParameterCommand).resolves({
+      Parameter: {
+        Value: JSON.stringify({
+          accessToken: 'jira-delegated',
+          expiresAt: NOW.getTime() + 3600000,
+        }),
+      },
+    });
     const projectId = await seedProjectWithRole('owner');
+    const submit = vi.spyOn(gremlin.driver.DriverRemoteConnection.prototype, 'submit');
     ddbMock
       .on(GetCommand, {
         TableName: TRACKER_TABLE,
@@ -1206,6 +1241,8 @@ describe('Jira Cloud — POST /projects/{id}/trackers connection check', () => {
           providerInstance: 'jira-cloud#cloud',
           parameterName: JIRA_PARAM_NAME,
           cloudId: JIRA_CLOUD_ID,
+          oauthClientId: JIRA_CLIENT_ID,
+          scope: 'read:jira-work write:jira-work',
           baseUrl: `https://api.atlassian.com/ex/jira/${JIRA_CLOUD_ID}`,
         },
       });
@@ -1216,6 +1253,7 @@ describe('Jira Cloud — POST /projects/{id}/trackers connection check', () => {
       headers: { origin: 'https://example.com' },
       body: JSON.stringify({
         provider: 'jira-cloud',
+        confirmDelegation: true,
         instance: 'cloud',
         externalProjectKey: 'PROJ',
         displayName: 'Project',
@@ -1223,6 +1261,15 @@ describe('Jira Cloud — POST /projects/{id}/trackers connection check', () => {
       ...claims(),
     });
     expect(res.statusCode).toBe(201);
+    expectSingleCardinalityWrites(submit, [
+      'id',
+      'provider',
+      'instance',
+      'display_name',
+      'created_at',
+      'created_by',
+      ...DELEGATION_KEYS,
+    ]);
     expect(JSON.parse(res.body)).toMatchObject({
       provider: 'jira-cloud',
       instance: 'cloud',
@@ -1490,4 +1537,498 @@ describe('Unknown paths', () => {
     });
     expect(res.statusCode).toBe(404);
   });
+});
+
+describe('Jira space delegation', () => {
+  const jiraRow = () => ({
+    userId: 'user-1',
+    providerInstance: 'jira-cloud#cloud',
+    parameterName: JIRA_PARAM_NAME,
+    cloudId: JIRA_CLOUD_ID,
+    baseUrl: `https://api.atlassian.com/ex/jira/${JIRA_CLOUD_ID}`,
+    siteHost: JIRA_SITE_HOST,
+    oauthClientId: JIRA_CLIENT_ID,
+    scope: 'read:jira-work write:jira-work',
+  });
+  beforeEach(() => {
+    ddbMock.on(GetCommand, { TableName: TRACKER_TABLE }).resolves({ Item: jiraRow() });
+    ssmMock.on(GetParameterCommand).resolves({
+      Parameter: {
+        Value: JSON.stringify({
+          accessToken: 'jira-delegated',
+          expiresAt: NOW.getTime() + 3600000,
+        }),
+      },
+    });
+  });
+  const seed = async ({ legacy = false } = {}) => {
+    const ids = await seedProjectAndBinding({
+      provider: 'jira-cloud',
+      instance: 'cloud',
+      gitRepo: 'PROJ',
+    });
+    if (!legacy)
+      await g
+        .V()
+        .has('TrackerBinding', 'id', ids.bindingId)
+        .property('connection_user_id', 'user-1')
+        .property('cloud_id', JIRA_CLOUD_ID)
+        .property('status', 'active')
+        .property('delegated_at', NOW.toISOString())
+        .toList();
+    const member = randomUUID();
+    await g
+      .addV('User')
+      .property('id', member)
+      .as('u')
+      .V()
+      .has('Project', 'id', ids.projectId)
+      .addE('HAS_MEMBER')
+      .property('role', 'member')
+      .to('u')
+      .toList();
+    return { ...ids, member };
+  };
+  const request = ({ projectId, bindingId, member }, suffix = '', method = 'GET', extra = {}) =>
+    handler({
+      httpMethod: method,
+      path: `/projects/${projectId}/trackers/${bindingId}/issues${suffix}`,
+      pathParameters: { projectId, bindingId, ...(suffix ? { resourceId: 'PROJ-1' } : {}) },
+      headers: { origin: 'https://example.com' },
+      ...claims(member),
+      ...extra,
+    });
+  const boundIssue = {
+    id: '1',
+    key: 'PROJ-1',
+    fields: { summary: 'Shared ticket', project: { id: '10000', key: 'PROJ' } },
+  };
+
+  it.each([
+    ['', 'GET'],
+    ['/PROJ-1', 'GET'],
+    ['/PROJ-1/comments', 'GET'],
+    ['/PROJ-1/comments', 'POST'],
+  ])('uses the delegated connection for a member without Jira: %s %s', async (suffix, method) => {
+    const ids = await seed();
+    ddbMock
+      .on(GetCommand, {
+        TableName: TRACKER_TABLE,
+        Key: { userId: ids.member, providerInstance: 'jira-cloud#cloud' },
+      })
+      .resolves({});
+    fetchMock.mockImplementation(async (url) =>
+      okResponse(
+        url.includes('/comment')
+          ? method === 'POST'
+            ? { id: 'c1' }
+            : { comments: [] }
+          : url.includes('/search/jql')
+            ? { issues: [boundIssue] }
+            : boundIssue,
+      ),
+    );
+    const res = await request(ids, suffix, method, {
+      body: JSON.stringify({ body: 'Shared comment' }),
+    });
+    expect(res.statusCode).toBe(method === 'POST' ? 201 : 200);
+    expect(
+      ddbMock.commandCalls(GetCommand).every((call) => call.args[0].input.Key.userId === 'user-1'),
+    ).toBe(true);
+    expect(
+      fetchMock.mock.calls.every(
+        ([, init]) => init.headers.Authorization === 'Bearer jira-delegated',
+      ),
+    ).toBe(true);
+  });
+
+  it('denies a non-member before resolving credentials', async () => {
+    const res = await request({ ...(await seed()), member: 'outsider' });
+    expect(res.statusCode).toBe(403);
+    expect(ddbMock).not.toHaveReceivedCommand(GetCommand);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['legacy', 'removed', 'disconnected', 'site-changed'])(
+    'requires reconnection for %s bindings without falling back to the caller',
+    async (reason) => {
+      const ids = await seed({ legacy: reason === 'legacy' });
+      if (reason === 'removed')
+        await g
+          .V()
+          .has('Project', 'id', ids.projectId)
+          .outE('HAS_MEMBER')
+          .where(gremlin.process.statics.inV().has('id', 'user-1'))
+          .drop()
+          .toList();
+      if (reason === 'disconnected')
+        ddbMock.on(GetCommand, { TableName: TRACKER_TABLE }).resolves({});
+      if (reason === 'site-changed')
+        ddbMock
+          .on(GetCommand, { TableName: TRACKER_TABLE })
+          .resolves({ Item: { ...jiraRow(), cloudId: 'other-site' } });
+      const submit = vi.spyOn(gremlin.driver.DriverRemoteConnection.prototype, 'submit');
+      const res = await request(ids);
+      expect(res.statusCode).toBe(409);
+      expect(JSON.parse(res.body).code).toBe('TRACKER_BINDING_NOT_READY');
+      expect(fetchMock).not.toHaveBeenCalled();
+      if (reason !== 'legacy') {
+        expectSingleCardinalityWrites(submit, ['status', 'invalid_reason']);
+        expect(
+          (await g.V().has('TrackerBinding', 'id', ids.bindingId).values('status').next()).value,
+        ).toBe('invalid');
+      }
+    },
+  );
+
+  it('marks bindings invalid on disconnect and does not revive them on personal reconnection', async () => {
+    const ids = await seed();
+    const submit = vi.spyOn(gremlin.driver.DriverRemoteConnection.prototype, 'submit');
+    const res = await handler({
+      httpMethod: 'DELETE',
+      path: '/trackers/jira-cloud/cloud',
+      pathParameters: { provider: 'jira-cloud', instance: 'cloud' },
+      ...claims(),
+    });
+    expect(res.statusCode).toBe(200);
+    expectSingleCardinalityWrites(submit, ['status', 'invalid_reason']);
+    expect((await request(ids)).statusCode).toBe(409);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('invalidates only the removed delegator’s bindings in the affected space', async () => {
+    const { invalidateTrackerBindingsByDelegator } =
+      await import('../../shared/tracker-binding-delegation.js');
+    const first = await seed();
+    const second = await seed();
+    const submit = vi.spyOn(gremlin.driver.DriverRemoteConnection.prototype, 'submit');
+    await invalidateTrackerBindingsByDelegator(g, 'user-1', 'delegator_removed', first.projectId);
+    expectSingleCardinalityWrites(submit, ['status', 'invalid_reason']);
+    expect((await request(first)).statusCode).toBe(409);
+    fetchMock.mockResolvedValue(okResponse({ issues: [] }));
+    expect((await request(second)).statusCode).toBe(200);
+  });
+
+  it.each(['/OTHER-1', '/OTHER-1/comments'])(
+    'denies an issue outside the bound project: %s',
+    async (suffix) => {
+      const ids = await seed();
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({ key: 'OTHER-1', fields: { project: { key: 'OTHER' } } }),
+        )
+        .mockResolvedValueOnce(okResponse({ projectTypeKey: 'software' }));
+      const res = await request(ids, suffix, 'GET', {
+        pathParameters: {
+          projectId: ids.projectId,
+          bindingId: ids.bindingId,
+          resourceId: 'OTHER-1',
+        },
+      });
+      expect(res.statusCode).toBe(404);
+      expect(fetchMock.mock.calls.some(([url]) => url.includes('/comment'))).toBe(false);
+    },
+  );
+
+  it('requires explicit delegation and verifies access before saving', async () => {
+    const projectId = await seedProjectWithRole('owner');
+    const event = {
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/trackers`,
+      pathParameters: { projectId },
+      ...claims(),
+    };
+    const input = { provider: 'jira-cloud', instance: 'cloud', externalProjectKey: 'PROJ' };
+    expect((await handler({ ...event, body: JSON.stringify(input) })).statusCode).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+    fetchMock.mockResolvedValue({ ok: false, status: 403 });
+    expect(
+      (await handler({ ...event, body: JSON.stringify({ ...input, confirmDelegation: true }) }))
+        .statusCode,
+    ).toBe(403);
+    expect(await g.V().has('Project', 'id', projectId).out('HAS_TRACKER').hasNext()).toBe(false);
+  });
+
+  it('replaces the delegator and discards old values before later invalidations', async () => {
+    const { invalidateTrackerBindingsByDelegator } =
+      await import('../../shared/tracker-binding-delegation.js');
+    const { jiraBindingContext } = await import('../jira-binding.js');
+    const ids = await seed();
+    const oldContext = jiraBindingContext({
+      g,
+      projectId: ids.projectId,
+      binding: {
+        id: ids.bindingId,
+        connectionUserId: 'user-1',
+        cloudId: JIRA_CLOUD_ID,
+        delegatedAt: NOW.toISOString(),
+      },
+    });
+    await g
+      .V()
+      .has('Project', 'id', ids.projectId)
+      .outE('HAS_MEMBER')
+      .where(gremlin.process.statics.inV().has('id', ids.member))
+      .property('role', 'admin')
+      .toList();
+    // Explicitly seed set-valued properties: stock TinkerGraph otherwise hides
+    // the old Neptune behavior by defaulting to single cardinality.
+    await g
+      .V()
+      .has('TrackerBinding', 'id', ids.bindingId)
+      .property(gremlin.process.cardinality.set, 'connection_user_id', 'retired-admin')
+      .property(gremlin.process.cardinality.set, 'status', 'invalid')
+      .property(gremlin.process.cardinality.set, 'external_project_key', 'OLD')
+      .toList();
+    ddbMock
+      .on(GetCommand, { TableName: TRACKER_TABLE })
+      .resolves({ Item: { ...jiraRow(), userId: ids.member } });
+    fetchMock.mockResolvedValue(okResponse({ id: '10000', key: 'RENAMED' }));
+    vi.setSystemTime(new Date(NOW.getTime() + 60000));
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${ids.projectId}/trackers`,
+      pathParameters: { projectId: ids.projectId },
+      ...claims(ids.member),
+      body: JSON.stringify({
+        bindingId: ids.bindingId,
+        provider: 'jira-cloud',
+        instance: 'cloud',
+        externalProjectKey: 'RENAMED',
+        confirmDelegation: true,
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+    const saved = await g.V().has('TrackerBinding', 'id', ids.bindingId).valueMap().next();
+    expect(saved.value.get('connection_user_id')).toEqual([ids.member]);
+    expect(saved.value.get('external_project_key')).toEqual(['RENAMED']);
+    expect(saved.value.get('delegated_at')).toEqual([new Date().toISOString()]);
+    expect(saved.value.get('cloud_id')).toEqual([JIRA_CLOUD_ID]);
+    expect(saved.value.get('status')).toEqual(['active']);
+
+    await invalidateTrackerBindingsByDelegator(g, 'user-1', 'oauth_disconnected');
+    await expect(oldContext.onConnectionError({ code: 'NOT_CONNECTED' })).rejects.toMatchObject({
+      code: 'TRACKER_BINDING_NOT_READY',
+    });
+    expect(
+      await g.V().has('TrackerBinding', 'id', ids.bindingId).values('status').toList(),
+    ).toEqual(['active']);
+    fetchMock.mockResolvedValue(okResponse({ issues: [] }));
+    expect((await request(ids)).statusCode).toBe(200);
+  });
+
+  it.each([true, false])('reconnects a renamed project in place (legacy=%s)', async (legacy) => {
+    const ids = await seed({ legacy });
+    if (!legacy) {
+      await g
+        .V()
+        .has('TrackerBinding', 'id', ids.bindingId)
+        .property('external_project_id', '10000')
+        .next();
+    }
+    fetchMock.mockResolvedValue(okResponse({ id: '10000', key: 'RENAMED' }));
+    const submit = vi.spyOn(gremlin.driver.DriverRemoteConnection.prototype, 'submit');
+    const res = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${ids.projectId}/trackers`,
+      pathParameters: { projectId: ids.projectId },
+      ...claims(),
+      body: JSON.stringify({
+        bindingId: ids.bindingId,
+        provider: 'jira-cloud',
+        instance: 'cloud',
+        externalProjectKey: 'RENAMED',
+        confirmDelegation: true,
+      }),
+    });
+    expect(res.statusCode).toBe(200);
+    expectSingleCardinalityWrites(submit, DELEGATION_KEYS);
+    expect(JSON.parse(res.body)).toMatchObject({
+      id: ids.bindingId,
+      createdBy: 'user-1',
+      connectionUserId: 'user-1',
+      cloudId: JIRA_CLOUD_ID,
+      externalProjectId: '10000',
+      status: 'active',
+    });
+    expect(
+      (await g.V().has('Project', 'id', ids.projectId).out('HAS_TRACKER').count().next()).value,
+    ).toBe(1);
+    fetchMock.mockResolvedValue(okResponse({ issues: [] }));
+    expect((await request(ids)).statusCode).toBe(200);
+    expect(new URL(fetchMock.mock.calls.at(-1)[0]).searchParams.get('jql')).toContain(
+      'project = "10000"',
+    );
+  });
+  it.each([false, true])(
+    'scheduled delivery survives legacy delegation repair (legacy=%s)',
+    async (legacy) => {
+      const ids = await seed({ legacy });
+      await g
+        .V()
+        .has('TrackerBinding', 'id', ids.bindingId)
+        .property('created_by', 'old-creator')
+        .next();
+      const { bindingContext } = await import('../index.js');
+      const { getProvider } = await import('../providers/index.js');
+      const { createDeliverySynchronizer } = await import('../delivery-sync.js');
+      const candidate = {
+        executionId: 'execution-659',
+        projectId: ids.projectId,
+        intentId: 'intent-659',
+        source: { bindingId: ids.bindingId, resourceId: 'PROJ-1' },
+        state: 'PR_CREATED',
+        attempts: 9,
+        pullRequests: [
+          {
+            provider: 'github',
+            repoId: 'acme/widgets',
+            prNumber: 1,
+            prUrl: 'https://github.com/acme/widgets/pull/1',
+            branch: 'feat/test',
+          },
+        ],
+      };
+      const store = {
+        claimTrackerSync: vi.fn(async () => ({ ...candidate })),
+        updateTrackerSync: vi.fn(async ({ state, fields }) =>
+          Object.assign(candidate, { state, ...fields }),
+        ),
+        listTrackerSyncs: vi.fn(async () =>
+          ['BLOCKED', 'COMPLETED'].includes(candidate.state) ? [] : [candidate],
+        ),
+        appendEvent: vi.fn(async () => ({})),
+      };
+      fetchMock.mockImplementation(async (url, options) =>
+        okResponse(
+          url.includes('/comment')
+            ? options.method === 'POST'
+              ? { id: 'comment-659' }
+              : { comments: [] }
+            : url.includes('/project/')
+              ? { id: '10000', key: 'PROJ' }
+              : boundIssue,
+        ),
+      );
+      const sync = createDeliverySynchronizer({
+        store,
+        resolveBinding: async () => {
+          const response = await handler({
+            httpMethod: 'GET',
+            path: `/projects/${ids.projectId}/trackers`,
+            pathParameters: { projectId: ids.projectId },
+            ...claims(),
+          });
+          expect(response.statusCode).toBe(200);
+          return JSON.parse(response.body).find((b) => b.id === ids.bindingId);
+        },
+        getTrackerProvider: getProvider,
+        trackerContext: (projectId, value) => bindingContext(g, projectId, value),
+        getPullRequestStatus: vi.fn(async () => ({ state: 'merged' })),
+        applicationUrl: 'https://example.com',
+        broadcast: vi.fn(),
+      });
+      if (legacy) {
+        for (let poll = 0; poll < 3; poll += 1) {
+          expect((await sync.runScheduled()).results[0]).toMatchObject({
+            state: 'PR_CREATED',
+            reconnect: true,
+          });
+          expect(candidate).toMatchObject({
+            state: 'PR_CREATED',
+            attempts: 9,
+            lastError: { code: 'TRACKER_BINDING_NOT_READY', reconnect: true },
+          });
+        }
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(store.appendEvent).toHaveBeenCalledTimes(1);
+        expect(store.appendEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ summary: 'Reconnect Jira to resume tracker synchronization' }),
+        );
+        const repaired = await handler({
+          httpMethod: 'POST',
+          path: `/projects/${ids.projectId}/trackers`,
+          pathParameters: { projectId: ids.projectId },
+          ...claims(),
+          body: JSON.stringify({
+            bindingId: ids.bindingId,
+            provider: 'jira-cloud',
+            instance: 'cloud',
+            externalProjectKey: 'PROJ',
+            confirmDelegation: true,
+          }),
+        });
+        expect(repaired.statusCode).toBe(200);
+      }
+      expect((await sync.runScheduled()).results[0]).toEqual({ state: 'WAITING_FOR_MERGE' });
+      expect(candidate).toMatchObject({ attempts: 0, lastError: null });
+      expect((await sync.runScheduled()).results[0]).toEqual({ state: 'PR_MERGED' });
+      expect((await sync.runScheduled()).results[0]).toEqual({ state: 'COMPLETED' });
+      expect(fetchMock.mock.calls.filter(([, options]) => options.method === 'POST')).toHaveLength(
+        2,
+      );
+      expect(
+        ddbMock
+          .commandCalls(GetCommand)
+          .every((call) => call.args[0].input.Key.userId === 'user-1'),
+      ).toBe(true);
+    },
+  );
+
+  it('a missing write scope does not prevent other members from reading', async () => {
+    const ids = await seed();
+    ddbMock
+      .on(GetCommand, { TableName: TRACKER_TABLE })
+      .resolves({ Item: { ...jiraRow(), scope: 'read:jira-work' } });
+    const response = await request(ids, '/PROJ-1/comments', 'POST', {
+      body: JSON.stringify({ body: 'Delivery' }),
+    });
+    expect(response.statusCode).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      (await g.V().has('TrackerBinding', 'id', ids.bindingId).values('status').next()).value,
+    ).toBe('active');
+    fetchMock.mockResolvedValue(okResponse({ issues: [] }));
+    expect((await request(ids)).statusCode).toBe(200);
+  });
+
+  it('a repeated API 401 does not invalidate a refreshable grant', async () => {
+    const ids = await seed();
+    fetchMock
+      .mockResolvedValueOnce({ status: 401 })
+      .mockResolvedValueOnce(
+        okResponse({ access_token: 'fresh', refresh_token: 'refresh', expires_in: 3600 }),
+      )
+      .mockResolvedValueOnce({ status: 401 });
+    expect((await request(ids)).statusCode).toBe(401);
+    expect(
+      (await g.V().has('TrackerBinding', 'id', ids.bindingId).values('status').next()).value,
+    ).toBe('active');
+    fetchMock.mockResolvedValue(okResponse({ issues: [] }));
+    expect((await request(ids)).statusCode).toBe(200);
+  });
+
+  it.each(['invalid_grant', 'changed_client'])(
+    'invalidates a confirmed unavailable grant: %s',
+    async (reason) => {
+      const ids = await seed();
+      if (reason === 'changed_client') {
+        ddbMock
+          .on(GetCommand, { TableName: TRACKER_TABLE })
+          .resolves({ Item: { ...jiraRow(), oauthClientId: 'old-client' } });
+      } else {
+        fetchMock.mockResolvedValueOnce({ status: 401 }).mockResolvedValueOnce({
+          ok: false,
+          status: 400,
+          json: async () => ({ error: 'invalid_grant' }),
+        });
+      }
+      expect((await request(ids)).statusCode).toBe(409);
+      expect(
+        (await g.V().has('TrackerBinding', 'id', ids.bindingId).values('status').next()).value,
+      ).toBe('invalid');
+      if (reason === 'invalid_grant')
+        expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(3);
+    },
+  );
 });

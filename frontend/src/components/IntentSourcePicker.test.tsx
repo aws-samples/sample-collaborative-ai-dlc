@@ -16,10 +16,15 @@ import { IntentSourcePicker } from './IntentSourcePicker';
 const binding = (provider: string): TrackerBinding =>
   ({ id: 'b1', provider, instance: 'cloud', externalProjectKey: 'ARC' }) as TrackerBinding;
 
-const renderPicker = (provider: string) =>
+const renderPicker = (provider: string, externalProjectKey = 'ARC', externalProjectId?: string) =>
   render(
     <IntentSourcePicker
-      project={{ id: 'p1', trackers: [binding(provider)] } as unknown as Project}
+      project={
+        {
+          id: 'p1',
+          trackers: [{ ...binding(provider), externalProjectKey, externalProjectId }],
+        } as unknown as Project
+      }
       selected={null}
       onSelect={vi.fn()}
     />,
@@ -73,6 +78,22 @@ beforeEach(() => {
 });
 
 describe('IntentSourcePicker', () => {
+  it('allows drilling into a renamed Discovery project but not a reused old key', async () => {
+    listIssuePages.mockImplementation(
+      pageOf(
+        [
+          issue('NEW-1', 'Idea', { externalProjectId: '10000' }),
+          issue('OLD-1', 'Idea', { externalProjectId: '20000' }),
+        ],
+        [],
+        'product_discovery',
+      ),
+    );
+    renderPicker('jira-cloud', 'OLD', '10000');
+    expect(await screen.findByRole('button', { name: 'Linked items of NEW-1' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Linked items of OLD-1' })).not.toBeInTheDocument();
+  });
+
   it("lists the bound project's own issue types and filters by them", async () => {
     listIssuePages.mockImplementation(
       pageOf([issue('PROJ-1', 'Spike'), issue('PROJ-2', 'Sub-task')], SOFTWARE_TYPES),
@@ -131,16 +152,21 @@ describe('IntentSourcePicker', () => {
   });
 
   it('browses linked items in a Product Discovery project, without a Type filter', async () => {
-    listIssuePages.mockImplementation(
+    listIssuePages.mockImplementationOnce(
       pageOf(
         [issue('IDEAS-1', 'Idea')],
         [{ name: 'Idea', iconUrl: null, hierarchyLevel: 0, subtask: false }],
         'product_discovery',
       ),
     );
-    renderPicker('jira-cloud');
+    listIssuePages.mockImplementation(pageOf([issue('WORK-1', 'Task')], [], 'product_discovery'));
+    renderPicker('jira-cloud', 'IDEAS');
     await userEvent.click(await screen.findByRole('button', { name: 'Linked items of IDEAS-1' }));
     await waitFor(() => expect(lastRequest()[2]).toMatchObject({ parent: 'IDEAS-1' }));
+    expect(await screen.findByRole('button', { name: /Task WORK-1/ })).toBeEnabled();
+    expect(
+      screen.queryByRole('button', { name: 'Linked items of WORK-1' }),
+    ).not.toBeInTheDocument();
     // Linked items sit in other projects, so the Discovery project's types don't apply.
     expect(screen.queryByRole('combobox', { name: 'Issue type' })).not.toBeInTheDocument();
 

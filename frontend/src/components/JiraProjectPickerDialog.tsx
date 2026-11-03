@@ -16,6 +16,8 @@ import { cn } from '@/lib/utils';
 
 interface Props {
   open: boolean;
+  projectKey?: string;
+  projectId?: string;
   onOpenChange: (open: boolean) => void;
   // Called once the user has confirmed a Jira project. The parent persists
   // the binding (so the dialog stays presentation-only).
@@ -41,12 +43,20 @@ const matchesFilter = (project: ExternalProject, filter: string) => {
   return !f || project.name.toLowerCase().includes(f) || project.key.toLowerCase().includes(f);
 };
 
-export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm, onAuthorize }: Props) {
+export function JiraProjectPickerDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+  onAuthorize,
+  projectKey,
+  projectId,
+}: Props) {
   const meta = getTrackerProvider('jira-cloud');
   const [projects, setProjects] = useState<ExternalProject[]>([]);
   const [loading, setLoading] = useState(false);
   const [chosenKey, setChosenKey] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
 
@@ -65,24 +75,31 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm, onAutho
   const [authorizing, setAuthorizing] = useState(false);
   const request = useRef<AbortController | null>(null);
 
+  const authorize = useCallback(
+    async (signal: AbortSignal) => {
+      if (signal.aborted || !onAuthorize) return;
+      setAuthorizing(true);
+      try {
+        await onAuthorize(signal);
+      } catch (error) {
+        if (signal.aborted) return;
+        setAuthorizing(false);
+        setError(error instanceof Error ? error.message : 'Failed to authorize Jira');
+      }
+    },
+    [onAuthorize],
+  );
+
   const handleError = useCallback(
     async (err: unknown, signal: AbortSignal) => {
       if (signal.aborted) return;
       if (err instanceof ApiError && err.body?.reconnect === true && onAuthorize) {
-        setAuthorizing(true);
-        try {
-          await onAuthorize(signal);
-          return;
-        } catch (authError) {
-          if (signal.aborted) return;
-          setAuthorizing(false);
-          setError(authError instanceof Error ? authError.message : 'Failed to authorize Jira');
-          return;
-        }
+        await authorize(signal);
+        return;
       }
       setError(err instanceof Error ? err.message : 'Failed to load Jira projects');
     },
-    [onAuthorize],
+    [onAuthorize, authorize],
   );
 
   useEffect(() => {
@@ -92,6 +109,7 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm, onAutho
     const { signal } = controller;
     setProjects([]);
     setChosenKey(null);
+    setConfirmed(false);
     setFilter('');
     setError(null);
     setAuthorizing(false);
@@ -101,7 +119,7 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm, onAutho
       .listExternalProjects(meta.id, meta.instance)
       .then((list) => {
         if (signal.aborted) return;
-        setProjects(list);
+        setProjects(projectId ? list.filter((p) => p.id === projectId) : list);
         // No preselection: with hundreds of projects the first one is never
         // the right one, and Add would silently bind it.
       })
@@ -114,7 +132,7 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm, onAutho
     return () => {
       controller.abort();
     };
-  }, [open, meta.id, meta.instance, handleError]);
+  }, [open, meta.id, meta.instance, handleError, projectId]);
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) request.current?.abort();
@@ -124,7 +142,7 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm, onAutho
   const handleConfirm = async () => {
     const chosen = projects.find((p) => p.key === chosenKey);
     const signal = request.current?.signal;
-    if (!chosen || !signal || signal.aborted) return;
+    if (!chosen || !confirmed || !signal || signal.aborted) return;
     setSaving(true);
     try {
       await onConfirm(chosen);
@@ -142,7 +160,7 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm, onAutho
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Add Jira project</DialogTitle>
+          <DialogTitle>{projectKey ? 'Reconnect Jira project' : 'Add Jira project'}</DialogTitle>
           <DialogDescription>
             Pick the Jira project to bind to this collaborative space. The "Start a sprint from a
             Jira issue" panel will list issues from this project.
@@ -200,7 +218,29 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm, onAutho
             ))
           )}
         </div>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={confirmed}
+            onChange={(event) => setConfirmed(event.target.checked)}
+          />
+          Allow all space members and automated delivery to read issues and post comments through my
+          Jira account for this project, including linked Product Discovery issues.
+        </label>
         <DialogFooter>
+          {onAuthorize && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving || authorizing}
+              onClick={() => {
+                const signal = request.current?.signal;
+                if (signal) void authorize(signal);
+              }}
+            >
+              Connect another Jira account
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -212,9 +252,9 @@ export function JiraProjectPickerDialog({ open, onOpenChange, onConfirm, onAutho
           <Button
             type="button"
             onClick={handleConfirm}
-            disabled={saving || authorizing || !chosenKey}
+            disabled={saving || authorizing || !chosenKey || !confirmed}
           >
-            {saving ? 'Adding…' : 'Add'}
+            {saving ? 'Saving…' : projectKey ? 'Reconnect' : 'Add'}
           </Button>
         </DialogFooter>
       </DialogContent>
