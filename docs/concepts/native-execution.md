@@ -1686,6 +1686,106 @@ dependency-link and post-recovery preservation guards remain required.
 No production change or deployment is needed for this local handoff repair.
 Generated-output quality remains excluded and NE-02 stays unchecked.
 
+**Completed tool recovery proof, 2026-11-03:** the corrected observer and actual
+member path now pass the interrupted-tool acceptance. Together with the preserved
+created-workflow waiting, intake and workspace-rejection proofs, this completes
+**NE-02 for the native execution tool**. It makes no assertion about generated
+application correctness, tests/build or playability. The earlier expired observer,
+failed observer and failed mutation receipts retain their original outcomes.
+
+The user ran the reviewed observer with `solution`; the agent used `solution-read`
+only for scoped AWS reads. After verifying the live observer's readiness, the
+member submitted the fresh **3,474-byte** answer through the browser at
+**09:33:19.367 UTC**. Its command is
+`cfc15189-f99b-4ed8-8845-249127e23057`, and its complete text SHA-256 is
+`31299c8b9851148c692e7cd32b81c7fb8f19fe087437d3e60902b7b817b45c0c`.
+The nonce was `56ba01dc-2cbd-4e62-a521-0ada621edf6b`, for intent
+`cd022952-432a-4574-8e79-ca9cb11b08a0`, attempt
+`bab30bfb-a158-486f-b12c-9b6df147e5ad` and writer **2**.
+The accepted answer hash matched the reviewed packet and immutable authority.
+
+The observer found the new foreground barrier as a live Claude descendant,
+with a new unpublished edit and installed dependency links. Its one stop
+completed at **09:34:54.564 UTC**, before the **09:37:15.971 UTC** barrier deadline.
+The controller confirmed the predecessor stop at **09:35:00.000 UTC** and fenced
+writer **2**. The actual browser offered recovery; the member confirmed **Resume
+in a fresh session** at **09:35:30.555 UTC**. The accepted recovery ID is
+`f8ce7f0b-8ba2-45a7-8907-a977ec74bfa2`, public request ID
+`699d4c83-59ef-4e1b-bfec-bae8e50ca4c0` and HTTP request ID
+`fc6e316c-99d7-4ab6-9408-54a3d6203fd2`. That request contained confirmation and
+identifiers only. Writer **3** became authoritative after the confirmed stop,
+without a response pointer or automatic answer replay.
+
+The fresh CLI is `a45076cf-30d6-4687-9c94-4bd71b2203bf`; the stopped CLI was
+`0019fe5c-00ce-4c03-8cac-684820772501`. Both use binding
+`84cc90a6-eb79-4b33-9b60-e731a9809102`, runtime session
+`6b241d97-23d9-47b5-8e58-94934098a08b`, EFS `fs-0dbff85b86169efdc` and access point
+`fsap-056d12e9bf18b7b37`. The post-recovery inspection matched the original root,
+project and machine inodes, workspace record and barrier marker. It also matched
+the unfinished **412-byte** file, all **four** dependency symlinks and the
+**one** hardlinked target. The file hash is
+`1a6093c96177d055634b63ebbf1c33f9371af5c044d34337fc3ce5910e51d1b6`;
+the dependency-link hash is
+`fab36d8a680c1504538e5f13bc37c36968b61c9125467861f525d711b1d11479`.
+The user observer performed the retained-work read at the new question, exited
+normally and issued no bootstrap or second stop.
+
+The runtime published revision **7** at **09:38:55.185 UTC**; authority admission
+completed at **09:39:01.084 UTC**. Its publication is
+`8f57928f01e6ac080bc8089f0e0fc6eb92b4b590ca5ba655c7b4c5ad81e7de97`
+and interaction is
+`b2b5a8c218eca23567809320edcf578e2c4c3cd6128b44c5b5c72e6b99541d3a`.
+The production readers verified all **62** opaque files and the interaction
+against their immutable storage versions, byte counts, hashes and identities.
+The signed-in member saw the matching inventory, fetched the exact retained
+412-byte file, and saw a real Code Generation question about the surviving
+unfinished work. The reply field remained empty with **Submit Answer** disabled.
+Anonymous publication, interaction and file reads each returned **401**.
+No separate signed-in nonmember account was available; denied membership remains
+covered by the existing public-API regression tests.
+
+Revision **6** still exposes the original answer ID, member, acceptance time and
+text hash. Its original delivery time is **09:33:23.148 UTC**, and
+`answer.resumeRetention.delivery` remains **`delivered`**. The browser explicitly
+says it was retained and not sent again. There is no resulting publication
+assigned to that interrupted answer and no recorded application, rejection or
+approval. All **29** earlier immutable publication/answer/request records remain
+unchanged. The earlier waiting answer
+`d0c27e9a-6464-4da1-898a-23945e0760d3` also remains **`undelivered`**, without a
+delivery or resulting-publication record. The active-tool answer's delivered
+classification does not substitute for that waiting-session evidence.
+
+The accepted configuration and all observed writers retain AI-DLC **2.11.1**,
+Claude Code **2.1.296**, model `global.anthropic.claude-sonnet-5-5`, platform Bedrock
+credentials and source commit `d99d2511c43f07ff2451e7e13f5a8f45b16dfce2`.
+Configuration SHA-256 remains
+`3c92dd4556e7afedd931be395045abde08dc1be568b44bd9e552d15a15f0acab`.
+The deployed implementation remains
+`8ffd126762b7e9a292d01523d1feb748c2a056b3`, with runtime image
+`sha256:534ccfd547671cee197ae10e3700fccd4b9ec51cc16d099f7cdafddbab568a2b`.
+The authority has no private checkpoint, and the fresh turn's scoped lifecycle
+evidence contains no checkpoint capture, upload, download or restore. The
+legacy private-checkpoint wording still visible below the file inventory is not
+runtime evidence; obsolete recovery copy belongs with NE-03 removal.
+
+Evidence is under `.native-evidence/ne02-2026-11-03-active-answer-contract/`.
+`active-tool-completion-proof.json` passes **54** combined checks.
+`independent-retained-inspection-verification.json` reproduces the user's **14**
+mechanical retention checks from the original receipts; those receipts correctly
+retain `qualificationStatus: "NOT_RUN"` because they do not themselves prove the
+member path. `prior-stage-verification.json` verifies preserved evidence and
+combines the earlier scenario results without repeating faults. The **28**
+handoff and **11** production-caller tests recorded above remain applicable to
+unchanged source. Documentation formatting, local links, evidence syntax/secret
+checks and the documentation build pass. No production implementation changed
+in this completion stage; full backend/frontend/release suites were not rerun.
+
+The fixture remains **AWAITING_USER** at the unanswered revision 7 question, with
+no active model turn. Its workspace and history are preserved, as are both
+quarantined fault originals. No deployment, repeated fault or further operator
+action is required. **NE-03 has not started.** Full Kiro qualification remains
+NE-18, and all four harnesses remain required for release.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -1707,7 +1807,7 @@ with previous native development executions.
       share the same notice about current support and release requirements. The 206 focused creation,
       configuration and Intent tests, frontend build, lint, formatting and secret
       checks pass. Deployed qualification remains open in the items below.
-- [ ] **NE-02 — Prove EFS resume through the actual application.** Deploy the matching
+- [x] **NE-02 — Prove EFS resume through the actual application.** Deploy the matching
       runtime, recovery API, worker and UI corrections and exercise browser → public REST API →
       authority → worker → runtime. Cover waiting-session expiry after workflow creation and an interrupted
       tool, confirmed predecessor stop, member confirmation, the same EFS workspace,
@@ -1717,7 +1817,12 @@ with previous native development executions.
       without private recovery operations or automatic answer replay; intake,
       unavailable workflow state, and a missing or wrong workspace block resume visibly.
       Generated-application correctness, independent test/build qualification and
-      playability are outside this verdict.
+      playability are outside this verdict. **Completed 2026-11-03:** the dated tool
+      proof above records the actual member recovery, fenced predecessor, retained
+      EFS edits/dependencies, new CLI, admitted publication, real next question and
+      preserved answers without replay. The earlier waiting, intake and isolated
+      missing/wrong-workspace proofs remain preserved; generated-output quality
+      is explicitly excluded.
 - [ ] **NE-03 — Delete the exact native snapshot/restore stack.** After NE-02, remove
       private CLI checkpoint capture, export/import, upload/download and exact
       filesystem/database restore; remove legacy native commands, mode fallbacks,
