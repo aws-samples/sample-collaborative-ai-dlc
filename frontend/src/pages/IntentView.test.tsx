@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Routes, Route, useLocation } from 'react-router';
+import { MemoryRouter, Routes, Route, Outlet, useLocation, useNavigate } from 'react-router';
 import { formatTimelineTimestamp } from '@/lib/timeAgo';
 
 const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
@@ -2566,6 +2566,52 @@ describe('IntentView — ?gate= deep link from My work', () => {
     expect(screen.getByTestId('gate-panel-h1')).toBeInTheDocument();
   });
 
+  it('returning via a non-intent route with a persistent provider shows no notice before the load', async () => {
+    // Provider above the routes, as AppShell mounts it.
+    function MyWorkStub() {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate('/space/p1/intent/i1?gate=h3')}>Open question</button>;
+    }
+    function ToMyWork() {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate('/my-work')}>My work</button>;
+    }
+    get.mockResolvedValueOnce(withGates(gate('h1'), gate('h2')));
+    render(
+      <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+        <Routes>
+          <Route
+            element={
+              <IntentProvider>
+                <Outlet />
+              </IntentProvider>
+            }
+          >
+            <Route
+              path="/space/:projectId/intent/:intentId"
+              element={
+                <>
+                  <IntentView />
+                  <ToMyWork />
+                </>
+              }
+            />
+            <Route path="/my-work" element={<MyWorkStub />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByTestId('gate-panel-h1')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'My work' }));
+    const next = deferred();
+    get.mockReturnValueOnce(next.promise);
+    await userEvent.click(screen.getByRole('button', { name: 'Open question' }));
+    expect(await screen.findByTestId('gate-panel-h1')).toBeInTheDocument();
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+    await act(async () => next.resolve(withGates(gate('h1'), gate('h2'), gate('h3'))));
+    expect(await screen.findByTestId('gate-panel-h3')).toBeInTheDocument();
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+  });
   it('without the param, selects the intent pending gate and shows no notice', async () => {
     get.mockResolvedValue(withGates(gate('h1'), gate('h2')));
     renderWithSearch('/space/p1/intent/i1');

@@ -453,6 +453,8 @@ export function IntentProvider({
     setSelectedStageId(null);
     setAgentFocus(null);
     setError(null);
+    // The provider outlives routes, so a cached detail is never fresh.
+    setFreshKey(null);
     fetchedWorkflowKeyRef.current = null;
 
     if (projectId && intentId) {
