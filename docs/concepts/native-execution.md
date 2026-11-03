@@ -1411,6 +1411,73 @@ remain **FAIL** at the observed stall; repaired live rejection, game
 publication/playability and active-tool recovery remain open. NE-02 stays
 unchecked, and the expired October 27 active-tool stop command remains unusable.
 
+**Verified missing/wrong-workspace rejections, 2026-11-03:** the user deployed
+`8ffd126762b7e9a292d01523d1feb748c2a056b3`. Fresh `solution-read`
+inspection confirms account **746558295630**, region **us-east-1**, and every
+downloaded package entry across **nine** native Lambda functions against the
+reviewed candidate. Execution and cancellation both contain the corrected
+`execution-worker.mjs`, SHA-256
+`90727c1e6946eb3479beb56c307ef71280d1de993c7ea321a738e24bf5892013`.
+All five authority aliases now select version **18**, with unchanged authority
+bytes. The base runtime digest remains
+`sha256:534ccfd547671cee197ae10e3700fccd4b9ec51cc16d099f7cdafddbab568a2b`.
+The frontend entry and previously verified chunks are unchanged. Both fault
+executions retain their accepted `074c5008…` image, executable endpoint version
+**2**, EFS bindings, configuration, package, model and application source pin.
+
+The two already queued recovery confirmations now finish with
+`RECOVERY_REQUIRED`, reason `WORKFLOW_STATE_UNAVAILABLE`,
+`workflowResumeState=unavailable` and `canRecover=false`. Scoped diagnostics show
+the opaque resume error followed by a cold predecessor status response:
+generation **1**, publication sequence **2**, `recovered=true`, and no identity
+mismatch. The controller then closes generation **2** and confirms its runtime
+stop. Each corresponding runtime logs `SIGTERM` with `busy=false` within a
+second of that confirmation. Generation 2 was reserved before this deployment;
+these checks did not admit another writer, publication or CLI/model turn.
+
+| Scenario and preserved intent                  | Backend and browser result | Confirmed stop, UTC | Public GET request ID                  |
+| ---------------------------------------------- | -------------------------- | ------------------- | -------------------------------------- |
+| Missing `f3cc998d-e457-4e4c-948c-985a2da1eb39` | **PASS**                   | 07:15:06.059        | `89303d84-e117-4c4e-b673-6729c08a3fcf` |
+| Wrong `33ab1cb2-8f74-4c41-aff2-71c27b3cb8fe`   | **PASS**                   | 07:15:06.442        | `27a05279-0b1e-42de-8ccb-a3fb02c8f1e9` |
+
+Both actual browser status refreshes return HTTP **200** with recovery disabled.
+Both pages visibly explain that recovery is unavailable because an existing
+workflow could not be verified, while published work and accepted answers remain
+available. Neither offers “Resume in a fresh session.” No recovery confirmation,
+workspace fault, saved answer or operator diagnostic command was submitted during
+this verification.
+
+All **70** and **69** existing records outside `EXECUTION`, respectively, retain
+their pre-deployment canonical hashes. Each intent adds only its recovery-required
+lifecycle event (`native-15106` and `native-14655`). Both publication-2 identities,
+original CLI identities, answer authors, acceptance times and answer text hashes
+remain unchanged. The original retained answers still have delivery
+**undelivered**, with no delivery timestamp, resulting publication or recorded
+engine approval. The browser shows those retained answers in their original
+revisions. No new output or publication record, queued reply or private checkpoint
+appears. The fences remain closed throughout the browser checks.
+
+The evidence, screenshots, public response metadata, stop corroboration and
+**36 passing evidence assertions per scenario** are under
+`.native-evidence/ne02-2026-11-03-deployed-8ffd1267/`. The prior **141-file**
+manifest, its five candidate source hashes and ten external references were
+verified before editing this tracker. The failed original missing-project
+receipt remains failed; the later successful inspection establishes its absent
+project and preserved original quarantine. The successful wrong-project receipt
+and both quarantines remain preserved. No fault or inspection was repeated.
+The raw body behind the SDK 424 remains unavailable; the current EFS observation
+establishes the negative verdict. Provider billing and quarantine file bytes
+were not independently re-audited in this stage.
+
+No additional operator action or deployment is needed for these two rejection
+checks. This stage changes documentation only; the previously recorded controller
+tests remain applicable. Documentation formatting and site-build validation are
+recorded with its evidence. Created-workflow waiting recovery, intake rejection
+and temporary Kiro unavailability retain their prior passes. Successful game
+publication/playability and a fresh interrupted-active-tool recovery proof remain
+open. NE-02 stays unchecked, NE-03 has not started, and the expired October 27 stop
+command must not be reused.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
