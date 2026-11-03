@@ -53,6 +53,21 @@ const make = () => {
 };
 
 describe('controller-owned native cancellation fence', () => {
+  it.each([1, 2, 4])(
+    'rejects unsupported fence schema %s without rewriting it',
+    async (schemaVersion) => {
+      const { fence, objects } = make();
+      await fence.ensureActive(identity);
+      const stored = objects.get(nativeExecutionFenceKey(identity));
+      stored.body = Buffer.from(JSON.stringify({ ...JSON.parse(stored.body), schemaVersion }));
+      const retained = Buffer.from(stored.body);
+      await expect(fence.ensureActive(identity)).rejects.toMatchObject({
+        code: 'NATIVE_EXECUTION_FENCE_INVALID',
+      });
+      expect(stored.body).toEqual(retained);
+    },
+  );
+
   it('admits explicit workspace successors without checkpoints and prevents a later legacy downgrade', async () => {
     const { fence } = make();
     const recoveryId = '55555555-5555-4555-8555-555555555555';
@@ -65,7 +80,6 @@ describe('controller-owned native cancellation fence', () => {
     const input = {
       writerGeneration: 2,
       recoveryId,
-      checkpointId: null,
       recoveryMode: 'efs-workspace-v1',
     };
     expect(await fence.activate(identity, input)).toMatchObject({
@@ -77,7 +91,7 @@ describe('controller-owned native cancellation fence', () => {
     await fence.suspend(identity, { writerGeneration: 2, recoveryId });
     await expect(
       fence.activate(identity, { writerGeneration: 3, recoveryId, checkpointId: 'a'.repeat(64) }),
-    ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_FENCE_CONFLICT' });
+    ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_FENCE_INVALID' });
     await fence.cancel(identity);
     await expect(fence.activate(identity, { ...input, writerGeneration: 3 })).rejects.toMatchObject(
       { code: 'NATIVE_EXECUTION_CANCELLED' },
@@ -95,7 +109,6 @@ describe('controller-owned native cancellation fence', () => {
     await fence.activate(identity, {
       writerGeneration: 2,
       recoveryId,
-      checkpointId: null,
       recoveryMode: 'efs-workspace-v1',
     });
     const stored = objects.get(nativeExecutionFenceKey(identity));
@@ -139,7 +152,6 @@ describe('controller-owned native cancellation fence', () => {
     const active = await fence.activate(identity, {
       writerGeneration: 2,
       recoveryId,
-      checkpointId: null,
       recoveryMode: 'efs-workspace-v1',
     });
     expect(active.workflowResumeState).toBeUndefined();
@@ -170,7 +182,6 @@ describe('controller-owned native cancellation fence', () => {
         fence.activate(identity, {
           writerGeneration: 2,
           recoveryId,
-          checkpointId: null,
           recoveryMode: 'efs-workspace-v1',
         }),
       ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_FENCE_CONFLICT' });
@@ -248,16 +259,20 @@ describe('controller-owned native cancellation fence', () => {
       fence.activate(identity, {
         writerGeneration: 2,
         recoveryId,
-        checkpointId: 'a'.repeat(64),
+        recoveryMode: 'efs-workspace-v1',
       }),
     ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_FENCE_CONFLICT' });
-    await fence.suspend(identity, { writerGeneration: 1, recoveryId });
+    await fence.suspend(identity, {
+      writerGeneration: 1,
+      recoveryId,
+      workflowResumeState: 'created',
+    });
     await expect(fence.ensureActive(identity)).rejects.toMatchObject({
       code: 'NATIVE_EXECUTION_FENCE_CONFLICT',
     });
-    const input = { writerGeneration: 2, recoveryId, checkpointId: 'a'.repeat(64) };
+    const input = { writerGeneration: 2, recoveryId, recoveryMode: 'efs-workspace-v1' };
     const active = await fence.activate(identity, input);
-    expect(active).toMatchObject({ schemaVersion: 2, state: 'ACTIVE', ...input });
+    expect(active).toMatchObject({ schemaVersion: 3, state: 'ACTIVE', ...input });
     expect(await fence.activate(identity, input)).toEqual(active);
     await expect(fence.ensureActive(identity)).rejects.toMatchObject({
       code: 'NATIVE_EXECUTION_FENCE_CONFLICT',
@@ -273,7 +288,11 @@ describe('controller-owned native cancellation fence', () => {
     const { fence, objects, hooks } = make();
     const recoveryId = '55555555-5555-4555-8555-555555555555';
     await fence.ensureActive(identity);
-    await fence.suspend(identity, { writerGeneration: 1, recoveryId });
+    await fence.suspend(identity, {
+      writerGeneration: 1,
+      recoveryId,
+      workflowResumeState: 'created',
+    });
     let version;
     hooks.beforePut = async (input) => {
       if (JSON.parse(input.Body).state === 'ACTIVE') {
@@ -286,7 +305,7 @@ describe('controller-owned native cancellation fence', () => {
       fence.activate(identity, {
         writerGeneration: 2,
         recoveryId,
-        checkpointId: 'a'.repeat(64),
+        recoveryMode: 'efs-workspace-v1',
       }),
     ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CANCELLED' });
     expect(objects.get(nativeExecutionFenceKey(identity)).version).toBe(version);

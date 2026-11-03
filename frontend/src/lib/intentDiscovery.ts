@@ -7,7 +7,7 @@ export type NativeDiscoveredIntent = NativeIntentSummary & {
   executionStatusUnavailable?: boolean;
   execution?: Pick<
     NativeExecution,
-    'status' | 'revision' | 'updatedAt' | 'responsePending' | 'turnSequence' | 'recoveryMode'
+    'status' | 'revision' | 'updatedAt' | 'responsePending' | 'turnSequence'
   > | null;
 };
 
@@ -29,7 +29,7 @@ export const nativeExecutionLabels: Record<NativeExecution['status'], string> = 
   DISPATCHING: 'Starting agent',
   RUNNING: 'Agent running',
   RECOVERY_REQUIRED: 'Session recovery required',
-  RECOVERING: 'Restoring session',
+  RECOVERING: 'Resuming in a fresh session',
   WAITING_FOR_INPUT: 'Waiting for input',
   AWAITING_USER: 'Awaiting your reply',
   STOPPED: 'Agent stopped',
@@ -45,11 +45,6 @@ export function nativeIntentStatusLabel(
   let label = intent.execution
     ? nativeExecutionLabels[intent.execution.status]
     : nativePreparationLabels[intent.status];
-  if (
-    intent.execution?.status === 'RECOVERING' &&
-    intent.execution.recoveryMode === 'efs-workspace-v1'
-  )
-    label = 'Resuming in a fresh session';
   if (
     intent.execution?.status === 'DISPATCHING' &&
     (intent.execution.responsePending === true || (intent.execution.turnSequence ?? 0) > 1)

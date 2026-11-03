@@ -72,6 +72,7 @@ const intent: NativeIntent = {
   updatedAt: stamp,
   executionAvailable: true,
   execution: {
+    recoveryMode: 'efs-workspace-v1',
     status: 'AWAITING_USER',
     attemptId: '22222222-2222-4222-8222-222222222222',
     epoch: 2,
@@ -571,7 +572,7 @@ it('preserves the explicit degraded-form condition in a selected historical revi
   });
   mount();
   await screen.findByText(
-    'The structured question form is unavailable for this turn. The response and checkpoint are saved.',
+    'The structured question form is unavailable for this turn. The response and published files are saved.',
   );
   expect(
     screen.queryByRole('region', { name: 'Published question choices' }),

@@ -86,7 +86,6 @@ export function installedDockerArgs({
   root,
   cli,
   name,
-  baseline = false,
   opencodeCache,
   packagedImage,
   dependenciesRoot,
@@ -107,10 +106,8 @@ export function installedDockerArgs({
     ...(packagedImage
       ? ['--import', '/fixture/scripts/native-qualification-packaged-audit.mjs']
       : []),
-    baseline
-      ? '/fixture/scripts/native-claude-recovery-smoke.mjs'
-      : '/fixture/scripts/native-installed-qualification.mjs',
-    ...(baseline ? [] : [cli]),
+    '/fixture/scripts/native-installed-qualification.mjs',
+    cli,
   ];
 }
 
@@ -146,10 +143,8 @@ export function linuxDockerArgs({
     '--maxWorkers=2',
     'lambda/agentcore/test/native-command-runner.test.js',
     'lambda/agentcore/test/native-execution-files.test.js',
-    'lambda/agentcore/test/native-session-recovery-files.test.js',
-    'lambda/agentcore/test/native-opencode-recovery-command.test.js',
-    'lambda/shared/test/native-recovery-checkpoint.test.js',
-    'lambda/shared/test/native-dependency-links.test.js',
+    'lambda/agentcore/test/native-executor.test.js',
+    'lambda/native-runtime-control/test/workspace-resume-journey.test.js',
   ];
 }
 

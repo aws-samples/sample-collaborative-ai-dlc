@@ -22,6 +22,12 @@ import {
 } from '../native-qualification-package.mjs';
 
 const image = `cached/native@sha256:${'a'.repeat(64)}`;
+test('loads the installed EFS qualification and its real dependency closure without starting a CLI', async () => {
+  const protocol = await import('../native-workspace-protocol-qualification.mjs');
+  assert.equal(typeof protocol.qualifyClaudeWorkspaceProtocol, 'function');
+  assert.equal(typeof protocol.qualifyWorkspaceTransport, 'function');
+});
+
 test('offline registry resolution cannot drift beyond the frozen archive closure', () => {
   const item = {
     version: '2.1.0',
@@ -46,7 +52,7 @@ test('offline registry resolution cannot drift beyond the frozen archive closure
   for (const patch of [{ version: 'missing' }, { integrity: 'changed' }, { resolved: 'changed' }])
     assert.throws(() => frozenOpenCodePackument(current, 'msgpackr', { ...item, ...patch }));
 });
-test('legacy invocation retains Claude; explicit selection has no missing-input fallback', () => {
+test('default invocation selects Claude; explicit selection has no missing-input fallback', () => {
   assert.equal(qualificationOptions([]).image, undefined);
   assert.deepEqual(qualificationOptions(['--image', image, '--assets', '/tmp/assets']).clis, [
     'claude',
@@ -87,7 +93,8 @@ test('Linux checks use the same offline container boundary and an explicit locke
   assert.ok(args.includes('type=bind,src=/tmp/bindings,dst=/linux-node-modules,readonly'));
   assert.ok(args.includes('NODE_PATH=/linux-node-modules'));
   assert.ok(args.includes('lambda/agentcore/test/native-command-runner.test.js'));
-  assert.ok(args.includes('lambda/agentcore/test/native-session-recovery-files.test.js'));
+  assert.ok(args.includes('lambda/agentcore/test/native-executor.test.js'));
+  assert.ok(args.includes('lambda/native-runtime-control/test/workspace-resume-journey.test.js'));
   assert.ok(args.includes('--maxWorkers=2'));
 });
 
@@ -299,9 +306,9 @@ if(args[0]==='run' && args.at(-1)==='kiro') process.exit(2);
     assert.doesNotMatch(result.stdout, /Offline native acceptance passed/);
     const calls = (await readFile(log, 'utf8')).trim().split('\n').map(JSON.parse);
     const runs = calls.filter((args) => args[0] === 'run');
-    assert.equal(runs.length, 5); // Claude baseline plus the four selected journeys.
+    assert.equal(runs.length, 4); // The four selected EFS journeys.
     assert.deepEqual(
-      runs.slice(1).map((args) => args.at(-1)),
+      runs.map((args) => args.at(-1)),
       ['claude', 'codex', 'opencode', 'kiro'],
     );
     assert.deepEqual(

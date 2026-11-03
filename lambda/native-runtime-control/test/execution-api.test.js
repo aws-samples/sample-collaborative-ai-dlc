@@ -210,6 +210,7 @@ describe('native execution API with real protected storage', () => {
       executionAvailable: true,
       execution: {
         status: 'REQUESTED',
+        recoveryMode: 'efs-workspace-v1',
         revision: row.version,
         recovery: null,
         attemptId: row.attemptId,

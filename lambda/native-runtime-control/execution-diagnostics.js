@@ -55,7 +55,6 @@ const STATUSES = new Set([
   'cancelling',
   'stopped_needs_review',
   'recovering',
-  'recovery_ready',
 ]);
 const RUNTIME_CODES = new Set(NATIVE_RUNTIME_FAILURE_CODES);
 const ERROR_CODES = new Set([
@@ -120,7 +119,6 @@ const ERROR_NAMES = new Set([
 const REASONS = new Set([
   'SESSION_LOST',
   'RESTORE_FAILED',
-  'CHECKPOINT_UNAVAILABLE',
   'DELIVERY_UNCERTAIN',
   'WORKSPACE_UNAVAILABLE',
   'INTAKE_UNAVAILABLE',
@@ -215,9 +213,6 @@ export const nativeDiagnosticReport = (row, report) => {
   const rowScope = own(row, 'scope');
   const storedGeneration = own(row, 'writerGeneration');
   const reportedGeneration = own(report, 'writerGeneration');
-  // Match checkReportIdentity: only both absent use the legacy exception;
-  // otherwise the report must echo the stored generation, defaulting to 1.
-  const legacyGeneration = storedGeneration === undefined && reportedGeneration === undefined;
   const expected = {
     projectId: own(rowScope, 'projectId'),
     executionId: own(rowScope, 'executionId'),
@@ -225,7 +220,7 @@ export const nativeDiagnosticReport = (row, report) => {
     attemptId: own(row, 'attemptId'),
     epoch: own(row, 'epoch'),
     runtimeSessionId: own(row, 'runtimeSessionId'),
-    writerGeneration: storedGeneration ?? 1,
+    writerGeneration: storedGeneration,
   };
   const response = own(row, 'response');
   const outputDiagnostic = nativeOutputDiagnostic(own(report, 'outputDiagnostic'));
@@ -233,23 +228,17 @@ export const nativeDiagnosticReport = (row, report) => {
   return {
     status: enumeration(STATUSES, own(report, 'status')),
     runtimeCode: enumeration(RUNTIME_CODES, own(report, 'code')),
-    ...(own(report, 'recoveryFailureCode') !== undefined
-      ? { recoveryFailureCode: enumeration(RUNTIME_CODES, own(report, 'recoveryFailureCode')) }
-      : {}),
     ...(outputDiagnostic ? { outputDiagnostic } : {}),
     ...(snapshotDiagnostic ? { snapshotDiagnostic } : {}),
     sequence: counter(own(report, 'sequence')),
-    expectedSequence: counter(own(row, 'turnSequence') ?? 1),
+    expectedSequence: counter(own(row, 'turnSequence')),
     writerGeneration: counter(reportedGeneration),
-    expectedWriterGeneration: counter(storedGeneration ?? 1),
+    expectedWriterGeneration: counter(storedGeneration),
     recovered: own(report, 'recovered'),
     recoveredPresent: own(report, 'recovered') !== undefined,
-    sequenceMatches: own(report, 'sequence') === (own(row, 'turnSequence') ?? 1),
+    sequenceMatches: own(report, 'sequence') === own(row, 'turnSequence'),
     requestIdMatches: !response || own(report, 'requestId') === own(response, 'commandId'),
-    identityMismatches: IDENTITY_FIELDS.filter(
-      (key) =>
-        !(key === 'writerGeneration' && legacyGeneration) && own(report, key) !== expected[key],
-    ),
+    identityMismatches: IDENTITY_FIELDS.filter((key) => own(report, key) !== expected[key]),
   };
 };
 
@@ -270,7 +259,6 @@ export const emitNativeExecutionDiagnostic = (sink, input) => {
     for (const [key, values] of [
       ['status', STATUSES],
       ['runtimeCode', RUNTIME_CODES],
-      ['recoveryFailureCode', RUNTIME_CODES],
       ['errorCode', ERROR_CODES],
       ['errorName', ERROR_NAMES],
       ['reason', REASONS],
@@ -301,7 +289,6 @@ export const emitNativeExecutionDiagnostic = (sink, input) => {
       'sequenceMatches',
       'requestIdMatches',
       'dispatchPresent',
-      'checkpointPresent',
     ]) {
       if (typeof own(input, key) === 'boolean') value[key] = own(input, key);
     }

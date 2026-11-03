@@ -16,7 +16,6 @@ import { DescribeAccessPointsCommand } from '@aws-sdk/client-efs';
 import { nativeRuntimeResourceNames } from '../shared/native-runtime-binding.js';
 import { nativePublicationScope } from '../shared/native-publication.js';
 import { nativeExecutionFenceKey } from '../shared/native-execution-fence.js';
-import { nativeRecoveryScope } from '../shared/native-recovery-checkpoint.js';
 import { nativeWorkspaceRecovery } from '../shared/native-recovery-mode.js';
 import { nativeRuntimeEnvironment } from './provisioner.js';
 import { canonicalJson, runtimePolicyDocuments, samePolicy } from './policies.js';
@@ -46,7 +45,7 @@ export const executionIdentity = (row) => ({
 });
 export const executionRuntimeConfiguration = (draft, row) => ({
   harness: row.configuration.harness,
-  ...(row.configuration.recoveryMode ? { recoveryMode: row.configuration.recoveryMode } : {}),
+  recoveryMode: row.configuration.recoveryMode,
   model: row.configuration.model,
   prompt: nativeDraftPrompt(draft).text,
   packageVersion: draft.candidate.packagePin.version,
@@ -60,6 +59,7 @@ export const executionRuntimeConfiguration = (draft, row) => ({
 
 export const nativeExecutionPolicy = ({ draft, execution, deployment }) => {
   const config = execution.configuration;
+  if (!nativeWorkspaceRecovery(config)) mismatch();
   const d = { ...deployment, imageUri: config.image.uri, imageDigest: config.image.digest };
   const base = runtimePolicyDocuments({
     deployment: d,
@@ -100,19 +100,6 @@ export const nativeExecutionPolicy = ({ draft, execution, deployment }) => {
           Action: 's3:GetObject',
           Resource: `${prefix}${config.publicationBucket}/${nativeExecutionFenceKey(executionIdentity(execution))}`,
         },
-        ...(nativeWorkspaceRecovery(config)
-          ? []
-          : [
-              {
-                // Immutable private resume bytes are separate from member-visible
-                // publications. Generations share this exact attempt/epoch scope;
-                // only the protected controller can admit a checkpoint/generation.
-                Sid: 'PreserveOwnRecoveryCheckpoint',
-                Effect: 'Allow',
-                Action: ['s3:PutObject', 's3:GetObject', 's3:GetObjectVersion'],
-                Resource: `${prefix}${config.publicationBucket}/${nativeRecoveryScope(executionIdentity(execution)).prefix}*`,
-              },
-            ]),
       ],
     },
   };

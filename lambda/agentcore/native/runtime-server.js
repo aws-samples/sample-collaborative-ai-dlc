@@ -50,7 +50,6 @@ const codes = new Set([
 const executionMethods = {
   'native-start': 'start',
   'native-continue': 'continue',
-  'native-recover': 'recover',
   'native-resume': 'resume',
   'native-status': 'status',
   'native-activity': 'activity',
@@ -69,7 +68,6 @@ const executionErrors = new Map([
   ['native_execution_reply_conflict', 409],
   ['native_execution_cancelled', 409],
   ['native_execution_reply_admission_unconfirmed', 409],
-  ['native_execution_recovery_failed', 409],
   ['native_execution_workspace_invalid', 409],
 ]);
 
@@ -122,7 +120,7 @@ export const createNativeRuntimeServer = ({
       .then((created) => {
         if (
           !created ||
-          !['start', 'continue', 'status', 'cancel', 'isBusy', 'settle'].every(
+          !['start', 'continue', 'resume', 'status', 'cancel', 'isBusy', 'settle'].every(
             (key) => typeof created[key] === 'function',
           )
         )
@@ -157,7 +155,6 @@ export const createNativeRuntimeServer = ({
       [
         'native-start',
         'native-continue',
-        'native-recover',
         'native-resume',
         'native-status',
         'native-activity',
@@ -167,22 +164,13 @@ export const createNativeRuntimeServer = ({
       if (!enabled) return send(403, { ok: false, code: 'native_execution_disabled' });
       if (IDENTITY.some((key) => payload[key] !== identity[key]))
         return send(400, { ok: false, code: 'native_execution_scope_mismatch' });
-      const starting = [
-        'native-start',
-        'native-continue',
-        'native-recover',
-        'native-resume',
-      ].includes(payload.command);
-      // Preparation-only images have no shared execution modules. Keep this
-      // compatibility reader behind the same enabled boundary as the executor.
-      const expectedSchema = starting
-        ? (await import('../../shared/native-recovery-mode.js')).nativeCommandSchema(
-            payload.configuration,
-          )
-        : null;
+      const starting = ['native-start', 'native-continue', 'native-resume'].includes(
+        payload.command,
+      );
       if (
         starting
-          ? payload.schemaVersion !== expectedSchema
+          ? payload.schemaVersion !== 2 ||
+            payload.configuration?.recoveryMode !== 'efs-workspace-v1'
           : Object.keys(payload).some(
               (key) =>
                 ![
@@ -194,10 +182,7 @@ export const createNativeRuntimeServer = ({
             )
       )
         return send(400, { ok: false, code: 'native_execution_request_invalid' });
-      if (
-        payload.writerGeneration !== undefined &&
-        (!Number.isSafeInteger(payload.writerGeneration) || payload.writerGeneration < 1)
-      )
+      if (!Number.isSafeInteger(payload.writerGeneration) || payload.writerGeneration < 1)
         return send(400, { ok: false, code: 'native_execution_request_invalid' });
       if (busy) return send(409, { ok: false, code: 'native_workspace_check_busy' });
       if (starting) startRequests++;
@@ -205,7 +190,7 @@ export const createNativeRuntimeServer = ({
         const active = await getExecutor();
         const method = executionMethods[payload.command];
         if (typeof active[method] !== 'function')
-          return send(409, { ok: false, code: 'native_execution_recovery_failed' });
+          return send(400, { ok: false, code: 'native_execution_request_invalid' });
         return send(200, await active[method](payload));
       } catch (error) {
         const code = executionErrors.has(error?.code) ? error.code : 'native_execution_failed';

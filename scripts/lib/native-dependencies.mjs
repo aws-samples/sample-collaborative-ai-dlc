@@ -14,7 +14,7 @@ const ACTIVE = new Set([
 ]);
 
 // Pure, deterministic inventory. Never emit prompts, answer text, credentials
-// or private checkpoint contents. Unknown records remain protected.
+// or private workspace contents. Unknown records remain protected.
 export const nativeDependencyInventory = (records) => {
   const references = [];
   for (const row of records) {
@@ -46,11 +46,11 @@ export const nativeDependencyInventory = (records) => {
           !['STOPPED', 'FAILED', 'CANCELLED'].includes(row.status),
         tuple: {
           rowSchema: row.schemaVersion,
-          writerProtocol: row.writerGeneration === undefined ? 'legacy' : 'generation-v1',
+          writerGeneration: row.writerGeneration ?? null,
+          recoveryMode: row.configuration?.recoveryMode ?? null,
           harness: row.configuration?.harness,
           configurationSha256: row.configurationSha256,
           acceptedCommandId: row.response?.commandId ?? null,
-          checkpoint: row.recoveryCheckpoint?.id ?? null,
           publication: row.publication?.id ?? null,
         },
         dependencies: [
@@ -58,9 +58,8 @@ export const nativeDependencyInventory = (records) => {
           row.configuration?.packageId,
           row.configuration?.materializationId,
           row.target?.runtimeArn,
-          row.recoveryCheckpoint?.id,
           row.publication?.id,
-          row.writerGeneration === undefined ? 'native-legacy-decoder' : 'native-generation-v1',
+          row.configuration?.recoveryMode,
           'native-publication-v1',
           'native-interaction-v1-v2',
           'native-answer-ledger-v1',

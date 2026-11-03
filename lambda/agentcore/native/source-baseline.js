@@ -3,7 +3,7 @@
 import { snapshotNativeExecutionFiles } from './execution-files.js';
 import { nativeCredentialPath } from '../../shared/native-project-files.js';
 import { NATIVE_PUBLICATION_LIMITS } from '../../shared/native-publication.js';
-import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-dependency-links.js';
+import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-project-files.js';
 
 export const captureNativeSourceBaseline = async ({
   project,

@@ -20,8 +20,8 @@ export function NativeFilesystemNotice({
   if (!policy) return null;
   return (
     <p className="text-xs text-muted-foreground">
-      Generated node_modules dependencies are kept in the private recovery checkpoint. Source files,
-      package manifests and lockfiles are published below.
+      Generated node_modules dependencies remain in the persistent workspace. Source files, package
+      manifests and lockfiles are published below.
     </p>
   );
 }

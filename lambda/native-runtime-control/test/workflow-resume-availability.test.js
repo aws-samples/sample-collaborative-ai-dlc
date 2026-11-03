@@ -277,70 +277,32 @@ describe('created-workflow recovery availability', () => {
     },
   );
 
-  it('keeps an old EFS recovery record readable but rejects its unproven canRecover bit', async () => {
-    const f = await fixture('created');
-    await f.reconcile(f.identity);
-    const row = f.row();
-    const stored = [...f.rows.values()].find((item) => item.pk === row.pk && item.sk === row.sk);
-    delete stored.recovery.workflowResumeState;
-    expect(stored.recovery.canRecover).toBe(true);
-    const retained = await f.store.get(f.identity);
-    expect(nativeExecutionView(retained).recovery).toMatchObject({
-      reason: 'WORKFLOW_STATE_UNAVAILABLE',
-      canRecover: false,
-    });
-    await expect(f.recover()).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CONFLICT' });
-    expect(f.row()).toEqual(retained);
-    expect(await f.store.response(retained, f.accepted.response.interactionId)).toEqual(
-      f.accepted.response,
-    );
-  });
-
-  it.each(['FENCING', 'RESTORING'])(
-    'closes a retained %s recovery without creation proof before admitting a writer',
+  it.each(['RECOVERY_REQUIRED', 'FENCING', 'RESTORING'])(
+    'rejects %s records without workflow creation proof before granting writer authority',
     async (phase) => {
       const f = await fixture('created');
       await f.reconcile(f.identity);
-      await f.recover();
+      if (phase !== 'RECOVERY_REQUIRED') await f.recover();
       if (phase === 'RESTORING') await f.reconcile(f.identity);
       const row = f.row();
       const stored = [...f.rows.values()].find((item) => item.pk === row.pk && item.sk === row.sk);
       delete stored.recovery.workflowResumeState;
-      expect((await f.store.get(f.identity)).recovery.phase).toBe(phase);
-      expect(await f.reconcile(f.identity)).toMatchObject({
-        status: 'RECOVERY_REQUIRED',
-        reason: 'WORKFLOW_STATE_UNAVAILABLE',
+      const retained = structuredClone([...f.rows]);
+      await expect(f.store.get(f.identity)).rejects.toMatchObject({
+        code: 'NATIVE_EXECUTION_INVALID',
       });
-      expect(f.row().recovery).toMatchObject({
-        canRecover: false,
-        workflowResumeState: 'unavailable',
+      await expect(f.reconcile(f.identity)).rejects.toMatchObject({
+        code: 'NATIVE_EXECUTION_INVALID',
       });
+      expect([...f.rows]).toEqual(retained);
       expect(f.activate).not.toHaveBeenCalled();
       expect(f.ports.credentials).not.toHaveBeenCalled();
       expect(f.ports.invoke.mock.calls.map(([input]) => input.payload.command)).toEqual([
         'native-status',
       ]);
-      expect(await f.ports.fence.read(executionIdentity(f.row()))).toMatchObject({
-        state: 'FENCED',
-        writerGeneration: 1,
-        workflowResumeState: 'unavailable',
-      });
-      expect(await f.store.response(f.row(), f.accepted.response.interactionId)).toMatchObject(
+      expect(await f.store.response(row, f.accepted.response.interactionId)).toMatchObject(
         f.accepted.response,
       );
-      expect(f.row().workspaceResume).toEqual(
-        phase === 'FENCING' ? undefined : row.workspaceResume,
-      );
-      const history = await f.store.historicalAnswer(f.row(), {
-        identity: executionIdentity(f.original),
-        runtimeSessionId: f.original.runtimeSessionId,
-        receipt: f.original.publication,
-        interaction: f.original.interaction,
-        interactionContentSha256: f.original.interactionContentSha256,
-      });
-      expect(history.response).toMatchObject(f.accepted.response);
-      expect(history.retained.delivery).toBe('undelivered');
-      expect(history.publication).toBeNull();
     },
   );
 

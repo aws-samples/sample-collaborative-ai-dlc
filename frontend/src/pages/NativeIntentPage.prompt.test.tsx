@@ -39,6 +39,7 @@ const initial: NativeIntent = {
 const started = (draft: NativeIntent): NativeIntent => ({
   ...draft,
   execution: {
+    recoveryMode: 'efs-workspace-v1',
     status: 'REQUESTED',
     attemptId: 'attempt',
     epoch: 1,

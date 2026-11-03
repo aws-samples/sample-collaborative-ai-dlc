@@ -264,7 +264,7 @@ describe('acknowledged native turns retry only unconfirmed status reads', () => 
       expect(await f.run(f.identity)).toMatchObject({
         pending: false,
         status: 'RECOVERY_REQUIRED',
-        reason: 'DELIVERY_UNCERTAIN',
+        reason: 'WORKFLOW_STATE_UNAVAILABLE',
       });
       expect(f.ports.fence.suspend).toHaveBeenCalledOnce();
       expect(f.ports.stop).toHaveBeenCalledOnce();
@@ -295,7 +295,7 @@ describe('acknowledged native turns retry only unconfirmed status reads', () => 
       expect(await f.run(f.identity)).toMatchObject({
         pending: false,
         status: 'RECOVERY_REQUIRED',
-        reason: 'DELIVERY_UNCERTAIN',
+        reason: 'WORKFLOW_STATE_UNAVAILABLE',
       });
       const sdkError = await f.ports.invoke.mock.results.at(-1).value.catch((error) => error);
       expect(sdkError).toMatchObject({
@@ -305,7 +305,7 @@ describe('acknowledged native turns retry only unconfirmed status reads', () => 
       });
       expect(f.row()).toMatchObject({
         status: 'RECOVERY_REQUIRED',
-        recovery: { reason: 'DELIVERY_UNCERTAIN', canRecover: false },
+        recovery: { reason: 'WORKFLOW_STATE_UNAVAILABLE', canRecover: false },
         attemptId: before.attemptId,
         runtimeSessionId: before.runtimeSessionId,
         epoch: before.epoch,
@@ -320,7 +320,7 @@ describe('acknowledged native turns retry only unconfirmed status reads', () => 
       expect(f.events().some((e) => e.code === 'STATUS_READ_RETRY')).toBe(false);
       expect(f.events().at(-1)).toMatchObject({
         code: 'RECOVERY_REQUIRED',
-        reason: 'DELIVERY_UNCERTAIN',
+        reason: 'WORKFLOW_STATE_UNAVAILABLE',
         errorCode: code,
       });
       expect(JSON.stringify(f.events())).not.toContain(SECRET);
@@ -334,7 +334,7 @@ describe('acknowledged native turns retry only unconfirmed status reads', () => 
     await f.dispatch();
     expect(f.row()).toMatchObject({
       status: 'RECOVERY_REQUIRED',
-      recovery: { reason: 'DELIVERY_UNCERTAIN', canRecover: false },
+      recovery: { reason: 'WORKFLOW_STATE_UNAVAILABLE', canRecover: false },
       dispatch: { sequence: 1 },
     });
     expect(f.ports.stop).toHaveBeenCalledOnce();
@@ -356,7 +356,7 @@ describe('acknowledged native turns retry only unconfirmed status reads', () => 
       expect(f.row()).toMatchObject({
         status: 'RECOVERY_REQUIRED',
         recovery: {
-          reason: phase === 'preflight' ? 'CHECKPOINT_UNAVAILABLE' : 'DELIVERY_UNCERTAIN',
+          reason: 'WORKFLOW_STATE_UNAVAILABLE',
           canRecover: false,
         },
       });

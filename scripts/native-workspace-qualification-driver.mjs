@@ -62,8 +62,7 @@ export async function workspaceQualificationDriver({
     NATIVE_PUBLICATION_BUCKET: storage.bucket,
     NATIVE_RUNTIME_ACCOUNT_ID: storage.accountId,
   };
-  let privateCalls = 0,
-    setups = 0,
+  let setups = 0,
     cliTurns = 0,
     lastHome,
     latestError;
@@ -73,10 +72,6 @@ export async function workspaceQualificationDriver({
   const resumes = [],
     accepted = [],
     sessions = new Set();
-  const forbidden = () => {
-    privateCalls++;
-    throw Error('Private recovery called in workspace mode');
-  };
   const create = () =>
     createNativeExecutor({
       env,
@@ -93,10 +88,6 @@ export async function workspaceQualificationDriver({
         };
       },
       prepareRecovery: async () => ({ package: { ...pkg, packageId: f.configuration.packageId } }),
-      captureRecovery: forbidden,
-      publishRecovery: forbidden,
-      loadRecovery: forbidden,
-      restoreRecovery: forbidden,
       commandRunner: async (input) => {
         input = {
           ...input,
@@ -278,7 +269,6 @@ export async function workspaceQualificationDriver({
     },
     loseSession,
     async finish({ expectedSessions = 3 } = {}) {
-      assert.equal(privateCalls, 0);
       assert.equal(
         memory.writes.some((key) => key.startsWith('native-recovery/')),
         false,
@@ -302,7 +292,6 @@ export async function workspaceQualificationDriver({
         publications: f.row().publication.sequence,
         cliTurns,
         sessions: sessions.size,
-        privateCalls,
         setups,
       };
     },

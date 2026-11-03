@@ -135,13 +135,23 @@ const fixture = async () => {
   };
   const fenceKey = nativeExecutionFenceKey(identity);
   const { epoch: _epoch, ...fenceIdentity } = identity;
-  const fenceRecord = { schemaVersion: 1, state: 'ACTIVE', ...fenceIdentity };
+  const fenceRecord = {
+    schemaVersion: 3,
+    state: 'ACTIVE',
+    ...fenceIdentity,
+    writerGeneration: 1,
+    recoveryMode: 'efs-workspace-v1',
+    recoveryId: null,
+    reason: null,
+  };
   memory.putVersion(fenceKey, Buffer.from(JSON.stringify(fenceRecord)), 'trusted-active-version');
   const payload = {
     command: 'native-start',
-    schemaVersion: 1,
+    schemaVersion: 2,
+    writerGeneration: 1,
     ...identity,
     configuration: {
+      recoveryMode: 'efs-workspace-v1',
       harness: 'codex',
       model: 'configured-model',
       prompt: 'Fix the pipe visualization',

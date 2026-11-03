@@ -1,9 +1,5 @@
-// Absence belongs to retained executions. A deployment must never reinterpret
-// their checkpoint or admission contract using its current default.
+// Recovery is an explicit immutable execution pin. Missing or unknown modes
+// never select another protocol or acquire permission to launch a CLI.
 export const NATIVE_WORKSPACE_RECOVERY = 'efs-workspace-v1';
 export const nativeWorkspaceRecovery = (configuration) =>
   configuration?.recoveryMode === NATIVE_WORKSPACE_RECOVERY;
-export const nativeRecoveryModeValid = (configuration) =>
-  configuration?.recoveryMode === undefined || nativeWorkspaceRecovery(configuration);
-export const nativeCommandSchema = (configuration) =>
-  nativeWorkspaceRecovery(configuration) ? 2 : 1;

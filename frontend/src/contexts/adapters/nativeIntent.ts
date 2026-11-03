@@ -51,11 +51,9 @@ const needsPolling = (intent: NativeIntent) =>
 const accessFailure = (error: unknown): error is ApiError =>
   error instanceof ApiError && [401, 403, 404].includes(error.status);
 export const recoveryMessages: Record<NativeRecovery['reason'], string> = {
-  SESSION_LOST: 'The saved AI-DLC session needs to be restored before this run can continue.',
-  RESTORE_FAILED:
-    'The session could not be restored. Your committed content remains available below.',
-  CHECKPOINT_UNAVAILABLE:
-    'A verified recovery checkpoint is unavailable. Your committed content remains available below.',
+  SESSION_LOST:
+    'The AI-DLC session was lost. Confirm a fresh session on the surviving workspace to continue.',
+  RESTORE_FAILED: 'The workspace could not resume. Your committed content remains available below.',
   DELIVERY_UNCERTAIN:
     'The last command may have executed. Inspect work and export its exact results; this command cannot be replayed through recovery.',
   WORKSPACE_UNAVAILABLE:
@@ -73,12 +71,12 @@ export const canRecover = (intent: NativeIntent) =>
   intent.execution?.status === 'RECOVERY_REQUIRED' &&
   intent.execution.revision !== undefined &&
   intent.execution.recovery?.canRecover === true &&
-  (intent.execution.recoveryMode !== 'efs-workspace-v1' ||
-    (intent.execution.stopStatus?.state === 'confirmed' &&
-      intent.execution.recovery.workflowResumeState === 'created' &&
-      !['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(
-        intent.execution.recovery.reason,
-      )));
+  intent.execution.recoveryMode === 'efs-workspace-v1' &&
+  intent.execution.stopStatus?.state === 'confirmed' &&
+  intent.execution.recovery.workflowResumeState === 'created' &&
+  !['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE', 'WORKSPACE_UNAVAILABLE'].includes(
+    intent.execution.recovery.reason,
+  );
 // Fixed public responses from lambda/native-runtime-control/api.js. Never
 // render arbitrary ApiError.message/body text, even for a recognized code.
 const nativeActionErrors: Record<string, readonly [number, string]> = {
@@ -410,12 +408,7 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
     )
       return;
     if (action === 'recover' && !canRecover(intent)) return;
-    if (
-      action === 'recover' &&
-      intent.execution?.recoveryMode === 'efs-workspace-v1' &&
-      confirmation?.recoveryId !== intent.execution.recovery?.id
-    )
-      return;
+    if (action === 'recover' && confirmation?.recoveryId !== intent.execution?.recovery?.id) return;
     actionInFlight.current = action;
     setActing(action);
     setError(null);
@@ -431,9 +424,7 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
           recoveryRequest.current = {
             requestId: crypto.randomUUID(),
             recoveryId,
-            ...(intent.execution!.recoveryMode === 'efs-workspace-v1'
-              ? { confirmWorkspaceResume: true as const }
-              : {}),
+            confirmWorkspaceResume: true,
           };
         next = await nativeIntentsService.recover(projectId, intentId, recoveryRequest.current);
       } else if (action === 'start') {

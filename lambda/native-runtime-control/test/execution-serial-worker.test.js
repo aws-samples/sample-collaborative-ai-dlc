@@ -95,7 +95,7 @@ describe('serial controller publication and continuation', () => {
     const continuation = calls.find((call) => call.command === 'native-continue');
     expect(continuation).toEqual({
       command: 'native-continue',
-      schemaVersion: 1,
+      schemaVersion: 2,
       ...executionIdentity(original),
       writerGeneration: 1,
       sequence: 2,
@@ -189,7 +189,7 @@ describe('serial controller publication and continuation', () => {
       await f.run(f.identity);
       expect(f.row()).toMatchObject({
         status: 'RECOVERY_REQUIRED',
-        recovery: { reason: 'DELIVERY_UNCERTAIN', canRecover: false },
+        recovery: { reason: 'WORKFLOW_STATE_UNAVAILABLE', canRecover: false },
         turnSequence: 2,
       });
       expect(f.ports.stop).toHaveBeenCalledOnce();
@@ -226,7 +226,7 @@ describe('serial controller publication and continuation', () => {
       await f.run(f.identity);
       expect(f.row()).toMatchObject({
         status: 'RECOVERY_REQUIRED',
-        recovery: { reason: 'DELIVERY_UNCERTAIN', canRecover: false },
+        recovery: { reason: 'WORKFLOW_STATE_UNAVAILABLE', canRecover: false },
       });
       expect(stream.destroyed).toBe(true);
       expect(

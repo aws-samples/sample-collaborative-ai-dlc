@@ -74,7 +74,6 @@ const executionStatuses = [
 const recoveryReasons = [
   'SESSION_LOST',
   'RESTORE_FAILED',
-  'CHECKPOINT_UNAVAILABLE',
   'DELIVERY_UNCERTAIN',
   'WORKSPACE_UNAVAILABLE',
   'INTAKE_UNAVAILABLE',
@@ -91,7 +90,7 @@ export interface NativeRecovery {
 export interface NativeRecoveryRequest {
   requestId: string;
   recoveryId: string;
-  confirmWorkspaceResume?: true;
+  confirmWorkspaceResume: true;
 }
 
 export interface NativeExecution {
@@ -106,7 +105,7 @@ export interface NativeExecution {
   // Absence on an older API is unknown, never a lookup of current settings.
   credentialSource?: 'user' | 'space' | 'platform';
   imageDigest?: string;
-  recoveryMode?: 'efs-workspace-v1';
+  recoveryMode: 'efs-workspace-v1';
   repository: {
     provider: string;
     repository: string;
@@ -492,7 +491,7 @@ function execution(value: unknown): NativeExecution | null {
     throw new Error('The native execution could not be verified.');
   }
   let recovery: NativeRecovery | null | undefined;
-  if (value.recoveryMode !== undefined && value.recoveryMode !== 'efs-workspace-v1')
+  if (value.recoveryMode !== 'efs-workspace-v1')
     throw new Error('The native recovery mode could not be verified.');
   let stopStatus: NativeExecution['stopStatus'];
   if (value.stopStatus !== undefined) {
@@ -576,7 +575,7 @@ function execution(value: unknown): NativeExecution | null {
     startedAt: value.startedAt,
     updatedAt: value.updatedAt,
     model: value.model,
-    ...(value.recoveryMode === 'efs-workspace-v1' ? { recoveryMode: value.recoveryMode } : {}),
+    recoveryMode: value.recoveryMode,
     ...(value.credentialSource !== undefined
       ? { credentialSource: value.credentialSource as NativeExecution['credentialSource'] }
       : {}),
@@ -1034,14 +1033,14 @@ export const nativeIntentsService = {
     if (
       !uuid(request.requestId) ||
       !validId(request.recoveryId) ||
-      (request.confirmWorkspaceResume !== undefined && request.confirmWorkspaceResume !== true)
+      request.confirmWorkspaceResume !== true
     )
       throw new Error('The native recovery request is invalid.');
     const next = view(
       await api.post(`${itemPath(projectId, intentId)}/recover`, {
         requestId: request.requestId,
         recoveryId: request.recoveryId,
-        ...(request.confirmWorkspaceResume ? { confirmWorkspaceResume: true } : {}),
+        confirmWorkspaceResume: true,
       }),
       projectId,
       intentId,

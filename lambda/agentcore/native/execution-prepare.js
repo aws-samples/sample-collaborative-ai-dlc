@@ -11,7 +11,6 @@ import { workflowSourceIdentity } from '../../shared/workflow-source-bindings.js
 import { createNativePublications } from '../../shared/native-publication.js';
 import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeExecutionFence } from '../../shared/native-execution-fence.js';
-import { createNativeRecoveryCheckpoints } from '../../shared/native-recovery-checkpoint.js';
 import { nativeWorkspaceRecovery } from '../../shared/native-recovery-mode.js';
 import { loadNativePackage } from './package-loader.js';
 import { runNativeCommand } from './command-runner.js';
@@ -76,7 +75,6 @@ export const createNativeExecutionPorts = ({
   gitCredential = withGitCredential,
   publicationFactory = createNativePublications,
   interactionFactory = createNativeInteractions,
-  recoveryFactory = createNativeRecoveryCheckpoints,
 } = {}) => {
   const readActive = async ({ identity, writerGeneration = 1, signal }) => {
     checkIdentity(env, identity);
@@ -107,19 +105,13 @@ export const createNativeExecutionPorts = ({
   const assertRecoveryAdmission = async (input) => {
     const record = await readActive(input);
     if (
+      !nativeWorkspaceRecovery({ recoveryMode: input.recoveryMode }) ||
       input.writerGeneration < 2 ||
       record.recoveryId !== input.recoveryId ||
-      record.checkpointId !== input.checkpointId ||
       record.recoveryMode !== input.recoveryMode
     )
       fail('native_execution_recovery_unconfirmed');
   };
-  const recoveryStorage = () =>
-    recoveryFactory({
-      s3,
-      bucket: env.NATIVE_PUBLICATION_BUCKET,
-      accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
-    });
   return {
     assertActive,
     assertRecoveryAdmission,
@@ -489,43 +481,6 @@ export const createNativeExecutionPorts = ({
       checkAbort(signal);
       return receipt;
     },
-    async publishRecovery({ identity, signal, ...input }) {
-      checkIdentity(env, identity);
-      checkAbort(signal);
-      if (input.imageDigest !== env.NATIVE_EXECUTION_IMAGE_DIGEST)
-        fail('native_execution_recovery_unconfirmed');
-      await assertActive({ identity, writerGeneration: input.writerGeneration, signal });
-      const receipt = await recoveryStorage().publish({
-        identity: executionScope(identity),
-        ...input,
-      });
-      checkAbort(signal);
-      return receipt;
-    },
-    async loadRecovery({ payload, signal }) {
-      checkIdentity(env, payload);
-      checkAbort(signal);
-      await assertRecoveryAdmission({
-        identity: payload,
-        writerGeneration: payload.writerGeneration,
-        recoveryId: payload.recoveryId,
-        checkpointId: payload.checkpoint?.id,
-        signal,
-      });
-      recordNativeBoundary(payload, 'checkpointVerificationStarted');
-      const loaded = await recoveryStorage().readFiles(executionScope(payload), payload.checkpoint);
-      const publications = publicationFactory({
-        s3,
-        bucket: env.NATIVE_PUBLICATION_BUCKET,
-        accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
-      });
-      const publication = await publications.read(executionScope(payload), payload.publication);
-      // Validate the retained original baseline before propagating its pointer.
-      await publications.source(executionScope(payload), publication);
-      checkAbort(signal);
-      recordNativeBoundary(payload, 'checkpointVerificationCompleted');
-      return { ...loaded, sourceBaseline: publication.sourceBaseline ?? null };
-    },
     async prepareRecovery({ payload, root, project, home, signal }) {
       checkIdentity(env, payload);
       checkAbort(signal);
@@ -534,12 +489,7 @@ export const createNativeExecutionPorts = ({
         identity: dispatch,
         writerGeneration: dispatch.writerGeneration,
         recoveryId: dispatch.recoveryId,
-        checkpointId: nativeWorkspaceRecovery(dispatch.configuration)
-          ? null
-          : dispatch.checkpoint?.id,
-        ...(dispatch.configuration?.recoveryMode
-          ? { recoveryMode: dispatch.configuration.recoveryMode }
-          : {}),
+        recoveryMode: dispatch.configuration?.recoveryMode,
         signal,
       });
       const config = dispatch.configuration;

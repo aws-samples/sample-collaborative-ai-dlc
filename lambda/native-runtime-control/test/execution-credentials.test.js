@@ -50,6 +50,7 @@ const fixture = async () => {
   });
   const configuration = {
     ...nativePreparedConfigurationPins(draft),
+    recoveryMode: 'efs-workspace-v1',
     model: 'openai.test',
     repository: {
       provider: 'github',
@@ -84,6 +85,8 @@ const fixture = async () => {
     bindingId: draft.bindingId,
     version: 3,
     epoch: 1,
+    turnSequence: 1,
+    writerGeneration: 1,
     attemptId: '90000000-0000-4000-8000-000000000001',
     runtimeSessionId: '90000000-0000-4000-8000-000000000002',
     startedBy: ACTOR,

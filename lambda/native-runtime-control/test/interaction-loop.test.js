@@ -213,7 +213,14 @@ it.each([false, true])('native interaction cycle (structured: %s)', async (struc
     for (let i = 0; i < 4; i++) await supervisor(f.identity);
     expect(f.row().status).toBe('RUNNING');
     await runtime.settle();
-    expect((await runtime.status(executionIdentity(f.row()))).status).toBe('publication_ready');
+    expect(
+      (
+        await runtime.status({
+          ...executionIdentity(f.row()),
+          writerGeneration: f.row().writerGeneration,
+        })
+      ).status,
+    ).toBe('publication_ready');
     await supervisor(f.identity);
     expect(f.row().status).toBe('AWAITING_USER');
     await supervisor(f.identity);
@@ -365,7 +372,11 @@ it.each([false, true])('native interaction cycle (structured: %s)', async (struc
       expect(modelTurns).toBe(3);
     }
   } finally {
-    if (runtime.isBusy()) await runtime.cancel(executionIdentity(f.row()));
+    if (runtime.isBusy())
+      await runtime.cancel({
+        ...executionIdentity(f.row()),
+        writerGeneration: f.row().writerGeneration,
+      });
     await runtime.settle();
     await fs.rm(temp, { recursive: true, force: true });
   }

@@ -24,10 +24,16 @@ const transition = (before, row) => {
   if (!before.dispatch && row.dispatch)
     return ['dispatch.attempted', 'Dispatch attempted; delivery not yet confirmed'];
   if (before.recovery?.phase !== row.recovery?.phase && row.recovery?.phase === 'RESTORING')
-    return ['recovery.restoring', 'Predecessor stopped; restoring the saved session'];
+    return [
+      'recovery.resuming',
+      'Predecessor stopped; starting a fresh session on the surviving workspace',
+    ];
   if (before.status !== row.status) {
-    if (before.status === 'RECOVERING' && row.status === 'DISPATCHING')
-      return ['recovery.restored', 'Saved session restored; dispatch queued'];
+    if (before.status === 'RECOVERING' && row.status === 'RUNNING')
+      return [
+        'recovery.resumed',
+        'Fresh session admitted; earlier answers retained without replay',
+      ];
     return [row.status.toLowerCase(), labels[row.status]];
   }
   return null;
@@ -37,8 +43,8 @@ export const nativeExecutionHistory = (before, row) => {
   const fact = transition(before, row);
   if (!fact) return null; // Leases, heartbeats and projection bookkeeping are not events.
   const [type, label] = fact;
-  const sequence = row.turnSequence ?? 1;
-  const generation = row.writerGeneration ?? 1;
+  const sequence = row.turnSequence;
+  const generation = row.writerGeneration;
   const timing = [];
   if (type === 'accepted' || type === 'dispatch.attempted')
     timing.push(

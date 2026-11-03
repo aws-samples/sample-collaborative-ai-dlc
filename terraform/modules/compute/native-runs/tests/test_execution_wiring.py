@@ -186,7 +186,7 @@ class NativeExecutionWiring(unittest.TestCase):
         self.assertIn('"${local.ssm_prefix_arn}/tier-models"', api)
         self.assertNotIn("bedrock-bearer-token", api)
 
-    def test_private_recovery_bytes_are_not_member_artifacts_or_runtime_authority(self):
+    def test_private_checkpoint_access_is_removed_from_every_native_role(self):
         extension = EXECUTION.split("execution_runtime_boundary_statements = [", 1)[1].split("\n}\n", 1)[0]
         runtime = block(MAIN, 'resource "aws_iam_policy" "runtime_boundary"') + extension
         worker = block(EXECUTION, 'resource "aws_iam_role_policy" "execution_worker"')
@@ -195,9 +195,9 @@ class NativeExecutionWiring(unittest.TestCase):
         )[1].split("execution_runtime_boundary_statements = [", 1)[0]
         checkpoint = "native-recovery/v1/scope/attempt/1/manifests/hash.json"
         for action in ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]:
-            self.assertTrue(permits_s3(runtime, action, checkpoint))
+            self.assertFalse(permits_s3(runtime, action, checkpoint))
             self.assertFalse(permits_s3(api, action, checkpoint))
-        self.assertTrue(permits_s3(worker, "s3:GetObjectVersion", checkpoint))
+        self.assertFalse(permits_s3(worker, "s3:GetObjectVersion", checkpoint))
         for action in ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:DeleteObjectVersion"]:
             self.assertFalse(permits_s3(worker, action, checkpoint))
         for action in ["s3:DeleteObject", "s3:DeleteObjectVersion"]:

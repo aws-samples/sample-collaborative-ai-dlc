@@ -9,7 +9,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { nativePublicationPath } from '../../shared/native-publication.js';
 import { canonicalNativePath, nativeFileExclusion } from '../../shared/native-project-files.js';
 import { nativeSnapshotDiagnostic } from '../../shared/native-execution-failure.js';
-import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-dependency-links.js';
+import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-project-files.js';
 export { canonicalNativePath, nativeFileExclusion } from '../../shared/native-project-files.js';
 
 export const NATIVE_SNAPSHOT_LIMITS = Object.freeze({

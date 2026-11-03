@@ -26,6 +26,7 @@ const preparationKey = nativeRuntimeBindingKey(IDENTITY);
 const executionKey = { ...preparationKey, sk: 'EXECUTION' };
 const bindingIdentity = { ...IDENTITY, bindingId: OTHER };
 const CONFIGURATION = {
+  recoveryMode: 'efs-workspace-v1',
   harness: 'codex',
   model: null,
   promptSha256: digest(request().prompt),
@@ -248,6 +249,30 @@ const setup = ({ leaseMs = 100 } = {}) => {
 };
 
 describe('first native Start and protected preparation boundary', () => {
+  it.each([undefined, null, 'snapshot-v1', 'unknown'])(
+    'rejects unsupported recovery configuration before accepting Start: %s',
+    async (recoveryMode) => {
+      const f = setup();
+      await expect(
+        f.start({ configuration: { ...CONFIGURATION, recoveryMode } }),
+      ).rejects.toMatchObject(rejection('INVALID'));
+      expect(f.read()).toBeUndefined();
+      expect(
+        f.ddb.send.mock.calls.some(([command]) => command instanceof TransactWriteCommand),
+      ).toBe(false);
+    },
+  );
+
+  it('rejects a retired private checkpoint without changing publication or history', async () => {
+    const f = setup();
+    const row = await f.dispatching();
+    const retained = structuredClone([...f.rows]);
+    await expect(
+      f.store.publish({ row, publication: PUBLICATION, checkpoint: { id: 'a'.repeat(64) } }),
+    ).rejects.toMatchObject(rejection('INVALID'));
+    expect([...f.rows]).toEqual(retained);
+  });
+
   it('records acceptance through publication and cancellation without lease noise or invented success', async () => {
     const f = setup();
     let row = await f.dispatching();

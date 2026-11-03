@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { canonicalJson } from './workflow-checkpoint.js';
-import { NATIVE_DEPENDENCY_POLICY } from './native-dependency-links.js';
+import { NATIVE_DEPENDENCY_POLICY } from './native-project-files.js';
 import { nativeFileExclusion } from './native-project-files.js';
 
 const SHA = /^[a-f0-9]{64}$/;
@@ -26,7 +26,7 @@ const safeVersion = (v) =>
 const exact = (v, fields) =>
   object(v) && Object.keys(v).length === fields.length && fields.every((f) => Object.hasOwn(v, f));
 
-// Keep the same four-request bound as private checkpoints. A failed inventory
+// Bound public object verification to four requests. A failed inventory
 // drains all started operations and never advances to its manifest commit.
 const eachFile = async (files, operation) => {
   let next = 0;

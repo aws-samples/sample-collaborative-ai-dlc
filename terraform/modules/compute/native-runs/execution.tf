@@ -85,14 +85,6 @@ locals {
       Action   = ["s3:GetObject"]
       Resource = "${aws_s3_bucket.publications.arn}/native-execution-control/v1/*"
     },
-    {
-      # Mandatory resume state, separate from public artifacts and optional
-      # debug archives. Per-runtime inline policy narrows to its exact attempt.
-      Sid      = "PreserveNativeRecoveryCheckpoints"
-      Effect   = "Allow"
-      Action   = ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion"]
-      Resource = "${aws_s3_bucket.publications.arn}/native-recovery/v1/*"
-    },
   ]
 }
 
@@ -207,14 +199,6 @@ resource "aws_iam_role_policy" "execution_worker" {
         Effect   = "Allow"
         Action   = ["s3:GetObjectVersion"]
         Resource = "${aws_s3_bucket.publications.arn}/native-executions/*"
-      },
-      {
-        # The controller verifies every pinned object version before committing
-        # a checkpoint receipt. It does not upload or alter private CLI bytes.
-        Sid      = "VerifyNativeRecoveryCheckpoints"
-        Effect   = "Allow"
-        Action   = ["s3:GetObjectVersion"]
-        Resource = "${aws_s3_bucket.publications.arn}/native-recovery/v1/*"
       },
       {
         # S3 returns AccessDenied for a missing GetObject key unless the caller

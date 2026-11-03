@@ -40,6 +40,7 @@ const response = {
   deliveryStatus: 'pending',
 };
 const execution = {
+  recoveryMode: 'efs-workspace-v1',
   status: 'AWAITING_USER',
   attemptId: 'attempt-1',
   epoch: 1,
@@ -174,7 +175,12 @@ describe('native recovery contract', () => {
     get.mockResolvedValue({ ...detail, execution: { ...execution, ...patch } });
     await expect(nativeIntentsService.get('project-1', 'run-1')).rejects.toThrow();
   });
-  const recovery = { id: 'recovery-1', reason: 'RESTORE_FAILED', canRecover: true };
+  const recovery = {
+    id: 'recovery-1',
+    reason: 'RESTORE_FAILED',
+    canRecover: true,
+    workflowResumeState: 'created',
+  };
   const recovering = {
     ...detail,
     execution: {
@@ -187,6 +193,7 @@ describe('native recovery contract', () => {
   const recoveryRequest = {
     requestId: '62e0aef9-a09a-4d40-851a-33b814de26b9',
     recoveryId: recovery.id,
+    confirmWorkspaceResume: true as const,
   };
 
   it('reads explicit recovery metadata while discarding private checkpoint fields', async () => {
@@ -212,7 +219,7 @@ describe('native recovery contract', () => {
     },
     {
       status: 'RECOVERY_REQUIRED',
-      recovery: { ...recovery, reason: 'CHECKPOINT_UNAVAILABLE', canRecover: false },
+      recovery: { ...recovery, reason: 'WORKSPACE_UNAVAILABLE', canRecover: false },
     },
     {
       status: 'RECOVERY_REQUIRED',
@@ -296,7 +303,7 @@ describe('native recovery contract', () => {
   });
 
   it.each([
-    { requestId: 'invalid', recoveryId: recovery.id },
+    { ...recoveryRequest, requestId: 'invalid' },
     { ...recoveryRequest, recoveryId: '' },
     { ...recoveryRequest, recoveryId: '../other' },
   ])('rejects an invalid recovery request before POST %#', async (input) => {

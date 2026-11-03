@@ -45,7 +45,6 @@ export const executionObservationPort = (options) =>
       'release',
       'dispatchAttempted',
       'dispatched',
-      'beginRecovery',
       'recoveryStopped',
       'recovered',
       'recoveryRequired',

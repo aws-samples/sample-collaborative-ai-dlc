@@ -13,11 +13,7 @@ import {
   NATIVE_PENDING_INPUT_LIMITS,
   NATIVE_TYPED_ASK_TYPES,
 } from '../../shared/native-pending-input.js';
-import { NATIVE_RECOVERY_LIMITS } from '../../shared/native-recovery-checkpoint.js';
-import {
-  nativeRecoveryModeValid,
-  nativeWorkspaceRecovery,
-} from '../../shared/native-recovery-mode.js';
+import { nativeWorkspaceRecovery } from '../../shared/native-recovery-mode.js';
 import { createNativeTurnOutput } from './turn-output.js';
 import { resolveKiroPromptEvidence } from './kiro-prompt.js';
 import { kiroAssistantHash } from './kiro-acp-turn.js';
@@ -42,18 +38,13 @@ import {
   nativeRuntimeFailureCode,
   nativeSnapshotDiagnostic,
 } from '../../shared/native-execution-failure.js';
-import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-dependency-links.js';
-import {
-  captureNativeSessionRecovery,
-  restoreNativeSessionRecovery,
-} from './session-recovery-files.js';
-
+import { NATIVE_DEPENDENCY_POLICY } from '../../shared/native-project-files.js';
 const HARNESSES = ['claude', 'codex', 'kiro', 'opencode'];
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-preview\.\d{8}\.[1-9]\d*)?$/;
 const SCOPE = ['projectId', 'executionId', 'bindingId'];
 const IDENTITY = [...SCOPE, 'attemptId', 'epoch', 'runtimeSessionId'];
-const ACTIVE = new Set(['preparing', 'running', 'publishing', 'recovering', 'cancelling']);
+const ACTIVE = new Set(['preparing', 'running', 'publishing', 'cancelling']);
 const HOST_PATH =
   '/opt/kiro/bin:/opt/opencode/bin:/opt/bun/bin:/opt/uv/bin:/usr/local/bin:/usr/bin:/bin';
 const BINARIES = {
@@ -61,13 +52,6 @@ const BINARIES = {
   codex: '/usr/local/bin/codex',
   opencode: '/opt/opencode/bin/opencode',
 };
-const RECOVERY_CAPTURE_LIMITS = Object.freeze({
-  maxFiles: NATIVE_RECOVERY_LIMITS.files,
-  maxEntries: NATIVE_RECOVERY_LIMITS.entries,
-  maxFileBytes: NATIVE_RECOVERY_LIMITS.fileBytes,
-  maxTotalBytes: NATIVE_RECOVERY_LIMITS.totalBytes,
-  maxDepth: NATIVE_RECOVERY_LIMITS.depth,
-});
 const fail = (code) => {
   throw Object.assign(new Error(code), { code });
 };
@@ -103,7 +87,7 @@ export const nativeWorkspaceResumePrompt = ({ harness }) => {
 // The pinned engine consumes the entire /aidlc message as human input. Keep
 // platform guidance in the harness instruction channel: adding an annex here
 // changes both command parsing and the provenance of recorded human answers.
-export const nativeTransportInstructions = ({ recoveryMode } = {}) => {
+export const nativeTransportInstructions = () => {
   return (
     'Platform transport instruction: The user message contains the exact request, reply, ' +
     'or explicitly confirmed fresh-session resume entrypoint. Follow the pinned AI-DLC ' +
@@ -116,9 +100,7 @@ export const nativeTransportInstructions = ({ recoveryMode } = {}) => {
     'the user. Do not approve a gate, answer on behalf of the user, or continue past that wait. ' +
     'Native filesystem capability: ordinary npm installs, local file: dependencies and builds ' +
     'are supported. Generated node_modules trees, including bounded relative internal links, ' +
-    (nativeWorkspaceRecovery({ recoveryMode })
-      ? 'remain in this persistent workspace; no exact private CLI backup is required. Authored files, package manifests and lockfiles '
-      : 'are retained exactly in private recovery; authored files, package manifests and lockfiles ') +
+    'remain in this persistent workspace. Authored files, package manifests and lockfiles ' +
     'remain published. Other public symbolic links, external/absolute or private targets, ' +
     'cycles and missing targets are unsupported. Do not skip required dependencies or tests ' +
     'or copy private files as a workaround. ' +
@@ -655,7 +637,7 @@ export const configureNativeClaudeSessionEnd = async (project) => {
 const canonicalConfig = (configuration) => {
   if (
     !configuration ||
-    !nativeRecoveryModeValid(configuration) ||
+    !nativeWorkspaceRecovery(configuration) ||
     !HARNESSES.includes(configuration.harness) ||
     !(configuration.model === null || safeText(configuration.model, 256)) ||
     !text(configuration.prompt, 64 * 1024) ||
@@ -669,7 +651,7 @@ const canonicalConfig = (configuration) => {
   const { harness, model, prompt, packageVersion, repository } = configuration;
   return {
     harness,
-    ...(configuration.recoveryMode ? { recoveryMode: configuration.recoveryMode } : {}),
+    recoveryMode: configuration.recoveryMode,
     model,
     prompt,
     packageVersion,
@@ -716,11 +698,7 @@ export const createNativeExecutor = ({
   publishInteraction,
   assertActive,
   assertRecoveryAdmission,
-  publishRecovery,
-  loadRecovery,
   prepareRecovery,
-  captureRecovery = captureNativeSessionRecovery,
-  restoreRecovery = restoreNativeSessionRecovery,
   commandRunner = runNativeCommand,
   root = '/mnt/native',
   homeRoot = '/home/node/.native-homes',
@@ -756,7 +734,7 @@ export const createNativeExecutor = ({
   let task = null;
   let poisoned = false;
   const generationOf = (value) => {
-    const generation = value?.writerGeneration ?? 1;
+    const generation = value?.writerGeneration;
     if (!Number.isSafeInteger(generation) || generation < 1)
       fail('native_execution_scope_mismatch');
     return generation;
@@ -859,7 +837,7 @@ export const createNativeExecutor = ({
       capabilities: [NATIVE_ACTIVITY_CAPABILITY],
     });
   const persist = () => writeJson(join(ownerDirectory, 'status.json'), current.report, true);
-  const checkpoint = async (status, extra = {}) => {
+  const setStatus = async (status, extra = {}) => {
     current.report = { ...current.report, ...extra, status, updatedAt: Date.now() };
     await persist();
   };
@@ -909,16 +887,16 @@ export const createNativeExecutor = ({
     const signal = current.controller.signal;
     const continuing = payload.command !== 'native-start';
     if (payload.command === 'native-resume') {
-      const restored = await prepareRecovery({
+      const resumed = await prepareRecovery({
         payload,
         root,
         project,
         home: current.home,
         signal,
       });
-      if (restored?.package?.packageId !== current.workspacePackageId)
+      if (resumed?.package?.packageId !== current.workspacePackageId)
         fail('native_execution_workspace_invalid');
-      current.package = restored.package;
+      current.package = resumed.package;
     }
     const prepared = continuing
       ? await prepareContinuation({ payload, signal })
@@ -1074,27 +1052,25 @@ export const createNativeExecutor = ({
       await checkDirectories();
       if (configuration.harness === 'claude') await configureNativeClaudeSessionEnd(project);
       current.package = structuredClone(pkg);
-      if (nativeWorkspaceRecovery(configuration)) {
-        const nodes = {};
-        for (const [name, path] of [
-          ['root', root],
-          ['project', project],
-          ['machine', join(root, 'machine')],
-        ]) {
-          await privateDirectory(path);
-          // NFS st_dev belongs to the current client mount, not the surviving
-          // EFS directory. Persist its full-width file ID, never that device ID.
-          nodes[name] = { ino: String((await fs.lstat(path, { bigint: true })).ino) };
-        }
-        await writeJson(join(control, 'workspace.json'), {
-          schemaVersion: 1,
-          identity: current.identity,
-          configurationSha256: current.configurationSha256,
-          packageId: pkg.packageId,
-          sourceBaseline: current.sourceBaseline,
-          nodes,
-        });
+      const nodes = {};
+      for (const [name, path] of [
+        ['root', root],
+        ['project', project],
+        ['machine', join(root, 'machine')],
+      ]) {
+        await privateDirectory(path);
+        // NFS st_dev belongs to the current client mount, not the surviving
+        // EFS directory. Persist its full-width file ID, never that device ID.
+        nodes[name] = { ino: String((await fs.lstat(path, { bigint: true })).ino) };
       }
+      await writeJson(join(control, 'workspace.json'), {
+        schemaVersion: 1,
+        identity: current.identity,
+        configurationSha256: current.configurationSha256,
+        packageId: pkg.packageId,
+        sourceBaseline: current.sourceBaseline,
+        nodes,
+      });
       timing('initializationVerificationCompleted');
     }
     timing('installationCompleted');
@@ -1189,7 +1165,7 @@ export const createNativeExecutor = ({
         timing('outputRejected', diagnostic);
       },
     });
-    await checkpoint('running', { packageId: pkg.packageId });
+    await setStatus('running', { packageId: pkg.packageId });
     activityTurn.lifecycle({ title: 'Agent started' });
     // Recheck after package/credential preparation as well as at admission.
     // No workflow command is used to discover state or answer a pending offer.
@@ -1322,7 +1298,7 @@ export const createNativeExecutor = ({
       outputTruncated: result.outputLimitExceeded === true,
     };
     checkCancelled();
-    await checkpoint('publishing', { nativeSessionId, outputTruncated: outcome.outputTruncated });
+    await setStatus('publishing', { nativeSessionId, outputTruncated: outcome.outputTruncated });
     return {
       completed,
       files,
@@ -1334,9 +1310,9 @@ export const createNativeExecutor = ({
     };
   };
 
-  // Public receipts and private CLI recovery bytes complete before the local head moves.
+  // Public receipts complete before the local head moves.
   const publishNativeTurn = async (
-    { signal, pkg, configuration, forbiddenBytes, activityTurn },
+    { signal, pkg, configuration, activityTurn },
     { completed, files, pendingInput, presentation, nativeSessionId, outcome, nextPromptEvidence },
   ) => {
     const publicationOutcome =
@@ -1425,71 +1401,18 @@ export const createNativeExecutor = ({
     )
       fail('native_execution_interaction_unconfirmed');
     timing('interactionUploadCompleted');
-    let recoveryCheckpoint;
     const continuation = {
       promptEvidence: nextPromptEvidence ?? null,
       priorAssistantSha256: kiroAssistantHash(
         completed.messages.map((message) => message.text).join(''),
       ),
     };
-    if (publishRecovery && !nativeWorkspaceRecovery(configuration)) {
-      // Quiescent private session state is required for the next reply.
-      // Public artifact/message uploads alone are not a resumable session.
-      timing('checkpointCaptureStarted');
-      activityTurn.lifecycle({ title: 'Capturing exact recovery checkpoint' });
-      const captured = await captureRecovery({
-        project,
-        home: current.home,
-        harness: configuration.harness,
-        nativeSessionId,
-        forbiddenBytes,
-        signal,
-        limits: RECOVERY_CAPTURE_LIMITS,
-        filesystemPolicy: files.filesystemPolicy,
-      });
-      const captureCounts = {
-        files: captured.files.length,
-        bytes: captured.files.reduce((total, file) => total + file.bytes, 0),
-      };
-      timing('checkpointCaptureCompleted', captureCounts);
-      await checkDirectories();
-      checkCancelled();
-      timing('checkpointUploadStarted', captureCounts);
-      activityTurn.lifecycle({ title: 'Saving recovery checkpoint' });
-      recoveryCheckpoint = await publishRecovery({
-        identity: current.identity,
-        writerGeneration: current.writerGeneration,
-        sequence: receipt.sequence,
-        nativeSessionId,
-        harness: configuration.harness,
-        configurationSha256: current.configurationSha256,
-        packageId: pkg.packageId,
-        imageDigest: env.NATIVE_EXECUTION_IMAGE_DIGEST,
-        publicationId: receipt.id,
-        interactionId: interaction.id,
-        continuation,
-        filesystem: captured.metadata,
-        files: captured.files,
-        forbiddenBytes,
-        signal,
-      });
-      checkCancelled();
-      if (
-        recoveryCheckpoint?.sequence !== receipt.sequence ||
-        !/^[a-f0-9]{64}$/.test(recoveryCheckpoint.id ?? '') ||
-        recoveryCheckpoint.manifest?.sha256 !== recoveryCheckpoint.id
-      )
-        fail('native_execution_recovery_unconfirmed');
-      timing('checkpointUploadCompleted', captureCounts);
-      activityTurn.lifecycle({ title: 'Checkpoint uploaded; awaiting publication verification' });
-    }
-    await checkpoint('publication_ready', {
+    await setStatus('publication_ready', {
       outcome: publicationOutcome,
       waitEvidence: outcome.evidence ?? null,
       stopCode: outcome.code,
       receipt,
       interaction,
-      ...(recoveryCheckpoint ? { checkpoint: recoveryCheckpoint } : {}),
     });
     checkCancelled();
     current.head = structuredClone(current.report);
@@ -1542,7 +1465,7 @@ export const createNativeExecutor = ({
       }
     } finally {
       activityTurn?.close({
-        failed: !['publication_ready', 'recovery_ready'].includes(current.report.status),
+        failed: current.report.status !== 'publication_ready',
       });
       current.executing = false;
     }
@@ -1597,14 +1520,12 @@ export const createNativeExecutor = ({
         current.writerGeneration !== writerGeneration
       )
         fail('native_execution_owner_conflict');
-      const observation = current.workspaceRecovery
-        ? {
-            workflowResumeState: await workspaceResumeObservation(
-              identity,
-              current.configurationSha256,
-            ),
-          }
-        : {};
+      const observation = {
+        workflowResumeState: await workspaceResumeObservation(
+          identity,
+          current.configurationSha256,
+        ),
+      };
       return { ...report(), ...observation };
     }
     const owner = await readExisting(identity, writerGeneration);
@@ -1641,7 +1562,7 @@ export const createNativeExecutor = ({
       if (
         saved.schemaVersion === 1 &&
         sameIdentity(saved, identity) &&
-        ['publication_ready', 'recovery_ready'].includes(saved.status) &&
+        saved.status === 'publication_ready' &&
         ['WAITING_FOR_INPUT', 'STOPPED'].includes(saved.outcome) &&
         ((saved.outcome === 'STOPPED' && saved.nativeSessionId === null) ||
           ID.test(saved.nativeSessionId ?? '')) &&
@@ -1673,7 +1594,6 @@ export const createNativeExecutor = ({
           sequence: saved.sequence,
           ...(saved.requestId ? { requestId: saved.requestId } : {}),
           waitEvidence: saved.waitEvidence ?? null,
-          ...(saved.checkpoint ? { checkpoint: saved.checkpoint } : {}),
           recovered: true,
           ...observation,
         };
@@ -1695,7 +1615,7 @@ export const createNativeExecutor = ({
     const writerGeneration = generationOf(input);
     if (
       input.command !== 'native-start' ||
-      input.schemaVersion !== (nativeWorkspaceRecovery(input.configuration) ? 2 : 1) ||
+      input.schemaVersion !== 2 ||
       writerGeneration !== 1 ||
       (input.sequence !== undefined && input.sequence !== 1)
     )
@@ -1740,7 +1660,6 @@ export const createNativeExecutor = ({
         identity,
         writerGeneration,
         configurationSha256,
-        workspaceRecovery: nativeWorkspaceRecovery(configuration),
         directories,
         controller: new AbortController(),
         report: {
@@ -1832,7 +1751,6 @@ export const createNativeExecutor = ({
         identity,
         writerGeneration,
         recoveryId: input.recoveryId,
-        checkpointId: null,
         recoveryMode: configuration.recoveryMode,
         signal: controller.signal,
       });
@@ -1888,7 +1806,6 @@ export const createNativeExecutor = ({
         identity,
         writerGeneration,
         configurationSha256,
-        workspaceRecovery: true,
         directories,
         controller,
         sourceBaseline: workspace.sourceBaseline,
@@ -1935,7 +1852,7 @@ export const createNativeExecutor = ({
     const writerGeneration = generationOf(input);
     if (
       input.command !== 'native-continue' ||
-      input.schemaVersion !== (nativeWorkspaceRecovery(input.configuration) ? 2 : 1) ||
+      input.schemaVersion !== 2 ||
       !Number.isSafeInteger(input.sequence) ||
       input.sequence < 2 ||
       !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
@@ -2000,7 +1917,7 @@ export const createNativeExecutor = ({
       if (ACTIVE.has(current.report.status)) fail('native_execution_busy');
       if (
         typeof prepareContinuation !== 'function' ||
-        !['publication_ready', 'recovery_ready'].includes(current.report.status) ||
+        current.report.status !== 'publication_ready' ||
         !current.head ||
         current.head.sequence + 1 !== input.sequence ||
         current.head.receipt?.id !== input.priorPublicationId ||
@@ -2054,302 +1971,6 @@ export const createNativeExecutor = ({
       launching = false;
     }
   };
-  const recover = async (value) => {
-    const input = structuredClone(value);
-    const identity = validateIdentity(input);
-    const writerGeneration = generationOf(input);
-    const configuration = canonicalConfig(input.configuration);
-    const configurationSha256 = digest(JSON.stringify(configuration));
-    if (
-      input.command !== 'native-recover' ||
-      input.schemaVersion !== 1 ||
-      nativeWorkspaceRecovery(configuration) ||
-      writerGeneration < 2 ||
-      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
-        input.recoveryId ?? '',
-      ) ||
-      !Number.isSafeInteger(input.sequence) ||
-      input.sequence < 1 ||
-      input.checkpoint?.sequence !== input.sequence ||
-      !/^[a-f0-9]{64}$/.test(input.checkpoint?.id ?? '') ||
-      input.publication?.sequence !== input.sequence ||
-      input.interaction?.sequence !== input.sequence ||
-      input.interaction?.publicationId !== input.publication?.id ||
-      input.interaction?.nativeSessionId !== input.publication?.nativeSessionId ||
-      !ID.test(input.publication?.nativeSessionId ?? '') ||
-      input.imageDigest !== env.NATIVE_EXECUTION_IMAGE_DIGEST ||
-      ![assertRecoveryAdmission, loadRecovery, prepareRecovery, restoreRecovery].every(
-        (port) => typeof port === 'function',
-      )
-    )
-      fail('native_execution_request_invalid');
-    nativeInteractionReceipt(input.interaction, identity);
-    if (launching) fail('native_execution_busy');
-    if (current) {
-      if (
-        poisoned ||
-        !sameIdentity(current.identity, identity) ||
-        current.writerGeneration !== writerGeneration ||
-        current.configurationSha256 !== configurationSha256 ||
-        current.report.recoveryId !== input.recoveryId ||
-        current.report.checkpointId !== input.checkpoint.id
-      )
-        fail('native_execution_owner_conflict');
-      return { ...report(), accepted: true, duplicate: true };
-    }
-    launching = true;
-    const controller = new AbortController();
-    const admission = () =>
-      assertRecoveryAdmission({
-        identity,
-        writerGeneration,
-        recoveryId: input.recoveryId,
-        checkpointId: input.checkpoint.id,
-        signal: controller.signal,
-      });
-    try {
-      // Only the protected controller can admit this exact successor and
-      // checkpoint, after fencing and stopping its predecessor.
-      await admission();
-      await inspectMount({ workspaceDir: root });
-      const directories = new Map([[root, await privateDirectory(root)]]);
-      await fs.mkdir(control, { mode: 0o700 }).catch((error) => {
-        if (error.code !== 'EEXIST') throw error;
-      });
-      directories.set(control, await privateDirectory(control));
-      ownerDirectory = directoryForGeneration(writerGeneration);
-      try {
-        directories.set(ownerDirectory, await createPrivateDirectory(ownerDirectory));
-      } catch (error) {
-        // A cold partial restore cannot create another writer in the same
-        // generation. The controller must fence and stop it before a retry.
-        if (error.code === 'EEXIST') fail('native_execution_existing_owner');
-        throw error;
-      }
-      current = {
-        identity,
-        writerGeneration,
-        configurationSha256,
-        directories,
-        controller,
-        home: join(homeRoot, identity.bindingId, identity.attemptId),
-        report: {
-          schemaVersion: 1,
-          ...identity,
-          writerGeneration,
-          sequence: input.sequence,
-          recoveryId: input.recoveryId,
-          checkpointId: input.checkpoint.id,
-          status: 'recovering',
-          nativeSessionId: input.publication.nativeSessionId,
-          updatedAt: Date.now(),
-        },
-      };
-      await writeJson(join(ownerDirectory, 'owner.json'), {
-        schemaVersion: 1,
-        identity,
-        writerGeneration,
-        configurationSha256,
-      });
-      await persist();
-      const executeRecovery = async () => {
-        current.executing = true;
-        try {
-          const signal = controller.signal;
-          timing('checkpointDownloadStarted');
-          const loaded = await loadRecovery({ payload: input, signal });
-          timing('checkpointDownloadCompleted');
-          checkCancelled();
-          const { manifest, files } = loaded ?? {};
-          current.sourceBaseline = loaded?.sourceBaseline ?? null;
-          if (
-            manifest?.sequence !== input.sequence ||
-            manifest.writerGeneration >= writerGeneration ||
-            manifest.configurationSha256 !== configurationSha256 ||
-            manifest.publicationId !== input.publication.id ||
-            manifest.interactionId !== input.interaction.id ||
-            manifest.nativeSessionId !== input.publication.nativeSessionId ||
-            manifest.harness !== configuration.harness ||
-            manifest.imageDigest !== env.NATIVE_EXECUTION_IMAGE_DIGEST
-          )
-            fail('native_execution_recovery_unconfirmed');
-          await admission();
-          await checkDirectories();
-          // The complete immutable checkpoint is verified before touching the
-          // workspace. Keep previous directories until restore is complete.
-          const backups = [];
-          const replaceDirectory = async (path, backup) => {
-            try {
-              await privateDirectory(path);
-              await fs.rename(path, backup);
-              backups.push(backup);
-            } catch (error) {
-              if (error.code !== 'ENOENT') throw error;
-            }
-            directories.set(path, await createPrivateDirectory(path));
-          };
-          await replaceDirectory(project, join(ownerDirectory, 'previous-project'));
-          await replaceDirectory(join(root, 'machine'), join(ownerDirectory, 'previous-machine'));
-          for (const path of [join(root, 'machine/data'), join(root, 'machine/bin')])
-            directories.set(path, await createPrivateDirectory(path));
-          await fs.mkdir(homeRoot, { recursive: true, mode: 0o700 });
-          directories.set(homeRoot, await privateDirectory(homeRoot));
-          const bindingHome = join(homeRoot, identity.bindingId);
-          await fs.mkdir(bindingHome, { mode: 0o700 }).catch((error) => {
-            if (error.code !== 'EEXIST') throw error;
-          });
-          directories.set(bindingHome, await privateDirectory(bindingHome));
-          await replaceDirectory(
-            current.home,
-            join(bindingHome, `${identity.attemptId}-before-writer-${writerGeneration}`),
-          );
-          timing('filesystemRestoreStarted');
-          const restored = await restoreRecovery({
-            project,
-            home: current.home,
-            harness: configuration.harness,
-            nativeSessionId: manifest.nativeSessionId,
-            metadata: manifest.filesystem,
-            files,
-            signal,
-            limits: RECOVERY_CAPTURE_LIMITS,
-          });
-          timing('filesystemRestoreCompleted');
-          if (
-            restored?.restored !== true ||
-            restored.nativeSessionId !== manifest.nativeSessionId ||
-            restored.harness !== configuration.harness
-          )
-            fail('native_execution_recovery_unconfirmed');
-          checkCancelled();
-          await checkDirectories();
-          const prepared = await prepareRecovery({
-            payload: input,
-            root,
-            project,
-            home: current.home,
-            signal,
-          });
-          const pkg = prepared?.package;
-          if (
-            !pkg ||
-            pkg.packageId !== manifest.packageId ||
-            pkg.version !== configuration.packageVersion ||
-            !within(join(root, 'packages'), pkg.directory) ||
-            !within(pkg.directory, pkg.binaryPath)
-          )
-            fail('native_execution_preparation_invalid');
-          await privateDirectory(pkg.directory);
-          current.package = structuredClone(pkg);
-          // Reinstall the machine projection from verified pinned package
-          // bytes. The restored project/session data is not reinitialized.
-          const machineEnv = {
-            HOME: current.home,
-            TMPDIR: '/tmp',
-            PATH: HOST_PATH,
-            LANG: 'C.UTF-8',
-            AIDLC_INSTALL_ROOT: join(root, 'machine/data'),
-            AIDLC_BIN_DIR: join(root, 'machine/bin'),
-            AIDLC_PROJECT_DIR: project,
-            AIDLC_OFFLINE: '1',
-          };
-          await run(
-            {
-              command: pkg.binaryPath,
-              args: ['use', pkg.version, '--from', pkg.directory, '--offline', '--json'],
-            },
-            machineEnv,
-          );
-          // The project pin is only honored when the machine pin registry
-          // (machine/data/pins.json, rebuilt above) lists this project. Re-pin
-          // the restored project; it rewrites only its own identical pin files.
-          await run(
-            {
-              command: join(root, 'machine/bin/aidlc'),
-              args: [
-                'config',
-                '--pin',
-                pkg.version,
-                '--project-dir',
-                project,
-                '--from',
-                pkg.directory,
-                '--offline',
-                '--json',
-              ],
-            },
-            machineEnv,
-          );
-          await admission();
-          await checkDirectories();
-          current.promptEvidence = manifest.continuation.promptEvidence;
-          current.priorAssistantSha256 = manifest.continuation.priorAssistantSha256;
-          // These backups are transient restore safety data, not debug
-          // archives. Only directories moved by this admitted restore qualify.
-          const discard = async (path) => {
-            const stat = await fs.lstat(path);
-            if (stat.isDirectory() && !stat.isSymbolicLink()) {
-              if (
-                (typeof process.geteuid === 'function' && stat.uid !== process.geteuid()) ||
-                (await fs.realpath(path)) !== path
-              )
-                fail('native_execution_directory_invalid');
-              await fs.chmod(path, 0o700);
-              for (const name of await fs.readdir(path)) await discard(join(path, name));
-              await fs.rmdir(path);
-            } else await fs.unlink(path);
-          };
-          for (const path of backups) {
-            await checkDirectories();
-            await discard(path);
-          }
-          await admission();
-          await checkpoint('recovery_ready', {
-            receipt: input.publication,
-            interaction: input.interaction,
-            checkpoint: input.checkpoint,
-            outcome: input.publication.outcome,
-            packageId: pkg.packageId,
-          });
-          current.head = structuredClone(current.report);
-        } catch (error) {
-          current.report = {
-            ...current.report,
-            status: 'stopped_needs_review',
-            code: 'native_execution_recovery_failed',
-            recoveryFailureCode: nativeRuntimeFailureCode(error),
-            updatedAt: Date.now(),
-          };
-          recordNativeBoundary(current.identity, 'executionFailed', current.report.updatedAt, {
-            code: current.report.recoveryFailureCode,
-            sequence: current.report.sequence,
-            writerGeneration: current.writerGeneration,
-          });
-          if (!poisoned) {
-            try {
-              await persist();
-            } catch {
-              poisoned = true;
-            }
-          }
-        } finally {
-          current.executing = false;
-        }
-      };
-      task = new Promise((resolveTask) => setImmediate(() => resolveTask(executeRecovery())));
-      return { ...report(), accepted: true, duplicate: false };
-    } catch (error) {
-      if (current) {
-        poisoned = true;
-        current.report.status = 'stopped_needs_review';
-        current.report.code = 'native_execution_recovery_failed';
-      }
-      if (/^native_execution_[a-z_]{1,64}$/.test(error?.code ?? '')) throw error;
-      fail('native_execution_recovery_failed');
-    } finally {
-      launching = false;
-    }
-  };
   const cancel = async (value) => {
     const identity = validateIdentity(value);
     if (!current) return status(value);
@@ -2358,17 +1979,10 @@ export const createNativeExecutor = ({
       current.writerGeneration !== generationOf(value)
     )
       fail('native_execution_owner_conflict');
-    if (
-      !ACTIVE.has(current.report.status) &&
-      !['publication_ready', 'recovery_ready'].includes(current.report.status)
-    )
+    if (!ACTIVE.has(current.report.status) && current.report.status !== 'publication_ready')
       return report();
     current.controller.abort();
-    if (
-      ['publication_ready', 'recovery_ready'].includes(current.report.status) &&
-      !current.executing &&
-      !launching
-    ) {
+    if (current.report.status === 'publication_ready' && !current.executing && !launching) {
       current.report = { ...current.report, status: 'cancelled', updatedAt: Date.now() };
       // There is no active child or execute() persistence owner at this point.
       await persist();
@@ -2404,7 +2018,6 @@ export const createNativeExecutor = ({
     activity,
     start,
     continue: continueTurn,
-    recover,
     resume: resumeWorkspace,
     status,
     cancel,

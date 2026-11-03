@@ -43,7 +43,7 @@ test('forbidden writers and mutator imports fail even when package dependencies 
   );
   assert.deepEqual(checkArchitecture([parsed], manifest, { functions: {} }).length, 2);
 });
-test('prepared, accepted, cold-recovery and unknown references block removal without leaking answers', () => {
+test('prepared, accepted, workspace recovery and unknown references block removal without leaking answers', () => {
   const records = [
     {
       pk: 'a',
@@ -57,9 +57,12 @@ test('prepared, accepted, cold-recovery and unknown references block removal wit
       sk: 'EXECUTION',
       schemaVersion: 1,
       status: 'RECOVERY_REQUIRED',
-      configuration: { image: { digest: 'old-image' }, harness: 'codex' },
+      configuration: {
+        image: { digest: 'old-image' },
+        harness: 'codex',
+        recoveryMode: 'efs-workspace-v1',
+      },
       response: { commandId: 'accepted-once', deliveryStatus: 'pending', text: 'private-answer' },
-      recoveryCheckpoint: { id: 'cold-checkpoint' },
       recovery: { canRecover: true },
     },
     { pk: 'c', sk: 'META', status: 'FAILED' }, // v2 failure cannot imply no dependents
@@ -121,7 +124,6 @@ test('stop evidence never removes retained recovery, publication, package and hi
       packageId: 'package',
       materializationId: 'material',
     },
-    recoveryCheckpoint: { id: 'checkpoint' },
     publication: { id: 'publication' },
     target: { runtimeArn: 'runtime' },
   };
@@ -140,7 +142,7 @@ test('stop evidence never removes retained recovery, publication, package and hi
   ]);
   assert.deepEqual(after, before);
   const reference = after.references.find((ref) => ref.kind === 'execution');
-  for (const dependency of ['image', 'package', 'material', 'checkpoint', 'publication', 'runtime'])
+  for (const dependency of ['image', 'package', 'material', 'publication', 'runtime'])
     assert.ok(reference.dependencies.includes(dependency));
   assert.doesNotMatch(JSON.stringify(after), /private-session/);
   assert.throws(

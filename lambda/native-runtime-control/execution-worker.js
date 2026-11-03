@@ -1,9 +1,7 @@
 import {
   fail,
-  hash,
   recoveryStopId,
   writerOptions,
-  verifyPublicProjectFiles,
   writerPayload,
   checkReportIdentity,
   admitted,
@@ -41,16 +39,11 @@ import { SQSClient, SendMessageCommand } from '@aws-sdk/client-sqs';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
 import { ID, UUID_V4, matches } from './store.js';
 import { nativeTurnSequence, nativeWriterGeneration } from './execution-store.js';
-import {
-  createExecutionRuntimeUpgrade,
-  executionIdentity,
-  executionRuntimeConfiguration,
-} from './execution-runtime.js';
+import { createExecutionRuntimeUpgrade, executionIdentity } from './execution-runtime.js';
 import { nativeDeploymentFromEnv } from './worker.js';
 import { createNativePublications } from '../shared/native-publication.js';
 import { createNativeInteractions } from '../shared/native-interaction.js';
 import { createNativeExecutionFence } from '../shared/native-execution-fence.js';
-import { createNativeRecoveryCheckpoints } from '../shared/native-recovery-checkpoint.js';
 import { createWorkflowSourceService } from '../shared/workflow-source-service.js';
 import { fetchWorkflowSourceMembership } from '../shared/workflow-source-membership.js';
 import { createNativeRuntimeImagePolicy } from './runtime-images.js';
@@ -76,7 +69,6 @@ export const createNativeExecutionSupervisor =
     stop,
     publications,
     interactions,
-    checkpoints,
     fence,
     diagnostics,
     imagePolicy,
@@ -104,6 +96,7 @@ export const createNativeExecutionSupervisor =
     };
     const initial = await controlCall('authority-read', () => store.get(identity));
     if (!initial) return { pending: false, status: 'missing' };
+    if (!nativeWorkspaceRecovery(initial.configuration)) fail('NATIVE_EXECUTION_INVALID');
     const claim = await controlCall('authority-claim', () =>
       store.claim({ ...identity, bindingId: initial.bindingId }),
     );
@@ -114,11 +107,7 @@ export const createNativeExecutionSupervisor =
     let workflowResumeState;
     const observedInvoke = async (input) => {
       const phase = nativeDiagnosticPhase(input.payload.command);
-      if (
-        ['native-start', 'native-continue', 'native-recover', 'native-resume'].includes(
-          input.payload.command,
-        )
-      )
+      if (['native-start', 'native-continue', 'native-resume'].includes(input.payload.command))
         recordNativeBoundary(executionIdentity(state.row), 'dispatchStarted', now(), {
           sequence: nativeTurnSequence(state.row),
           writerGeneration: nativeWriterGeneration(state.row),
@@ -213,27 +202,25 @@ export const createNativeExecutionSupervisor =
       return { pending: true, status };
     };
     const requireRecovery = async (requestedReason, deniedResumeObservation) => {
-      const workspace = nativeWorkspaceRecovery(state.row.configuration);
       const observedState = deniedResumeObservation
         ? deniedResumeObservation.workflowResumeState
         : workflowResumeState;
       const verifiedState = ['created', 'not_created', 'unavailable'].includes(observedState)
         ? observedState
         : 'unavailable';
-      const observedWorkflow = workspace
-        ? requestedReason === 'INTAKE_UNAVAILABLE'
+      const observedWorkflow =
+        requestedReason === 'INTAKE_UNAVAILABLE'
           ? 'not_created'
           : ['WORKSPACE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE'].includes(requestedReason)
             ? 'unavailable'
-            : verifiedState
-        : undefined;
+            : verifiedState;
       const reason =
-        !workspace || requestedReason === 'WORKSPACE_UNAVAILABLE' || observedWorkflow === 'created'
+        requestedReason === 'WORKSPACE_UNAVAILABLE' || observedWorkflow === 'created'
           ? requestedReason
           : observedWorkflow === 'not_created'
             ? 'INTAKE_UNAVAILABLE'
             : 'WORKFLOW_STATE_UNAVAILABLE';
-      const workflowEvidence = workspace ? { workflowResumeState: observedWorkflow } : {};
+      const workflowEvidence = { workflowResumeState: observedWorkflow };
       observe({
         ...observation,
         stage: 'decision',
@@ -241,15 +228,12 @@ export const createNativeExecutionSupervisor =
         reason,
         controlStatus: state.row.status,
         dispatchPresent: Boolean(state.row.dispatch),
-        checkpointPresent: Boolean(state.row.recoveryCheckpoint),
       });
       try {
         await check();
         const recoveryId = recoveryStopId(state.row, reason);
         if (
-          ['CHECKPOINT_UNAVAILABLE', 'INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE'].includes(
-            reason,
-          ) &&
+          ['INTAKE_UNAVAILABLE', 'WORKFLOW_STATE_UNAVAILABLE'].includes(reason) &&
           state.row.status === 'RECOVERING' &&
           state.row.recovery.phase === 'RESTORING'
         ) {
@@ -308,70 +292,6 @@ export const createNativeExecutionSupervisor =
         await current();
         return yieldPending();
       }
-    };
-    const verifyCheckpoint = async (
-      receipt,
-      publication,
-      interaction,
-      generation,
-      verifiedPublication,
-    ) => {
-      if (!checkpoints || !receipt || !interaction) fail('NATIVE_RECOVERY_INVALID');
-      recordNativeBoundary(executionIdentity(state.row), 'checkpointVerificationStarted', now(), {
-        sequence: nativeTurnSequence(state.row),
-      });
-      const manifest = await checkpoints.read(executionIdentity(state.row), receipt, {
-        verifyFiles: true,
-      });
-      if (
-        !Number.isSafeInteger(manifest.writerGeneration) ||
-        manifest.writerGeneration < 1 ||
-        manifest.writerGeneration > nativeWriterGeneration(state.row) ||
-        (generation !== undefined && manifest.writerGeneration !== generation) ||
-        manifest.sequence !== publication.sequence ||
-        manifest.publicationId !== publication.id ||
-        manifest.interactionId !== interaction.id ||
-        manifest.nativeSessionId !== publication.nativeSessionId ||
-        manifest.harness !== state.row.configuration.harness ||
-        manifest.packageId !== state.row.configuration.packageId ||
-        manifest.imageDigest !== state.row.configuration.image.digest ||
-        manifest.configurationSha256 !==
-          hash(JSON.stringify(executionRuntimeConfiguration(draft, state.row)))
-      )
-        fail('NATIVE_RECOVERY_INVALID');
-      await check();
-      let publicManifest = verifiedPublication;
-      if (!publicManifest) {
-        try {
-          publicManifest = await publications.read(
-            {
-              ...executionIdentity(state.row),
-              epoch: state.row.publicationEpoch ?? state.row.epoch,
-            },
-            publication,
-            { verifyFiles: true },
-          );
-        } catch (error) {
-          if (error?.code === 'NATIVE_PUBLICATION_INVALID') fail('NATIVE_RECOVERY_INVALID');
-          if (['NoSuchKey', 'NoSuchVersion', 'NotFound'].includes(error?.name))
-            fail('NATIVE_RECOVERY_MISSING');
-          fail('NATIVE_RECOVERY_UNAVAILABLE');
-        }
-      }
-      if (
-        publicManifest.packageId !== state.row.configuration.packageId ||
-        publicManifest.repository?.commit !== state.row.sourceCommit ||
-        publicManifest.repository?.branch !== state.row.sourceBranch
-      )
-        fail('NATIVE_RECOVERY_INVALID');
-      verifyPublicProjectFiles(manifest, publicManifest);
-      await check();
-      recordNativeBoundary(executionIdentity(state.row), 'checkpointVerificationCompleted', now(), {
-        sequence: manifest.sequence,
-        files: manifest.files?.length,
-        bytes: manifest.files?.reduce((total, file) => total + file.bytes, 0),
-      });
-      return manifest;
     };
     const status = async ({ predecessor = false } = {}) => {
       if (
@@ -484,7 +404,6 @@ export const createNativeExecutionSupervisor =
           state,
           draft,
           store,
-          verifyCheckpoint,
           requireRecovery,
           fence,
           check,
@@ -508,7 +427,6 @@ export const createNativeExecutionSupervisor =
           requireRecovery,
           advance,
           yieldPending,
-          verifyCheckpoint,
           credentials,
           observedInvoke,
           identity,
@@ -553,7 +471,6 @@ export const createNativeExecutionSupervisor =
           failureClass,
           controlStatus: state.row.status,
           dispatchPresent: Boolean(state.row.dispatch),
-          checkpointPresent: Boolean(state.row.recoveryCheckpoint),
         });
         return yieldPending();
       }
@@ -577,7 +494,6 @@ export const createNativeExecutionSupervisor =
           publications,
           interactions,
           check,
-          verifyCheckpoint,
           yieldPending,
         });
       }
@@ -594,8 +510,6 @@ export const createNativeExecutionSupervisor =
       await advance({ status: 'FAILED', failureCode: nativeRuntimeFailureCode(report) }, stopped);
       return { pending: false, status: 'FAILED' };
     } catch (error) {
-      if (error?.code === 'NATIVE_RECOVERY_MISSING')
-        return requireRecovery('CHECKPOINT_UNAVAILABLE');
       if (
         ['NATIVE_EXECUTION_RUNTIME_UNAVAILABLE', 'NATIVE_EXECUTION_RUNTIME_MISMATCH'].includes(
           error?.code,
@@ -618,9 +532,7 @@ export const createNativeExecutionSupervisor =
         )
           return requireRecovery('DELIVERY_UNCERTAIN');
         if (state.row.status === 'DISPATCHING' && error?.name === 'RuntimeClientError')
-          return requireRecovery(
-            state.row.recoveryCheckpoint ? 'SESSION_LOST' : 'CHECKPOINT_UNAVAILABLE',
-          );
+          return requireRecovery('SESSION_LOST');
       }
       const terminal = phaseError(error);
       if (terminal) {
@@ -752,6 +664,7 @@ export const invokeNativeExecutionRuntime = async ({
 // again on its next invocation. Never retry Stop with a new token after a
 // successor could have started. Recovery only advances on the exact positive
 // response; an arbitrary ResourceNotFound does not establish quiescence.
+const hash = (value) => createHash('sha256').update(value).digest('hex');
 export const stopNativeExecutionSession = async ({
   runtime,
   draft,
@@ -895,11 +808,6 @@ export const createNativeExecutionWorker =
             ddb,
             tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
             env,
-          }),
-          checkpoints: createNativeRecoveryCheckpoints({
-            s3,
-            bucket: env.NATIVE_EXECUTION_PUBLICATION_BUCKET,
-            accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
           }),
           fence: createNativeExecutionFence({
             s3,

@@ -18,7 +18,7 @@ const env = { NATIVE_RUNTIME_ACCOUNT_ID: ACCOUNT, AWS_REGION: 'us-east-1' };
 const deployment = { image: CURRENT };
 const row = (status, extra = {}) => ({
   status,
-  configuration: { image: structuredClone(OLD) },
+  configuration: { image: structuredClone(OLD), recoveryMode: 'efs-workspace-v1' },
   target: { imageDigest: OLD.digest },
   ...extra,
 });
@@ -83,21 +83,19 @@ describe('native runtime image policy', () => {
     });
   });
 
-  it.each(['RECOVERY_REQUIRED', 'RECOVERING'])(
-    'retains the pin of %s only while its recovery checkpoint is retained',
-    async (status) => {
+  it.each([undefined, 'snapshot-v1', 'unknown'])(
+    'does not renew a pin for an unsupported recovery mode: %s',
+    async (recoveryMode) => {
       const { images } = policy();
-      const checkpoint = { id: 'c'.repeat(64) };
-      await expect(
-        images.decide({
-          image: OLD,
-          row: row(status, { recoveryCheckpoint: checkpoint, recovery: { canRecover: false } }),
-          deployment,
-        }),
-      ).resolves.toEqual({ status: 'retained' });
-      await expect(images.decide({ image: OLD, row: row(status), deployment })).resolves.toEqual({
-        status: 'unapproved',
-      });
+      for (const status of ['RUNNING', 'RECOVERY_REQUIRED', 'RECOVERING']) {
+        await expect(
+          images.decide({
+            image: OLD,
+            row: row(status, { configuration: { image: OLD, recoveryMode } }),
+            deployment,
+          }),
+        ).resolves.toEqual({ status: 'unapproved' });
+      }
     },
   );
 
@@ -111,7 +109,7 @@ describe('native runtime image policy', () => {
     },
   );
   it.each(['RECOVERY_REQUIRED', 'RECOVERING'])(
-    'retains the exact workspace-mode image during %s without inventing an exact checkpoint',
+    'retains the pinned workspace image during %s and honors revocation',
     async (status) => {
       const revocations = {};
       const { images } = policy(revocations);
@@ -137,7 +135,10 @@ describe('native runtime image policy', () => {
       await expect(
         images.decide({
           image: pinned,
-          row: { status: 'AWAITING_USER', configuration: { image: pinned } },
+          row: {
+            status: 'AWAITING_USER',
+            configuration: { image: pinned, recoveryMode: 'efs-workspace-v1' },
+          },
           deployment,
         }),
       ).resolves.toEqual({ status: 'retained' });
@@ -170,7 +171,10 @@ describe('native runtime image policy', () => {
     await expect(
       images.decide({
         image: pinned,
-        row: { status: 'AWAITING_USER', configuration: { image: pinned } },
+        row: {
+          status: 'AWAITING_USER',
+          configuration: { image: pinned, recoveryMode: 'efs-workspace-v1' },
+        },
         deployment,
       }),
     ).resolves.toEqual({ status: 'unapproved' });

@@ -18,7 +18,13 @@ const route = (action, overrides = {}) => {
     httpMethod: action === 'interaction' ? 'GET' : 'POST',
     ...(action === 'response' ? { body: JSON.stringify(input()) } : {}),
     ...(action === 'recover'
-      ? { body: JSON.stringify({ requestId: OTHER, recoveryId: OTHER }) }
+      ? {
+          body: JSON.stringify({
+            requestId: OTHER,
+            recoveryId: OTHER,
+            confirmWorkspaceResume: true,
+          }),
+        }
       : {}),
     ...overrides,
   };
@@ -106,7 +112,7 @@ describe('native assistant interaction REST boundary', () => {
       expect(result.statusCode).toBe(202);
       expect(f.execution.recover).toHaveBeenCalledWith(
         expect.objectContaining({ projectId: PROJECT }),
-        { requestId: OTHER, recoveryId: OTHER },
+        { requestId: OTHER, recoveryId: OTHER, confirmWorkspaceResume: true },
         expect.any(Function),
       );
       expect(f.execution.respond).not.toHaveBeenCalled();
@@ -117,10 +123,16 @@ describe('native assistant interaction REST boundary', () => {
     undefined,
     {},
     { requestId: OTHER },
-    { requestId: OTHER, recoveryId: 'untrusted-episode' },
-    { requestId: OTHER, recoveryId: OTHER, checkpoint: 'forged-storage-key' },
-    { requestId: OTHER, recoveryId: OTHER, writerGeneration: 100 },
-    { requestId: OTHER, recoveryId: OTHER, text: 'another reply' },
+    { requestId: OTHER, recoveryId: OTHER },
+    { requestId: OTHER, recoveryId: 'untrusted-episode', confirmWorkspaceResume: true },
+    {
+      requestId: OTHER,
+      recoveryId: OTHER,
+      confirmWorkspaceResume: true,
+      checkpoint: 'forged-storage-key',
+    },
+    { requestId: OTHER, recoveryId: OTHER, confirmWorkspaceResume: true, writerGeneration: 100 },
+    { requestId: OTHER, recoveryId: OTHER, confirmWorkspaceResume: true, text: 'another reply' },
   ])('rejects a malformed recovery request before authorization: %j', async (body) => {
     const f = await fixture();
     expect((await f.api(route('recover', { body: JSON.stringify(body) }))).statusCode).toBe(400);

@@ -5,12 +5,11 @@ import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { createServer } from 'node:http';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
-import { expect, it, vi } from 'vitest';
+import { expect, it } from 'vitest';
 import { createNativeExecutor } from '../../agentcore/native/executor.js';
 import { createNativeRuntimeServer } from '../../agentcore/native/runtime-server.js';
 import { createNativeExecutionPorts } from '../../agentcore/native/execution-prepare.js';
 import { runNativeCommand } from '../../agentcore/native/command-runner.js';
-import { captureNativeSessionRecovery } from '../../agentcore/native/session-recovery-files.js';
 import { createNativePublications } from '../../shared/native-publication.js';
 import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeExecutionFence } from '../../shared/native-execution-fence.js';
@@ -100,11 +99,7 @@ it.each([
     NATIVE_PUBLICATION_BUCKET: storage.bucket,
     NATIVE_RUNTIME_ACCOUNT_ID: storage.accountId,
   };
-  const forbiddenPrivate = vi.fn(() => {
-    throw Error('Private recovery must not run');
-  });
   let pkg;
-  let lastHome;
   let modelTurns = 0;
   let nativeSession;
   let setup = 0;
@@ -121,10 +116,6 @@ it.each([
       ...createNativeExecutionPorts({ env, s3: memory.s3 }),
       inspectMount: async () => ({}),
       inspectInitialization: async () => ({ ok: true }),
-      captureRecovery: forbiddenPrivate,
-      publishRecovery: forbiddenPrivate,
-      loadRecovery: forbiddenPrivate,
-      restoreRecovery: forbiddenPrivate,
       prepareRecovery: async () => ({ package: pkg }),
       prepare: async () => {
         const directory = join(root, 'packages/fixture');
@@ -184,7 +175,6 @@ it.each([
             stderr: '',
           };
         }
-        lastHome = input.env.HOME;
         if (!input.args.includes('--resume')) nativeSession = randomUUID();
         modelTurns++;
         const interrupt = interruptRunningResume && modelTurns === 2;
@@ -378,17 +368,6 @@ it.each([
     const first = structuredClone(f.row().publication);
     const oldSession = first.nativeSessionId;
     expect(f.row().recoveryCheckpoint).toBeUndefined();
-    // Direct old exporter reproduction on exactly the surviving tree: the
-    // internal dependency alias is rejected despite a successful public turn.
-    await expect(
-      captureNativeSessionRecovery({
-        project,
-        home: lastHome,
-        harness: 'claude',
-        nativeSessionId: oldSession,
-        filesystemPolicy: 'node-dependencies-v1',
-      }),
-    ).rejects.toMatchObject({ code: 'native_recovery_external_hardlink' });
     const firstRow = structuredClone(f.row());
     const question = await api.interaction(f.prepared, recheck);
     const reply = {
@@ -401,7 +380,7 @@ it.each([
     if (['delivered', 'uncertain'].includes(scenario)) {
       await supervisor(f.identity);
       await interrupted;
-      await runtime.cancel(firstIdentity);
+      await runtime.cancel({ ...firstIdentity, writerGeneration: 1 });
       await runtime.settle();
     }
     const priorModelTurns = modelTurns;
@@ -510,7 +489,6 @@ it.each([
         expect(await fs.readFile(join(root, 'wrong-project/unfinished.md'), 'utf8')).toBe(
           'Unpublished work must survive.\n',
         );
-        expect(forbiddenPrivate).not.toHaveBeenCalled();
         expect(memory.writes.some((key) => key.startsWith('native-recovery/'))).toBe(false);
       }
       return;
@@ -648,7 +626,6 @@ it.each([
     await api.respond(f.prepared, ACTOR, reply, recheck);
     await supervisor(f.identity);
     expect(modelTurns).toBe(expectedTurns);
-    expect(forbiddenPrivate).not.toHaveBeenCalled();
     expect(memory.writes.some((key) => key.startsWith('native-recovery/'))).toBe(false);
     await api.cancel(f.prepared, recheck);
     await supervisor(f.identity);

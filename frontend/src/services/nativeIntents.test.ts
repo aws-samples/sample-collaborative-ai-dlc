@@ -378,6 +378,7 @@ describe('protected native discovery list', () => {
 describe('native execution and committed publication boundary', () => {
   const requestId = 'a1227042-0661-4843-8138-9d08fdd0a890';
   const execution = {
+    recoveryMode: 'efs-workspace-v1',
     status: 'WAITING_FOR_INPUT',
     attemptId: 'attempt-1',
     epoch: 1,

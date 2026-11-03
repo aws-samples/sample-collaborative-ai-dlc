@@ -3,8 +3,6 @@ import { createExecutionRuntimeUpgrade, nativeExecutionPolicy } from '../executi
 import { nativeRuntimeEnvironment } from '../provisioner.js';
 import { runtimePolicyDocuments } from '../policies.js';
 import { nativeRuntimeResourceNames } from '../../shared/native-runtime-binding.js';
-import { nativeRecoveryScope } from '../../shared/native-recovery-checkpoint.js';
-import { executionIdentity } from '../execution-runtime.js';
 import { executionFixture } from './execution-fixtures.js';
 import { DEPLOYMENT } from './fixtures.js';
 
@@ -205,26 +203,20 @@ describe('explicit native runtime upgrade', () => {
       false,
     );
     const recovery = policy.Statement.find((s) => s.Sid === 'PreserveOwnRecoveryCheckpoint');
-    expect(recovery).toEqual({
-      Sid: 'PreserveOwnRecoveryCheckpoint',
-      Effect: 'Allow',
-      Action: ['s3:PutObject', 's3:GetObject', 's3:GetObjectVersion'],
-      Resource: `arn:aws:s3:::${f.configuration.publicationBucket}/${nativeRecoveryScope(executionIdentity(f.execution)).prefix}*`,
-    });
-    expect(recovery.Resource).not.toContain('native-executions/');
-    expect(recovery.Resource).not.toContain('native-execution-control/');
-    const workspace = nativeExecutionPolicy({
-      draft: f.draft,
-      execution: {
-        ...f.execution,
-        configuration: { ...f.execution.configuration, recoveryMode: 'efs-workspace-v1' },
-      },
-      deployment: f.deployment,
-    }).permissionsPolicy;
-    expect(workspace.Statement).toEqual(
-      policy.Statement.filter((s) => s.Sid !== 'PreserveOwnRecoveryCheckpoint'),
-    );
+    expect(recovery).toBeUndefined();
+    expect(JSON.stringify(policy)).not.toContain('native-recovery/');
   });
+
+  it.each([undefined, null, 'snapshot-v1', 'unknown'])(
+    'does not grant runtime permissions for unsupported recovery mode %s',
+    async (recoveryMode) => {
+      const f = await make();
+      f.execution.configuration.recoveryMode = recoveryMode;
+      await expect(f.run()).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_RUNTIME_MISMATCH' });
+      expect(f.iam.send).not.toHaveBeenCalled();
+      expect(f.control.send).not.toHaveBeenCalled();
+    },
+  );
 
   it('does not mutate after authority is revoked', async () => {
     const f = await make();

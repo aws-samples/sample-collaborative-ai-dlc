@@ -65,6 +65,7 @@ export async function nativeInteractionFixture(scenario = 'waiting') {
     createdAt: '2026-09-29T11:00:00Z',
     updatedAt: '2026-09-29T12:00:00Z',
     execution: {
+      recoveryMode: 'efs-workspace-v1',
       status: 'AWAITING_USER',
       attemptId: 'preview-attempt',
       epoch: 1,

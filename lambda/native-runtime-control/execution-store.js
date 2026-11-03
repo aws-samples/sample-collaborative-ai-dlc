@@ -3,10 +3,7 @@
 // manifest/file verification remain the caller's responsibility.
 import { createHash, randomUUID } from 'node:crypto';
 import { NATIVE_RUNTIME_FAILURE_CODES } from '../shared/native-execution-failure.js';
-import {
-  nativeRecoveryModeValid,
-  nativeWorkspaceRecovery,
-} from '../shared/native-recovery-mode.js';
+import { nativeWorkspaceRecovery } from '../shared/native-recovery-mode.js';
 import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import {
   nativeRuntimeBindingKey,
@@ -173,26 +170,23 @@ const branch = (value) =>
       .every((part) => part !== '' && !part.startsWith('.') && !part.endsWith('.lock')));
 
 export const nativeExecutionConfiguration = (value) => {
-  shape(
-    value,
-    [
-      'harness',
-      'model',
-      'promptSha256',
-      'packageId',
-      'materializationId',
-      'source',
-      'repository',
-      'credentialBinding',
-      'image',
-      'publicationBucket',
-      'packageBucket',
-      'accountId',
-    ],
-    ['recoveryMode'],
-  );
+  shape(value, [
+    'harness',
+    'model',
+    'promptSha256',
+    'packageId',
+    'materializationId',
+    'source',
+    'repository',
+    'credentialBinding',
+    'image',
+    'publicationBucket',
+    'packageBucket',
+    'accountId',
+    'recoveryMode',
+  ]);
   check(
-    nativeRecoveryModeValid(value) &&
+    nativeWorkspaceRecovery(value) &&
       ['claude', 'codex', 'kiro', 'opencode'].includes(value.harness) &&
       (value.model === null || matches(value.model, /^[A-Za-z0-9][A-Za-z0-9_.:/()-]{0,255}$/)) &&
       matches(value.promptSha256, SHA256) &&
@@ -344,14 +338,13 @@ const publicationValue = (value) => {
   );
   return clone(value);
 };
-export const nativeTurnSequence = (row) => row.turnSequence ?? 1;
+export const nativeTurnSequence = (row) => row.turnSequence;
 // Runtime replacement is independent of both cancellation epoch and the
 // supervisor's short-lived lease fence. Historical records keep their identity.
-export const nativeWriterGeneration = (row) => row.writerGeneration ?? 1;
+export const nativeWriterGeneration = (row) => row.writerGeneration;
 const RECOVERY_REASONS = [
   'SESSION_LOST',
   'RESTORE_FAILED',
-  'CHECKPOINT_UNAVAILABLE',
   'DELIVERY_UNCERTAIN',
   'WORKSPACE_UNAVAILABLE',
   'INTAKE_UNAVAILABLE',
@@ -365,9 +358,9 @@ const UNAVAILABLE_WORKSPACE_REASONS = [
 ];
 export const nativeRecoveryAvailable = (row) =>
   row.recovery?.canRecover === true &&
-  (!nativeWorkspaceRecovery(row.configuration) ||
-    (row.recovery.workflowResumeState === 'created' &&
-      !UNAVAILABLE_WORKSPACE_REASONS.includes(row.recovery.reason)));
+  nativeWorkspaceRecovery(row.configuration) &&
+  row.recovery.workflowResumeState === 'created' &&
+  !UNAVAILABLE_WORKSPACE_REASONS.includes(row.recovery.reason);
 export const nativeRecoveryReason = (row) => {
   const recovery = row.recovery;
   if (
@@ -381,29 +374,6 @@ export const nativeRecoveryReason = (row) => {
     ? 'INTAKE_UNAVAILABLE'
     : 'WORKFLOW_STATE_UNAVAILABLE';
 };
-const recoveryCheckpointValue = (value) => {
-  shape(value, ['id', 'sequence', 'manifest']);
-  shape(value.manifest, ['key', 'versionId', 'sha256', 'bytes']);
-  check(
-    matches(value.id, SHA256) &&
-      integer(value.sequence, 1) &&
-      value.manifest.sha256 === value.id &&
-      relativePath(value.manifest.key, 4096) &&
-      value.manifest.key.startsWith('native-recovery/v1/') &&
-      text(value.manifest.versionId, 1024) &&
-      value.manifest.versionId !== 'null' &&
-      integer(value.manifest.bytes, 1) &&
-      value.manifest.bytes <= 16 * 1024 * 1024,
-  );
-  return clone(value);
-};
-const recoverableBoundary = (row) =>
-  !!row.recoveryCheckpoint &&
-  row.recoveryCheckpoint.sequence === row.publication?.sequence &&
-  row.interaction?.sequence === row.publication.sequence &&
-  row.publication.sequence + 1 === nativeTurnSequence(row) &&
-  row.response?.deliveryStatus === 'pending' &&
-  !row.dispatch;
 const interactionIdentity = (row, epoch = row.epoch) => ({
   ...row.scope,
   bindingId: row.bindingId,
@@ -526,6 +496,8 @@ const ROW_FIELDS = [
   'startedAt',
   'updatedAt',
   'fence',
+  'turnSequence',
+  'writerGeneration',
 ];
 const ROW_OPTIONAL = [
   'leaseToken',
@@ -538,13 +510,10 @@ const ROW_OPTIONAL = [
   'publicationEpoch',
   'projectionStatus',
   'stop',
-  'turnSequence',
   'interaction',
   'interactionEpoch',
   'interactionContentSha256',
   'response',
-  'writerGeneration',
-  'recoveryCheckpoint',
   'dispatch',
   'recovery',
   'lastRecoveryId',
@@ -564,17 +533,6 @@ const validateStopConfirmation = (row) => {
       row.stopConfirmation.confirmedAt <= row.updatedAt,
   );
 };
-const hasRecoveryBoundary = (row) =>
-  nativeWorkspaceRecovery(row.configuration) || recoverableBoundary(row);
-const validRecoveryCheckpoint = (row) =>
-  nativeWorkspaceRecovery(row.configuration)
-    ? row.recovery.checkpointId === undefined
-    : row.recovery.checkpointId === row.recoveryCheckpoint.id;
-const canConfirmRecovery = (row) =>
-  nativeWorkspaceRecovery(row.configuration)
-    ? row.stopConfirmation?.writerGeneration === nativeWriterGeneration(row)
-    : row.recovery.reason === 'RESTORE_FAILED' && recoverableBoundary(row);
-
 const validateWorkspaceResume = (row) => {
   if (Object.hasOwn(row, 'workspaceResume')) {
     shape(row.workspaceResume, ['id', 'sequence', 'writerGeneration']);
@@ -597,7 +555,7 @@ const validateRecovery = (row) => {
   shape(
     row.recovery,
     ['id', 'reason', 'canRecover'],
-    ['phase', 'previousGeneration', 'writerGeneration', 'checkpointId', 'workflowResumeState'],
+    ['phase', 'previousGeneration', 'writerGeneration', 'workflowResumeState'],
   );
   check(matches(row.recovery.id, UUID) && RECOVERY_REASONS.includes(row.recovery.reason));
   check(typeof row.recovery.canRecover === 'boolean');
@@ -610,12 +568,11 @@ const validateRecovery = (row) => {
   }
   if (row.status === 'RECOVERING') {
     check(
-      hasRecoveryBoundary(row) &&
+      row.recovery.workflowResumeState === 'created' &&
         !row.recovery.canRecover &&
         ['FENCING', 'RESTORING'].includes(row.recovery.phase) &&
         integer(row.recovery.previousGeneration, 1) &&
         row.recovery.writerGeneration === row.recovery.previousGeneration + 1 &&
-        validRecoveryCheckpoint(row) &&
         nativeWriterGeneration(row) ===
           (row.recovery.phase === 'FENCING'
             ? row.recovery.previousGeneration
@@ -626,7 +583,9 @@ const validateRecovery = (row) => {
       ['RECOVERY_REQUIRED', 'CANCEL_REQUESTED', 'CANCELLED'].includes(row.status) &&
         Object.keys(row.recovery).length ===
           (Object.hasOwn(row.recovery, 'workflowResumeState') ? 4 : 3) &&
-        (!row.recovery.canRecover || canConfirmRecovery(row)),
+        (!row.recovery.canRecover ||
+          (nativeRecoveryAvailable(row) &&
+            row.stopConfirmation?.writerGeneration === nativeWriterGeneration(row))),
     );
   }
 };
@@ -782,13 +741,6 @@ const validate = (row, expectedScope) => {
           row.interactionContentSha256 === row.response.contentSha256 &&
           row.interaction.sequence + 1 === row.response.sequence,
       );
-  }
-  if (Object.hasOwn(row, 'recoveryCheckpoint')) {
-    recoveryCheckpointValue(row.recoveryCheckpoint);
-    check(
-      !nativeWorkspaceRecovery(row.configuration) &&
-        row.recoveryCheckpoint.sequence === row.publication?.sequence,
-    );
   }
   if (Object.hasOwn(row, 'dispatch')) {
     shape(row.dispatch, ['sequence', 'writerGeneration', 'commandId', 'attemptedAt']);
@@ -1464,25 +1416,6 @@ export const createNativeExecutionStore = ({
         leaseExpiresAt: clock() + leaseMs,
       });
     },
-    async beginRecovery(input) {
-      shape(input, ['row']);
-      const row = await owned(input.row);
-      if (row.status !== 'DISPATCHING' || !recoverableBoundary(row)) fail('CONFLICT');
-      return commit(row, {
-        ...row,
-        status: 'RECOVERING',
-        recovery: {
-          id: randomUUID(),
-          reason: 'SESSION_LOST',
-          canRecover: false,
-          phase: 'FENCING',
-          previousGeneration: nativeWriterGeneration(row),
-          writerGeneration: nativeWriterGeneration(row) + 1,
-          checkpointId: row.recoveryCheckpoint.id,
-        },
-        leaseExpiresAt: clock() + leaseMs,
-      });
-    },
     async recoveryStopped(input) {
       shape(input, ['row']);
       const row = await owned(input.row);
@@ -1502,7 +1435,7 @@ export const createNativeExecutionStore = ({
       if (row.status !== 'RECOVERING' || row.recovery.phase !== 'RESTORING') fail('CONFLICT');
       const next = {
         ...row,
-        status: nativeWorkspaceRecovery(row.configuration) ? 'RUNNING' : 'DISPATCHING',
+        status: 'RUNNING',
         lastRecoveryId: row.recovery.id,
         leaseExpiresAt: clock() + leaseMs,
       };
@@ -1514,9 +1447,8 @@ export const createNativeExecutionStore = ({
       check(RECOVERY_REASONS.includes(input.reason));
       if (Object.hasOwn(input, 'recoveryId')) check(matches(input.recoveryId, UUID));
       const row = await owned(input.row);
-      const workspace = nativeWorkspaceRecovery(row.configuration);
       if (Object.hasOwn(input, 'workflowResumeState'))
-        check(workspace && WORKFLOW_RESUME_STATES.includes(input.workflowResumeState));
+        check(WORKFLOW_RESUME_STATES.includes(input.workflowResumeState));
       const workflowResumeState = input.workflowResumeState ?? 'unavailable';
       if (!['DISPATCHING', 'RUNNING', 'RECOVERING'].includes(row.status)) fail('CONFLICT');
       const next = unlease({
@@ -1528,19 +1460,17 @@ export const createNativeExecutionStore = ({
         recovery: {
           id: input.recoveryId ?? randomUUID(),
           reason: input.reason,
-          canRecover: workspace
-            ? Object.hasOwn(input, 'stoppedSessionId') &&
-              workflowResumeState === 'created' &&
-              !UNAVAILABLE_WORKSPACE_REASONS.includes(input.reason)
-            : input.reason === 'RESTORE_FAILED' && recoverableBoundary(row),
-          ...(workspace ? { workflowResumeState } : {}),
+          canRecover:
+            Object.hasOwn(input, 'stoppedSessionId') &&
+            workflowResumeState === 'created' &&
+            !UNAVAILABLE_WORKSPACE_REASONS.includes(input.reason),
+          workflowResumeState,
         },
       });
       // An abandoned FENCING episode has not admitted its proposed successor.
       // Keep existing writer pointers and immutable answer-retention history,
       // but do not leave a future writer attached to the new stopped episode.
       if (
-        workspace &&
         row.recovery?.phase === 'FENCING' &&
         row.workspaceResume?.writerGeneration > nativeWriterGeneration(row)
       )
@@ -1554,19 +1484,14 @@ export const createNativeExecutionStore = ({
         executionId: input.executionId,
         bindingId: input.bindingId,
       });
-      shape(input.request, ['requestId', 'recoveryId'], ['confirmWorkspaceResume']);
+      shape(input.request, ['requestId', 'recoveryId', 'confirmWorkspaceResume']);
+      check(input.request.confirmWorkspaceResume === true);
       check(matches(input.request.requestId, UUID) && matches(input.request.recoveryId, UUID));
       for (let retry = 0; retry < 4; retry++) {
         const row = await get(currentScope);
         if (!row) fail('NOT_FOUND');
         if (row.bindingId !== input.bindingId) fail('CONFLICT');
         if (row.cancelRequested) fail('CANCELLED');
-        const workspace = nativeWorkspaceRecovery(row.configuration);
-        check(
-          workspace
-            ? input.request.confirmWorkspaceResume === true
-            : input.request.confirmWorkspaceResume === undefined,
-        );
         // The server-issued episode deduplicates recovery across members and
         // tabs. A lost response must not start another writer generation.
         if (
@@ -1578,9 +1503,7 @@ export const createNativeExecutionStore = ({
           row.status !== 'RECOVERY_REQUIRED' ||
           row.recovery.id !== input.request.recoveryId ||
           !nativeRecoveryAvailable(row) ||
-          (workspace
-            ? row.stopConfirmation?.writerGeneration !== nativeWriterGeneration(row)
-            : !recoverableBoundary(row))
+          row.stopConfirmation?.writerGeneration !== nativeWriterGeneration(row)
         )
           fail('CONFLICT');
         const next = unlease({
@@ -1593,25 +1516,21 @@ export const createNativeExecutionStore = ({
             phase: 'FENCING',
             previousGeneration: nativeWriterGeneration(row),
             writerGeneration: nativeWriterGeneration(row) + 1,
-            ...(workspace
-              ? { workflowResumeState: row.recovery.workflowResumeState }
-              : { checkpointId: row.recoveryCheckpoint.id }),
+            workflowResumeState: row.recovery.workflowResumeState,
           },
         });
-        if (workspace) {
-          // Confirmation admits a new resume command, never the previous
-          // answer. Its immutable ledger and delivery observations survive.
-          // Even definitively undelivered input is retained for the member to
-          // review against the question AI-DLC recovers from the live files.
-          next.turnSequence = (row.publication?.sequence ?? 0) + 1;
-          next.workspaceResume = {
-            id: row.recovery.id,
-            sequence: next.turnSequence,
-            writerGeneration: nativeWriterGeneration(row) + 1,
-          };
-          delete next.response;
-          delete next.dispatch;
-        }
+        // Confirmation admits a new resume command, never the previous
+        // answer. Its immutable ledger and delivery observations survive.
+        // Even definitively undelivered input is retained for the member to
+        // review against the question AI-DLC recovers from the live files.
+        next.turnSequence = (row.publication?.sequence ?? 0) + 1;
+        next.workspaceResume = {
+          id: row.recovery.id,
+          sequence: next.turnSequence,
+          writerGeneration: nativeWriterGeneration(row) + 1,
+        };
+        delete next.response;
+        delete next.dispatch;
         try {
           return await commit(row, next, 'response');
         } catch (error) {
@@ -1660,17 +1579,10 @@ export const createNativeExecutionStore = ({
       fail('CONFLICT');
     },
     async publish(input) {
-      shape(
-        input,
-        ['row', 'publication'],
-        ['interaction', 'interactionContentSha256', 'checkpoint'],
-      );
+      shape(input, ['row', 'publication'], ['interaction', 'interactionContentSha256']);
       const publication = publicationValue(input.publication);
       const row = await owned(input.row);
       const interaction = input.interaction ? interactionValue(input.interaction, row) : null;
-      const checkpoint = input.checkpoint ? recoveryCheckpointValue(input.checkpoint) : null;
-      if (nativeWorkspaceRecovery(row.configuration) && checkpoint) fail('CONFLICT');
-      if (checkpoint) check(interaction !== null && checkpoint.sequence === publication.sequence);
       if (interaction) {
         check(
           matches(input.interactionContentSha256, SHA256) &&
@@ -1683,7 +1595,6 @@ export const createNativeExecutionStore = ({
         if (
           !same(row.publication, publication) ||
           !same(row.interaction ?? null, interaction) ||
-          !same(row.recoveryCheckpoint ?? null, checkpoint) ||
           (interaction && row.interactionContentSha256 !== input.interactionContentSha256)
         )
           fail('CONFLICT');
@@ -1704,8 +1615,6 @@ export const createNativeExecutionStore = ({
         leaseExpiresAt: clock() + leaseMs,
       };
       delete next.dispatch;
-      if (checkpoint) next.recoveryCheckpoint = checkpoint;
-      else delete next.recoveryCheckpoint;
       if (interaction) {
         next.interaction = interaction;
         next.interactionEpoch = row.epoch;
@@ -1724,7 +1633,6 @@ export const createNativeExecutionStore = ({
         interaction,
         interactionContentSha256: input.interactionContentSha256 ?? null,
         admittedAt: clock(),
-        ...(checkpoint ? { recoveryCheckpoint: checkpoint } : {}),
       };
       delete Item.projectId;
       delete Item.executionId;

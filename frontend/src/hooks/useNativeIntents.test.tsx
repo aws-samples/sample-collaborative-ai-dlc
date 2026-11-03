@@ -69,6 +69,7 @@ describe('shared native discovery cache', () => {
   });
 
   const execution = (status: NativeExecution['status'], revision = 1): NativeExecution => ({
+    recoveryMode: 'efs-workspace-v1',
     status,
     revision,
     attemptId: 'attempt-1',

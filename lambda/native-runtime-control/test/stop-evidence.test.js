@@ -61,7 +61,11 @@ it('atomically records exact stop evidence with uncertainty and exposes only a p
   await expect(
     f.store.recover({
       ...f.bindingIdentity,
-      request: { requestId: randomUUID(), recoveryId: row.recovery.id },
+      request: {
+        requestId: randomUUID(),
+        recoveryId: row.recovery.id,
+        confirmWorkspaceResume: true,
+      },
     }),
   ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CONFLICT' });
   expect(nativeExecutionView({ ...row, writerGeneration: 2 }).stopStatus.state).toBe('unconfirmed');

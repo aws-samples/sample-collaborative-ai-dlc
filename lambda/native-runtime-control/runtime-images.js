@@ -3,8 +3,7 @@
 // Approval is reference-based. The trusted API pins the deployment image into
 // the protected execution row when a run starts; agent runtimes and members
 // cannot write that table. After a later deployment, the run's own pin stays
-// authorized for as long as the run can still resume or retains a recovery
-// checkpoint. Nothing needs to be listed by an operator, so deployment
+// authorized for as long as the run can still resume. Nothing needs to be listed by an operator, so deployment
 // configuration cannot drop a still-required pin. The pin must remain the
 // exact immutable digest in this deployment's account, region and repository.
 //
@@ -33,8 +32,7 @@ const RESUMABLE = new Set([
   'WAITING_FOR_INPUT',
   'CANCEL_REQUESTED',
 ]);
-// Recovery keeps the selected mode's image: a retained exact checkpoint, or
-// the surviving-workspace protocol. Eligibility never grants a new writer.
+// Recovery keeps the pinned workspace image. Eligibility never grants a new writer.
 const RECOVERY = new Set(['RECOVERY_REQUIRED', 'RECOVERING']);
 
 export class NativeRuntimeImageError extends Error {
@@ -66,10 +64,8 @@ export const nativeRuntimeImageKey = (digest) => {
 
 /** True while the run's pinned image must stay usable for renewal/recovery. */
 export const nativeImageRenewalEligible = (row) =>
-  Boolean(row) &&
-  (RESUMABLE.has(row.status) ||
-    (RECOVERY.has(row.status) &&
-      (nativeWorkspaceRecovery(row.configuration) || Boolean(row.recoveryCheckpoint))));
+  nativeWorkspaceRecovery(row?.configuration) &&
+  (RESUMABLE.has(row.status) || RECOVERY.has(row.status));
 
 const revocationValue = (item, digest) => {
   const key = nativeRuntimeImageKey(digest);

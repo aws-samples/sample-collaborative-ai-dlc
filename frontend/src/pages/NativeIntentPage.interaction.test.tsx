@@ -83,6 +83,7 @@ const initial: NativeIntent = {
   updatedAt: '2026-09-29T12:00:00Z',
   executionAvailable: true,
   execution: {
+    recoveryMode: 'efs-workspace-v1',
     status: 'AWAITING_USER',
     attemptId: 'attempt-1',
     epoch: 1,
@@ -460,7 +461,7 @@ it('keeps a degraded form explicitly waiting, submits once and retains its notic
   };
   const page = renderPage();
   await screen.findByText(
-    'The structured question form is unavailable for this turn. The response and checkpoint are saved.',
+    'The structured question form is unavailable for this turn. The response and published files are saved.',
   );
   expect(screen.queryByRole('form', { name: 'Workflow questions' })).not.toBeInTheDocument();
   const field = await screen.findByRole('textbox', { name: 'Reply to AI-DLC' });
@@ -478,7 +479,7 @@ it('keeps a degraded form explicitly waiting, submits once and retains its notic
   page.unmount();
   renderPage();
   await screen.findByText(
-    'The structured question form is unavailable for this turn. The response and checkpoint are saved.',
+    'The structured question form is unavailable for this turn. The response and published files are saved.',
   );
   expect(
     await screen.findByDisplayValue('Please present the current questions and options.'),
@@ -1085,13 +1086,15 @@ function requireRecovery(patch: Partial<NativeExecution> = {}) {
       ...intent.execution!,
       status: 'RECOVERY_REQUIRED',
       revision: 10,
+      stopStatus:
+        patch.status && patch.status !== 'RECOVERY_REQUIRED'
+          ? { state: 'unconfirmed', confirmedAt: null }
+          : { state: 'confirmed', confirmedAt: '2026-09-29T12:00:00Z' },
       recovery: {
         id: 'recovery-1',
         reason: 'RESTORE_FAILED',
         canRecover: true,
-        ...(patch.recoveryMode === 'efs-workspace-v1'
-          ? { workflowResumeState: 'created' as const }
-          : {}),
+        workflowResumeState: 'created',
       },
       ...patch,
     },
@@ -1105,6 +1108,7 @@ function recovering(revision = 11): NativeIntent {
       ...intent.execution!,
       status: 'RECOVERING',
       revision,
+      stopStatus: { state: 'unconfirmed', confirmedAt: null },
       recovery: { ...intent.execution!.recovery!, canRecover: false },
     },
   };
@@ -1224,11 +1228,15 @@ it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
     renderPage();
     await loaded();
     expect(screen.getByText('Session recovery required')).toBeInTheDocument();
-    expect(screen.getByText('Your reply is saved.')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText('Continuing agent')).not.toBeInTheDocument();
     expect(screen.getByRole('textbox')).toHaveValue('poc');
     expect(screen.getByRole('textbox')).toHaveAttribute('readonly');
-    expect(screen.getByRole('button', { name: 'Recover session' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Resume in fresh session' })).toBeEnabled();
     for (const name of ['Start agent', 'Edit artifacts', 'Create unit PR', 'Delete intent'])
       expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
@@ -1246,30 +1254,45 @@ it('keeps committed files, graph and the same saved reply through recovery and t
   await userEvent.click(screen.getByRole('tab', { name: 'Files' }));
   await click(/src\/pipe.ts/);
   await screen.findByText('pipe');
-  await click('Recover session');
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
   await click('Requesting recovery…');
   expect(transport.post).toHaveBeenCalledTimes(1);
   expect(transport.post.mock.calls[0]).toEqual([
     '/projects/project-1/native-intents/run-1/recover',
-    { requestId: expect.stringMatching(/^[a-f0-9-]{36}$/), recoveryId: 'recovery-1' },
+    {
+      requestId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+      recoveryId: 'recovery-1',
+      confirmWorkspaceResume: true,
+    },
   ]);
   intent = recovering();
   await act(async () => pending.resolve(intent));
-  expect(screen.getByText('Restoring session')).toBeInTheDocument();
+  expect(screen.getByText('Resuming in a fresh session')).toBeInTheDocument();
   expect(screen.getByText('pipe')).toBeInTheDocument();
   expect(readFile).toHaveBeenCalledTimes(1);
-  expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Resume in fresh session' })).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole('tab', { name: 'Graph' }));
   await screen.findByRole('button', { name: 'Open response for AI-DLC turn' });
   await userEvent.click(screen.getByRole('tab', { name: 'Overview' }));
   expect(await loaded()).toHaveValue('poc');
-  expect(screen.getByText('Your reply is saved.')).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+    ),
+  ).toBeInTheDocument();
   expect(interaction.response).toEqual(savedReply);
   expect(intent.execution?.turnSequence).toBe(2);
 
   intent = {
     ...intent,
-    execution: { ...intent.execution!, status: 'RUNNING', revision: 12, recovery: null },
+    execution: {
+      ...intent.execution!,
+      status: 'RUNNING',
+      revision: 12,
+      recovery: null,
+      stopStatus: { state: 'unconfirmed', confirmedAt: null },
+    },
   };
   await click('Refresh status');
   expect(screen.getByText('Agent running')).toBeInTheDocument();
@@ -1307,14 +1330,16 @@ it('retries an uncertain recovery with the same request without resending the ac
   transport.post.mockImplementationOnce(async () => (intent = recovering()));
   renderPage();
   await loaded();
-  await click('Recover session');
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
   const first = transport.post.mock.calls[0];
   expect(document.body).not.toHaveTextContent('private token');
   expect(document.body).not.toHaveTextContent('private stack');
   expect(screen.getByRole('textbox')).toHaveValue('poc');
-  await click('Recover session');
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
   expect(transport.post.mock.calls[1]).toEqual(first);
-  expect(screen.getByText('Restoring session')).toBeInTheDocument();
+  expect(screen.getByText('Resuming in a fresh session')).toBeInTheDocument();
   expect(transport.post.mock.calls.every(([path]) => path.endsWith('/recover'))).toBe(true);
 });
 
@@ -1330,19 +1355,34 @@ it('retains an uncertain reply across recovery without claiming it was saved or 
       ...intent.execution!,
       status: 'RECOVERY_REQUIRED',
       revision: 10,
-      recovery: { id: 'recovery-1', reason: 'RESTORE_FAILED', canRecover: true },
+      stopStatus: { state: 'confirmed', confirmedAt: '2026-09-29T12:00:00Z' },
+      recovery: {
+        id: 'recovery-1',
+        reason: 'RESTORE_FAILED',
+        canRecover: true,
+        workflowResumeState: 'created',
+      },
     },
   };
   await click('Refresh status');
   expect(screen.getByRole('textbox')).toHaveValue('uncertain private reply');
   expect(screen.getByRole('textbox')).toHaveAttribute('readonly');
   expect(screen.getByRole('button', { name: 'Retry same reply' })).toBeDisabled();
-  expect(screen.queryByText('Your reply is saved.')).not.toBeInTheDocument();
+  expect(
+    screen.queryByText(
+      'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+    ),
+  ).not.toBeInTheDocument();
   transport.post.mockImplementationOnce(async () => (intent = recovering()));
-  await click('Recover session');
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
   expect(transport.post.mock.calls[1]).toEqual([
     '/projects/project-1/native-intents/run-1/recover',
-    { requestId: expect.stringMatching(/^[a-f0-9-]{36}$/), recoveryId: 'recovery-1' },
+    {
+      requestId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+      recoveryId: 'recovery-1',
+      confirmWorkspaceResume: true,
+    },
   ]);
   expect(screen.getByRole('textbox')).toHaveValue('uncertain private reply');
   expect(transport.post).toHaveBeenCalledTimes(2);
@@ -1352,7 +1392,7 @@ it.each([
   { recovery: undefined },
   { recovery: null },
   { revision: undefined },
-  { recovery: { id: 'recovery-1', reason: 'CHECKPOINT_UNAVAILABLE', canRecover: false } },
+  { recovery: { id: 'recovery-1', reason: 'WORKSPACE_UNAVAILABLE', canRecover: false } },
 ] satisfies Partial<NativeExecution>[])(
   'keeps recovery view-only when capability evidence is absent %#',
   async (patch) => {
@@ -1360,8 +1400,14 @@ it.each([
     renderPage();
     await loaded();
     expect(screen.getByText('Session recovery required')).toBeInTheDocument();
-    expect(screen.getByText('Your reply is saved.')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Resume in fresh session' }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
     expect(transport.post).not.toHaveBeenCalled();
@@ -1373,36 +1419,36 @@ it('does not offer recovery when execution is disabled', async () => {
   intent.executionAvailable = false;
   renderPage();
   await loaded();
-  expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Resume in fresh session' })).not.toBeInTheDocument();
   expect(transport.post).not.toHaveBeenCalled();
 });
 
 it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
-  'follows server-led recovery for %s through the next turn without any POST',
+  'observes recovery confirmed by another member for %s through the next turn without any POST',
   async (harness) => {
     vi.useFakeTimers();
-    requireRecovery({ status: 'DISPATCHING', revision: 9, recovery: null });
+    requireRecovery({
+      status: 'RECOVERING',
+      recovery: {
+        id: 'recovery-1',
+        reason: 'SESSION_LOST',
+        canRecover: false,
+        workflowResumeState: 'created',
+      },
+      responsePending: false,
+    });
     intent.harness = harness;
     interaction.harness = harness;
     const savedReply = structuredClone(interaction.response);
     await act(async () => renderPage());
-    expect(screen.getByText('Continuing agent')).toBeInTheDocument();
-    await verifiedText('Reply accepted. Delivery pending.');
-    intent = {
-      ...intent,
-      execution: {
-        ...intent.execution!,
-        status: 'RECOVERING',
-        revision: 10,
-        recovery: { id: 'recovery-1', reason: 'SESSION_LOST', canRecover: false },
-        responsePending: true,
-      },
-    };
-    await act(async () => vi.advanceTimersByTimeAsync(3000));
-    expect(screen.getByText('Restoring session')).toBeInTheDocument();
-    await verifiedText('Your reply is saved.');
+    expect(screen.getByText('Resuming in a fresh session')).toBeInTheDocument();
+    await verifiedText(
+      'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+    );
     expect(screen.queryByText('Continuing agent')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Resume in fresh session' }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole('textbox')).toHaveValue(savedReply!.text);
     expect(screen.getByRole('textbox')).toHaveAttribute('readonly');
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
@@ -1419,13 +1465,15 @@ it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
         responsePending: false,
       },
     };
-    interaction.response = { ...savedReply!, deliveryStatus: 'delivered' };
     await act(async () => vi.advanceTimersByTimeAsync(3000));
     expect(screen.getByText('Agent running')).toBeInTheDocument();
-    await verifiedText('Reply delivered. Waiting for the next AI-DLC response.');
+    expect(
+      screen.queryByText('Reply delivered. Waiting for the next AI-DLC response.'),
+    ).not.toBeInTheDocument();
+    expect(interaction.response).toEqual(savedReply);
     expect(screen.getByRole('textbox')).toHaveValue(savedReply!.text);
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
-    expect(interaction.response.id).toBe(savedReply!.id);
+    expect(interaction.response?.id).toBe(savedReply!.id);
     expect(intent.execution?.turnSequence).toBe(2);
 
     publication = { ...publication, id: 'pub-2', sequence: 2 };
@@ -1456,24 +1504,30 @@ it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
 );
 
 it.each([
-  ['SESSION_LOST', 'The saved AI-DLC session needs to be restored'],
-  ['CHECKPOINT_UNAVAILABLE', 'A verified recovery checkpoint is unavailable'],
+  ['SESSION_LOST', 'The AI-DLC session was lost'],
+  ['WORKSPACE_UNAVAILABLE', 'The surviving workspace or its binding could not be verified'],
   ['DELIVERY_UNCERTAIN', 'The last command may have executed'],
-  ['RESTORE_FAILED', 'The session could not be restored'],
+  ['RESTORE_FAILED', 'The workspace could not resume'],
 ] as const)(
   'keeps %s blocked without a recovery capability and never posts automatically',
   async (reason, explanation) => {
     vi.useFakeTimers();
     requireRecovery({
-      recovery: { id: 'recovery-1', reason, canRecover: false },
+      recovery: { id: 'recovery-1', reason, canRecover: false, workflowResumeState: 'created' },
       responsePending: true,
     });
     await act(async () => renderPage());
     expect(screen.getByText('Session recovery required')).toBeInTheDocument();
     expect(screen.getByText(explanation, { exact: false })).toBeInTheDocument();
-    await verifiedText('Your reply is saved.');
+    await verifiedText(
+      reason === 'DELIVERY_UNCERTAIN'
+        ? 'Your reply is saved.'
+        : 'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+    );
     await act(async () => vi.advanceTimersByTimeAsync(18000));
-    expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Resume in fresh session' }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
     expect(screen.getByRole('textbox')).toHaveValue('poc');
@@ -1486,36 +1540,58 @@ it('offers a manual retry only after the server publishes RESTORE_FAILED with ca
   vi.useFakeTimers();
   requireRecovery({
     status: 'RECOVERING',
-    recovery: { id: 'recovery-1', reason: 'SESSION_LOST', canRecover: false },
+    recovery: {
+      id: 'recovery-1',
+      reason: 'SESSION_LOST',
+      canRecover: false,
+      workflowResumeState: 'created',
+    },
   });
   await act(async () => renderPage());
-  expect(screen.getByText('Restoring session')).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
+  expect(screen.getByText('Resuming in a fresh session')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Resume in fresh session' })).not.toBeInTheDocument();
   intent = {
     ...intent,
     execution: {
       ...intent.execution!,
       status: 'RECOVERY_REQUIRED',
       revision: 11,
-      recovery: { id: 'recovery-1', reason: 'RESTORE_FAILED', canRecover: true },
+      stopStatus: { state: 'confirmed', confirmedAt: '2026-09-29T12:00:00Z' },
+      recovery: {
+        id: 'recovery-1',
+        reason: 'RESTORE_FAILED',
+        canRecover: true,
+        workflowResumeState: 'created',
+      },
       responsePending: true,
     },
   };
   await act(async () => vi.advanceTimersByTimeAsync(9000));
   expect(screen.getByText('Session recovery required')).toBeInTheDocument();
-  await verifiedText('Your reply is saved.');
-  expect(screen.getByRole('button', { name: 'Recover session' })).toBeEnabled();
+  await verifiedText(
+    'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+  );
+  expect(screen.getByRole('button', { name: 'Resume in fresh session' })).toBeEnabled();
   expect(transport.post).not.toHaveBeenCalled();
   transport.post.mockImplementationOnce(async () => (intent = recovering(12)));
-  await click('Recover session');
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
   expect(transport.post.mock.calls).toEqual([
     [
       '/projects/project-1/native-intents/run-1/recover',
-      { requestId: expect.stringMatching(/^[a-f0-9-]{36}$/), recoveryId: 'recovery-1' },
+      {
+        requestId: expect.stringMatching(/^[a-f0-9-]{36}$/),
+        recoveryId: 'recovery-1',
+        confirmWorkspaceResume: true,
+      },
     ],
   ]);
-  expect(screen.getByText('Restoring session')).toBeInTheDocument();
-  expect(screen.getByText('Your reply is saved.')).toBeInTheDocument();
+  expect(screen.getByText('Resuming in a fresh session')).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+    ),
+  ).toBeInTheDocument();
   expect(screen.getByRole('textbox')).toHaveValue('poc');
 });
 
@@ -1532,11 +1608,13 @@ it.each([9, undefined])(
     intent = recovering();
     intent.execution!.updatedAt = '2026-09-29T11:00:00Z';
     await click('Refresh status');
-    expect(screen.getByText('Restoring session')).toBeInTheDocument();
+    expect(screen.getByText('Resuming in a fresh session')).toBeInTheDocument();
     intent = stale;
     await click('Refresh status');
-    expect(screen.getByText('Restoring session')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
+    expect(screen.getByText('Resuming in a fresh session')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Resume in fresh session' }),
+    ).not.toBeInTheDocument();
   },
 );
 
@@ -1547,16 +1625,23 @@ it('ignores a late recovery acknowledgement after newer execution progress', asy
   transport.post.mockReturnValueOnce(pending.promise);
   renderPage();
   await loaded();
-  await click('Recover session');
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
   intent = {
     ...intent,
-    execution: { ...intent.execution!, status: 'RUNNING', revision: 12, recovery: null },
+    execution: {
+      ...intent.execution!,
+      status: 'RUNNING',
+      revision: 12,
+      recovery: null,
+      stopStatus: { state: 'unconfirmed', confirmedAt: null },
+    },
   };
   await click('Refresh status');
   expect(screen.getByText('Agent running')).toBeInTheDocument();
   await act(async () => pending.resolve(ack));
   expect(screen.getByText('Agent running')).toBeInTheDocument();
-  expect(screen.queryByText('Restoring session')).not.toBeInTheDocument();
+  expect(screen.queryByText('Resuming in a fresh session')).not.toBeInTheDocument();
 });
 
 it('refreshes a stale recovery episode and uses a new identity only after another explicit click', async () => {
@@ -1567,7 +1652,12 @@ it('refreshes a stale recovery episode and uses a new identity only after anothe
       execution: {
         ...intent.execution!,
         revision: 11,
-        recovery: { id: 'recovery-2', reason: 'RESTORE_FAILED', canRecover: true },
+        recovery: {
+          id: 'recovery-2',
+          reason: 'RESTORE_FAILED',
+          canRecover: true,
+          workflowResumeState: 'created',
+        },
       },
     };
     throw new ApiError(409, 'private detail', { code: 'NATIVE_EXECUTION_CONFLICT' });
@@ -1575,9 +1665,11 @@ it('refreshes a stale recovery episode and uses a new identity only after anothe
   transport.post.mockImplementationOnce(async () => (intent = recovering(12)));
   renderPage();
   await loaded();
-  await click('Recover session');
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
   expect(transport.post).toHaveBeenCalledTimes(1);
-  await click('Recover session');
+  await click('Resume in fresh session');
+  await click('Confirm fresh session');
   const first = transport.post.mock.calls[0][1];
   const second = transport.post.mock.calls[1][1];
   expect(first.recoveryId).toBe('recovery-1');
@@ -1595,7 +1687,8 @@ it.each(['access-revision', 'session-expiry', 'file-denial'] as const)(
     transport.post.mockReturnValueOnce(pending.promise);
     renderPage();
     await loaded();
-    await click('Recover session');
+    await click('Resume in fresh session');
+    await click('Confirm fresh session');
     if (boundary === 'access-revision') {
       await act(async () => clearNativeIntents('project-1', true));
     } else if (boundary === 'session-expiry') {
@@ -1609,7 +1702,11 @@ it.each(['access-revision', 'session-expiry', 'file-denial'] as const)(
     cleared();
     await act(async () => pending.resolve(ack));
     cleared();
-    expect(screen.queryByText('Your reply is saved.')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+      ),
+    ).not.toBeInTheDocument();
     expect(transport.post).toHaveBeenCalledTimes(1);
   },
 );
@@ -1621,9 +1718,14 @@ it.each([401, 403, 404])(
     transport.post.mockRejectedValue(new ApiError(status, 'private denial'));
     renderPage();
     await loaded();
-    await click('Recover session');
+    await click('Resume in fresh session');
+    await click('Confirm fresh session');
     cleared();
-    expect(screen.queryByText('Your reply is saved.')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'Your earlier reply remains in history. Fresh-session recovery will not send it again.',
+      ),
+    ).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('private denial');
     expect(transport.post).toHaveBeenCalledTimes(1);
   },

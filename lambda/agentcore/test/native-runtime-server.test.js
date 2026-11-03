@@ -279,9 +279,11 @@ const executionEnv = {
 };
 const startPayload = () => ({
   command: 'native-start',
-  schemaVersion: 1,
+  schemaVersion: 2,
+  writerGeneration: 1,
   ...executionIdentity,
   configuration: {
+    recoveryMode: 'efs-workspace-v1',
     harness: 'codex',
     model: 'configured-model',
     prompt: 'Fix the pipe visualization',
@@ -330,7 +332,7 @@ const executionFixture = async () => {
     }),
   });
   cleanup.push(async () => {
-    if (executor.isBusy()) await executor.cancel(executionIdentity);
+    if (executor.isBusy()) await executor.cancel({ ...executionIdentity, writerGeneration: 1 });
     await executor.settle();
   });
   const checkWorkspace = vi.fn(async () => ({ ok: true }));
@@ -340,9 +342,41 @@ const executionFixture = async () => {
 };
 
 describe('native execution HTTP lifecycle on real loopback sockets', () => {
+  it.each(['native-start', 'native-continue', 'native-resume'])(
+    'rejects obsolete or unknown %s protocols before constructing a CLI executor',
+    async (command) => {
+      const createExecutor = vi.fn();
+      const port = await start({ env: executionEnv, createExecutor, checkWorkspace: vi.fn() });
+      for (const recoveryMode of [undefined, null, 'snapshot-v1', 'unknown']) {
+        const body = startPayload();
+        body.command = command;
+        body.configuration.recoveryMode = recoveryMode;
+        expect((await request(port, '/invocations', body)).status).toBe(400);
+      }
+      for (const patch of [{ schemaVersion: 1 }, { writerGeneration: undefined }]) {
+        expect(
+          (await request(port, '/invocations', { ...startPayload(), command, ...patch })).status,
+        ).toBe(400);
+      }
+      expect(createExecutor).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['native-recover', 'native-checkpoint', 'native-restore'])(
+    'rejects the retired %s command before constructing an executor',
+    async (command) => {
+      const createExecutor = vi.fn();
+      const port = await start({ env: executionEnv, createExecutor, checkWorkspace: vi.fn() });
+      expect((await request(port, '/invocations', { ...startPayload(), command })).status).toBe(
+        400,
+      );
+      expect(createExecutor).not.toHaveBeenCalled();
+    },
+  );
+
   it('uses wire v2 only for explicitly pinned workspace commands and routes resume separately', async () => {
     const executor = Object.fromEntries(
-      ['start', 'continue', 'recover', 'resume', 'status', 'cancel', 'settle'].map((method) => [
+      ['start', 'continue', 'resume', 'status', 'cancel', 'settle'].map((method) => [
         method,
         vi.fn(async () => ({ accepted: true, method })),
       ]),
@@ -354,7 +388,9 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
       ...startPayload(),
       configuration: { ...startPayload().configuration, recoveryMode: 'efs-workspace-v1' },
     };
-    expect((await request(port, '/invocations', payload)).status).toBe(400);
+    expect((await request(port, '/invocations', { ...payload, schemaVersion: 1 })).status).toBe(
+      400,
+    );
     expect(createExecutor).not.toHaveBeenCalled();
     expect(
       (await request(port, '/invocations', { ...payload, schemaVersion: 2 })).body.method,
@@ -368,9 +404,16 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
         })
       ).body.method,
     ).toBe('resume');
-    expect(executor.recover).not.toHaveBeenCalled();
     expect(
-      (await request(port, '/invocations', { ...startPayload(), schemaVersion: 2 })).status,
+      (await request(port, '/invocations', { ...payload, command: 'native-recover' })).status,
+    ).toBe(400);
+    expect(
+      (
+        await request(port, '/invocations', {
+          ...startPayload(),
+          configuration: { ...startPayload().configuration, recoveryMode: undefined },
+        })
+      ).status,
     ).toBe(400);
     expect((await request(port, '/invocations', startPayload())).body.method).toBe('start');
   });
@@ -423,7 +466,15 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
             if (input.Key === fenceKey) {
               expect(input).not.toHaveProperty('VersionId');
               const bytes = Buffer.from(
-                JSON.stringify({ schemaVersion: 1, ...fenceIdentity, state: fenceState }),
+                JSON.stringify({
+                  schemaVersion: 3,
+                  ...fenceIdentity,
+                  state: fenceState,
+                  writerGeneration: 1,
+                  recoveryMode: 'efs-workspace-v1',
+                  recoveryId: null,
+                  reason: null,
+                }),
               );
               return {
                 VersionId: `trusted-${fenceState}`,
@@ -526,7 +577,7 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
         },
       });
       cleanup.push(async () => {
-        if (executor.isBusy()) await executor.cancel(scope);
+        if (executor.isBusy()) await executor.cancel({ ...scope, writerGeneration: 1 });
         await executor.settle();
       });
       const port = await start({
@@ -539,7 +590,11 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
       expect(ack.body).not.toHaveProperty('receipt');
       await executor.settle();
       // Exactly the worker payload: no schemaVersion on status/cancel.
-      const status = await request(port, '/invocations', { command: 'native-status', ...scope });
+      const status = await request(port, '/invocations', {
+        command: 'native-status',
+        ...scope,
+        writerGeneration: 1,
+      });
       if (outcome.startsWith('CANCELLED_')) {
         expect(status).toMatchObject({
           status: 200,
@@ -626,7 +681,11 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
           sequence: 2,
         });
         await executor.settle();
-        const next = await request(port, '/invocations', { command: 'native-status', ...scope });
+        const next = await request(port, '/invocations', {
+          command: 'native-status',
+          ...scope,
+          writerGeneration: 1,
+        });
         expect(next).toMatchObject({
           status: 200,
           body: {
@@ -710,7 +769,11 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
       await f.started.promise;
       expect((await request(f.port, '/ping')).body.status).toBe('HealthyBusy');
       expect(
-        await request(f.port, '/invocations', { command: 'native-status', ...executionIdentity }),
+        await request(f.port, '/invocations', {
+          command: 'native-status',
+          ...executionIdentity,
+          writerGeneration: 1,
+        }),
       ).toMatchObject({ status: 200, body: { status: 'preparing' } });
       expect(await request(f.port, '/invocations', startPayload())).toMatchObject({
         status: 200,
@@ -721,12 +784,17 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
       expect((await request(f.port, '/invocations', payload)).status).toBe(409);
       expect(f.checkWorkspace).not.toHaveBeenCalled();
       expect(
-        await request(f.port, '/invocations', { command: 'native-cancel', ...executionIdentity }),
+        await request(f.port, '/invocations', {
+          command: 'native-cancel',
+          ...executionIdentity,
+          writerGeneration: 1,
+        }),
       ).toMatchObject({ status: 200, body: { status: 'cancelling' } });
       await f.executor.settle();
       const final = await request(f.port, '/invocations', {
         command: 'native-status',
         ...executionIdentity,
+        writerGeneration: 1,
       });
       expect(final).toMatchObject({ status: 200, body: { status: 'cancelled' } });
       expect((await request(f.port, '/ping')).body.status).toBe('Healthy');
@@ -744,7 +812,9 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
       const f = await executionFixture();
       for (const command of ['native-start', 'native-status', 'native-cancel']) {
         const body =
-          command === 'native-start' ? startPayload() : { command, ...executionIdentity };
+          command === 'native-start'
+            ? startPayload()
+            : { command, ...executionIdentity, writerGeneration: 1 };
         body[field] = field === 'epoch' ? 2 : 'wrong';
         expect(await request(f.port, '/invocations', body)).toEqual({
           status: 400,
@@ -763,8 +833,13 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
     const port = await start({ createExecutor, checkWorkspace });
     expect((await request(port, '/invocations', startPayload())).status).toBe(403);
     expect(
-      (await request(port, '/invocations', { command: 'native-status', ...executionIdentity }))
-        .status,
+      (
+        await request(port, '/invocations', {
+          command: 'native-status',
+          ...executionIdentity,
+          writerGeneration: 1,
+        })
+      ).status,
     ).toBe(403);
     expect((await request(port, '/invocations', payload)).body.ok).toBe(true);
     expect(createExecutor).not.toHaveBeenCalled();

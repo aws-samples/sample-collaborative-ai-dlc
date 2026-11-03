@@ -115,7 +115,7 @@ it.each([
   ['WAITING_FOR_INPUT', 'Waiting for input'],
   ['AWAITING_USER', 'Awaiting your reply'],
   ['RECOVERY_REQUIRED', 'Session recovery required'],
-  ['RECOVERING', 'Restoring session'],
+  ['RECOVERING', 'Resuming in a fresh session'],
   ['STOPPED', 'Agent stopped'],
   ['FAILED', 'Execution failed'],
   ['CANCELLED', 'Execution cancelled'],

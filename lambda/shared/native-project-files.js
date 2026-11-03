@@ -1,6 +1,8 @@
-// Shared publication visibility policy. Recovery contains private files too;
-// its public project subset must match the exact committed publication.
+// Shared publication visibility policy. Private workspace and harness files
+// stay out of public results; generated dependencies remain on EFS.
 import { isAbsolute } from 'node:path';
+
+export const NATIVE_DEPENDENCY_POLICY = 'node-dependencies-v1';
 
 export const canonicalNativePath = (value) =>
   typeof value === 'string' &&
@@ -13,7 +15,7 @@ export const canonicalNativePath = (value) =>
   ) &&
   value.split('/').every((part) => part && part !== '.' && part !== '..');
 
-// Existing private-recovery credential classification. Kept separate from
+// Credential classification for public result and traceability consumers. Separate from
 // public admission: changing historical visibility is an independent policy
 // decision. Derived indexes also avoid copying these files' content.
 export const nativeCredentialPath = (path) => {
@@ -53,7 +55,7 @@ export const nativeFileExclusion = (path, filesystemPolicy) => {
     const name = parts.at(-1);
     if (/(?:lock|mutex|key)(?:\.|$)/.test(name)) return 'private-lock';
   }
-  if (filesystemPolicy === 'node-dependencies-v1' && parts.includes('node_modules'))
+  if (filesystemPolicy === NATIVE_DEPENDENCY_POLICY && parts.includes('node_modules'))
     return 'private-dependency';
   return null;
 };

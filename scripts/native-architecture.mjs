@@ -52,13 +52,6 @@ if (baselineRef) {
     if (dirty && !process.argv.includes('--allow-dirty'))
       throw new Error('Release architecture map requires one clean HEAD');
     const head = git('rev-parse', 'HEAD');
-    const compatibility = JSON.parse(
-      readFileSync('architecture/native-compatibility.json', 'utf8'),
-    );
-    const provenance = compatibility.tuples.map((tuple) => ({
-      tuple: tuple.id,
-      ...JSON.parse(readFileSync(tuple.fixtures, 'utf8')),
-    }));
     const iamSources = git(
       'ls-files',
       '--cached',
@@ -96,8 +89,6 @@ if (baselineRef) {
       node: process.version,
       metric: baseline.metric,
       owners: manifest,
-      compatibility,
-      provenance,
       iamSources,
       files,
       limitations: [
@@ -116,7 +107,7 @@ if (baselineRef) {
       .slice(0, 30);
     writeFileSync(
       'reports/architecture/native.html',
-      `<!doctype html><meta charset="utf-8"><title>Native architecture</title><style>body{font:16px system-ui;max-width:1100px;margin:3rem auto}td,th{padding:.5rem;text-align:left;vertical-align:top}pre{white-space:pre-wrap}</style><h1>Native architecture</h1><p>HEAD ${head}${dirty ? ' (working tree preview)' : ''}</p><p>${escape(baseline.metric)}</p><h2>Owners and boundaries</h2><pre>${escape(JSON.stringify(manifest.records, null, 2))}</pre><h2>Measured hotspots</h2><table>${hotspots.map((fn) => `<tr><td>${escape(fn.file)}:${fn.line}</td><td>${escape(fn.name)}</td><td>${fn.score}</td></tr>`).join('')}</table><p>Machine-readable imports, direct write sites, unresolved dynamic edges and compatibility tuples accompany this artifact.</p>`,
+      `<!doctype html><meta charset="utf-8"><title>Native architecture</title><style>body{font:16px system-ui;max-width:1100px;margin:3rem auto}td,th{padding:.5rem;text-align:left;vertical-align:top}pre{white-space:pre-wrap}</style><h1>Native architecture</h1><p>HEAD ${head}${dirty ? ' (working tree preview)' : ''}</p><p>${escape(baseline.metric)}</p><h2>Owners and boundaries</h2><pre>${escape(JSON.stringify(manifest.records, null, 2))}</pre><h2>Measured hotspots</h2><table>${hotspots.map((fn) => `<tr><td>${escape(fn.file)}:${fn.line}</td><td>${escape(fn.name)}</td><td>${fn.score}</td></tr>`).join('')}</table><p>Machine-readable imports, direct write sites, unresolved dynamic edges accompany this artifact.</p>`,
     );
   }
   console.log(

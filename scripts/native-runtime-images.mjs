@@ -2,7 +2,7 @@
 // Operator tool for the native runtime-image lifecycle.
 //
 //   referenced  Read-only. Lists the immutable image pins still required by
-//               resumable native runs (or retained recovery checkpoints) and
+//               resumable native EFS runs and
 //               proves each digest is still present in ECR. Run it before and
 //               after a deployment; a non-zero exit means a required pin is
 //               missing and the deployment must not proceed or be accepted.

@@ -210,7 +210,7 @@ describe('Space native discovery', () => {
     ['WAITING_FOR_INPUT', 'Waiting for input'],
     ['AWAITING_USER', 'Awaiting your reply'],
     ['RECOVERY_REQUIRED', 'Session recovery required'],
-    ['RECOVERING', 'Restoring session'],
+    ['RECOVERING', 'Resuming in a fresh session'],
     ['STOPPED', 'Agent stopped'],
     ['FAILED', 'Execution failed'],
     ['CANCELLED', 'Execution cancelled'],
@@ -218,6 +218,7 @@ describe('Space native discovery', () => {
     'shows protected execution %s instead of preparation readiness',
     async (status, label) => {
       const execution: NativeExecution = {
+        recoveryMode: 'efs-workspace-v1',
         status,
         responsePending: status === 'DISPATCHING',
         attemptId: 'attempt-1',

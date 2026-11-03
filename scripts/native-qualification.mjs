@@ -33,15 +33,15 @@ const run = (label, command, arguments_, cwd = root) => {
 };
 if (!options.installedOnly) {
   const backend = [
-    'lambda/native-runtime-control/test/checkpoint-journey.test.js',
+    'lambda/native-runtime-control/test/publication-journey.test.js',
     'lambda/native-runtime-control/test/workspace-resume-journey.test.js',
+    'lambda/native-runtime-control/test/execution-workspace-resume-worker.test.js',
+    'lambda/native-runtime-control/test/workflow-resume-availability.test.js',
+    'lambda/native-runtime-control/test/frontend-recovery.test.js',
+    'lambda/native-runtime-control/test/execution-stop.test.js',
     'lambda/native-runtime-control/test/execution-serial-worker.test.js',
     'lambda/native-runtime-control/test/execution-worker.test.js',
-    'lambda/native-runtime-control/test/execution-recovery.test.js',
-    'lambda/native-runtime-control/test/execution-recovery-worker.test.js',
-    'lambda/native-runtime-control/test/recovery-loop.test.js',
     'lambda/native-runtime-control/test/execution-status-retry.test.js',
-    'lambda/native-runtime-control/test/execution-legacy-protocol.test.js',
     'lambda/native-runtime-control/test/execution-image-policy.test.js',
     'lambda/native-runtime-control/test/revision-history.test.js',
     'lambda/native-runtime-control/test/activity-store.test.js',
@@ -51,8 +51,6 @@ if (!options.installedOnly) {
     'lambda/agentcore/test/native-activity.test.js',
     'lambda/agentcore/test/native-executor-output.test.js',
     'lambda/agentcore/test/native-pending-question.test.js',
-    'lambda/agentcore/test/native-session-recovery-files.test.js',
-    'lambda/agentcore/test/native-opencode-recovery-command.test.js',
     'lambda/agentcore/test/native-kiro-acp-turn.test.js',
     'lambda/agentcore/test/native-kiro-acp-client.test.js',
     'lambda/agentcore/test/native-command-runner.test.js',
@@ -61,8 +59,6 @@ if (!options.installedOnly) {
     'lambda/shared/test/native-interaction.test.js',
     'lambda/shared/test/native-publication.test.js',
     'lambda/shared/test/native-pending-input.test.js',
-    'lambda/shared/test/native-recovery-checkpoint.test.js',
-    'lambda/shared/test/native-dependency-links.test.js',
     'lambda/shared/test/native-execution-fence.test.js',
   ];
   run(
@@ -78,7 +74,7 @@ if (!options.installedOnly) {
     ],
   );
   run(
-    'rendered forms, collaboration/reconnect, immutable history and legacy API',
+    'rendered forms, collaboration/reconnect, immutable history and recovery API',
     process.execPath,
     [
       'node_modules/vitest/vitest.mjs',
@@ -155,32 +151,26 @@ try {
   if (options.image) {
     const results = [];
     for (const cli of options.clis) {
-      const statuses = [];
-      for (const baseline of cli === 'claude' ? [true, false] : [false]) {
-        console.log(
-          `Installed ${cli}: ${
-            baseline
-              ? 'four-turn terminal/cwd/subagent baseline'
-              : cli === 'kiro'
-                ? 'real package initialization and v2 authentication boundary'
-                : 'production-composed journey and failures'
-          }`,
-        );
-        const name = `native-qualification-${randomUUID()}`;
-        try {
-          const result = spawnSync(
-            'docker',
-            installedDockerArgs({ ...containerOptions, cli, baseline, name }),
-            { cwd: root, stdio: 'inherit', timeout: 10 * 60_000 },
-          );
-          statuses.push(result.status);
-        } finally {
-          // A timed-out Docker client does not itself stop its container. Only
-          // remove the disposable container whose random name this run owns.
-          spawnSync('docker', ['rm', '--force', name], { stdio: 'ignore', timeout: 10_000 });
-        }
+      console.log(
+        `Installed ${cli}: ${
+          cli === 'kiro'
+            ? 'real package initialization and v2 authentication boundary'
+            : 'production EFS journey and failures'
+        }`,
+      );
+      const name = `native-qualification-${randomUUID()}`;
+      let result;
+      try {
+        result = spawnSync('docker', installedDockerArgs({ ...containerOptions, cli, name }), {
+          cwd: root,
+          stdio: 'inherit',
+          timeout: 10 * 60_000,
+        });
+      } finally {
+        // Remove only the disposable container whose random name this run owns.
+        spawnSync('docker', ['rm', '--force', name], { stdio: 'ignore', timeout: 10_000 });
       }
-      const status = installedStatus(statuses);
+      const status = installedStatus([result.status]);
       console.log(`Installed ${cli}: ${status}`);
       results.push(status);
     }

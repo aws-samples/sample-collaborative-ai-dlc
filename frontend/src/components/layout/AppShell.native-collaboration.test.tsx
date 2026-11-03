@@ -118,6 +118,7 @@ const waiting = (
   createdAt: time,
   updatedAt: time,
   execution: {
+    recoveryMode: 'efs-workspace-v1',
     status: 'AWAITING_USER',
     revision: 9,
     imageStatus: 'retained',

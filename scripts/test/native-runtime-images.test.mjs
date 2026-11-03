@@ -13,7 +13,7 @@ const row = (id, status, image, extra = {}) => ({
   sk: 'EXECUTION',
   scope: { projectId: 'project-one', executionId: id },
   status,
-  configuration: { image, prompt: 'must never be printed' },
+  configuration: { recoveryMode: 'efs-workspace-v1', image, prompt: 'must never be printed' },
   runtimeSessionId: 'must-never-be-printed',
   ...extra,
 });
@@ -64,11 +64,11 @@ ${install}`,
   });
 }
 
-test('lists every pin still required by resumable runs and retained checkpoints', () => {
+test('lists every pin still required by EFS runs and recovery', () => {
   const pins = requiredPins([
     row('a', 'AWAITING_USER', pin('a')),
     row('b', 'WAITING_FOR_INPUT', pin('a')),
-    row('c', 'RECOVERY_REQUIRED', pin('b'), { recoveryCheckpoint: { id: 'x' } }),
+    row('c', 'RECOVERY_REQUIRED', pin('b')),
     row('d', 'RECOVERY_REQUIRED', pin('c')),
     row('e', 'FAILED', pin('d')),
     row('f', 'RUNNING', pin('e')),
@@ -78,6 +78,7 @@ test('lists every pin still required by resumable runs and retained checkpoints'
     [
       ['a', ['AWAITING_USER', 'WAITING_FOR_INPUT']],
       ['b', ['RECOVERY_REQUIRED']],
+      ['c', ['RECOVERY_REQUIRED']],
       ['e', ['RUNNING']],
     ],
   );

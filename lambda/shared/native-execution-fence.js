@@ -10,11 +10,9 @@ import { NATIVE_WORKSPACE_RECOVERY } from './native-recovery-mode.js';
 
 const keys = ['projectId', 'executionId', 'bindingId', 'attemptId', 'runtimeSessionId'];
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
-const SHA = /^[a-f0-9]{64}$/;
 const REASONS = [
   'SESSION_LOST',
   'RESTORE_FAILED',
-  'CHECKPOINT_UNAVAILABLE',
   'DELIVERY_UNCERTAIN',
   'WORKSPACE_UNAVAILABLE',
   'INTAKE_UNAVAILABLE',
@@ -22,7 +20,7 @@ const REASONS = [
 ];
 const WORKFLOW_RESUME_STATES = ['created', 'not_created', 'unavailable'];
 const integer = (value) => Number.isSafeInteger(value) && value >= 1;
-const generation = (record) => record.writerGeneration ?? 1;
+const generation = (record) => record.writerGeneration;
 const precondition = (error) =>
   ['PreconditionFailed', 'ConditionalRequestConflict'].includes(error?.name) ||
   [409, 412].includes(error?.$metadata?.httpStatusCode);
@@ -92,49 +90,40 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
         new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)),
       );
       if (!record || keys.some((key) => record[key] !== expected[key])) fail();
-      const fields = [...keys, 'schemaVersion', 'state'];
-      if (record.schemaVersion === 1) {
-        if (!['ACTIVE', 'CANCELLED'].includes(record.state)) fail();
-      } else if ([2, 3].includes(record.schemaVersion)) {
-        fields.push('writerGeneration', 'recoveryId', 'checkpointId', 'reason');
-        if (Object.hasOwn(record, 'workflowResumeState')) {
-          fields.push('workflowResumeState');
-          if (
-            record.state !== 'FENCED' ||
-            !WORKFLOW_RESUME_STATES.includes(record.workflowResumeState)
-          )
-            fail();
-        }
-        if (record.schemaVersion === 3) {
-          fields.push('recoveryMode');
-          if (record.recoveryMode !== NATIVE_WORKSPACE_RECOVERY) fail();
-        }
+      const fields = [
+        ...keys,
+        'schemaVersion',
+        'state',
+        'writerGeneration',
+        'recoveryId',
+        'reason',
+        'recoveryMode',
+      ];
+      if (Object.hasOwn(record, 'workflowResumeState')) {
+        fields.push('workflowResumeState');
         if (
-          !integer(record.writerGeneration) ||
-          !['ACTIVE', 'FENCED', 'CANCELLED'].includes(record.state) ||
-          !(
-            record.recoveryId === null ||
-            (typeof record.recoveryId === 'string' && UUID.test(record.recoveryId))
-          ) ||
-          !(
-            record.checkpointId === null ||
-            (typeof record.checkpointId === 'string' && SHA.test(record.checkpointId))
-          ) ||
-          !(record.reason === null || REASONS.includes(record.reason)) ||
-          (record.state === 'FENCED' && record.recoveryId === null) ||
-          (record.state === 'FENCED' && record.reason === null) ||
-          (record.state === 'FENCED' && record.checkpointId !== null) ||
-          (record.state === 'ACTIVE' &&
-            (record.writerGeneration === 1
-              ? record.recoveryId !== null || record.checkpointId !== null || record.reason !== null
-              : record.recoveryId === null ||
-                (record.schemaVersion === 3
-                  ? record.checkpointId !== null
-                  : record.checkpointId === null) ||
-                record.reason === null))
+          record.state !== 'FENCED' ||
+          !WORKFLOW_RESUME_STATES.includes(record.workflowResumeState)
         )
           fail();
-      } else fail();
+      }
+      if (
+        record.schemaVersion !== 3 ||
+        record.recoveryMode !== NATIVE_WORKSPACE_RECOVERY ||
+        !integer(record.writerGeneration) ||
+        !['ACTIVE', 'FENCED', 'CANCELLED'].includes(record.state) ||
+        !(
+          record.recoveryId === null ||
+          (typeof record.recoveryId === 'string' && UUID.test(record.recoveryId))
+        ) ||
+        !(record.reason === null || REASONS.includes(record.reason)) ||
+        (record.state === 'FENCED' && (record.recoveryId === null || record.reason === null)) ||
+        (record.state === 'ACTIVE' &&
+          (record.writerGeneration === 1
+            ? record.recoveryId !== null || record.reason !== null
+            : record.recoveryId === null || record.reason === null))
+      )
+        fail();
       if (Object.keys(record).toSorted().join(',') !== fields.toSorted().join(',')) fail();
       return { record, etag: result.ETag };
     } catch (error) {
@@ -149,7 +138,12 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
     if (previous && (typeof previous.etag !== 'string' || !/^"[^"\r\n]+"$/.test(previous.etag)))
       fail();
     const body = Buffer.from(
-      canonicalJson({ schemaVersion: record.recoveryMode ? 3 : 2, ...scope(identity), ...record }),
+      canonicalJson({
+        schemaVersion: 3,
+        recoveryMode: NATIVE_WORKSPACE_RECOVERY,
+        ...scope(identity),
+        ...record,
+      }),
     );
     const result = await s3.send(
       new PutObjectCommand({
@@ -186,7 +180,8 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
       if (
         canonicalJson(latest.record) ===
         canonicalJson({
-          schemaVersion: next.recoveryMode ? 3 : 2,
+          schemaVersion: 3,
+          recoveryMode: NATIVE_WORKSPACE_RECOVERY,
           ...scope(identity),
           ...next,
         })
@@ -211,7 +206,6 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
           state: 'ACTIVE',
           writerGeneration: 1,
           recoveryId: null,
-          checkpointId: null,
           reason: null,
         };
       });
@@ -224,9 +218,7 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
               state: 'CANCELLED',
               writerGeneration: record ? generation(record) : 1,
               recoveryId: record?.recoveryId ?? null,
-              checkpointId: record?.checkpointId ?? null,
               reason: record?.reason ?? null,
-              ...(record?.recoveryMode ? { recoveryMode: record.recoveryMode } : {}),
             },
       );
     },
@@ -260,24 +252,19 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
           state: 'FENCED',
           writerGeneration,
           recoveryId,
-          checkpointId: null,
           reason,
           ...(workflowResumeState === undefined ? {} : { workflowResumeState }),
-          ...(record.recoveryMode ? { recoveryMode: record.recoveryMode } : {}),
         };
       });
     },
-    async activate(identity, { writerGeneration, recoveryId, checkpointId, recoveryMode }) {
-      const workspace = recoveryMode === NATIVE_WORKSPACE_RECOVERY;
+    async activate(identity, { writerGeneration, recoveryId, recoveryMode, ...unsupported }) {
       if (
         !integer(writerGeneration) ||
         writerGeneration === 1 ||
         typeof recoveryId !== 'string' ||
         !UUID.test(recoveryId) ||
-        (recoveryMode !== undefined && !workspace) ||
-        (workspace
-          ? checkpointId !== null
-          : typeof checkpointId !== 'string' || !SHA.test(checkpointId))
+        recoveryMode !== NATIVE_WORKSPACE_RECOVERY ||
+        Object.keys(unsupported).length > 0
       )
         fail();
       return transition(identity, (record) => {
@@ -286,7 +273,6 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
           record?.state === 'ACTIVE' &&
           record.writerGeneration === writerGeneration &&
           record.recoveryId === recoveryId &&
-          record.checkpointId === checkpointId &&
           record.recoveryMode === recoveryMode
         )
           return null;
@@ -294,18 +280,16 @@ export const createNativeExecutionFence = ({ s3, bucket, accountId }) => {
           record?.state !== 'FENCED' ||
           record.writerGeneration !== writerGeneration - 1 ||
           record.recoveryId !== recoveryId ||
-          (workspace && record.workflowResumeState !== 'created') ||
-          (!workspace && record.workflowResumeState !== undefined) ||
-          (record.recoveryMode !== undefined && record.recoveryMode !== recoveryMode)
+          record.workflowResumeState !== 'created' ||
+          record.recoveryMode !== recoveryMode
         )
           conflict();
         return {
           state: 'ACTIVE',
           writerGeneration,
           recoveryId,
-          checkpointId,
           reason: record.reason,
-          ...(workspace ? { recoveryMode } : {}),
+          recoveryMode,
         };
       });
     },

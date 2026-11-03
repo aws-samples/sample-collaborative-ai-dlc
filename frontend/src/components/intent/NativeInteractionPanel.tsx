@@ -330,8 +330,8 @@ export function NativePresentationNotice({ interaction }: { interaction: NativeI
   return (
     <div role="status" className="rounded-md border p-3 text-sm">
       <p>
-        The structured question form is unavailable for this turn. The response and checkpoint are
-        saved.
+        The structured question form is unavailable for this turn. The response and published files
+        are saved.
       </p>
       <p>
         Review the published response and files. If the choices or question are unclear, ask AI-DLC

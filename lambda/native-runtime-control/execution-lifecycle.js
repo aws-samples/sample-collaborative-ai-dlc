@@ -1,9 +1,7 @@
 import { createHash } from 'node:crypto';
 import { nativeTurnSequence, nativeWriterGeneration } from './execution-store.js';
 import { executionIdentity, executionRuntimeConfiguration } from './execution-runtime.js';
-import { nativeFileExclusion } from '../shared/native-project-files.js';
 import { recordNativeBoundary } from '../shared/native-lifecycle.js';
-import { nativeWorkspaceRecovery, nativeCommandSchema } from '../shared/native-recovery-mode.js';
 export const fail = (code) => {
   throw Object.assign(new Error(code), { code });
 };
@@ -22,60 +20,14 @@ export const recoveryStopId = (row, reason) => {
   return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
 };
 export const writerOptions = (row) => ({ writerGeneration: nativeWriterGeneration(row) });
-export const excludedProjectPath = (path, filesystemPolicy) => {
-  // The publisher applies its predicate before descending into directories.
-  // Apply it to ancestors too so children of private lock directories retain
-  // exactly that same visibility when verifying a flat checkpoint inventory.
-  let prefix = '';
-  for (const part of path.split('/')) {
-    prefix = prefix ? `${prefix}/${part}` : part;
-    if (nativeFileExclusion(prefix, filesystemPolicy)) return true;
-  }
-  return false;
-};
-export const verifyPublicProjectFiles = (checkpoint, publication) => {
-  if (!Array.isArray(checkpoint.files) || !Array.isArray(publication.files))
-    fail('NATIVE_RECOVERY_INVALID');
-  if ((checkpoint.filesystem?.filesystemPolicy ?? null) !== (publication.filesystemPolicy ?? null))
-    fail('NATIVE_RECOVERY_INVALID');
-  const files = new Map();
-  const published = new Set();
-  try {
-    for (const file of checkpoint.files) {
-      if (file.scope !== 'project' || excludedProjectPath(file.path, publication.filesystemPolicy))
-        continue;
-      if (files.has(file.path)) fail('NATIVE_RECOVERY_INVALID');
-      files.set(file.path, file);
-    }
-    if (files.size !== publication.files.length) fail('NATIVE_RECOVERY_INVALID');
-    for (const file of publication.files) {
-      const restored = files.get(file.path);
-      if (
-        excludedProjectPath(file.path, publication.filesystemPolicy) ||
-        published.has(file.path) ||
-        !restored ||
-        restored.bytes !== file.bytes ||
-        restored.sha256 !== file.sha256
-      )
-        fail('NATIVE_RECOVERY_INVALID');
-      published.add(file.path);
-    }
-  } catch {
-    fail('NATIVE_RECOVERY_INVALID');
-  }
-};
 export const writerPayload = (row) => ({
   ...executionIdentity(row),
-  ...(row.writerGeneration === undefined ? {} : writerOptions(row)),
+  ...writerOptions(row),
 });
 export const checkReportIdentity = (row, report) => {
-  // Old pinned servers reject extra status fields and never reported writer
-  // generations. Only rows created before the generation protocol use that
-  // contract. New rows explicitly carry generation 1 and must always echo it.
-  const legacy = row.writerGeneration === undefined && report?.writerGeneration === undefined;
   if (
     Object.entries(executionIdentity(row)).some(([key, value]) => report?.[key] !== value) ||
-    (!legacy && report?.writerGeneration !== nativeWriterGeneration(row))
+    report?.writerGeneration !== nativeWriterGeneration(row)
   )
     fail('NATIVE_EXECUTION_RUNTIME_MISMATCH');
 };
@@ -89,13 +41,9 @@ export const admitted = (row, report) =>
 export const priorBoundary = (row, report) =>
   report?.sequence === row.publication?.sequence &&
   report?.nativeSessionId === row.publication?.nativeSessionId &&
-  ((report.status === 'publication_ready' &&
-    report.receipt?.id === row.publication.id &&
-    report.interaction?.id === row.interaction?.id) ||
-    (report.status === 'recovery_ready' &&
-      report.recoveryId === row.lastRecoveryId &&
-      report.checkpointId === row.recoveryCheckpoint?.id &&
-      report.recovered === false));
+  report.status === 'publication_ready' &&
+  report.receipt?.id === row.publication.id &&
+  report.interaction?.id === row.interaction?.id;
 export const ownerErrors = new Set([
   'native_execution_existing_owner',
   'native_execution_owner_conflict',
@@ -129,7 +77,6 @@ export const failRuntimeRead = (code, kind, runtimeCode) => {
   throw markRuntimeReadFailure(Object.assign(new Error(code), { code }), kind, runtimeCode);
 };
 export const shortTransportRetry = (error) =>
-  error?.code === 'NATIVE_RECOVERY_UNAVAILABLE' ||
   [
     'AbortError',
     'TimeoutError',
@@ -162,13 +109,7 @@ export const phaseError = (error) => {
   if (error?.code === 'NATIVE_EXECUTION_CANCELLED') return 'native_execution_failed';
   if (error?.code === 'NATIVE_EXECUTION_RUNTIME_MISMATCH' || ownerErrors.has(error?.code))
     return 'native_execution_runtime_mismatch';
-  if (
-    [
-      'NATIVE_PUBLICATION_INVALID',
-      'NATIVE_INTERACTION_INVALID',
-      'NATIVE_RECOVERY_INVALID',
-    ].includes(error?.code)
-  )
+  if (['NATIVE_PUBLICATION_INVALID', 'NATIVE_INTERACTION_INVALID'].includes(error?.code))
     return 'native_execution_publication_invalid';
   if (['WORKFLOW_SOURCE_FORBIDDEN', 'NATIVE_EXECUTION_FORBIDDEN'].includes(error?.code))
     return 'native_execution_access_denied';
@@ -224,16 +165,6 @@ const recoveryPayload = async (row, draft, credentials) => {
     imageDigest: row.configuration.image.digest,
     package: { candidate: draft.candidate, archiveReceipt: draft.archiveReceipt },
   };
-  if (!nativeWorkspaceRecovery(row.configuration))
-    return {
-      ...common,
-      command: 'native-recover',
-      schemaVersion: 1,
-      sequence: row.publication.sequence,
-      checkpoint: row.recoveryCheckpoint,
-      publication: row.publication,
-      interaction: row.interaction,
-    };
   const material = checkedCredentials(row, await credentials(row));
   if (
     !material?.ok ||
@@ -251,40 +182,23 @@ const recoveryPayload = async (row, draft, credentials) => {
 };
 
 // Interpret an owned runtime response only after the caller checks its identity.
-// Fresh workspace sessions and retained exact-checkpoint sessions have distinct
-// admission evidence; neither can reconstruct a lost acknowledgement.
+// Resume admission never reconstructs a lost acknowledgement or replays an answer.
 const completeNativeRecovery = async ({ state, report, store, requireRecovery, yieldPending }) => {
   const recovery = state.row.recovery;
-  if (nativeWorkspaceRecovery(state.row.configuration)) {
-    const unavailableWorkflow = workflowRecoveryFailure(report.code);
-    if (unavailableWorkflow) return requireRecovery(unavailableWorkflow);
-    if (
-      report.status === 'stopped_needs_review' &&
-      report.code === 'native_execution_existing_owner' &&
-      report.accepted === false &&
-      report.duplicate === true &&
-      report.recoveryId === recovery.id
-    )
-      return requireRecovery('RESTORE_FAILED', {
-        workflowResumeState: report.workflowResumeState,
-      });
-    if (report.recoveryId !== recovery.id || !admitted(state.row, report))
-      return requireRecovery('RESTORE_FAILED');
-  } else {
-    if (
-      report.recoveryId !== recovery.id ||
-      report.checkpointId !== state.row.recoveryCheckpoint.id ||
-      report.sequence !== state.row.publication.sequence
-    )
-      return requireRecovery('RESTORE_FAILED');
-    if (report.status === 'recovering' && report.recovered === false) return yieldPending();
-    if (
-      report.status !== 'recovery_ready' ||
-      report.recovered !== false ||
-      report.nativeSessionId !== state.row.publication.nativeSessionId
-    )
-      return requireRecovery('RESTORE_FAILED');
-  }
+  const unavailableWorkflow = workflowRecoveryFailure(report.code);
+  if (unavailableWorkflow) return requireRecovery(unavailableWorkflow);
+  if (
+    report.status === 'stopped_needs_review' &&
+    report.code === 'native_execution_existing_owner' &&
+    report.accepted === false &&
+    report.duplicate === true &&
+    report.recoveryId === recovery.id
+  )
+    return requireRecovery('RESTORE_FAILED', {
+      workflowResumeState: report.workflowResumeState,
+    });
+  if (report.recoveryId !== recovery.id || !admitted(state.row, report))
+    return requireRecovery('RESTORE_FAILED');
   state.row = await store.recovered({ row: state.row });
   return yieldPending();
 };
@@ -293,7 +207,6 @@ export const reconcileNativeRecovery = async ({
   state,
   draft,
   store,
-  verifyCheckpoint,
   requireRecovery,
   fence,
   check,
@@ -306,43 +219,28 @@ export const reconcileNativeRecovery = async ({
   controlCall = (_operation, call) => call(),
 }) => {
   const recovery = state.row.recovery;
-  const workspace = nativeWorkspaceRecovery(state.row.configuration);
-  if (workspace && recovery.workflowResumeState !== 'created')
+  if (recovery.workflowResumeState !== 'created')
     return requireRecovery(
       recovery.workflowResumeState === 'not_created'
         ? 'INTAKE_UNAVAILABLE'
         : 'WORKFLOW_STATE_UNAVAILABLE',
     );
-  try {
-    if (!workspace)
-      await verifyCheckpoint(
-        state.row.recoveryCheckpoint,
-        state.row.publication,
-        state.row.interaction,
-      );
-  } catch (error) {
-    if (['NATIVE_RECOVERY_INVALID', 'NATIVE_RECOVERY_MISSING'].includes(error.code))
-      return requireRecovery('CHECKPOINT_UNAVAILABLE');
-    throw error;
-  }
   if (recovery.phase === 'FENCING') {
     await controlCall('fence-suspend', () =>
       fence.suspend(executionIdentity(state.row), {
         writerGeneration: recovery.previousGeneration,
         recoveryId: recovery.id,
         reason: recovery.reason,
-        ...(workspace ? { workflowResumeState: recovery.workflowResumeState } : {}),
+        workflowResumeState: recovery.workflowResumeState,
       }),
     );
     await check();
     // Workspace confirmation already requires a durable, validated stop for
     // this predecessor. Reuse that proof after fencing and rechecking ownership:
     // repeating Stop days later can return 404 for the completed session.
-    // A different generation/session, or checkpoint recovery without that
-    // proof, must still obtain an exact positive response.
+    // A different generation/session must still obtain an exact positive response.
     const confirmation = state.row.stopConfirmation;
     const alreadyStopped =
-      workspace &&
       confirmation?.writerGeneration === recovery.previousGeneration &&
       confirmation?.runtimeSessionId === state.row.runtimeSessionId &&
       state.row.target?.runtimeArn === draft.runtimeArn;
@@ -367,13 +265,12 @@ export const reconcileNativeRecovery = async ({
     fence.activate(executionIdentity(state.row), {
       writerGeneration: nativeWriterGeneration(state.row),
       recoveryId: recovery.id,
-      checkpointId: workspace ? null : state.row.recoveryCheckpoint.id,
-      ...(workspace ? { recoveryMode: state.row.configuration.recoveryMode } : {}),
+      recoveryMode: state.row.configuration.recoveryMode,
     }),
   );
   await check();
   let report;
-  let phase = 'recover';
+  const phase = 'recover';
   try {
     const payload = await recoveryPayload(state.row, draft, credentials);
     await check();
@@ -383,15 +280,13 @@ export const reconcileNativeRecovery = async ({
     });
     await check();
     checkReportIdentity(state.row, ack);
-    phase = 'status';
-    report = workspace || ack.status === 'recovery_ready' ? ack : await status();
+    report = ack;
   } catch (error) {
     const unavailableWorkflow =
       workflowRecoveryFailure(error?.code) ??
       workflowRecoveryFailure(runtimeReadFailures.get(error)?.runtimeCode);
-    if (workspace && unavailableWorkflow) return requireRecovery(unavailableWorkflow);
+    if (unavailableWorkflow) return requireRecovery(unavailableWorkflow);
     if (
-      workspace &&
       [error?.code, runtimeReadFailures.get(error)?.runtimeCode].includes(
         'native_execution_workspace_invalid',
       )
@@ -400,7 +295,7 @@ export const reconcileNativeRecovery = async ({
     if (recoveryReadRejected(error)) return requireRecovery('RESTORE_FAILED');
     const failureClass = statusReadFailure(error);
     if (!failureClass) throw error;
-    if (workspace && phase === 'recover' && error?.name === 'RuntimeClientError') {
+    if (error?.name === 'RuntimeClientError') {
       // AgentCore can replace the runtime's HTTP rejection with an opaque SDK
       // error. Do not infer its code from the message. A cold predecessor status
       // still observes the current EFS binding and workflow before any CLI spawn.
@@ -422,10 +317,9 @@ export const reconcileNativeRecovery = async ({
           return requireRecovery('WORKFLOW_STATE_UNAVAILABLE');
       }
     }
-    // Recovery deduplicates the exact episode/generation/checkpoint. An
-    // unreadable acknowledgement or status does not prove restore failure.
-    // Recheck authority and yield the lease; the next worker repeats only
-    // that restore, never an accepted answer or a new writer admission.
+    // Recovery deduplicates the exact episode and generation. An unreadable
+    // acknowledgement does not prove resume failure. Recheck authority and
+    // yield the lease; retries cannot replay an accepted answer or admit a new writer.
     await check();
     observe({
       phase,
@@ -451,7 +345,6 @@ export const reconcileNativeDispatch = async ({
   requireRecovery,
   advance,
   yieldPending,
-  verifyCheckpoint,
   credentials,
   observedInvoke,
   identity,
@@ -475,23 +368,7 @@ export const reconcileNativeDispatch = async ({
     await check();
     checkReportIdentity(state.row, report);
     if (!priorBoundary(state.row, report)) return requireRecovery('DELIVERY_UNCERTAIN');
-    if (report.recovered === true) {
-      if (nativeWorkspaceRecovery(state.row.configuration)) return requireRecovery('SESSION_LOST');
-      if (!state.row.recoveryCheckpoint) return requireRecovery('CHECKPOINT_UNAVAILABLE');
-      try {
-        await verifyCheckpoint(
-          state.row.recoveryCheckpoint,
-          state.row.publication,
-          state.row.interaction,
-        );
-      } catch (error) {
-        if (['NATIVE_RECOVERY_INVALID', 'NATIVE_RECOVERY_MISSING'].includes(error.code))
-          return requireRecovery('CHECKPOINT_UNAVAILABLE');
-        throw error;
-      }
-      state.row = await store.beginRecovery({ row: state.row });
-      return yieldPending();
-    }
+    if (report.recovered === true) return requireRecovery('SESSION_LOST');
   }
   const material = checkedCredentials(state.row, await credentials(state.row));
   if (
@@ -504,7 +381,7 @@ export const reconcileNativeDispatch = async ({
   const configuration = executionRuntimeConfiguration(draft, state.row);
   let payload = {
     command: 'native-start',
-    schemaVersion: nativeCommandSchema(state.row.configuration),
+    schemaVersion: 2,
     ...writerPayload(state.row),
     imageDigest: state.row.configuration.image.digest,
     sequence: nativeTurnSequence(state.row),
@@ -527,7 +404,7 @@ export const reconcileNativeDispatch = async ({
       fail('NATIVE_EXECUTION_RUNTIME_MISMATCH');
     payload = {
       command: 'native-continue',
-      schemaVersion: nativeCommandSchema(state.row.configuration),
+      schemaVersion: 2,
       ...writerPayload(state.row),
       sequence: response.sequence,
       requestId: response.commandId,
@@ -566,7 +443,6 @@ export const verifyCompletedNativeTurn = async ({
   publications,
   interactions,
   check,
-  verifyCheckpoint,
   yieldPending,
 }) => {
   const receipt = report.receipt;
@@ -625,22 +501,12 @@ export const verifyCompletedNativeTurn = async ({
     await check();
     timing('interactionVerificationCompleted');
   }
-  const checkpoint = report.checkpoint;
-  if (checkpoint) {
-    await verifyCheckpoint(
-      checkpoint,
-      receipt,
-      interaction,
-      nativeWriterGeneration(state.row),
-      manifest,
-    );
-  }
+  if (Object.hasOwn(report, 'checkpoint')) fail('NATIVE_PUBLICATION_INVALID');
   timing('authorityAdmissionStarted');
   state.row = await store.publish({
     row: state.row,
     publication: receipt,
     ...(interaction ? { interaction, interactionContentSha256 } : {}),
-    ...(checkpoint ? { checkpoint } : {}),
   });
   timing('authorityAdmissionCompleted');
   return yieldPending();

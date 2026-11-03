@@ -188,3 +188,32 @@ it.each(['not_created', 'unavailable'])(
     expect(f.row()).toEqual(f.required);
   },
 );
+
+it.each([
+  { confirmWorkspaceResume: undefined },
+  { confirmWorkspaceResume: false },
+  { checkpoint: { id: 'a'.repeat(64) } },
+  { recoveryMode: 'snapshot-v1' },
+])(
+  'rejects an obsolete or unconfirmed recovery envelope at the public router %j',
+  async (patch) => {
+    const f = await fixture();
+    // Bypass the frontend's projection to exercise the actual public request boundary.
+    const response = await fetch(
+      `${ORIGIN}/api/projects/${f.identity.projectId}/native-intents/${f.identity.executionId}/recover`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ ...f.request, ...patch }),
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'NATIVE_PREPARATION_INVALID' });
+    expect(f.recover).not.toHaveBeenCalled();
+    expect(f.enqueue).not.toHaveBeenCalled();
+    expect(
+      f.authority.mock.calls.filter(([command]) => command instanceof TransactWriteCommand),
+    ).toHaveLength(0);
+    expect(f.row()).toEqual(f.required);
+  },
+);

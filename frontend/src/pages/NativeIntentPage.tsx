@@ -126,11 +126,9 @@ export function NativeWorkspaceView({
             <p className="text-sm">
               {intent.execution
                 ? intent.execution.status === 'RECOVERING'
-                  ? intent.execution.recoveryMode === 'efs-workspace-v1'
-                    ? 'Opening a fresh CLI session on the surviving workspace. AI-DLC will reconcile its work and required questions.'
-                    : 'Restoring the saved AI-DLC session. You can leave this page and return to the same link.'
+                  ? 'Opening a fresh CLI session on the surviving workspace. AI-DLC will reconcile its work and required questions.'
                   : intent.execution.status === 'RECOVERY_REQUIRED'
-                    ? intent.execution.recoveryMode === 'efs-workspace-v1' && canRecover(intent)
+                    ? canRecover(intent)
                       ? 'The previous runtime is stopped. Confirm a fresh session to resume AI-DLC on the surviving workspace. Earlier answers remain in history and will not be sent again.'
                       : intent.execution.recovery
                         ? recoveryMessages[intent.execution.recovery.reason]
@@ -184,17 +182,11 @@ export function NativeWorkspaceView({
               {canRecover(intent) && (
                 <Button
                   onClick={() => {
-                    if (intent.execution?.recoveryMode === 'efs-workspace-v1')
-                      setResumeEpisode(intent.execution.recovery!.id);
-                    else void execute('recover');
+                    setResumeEpisode(intent.execution!.recovery!.id);
                   }}
                   disabled={acting !== null}
                 >
-                  {acting === 'recover'
-                    ? 'Requesting recovery…'
-                    : intent.execution?.recoveryMode === 'efs-workspace-v1'
-                      ? 'Resume in fresh session'
-                      : 'Recover session'}
+                  {acting === 'recover' ? 'Requesting recovery…' : 'Resume in fresh session'}
                 </Button>
               )}
               {!intent.execution && (

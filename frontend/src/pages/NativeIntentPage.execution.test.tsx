@@ -69,6 +69,7 @@ const ready: NativeIntent = {
   execution: null,
 };
 const execution: NativeExecution = {
+  recoveryMode: 'efs-workspace-v1',
   status: 'WAITING_FOR_INPUT',
   attemptId: 'attempt-1',
   epoch: 1,
@@ -198,7 +199,9 @@ it('shows the admitted dependency retention policy without changing published so
   api.publication.mockResolvedValue({ ...publication, filesystemPolicy: 'node-dependencies-v1' });
   renderPage();
   expect(
-    await screen.findByText(/Generated node_modules dependencies are kept/),
+    await screen.findByText(
+      /Generated node_modules dependencies remain in the persistent workspace/,
+    ),
   ).toBeInTheDocument();
   await userEvent.setup().click(screen.getByRole('tab', { name: 'Files' }));
   expect(await screen.findByRole('button', { name: /src\/pipe.ts/ })).toBeInTheDocument();
@@ -969,21 +972,10 @@ it.each(['STOPPED', 'FAILED'] as const)(
 
 it.each([
   [
-    'native_recovery_session_cwd_invalid',
-    'The session referenced a working directory outside its captured project directories.',
-  ],
-  ['native_recovery_session_id_mismatch', 'The checkpoint contained a different session identity.'],
-  [
     'native_execution_question_spec_invalid',
     'The workflow returned a question form that native execution could not verify.',
   ],
-  [
-    'native_recovery_home_path_invalid',
-    'Native execution could not save this session’s recovery file layout.',
-  ],
-  ['native_recovery_changed', 'Files changed while native execution was saving the turn.'],
-  ['native_recovery_limit', 'The turn exceeded the native file capture limits.'],
-  ['native_recovery_session_identity', 'Native execution could not verify the session checkpoint.'],
+  ['native_snapshot_changed', 'Files changed while native execution was saving the turn.'],
   ['native_execution_failed', 'Execution reported an error.'],
 ])(
   'shows a safe %s failure with retained files and no replay action',

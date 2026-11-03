@@ -105,6 +105,7 @@ const detail = (id = 'one'): NativeIntent => ({
   createdAt: time,
   updatedAt: time,
   execution: {
+    recoveryMode: 'efs-workspace-v1',
     status: 'RUNNING',
     revision: 7,
     imageStatus: 'retained',
@@ -363,7 +364,7 @@ it('puts the supported question before the request and keeps pinned configuratio
 });
 
 it.each([
-  ['SESSION_LOST', true, 'The saved AI-DLC session needs to be restored'],
+  ['SESSION_LOST', true, 'The previous runtime is stopped. Confirm a fresh session'],
   ['DELIVERY_UNCERTAIN', false, 'this command cannot be replayed through recovery'],
 ] as const)(
   'puts %s recovery before the published response and preserves recovery authority',
@@ -374,7 +375,8 @@ it.each([
       execution: {
         ...waiting.execution!,
         status: 'RECOVERY_REQUIRED' as const,
-        recovery: { id: 'recovery', reason, canRecover },
+        stopStatus: { state: 'confirmed' as const, confirmedAt: '2026-09-29T12:00:00Z' },
+        recovery: { id: 'recovery', reason, canRecover, workflowResumeState: 'created' as const },
       },
     };
     service.get.mockResolvedValue(recovery);
@@ -390,7 +392,8 @@ it.each([
     if (canRecover) {
       const pending = deferred<NativeIntent>();
       service.recover.mockReturnValue(pending.promise);
-      await userEvent.click(screen.getByRole('button', { name: 'Recover session' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Resume in fresh session' }));
+      await userEvent.click(screen.getByRole('button', { name: 'Confirm fresh session' }));
       expect(screen.getByRole('button', { name: 'Requesting recovery…' })).toBeDisabled();
       await act(async () =>
         pending.resolve({
@@ -398,9 +401,11 @@ it.each([
           execution: { ...recovery.execution, status: 'RECOVERING', revision: 8 },
         }),
       );
-      expect(screen.getByText('Restoring session')).toBeVisible();
+      expect(screen.getByText('Resuming in a fresh session')).toBeVisible();
     } else {
-      expect(screen.queryByRole('button', { name: 'Recover session' })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: 'Resume in fresh session' }),
+      ).not.toBeInTheDocument();
     }
   },
 );

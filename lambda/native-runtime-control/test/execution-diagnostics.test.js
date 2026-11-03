@@ -69,6 +69,7 @@ const row = {
   ...identity,
   scope,
   writerGeneration: 1,
+  turnSequence: 1,
   target: {
     runtimeArn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/native_test-abcdefghijkl',
     endpoint: 'exec_test',
@@ -371,14 +372,8 @@ describe('native controller diagnostic privacy boundary', () => {
     }
   });
   it.each([
-    'native_recovery_home_path_invalid',
-    'native_recovery_session_id_mismatch',
-    'native_recovery_session_cwd_invalid',
     'native_execution_question_spec_invalid',
     'native_execution_question_spec_unsafe',
-    'native_recovery_adapter_failed',
-    'native_recovery_cancelled',
-    'native_recovery_time_failed',
     'native_snapshot_changed',
   ])('retains %s through both the runtime report mapper and diagnostic sink', (code) => {
     const s = sinks();
@@ -392,7 +387,7 @@ describe('native controller diagnostic privacy boundary', () => {
     s.assertPrivate();
   });
 
-  it('retains a safe restore cause without serializing the recovery error', () => {
+  it('discards retired private recovery codes and metadata', () => {
     const s = sinks();
     s.diagnostics({
       ...nativeDiagnosticReport(row, {
@@ -406,17 +401,15 @@ describe('native controller diagnostic privacy boundary', () => {
       stage: 'report',
       code: 'REPORT_OBSERVED',
     });
-    expect(s.events()[0]).toMatchObject({
-      runtimeCode: 'native_execution_recovery_failed',
-      recoveryFailureCode: 'native_recovery_time_failed',
-    });
+    expect(s.events()[0].runtimeCode).toBe('unknown');
+    expect(s.events()[0]).not.toHaveProperty('recoveryFailureCode');
     s.assertPrivate();
   });
 
   it.each([
-    ['legacy both absent', undefined, undefined, []],
-    ['legacy accepts generation one', undefined, 1, []],
-    ['legacy rejects generation two', undefined, 2, ['writerGeneration']],
+    ['both generations absent', undefined, undefined, []],
+    ['absent stored generation', undefined, 1, ['writerGeneration']],
+    ['absent stored generation two', undefined, 2, ['writerGeneration']],
     ['explicit generation requires echo', 1, undefined, ['writerGeneration']],
   ])(
     'matches identity validation for %s',
@@ -432,7 +425,7 @@ describe('native controller diagnostic privacy boundary', () => {
         code: 'REPORT_OBSERVED',
       });
       expect(s.events()[0].identityMismatches).toEqual(mismatches);
-      expect(s.events()[0].expectedWriterGeneration).toBe(1);
+      expect(s.events()[0].expectedWriterGeneration).toBe(storedGeneration);
       s.assertPrivate();
     },
   );
@@ -835,7 +828,7 @@ describe('supervisor decision diagnostics preserve protected behavior', () => {
   };
 
   it.each(['identity', 'sequence', 'cold'])(
-    'records %s before the unchanged DELIVERY_UNCERTAIN decision without another Start',
+    'records %s before blocking recovery without workflow evidence or another Start',
     async (kind) => {
       const f = await fixture();
       const before = f.row();
@@ -854,7 +847,7 @@ describe('supervisor decision diagnostics preserve protected behavior', () => {
       await f.run(f.identity);
       expect(f.row()).toMatchObject({
         status: 'RECOVERY_REQUIRED',
-        recovery: { reason: 'DELIVERY_UNCERTAIN', canRecover: false },
+        recovery: { reason: 'WORKFLOW_STATE_UNAVAILABLE', canRecover: false },
         attemptId: before.attemptId,
         epoch: before.epoch,
         dispatch: before.dispatch,
@@ -864,7 +857,7 @@ describe('supervisor decision diagnostics preserve protected behavior', () => {
         phase: 'status',
         stage: 'decision',
         code: 'RECOVERY_REQUIRED',
-        reason: 'DELIVERY_UNCERTAIN',
+        reason: 'WORKFLOW_STATE_UNAVAILABLE',
         dispatchPresent: true,
       });
       if (kind === 'identity') expect(events.at(-1).identityMismatches).toEqual(['bindingId']);

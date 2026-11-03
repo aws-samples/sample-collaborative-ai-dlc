@@ -67,7 +67,7 @@ export function NativeRunInspection({
         )}
         <p className="text-sm text-muted-foreground">
           Result exports contain published public files, not a complete runnable workspace. Private
-          sessions and recovery checkpoints are not included. Creating a replacement run and
+          sessions and unpublished workspace files are not included. Creating a replacement run and
           archiving work are not available here.
         </p>
       </section>

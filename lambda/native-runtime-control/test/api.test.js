@@ -78,7 +78,7 @@ describe('native execution REST boundary', () => {
     graph: vi.fn(async () => ({ publicationId: 'committed', nodes: [], edges: [] })),
     status: vi.fn(async () => ({ executionAvailable: true, execution: null })),
   });
-  it.each([{}, { confirmWorkspaceResume: true }])(
+  it.each([{ confirmWorkspaceResume: true }])(
     'passes recovery confirmation through the REST boundary after membership checks %j',
     async (confirmation) => {
       const recover = vi.fn(async () => ({
@@ -101,6 +101,7 @@ describe('native execution REST boundary', () => {
     },
   );
   it.each([
+    {},
     { confirmWorkspaceResume: false },
     { confirmWorkspaceResume: 'true' },
     { confirmWorkspaceResume: null },

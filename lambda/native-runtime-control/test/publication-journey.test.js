@@ -8,10 +8,8 @@ import { createNativeExecutionPorts } from '../../agentcore/native/execution-pre
 import { runNativeCommand } from '../../agentcore/native/command-runner.js';
 import { createNativePublications } from '../../shared/native-publication.js';
 import { createNativeInteractions } from '../../shared/native-interaction.js';
-import { createNativeRecoveryCheckpoints } from '../../shared/native-recovery-checkpoint.js';
 import { createNativeExecutionFence } from '../../shared/native-execution-fence.js';
 import { nativeAnswerText } from '../../shared/native-pending-input.js';
-import { NATIVE_WORKSPACE_RECOVERY } from '../../shared/native-recovery-mode.js';
 import { proposedPlanSpec } from '../../shared/test/fixtures/native-plan-ask.js';
 import { createNativeExecutionSupervisor } from '../execution-worker.js';
 import { createNativeExecutionDiagnostics } from '../execution-diagnostics.js';
@@ -21,22 +19,20 @@ import { executionFixture } from './execution-fixtures.js';
 import { ACTOR } from './fixtures.js';
 import { memoryNativeObjects } from './memory-objects.js';
 
-// Real subprocesses, filesystem capture and production runtime/controller/
-// authority/publication/checkpoint validators. Only AWS, package initialization
+// Real subprocesses, public file capture and production runtime/controller/
+// authority/publication validators. Only AWS, package initialization
 // and model output are inert ports. No CLI or provider is invoked.
 it.each([
   { kind: 'complete', turns: 3 },
   { kind: 'form', turns: 3 },
   { kind: 'scope', turns: 3 },
-  { kind: 'scope-proposed', turns: 3, workspace: true },
+  { kind: 'scope-proposed', turns: 3 },
   { kind: 'scope-query-loop', turns: 3 },
   { kind: 'scope-output-silent', turns: 3 },
   { kind: 'scope-output-markup', turns: 3 },
   { kind: 'scope-output-mismatch', turns: 2, code: 'native_execution_output_result' },
   { kind: 'scope-credential', turns: 2, code: 'native_execution_output_credential' },
   { kind: 'scope-cross-credential', turns: 2, code: 'native_execution_output_credential' },
-  { kind: 'scope-capture-cwd', turns: 2, code: 'native_recovery_session_cwd_invalid' },
-  { kind: 'scope-capture-id', turns: 2, code: 'native_recovery_session_id_mismatch' },
   { kind: 'form-invalid', turns: 3 },
   { kind: 'form-invalid-match', turns: 3 },
   { kind: 'form-absent', turns: 3, degraded: 'absent' },
@@ -45,21 +41,16 @@ it.each([
   { kind: 'form-unsupported', turns: 3, degraded: 'unsupported_ask' },
   { kind: 'upload-publication', turns: 2, code: 'native_execution_failed' },
   { kind: 'upload-interaction', turns: 2, code: 'native_execution_failed' },
-  { kind: 'upload-checkpoint', turns: 2, code: 'native_execution_failed' },
   { kind: 'admission-ack', turns: 3 },
-  { kind: 'form-capture', turns: 2, code: 'native_recovery_home_path_invalid' },
-  { kind: 'capture', turns: 2, code: 'native_recovery_home_path_invalid' },
   { kind: 'snapshot', turns: 3, code: 'native_snapshot_link' },
   { kind: 'cancel', turns: 2 },
-  { kind: 'capture', turns: 2, code: 'native_recovery_home_path_invalid', unconfirmed: true },
-])('Claude checkpoint journey: %j', async (scenario) => {
+])('Claude publication journey: %j', async (scenario) => {
   const f = executionFixture({
     harness: 'claude',
     model: 'fixture-sonnet',
-    ...(scenario.workspace ? { recoveryMode: NATIVE_WORKSPACE_RECOVERY } : {}),
   });
   await f.start();
-  const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-checkpoint-journey-')));
+  const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-publication-journey-')));
   const root = join(base, 'mount');
   const homeRoot = join(base, 'homes');
   await fs.mkdir(root, { mode: 0o700 });
@@ -94,13 +85,10 @@ it.each([
     }
     if(scope && turn===2) {
       await fs.mkdir('nested',{mode:0o700});
-      await fs.appendFile(file,JSON.stringify({type:'user',sessionId:kind==='scope-capture-id'?'foreign-session':id,
-        cwd:kind==='scope-capture-cwd'?process.cwd()+'-other':join(process.cwd(),'nested')})+'\\n');
+      await fs.appendFile(file,JSON.stringify({type:'user',sessionId:id, cwd:join(process.cwd(),'nested')})+'\\n');
     }
     await fs.appendFile(file,JSON.stringify({type:'fixture_turn',turn})+'\\n');
     await fs.writeFile('work.txt','saved turn '+turn+'\\n',{mode:0o600});
-    if(kind.includes('capture') && !scope && turn===2)
-      await fs.writeFile(join(file.slice(0,-6),'unknown.sqlite'),'unsupported session layout',{mode:0o600});
     if(kind==='snapshot' && turn===3) await fs.symlink('work.txt','unsafe-link');
     let result='Question '+turn+'?';
     if(form) {
@@ -181,11 +169,8 @@ it.each([
         command.constructor.name === 'PutObjectCommand' &&
         turns === 2 &&
         scenario.kind.startsWith('upload-') &&
-        ((fault === 'publication' &&
-          p.Key.includes('/manifests/') &&
-          !p.Key.startsWith('native-recovery/')) ||
-          (fault === 'interaction' && p.Key.includes('/interactions/')) ||
-          (fault === 'checkpoint' && p.Key.startsWith('native-recovery/')))
+        ((fault === 'publication' && p.Key.includes('/manifests/')) ||
+          (fault === 'interaction' && p.Key.includes('/interactions/')))
       )
         throw new Error('injected upload failure');
     },
@@ -197,7 +182,6 @@ it.each([
   };
   const publications = createNativePublications(storage);
   const interactions = createNativeInteractions(storage);
-  const checkpoints = createNativeRecoveryCheckpoints(storage);
   const fence = createNativeExecutionFence(storage);
   const row = f.row();
   const env = {
@@ -238,9 +222,6 @@ it.each([
   };
   const commands = [];
   let setupCommands = 0;
-  const privateRecovery = vi.fn(() => {
-    throw Error('Private checkpoint operation in workspace mode');
-  });
   const runtime = createNativeExecutor({
     env,
     root,
@@ -248,14 +229,6 @@ it.each([
     ...createNativeExecutionPorts({ env, s3 }),
     inspectMount: async () => ({}),
     inspectInitialization: async () => ({ ok: true }),
-    ...(scenario.workspace
-      ? {
-          captureRecovery: privateRecovery,
-          publishRecovery: privateRecovery,
-          loadRecovery: privateRecovery,
-          restoreRecovery: privateRecovery,
-        }
-      : {}),
     commandRunner: async (input) => {
       if (input.timeoutMs !== null) {
         setupCommands++;
@@ -308,9 +281,9 @@ it.each([
     expect((await fence.read(executionIdentity(execution))).state).toBe('CANCELLED');
     // The external stop targets the admitted session. Authority cancellation
     // increments its fence epoch; it does not give the old runtime a new epoch.
-    await runtime.cancel(executionIdentity(row));
+    await runtime.cancel({ ...executionIdentity(row), writerGeneration: row.writerGeneration });
     await runtime.settle();
-    return { confirmed: !scenario.unconfirmed, runtimeSessionId: execution.runtimeSessionId };
+    return { confirmed: true, runtimeSessionId: execution.runtimeSessionId };
   });
   const invocations = [];
   let loseAck = scenario.kind === 'form' || scenario.kind === 'scope-proposed';
@@ -349,7 +322,6 @@ it.each([
     stop,
     publications,
     interactions,
-    checkpoints,
     fence,
     project: async () => {},
   });
@@ -385,7 +357,7 @@ it.each([
     await settle();
     expect(f.row().status).toBe('AWAITING_USER');
     const first = f.row();
-    expect(first.recoveryCheckpoint?.sequence).toBe(scenario.workspace ? undefined : 1);
+    expect(first).not.toHaveProperty('recoveryCheckpoint');
     if (scenario.kind === 'scope-proposed')
       expect((await runtime.settle()).presentation).toMatchObject({
         reason: 'structured',
@@ -397,22 +369,17 @@ it.each([
         options: 3,
       });
     expect(setupCommands).toBe(3);
-    const progress = await runtime.activity({ ...executionIdentity(row), after: 0 });
+    const progress = await runtime.activity({
+      ...executionIdentity(row),
+      writerGeneration: 1,
+      after: 0,
+    });
     expect(
       progress.events
         .filter((event) => event.kind === 'lifecycle')
         .map((event) => event.display.title),
     ).toEqual(
-      expect.arrayContaining([
-        'Installing verified workflow package',
-        'Saving workflow files',
-        ...(scenario.workspace
-          ? []
-          : [
-              'Saving recovery checkpoint',
-              'Checkpoint uploaded; awaiting publication verification',
-            ]),
-      ]),
+      expect.arrayContaining(['Installing verified workflow package', 'Saving workflow files']),
     );
     let previous = first;
     let latestAnswer;
@@ -436,7 +403,7 @@ it.each([
           reason: scenario.degraded ?? 'invalid_json',
         });
         expect(question.pendingInput).toBeNull();
-        expect(f.row().recoveryCheckpoint.sequence).toBe(2);
+        expect(f.row().publication.sequence).toBe(2);
       }
       const selection = form
         ? {
@@ -512,12 +479,6 @@ it.each([
         for (const [before, after] of [
           ['workspaceSnapshotStarted', 'workspaceSnapshotCompleted'],
           ['publicationStarted', 'publicationCompleted'],
-          ...(scenario.workspace
-            ? []
-            : [
-                ['checkpointCaptureStarted', 'checkpointCaptureCompleted'],
-                ['checkpointUploadStarted', 'checkpointUploadCompleted'],
-              ]),
         ])
           expect(completed.timings[after]).toBeGreaterThanOrEqual(completed.timings[before]);
       }
@@ -555,13 +516,6 @@ it.each([
           expect(
             [...objects.values()].some((object) => object.bytes.includes('fixture-model-token')),
           ).toBe(false);
-        }
-        if (scenario.kind.includes('capture')) {
-          expect(persistedFailure.timings.interactionUploadCompleted).toBeTypeOf('number');
-          expect(persistedFailure.timings.checkpointCaptureStarted).toBeTypeOf('number');
-          expect(persistedFailure.timings.checkpointCaptureCompleted).toBeUndefined();
-          expect(persistedFailure.timings.checkpointUploadStarted).toBeUndefined();
-          expect(writes.some((key) => key.includes('/interactions/'))).toBe(true);
         }
         if (scenario.kind === 'scope-output-mismatch') {
           expect(persistedFailure.outputDiagnostic).toMatchObject({
@@ -605,7 +559,7 @@ it.each([
         }
       } else if (scenario.kind !== 'cancel') {
         expect(f.row().status).toBe('AWAITING_USER');
-        expect(f.row().recoveryCheckpoint?.sequence).toBe(scenario.workspace ? undefined : turn);
+        expect(f.row()).not.toHaveProperty('recoveryCheckpoint');
         expect(f.row().publication.nativeSessionId).toBe(nativeSessionId);
         previous = f.row();
       }
@@ -618,31 +572,24 @@ it.each([
     if (scenario.code || scenario.kind === 'cancel') {
       expect(final.status).toBe(scenario.kind === 'cancel' ? 'CANCELLED' : 'FAILED');
       expect(final.publication).toEqual(previous.publication);
-      expect(final.recoveryCheckpoint).toEqual(previous.recoveryCheckpoint);
+      expect(final).not.toHaveProperty('recoveryCheckpoint');
       expect(final.interaction).toEqual(previous.interaction);
       expect(final.recovery).toBeUndefined();
       expect(stop).toHaveBeenCalledTimes(1);
-      if (scenario.unconfirmed) expect(final.stopConfirmation).toBeUndefined();
-      else expect(final.stopConfirmation.runtimeSessionId).toBe(first.runtimeSessionId);
+      expect(final.stopConfirmation.runtimeSessionId).toBe(first.runtimeSessionId);
       await expect(
-        api.recover(f.prepared, { requestId: randomUUID(), recoveryId: randomUUID() }, recheck),
+        api.recover(
+          f.prepared,
+          { requestId: randomUUID(), recoveryId: randomUUID(), confirmWorkspaceResume: true },
+          recheck,
+        ),
       ).rejects.toMatchObject({
         code:
           scenario.kind === 'cancel' ? 'NATIVE_EXECUTION_CANCELLED' : 'NATIVE_EXECUTION_CONFLICT',
       });
     }
-    // Only admitted bytes remain visible; checkpoint one remains independently readable.
-    if (scenario.workspace) {
-      expect(privateRecovery).not.toHaveBeenCalled();
-      expect(writes.some((key) => key.startsWith('native-recovery/'))).toBe(false);
-    } else {
-      const firstCheckpoint = await checkpoints.read(
-        executionIdentity(first),
-        first.recoveryCheckpoint,
-        { verifyFiles: true },
-      );
-      expect(firstCheckpoint.sequence).toBe(1);
-    }
+    // Only admitted public bytes remain visible. No private recovery object is written.
+    expect(writes.some((key) => key.startsWith('native-recovery/'))).toBe(false);
     const visible = await api.publication(f.prepared, recheck);
     expect(visible.id).toBe(final.publication.id);
     const saved = visible.files.find((file) => file.path === 'work.txt');

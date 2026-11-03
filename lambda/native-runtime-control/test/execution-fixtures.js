@@ -29,7 +29,7 @@ const hash = (v) => createHash('sha256').update(v).digest('hex');
 export const executionFixture = ({
   harness = 'codex',
   model = 'openai.example',
-  recoveryMode,
+  recoveryMode = 'efs-workspace-v1',
   packageVersion = '2.9.0',
 } = {}) => {
   const prepared = {

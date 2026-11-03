@@ -33,7 +33,8 @@ const env = {
 };
 const payload = () => ({
   command: 'native-start',
-  schemaVersion: 1,
+  schemaVersion: 2,
+  writerGeneration: 1,
   projectId,
   executionId,
   bindingId,
@@ -41,6 +42,7 @@ const payload = () => ({
   runtimeSessionId: randomUUID(),
   epoch: 1,
   configuration: {
+    recoveryMode: NATIVE_WORKSPACE_RECOVERY,
     harness: 'codex',
     model: 'configured-model',
     prompt:
@@ -224,17 +226,16 @@ const make = (options = {}) => {
 };
 
 describe('native first-turn executor', () => {
-  it('persists a capture failure even when runtime telemetry throws', async () => {
+  it('persists a publication failure even when runtime telemetry throws', async () => {
     const log = vi.spyOn(console, 'info').mockImplementation(() => {
       throw new Error('logger unavailable');
     });
     try {
       const { executor, request } = make({
         ports: {
-          publishRecovery: vi.fn(),
-          captureRecovery: async () => {
+          publish: async () => {
             throw Object.assign(new Error('private details'), {
-              code: 'native_recovery_adapter_failed',
+              code: 'native_execution_publication_unconfirmed',
             });
           },
         },
@@ -242,18 +243,18 @@ describe('native first-turn executor', () => {
       await executor.start(request);
       expect(await executor.settle()).toMatchObject({
         status: 'failed',
-        code: 'native_recovery_adapter_failed',
+        code: 'native_execution_publication_unconfirmed',
       });
       expect(
         JSON.parse(await fs.readFile(join(root, '.native-control/first-turn/status.json'), 'utf8')),
-      ).toMatchObject({ code: 'native_recovery_adapter_failed' });
+      ).toMatchObject({ code: 'native_execution_publication_unconfirmed' });
     } finally {
       log.mockRestore();
     }
   });
 
   it.each(['known', 'unknown', 'getter', 'coercion'])(
-    'persists only a closed failure identity after successful output/uploads: %s',
+    'persists only a closed failure identity when interaction publication fails: %s',
     async (kind) => {
       const getter = vi.fn(() => {
         throw new Error('private-error-canary');
@@ -263,19 +264,17 @@ describe('native first-turn executor', () => {
       else
         error.code =
           kind === 'known'
-            ? 'native_recovery_home_path_invalid'
+            ? 'native_execution_interaction_unconfirmed'
             : kind === 'coercion'
               ? { toString: getter, toJSON: getter }
-              : 'native_recovery_private_error_canary';
+              : 'native_execution_private_error_canary';
       const log = vi.spyOn(console, 'info').mockImplementation(() => {});
-      const publishRecovery = vi.fn();
       try {
         const { executor, request, ports } = make({
           ports: {
-            captureRecovery: async () => {
+            publishInteraction: vi.fn(async () => {
               throw error;
-            },
-            publishRecovery,
+            }),
           },
         });
         await executor.start(request);
@@ -284,7 +283,6 @@ describe('native first-turn executor', () => {
         expect(report).toMatchObject({ status: 'failed', code: expected });
         expect(ports.publish).toHaveBeenCalledTimes(1);
         expect(ports.publishInteraction).toHaveBeenCalledTimes(1);
-        expect(publishRecovery).not.toHaveBeenCalled();
         const persisted = await fs.readFile(
           join(root, '.native-control/first-turn/status.json'),
           'utf8',
@@ -482,10 +480,7 @@ describe('native first-turn executor', () => {
       request.configuration.model = 'us.anthropic.configured';
       request.configuration.recoveryMode = NATIVE_WORKSPACE_RECOVERY;
       request.configuration.packageVersion = '2.11.1';
-      const { executor, ports } = make({
-        request,
-        ports: { captureRecovery: vi.fn(), publishRecovery: vi.fn() },
-      });
+      const { executor, ports } = make({ request });
       const prepare = ports.prepare.getMockImplementation();
       ports.prepare.mockImplementation(async (input) => {
         const prepared = await prepare(input);
@@ -567,8 +562,6 @@ describe('native first-turn executor', () => {
         expect(ports.publish).not.toHaveBeenCalled();
         expect(ports.publishInteraction).not.toHaveBeenCalled();
       }
-      expect(ports.captureRecovery).not.toHaveBeenCalled();
-      expect(ports.publishRecovery).not.toHaveBeenCalled();
     },
   );
 
@@ -1312,13 +1305,13 @@ describe('native invocation and first-wait classification', () => {
     expect(instructions).toContain('compose_command, scope_commands or choices');
     expect(instructions).toContain('Do not reconstruct those commands');
     expect(instructions).toContain('ordinary npm installs, local file: dependencies and builds');
-    expect(instructions).toContain('retained exactly in private recovery');
+    expect(instructions).toContain('remain in this persistent workspace');
     expect(instructions).toContain('Do not skip required dependencies or tests');
     expect(instructions).toContain('normal interaction-mode question');
     expect(instructions).toContain('Never record these platform instructions as words spoken');
     expect(instructions).not.toContain('--on-instruction');
     expect(nativeTransportInstructions({ recoveryMode: NATIVE_WORKSPACE_RECOVERY })).toContain(
-      'no exact private CLI backup is required',
+      'remain in this persistent workspace',
     );
   });
 
@@ -1419,126 +1412,6 @@ describe('native invocation and first-wait classification', () => {
     expect(classifyNativeFirstWait({ snapshot: changed, harness: 'codex' }).kind).toBe(
       'stopped_needs_review',
     );
-  });
-});
-
-describe('native cold recovery', () => {
-  const CHECKPOINT = '9'.repeat(64);
-  // A first turn captures a checkpoint; a successor generation restores it on
-  // the same mount. Session capture/restore are injected; the executor's own
-  // directory replacement, machine projection and admission run for real.
-  const recoverable = async () => {
-    let captured;
-    const first = make({
-      ports: {
-        captureRecovery: vi.fn(async () => ({ metadata: { schemaVersion: 1 }, files: [] })),
-        publishRecovery: vi.fn(async (input) => {
-          captured = input;
-          return { sequence: input.sequence, id: CHECKPOINT, manifest: { sha256: CHECKPOINT } };
-        }),
-      },
-    });
-    await first.executor.start(first.request);
-    const head = await first.executor.settle();
-    expect(head.status).toBe('publication_ready');
-    const packages = join(root, 'packages');
-    const successor = make({
-      request: first.request,
-      ports: {
-        assertRecoveryAdmission: vi.fn(async () => {}),
-        loadRecovery: vi.fn(async () => ({
-          manifest: {
-            sequence: captured.sequence,
-            writerGeneration: captured.writerGeneration,
-            configurationSha256: captured.configurationSha256,
-            publicationId: captured.publicationId,
-            interactionId: captured.interactionId,
-            nativeSessionId: captured.nativeSessionId,
-            harness: captured.harness,
-            imageDigest: captured.imageDigest,
-            packageId: captured.packageId,
-            continuation: captured.continuation,
-            filesystem: captured.filesystem,
-          },
-          files: [],
-        })),
-        prepareRecovery: vi.fn(async () => ({
-          package: {
-            directory: packages,
-            binaryPath: join(packages, 'aidlc'),
-            version: '2.9.0',
-            packageId: captured.packageId,
-          },
-        })),
-        restoreRecovery: vi.fn(async ({ project, nativeSessionId, harness }) => {
-          // The restored project carries its committed pin, not the machine registry.
-          await fs.writeFile(join(project, '.aidlc-version'), '2.9.0\n');
-          return { restored: true, nativeSessionId, harness };
-        }),
-      },
-    });
-    const input = {
-      ...first.request,
-      command: 'native-recover',
-      writerGeneration: 2,
-      recoveryId: randomUUID(),
-      sequence: head.sequence,
-      checkpoint: { sequence: head.sequence, id: CHECKPOINT },
-      publication: head.receipt,
-      interaction: head.interaction,
-    };
-    return { ...successor, input, packages };
-  };
-
-  it('re-registers the restored project pin with the rebuilt machine projection', async () => {
-    const { executor, input, ports, packages } = await recoverable();
-    await executor.recover(input);
-    expect(await executor.settle()).toMatchObject({
-      status: 'recovery_ready',
-      recoveryId: input.recoveryId,
-      checkpointId: CHECKPOINT,
-    });
-    const commands = ports.commandRunner.mock.calls.map(([call]) => call);
-    expect(commands.map(({ command, args }) => [command, args])).toEqual([
-      [join(packages, 'aidlc'), ['use', '2.9.0', '--from', packages, '--offline', '--json']],
-      [
-        join(root, 'machine/bin/aidlc'),
-        [
-          'config',
-          '--pin',
-          '2.9.0',
-          '--project-dir',
-          join(root, 'project'),
-          '--from',
-          packages,
-          '--offline',
-          '--json',
-        ],
-      ],
-    ]);
-    // Both run against the rebuilt machine data, offline, never with model credentials.
-    for (const { env: commandEnv } of commands) {
-      expect(commandEnv).toMatchObject({
-        AIDLC_INSTALL_ROOT: join(root, 'machine/data'),
-        AIDLC_BIN_DIR: join(root, 'machine/bin'),
-        AIDLC_PROJECT_DIR: join(root, 'project'),
-        AIDLC_OFFLINE: '1',
-      });
-      expect(Object.keys(commandEnv).filter((key) => /TOKEN|SECRET|KEY/.test(key))).toEqual([]);
-    }
-  });
-
-  it('does not report a recovered owner when the pin cannot be re-registered', async () => {
-    const { executor, input, ports } = await recoverable();
-    ports.commandRunner.mockImplementation(async ({ args }) =>
-      args[0] === 'config' ? { ...cleanCommand, exitCode: 1 } : cleanCommand,
-    );
-    await executor.recover(input);
-    expect(await executor.settle()).toMatchObject({
-      status: 'stopped_needs_review',
-      code: 'native_execution_recovery_failed',
-      recoveryFailureCode: 'native_execution_initialization_failed',
-    });
   });
 });
 

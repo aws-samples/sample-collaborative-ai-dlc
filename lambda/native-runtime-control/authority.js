@@ -25,7 +25,6 @@ export const NATIVE_AUTHORITY_OPERATIONS = Object.freeze({
       'release',
       'dispatchAttempted',
       'dispatched',
-      'beginRecovery',
       'recoveryStopped',
       'recovered',
       'recoveryRequired',
