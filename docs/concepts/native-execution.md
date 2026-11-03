@@ -355,6 +355,19 @@ implemented capability from proof that it works through the deployed user path.
 
 ### First-path EFS resume qualification
 
+**Current scope, corrected by the user on 2026-11-03:** NE-02 qualifies the
+native execution tool. Generated application files and command results are
+opaque fixture data. Verify that the platform accepts, stores, exposes and
+preserves those bytes with the correct execution, publication and access
+identities. Generated-game correctness, source-quality review, independent
+application test/build qualification and browser playability are not completion
+gates. A complete game is unnecessary. Errors in generated content are not
+platform defects unless the tool violates its own transport, persistence,
+authorization or recovery contract. This scope supersedes the game-quality and
+playability requirements in the dated historical observations below; those
+observations retain their original outcomes. The tool's regression tests and
+genuine workflow human gates remain required.
+
 NE-02 uses separate fresh qualification intents in the existing dev-enabled space,
 with AI-DLC 2.11.1, Claude Code and a connected GitHub application repository.
 Deploy the same candidate's frontend, authority, workers and runtime before
@@ -381,8 +394,11 @@ Terraform default or mutable image tag is insufficient.
    a fresh session** action through the browser. Trace the accepted public request
    to the authority, worker and runtime. Confirm the same workspace identity and
    a different CLI session identity, with no concurrent predecessor writer.
-4. Verify AI-DLC reconciles the surviving edits and dependencies, runs the relevant
-   build/tests, admits a new publication and reaches its next real question.
+4. Verify AI-DLC resumes against the surviving edits and dependencies, exposes
+   real command results, admits a new publication and reaches its next real
+   question. Compare retained file and dependency identities and verify result
+   delivery through the application; do not assess generated application quality
+   or require its tests/build to pass.
    Previously accepted answers must retain their delivery classification and
    history; recovery itself must not replay an answer or approve a gate. For the
    expired waiting session, inspect the original revision's
@@ -422,6 +438,8 @@ the exact accepted runtime session. Capture changed-file and dependency-link
 hashes before stopping, compare the changes with the preceding publication, and
 use `inspect --marker-sha256` after the resumed run publishes to compare retained
 evidence. An old marker alone does not prove an active interrupted tool.
+Prepare the scoped user-run stop command first. Start the expiring barrier only
+after the operator is ready, and never reuse the expired October 27 command.
 
 The `missing-project` and `wrong-project` actions require an isolated intent at a
 recoverable boundary with a confirmed predecessor stop. They preserve the
@@ -1473,10 +1491,97 @@ No additional operator action or deployment is needed for these two rejection
 checks. This stage changes documentation only; the previously recorded controller
 tests remain applicable. Documentation formatting and site-build validation are
 recorded with its evidence. Created-workflow waiting recovery, intake rejection
-and temporary Kiro unavailability retain their prior passes. Successful game
-publication/playability and a fresh interrupted-active-tool recovery proof remain
-open. NE-02 stays unchecked, NE-03 has not started, and the expired October 27 stop
+and temporary Kiro unavailability retain their prior passes. Result publication
+through the application and a fresh interrupted-active-tool recovery proof remain
+open. Generated-output quality and playability are excluded by the corrected
+scope above. NE-02 stays unchecked, NE-03 has not started, and the expired October 27 stop
 command must not be reused.
+
+**Tool-only fixture scope, 2026-11-03:** the user's correction arrived after
+draft `cd022952-432a-4574-8e79-ca9cb11b08a0` was created and its isolated
+workspace requested. A consistent authority read found no execution record,
+CLI writer or publication. No generated-game model work had started.
+The prepared draft was reused with an explicit prompt amendment through the
+application before Start. The reduced fixture requests only small draft files
+and a real dependency installation, then a member/operator readiness question.
+It does not start an expiring barrier or request game-quality verification.
+The original draft request and preparation receipts are preserved under
+`.native-evidence/ne02-2026-11-03-game-positive/`; subsequent tool qualification
+is recorded separately under
+`.native-evidence/ne02-2026-11-03-tool-recovery/`.
+
+Pre-Start reads reconfirmed the nine deployed controller package hashes,
+five authority aliases, unchanged frontend assets and runtime image
+`sha256:534ccfd547671cee197ae10e3700fccd4b9ec51cc16d099f7cdafddbab568a2b`
+against implementation `8ffd126762b7e9a292d01523d1feb748c2a056b3`.
+Start accepted amended prompt revision **1**, AI-DLC **2.11.1**, Claude Code,
+the existing platform Bedrock/model scope and application source
+`d99d2511c43f07ff2451e7e13f5a8f45b16dfce2`. The accepted attempt is
+`bab30bfb-a158-486f-b12c-9b6df147e5ad`, runtime session
+`6b241d97-23d9-47b5-8e58-94934098a08b`, EFS binding
+`84cc90a6-eb79-4b33-9b60-e731a9809102`, writer **1**. All four admitted
+publications identify CLI session `8a240037-b848-4114-ad42-67372ee8cdf0`.
+
+**Opaque result publication passes for this execution.** Sequences **1–4**
+admitted publications `79b36712…64202`, `7a8810cb…4d2`, `64bc2680…b827`
+and `220186c6…bc73`, containing **24**, **41**, **48** and **58** files
+respectively. The production
+publication reader verified every immutable object version, byte length,
+digest and execution identity without evaluating or running the generated
+content. The signed-in application's first three publication inventories
+match storage metadata, and its retrieved file has the same bytes/hash. Anonymous requests
+for that publication, interaction and file each returned **401**; a separate
+nonmember account was not exercised. The original publication and all its
+file versions still matched after sequence 3 was admitted.
+
+The express plan was selected through the real member interaction. Its
+accepted answer and the subsequent routine fixture choices have distinct
+command IDs, actor/acceptance metadata and delivered-history records. Sequence
+2 exposed the real requirements question for created workflow
+`261103-phaser-fixture-scaffold`. The actual requirements gate was then
+approved for the minimal fixture only. The current authority read shows
+**AWAITING_USER**, sequence **4**, writer **1**, no private recovery checkpoint,
+and readiness interaction
+`e6ebb2d1f2cc63619f400ddbcf64094fd3ef56c6266de280432fd5af681a029c`.
+The application visibly asks whether the member/operator is ready for the
+interruption step; this question has not been answered.
+Controller `CALL_FAILED`/`EBUSY` observations
+delayed admission and dispatch; existing retries progressed without repeated
+Start or answer submissions. The underlying SDK error cause is not established.
+
+The active-tool interruption remains **NOT RUN**. No operator readiness,
+barrier or stop has occurred. The admitted fixture provides the preceding
+publication; the unpublished edit and actual dependency links still require
+direct workspace inspection during the live interruption. The local terminal
+handoff waits for operator readiness, verifies a fresh live barrier and a
+changed `src/draft.js` byte identity, and stops only the exact pinned execution.
+It then waits for application recovery and reads the same workspace to compare
+retained file bytes, dependency links and the new CLI/writer identities.
+It does not submit answers, start model work, bootstrap a diagnostic session,
+or perform a second stop. A temporary computer-control
+`cgWindowNotFound` failure prevented actions at the requirements gate. Access
+was restored after reconnecting the tool, and the buffered token-free browser
+receipts were exported without a capture error.
+The user-run handoff is `handoff/run-active-tool-stop.sh` under the current
+evidence directory. It pins the reviewed commit, exact publication and resource
+identities, and refuses changed state or existing output files. Its readiness
+window is 15 minutes; the barrier itself is not started until the member has
+explicitly confirmed readiness and lasts at most 150 seconds. Natural session
+expiry does not authorize a different writer or reuse of a failed handoff.
+No deployment, repeated workspace fault or generated-output quality check is
+required. NE-02 remains unchecked.
+
+Local validation for this scope/evidence update: **79 existing qualification
+helper tests** and **26 handoff contract checks** pass. The handoff tests use
+real temporary file bytes, Git differences, dependency symlinks and a child
+process, with simulated AWS responses, Linux process metadata and signed NFS
+inode IDs; they are not a live stop/recovery pass. They reject changed pins
+between inspection and stop, an expired/dead barrier, already-published work
+and ambiguous stop results, as well as changed retained bytes, reused CLI
+identity, unexpected writer generations and a retained response on recovery.
+Syntax checks for the evidence helpers, secret
+checks, canonical-document formatting and the documentation site build pass.
+No application test/build or playability qualification was performed.
 
 ## Integration and simplification checklist
 
@@ -1503,10 +1608,13 @@ with previous native development executions.
       runtime, recovery API, worker and UI corrections and exercise browser → public REST API →
       authority → worker → runtime. Cover waiting-session expiry after workflow creation and an interrupted
       tool, confirmed predecessor stop, member confirmation, the same EFS workspace,
-      a fresh CLI session, unfinished edits, dependency links, build/test and the
-      next real workflow question. **Done when:** a new publication is admitted
+      a fresh CLI session, unfinished edits, dependency links, real command results
+      and the next real workflow question. **Done when:** result data is admitted,
+      stored and exposed through the application with correct identity and access,
       without private recovery operations or automatic answer replay; intake,
       unavailable workflow state, and a missing or wrong workspace block resume visibly.
+      Generated-application correctness, independent test/build qualification and
+      playability are outside this verdict.
 - [ ] **NE-03 — Delete the exact native snapshot/restore stack.** After NE-02, remove
       private CLI checkpoint capture, export/import, upload/download and exact
       filesystem/database restore; remove legacy native commands, mode fallbacks,
