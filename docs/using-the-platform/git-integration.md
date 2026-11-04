@@ -75,7 +75,7 @@ The external ID is deployment-wide and the app never takes it from a request, so
 
 Repository identity is the **ARN** (region and account are part of it), so CodeCommit repositories appear as `name (region)` and link to the regional console. Commits made by the engine carry the committer configured on the binding (CodeCommit has no user-identity API to discover one).
 
-What CodeCommit cannot do, declared by the provider so the engine never attempts it: no draft pull requests, no reopening a closed pull request (closed is terminal — a new execution can open a replacement; final delivery retry refuses closed work), no issues tracker, no CI check statuses (approval rules are read instead). Because **PR per unit** relies on draft pull requests to keep each unit review unmergeable while its lane reconciles or revises it, that strategy (and its feedback revisions) is not available for a space with CodeCommit repositories: intent creation is refused with `PR_STRATEGY_UNSUPPORTED`; choose one PR per intent for such a space instead. Pull request state is picked up by the same one-minute reconciler as every other provider; no webhook is needed.
+What CodeCommit cannot do, declared by the provider so the engine never attempts it: no draft pull requests, no reopening a closed pull request (closed is terminal — a new execution can open a replacement; final delivery retry refuses only a closed pull request that its own run created), no issues tracker, no CI check statuses (approval rules are read instead). Because **PR per unit** relies on draft pull requests to keep each unit review unmergeable while its lane reconciles or revises it, that strategy (and its feedback revisions) is not available for a space with CodeCommit repositories: intent creation is refused with `PR_STRATEGY_UNSUPPORTED`; choose one PR per intent for such a space instead. Pull request state is picked up by the same one-minute reconciler as every other provider; no webhook is needed.
 
 ## Branches
 
@@ -191,9 +191,12 @@ merge the final PR. Deliberately accepted partial work remains partial.
 
 An uncertain previous create request is reconciled with the code host before
 another request is made. Successfully published repositories are preserved.
-A closed or merged existing PR, a changed intent branch or a missing branch is
-shown with an actionable refusal; retry does not recreate closed work or choose
-a different target. Restore a missing captured branch, fix repository access,
+An open PR from the intent branch is reconciled as the current PR. A closed or
+merged PR that this run created (for example after its create response was lost),
+a changed intent branch or a missing branch is shown with an actionable refusal;
+retry does not recreate closed work or choose a different target. Rewind and
+relaunch keep the intent branch: a PR that an earlier run opened and a reviewer
+closed or merged is history, and the new run publishes a new PR. Restore a missing captured branch, fix repository access,
 or review a separate execution/recovery plan as the displayed reason directs.
 PR-per-unit workflows keep their existing unit review process; this action
 covers their final intent-to-base publication only.
@@ -240,9 +243,13 @@ the invocation might already be accepted; a later check recovers abandonment.
 Retry invokes a separate durable `retry-delivery` history through the configured
 orchestrator target. It only uses the shared publication logic and the existing
 source-control service. It never invokes AgentCore, stages, Git integration or
-models. A failed or incomplete provider lookup blocks creation. Strict lookup
-includes closed PRs; a changed source SHA, missing branch, retargeted PR or closed
-work requires review instead of implicit replacement. External repository edits
+models. A failed or incomplete provider lookup blocks creation. Strict lookup reads open
+PRs for the intent branch. Closed and merged PRs are considered only after this
+run recorded a create request (`createRequestedAt` on the repository entry, written
+immediately before the provider call), and only those the provider created at
+most five minutes (clock tolerance) before that request. A changed source SHA,
+missing branch, retargeted PR or this run's closed work requires review instead
+of implicit replacement. External repository edits
 remain outside DynamoDB ownership; branch identity is rechecked immediately
 before creation. No provider merge-state polling is added.
 

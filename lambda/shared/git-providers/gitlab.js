@@ -1005,6 +1005,7 @@ const getPullRequestStatus = async (ctx, repoId, mrIid) => {
     mergedAt: mr.merged_at ?? null,
     closedAt: mr.closed_at ?? null,
     updatedAt: mr.updated_at ?? null,
+    createdAt: mr.created_at ?? null,
     title: mr.title ?? '',
   };
 };

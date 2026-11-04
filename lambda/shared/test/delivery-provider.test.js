@@ -97,7 +97,7 @@ describe('strict delivery provider reads', () => {
     },
   );
   it.each(['github', 'gitlab'])(
-    '%s retains a closed matching PR for normalized inspection',
+    '%s reconciles only open PRs unless this run requested creation before a closed one',
     async (name) => {
       const provider = getProvider(name);
       const raw =
@@ -109,6 +109,7 @@ describe('strict delivery provider reads', () => {
               base: { ref: 'develop' },
               state: 'closed',
               merged_at: null,
+              created_at: '2026-10-01T12:00:00Z',
             }
           : {
               iid: 7,
@@ -117,41 +118,56 @@ describe('strict delivery provider reads', () => {
               target_branch: 'develop',
               sha: 'sha',
               state: 'closed',
+              created_at: '2026-10-01T12:00:00Z',
             };
-      const fetchImpl = async (url) =>
-        fetchResponse(
-          url.includes('/7')
-            ? raw
-            : url.includes('pulls?') || url.includes('merge_requests?')
-              ? [raw]
-              : name === 'github'
-                ? { object: { sha: 'sha' } }
-                : { commit: { id: 'sha' } },
+      const urls = [];
+      const fetchImpl = async (url) => {
+        urls.push(url);
+        if (url.includes('/7')) return fetchResponse(raw);
+        if (url.includes('pulls?') || url.includes('merge_requests?'))
+          return fetchResponse(/state=(open|opened)&/.test(url) ? [] : [raw]);
+        return fetchResponse(
+          name === 'github' ? { object: { sha: 'sha' } } : { commit: { id: 'sha' } },
         );
-      const result = await inspectDelivery(provider, { token: 'test', fetchImpl }, 'org/repo', {
-        branch: 'intent',
-        baseBranch: 'develop',
-      });
-      expect(result.pr).toMatchObject({
+      };
+      const inspect = (createdAfter) =>
+        inspectDelivery(provider, { token: 'test', fetchImpl }, 'org/repo', {
+          branch: 'intent',
+          baseBranch: 'develop',
+          createdAfter,
+        });
+      // An earlier run's closed PR on the same intent branch is history.
+      expect((await inspect(null)).pr).toBeNull();
+      expect(urls.filter((u) => /pulls\?|merge_requests\?/.test(u))).toHaveLength(1);
+      expect((await inspect('2026-10-02T12:00:00Z')).pr).toBeNull();
+      // This run asked for creation, then the response was lost and the PR closed.
+      expect((await inspect('2026-10-01T12:01:00Z')).pr).toMatchObject({
         number: 7,
         state: 'closed',
         sourceBranch: 'intent',
         targetBranch: 'develop',
+        createdAt: expect.stringMatching(/^2026-10-01T12:00:00/),
       });
     },
   );
-  it('Bitbucket explicitly checks terminal states and rejects incomplete negative lookup', async () => {
+  it('Bitbucket checks terminal states only after a create request and rejects incomplete negative lookup', async () => {
     const provider = getProvider('bitbucket');
     const urls = [];
     const fetchImpl = async (url) => {
       urls.push(decodeURIComponent(url));
       return fetchResponse(url.includes('/refs/') ? { target: { hash: 'sha' } } : { values: [] });
     };
-    const result = await inspectDelivery(provider, { token: 'test', fetchImpl }, 'org/repo', {
-      branch: 'intent',
-      baseBranch: 'develop',
-    });
-    expect(result.pr).toBeNull();
+    const inspect = (createdAfter) =>
+      inspectDelivery(provider, { token: 'test', fetchImpl }, 'org/repo', {
+        branch: 'intent',
+        baseBranch: 'develop',
+        createdAfter,
+      });
+    expect((await inspect(null)).pr).toBeNull();
+    expect(urls.filter((u) => u.includes('/pullrequests?'))).toHaveLength(1);
+    expect(urls.join('\n')).toContain('state="OPEN"');
+    urls.length = 0;
+    expect((await inspect('2026-10-01T12:00:00Z')).pr).toBeNull();
     expect(urls.filter((u) => u.includes('/pullrequests?'))).toHaveLength(4);
     expect(urls.join('\n')).toContain('state="MERGED"');
     await expect(
@@ -162,15 +178,20 @@ describe('strict delivery provider reads', () => {
       ),
     ).rejects.toThrow(/incomplete/);
   });
-  it('CodeCommit uses GetBranch and searches closed as well as open PRs without creating', async () => {
+  it('CodeCommit uses GetBranch and searches closed PRs only after a create request', async () => {
     const mock = mockClient(CodeCommitClient);
     try {
       mock.on(GetBranchCommand).resolves({ branch: { commitId: 'sha' } });
-      mock.on(ListPullRequestsCommand).resolves({ pullRequestIds: ['7'] });
+      mock
+        .on(ListPullRequestsCommand, { pullRequestStatus: 'OPEN' })
+        .resolves({ pullRequestIds: [] })
+        .on(ListPullRequestsCommand, { pullRequestStatus: undefined })
+        .resolves({ pullRequestIds: ['7'] });
       mock.on(GetPullRequestCommand).resolves({
         pullRequest: {
           pullRequestId: '7',
           pullRequestStatus: 'CLOSED',
+          creationDate: new Date('2026-10-01T12:00:00Z'),
           pullRequestTargets: [
             {
               repositoryName: 'repo',
@@ -182,22 +203,28 @@ describe('strict delivery provider reads', () => {
         },
       });
       const provider = getProvider('codecommit');
-      const result = await inspectDelivery(
-        provider,
-        {
-          token: {
-            assumedRoleArn: 'arn:aws:sts::123456789012:assumed-role/test/session',
-            credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+      const inspect = (createdAfter) =>
+        inspectDelivery(
+          provider,
+          {
+            token: {
+              assumedRoleArn: 'arn:aws:sts::123456789012:assumed-role/test/session',
+              credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+            },
           },
-        },
-        'arn:aws:codecommit:eu-west-1:123456789012:repo',
-        { branch: 'intent', baseBranch: 'develop' },
-      );
-      expect(result.pr.state).toBe('closed');
-      expect(
-        mock.commandCalls(ListPullRequestsCommand)[0].args[0].input.pullRequestStatus,
-      ).toBeUndefined();
-      expect(mock.commandCalls(ListPullRequestsCommand)[0].args[0].input.authorArn).toBeUndefined();
+          'arn:aws:codecommit:eu-west-1:123456789012:repo',
+          { branch: 'intent', baseBranch: 'develop', createdAfter },
+        );
+      expect((await inspect(null)).pr).toBeNull();
+      const lookups = () =>
+        mock.commandCalls(ListPullRequestsCommand).map((call) => call.args[0].input);
+      expect(lookups()).toEqual([
+        expect.objectContaining({ pullRequestStatus: 'OPEN', authorArn: undefined }),
+      ]);
+      const result = await inspect('2026-10-01T11:59:00Z');
+      expect(result.pr).toMatchObject({ state: 'closed', createdAt: '2026-10-01T12:00:00.000Z' });
+      expect(lookups().at(-1).pullRequestStatus).toBeUndefined();
+      expect(lookups().at(-1).authorArn).toBeUndefined();
     } finally {
       mock.restore();
     }

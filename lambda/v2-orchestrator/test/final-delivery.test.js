@@ -11,9 +11,22 @@ import {
 } from '../../shared/final-delivery.js';
 import { __durableHandler } from '../index.js';
 import { finalizeUnitCompletion, unitPlanIdentity } from '../../shared/unit-completion.js';
+import { inspectDelivery } from '../../shared/delivery-provider.js';
 
 const tableName = `delivery-${randomUUID()}`;
-let db, store, meta, remote, operation, timestamp, workflowPlan;
+let db, store, meta, remote, operation, timestamp, workflowPlan, prNumbers;
+// The real provider-side selection over one remote PR per repository.
+const remoteProvider = {
+  id: 'github',
+  getDefaultBranch: async () => 'develop',
+  findPullRequest: async (_ctx, repo, { sourceBranch, state }) => {
+    const pr = remote.get(repo);
+    return pr?.sourceBranch === sourceBranch && (state === 'all' || pr.state === state) ? pr : null;
+  },
+  getPullRequestStatus: async (_ctx, repo, number) =>
+    remote.get(repo)?.number === number ? remote.get(repo) : null,
+  getBranchHead: async (_ctx, _repo, branch) => (branch === 'develop' ? 'base1' : 'head1'),
+};
 const loadPlan = async () => ({ valid: true, plan: workflowPlan });
 beforeAll(async () => {
   db = makeDdb();
@@ -48,23 +61,19 @@ beforeEach(async () => {
     orchestratorRunId: 'run1',
   });
   remote = new Map();
+  prNumbers = 0;
   operation = vi.fn(async ({ repo, operation: name, args }) => {
-    if (name === 'delivery-inspect')
-      return {
-        headSha: 'head1',
-        baseSha: 'base1',
-        baseBranch: args.baseBranch,
-        pr: remote.get(repo) ?? null,
-      };
+    if (name === 'delivery-inspect') return inspectDelivery(remoteProvider, {}, repo, args);
     if (name === 'compare') return { status: 'ahead', base: args.base };
     if (name === 'create-pr') {
       const pr = {
-        number: remote.size + 1,
-        url: `https://example.test/${repo}/pull/1`,
+        number: ++prNumbers,
+        url: `https://example.test/${repo}/pull/${prNumbers}`,
         sourceBranch: args.branch,
         targetBranch: args.baseBranch,
         headSha: 'head1',
         state: 'open',
+        createdAt: new Date().toISOString(),
       };
       remote.set(repo, pr);
       return { prUrl: pr.url, prNumber: pr.number };
@@ -488,6 +497,45 @@ describe('final delivery with real DynamoDB ownership', () => {
       expect(p.delivery.repositories[0].reason).toContain(state);
       await retry();
       expect(createCalls().filter((c) => c.repo === 'owner/api')).toHaveLength(1);
+    },
+  );
+  it.each(['closed', 'merged'])(
+    "publishes a new PR in a new run after the previous run's PR was %s",
+    async (state) => {
+      await publish();
+      const previous = [...remote.values()].map((pr) => pr.url);
+      for (const pr of remote.values()) {
+        pr.state = state;
+        pr.createdAt = new Date(Date.now() - 3 * 3_600_000).toISOString();
+      }
+      // Rewind or relaunch keeps the intent branch and mints a new run.
+      meta = await store.updateExecution({
+        executionId: meta.executionId,
+        orchestratorRunId: 'run2',
+      });
+      const records = await store.getExecutionRecords(meta.executionId);
+      expect(deliveryView(meta, currentDelivery(records))).toMatchObject({
+        status: 'unknown',
+        repositories: [],
+      });
+      const p = await preview();
+      expect(p.delivery.repositories).toEqual([
+        expect.objectContaining({ status: 'pending', retryable: true }),
+        expect.objectContaining({ status: 'pending', retryable: true }),
+      ]);
+      expect(p.delivery.repositories.some((r) => r.pr)).toBe(false);
+      await publish();
+      const run2 = createCalls().slice(2);
+      expect(run2.map((c) => c.args.attemptKey)).toEqual([
+        `${meta.executionId}:run2`,
+        `${meta.executionId}:run2`,
+      ]);
+      const view = deliveryView(meta, await row());
+      expect(view.status).toBe('succeeded');
+      expect(view.repositories.map((r) => r.pr.prUrl)).toEqual(
+        [...remote.values()].map((pr) => pr.url),
+      );
+      expect(view.repositories.some((r) => previous.includes(r.pr.prUrl))).toBe(false);
     },
   );
   it.each(['missing', 'changed'])('refuses %s head branches on retry', async (kind) => {

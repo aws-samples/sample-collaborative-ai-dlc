@@ -169,6 +169,8 @@ const inspect = async (meta, repo, operation) => {
       branch: repo.branch,
       baseBranch: repo.baseBranch,
       number: repo.pr?.prNumber,
+      // Only this run's own create request makes a closed or merged PR current.
+      createdAfter: repo.createRequestedAt ?? null,
     });
     const next = {
       ...repo,
@@ -204,7 +206,7 @@ const inspect = async (meta, repo, operation) => {
           pr: identity,
           status: 'failed',
           retryable: false,
-          reason: `The existing pull request is ${pr.state === 'merged' ? 'merged' : 'closed'}. Review it in the provider; retry will not recreate closed work.`,
+          reason: `This run's pull request is ${pr.state === 'merged' ? 'merged' : 'closed'}. Review it in the provider; retry will not recreate closed work.`,
         };
       if (
         !snapshot.headSha ||
@@ -414,8 +416,16 @@ export const publishFinalDelivery = async ({
           openPr: async ({ branch, baseBranch, title, body, attemptKey }) => {
             // Provider inspection may take time. Recheck completion and atomically
             // fence its plan with the active attempt immediately before creation.
+            // The same write records the create request: a later check accepts
+            // a closed or merged PR as this run's only after this marker.
             completionRecords = await verifyCompletion();
+            const requested = {
+              ...repo,
+              createRequestedAt: repo.createRequestedAt ?? new Date().toISOString(),
+            };
+            delivery.repositories[i] = requested;
             await store.saveDelivery({ delivery, ifUnitPlan: completionRecords.unitPlan });
+            repo = requested;
             let providerResult;
             try {
               providerResult = await callFor(operation, meta, repo, 'create-pr', {
