@@ -2563,6 +2563,131 @@ deployment and sealed verification directories remain unchanged. Generated
 application quality is outside scope, Kiro remains deferred to NE-18, and
 **NE-06 has not started**.
 
+The preceding disposition proposal records the question at the close of that
+investigation. The user decision below answers it and supersedes its proposed
+preservation and retirement prerequisites.
+
+### Development-data decision and NE-06 — 2026-11-04
+
+The user has resolved the preceding investigation's disposition question:
+**this is a development environment; existing development executions are
+disposable and could be deleted.** Compatibility with, or preservation of,
+those executions and their publication/answer data is not a requirement or a
+gate for NE-06. No retirement or migration system, fixture-preservation
+exercise, queue cleanup or fresh live workflow is required to advance the
+implementation. The NE-05 reports and sealed diagnostic/test evidence remain
+historical evidence. The obsolete-row queue condition remains an observed
+environment condition, not a newly established NE-06 regression.
+
+This decision does not request cloud deletion or other operator mutations.
+Local implementation, validation and a fresh deployment handoff come first.
+New executions must still enforce authorization, pinned configuration,
+explicit human confirmation, idempotent acceptance, retained accepted answers
+and no automatic command replay. The already successful NE-05 deployment and
+its attempted-handoff guard must not be rerun or reset.
+
+**NE-06 is locally complete** on `feat/native-aidlc-execution`, starting from
+`5126bc87270c39a1189e6000e4e337ae6fd99f0e`. Implementation
+`390642ed2ca610660a57f2b97a44006592249023` replaces concentrated route classification
+with explicit method definitions in `lambda/native-runtime-control/api.js`.
+Authentication, project admission, exact path/body/query validation and membership
+rechecks surround those definitions. Each method uses its existing operation
+owner; this adds no dispatch framework or workflow adapter.
+
+The member command contract under
+`/api/projects/{projectId}/native-intents/{intentId}` is now explicit:
+
+| POST suffix | JSON request                                                                       | Acceptance and retry contract                                                                                                                                                                                     |
+| ----------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/start`    | `requestId`, `promptRevision`                                                      | A lowercase UUIDv4 and nonnegative integer revision are required. Concurrent or repeated Start requests converge on the accepted execution and its original configuration. A different prompt revision conflicts. |
+| `/response` | `requestId`, `interactionId`, `contentSha256`, `text`, optional `selection` object | A reply is bound to the member, exact interaction and content. The same request returns its recorded acceptance; conflicting content or ownership fails. The authority's reply validator is reused.               |
+| `/cancel`   | Empty object                                                                       | Repeated cancellation converges on the same execution. The cancellation epoch fences a stale dispatch or reply; the browser invents no cancellation identity.                                                     |
+| `/recover`  | `requestId`, `recoveryId`, `confirmWorkspaceResume: true`                          | Both IDs are lowercase UUIDv4 values. Confirmation is mandatory; one recorded recovery episode is accepted once, even across member/request retries. Accepted answers remain recorded, without automatic replay.  |
+
+Unknown command fields and invalid query/path shapes are rejected. The real
+frontend service always serializes Start's prompt revision and rejects reply or
+resume overrides. The public execution view exposes `turnSequence`; its old
+`sequence` alias is removed. Publication, interaction and engine command sequence
+fields retain their existing meanings. `lambda/shared/native-runtime-command.js`
+defines the six current engine envelopes. The controller validates commands
+before marking dispatch attempted; the runtime HTTP boundary and executor
+validate them independently. Required sequence/writer fields, exact envelope
+keys and EFS recovery replace permissive or retired shapes. Configuration,
+package provenance, credentials, fencing and human-gate owners retain their own
+admission checks.
+
+The **44 public-command tests** use the real frontend service and authenticated
+API wrapper, public Lambda router, command authority, execution API and conditional
+store. HTTP/Lambda transport, JWT verification and local AWS storage are injected;
+this is local application-boundary evidence, not deployed authentication or cloud
+proof. Successful Start, reply, cancel and confirmed resume run from current
+records. Cases include malformed/extra fields, absent confirmation, membership
+denial including a platform administrator without membership, post-commit access
+revocation, same-identity and conflicting duplicates, a lost storage acknowledgement,
+and lost HTTP responses for all four commands. They check frozen request identities,
+a single acceptance, pinned configuration, retained answers and stale-worker
+cancellation. No retired execution protocol is needed to pass them.
+
+Finite local validation is recorded under
+`.native-evidence/ne06-2026-11-04-public-command-contract/`:
+
+| Check                                                                                    | Result                                                                                                                                                                                                                                                                |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Full backend suite, including controller/shared/AgentCore and DynamoDB Local integration | **11,196 passed; eight skipped** across 387 files. The 44 public-command, 32 shared envelope and 42 runtime HTTP cases are included.                                                                                                                                  |
+| Full frontend suite and production build/typecheck                                       | **2,104 passed** across 150 files; build/typecheck passed.                                                                                                                                                                                                            |
+| Release/script suite                                                                     | **357 of 358 passed** in the checkout. Its sole failure reads versioned manifests in unrelated untracked `.worktrees/`; that exact metadata test passes in an isolated candidate snapshot. Both results are retained; the root invocation is not reported as passing. |
+| Native package and infrastructure wiring                                                 | All eight build entrypoints, covering nine Lambda functions, pass; **22 wiring checks** pass.                                                                                                                                                                         |
+| Static checks                                                                            | Lint, formatting, secret scanning, dependency rules, SDK alignment and documentation build pass. Architecture checks cover **411 production modules with zero violations**. Non-failing lint/dependency/build warnings remain in the logs.                            |
+
+Initial fixture failures from omitted prompt revisions, synthetic non-UUID recovery
+IDs and old request/view shapes were corrected, then the affected focused and full
+suites passed. An initial sandbox-denied Docker attempt is retained separately
+from the subsequent successful Docker-backed runs. Unrelated worktrees remain
+untouched; no existing evidence or execution was removed. Secret scanning excludes
+those unrelated worktrees; release metadata was checked against tracked candidate
+files without them. Successful broad suites were not repeated after these final
+results. Local commit hooks were skipped after explicit checks to avoid duplicate
+tests and network audits.
+
+**Deployment and installed-image qualification remain pending.** All nine native
+packages have local byte manifests from **105 production source inputs**;
+authority, execution, cancellation and credentials differ from the deployed NE-05
+candidate. The other five entrypoints are byte-identical, although Terraform's
+shared source triggers can rebuild their packages. Runtime and frontend bytes also
+change. The **270 runtime source files** compute tag **`9f2b66d03e798aca`** with
+the existing dev interaction fixture enabled. This is a source-derived tag, not a
+qualified local image ID or a verified registry digest. NE-05's earlier image and
+installed qualification cannot prove these new runtime bytes.
+
+After review, the next operator action is the fresh, single-use handoff:
+
+```bash
+bash /Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne06-2026-11-04-public-command-contract/handoff/qualify-and-deploy.sh
+```
+
+Its `--check-only` mode verifies the reviewed branch/HEAD, clean tracked tree,
+configuration/input hashes and local validation without credentials or deployment.
+The handoff pins the final candidate in `handoff/candidate.json`, uses profile
+`solution` in account `746558295630`, region `us-east-1`, and checks the standalone
+ECR helper. It archives the committed runtime source, builds a new ARM64 image,
+and runs the existing packaged-image Linux and installed Claude/Codex/OpenCode
+qualification against that immutable local image. Qualification uses the existing
+cached fixture assets and no provider network. Any failure stops before deployment
+and preserves this handoff's attempt directory.
+
+Only after qualification succeeds does the operator script call
+`scripts/deploy-terraform.sh dev --phase all --skip-seed` with a fresh retained plan,
+then `scripts/deploy-frontend.sh dev`. The wrapper builds/pushes its own image;
+independent deployed verification must subsequently match native bundle/alias
+bytes, the registry image and its installed qualification, and frontend bytes.
+The local image ID is not substituted for registry proof. This task performs none
+of those operator mutations, no runtime/model call, and no fresh live workflow.
+Old execution preservation and queue cleanup are not deployment prerequisites.
+A completion receipt and integrity manifest accompany the handoff; they preserve
+failed attempts as evidence and distinguish local, installed, deployed and live
+status. Generated application content is opaque fixture data; Kiro remains
+deferred to NE-18. NE-07 and NE-08 are not part of this implementation.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -2571,6 +2696,9 @@ only their remaining integration, simplification or qualification appears here.
 Work starts with the EFS path and removal of obsolete recovery support, then
 closes the product journey and release acceptance. No item requires compatibility
 with previous native development executions.
+The development-data decision above also removes preservation of those existing
+executions as a prerequisite; it does not authorize automatic replay or weaken
+the current contract for newly created executions.
 
 - [x] **NE-01 — Define the release support contract.** Name the supported packages,
       harness/model combinations, application providers, inputs and settings for
@@ -2655,17 +2783,24 @@ with previous native development executions.
       **Scoped acceptance completed 2026-11-04:** the follow-up above identifies
       the exact prior-development recovery contract and the other incompatible
       records, reproduces identical rejection before and after NE-05, and confirms
-      current-record and publication preservation. The separate decision about
-      retiring incompatible development executions from automatic processing
-      remains open; the queues are not declared healthy. No deployment retry,
+      current-record and publication preservation. The subsequent user decision
+      above resolves the development-data disposition question: existing executions
+      are disposable and need no compatibility or preservation gate. The queues
+      are not declared healthy. No deployment retry,
       legacy compatibility or fresh workflow is required for NE-05 acceptance.
-- [ ] **NE-06 — Consolidate the public command contract.** Replace concentrated route
+- [x] **NE-06 — Consolidate the public command contract.** Replace concentrated route
       classification with simple route definitions and align frontend requests,
       API validation and runtime command shapes. Keep validation at each trust
       boundary. **Done when:** tests send real frontend-shaped Start, reply, cancel
       and resume requests through the public router, including invalid fields,
       access denial, duplicates and lost responses; no retired native protocol is
-      needed to pass them.
+      needed to pass them. **Completed locally 2026-11-04:** explicit routes and
+      current frontend/API/runtime shapes are covered by 44 public-command tests,
+      with the full backend/frontend and bounded packaging/static evidence above.
+      The fresh guarded handoff names the coordinated runtime/controller/frontend
+      deployment and required installed-image qualification; neither is claimed
+      complete by these local tests. The user's development-data decision is resolved
+      and creates no preservation or cleanup gate.
 - [ ] **NE-07 — Simplify harness output and workflow question adapters.** Select a
       decoder for each harness and a supported methodology interaction contract.
       Remove obsolete parser state and question-format fallbacks; keep AI-DLC as
