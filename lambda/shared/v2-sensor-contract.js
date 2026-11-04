@@ -1,5 +1,5 @@
 import { REGISTRY, extractArtifactStructure } from './artifact-extractors.js';
-import { htmlH2Headings, isHtmlDocument } from './html-artifact.js';
+import { sectionHeadings } from './html-artifact.js';
 import { UNIT_KINDS } from './blocks.js';
 
 // V2 deterministic sensor contract — PURE + shared (no I/O, no AWS, no spawn).
@@ -446,13 +446,7 @@ const evalRequiredSections = (body = '', name = '', options = {}) => {
   const timestampMarker =
     Boolean(options.recordTimestampExempt) && TIMESTAMP_MARKER_RE.test(String(name));
   // An HTML artifact's <h2> elements are its sections, reported as `## <text>`.
-  const headingLines = isHtmlDocument(body)
-    ? htmlH2Headings(body).map((text) => `## ${text}`)
-    : String(body)
-        .split(/\r?\n/)
-        .map((raw) => raw.trim())
-        .filter((line) => line.startsWith('## '));
-  const headings = [...new Set(headingLines)];
+  const headings = sectionHeadings(body);
   const h2Count = headings.length;
   let pass = timestampMarker || h2Count >= 2;
   let findingsCount = timestampMarker ? 0 : Math.max(0, 2 - h2Count);

@@ -2,7 +2,8 @@
 // markdown. Keep HTML_DOCUMENT_RE in sync with
 // frontend/src/components/intent/ArtifactHtmlFrame.tsx, which renders them.
 
-const HTML_DOCUMENT_RE = /^\s*(?:<!--[\s\S]*?-->\s*)*(?:<!doctype\s+html[\s>]|<html[\s>])/i;
+const HTML_DOCUMENT_RE =
+  /^\s*(?:<!--(?:>|->|[\s\S]*?--!?>)\s*)*(?:<!doctype\s+html[\s>]|<html[\s>])/i;
 
 // Every other type is read as markdown downstream (sections, YAML blocks, questions).
 export const HTML_ARTIFACT_TYPES = Object.freeze(['wireframes', 'user-flow', 'mockups']);
@@ -19,8 +20,14 @@ export const htmlArtifactRefusal = (artifactType, content) => {
   );
 };
 
+// Whether an HTML document keeps HTML on a rewrite: only the visual types are
+// stored as HTML, so a legacy HTML document of any other type converts to
+// markdown, the format its type allows.
+export const keepsHtml = (artifactType, content) =>
+  isHtmlDocument(content) && HTML_ARTIFACT_TYPES.includes(artifactType);
+
 const H2_RE = /<h2\b[^>]*>([\s\S]*?)<\/h2\s*>/gi;
-const COMMENT_RE = /<!--[\s\S]*?-->/g;
+const COMMENT_RE = /<!--(?:>|->|[\s\S]*?--!?>)/g;
 const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" };
 
 const textOf = (html) =>
@@ -30,8 +37,22 @@ const textOf = (html) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-// The visible text of each non-empty <h2>, in document order.
+// The visible text of each non-empty <h2>, in document order. A comment closes
+// at `-->` or the legacy `--!>`; `<!-->` and `<!--->` are empty comments.
 export const htmlH2Headings = (html) =>
   [...String(html).replace(COMMENT_RE, '').matchAll(H2_RE)]
     .map((m) => textOf(m[1]))
     .filter(Boolean);
+
+// The section headings of an artifact body as de-duplicated `## <text>` lines:
+// an HTML document's sections are its <h2> elements, a markdown document's are
+// its `## ` lines.
+export const sectionHeadings = (body) => {
+  const lines = isHtmlDocument(body)
+    ? htmlH2Headings(body).map((text) => `## ${text}`)
+    : String(body ?? '')
+        .split(/\r?\n/)
+        .map((raw) => raw.trim())
+        .filter((line) => line.startsWith('## '));
+  return [...new Set(lines)];
+};
