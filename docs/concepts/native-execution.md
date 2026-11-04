@@ -2346,10 +2346,10 @@ no new installed-image qualification is claimed. The prior **95 sealed NE-04
 evidence files**, **329 committed source references** and **18 external
 references** verify unchanged.
 
-**NE-05 is complete locally; controller deployment and independent deployed
-verification remain pending.** The operator handoff pins the reviewed checkout,
+**At this local stage, NE-05 was complete locally; controller deployment and
+independent deployed verification were pending.** The operator handoff pins the reviewed checkout,
 commit, bundle inputs and validation, preserves a fresh Terraform plan and
-refuses a repeated attempt. Its command is:
+refuses a repeated attempt. Its original, single-use command was:
 
 ```bash
 bash /Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne05-2026-11-04-controller-transitions/handoff/deploy-controller.sh
@@ -2362,8 +2362,98 @@ existing image pins, scoped diagnostics and the preserved publication/history/
 unanswered gate. This local stage performs no cloud mutation or fresh live flow
 and makes no new deployed/browser claim. Generated-output quality remains outside
 the verdict; Kiro remains deferred to NE-18, and NE-06 has not started.
+This is the historical local-stage record. The following section records the
+completed first deployment and the rejected repeat; do not rerun this handoff.
 Evidence and exact validation commands are under
 `.native-evidence/ne05-2026-11-04-controller-transitions/`.
+
+### NE-05 deployed-byte and preservation verification — 2026-11-04
+
+The first operator invocation successfully deployed
+`7de995bc30b4d3e387da0b6bcea76d74bad36da9`, containing implementation
+`4f82d70161999943a090983901fff878a185404e`. It started at **09:30:31 UTC**
+and finished at **09:36:05 UTC**. The later returned exit-1 output came from the
+intentional repeated-attempt guard, before credential setup, log creation or
+deployment. It did not overwrite the first run. The original log, plan and both
+receipts retain their supplied SHA-256 hashes, including the receipts' historical
+`verificationStatus: PENDING`; independent verification has separate records.
+
+Local decoding of the saved plan agrees with its single successful apply:
+**33 added, 14 changed, 33 destroyed**. The 33 replacements are **17
+`terraform_data` records, 8 local archive-plan files and 8 build provisioners**.
+No cloud resource was replaced. The 14 in-place cloud updates are **nine native
+Lambda functions and five authority aliases**. No unexpected resource scope was
+found. The computed logging fields retain their existing Text format and log
+groups, and the checked controller environment settings are unchanged.
+
+Independent `solution-read` verification in account **746558295630**, region
+**us-east-1**, downloaded all **nine** native Lambda packages and the active
+published authority version. Their entrypoint bytes match the exact candidate
+bundle manifest; its **104 source inputs** match the committed candidate and
+working tree. All five authority aliases select verified version **22**, without
+weighted routing. Exactly **authority, execution, cancellation and credentials**
+changed relative to NE-04; the other five packages remain byte-identical.
+
+Registry tag **`0a7e090fc869ab30`** still resolves to
+`sha256:32fc8539bf72d2dfba07c2ba352c12d8f9b7d3470a34fff35b1e822acbcbb33d`,
+and the registry manifest bytes hash to that digest. All **33 image pins across
+12 Lambda consumers**, the **READY** shared runtime at version **142**, and all
+**523 deployed frontend files** remain unchanged. The **269 runtime source
+files** and the frontend, shared, infrastructure and deployment source scopes
+also remain unchanged. The existing execution's runtime, endpoint, EFS and role
+pins pass their 12 checks and retain its original available image. NE-04's
+qualification of the unchanged registry image is reused; no new image
+qualification or repetition of the 4,448 host tests was performed.
+
+Intent `0c886f19-89da-4c1c-927a-b48bed4a634b` remains `AWAITING_USER` on its
+original attempt and writer. All **31 authority records**, including **25
+immutable history records** and **two ready exports**, remain identical to NE-04.
+Production readers verified the publication's **24 files**, source receipt and
+original interaction. The public history view preserves six events; both
+existing export objects pass exact-version, checksum and downloaded-byte
+checks without issuing signed URLs. The earlier **348 immutable records and
+10 saved responses** remain unchanged. A final authority and fence read confirms
+no changes during browser inspection.
+
+The exact browser view displayed revision 1, its 24 files, the original three
+choices, the free-text alternative and a disabled **Submit Answer** button.
+It also displayed a sidebar warning that some native statuses could not refresh;
+that warning alone does not identify an affected intent or cause. Native browser
+control repeatedly lost the selected window. The successful visible observation
+is preserved, but no authenticated HTTP request receipts or separate history/
+export page render were captured.
+
+**An existing operational issue remains open.** Bounded diagnostics from
+**09:25:31–10:06:05 UTC** found execution and projection retries, rather than a
+quiet deployment period. Five-minute samples before and after deployment both
+return **`NATIVE_EXECUTION_INVALID`**; the sampled execution diagnostic fails
+`authority-read` for a scope hash that does not match the four preserved
+fixtures. Its actual intent and rejected record field remain unidentified.
+At 09:25 UTC, before deployment, metrics already showed **2,332 execution** and
+**5,334 projection** messages in flight. At approximately 13:40 UTC their
+approximate counts were **2,383** and **6,405**. Cancellation, provisioning and
+its dead-letter queue were empty. Lambda error/throttle metrics do not establish
+successful processing: these workers return application retries as partial
+batch failures.
+
+The broad log read captured **30,309 events**, reaching its eight-page bound for
+authority, execution and projection. Separate filtered samples establish the
+same retry code before and after deployment; uncollected logs are not claimed
+as checked. The backlog predates NE-05 and is not established as introduced by
+it. Its cause and disposition require a separate scoped investigation.
+Neither quiet metrics nor these observations prove fresh fault-injection,
+uncertain-dispatch, lease-race or real-model behavior.
+
+**The deployment, candidate bytes and preserved fixtures are verified. Full
+NE-05 operational verification remains pending the invalid-scope investigation.**
+No deployment retry is needed. A guarded follow-up, complete report, completion
+record and integrity manifest are under
+`.native-evidence/ne05-2026-11-04-deployed-7de995bc/`. All **12 referenced prior
+manifests**, **3,081 sealed evidence/external files** and **786 historical source
+references** verify unchanged. No deployment, runtime/model invocation, workflow
+answer or replay, queue mutation or workspace fault was performed by this
+verifier. Generated-output quality remains outside scope; Kiro remains deferred
+to NE-18, and **NE-06 has not started**.
 
 ## Integration and simplification checklist
 
@@ -2451,8 +2541,13 @@ with previous native development executions.
       projection uses its own fenced progress row. The obsolete execution mutation
       is removed and its fixtures use the actual owner. The 4,448 passing host
       tests (8 skipped), DynamoDB Local integration and packaging/static checks
-      are recorded above. Controller deployment and deployed preservation checks
-      are pending; the existing runtime image and frontend require no change.
+      are recorded above. **Deployed bytes and preservation verified 2026-11-04:**
+      all nine packages and authority version 22 match the candidate, and the
+      existing image, frontend, publication, history and answers remain intact.
+      **Full operational verification remains pending:** the dated record above
+      preserves an invalid-scope retry backlog observed before and after deployment,
+      its bounded diagnostics and the guarded investigation handoff. No deployment
+      retry or fresh workflow is needed.
 - [ ] **NE-06 — Consolidate the public command contract.** Replace concentrated route
       classification with simple route definitions and align frontend requests,
       API validation and runtime command shapes. Keep validation at each trust
