@@ -1524,6 +1524,17 @@ resource "aws_api_gateway_resource" "intent_quorum_edit_decision" {
   path_part   = "decision"
 }
 
+# /users/me/pending-questions: the caller's pending questions across spaces.
+resource "aws_api_gateway_resource" "user_pending_questions" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.users_me.id
+  path_part   = "pending-questions"
+}
+module "cors_user_pending_questions" {
+  source      = "./cors"
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.user_pending_questions.id
+}
 locals {
   intent_routes = {
     collection_get         = { resource = aws_api_gateway_resource.intents.id, method = "GET" }
@@ -1562,6 +1573,7 @@ locals {
     artifact_versions_get = { resource = aws_api_gateway_resource.intent_artifact_versions.id, method = "GET" }
     artifact_version_get  = { resource = aws_api_gateway_resource.intent_artifact_version.id, method = "GET" }
     qedit_decision_post   = { resource = aws_api_gateway_resource.intent_quorum_edit_decision.id, method = "POST" }
+    pending_questions_get = { resource = aws_api_gateway_resource.user_pending_questions.id, method = "GET" }
   }
 }
 

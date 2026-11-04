@@ -355,6 +355,18 @@ The table has three global secondary indexes:
 | `PR_WAITS`          | Unit pull requests parked while waiting for an external condition. |
 | `TRACKER_SYNCS`     | Tracker synchronizations ordered by their next scheduled check.    |
 
+A user's pending questions across spaces (`GET /users/me/pending-questions`)
+use the existing indexes, with no dedicated index: for each of the user's v2
+spaces, `GSI1` lists the `WAITING` and `RUNNING` executions oldest first; for
+each of those, `GSI2` lists the `HUMAN` rows under
+`TYPE#HUMAN#STATE#pending#`, and a gate that names a stage reads that `STAGE#`
+row. A gate is listed only while an answer would be accepted: it is pending,
+its `orchestratorRunId` (when recorded) is the execution's current run, and a
+worker-created gate's `stageCallbackId` is still the stage's current attempt
+(`isHumanTaskAnswerable` in `v2-process-keys.js`). The reads are bounded per
+request; spaces that could not be fully read are reported as unavailable
+rather than omitted.
+
 ### Relationship to the graph
 
 The execution and graph models are joined by stable application identifiers,

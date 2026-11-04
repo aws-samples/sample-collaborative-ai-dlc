@@ -259,6 +259,19 @@ const humanTaskMatchesOwner = ({
     Number(task.sectionIndex) === Number(sectionIndex)
   );
 };
+// Whether an answer to this human task would be accepted now, by the same
+// ownership the answer transaction checks (v2-process-store ownershipConditions):
+// the task is pending, its run is the execution's live run, and a worker-owned
+// task still belongs to the stage's current attempt. Legacy rows without a run
+// or callback id are judged by the clauses they can satisfy.
+const isHumanTaskAnswerable = ({ task, meta, stage = null }) =>
+  Boolean(task && meta) &&
+  task.status === 'pending' &&
+  ['RUNNING', 'WAITING'].includes(meta.status) &&
+  (!task.orchestratorRunId || task.orchestratorRunId === meta.orchestratorRunId) &&
+  (!task.stageCallbackId ||
+    !task.stageInstanceId ||
+    stage?.stageCallbackId === task.stageCallbackId);
 // Human steering (course-correction) messages. Immutable once written; a
 // correction of a correction supersedes the old row. Delivery ("consumed") only
 // happens at a deterministic injection point: a gate resume or a fresh stage
@@ -1411,6 +1424,7 @@ export {
   HUMAN_TASK_STATUSES,
   isHumanTaskAnswerStatus,
   humanTaskMatchesOwner,
+  isHumanTaskAnswerable,
   STEERING_KINDS,
   RECEIPT_KINDS,
   STEERING_STATUSES,
@@ -1486,6 +1500,7 @@ export default {
   HUMAN_TASK_STATUSES,
   isHumanTaskAnswerStatus,
   humanTaskMatchesOwner,
+  isHumanTaskAnswerable,
   STEERING_KINDS,
   RECEIPT_KINDS,
   STEERING_STATUSES,
