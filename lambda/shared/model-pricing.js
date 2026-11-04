@@ -54,6 +54,22 @@ const FALLBACK_PRICES = {
   'claude-opus-4-6': { input: 5, output: 25 },
   'claude-sonnet-4-6': { input: 3, output: 15 },
   'claude-haiku-4-5': { input: 1, output: 5 },
+  // OpenAI models served to Codex through the Bedrock Mantle endpoint, which
+  // takes the bare `openai.` id and bills the In-Region rate. Standard-tier
+  // short-context (272K input tokens or fewer) prices from each Bedrock model
+  // card, November 2026. The long-context tier is not needed: the pinned Codex
+  // (0.162.1) gives every model in its Bedrock catalog a 272K context window,
+  // and the runtime does not raise it, so no request can exceed the threshold.
+  // GPT-5.5 has no cache-write fee; those tokens bill at the input rate.
+  // GPT-5.4 and GPT-6.1 Terra are absent from that catalog and stay unpriced.
+  'openai.gpt-6.1-sol': { input: 2.2, output: 11, cacheRead: 0.11, cacheWrite: 2.75 },
+  'openai.gpt-6-astra': { input: 11, output: 55, cacheRead: 1.1, cacheWrite: 13.75 },
+  'openai.gpt-6-sol': { input: 2.2, output: 11, cacheRead: 0.22, cacheWrite: 2.75 },
+  'openai.gpt-6-luna': { input: 0.11, output: 0.55, cacheRead: 0.011, cacheWrite: 0.1375 },
+  'openai.gpt-5.6-sol': { input: 4.4, output: 22, cacheRead: 0.44, cacheWrite: 5.5 },
+  'openai.gpt-5.6-terra': { input: 2.2, output: 13.2, cacheRead: 0.22, cacheWrite: 2.75 },
+  'openai.gpt-5.6-luna': { input: 0.22, output: 1.32, cacheRead: 0.022, cacheWrite: 0.275 },
+  'openai.gpt-5.5': { input: 5.5, output: 33, cacheRead: 0.55, cacheWrite: 5.5 },
 };
 
 // Normalize a resolved model id to a canonical family key.
@@ -62,18 +78,19 @@ const FALLBACK_PRICES = {
 //   global.anthropic.claude-haiku-4-5-20251001-v1:0 → claude-haiku-4-5
 //   amazon-bedrock/us.anthropic.claude-...    → claude-...
 //   claude-opus-4.6 (Kiro), auto              → (no family — stays as-is / null)
-//   openai.gpt-5.5 (Codex)                    → (no family — stays as-is)
+//   openai.gpt-5.5 (Codex)                    → openai.gpt-5.5
+//   global.openai.gpt-5.5                     → global.openai.gpt-5.5 (unpriced)
 // Dots in a Kiro version (4.6) are intentionally NOT converted to dashes, so a
 // Kiro id never collides with a Bedrock family and gets token-priced.
-// Codex ids ("openai.*") likewise resolve to no family and report UNPRICED —
-// tokens are still recorded; add openai families here once Bedrock's OpenAI
-// token prices are confirmed, rather than guessing a rate.
+// Codex ids keep their exact Mantle form. A geo-prefixed OpenAI id is a Bedrock
+// Runtime profile with different rates, so it keeps its prefix and no family.
 const modelFamily = (modelId) => {
   if (!modelId) return null;
   let id = String(modelId).trim().toLowerCase();
   if (!id) return null;
   // Drop an opencode-style provider prefix.
   if (id.startsWith('amazon-bedrock/')) id = id.slice('amazon-bedrock/'.length);
+  if (/^(us|eu|apac|global)\.openai\./.test(id)) return id;
   // Drop a cross-region inference-profile geo prefix.
   id = id.replace(/^(us|eu|apac|global)\./, '');
   // Drop the anthropic provider prefix.
@@ -129,6 +146,15 @@ const makePriceResolver = (table = {}) => {
             cacheWrite1hPerToken: (entry.cacheWrite1h ?? entry.input * 2) / TOKENS_PER_UNIT,
           }
         : {}),
+      // Responses API input_tokens includes cache reads and writes.
+      ...(family.startsWith('openai.')
+        ? {
+            inputIncludesCache: true,
+            cacheReadPerToken: entry.cacheRead != null ? entry.cacheRead / TOKENS_PER_UNIT : null,
+            cacheWritePerToken:
+              entry.cacheWrite != null ? entry.cacheWrite / TOKENS_PER_UNIT : null,
+          }
+        : {}),
       priced: true,
     };
   };
@@ -136,7 +162,8 @@ const makePriceResolver = (table = {}) => {
 
 // Compute the cost of one metric bag given a price resolver. Reads tokensInput /
 // tokensOutput and cache token categories (token-billed models), and `credits`
-// (Kiro). Stored Claude input excludes cache tokens. Always returns a cost object
+// (Kiro). Stored Claude input excludes cache tokens; Codex input includes them,
+// so only the remainder bills at the uncached rate. Always returns a cost object
 // so the DTO shape is stable; `priced: false` means "usage known, price unavailable" (newer model,
 // or Kiro without a captured credit rate) — the UI must not render this as $0.
 //
@@ -156,8 +183,9 @@ const costForMetrics = (metrics = {}, modelId, resolver, creditRate = null) => {
   const cacheWrite1h = Math.min(metrics.tokensCacheWrite1h ?? 0, cacheWrite);
   const credits = typeof metrics.credits === 'number' ? metrics.credits : 0;
   const rate = typeof creditRate === 'number' && creditRate > 0 ? creditRate : null;
+  const uncachedInput = price.inputIncludesCache ? Math.max(tin - cacheRead - cacheWrite, 0) : tin;
   const inputCost =
-    tin * price.inputPerToken +
+    uncachedInput * price.inputPerToken +
     cacheRead * (price.cacheReadPerToken ?? 0) +
     (cacheWrite - cacheWrite1h) * (price.cacheWritePerToken ?? 0) +
     cacheWrite1h * (price.cacheWrite1hPerToken ?? 0);
