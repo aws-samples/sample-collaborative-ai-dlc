@@ -2236,7 +2236,8 @@ files remain unchanged. Source/image identity, commands, logs, comparison
 results and exact boundaries are recorded in
 `.native-evidence/ne04-2026-11-03-turn-ownership/`.
 
-**NE-04 is complete locally and in the installed image. Deployment is pending.**
+**At this stage, NE-04 was complete locally and in the installed image; deployment
+was pending.** The following section records the subsequent deployed verification.
 The runtime source fingerprint produces Terraform image tag **`0a7e090fc869ab30`**.
 Deploy the new runtime image and ordinary Terraform image-pin/configuration
 updates together; frontend/controller source and IAM are unchanged.
@@ -2248,6 +2249,52 @@ file set, image, qualification and configuration hashes; uses the existing
 deployment, workflow answer or repeated workspace fault is needed. A deployment
 receipt still requires independent verification of the registry image, deployed
 pins and preserved state; the local image ID alone does not prove registry bytes.
+
+### NE-04 deployed image and preservation verification — 2026-11-04
+
+The operator deployed `5e5ad76caf85ad4d82504d3a8008fe4cd67b6e4f`, finishing at
+**08:17:29 UTC**. Independent read-only verification confirmed image tag
+**`0a7e090fc869ab30`** at registry digest
+`sha256:32fc8539bf72d2dfba07c2ba352c12d8f9b7d3470a34fff35b1e822acbcbb33d`.
+This is the deployed build's identity, distinct from the earlier local image.
+The registry manifest hash and local immutable image identity agree. All
+**269 packaged production files** match the committed candidate in each of four
+qualification containers. The actual registry image passed **162 Linux tests**
+and the existing installed Claude Code **2.1.296**, Codex **0.162.1** and OpenCode
+**1.19.0** scopes. These remain offline tool checks with deterministic providers
+and in-memory AWS ports; they do not claim a new live workflow or model turn.
+
+All **nine native Lambda packages** match the candidate's unchanged controller
+bytes. All five authority aliases select verified version **21**, including its
+image configuration. All **33 image pins across 12 Lambda consumers** match the
+new digest. The shared AgentCore runtime is **READY** at version **142** with
+that image. The **523 frontend files** remain unchanged. The native permission
+boundary, public publication grants, and the existing execution's runtime,
+EFS access point and role pins also pass their scoped checks.
+
+Intent `0c886f19-89da-4c1c-927a-b48bed4a634b` remains `AWAITING_USER` with its
+original attempt, writer, configuration and image. Its original image remains
+available in the registry. All **31 authority records**, including **25 immutable
+history records** and **two ready export records**, are unchanged. Production
+readers verified the original publication's **24 files**, source receipt and
+interaction. The earlier **348 immutable records and 10 saved responses** also
+remain unchanged. No answer was submitted or replayed.
+
+The existing browser tab initially displayed an access-unavailable state.
+Its ordinary **Refresh status** control restored the same publication and
+unanswered question. All **19 captured scoped GETs** returned **200**; the
+original three choices, free-text alternative and disabled submission button
+remain visible. Capture cleanup completed without pending requests or errors,
+and a second authority read confirmed no state changes during inspection.
+
+**NE-04 deployment and preservation verification is complete. No operator action
+is required.** The verifier performed no deployment, new Start, runtime
+invocation, queue redrive or workspace fault. Generated-output quality remains
+outside the verdict; Kiro remains deferred to NE-18. The prior **282 sealed
+evidence files** remain unchanged. Commands, registry identity, installed checks,
+deployed pins and browser/authority receipts are recorded under
+`.native-evidence/ne04-2026-11-04-deployed-5e5ad76c/`.
+NE-05 has not started.
 
 ## Integration and simplification checklist
 
@@ -2319,8 +2366,11 @@ with previous native development executions.
       turn context owns all three entrypoints; interaction decoding is separate,
       duplicated mutable state is removed, 4,418 host tests and 162 packaged Linux
       regressions pass, and the installed Claude/Codex/OpenCode scopes pass.
-      Deployment remains pending; the record above distinguishes it from local
-      and installed proof. Generated-output quality is outside the verdict.
+      **Deployment and preservation verified 2026-11-04:** the actual registry
+      image passes the installed scopes, deployed image pins match, and the
+      original publication, history and unanswered gate remain intact. The
+      record above distinguishes installed checks from deployed and browser
+      observations. Generated-output quality is outside the verdict.
 - [ ] **NE-05 — Simplify controller transitions and observation failures.** Make status
       reads, activity catch-up, lost ownership and uncertain dispatch produce explicit
       outcomes under the existing execution authority. Remove the obsolete execution
