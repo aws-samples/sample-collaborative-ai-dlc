@@ -17,6 +17,77 @@ const row = (before, after, coverageDelta) => ({
   coverage: { change: { percentagePoints: coverageDelta } },
 });
 
+test('embedded function locations link to the immutable commit with encoded paths and escaped text', () => {
+  const headSha = 'a'.repeat(40);
+  const report = {
+    files: [],
+    findings: [
+      {
+        ...row(25, 26, null),
+        path: 'lambda/demo/a (b)[c]#déjà!.js',
+        function: '<run>@everyone|[bad]',
+        line: 42,
+      },
+    ],
+    improvements: [],
+  };
+  const linked = renderComparison(report, { embedded: true, headSha });
+  assert.ok(
+    linked.includes(
+      `https://github.com/aws-samples/sample-collaborative-ai-dlc/blob/${headSha}/lambda/demo/a%20%28b%29%5Bc%5D%23d%C3%A9j%C3%A0%21.js#L42`,
+    ),
+  );
+  assert.match(linked, / — &#60;run&#62;&#64;everyone&#124;&#91;bad&#93;/);
+  assert.doesNotMatch(linked, /<run>|@everyone/);
+  const standalone = renderComparison(report);
+  assert.doesNotMatch(standalone, /github\.com/);
+  assert.equal(renderComparison(report, { headSha }), standalone);
+});
+
+test('unsafe function paths and invalid line or revision values retain escaped plain locations', () => {
+  const headSha = 'a'.repeat(40);
+  for (const path of [
+    '/lambda/a.js',
+    '//other.example/a.js',
+    'C:/lambda/a.js',
+    'lambda\\a.js',
+    './lambda/a.js',
+    'lambda/../a.js',
+    'lambda/./a.js',
+    'lambda//a.js',
+    'lambda/a\u0000.js',
+    'lambda/a\n.js',
+    'lambda/\ud800.js',
+  ]) {
+    const report = { files: [], findings: [{ ...row(25, 26, null), path }], improvements: [] };
+    assert.doesNotMatch(renderComparison(report, { embedded: true, headSha }), /github\.com/);
+  }
+  const report = { files: [], findings: [{ ...row(25, 26, null), line: 0 }], improvements: [] };
+  assert.doesNotMatch(renderComparison(report, { embedded: true, headSha }), /github\.com/);
+  report.findings[0].line = 1;
+  assert.doesNotMatch(renderComparison(report, { embedded: true, headSha: 'main' }), /github\.com/);
+});
+
+test('an explicit row budget retains sorted complete rows and reports omitted functions', () => {
+  const report = {
+    files: [],
+    findings: [
+      { ...row(25, 26, null), function: 'orange' },
+      { ...row(50, 60, -10), function: 'purple' },
+    ],
+    improvements: [],
+  };
+  const limited = renderComparison(report, { embedded: true, maxRows: 1 });
+  assert.match(limited, /\| 🟣 \|.*purple/);
+  assert.doesNotMatch(limited, /— orange \|/);
+  assert.match(limited, /Display truncated: showing 1 of 2 functions/);
+  const none = renderComparison(report, { embedded: true, maxRows: 0 });
+  assert.doesNotMatch(none, /\| File \/ function \|/);
+  assert.match(none, /Display truncated: showing 0 of 2 functions/);
+  assert.equal(renderComparison(report, { maxRows: Infinity }), renderComparison(report));
+  assert.throws(() => renderComparison(report, { maxRows: -1 }), /Invalid comparison row limit/);
+});
+
 test('detail artifacts include every function and importer, with escaped Markdown', () => {
   const functions = Array.from({ length: 25 }, (_, index) => ({
     name: `fn${index}|<tag>`,

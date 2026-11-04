@@ -510,7 +510,8 @@ test('both workflow paths download selected producer artifacts and call the shar
     assert.equal(checkout.with['persist-credentials'], false);
     if (file === 'pr-quality-comment.yml') assert.equal(checkout.with.ref, undefined);
     else {
-      assert.equal(checkout.with.ref, '${{ github.sha }}');
+      assert.equal(checkout.with.ref, '${{ github.event.repository.default_branch }}');
+      assert.equal(workflow.jobs.comment.permissions.contents, 'write');
       const uploads = workflow.jobs.report.steps
         .filter((step) => step.uses?.startsWith('actions/upload-artifact@'))
         .map((step) => [step.with.name, step.with.path]);
@@ -572,7 +573,11 @@ test('workflow tools support PR heads that predate them without measuring the me
     const checkout = workflow.jobs[jobName].steps.find((step) =>
       step.uses?.startsWith('actions/checkout@'),
     );
-    assert.equal(checkout.with.ref, '${{ github.sha }}', jobName);
+    assert.equal(
+      checkout.with.ref,
+      jobName === 'comment' ? '${{ github.event.repository.default_branch }}' : '${{ github.sha }}',
+      jobName,
+    );
   }
   const sourceCheckout = workflow.jobs.coverage.steps.find((step) => step.with?.path === 'source');
   assert.equal(

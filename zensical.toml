@@ -37,6 +37,7 @@ nav = [
   { "Development" = [
     "development/demo-deployment.md",
     "development/testing.md",
+    "development/pr-quality.md",
   ] },
   { "Roadmap" = "roadmap/index.md" },
 ]

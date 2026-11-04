@@ -6,13 +6,14 @@ on:
     types: [completed]
 
 permissions:
-  contents: read
+  contents: write
   actions: read
   pull-requests: write
 
 concurrency:
   group: pr-quality-comment-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   comment:
@@ -33,6 +34,8 @@ jobs:
           sparse-checkout: |
             /scripts/publish-complexity-comment.mjs
             /scripts/complexity-report.mjs
+            /scripts/pr-impact/comment.mjs
+            /scripts/pr-impact/publish.mjs
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         id: artifacts
         with:
@@ -45,7 +48,7 @@ jobs:
               github, repo: context.repo, runId: run.id, attempt: run.run_attempt,
             });
             core.setOutput('report', names.report);
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.artifacts.outputs.report != ''
         continue-on-error: true
         with:

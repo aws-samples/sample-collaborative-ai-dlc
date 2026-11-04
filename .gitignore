@@ -80,3 +80,9 @@ reports/dependency/
 
 # Local cognitive-complexity analysis
 reports/complexity/
+
+# Generated Isobar previews and local tooling
+.isobar/previews/
+.isobar/upstream/
+scripts/pr-impact/.venv/
+scripts/pr-impact/__pycache__/
