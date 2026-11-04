@@ -39,8 +39,11 @@ The **Observability** button opens the intent's execution dashboard:
   and cache writes; **Usage details** shows the cache counts separately. Costs apply
   the corresponding cache rates, including one-hour writes when the CLI reports
   them. Codex reports cumulative thread totals, so resumed calls subtract the
-  saved thread usage and record only the new usage. Kiro credits use the captured
-  overage rate and remain an estimate.
+  saved thread usage and record only the new usage. Codex input totals already
+  include cache reads and writes, and Codex costs use the Bedrock In-Region rates
+  for the OpenAI models in the pinned Codex catalog; other OpenAI models show the
+  cost as unavailable. Kiro credits use the captured overage rate and remain an
+  estimate.
 
   Usage is recorded when each invocation ends, including reported usage on failure
   or before a human pause. If a CLI stops without reporting usage, the runtime
