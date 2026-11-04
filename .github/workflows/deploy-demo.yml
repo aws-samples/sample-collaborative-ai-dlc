@@ -460,3 +460,51 @@ jobs:
             echo "- Terraform environment: \`$TF_ENVIRONMENT\`"
             echo "- Region: \`$AWS_REGION\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Optional: asks the release-testing setup in the target account to test
+      # this deployment. Values come from environment secrets, failures print
+      # only a stage and an AWS error code, and they never fail the deployment.
+      - name: Request post-deploy release tests
+        if: success() && env.DEPLOY_TARGET == 'main'
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          POST_DEPLOY_TEST_ROLE_ARN: ${{ secrets.POST_DEPLOY_TEST_ROLE_ARN }}
+          POST_DEPLOY_TEST_FUNCTION: ${{ secrets.POST_DEPLOY_TEST_FUNCTION }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$POST_DEPLOY_TEST_ROLE_ARN" && -z "$POST_DEPLOY_TEST_FUNCTION" ]]; then
+            echo "Post-deploy release tests are not configured."
+            exit 0
+          fi
+          if [[ -z "$POST_DEPLOY_TEST_ROLE_ARN" || -z "$POST_DEPLOY_TEST_FUNCTION" ]]; then
+            echo "::warning::Post-deploy release tests not requested: only one of POST_DEPLOY_TEST_ROLE_ARN and POST_DEPLOY_TEST_FUNCTION is set"
+            exit 1
+          fi
+          token_file="$RUNNER_TEMP/post-deploy-oidc-token"
+          config_file="$RUNNER_TEMP/post-deploy-aws-config"
+          oidc_token="$(curl --fail --silent --max-time 30 \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" 2>/dev/null | jq -er .value 2>/dev/null)" \
+            || { echo "::warning::Post-deploy release tests not requested: OIDC token request failed"; exit 1; }
+          echo "::add-mask::$oidc_token"
+          (umask 077 && printf '%s' "$oidc_token" > "$token_file")
+          # A dedicated web-identity profile: the CLI assumes the role itself,
+          # independently of the deployment credentials already in this job.
+          printf '[profile post-deploy-tests]\nrole_arn = %s\nweb_identity_token_file = %s\nrole_session_name = aidlc-post-deploy-%s\n' \
+            "$POST_DEPLOY_TEST_ROLE_ARN" "$token_file" "$GITHUB_RUN_ID" > "$config_file"
+          payload="$(jq -nc --arg sha "$DEPLOY_COMMIT" --argjson run "$GITHUB_RUN_ID" \
+            '{trigger: {runId: $run, headSha: $sha}}')"
+          # --region overrides the job's AWS_REGION; only the error code and the
+          # failing operation are printed, never the message (it carries ARNs).
+          if ! aws_error="$(AWS_CONFIG_FILE="$config_file" aws --profile post-deploy-tests lambda invoke \
+            --region us-east-1 \
+            --function-name "$POST_DEPLOY_TEST_FUNCTION" --invocation-type Event \
+            --cli-binary-format raw-in-base64-out --payload "$payload" /dev/null 2>&1 >/dev/null)"; then
+            rm -f "$token_file"
+            code="$(sed -nE 's/.*An error occurred \(([A-Za-z]+)\) when calling the ([A-Za-z]+) operation.*/\1 on \2/p' <<<"$aws_error" | head -n1)"
+            echo "::warning::Post-deploy release tests not requested: ${code:-no AWS error code}"
+            exit 1
+          fi
+          rm -f "$token_file"
+          echo "Post-deploy release tests requested."

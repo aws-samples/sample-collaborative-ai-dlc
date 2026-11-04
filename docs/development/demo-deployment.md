@@ -197,6 +197,43 @@ state would plan replacement of the release deployment rather than a second
 stack. Sharing the bucket is safe when the key and lock-file permissions are
 separate.
 
+### Optional post-deploy release tests
+
+After a successful `main` deployment, the workflow can ask a release-testing
+setup in the deployment account to test the deployed revision, for example an
+AWS DevOps Agent release test. The request is sent only when both environment
+secrets below exist in `demo-main`. With neither secret the step exits without
+doing anything; with only one it fails with a warning. It runs
+after `Verify deployment` and uses `continue-on-error`, so a failed request
+never fails the deployment. The step assumes the role through a web-identity
+profile built from the job's OIDC token, separate from the deployment
+credentials.
+
+| Secret                      | Value                                                                              |
+| --------------------------- | ---------------------------------------------------------------------------------- |
+| `POST_DEPLOY_TEST_ROLE_ARN` | An OIDC role trusted like the deployment role, allowed only to invoke the function |
+| `POST_DEPLOY_TEST_FUNCTION` | Name of the Lambda function in `us-east-1` that starts the tests                   |
+
+The workflow invokes the function asynchronously in `us-east-1`. On failure it
+prints only the stage, the AWS error code and the failing operation, never AWS
+messages, so public logs contain no account-specific values. The payload is:
+
+```json
+{ "trigger": { "runId": 123456789, "headSha": "<40-character commit SHA>" } }
+```
+
+`runId` is the workflow run ID and `headSha` is the deployed commit. The role's
+trust policy must require audience `sts.amazonaws.com` and subject
+`repo:aws-samples/sample-collaborative-ai-dlc:environment:demo-main`, like the
+main-demo deployment role below, and the role needs `lambda:InvokeFunction` on
+the function and nothing more.
+
+The run is still `in_progress` when the function is called, so the function must
+not wait for the run's conclusion. It should read the run through the GitHub API
+and proceed only if the workflow, `main` branch and `head_sha` match and the
+`Verify deployment` step succeeded. A re-run reuses `runId` and the payload has
+no attempt number, so treat repeated requests for the same run as duplicates.
+
 ### Create or update the main-demo deployment role
 
 Reuse the account's existing GitHub Actions OIDC provider, but prefer a separate
