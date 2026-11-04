@@ -10,8 +10,8 @@ import { DerivedItemCountChip } from '@/components/intent/DerivedItemCountChip';
 import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
-import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
-import { ArtifactHtmlFrame, isHtmlDocument } from '@/components/intent/ArtifactHtmlFrame';
+import { ArtifactContent } from '@/components/intent/ArtifactContent';
+import { isHtmlDocument } from '@/components/intent/ArtifactHtmlFrame';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import type { IntentArtifact } from '@/services/intents';
 import { ChevronDown } from 'lucide-react';
@@ -43,7 +43,6 @@ export function ArtifactViewer({
   const [editing, setEditing] = useState(false);
 
   const content = artifact.content ?? '';
-  // Truncating markup would break the page; the HTML frame collapses by height.
   const html = isHtmlDocument(content);
   const collapsible = !html && content.length > COLLAPSE_CHARS;
   const shown = collapsible && !expanded ? `${content.slice(0, COLLAPSE_CHARS)}…` : content;
@@ -114,12 +113,9 @@ export function ArtifactViewer({
           <ArtifactContentEditor artifact={artifact} onDone={() => setEditing(false)} />
         ) : (
           <>
-            {content && html && (
-              <ArtifactHtmlFrame content={content} title={artifact.title} collapsible />
-            )}
-            {content && !html && (
+            {content && (
               <div className="prose prose-sm dark:prose-invert mt-2 max-w-none">
-                <ArtifactMarkdown content={shown} />
+                <ArtifactContent content={shown} title={artifact.title} />
               </div>
             )}
             {collapsible && (

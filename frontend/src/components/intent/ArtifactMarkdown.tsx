@@ -19,7 +19,6 @@ import {
   type MdastNode,
   type ReferenceDefinition,
 } from '@/components/intent/artifactReferences';
-import { ArtifactHtmlFrame, isHtmlDocument } from '@/components/intent/ArtifactHtmlFrame';
 
 export interface MarkdownArtifactLink {
   id: string;
@@ -405,8 +404,6 @@ export function ArtifactMarkdown({
     }),
     [onOpenArtifact, onOpenItem, stopLinkPropagation],
   );
-
-  if (isHtmlDocument(content)) return <ArtifactHtmlFrame content={content} />;
 
   return (
     <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>

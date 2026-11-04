@@ -28,7 +28,8 @@ import { focusWorkProduct } from '@/components/intent/workProductsFocus';
 import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
-import { ArtifactMarkdown, type OpenArtifact } from '@/components/intent/ArtifactMarkdown';
+import { ArtifactContent } from '@/components/intent/ArtifactContent';
+import { type OpenArtifact } from '@/components/intent/ArtifactMarkdown';
 import { scrollToReference } from '@/components/layout/scrollToReference';
 import { AgentOutputTranscript } from '@/components/agent-output/AgentOutputTranscript';
 import { useIntentGraph, type GraphNeighbor } from '@/hooks/useIntentGraph';
@@ -770,9 +771,10 @@ function ArtifactPreviewContent({
       ) : (
         artifact.content && (
           <div className={cn('prose prose-sm dark:prose-invert max-w-none', contentClassName)}>
-            <ArtifactMarkdown
+            <ArtifactContent
               content={artifact.content}
               artifactId={artifact.id}
+              title={title}
               artifacts={artifacts}
               derivedItems={derivedItems}
               onOpenArtifact={onOpenArtifact}
