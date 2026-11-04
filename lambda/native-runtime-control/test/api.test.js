@@ -62,7 +62,11 @@ describe('native execution REST boundary', () => {
         ...(action === 'files' ? { fileId: `nf-${'a'.repeat(64)}` } : {}),
       },
       httpMethod: read ? 'GET' : 'POST',
-      ...(read ? {} : { body: JSON.stringify(action === 'start' ? { requestId: OTHER } : {}) }),
+      ...(read
+        ? {}
+        : {
+            body: JSON.stringify(action === 'start' ? { requestId: OTHER, promptRevision: 0 } : {}),
+          }),
       ...overrides,
     };
   };
@@ -163,6 +167,7 @@ describe('native execution REST boundary', () => {
           ACTOR,
           OTHER,
           expect.any(Function),
+          0,
         );
       f.membership.mockResolvedValue(null);
       expect((await f.api(route(action))).statusCode).toBe(403);

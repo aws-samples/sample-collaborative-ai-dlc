@@ -90,8 +90,8 @@ describe('native harness availability through the public command authority', () 
         execution: null,
       },
     });
-    const request = { requestId: randomUUID() };
-    for (const input of [request, request, { requestId: randomUUID() }])
+    const request = { requestId: randomUUID(), promptRevision: 0 };
+    for (const input of [request, request, { requestId: randomUUID(), promptRevision: 0 }])
       expect(await f.invoke('start', input)).toEqual({
         status: 409,
         body: {
@@ -113,7 +113,9 @@ describe('native harness availability through the public command authority', () 
     'rejects a caller attempt to override the protected availability with %j',
     async (override) => {
       const f = fixture();
-      expect(await f.invoke('start', { requestId: randomUUID(), ...override })).toMatchObject({
+      expect(
+        await f.invoke('start', { requestId: randomUUID(), promptRevision: 0, ...override }),
+      ).toMatchObject({
         status: 400,
         body: { code: 'NATIVE_PREPARATION_INVALID' },
       });
@@ -128,7 +130,7 @@ describe('native harness availability through the public command authority', () 
     const f = fixture();
     f.membership.mockResolvedValue(null);
     for (const route of ['capabilities', 'get', 'start'])
-      expect(await f.invoke(route, { requestId: randomUUID() })).toMatchObject({
+      expect(await f.invoke(route, { requestId: randomUUID(), promptRevision: 0 })).toMatchObject({
         status: 403,
         body: { code: 'NATIVE_PREPARATION_FORBIDDEN' },
       });
@@ -145,7 +147,7 @@ describe('native harness availability through the public command authority', () 
         status: 200,
         body: { executionAvailable: true, execution: null },
       });
-      const request = { requestId: randomUUID() };
+      const request = { requestId: randomUUID(), promptRevision: 0 };
       const result = await f.invoke('start', request);
       expect(result).toMatchObject({ status: 202, body: { execution: { status: 'REQUESTED' } } });
       const accepted = f.row();
@@ -170,7 +172,9 @@ describe('native harness availability through the public command authority', () 
       body: { harness: 'kiro', executionAvailable: true, execution: { status: 'REQUESTED' } },
     });
     expect(status.body).not.toHaveProperty('startUnavailableReason');
-    expect(await f.invoke('start', { requestId: randomUUID() })).toMatchObject({ status: 202 });
+    expect(await f.invoke('start', { requestId: randomUUID(), promptRevision: 0 })).toMatchObject({
+      status: 202,
+    });
     expect(f.row()).toEqual(accepted);
     expect(writes(f)).toHaveLength(0);
     expect(f.configure).not.toHaveBeenCalled();

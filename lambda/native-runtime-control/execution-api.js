@@ -72,7 +72,7 @@ export const nativeExecutionView = (row) =>
         ...(row.failureCode ? { failureCode: row.failureCode } : {}),
         publicationId: row.publication?.id ?? null,
         projectionStatus: row.projectionStatus ?? null,
-        sequence: nativeTurnSequence(row),
+        turnSequence: nativeTurnSequence(row),
         interactionId: row.interaction?.id ?? null,
         // Publication sequence is independent of a pending command's sequence.
         publicationSequence: row.publication?.sequence ?? null,

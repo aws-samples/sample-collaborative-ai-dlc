@@ -157,7 +157,7 @@ describe('native-only HTTP on real loopback sockets', () => {
       import { registerHooks } from 'node:module';
       registerHooks({ resolve(specifier, context, next) {
         if (!specifier.startsWith('node:') &&
-          !['/runtime-server.js', '/workspace-check.js', '/efs-workspace.js', '/resource-telemetry.js', '/flight-recorder.js'].some(name => specifier.endsWith(name)))
+          !['/runtime-server.js', '/workspace-check.js', '/efs-workspace.js', '/resource-telemetry.js', '/flight-recorder.js', '/native-runtime-command.js'].some(name => specifier.endsWith(name)))
           throw new Error('execution import attempted');
         return next(specifier, context);
       }});
@@ -280,6 +280,8 @@ const executionEnv = {
 const startPayload = () => ({
   command: 'native-start',
   schemaVersion: 2,
+  sequence: 1,
+  imageDigest: `sha256:${'a'.repeat(64)}`,
   writerGeneration: 1,
   ...executionIdentity,
   configuration: {
@@ -343,6 +345,42 @@ const executionFixture = async () => {
 
 describe('native execution HTTP lifecycle on real loopback sockets', () => {
   it.each(['native-start', 'native-continue', 'native-resume'])(
+    'rejects unknown %s fields at the HTTP boundary before constructing an executor',
+    async (command) => {
+      const body = { ...startPayload(), command };
+      if (command === 'native-continue') {
+        delete body.package;
+        delete body.imageDigest;
+        Object.assign(body, {
+          sequence: 2,
+          requestId: '50000000-0000-4000-8000-000000000001',
+          priorInteractionId: 'c'.repeat(64),
+          priorPublicationId: 'd'.repeat(64),
+          text: 'Exact member reply',
+        });
+      }
+      if (command === 'native-resume')
+        Object.assign(body, {
+          writerGeneration: 2,
+          recoveryId: '50000000-0000-4000-8000-000000000002',
+        });
+      const createExecutor = vi.fn();
+      const port = await start({ env: executionEnv, createExecutor, checkWorkspace: vi.fn() });
+      for (const patch of [
+        { actorId: 'forged-member' },
+        { checkpoint: {} },
+        { sequence: undefined },
+        { configuration: { ...body.configuration, approved: true } },
+      ]) {
+        expect(await request(port, '/invocations', { ...body, ...patch })).toMatchObject({
+          status: 400,
+          body: { code: 'native_execution_request_invalid' },
+        });
+      }
+      expect(createExecutor).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['native-start', 'native-continue', 'native-resume'])(
     'rejects obsolete or unknown %s protocols before constructing a CLI executor',
     async (command) => {
       const createExecutor = vi.fn();
@@ -401,6 +439,8 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
           ...payload,
           schemaVersion: 2,
           command: 'native-resume',
+          writerGeneration: 2,
+          recoveryId: '50000000-0000-4000-8000-000000000002',
         })
       ).body.method,
     ).toBe('resume');
@@ -674,6 +714,8 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
           text: 'Use the colorful design.',
           credentials: { model: startPayload().credentials.model },
         };
+        delete continuation.package;
+        delete continuation.imageDigest;
         const accepted = await request(port, '/invocations', continuation);
         expect(accepted).toMatchObject({ status: 200, body: { accepted: true, sequence: 2 } });
         expect((await request(port, '/invocations', continuation)).body).toMatchObject({

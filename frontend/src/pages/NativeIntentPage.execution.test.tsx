@@ -229,8 +229,8 @@ it('starts only explicitly, deduplicates pending clicks and reuses the request I
   expect(screen.getByRole('alert')).toHaveTextContent('Start could not be confirmed');
   await click('Start agent');
   expect(api.start.mock.calls).toEqual([
-    ['project-1', 'run-1', requestId],
-    ['project-1', 'run-1', requestId],
+    ['project-1', 'run-1', requestId, 0],
+    ['project-1', 'run-1', requestId, 0],
   ]);
   expect(executionStatus()).toHaveTextContent('Start requested');
   expect(screen.queryByRole('button', { name: 'Start agent' })).not.toBeInTheDocument();
@@ -305,8 +305,8 @@ it('reuses the same Start request after an actionable error and clears feedback 
   const requestId = api.start.mock.calls[0][2];
   await click('Start agent');
   expect(api.start.mock.calls).toEqual([
-    ['project-1', 'run-1', requestId],
-    ['project-1', 'run-1', requestId],
+    ['project-1', 'run-1', requestId, 0],
+    ['project-1', 'run-1', requestId, 0],
   ]);
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(executionStatus()).toHaveTextContent('Start requested');

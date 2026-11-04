@@ -428,7 +428,7 @@ const digest = (value: unknown): value is string =>
   typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const uuid = (value: unknown): value is string =>
   typeof value === 'string' &&
-  /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(value);
+  /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
 const relativePath = (value: unknown): value is string =>
   typeof value === 'string' &&
   value.length > 0 &&
@@ -438,9 +438,10 @@ const relativePath = (value: unknown): value is string =>
 
 function execution(value: unknown): NativeExecution | null {
   if (value === null) return null;
-  const turnSequence = record(value) ? (value.turnSequence ?? value.sequence) : undefined;
+  const turnSequence = record(value) ? value.turnSequence : undefined;
   if (
     !record(value) ||
+    Object.hasOwn(value, 'sequence') ||
     !executionStatuses.includes(value.status as NativeExecution['status']) ||
     !validId(value.attemptId) ||
     !Number.isSafeInteger(value.epoch) ||
@@ -471,13 +472,6 @@ function execution(value: unknown): NativeExecution | null {
       !digest(value.interactionId)) ||
     (turnSequence !== undefined &&
       (!Number.isSafeInteger(turnSequence) || Number(turnSequence) < 1)) ||
-    (value.turnSequence !== undefined &&
-      (!Number.isSafeInteger(value.turnSequence) || Number(value.turnSequence) < 1)) ||
-    (value.sequence !== undefined &&
-      (!Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1)) ||
-    (value.turnSequence !== undefined &&
-      value.sequence !== undefined &&
-      value.turnSequence !== value.sequence) ||
     (value.responsePending !== undefined && typeof value.responsePending !== 'boolean') ||
     (value.revision !== undefined &&
       (!Number.isSafeInteger(value.revision) || Number(value.revision) < 0)) ||
@@ -1004,19 +998,15 @@ export const nativeIntentsService = {
     projectId: string,
     intentId: string,
     requestId: string,
-    promptRevision?: number,
+    promptRevision = 0,
   ): Promise<NativeIntent> {
-    if (
-      !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(requestId) ||
-      (promptRevision !== undefined &&
-        (!Number.isSafeInteger(promptRevision) || promptRevision < 0))
-    ) {
+    if (!uuid(requestId) || !Number.isSafeInteger(promptRevision) || promptRevision < 0) {
       throw new Error('The native start request identity is invalid.');
     }
     return view(
       await api.post(`${itemPath(projectId, intentId)}/start`, {
         requestId,
-        ...(promptRevision !== undefined ? { promptRevision } : {}),
+        promptRevision,
       }),
       projectId,
       intentId,
@@ -1032,8 +1022,11 @@ export const nativeIntentsService = {
   ): Promise<NativeIntent> {
     if (
       !uuid(request.requestId) ||
-      !validId(request.recoveryId) ||
-      request.confirmWorkspaceResume !== true
+      !uuid(request.recoveryId) ||
+      request.confirmWorkspaceResume !== true ||
+      Object.keys(request).some(
+        (key) => !['requestId', 'recoveryId', 'confirmWorkspaceResume'].includes(key),
+      )
     )
       throw new Error('The native recovery request is invalid.');
     const next = view(
@@ -1068,7 +1061,12 @@ export const nativeIntentsService = {
       !uuid(request.requestId) ||
       !digest(request.interactionId) ||
       !digest(request.contentSha256) ||
-      !nativeReplyTextValid(request.text)
+      !nativeReplyTextValid(request.text) ||
+      (Object.hasOwn(request, 'selection') && !record(request.selection)) ||
+      Object.keys(request).some(
+        (key) =>
+          !['requestId', 'interactionId', 'contentSha256', 'text', 'selection'].includes(key),
+      )
     ) {
       throw new Error('The native reply request is invalid.');
     }

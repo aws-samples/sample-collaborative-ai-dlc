@@ -143,7 +143,7 @@ describe('serial native interaction authority', () => {
     const commandId = f.row().response.commandId;
     const retry = await f.api.respond(f.prepared, 'member-one', request, f.recheck);
     expect(retry).toMatchObject({
-      execution: { sequence: 2, status: 'DISPATCHING', responsePending: true },
+      execution: { turnSequence: 2, status: 'DISPATCHING', responsePending: true },
       response: {
         id: commandId,
         kind: 'user_reply',

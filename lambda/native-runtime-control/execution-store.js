@@ -423,6 +423,8 @@ export const nativeReplyRequest = (value) => {
       matches(value.contentSha256, SHA256) &&
       responseText(value.text),
   );
+  if (Object.hasOwn(value, 'selection'))
+    shape(value.selection, [], Object.keys(value.selection ?? {}));
   return clone(value);
 };
 const RESPONSE_FIELDS = [

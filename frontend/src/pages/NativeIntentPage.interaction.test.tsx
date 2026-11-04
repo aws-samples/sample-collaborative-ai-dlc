@@ -1091,7 +1091,7 @@ function requireRecovery(patch: Partial<NativeExecution> = {}) {
           ? { state: 'unconfirmed', confirmedAt: null }
           : { state: 'confirmed', confirmedAt: '2026-09-29T12:00:00Z' },
       recovery: {
-        id: 'recovery-1',
+        id: 'a1227042-0661-4843-8138-9d08fdd0a891',
         reason: 'RESTORE_FAILED',
         canRecover: true,
         workflowResumeState: 'created',
@@ -1138,7 +1138,7 @@ it('requires confirmation for fresh-session resume and sends no earlier answer',
     '/projects/project-1/native-intents/run-1/recover',
     {
       requestId: expect.stringMatching(/^[a-f0-9-]{36}$/),
-      recoveryId: 'recovery-1',
+      recoveryId: 'a1227042-0661-4843-8138-9d08fdd0a891',
       confirmWorkspaceResume: true,
     },
   );
@@ -1157,7 +1157,7 @@ it.each([
       recoveryMode: 'efs-workspace-v1',
       stopStatus: { state: 'confirmed', confirmedAt: '2026-09-29T12:00:00Z' },
       recovery: {
-        id: 'recovery-1',
+        id: 'a1227042-0661-4843-8138-9d08fdd0a891',
         reason,
         // Even a retained older API's permissive value needs creation proof.
         canRecover: true,
@@ -1262,7 +1262,7 @@ it('keeps committed files, graph and the same saved reply through recovery and t
     '/projects/project-1/native-intents/run-1/recover',
     {
       requestId: expect.stringMatching(/^[a-f0-9-]{36}$/),
-      recoveryId: 'recovery-1',
+      recoveryId: 'a1227042-0661-4843-8138-9d08fdd0a891',
       confirmWorkspaceResume: true,
     },
   ]);
@@ -1357,7 +1357,7 @@ it('retains an uncertain reply across recovery without claiming it was saved or 
       revision: 10,
       stopStatus: { state: 'confirmed', confirmedAt: '2026-09-29T12:00:00Z' },
       recovery: {
-        id: 'recovery-1',
+        id: 'a1227042-0661-4843-8138-9d08fdd0a891',
         reason: 'RESTORE_FAILED',
         canRecover: true,
         workflowResumeState: 'created',
@@ -1380,7 +1380,7 @@ it('retains an uncertain reply across recovery without claiming it was saved or 
     '/projects/project-1/native-intents/run-1/recover',
     {
       requestId: expect.stringMatching(/^[a-f0-9-]{36}$/),
-      recoveryId: 'recovery-1',
+      recoveryId: 'a1227042-0661-4843-8138-9d08fdd0a891',
       confirmWorkspaceResume: true,
     },
   ]);
@@ -1392,7 +1392,13 @@ it.each([
   { recovery: undefined },
   { recovery: null },
   { revision: undefined },
-  { recovery: { id: 'recovery-1', reason: 'WORKSPACE_UNAVAILABLE', canRecover: false } },
+  {
+    recovery: {
+      id: 'a1227042-0661-4843-8138-9d08fdd0a891',
+      reason: 'WORKSPACE_UNAVAILABLE',
+      canRecover: false,
+    },
+  },
 ] satisfies Partial<NativeExecution>[])(
   'keeps recovery view-only when capability evidence is absent %#',
   async (patch) => {
@@ -1430,7 +1436,7 @@ it.each(['claude', 'codex', 'kiro', 'opencode'] as const)(
     requireRecovery({
       status: 'RECOVERING',
       recovery: {
-        id: 'recovery-1',
+        id: 'a1227042-0661-4843-8138-9d08fdd0a891',
         reason: 'SESSION_LOST',
         canRecover: false,
         workflowResumeState: 'created',
@@ -1513,7 +1519,12 @@ it.each([
   async (reason, explanation) => {
     vi.useFakeTimers();
     requireRecovery({
-      recovery: { id: 'recovery-1', reason, canRecover: false, workflowResumeState: 'created' },
+      recovery: {
+        id: 'a1227042-0661-4843-8138-9d08fdd0a891',
+        reason,
+        canRecover: false,
+        workflowResumeState: 'created',
+      },
       responsePending: true,
     });
     await act(async () => renderPage());
@@ -1541,7 +1552,7 @@ it('offers a manual retry only after the server publishes RESTORE_FAILED with ca
   requireRecovery({
     status: 'RECOVERING',
     recovery: {
-      id: 'recovery-1',
+      id: 'a1227042-0661-4843-8138-9d08fdd0a891',
       reason: 'SESSION_LOST',
       canRecover: false,
       workflowResumeState: 'created',
@@ -1558,7 +1569,7 @@ it('offers a manual retry only after the server publishes RESTORE_FAILED with ca
       revision: 11,
       stopStatus: { state: 'confirmed', confirmedAt: '2026-09-29T12:00:00Z' },
       recovery: {
-        id: 'recovery-1',
+        id: 'a1227042-0661-4843-8138-9d08fdd0a891',
         reason: 'RESTORE_FAILED',
         canRecover: true,
         workflowResumeState: 'created',
@@ -1581,7 +1592,7 @@ it('offers a manual retry only after the server publishes RESTORE_FAILED with ca
       '/projects/project-1/native-intents/run-1/recover',
       {
         requestId: expect.stringMatching(/^[a-f0-9-]{36}$/),
-        recoveryId: 'recovery-1',
+        recoveryId: 'a1227042-0661-4843-8138-9d08fdd0a891',
         confirmWorkspaceResume: true,
       },
     ],
@@ -1653,7 +1664,7 @@ it('refreshes a stale recovery episode and uses a new identity only after anothe
         ...intent.execution!,
         revision: 11,
         recovery: {
-          id: 'recovery-2',
+          id: 'a1227042-0661-4843-8138-9d08fdd0a892',
           reason: 'RESTORE_FAILED',
           canRecover: true,
           workflowResumeState: 'created',
@@ -1672,8 +1683,8 @@ it('refreshes a stale recovery episode and uses a new identity only after anothe
   await click('Confirm fresh session');
   const first = transport.post.mock.calls[0][1];
   const second = transport.post.mock.calls[1][1];
-  expect(first.recoveryId).toBe('recovery-1');
-  expect(second.recoveryId).toBe('recovery-2');
+  expect(first.recoveryId).toBe('a1227042-0661-4843-8138-9d08fdd0a891');
+  expect(second.recoveryId).toBe('a1227042-0661-4843-8138-9d08fdd0a892');
   expect(second.requestId).not.toBe(first.requestId);
   expect(transport.post.mock.calls.every(([path]) => path.endsWith('/recover'))).toBe(true);
 });

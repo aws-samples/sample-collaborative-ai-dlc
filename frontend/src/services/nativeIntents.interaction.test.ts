@@ -176,7 +176,7 @@ describe('native recovery contract', () => {
     await expect(nativeIntentsService.get('project-1', 'run-1')).rejects.toThrow();
   });
   const recovery = {
-    id: 'recovery-1',
+    id: 'a1227042-0661-4843-8138-9d08fdd0a891',
     reason: 'RESTORE_FAILED',
     canRecover: true,
     workflowResumeState: 'created',
@@ -235,7 +235,7 @@ describe('native recovery contract', () => {
         execution: {
           ...wireExecution,
           ...patch,
-          sequence: turnSequence,
+          turnSequence,
           revision: 27,
           responsePending: true,
         },
@@ -295,7 +295,11 @@ describe('native recovery contract', () => {
       checkpoint: 'private',
       approved: true,
     };
-    expect(await nativeIntentsService.recover('project-1', 'run-1', input)).toEqual(recovering);
+    await expect(nativeIntentsService.recover('project-1', 'run-1', input)).rejects.toThrow();
+    expect(post).not.toHaveBeenCalled();
+    expect(await nativeIntentsService.recover('project-1', 'run-1', recoveryRequest)).toEqual(
+      recovering,
+    );
     expect(post).toHaveBeenCalledWith(
       '/projects/project-1/native-intents/run-1/recover',
       recoveryRequest,
@@ -384,12 +388,12 @@ describe('published assistant turn contract', () => {
     get.mockResolvedValue({ ...detail, execution: { ...execution, turnSequence: undefined } });
     await expect(nativeIntentsService.get('project-1', 'run-1')).rejects.toThrow();
   });
-  it('normalizes the wire sequence alias while rejecting disagreements', async () => {
+  it('requires the current turnSequence field instead of the retired wire alias', async () => {
     get.mockResolvedValue({
       ...detail,
       execution: { ...execution, turnSequence: undefined, sequence: 1 },
     });
-    expect((await nativeIntentsService.get('project-1', 'run-1')).execution?.turnSequence).toBe(1);
+    await expect(nativeIntentsService.get('project-1', 'run-1')).rejects.toThrow();
     get.mockResolvedValue({ ...detail, execution: { ...execution, sequence: 2 } });
     await expect(nativeIntentsService.get('project-1', 'run-1')).rejects.toThrow();
   });
@@ -405,10 +409,12 @@ describe('published assistant turn contract', () => {
 });
 
 describe('ordinary reply contract', () => {
-  it('sends only the four fields, preserving exact text, and validates the receipt', async () => {
+  it('rejects extra authority fields, preserves exact reply text and validates the receipt', async () => {
     post.mockResolvedValue(acceptance);
     const input = { ...request, actorId: 'forged', approved: true };
-    expect(await nativeIntentsService.respond('project-1', 'run-1', input)).toEqual({
+    await expect(nativeIntentsService.respond('project-1', 'run-1', input)).rejects.toThrow();
+    expect(post).not.toHaveBeenCalled();
+    expect(await nativeIntentsService.respond('project-1', 'run-1', request)).toEqual({
       execution: acceptance.execution,
       response,
     });

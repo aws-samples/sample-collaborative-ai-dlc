@@ -16,6 +16,7 @@ import {
   readNativePendingSpec,
 } from './turn-interaction.js';
 import { nativeWorkspaceRecovery } from '../../shared/native-recovery-mode.js';
+import { nativeRuntimeCommand } from '../../shared/native-runtime-command.js';
 import { createNativeTurnOutput } from './turn-output.js';
 import { resolveKiroPromptEvidence } from './kiro-prompt.js';
 import { kiroAssistantHash } from './kiro-acp-turn.js';
@@ -1368,13 +1369,7 @@ export const createNativeExecutor = ({
     const input = structuredClone(value);
     const identity = validateIdentity(input);
     const writerGeneration = generationOf(input);
-    if (
-      input.command !== 'native-start' ||
-      input.schemaVersion !== 2 ||
-      writerGeneration !== 1 ||
-      (input.sequence !== undefined && input.sequence !== 1)
-    )
-      fail('native_execution_request_invalid');
+    nativeRuntimeCommand(input, 'native-start');
     const configuration = canonicalConfig(input.configuration);
     const configurationSha256 = digest(JSON.stringify(configuration));
     if (admitting) fail('native_execution_busy');
@@ -1457,23 +1452,12 @@ export const createNativeExecutor = ({
     const input = structuredClone(value);
     const identity = validateIdentity(input);
     const writerGeneration = generationOf(input);
+    nativeRuntimeCommand(input, 'native-resume');
     const configuration = canonicalConfig(input.configuration);
     const configurationSha256 = digest(JSON.stringify(configuration));
     const controller = new AbortController();
     if (
-      input.command !== 'native-resume' ||
-      input.schemaVersion !== 2 ||
-      !nativeWorkspaceRecovery(configuration) ||
-      writerGeneration < 2 ||
-      !Number.isSafeInteger(input.sequence) ||
-      input.sequence < 1 ||
-      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
-        input.recoveryId ?? '',
-      ) ||
       input.imageDigest !== env.NATIVE_EXECUTION_IMAGE_DIGEST ||
-      ['text', 'checkpoint', 'nativeSessionId', 'requestId'].some((key) =>
-        Object.hasOwn(input, key),
-      ) ||
       ![assertRecoveryAdmission, prepareRecovery, prepareContinuation].every(
         (port) => typeof port === 'function',
       )
@@ -1594,25 +1578,7 @@ export const createNativeExecutor = ({
     const input = structuredClone(value);
     const identity = validateIdentity(input);
     const writerGeneration = generationOf(input);
-    if (
-      input.command !== 'native-continue' ||
-      input.schemaVersion !== 2 ||
-      !Number.isSafeInteger(input.sequence) ||
-      input.sequence < 2 ||
-      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
-        input.requestId ?? '',
-      ) ||
-      !/^[a-f0-9]{64}$/.test(input.priorInteractionId ?? '') ||
-      !/^[a-f0-9]{64}$/.test(input.priorPublicationId ?? '') ||
-      !text(input.text, 16 * 1024) ||
-      !input.text.trim() ||
-      Buffer.from(input.text).toString('utf8') !== input.text ||
-      [...input.text].some((character) => {
-        const code = character.codePointAt(0);
-        return (code < 32 && ![9, 10, 13].includes(code)) || code === 127;
-      })
-    )
-      fail('native_execution_request_invalid');
+    nativeRuntimeCommand(input, 'native-continue');
     const configuration = canonicalConfig(input.configuration);
     const configurationSha256 = digest(JSON.stringify(configuration));
     // Cold recovery is observation only. A local record never grants a fresh

@@ -230,7 +230,7 @@ describe('native execution API with real protected storage', () => {
         publicationSequence: null,
         stopStatus: { state: 'unconfirmed', confirmedAt: null },
         projectionStatus: null,
-        sequence: 1,
+        turnSequence: 1,
         interactionId: null,
         responsePending: false,
       },

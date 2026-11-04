@@ -37,7 +37,7 @@ if (!options.installedOnly) {
     'lambda/native-runtime-control/test/workspace-resume-journey.test.js',
     'lambda/native-runtime-control/test/execution-workspace-resume-worker.test.js',
     'lambda/native-runtime-control/test/workflow-resume-availability.test.js',
-    'lambda/native-runtime-control/test/frontend-recovery.test.js',
+    'lambda/native-runtime-control/test/frontend-commands.test.js',
     'lambda/native-runtime-control/test/execution-stop.test.js',
     'lambda/native-runtime-control/test/execution-serial-worker.test.js',
     'lambda/native-runtime-control/test/execution-worker.test.js',
@@ -60,6 +60,7 @@ if (!options.installedOnly) {
     'lambda/shared/test/native-publication.test.js',
     'lambda/shared/test/native-pending-input.test.js',
     'lambda/shared/test/native-execution-fence.test.js',
+    'lambda/shared/test/native-runtime-command.test.js',
   ];
   run(
     'production-composed journeys and boundary failures (scripted harness output)',

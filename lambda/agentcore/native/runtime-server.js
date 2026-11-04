@@ -2,6 +2,10 @@ import http from 'node:http';
 import { createNativeWorkspaceCheck } from './workspace-check.js';
 import { startNativeResourceTelemetry } from './resource-telemetry.js';
 import { startNativeFlightRecorder } from './flight-recorder.js';
+import {
+  NATIVE_RUNTIME_COMMANDS,
+  nativeRuntimeCommand,
+} from '../../shared/native-runtime-command.js';
 
 export const NATIVE_RUNTIME_MAX_BODY = 256 * 1024;
 const IDENTITY = [
@@ -47,15 +51,6 @@ const codes = new Set([
   'native_workspace_rename_failed',
   'native_workspace_readback_failed',
 ]);
-const executionMethods = {
-  'native-start': 'start',
-  'native-continue': 'continue',
-  'native-resume': 'resume',
-  'native-status': 'status',
-  'native-activity': 'activity',
-  'native-cancel': 'cancel',
-};
-
 const executionErrors = new Map([
   ['native_execution_scope_mismatch', 400],
   ['native_execution_request_invalid', 400],
@@ -151,44 +146,23 @@ export const createNativeRuntimeServer = ({
     } catch {
       return send(400, { ok: false, code: 'invalid_request' });
     }
-    if (
-      [
-        'native-start',
-        'native-continue',
-        'native-resume',
-        'native-status',
-        'native-activity',
-        'native-cancel',
-      ].includes(payload.command)
-    ) {
+    if (Object.hasOwn(NATIVE_RUNTIME_COMMANDS, payload.command ?? '')) {
       if (!enabled) return send(403, { ok: false, code: 'native_execution_disabled' });
       if (IDENTITY.some((key) => payload[key] !== identity[key]))
         return send(400, { ok: false, code: 'native_execution_scope_mismatch' });
       const starting = ['native-start', 'native-continue', 'native-resume'].includes(
         payload.command,
       );
-      if (
-        starting
-          ? payload.schemaVersion !== 2 ||
-            payload.configuration?.recoveryMode !== 'efs-workspace-v1'
-          : Object.keys(payload).some(
-              (key) =>
-                ![
-                  'command',
-                  'writerGeneration',
-                  ...(payload.command === 'native-activity' ? ['after'] : []),
-                  ...IDENTITY,
-                ].includes(key),
-            )
-      )
+      try {
+        nativeRuntimeCommand(payload);
+      } catch {
         return send(400, { ok: false, code: 'native_execution_request_invalid' });
-      if (!Number.isSafeInteger(payload.writerGeneration) || payload.writerGeneration < 1)
-        return send(400, { ok: false, code: 'native_execution_request_invalid' });
+      }
       if (busy) return send(409, { ok: false, code: 'native_workspace_check_busy' });
       if (starting) startRequests++;
       try {
         const active = await getExecutor();
-        const method = executionMethods[payload.command];
+        const method = NATIVE_RUNTIME_COMMANDS[payload.command].method;
         if (typeof active[method] !== 'function')
           return send(400, { ok: false, code: 'native_execution_request_invalid' });
         return send(200, await active[method](payload));

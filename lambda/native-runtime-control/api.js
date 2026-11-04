@@ -4,11 +4,11 @@ import { buildResponse } from '../shared/response.js';
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { ID, UUID_V4, fail, matches, nativeDraftRequest, pinPackageJob, record } from './store.js';
 import { nativeListQuery } from './listing.js';
-import { NATIVE_INTERACTION_LIMITS } from '../shared/native-interaction.js';
 import { nativeDraftPrompt, nativePromptRequest, promptFailure } from './draft-prompt.js';
 import { nativeRevisionQuery } from './revision-query.js';
 import { nativeResultRequest, nativeResultQuery } from './result-store.js';
 import { nativeUnavailableHarnesses } from './execution-api.js';
+import { nativeReplyRequest } from './execution-store.js';
 
 const COLLECTION = '/api/projects/{projectId}/native-intents';
 const ITEM = `${COLLECTION}/{intentId}`;
@@ -50,6 +50,7 @@ const ERRORS = {
   ],
   NATIVE_PROMPT_UNAVAILABLE: [503, 'Prompt saving could not be confirmed. Retry the same save'],
   NATIVE_PREPARATION_INVALID: [400, 'Invalid native preparation request'],
+  NATIVE_PREPARATION_BODY_TOO_LARGE: [413, 'Native draft request is too large'],
   NATIVE_PREPARATION_CONFLICT: [409, 'Native intent changed or its immutable request conflicts'],
   NATIVE_PREPARATION_NOT_FOUND: [404, 'Native intent not found'],
   NATIVE_PREPARATION_UNAVAILABLE: [503, 'Native preparation is unavailable; retry safely'],
@@ -180,29 +181,82 @@ const validMembership = (value) =>
       ![...value[key]].some((character) => character.codePointAt(0) < 32 || character === '\x7f'),
   );
 
-// Task-3: an optional structured selection. Its meaning is validated against
-// the committed interaction by the execution API, not here.
-const validReply = (value) =>
+const fields = (value, names) =>
   record(value) &&
-  Object.keys(value).length === (Object.hasOwn(value, 'selection') ? 5 : 4) &&
-  ['requestId', 'interactionId', 'contentSha256', 'text'].every((key) =>
-    Object.hasOwn(value, key),
-  ) &&
-  (!Object.hasOwn(value, 'selection') || record(value.selection)) &&
-  matches(value.requestId, UUID_V4) &&
-  matches(value.interactionId, /^[a-f0-9]{64}$/) &&
-  matches(value.contentSha256, /^[a-f0-9]{64}$/) &&
-  typeof value.text === 'string' &&
-  Boolean(value.text.trim()) &&
-  Buffer.byteLength(value.text) <= NATIVE_INTERACTION_LIMITS.responseBytes &&
-  // oxlint-disable-next-line no-control-regex -- Reject terminal controls; preserve tabs and line endings.
-  !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value.text) &&
-  Buffer.from(value.text, 'utf8').toString('utf8') === value.text;
-
-const suffixFor = (resource, params) => {
-  if (resource === COLLECTION || resource === ITEM) return '';
-  if (resource === FILE) return `/files/${params.fileId}`;
-  return '/' + resource.split('/').at(-1);
+  Object.keys(value).length === names.length &&
+  names.every((key) => Object.hasOwn(value, key));
+const startRequest = (value) => {
+  if (
+    !fields(value, ['requestId', 'promptRevision']) ||
+    !matches(value.requestId, UUID_V4) ||
+    !Number.isSafeInteger(value.promptRevision) ||
+    value.promptRevision < 0
+  )
+    fail('INVALID');
+  return value;
+};
+const recoveryRequest = (value) => {
+  if (
+    !fields(value, ['requestId', 'recoveryId', 'confirmWorkspaceResume']) ||
+    !matches(value.requestId, UUID_V4) ||
+    !matches(value.recoveryId, UUID_V4) ||
+    value.confirmWorkspaceResume !== true
+  )
+    fail('INVALID');
+  return value;
+};
+const jsonBody = (event, validate, maxBytes = 1024) => {
+  if (typeof event.body !== 'string' || Buffer.byteLength(event.body) > maxBytes) fail('INVALID');
+  try {
+    return validate(JSON.parse(event.body));
+  } catch (error) {
+    if (error?.code === 'NATIVE_PROMPT_INVALID') throw error;
+    fail('INVALID');
+  }
+};
+const draftBody = (event) => {
+  // This marker identifies rejection before dependencies or persistence. It
+  // says nothing about an earlier uncertain attempt with the same identity.
+  try {
+    if (typeof event.body === 'string' && Buffer.byteLength(event.body) > 96 * 1024)
+      throw Object.assign(new Error('Native draft request is too large'), {
+        code: 'NATIVE_PREPARATION_BODY_TOO_LARGE',
+      });
+    return jsonBody(event, nativeDraftRequest, 96 * 1024);
+  } catch (error) {
+    error.draftInputRejected = true;
+    throw error;
+  }
+};
+const promptBody = (event) => {
+  if (typeof event.body !== 'string' || Buffer.byteLength(event.body) > 96 * 1024)
+    promptFailure('INVALID');
+  return jsonBody(event, nativePromptRequest, 96 * 1024);
+};
+const emptyBody = (event) => {
+  if (event.body == null || event.body === '') return {};
+  return jsonBody(event, (value) => {
+    if (!fields(value, [])) fail('INVALID');
+    return value;
+  });
+};
+const noBody = (event) => {
+  if (event.body != null && event.body !== '') fail('INVALID');
+};
+const pathParameters = (event) => {
+  const patterns = { projectId: ID, intentId: UUID_V4, fileId: /^nf-[a-f0-9]{64}$/ };
+  const names = [...event.resource.matchAll(/\{(\w+)\}/g)].map((match) => match[1]);
+  const params = event.pathParameters;
+  if (
+    !fields(params, names) ||
+    names.some((name) => !matches(params[name], patterns[name])) ||
+    ['operation', 'op', 'action'].some((key) => Object.hasOwn(event, key)) ||
+    (event.isBase64Encoded !== undefined && event.isBase64Encoded !== false)
+  )
+    fail('INVALID');
+  const expected = event.resource.replace(/\{(\w+)\}/g, (_, name) => params[name]);
+  if (event.path !== undefined && event.path !== expected) fail('INVALID');
+  return params;
 };
 const outputCursor = (event, field = 'afterSeq') => {
   let after = 0;
@@ -247,12 +301,47 @@ export const createNativeRuntimeApi = ({
   image,
   execution,
 } = {}) => {
-  const collectionRead = async ({ listing, projectId, before, recheck, response }) => {
-    if (listing) {
+  const authorize = async (projectId, actorId) => {
+    const membership = async () => {
+      const current = await getMembershipSnapshot(projectId, actorId);
+      if (!validMembership(current)) fail('FORBIDDEN');
+      return structuredClone(current);
+    };
+    const before = await membership();
+    const recheck = async (row = null) => {
+      const current = await membership();
+      if (
+        current.projectIdentity !== before.projectIdentity ||
+        current.membershipId !== before.membershipId ||
+        (row && row.projectIdentity !== current.projectIdentity)
+      )
+        fail('FORBIDDEN');
+    };
+    return { before, recheck };
+  };
+  const authorizeSource = ({ projectId, actorId }, request) =>
+    workflowSources.getAuthorizedBinding({
+      projectId,
+      actorId,
+      sourceId: request.sourceId,
+      expectedRevision: request.bindingRevision,
+    });
+  const readPins = async (context, request) => {
+    const binding = await authorizeSource(context, request);
+    const job = await jobs.get({ projectId: context.projectId, jobId: request.packageJobId });
+    const pins = pinPackageJob(job, { projectId: context.projectId, request, binding });
+    // No credential reads: recheck the protected source and membership after
+    // package lookup, before persisting or enqueueing work.
+    await authorizeSource(context, request);
+    await context.recheck();
+    return pins;
+  };
+  const collectionRead = async ({ query, projectId, before, recheck, response }) => {
+    if (query) {
       const page = await listNativeIntents({
         projectId,
         projectIdentity: before.projectIdentity,
-        ...listing,
+        ...query,
       });
       if (page.rows.some((row) => row.projectIdentity !== before.projectIdentity))
         fail('FORBIDDEN');
@@ -269,38 +358,67 @@ export const createNativeRuntimeApi = ({
       unavailableHarnesses: nativeUnavailableHarnesses,
     });
   };
-  const executionCommand = async ({
-    start,
-    userResponse,
-    recover,
-    row,
-    actorId,
-    input,
-    recheck,
-    before,
-    response,
-  }) => {
+  const createDraft = async (context) => {
+    const { input, projectId, actorId, before, recheck, response } = context;
+    if (!admissionEnabled && !(await store.get({ projectId, executionId: input.intentId })))
+      return reply(response, 503, 'NATIVE_PREPARATION_DISABLED', 'New native drafts are disabled');
+    const pins = await readPins(context, input);
+    const created = await store.create({
+      projectId,
+      actorId,
+      projectIdentity: before.projectIdentity,
+      request: input,
+      ...pins,
+      image,
+    });
+    await recheck(created.row);
+    return response(created.created ? 201 : 200, nativeIntentView(created.row));
+  };
+  const details = async (row, recheck) => ({
+    ...nativeIntentView(row),
+    ...(execution ? await execution.status(row, recheck) : {}),
+  });
+  const prepare = async (context) => {
+    const { row, identity, recheck, response } = context;
+    const pins = await readPins(context, row.request);
+    if (
+      canonicalJson(pins.candidate) !== canonicalJson(row.candidate) ||
+      canonicalJson(pins.archiveReceipt) !== canonicalJson(row.archiveReceipt)
+    )
+      fail('CONFLICT');
+    const prepared = await store.prepare(identity);
+    await authorizeSource(context, prepared.request);
+    await recheck(prepared);
+    if (prepared.status === 'PREPARING') {
+      // Commit first. Stream delivery repairs a lost fast notification; a
+      // retry sends the same pointer without minting another execution.
+      try {
+        await enqueue(identity);
+      } catch {
+        /* Committed preparation remains discoverable. */
+      }
+    }
+    return response(prepared.status === 'PREPARING' ? 202 : 200, await details(prepared, recheck));
+  };
+  const savePrompt = async ({ identity, actorId, before, input, recheck, response }) => {
+    const saved = await store.savePrompt({
+      ...identity,
+      actorId,
+      projectIdentity: before.projectIdentity,
+      request: input,
+    });
+    await recheck(saved.row);
+    return response(200, {
+      ...(await details(saved.row, recheck)),
+      promptAcceptance: saved.promptAcceptance,
+    });
+  };
+  const commandResponse = async ({ row, response }, invoke) => {
     if (!execution)
       return reply(response, 503, 'NATIVE_EXECUTION_DISABLED', 'Native execution is disabled');
-    const details = start
-      ? await execution.start(
-          row,
-          actorId,
-          input.requestId,
-          recheck,
-          ...(input.promptRevision === undefined ? [] : [input.promptRevision]),
-        )
-      : userResponse
-        ? await execution.respond(row, actorId, input, recheck, {
-            membershipId: before.membershipId,
-            projectIdentity: before.projectIdentity,
-          })
-        : recover
-          ? await execution.recover(row, input, recheck)
-          : await execution.cancel(row, recheck);
-    return response(202, { ...nativeIntentView(row), ...details });
+    return response(202, { ...nativeIntentView(row), ...(await invoke()) });
   };
-  const committedRead = async ({ event, file, row, params, recheck, response, revision }) => {
+  const committedRead = async ({ row, query, recheck, response }, read) => {
     if (!execution)
       return reply(
         response,
@@ -308,348 +426,222 @@ export const createNativeRuntimeApi = ({
         'NATIVE_PUBLICATION_NOT_FOUND',
         'No native files have been published yet',
       );
-    if (revision) {
-      const result = revision.history
-        ? await execution.history(row, revision.before, recheck)
-        : file
-          ? await execution.revisionFile(row, revision, recheck)
-          : event.resource === INTERACTION
-            ? await execution.revisionInteraction(row, revision, recheck)
-            : await execution.revision(row, revision, recheck);
-      await recheck(row);
-      return response(
-        200,
-        result,
-        revision.evidence ? { 'Cache-Control': 'private, no-store' } : {},
-      );
-    }
-    const result = file
-      ? await execution.file(row, params.fileId, recheck)
-      : event.resource === GRAPH
-        ? await execution.graph(row, recheck)
-        : event.resource === INTERACTION
-          ? await execution.interaction(row, recheck)
-          : await execution.publication(row, recheck);
-    return response(200, result);
+    const result = await read();
+    await recheck(row);
+    return response(200, result, query?.evidence ? { 'Cache-Control': 'private, no-store' } : {});
+  };
+  const resultResponse = async ({ row, recheck, response }, read) => {
+    if (!execution?.requestResult || !execution?.result)
+      return reply(response, 503, 'NATIVE_RESULT_UNAVAILABLE', 'Result downloads are unavailable');
+    const value = await read();
+    await recheck(row);
+    return response(value.status === 'ready' ? 200 : 202, value, {
+      'Cache-Control': 'private, no-store',
+    });
+  };
+
+  // Each public method owns its request and operation. Shared authentication,
+  // path/body/query checks and membership rechecks surround this fixed table.
+  const routes = {
+    [COLLECTION]: {
+      GET: {
+        query: (event) =>
+          nativeListQuery(event, { collection: true, projectId: event.pathParameters.projectId }),
+        handle: collectionRead,
+      },
+      POST: { body: draftBody, handle: createDraft },
+    },
+    [ITEM]: {
+      GET: {
+        handle: async ({ row, recheck, response }) => response(200, await details(row, recheck)),
+      },
+    },
+    [PREPARE]: { POST: { body: emptyBody, handle: prepare } },
+    [PROMPT]: { POST: { body: promptBody, handle: savePrompt } },
+    [START]: {
+      POST: {
+        body: (event) => jsonBody(event, startRequest),
+        handle: (context) =>
+          commandResponse(context, () =>
+            execution.start(
+              context.row,
+              context.actorId,
+              context.input.requestId,
+              context.recheck,
+              context.input.promptRevision,
+            ),
+          ),
+      },
+    },
+    [CANCEL]: {
+      POST: {
+        body: emptyBody,
+        handle: (context) =>
+          commandResponse(context, () => execution.cancel(context.row, context.recheck)),
+      },
+    },
+    [RECOVER]: {
+      POST: {
+        body: (event) => jsonBody(event, recoveryRequest),
+        handle: (context) =>
+          commandResponse(context, () =>
+            execution.recover(context.row, context.input, context.recheck),
+          ),
+      },
+    },
+    [RESPONSE]: {
+      POST: {
+        // JSON escaping can expand a valid 16 KiB reply sixfold. The shared
+        // request validator bounds decoded text and its optional selection.
+        body: (event) => jsonBody(event, nativeReplyRequest, 100 * 1024),
+        handle: (context) =>
+          commandResponse(context, () =>
+            execution.respond(context.row, context.actorId, context.input, context.recheck, {
+              membershipId: context.before.membershipId,
+              projectIdentity: context.before.projectIdentity,
+            }),
+          ),
+      },
+    },
+    [OUTPUTS]: {
+      GET: {
+        query: (event) => ({
+          after: outputCursor(event),
+          afterEvent: outputCursor(event, 'afterEvent'),
+        }),
+        handle: async ({ row, query, recheck, response }) =>
+          response(
+            200,
+            execution?.outputs
+              ? await execution.outputs(row, query.after, recheck, query.afterEvent)
+              : { outputs: [], nextAfter: null },
+          ),
+      },
+    },
+    [PUBLICATION]: {
+      GET: {
+        query: (event) => nativeRevisionQuery(event, 'publication'),
+        handle: (context) =>
+          committedRead(context, () =>
+            context.query?.history
+              ? execution.history(context.row, context.query.before, context.recheck)
+              : context.query
+                ? execution.revision(context.row, context.query, context.recheck)
+                : execution.publication(context.row, context.recheck),
+          ),
+      },
+    },
+    [FILE]: {
+      GET: {
+        query: (event) => nativeRevisionQuery(event, 'file'),
+        handle: (context) =>
+          committedRead(context, () =>
+            context.query
+              ? execution.revisionFile(context.row, context.query, context.recheck)
+              : execution.file(context.row, context.params.fileId, context.recheck),
+          ),
+      },
+    },
+    [INTERACTION]: {
+      GET: {
+        query: (event) => nativeRevisionQuery(event, 'interaction'),
+        handle: (context) =>
+          committedRead(context, () =>
+            context.query
+              ? execution.revisionInteraction(context.row, context.query, context.recheck)
+              : execution.interaction(context.row, context.recheck),
+          ),
+      },
+    },
+    [GRAPH]: {
+      GET: {
+        handle: (context) =>
+          committedRead(context, () => execution.graph(context.row, context.recheck)),
+      },
+    },
+    [RESULTS]: {
+      GET: {
+        query: nativeResultQuery,
+        handle: (context) =>
+          resultResponse(context, () =>
+            execution.result(context.row, context.query, context.recheck),
+          ),
+      },
+      POST: {
+        body: (event) => jsonBody(event, nativeResultRequest),
+        handle: (context) =>
+          resultResponse(context, () =>
+            execution.requestResult(context.row, context.input, context.recheck),
+          ),
+      },
+    },
   };
   return async (event) => {
     const response = buildResponse(event, { methods: 'GET,POST,OPTIONS' });
-    const collection = event?.resource === COLLECTION;
-    const preparation = event?.resource === PREPARE;
-    const promptEdit = event?.resource === PROMPT;
-    const start = event?.resource === START;
-    const cancel = event?.resource === CANCEL;
-    const recover = event?.resource === RECOVER;
-    const userResponse = event?.resource === RESPONSE;
-    const file = event?.resource === FILE;
-    const results = event?.resource === RESULTS;
-    const resultPost = results && event.httpMethod === 'POST';
-    const mutation =
-      preparation || promptEdit || start || cancel || recover || userResponse || resultPost;
-    if (
-      ![
-        COLLECTION,
-        ITEM,
-        PREPARE,
-        PROMPT,
-        START,
-        CANCEL,
-        RECOVER,
-        PUBLICATION,
-        FILE,
-        GRAPH,
-        INTERACTION,
-        RESPONSE,
-        OUTPUTS,
-        RESULTS,
-      ].includes(event?.resource)
-    )
+    if (!Object.hasOwn(routes, event?.resource ?? ''))
       return reply(response, 404, 'NOT_FOUND', 'Route not found');
-    const methods =
-      collection || results
-        ? ['GET', 'POST', 'OPTIONS']
-        : mutation
-          ? ['POST', 'OPTIONS']
-          : ['GET', 'OPTIONS'];
-    if (!methods.includes(event.httpMethod))
+    const methods = routes[event.resource];
+    if (event.httpMethod === 'OPTIONS') return response(200, {});
+    if (!Object.hasOwn(methods, event.httpMethod))
       return response(
         405,
         { code: 'METHOD_NOT_ALLOWED', error: 'Method not allowed' },
-        { Allow: methods.join(',') },
+        { Allow: [...Object.keys(methods), 'OPTIONS'].join(',') },
       );
-    if (event.httpMethod === 'OPTIONS') return response(200, {});
     if (enabled !== true)
       return reply(response, 503, 'NATIVE_PREPARATION_DISABLED', 'Native preparation is disabled');
     const claims = event.requestContext?.authorizer?.claims;
     const actorId = record(claims) && Object.hasOwn(claims, 'sub') ? claims.sub : undefined;
     if (!matches(actorId, ID))
       return reply(response, 401, 'UNAUTHORIZED', 'Authentication required');
-    const invalid = () =>
-      reply(response, 400, 'NATIVE_PREPARATION_INVALID', 'Invalid native preparation request');
-    const params = event.pathParameters;
-    if (
-      !record(params) ||
-      !matches(params.projectId, ID) ||
-      (!collection && !matches(params.intentId, UUID_V4)) ||
-      (file && !matches(params.fileId, /^nf-[a-f0-9]{64}$/)) ||
-      Object.keys(params).some(
-        (key) =>
-          !['projectId', ...(collection ? [] : ['intentId']), ...(file ? ['fileId'] : [])].includes(
-            key,
-          ),
-      ) ||
-      ['operation', 'op', 'action'].some((key) => Object.hasOwn(event, key)) ||
-      (event.isBase64Encoded !== undefined && event.isBase64Encoded !== false)
-    )
-      return invalid();
-    const { projectId, intentId } = params;
-    const outputRead = event.resource === OUTPUTS;
-    const suffix = suffixFor(event.resource, params);
-    const expectedPath = `/api/projects/${projectId}/native-intents${collection ? '' : `/${intentId}`}${suffix}`;
-    if (event.path !== undefined && event.path !== expectedPath) return invalid();
-    if (
-      !Array.isArray(allowedProjectIds) ||
-      !allowedProjectIds.every((id) => matches(id, ID)) ||
-      !allowedProjectIds.includes(projectId)
-    )
-      return reply(
-        response,
-        403,
-        'NATIVE_PREPARATION_PROJECT_DISABLED',
-        'Native preparation is not enabled for this project',
-      );
-    let input;
     try {
-      const after = outputRead ? outputCursor(event) : 0;
-      const afterEvent = outputRead ? outputCursor(event, 'afterEvent') : undefined;
-      const revisionRead = [PUBLICATION, FILE, INTERACTION].includes(event.resource);
-      const revision = revisionRead
-        ? nativeRevisionQuery(
-            event,
-            file ? 'file' : event.resource === INTERACTION ? 'interaction' : 'publication',
-          )
-        : null;
-      const listing =
-        outputRead || revisionRead || results
-          ? null
-          : nativeListQuery(event, { collection, projectId });
-      if (results && !resultPost) input = nativeResultQuery(event);
+      const params = pathParameters(event);
+      const { projectId, intentId } = params;
       if (
-        resultPost &&
-        (Object.keys(event.queryStringParameters ?? {}).length ||
-          Object.keys(event.multiValueQueryStringParameters ?? {}).length)
+        !Array.isArray(allowedProjectIds) ||
+        !allowedProjectIds.every((id) => matches(id, ID)) ||
+        !allowedProjectIds.includes(projectId)
       )
-        return invalid();
-      if (collection && event.httpMethod === 'POST') {
-        if (typeof event.body !== 'string') return invalid();
-        if (Buffer.byteLength(event.body) > 96 * 1024)
-          return response(413, {
-            code: 'NATIVE_PREPARATION_BODY_TOO_LARGE',
-            error: 'Native draft request is too large',
-            draftInputRejected: true,
-          });
-        try {
-          input = nativeDraftRequest(JSON.parse(event.body));
-        } catch {
-          // This attempt has not reached any dependencies or persistence. The
-          // generic INVALID code can also originate from a committed-row read;
-          // only this boundary identifies editable draft input. It says nothing
-          // about earlier attempts using the same identity.
-          return response(400, {
-            code: 'NATIVE_PREPARATION_INVALID',
-            error: 'Invalid native preparation request',
-            draftInputRejected: true,
-          });
-        }
-      } else if (event.body !== undefined && event.body !== null && event.body !== '') {
-        // JSON escaping can expand a valid 16 KiB reply sixfold. The decoded
-        // text has its own byte limit; this bounds work before JSON parsing.
-        const maxBody = userResponse ? 100 * 1024 : promptEdit ? 96 * 1024 : 1024;
-        if (
-          promptEdit &&
-          (typeof event.body !== 'string' || Buffer.byteLength(event.body) > maxBody)
-        )
-          promptFailure('INVALID');
-        if (!mutation || typeof event.body !== 'string' || Buffer.byteLength(event.body) > maxBody)
-          return invalid();
-        try {
-          const body = JSON.parse(event.body);
-          if (resultPost) {
-            input = nativeResultRequest(body);
-          } else if (start) {
-            if (
-              !record(body) ||
-              Object.keys(body).some((key) => !['requestId', 'promptRevision'].includes(key)) ||
-              !matches(body.requestId, UUID_V4) ||
-              (body.promptRevision !== undefined &&
-                (!Number.isSafeInteger(body.promptRevision) || body.promptRevision < 0))
-            )
-              return invalid();
-            input = body;
-          } else if (promptEdit) {
-            input = nativePromptRequest(body);
-          } else if (userResponse) {
-            if (!validReply(body)) return invalid();
-            input = body;
-          } else if (recover) {
-            if (
-              !record(body) ||
-              Object.keys(body).some(
-                (key) => !['requestId', 'recoveryId', 'confirmWorkspaceResume'].includes(key),
-              ) ||
-              !matches(body.requestId, UUID_V4) ||
-              !matches(body.recoveryId, UUID_V4) ||
-              body.confirmWorkspaceResume !== true
-            )
-              return invalid();
-            input = body;
-          } else if (!record(body) || Object.keys(body).length) return invalid();
-        } catch (error) {
-          if (promptEdit && error?.code === 'NATIVE_PROMPT_INVALID') throw error;
-          return invalid();
-        }
-      }
-      if ((start || userResponse || recover || promptEdit || resultPost) && !input)
-        return invalid();
-      const membership = async () => {
-        const current = await getMembershipSnapshot(projectId, actorId);
-        if (!validMembership(current)) fail('FORBIDDEN');
-        return structuredClone(current);
-      };
-      const before = await membership();
-      const recheck = async (row = null) => {
-        const current = await membership();
-        if (
-          current.projectIdentity !== before.projectIdentity ||
-          current.membershipId !== before.membershipId ||
-          (row && row.projectIdentity !== current.projectIdentity)
-        )
-          fail('FORBIDDEN');
-      };
-      if (collection && event.httpMethod === 'GET')
-        return await collectionRead({ listing, projectId, before, recheck, response });
-      const authorizeSource = (request) =>
-        workflowSources.getAuthorizedBinding({
-          projectId,
-          actorId,
-          sourceId: request.sourceId,
-          expectedRevision: request.bindingRevision,
-        });
-      const readPins = async (request) => {
-        const binding = await authorizeSource(request);
-        const job = await jobs.get({ projectId, jobId: request.packageJobId });
-        const pins = pinPackageJob(job, { projectId, request, binding });
-        // No credential reads: recheck the current protected source revision
-        // after the package lookup and before persisting or enqueueing work.
-        await authorizeSource(request);
-        await recheck();
-        return pins;
-      };
-      if (collection) {
-        if (!admissionEnabled && !(await store.get({ projectId, executionId: input.intentId })))
-          return reply(
-            response,
-            503,
-            'NATIVE_PREPARATION_DISABLED',
-            'New native drafts are disabled',
-          );
-        const pins = await readPins(input);
-        const created = await store.create({
-          projectId,
-          actorId,
-          projectIdentity: before.projectIdentity,
-          request: input,
-          ...pins,
-          image,
-        });
-        await recheck(created.row);
-        return response(created.created ? 201 : 200, nativeIntentView(created.row));
-      }
-      const identity = { projectId, executionId: intentId };
-      let row = await store.get(identity);
-      if (!row) fail('NOT_FOUND');
-      await recheck(row);
-      if (results) {
-        if (!execution?.requestResult || !execution?.result)
-          return reply(
-            response,
-            503,
-            'NATIVE_RESULT_UNAVAILABLE',
-            'Result downloads are unavailable',
-          );
-        const value = resultPost
-          ? await execution.requestResult(row, input, recheck)
-          : await execution.result(row, input, recheck);
-        await recheck(row);
-        return response(value.status === 'ready' ? 200 : 202, value, {
-          'Cache-Control': 'private, no-store',
-        });
-      }
-      if (promptEdit) {
-        const saved = await store.savePrompt({
-          ...identity,
-          actorId,
-          projectIdentity: before.projectIdentity,
-          request: input,
-        });
-        await recheck(saved.row);
-        return response(200, {
-          ...nativeIntentView(saved.row),
-          ...(execution ? await execution.status(saved.row, recheck) : {}),
-          promptAcceptance: saved.promptAcceptance,
-        });
-      }
-      if (outputRead) {
-        if (!execution?.outputs) return response(200, { outputs: [], nextAfter: null });
-        return response(200, await execution.outputs(row, after, recheck, afterEvent));
-      }
-      if (start || cancel || userResponse || recover)
-        return await executionCommand({
-          start,
-          userResponse,
-          recover,
-          row,
-          actorId,
-          input,
-          recheck,
-          before,
+        return reply(
           response,
-        });
-      if ([PUBLICATION, FILE, GRAPH, INTERACTION].includes(event.resource))
-        return await committedRead({ event, file, row, params, recheck, response, revision });
-      if (!preparation)
-        return response(200, {
-          ...nativeIntentView(row),
-          ...(execution ? await execution.status(row, recheck) : {}),
-        });
-      const pins = await readPins(row.request);
-      if (
-        canonicalJson(pins.candidate) !== canonicalJson(row.candidate) ||
-        canonicalJson(pins.archiveReceipt) !== canonicalJson(row.archiveReceipt)
-      )
-        fail('CONFLICT');
-      row = await store.prepare(identity);
-      await authorizeSource(row.request);
-      await recheck(row);
-      if (row.status === 'PREPARING') {
-        // Commit first. A lost SQS acknowledgement leaves PREPARING intact;
-        // retrying prepare sends the same pointer without minting a new run.
-        try {
-          await enqueue(identity);
-        } catch {
-          // Committed PREPARING state is delivered by the stream bridge.
-        }
+          403,
+          'NATIVE_PREPARATION_PROJECT_DISABLED',
+          'Native preparation is not enabled for this project',
+        );
+      const route = methods[event.httpMethod];
+      const query = route.query
+        ? route.query(event)
+        : nativeListQuery(event, { collection: false, projectId });
+      const input = (route.body ?? noBody)(event);
+      const { before, recheck } = await authorize(projectId, actorId);
+      const identity = intentId ? { projectId, executionId: intentId } : null;
+      const row = identity ? await store.get(identity) : null;
+      if (identity) {
+        if (!row) fail('NOT_FOUND');
+        await recheck(row);
       }
-      return response(row.status === 'PREPARING' ? 202 : 200, {
-        ...nativeIntentView(row),
-        ...(execution ? await execution.status(row, recheck) : {}),
+      return await route.handle({
+        projectId,
+        actorId,
+        params,
+        identity,
+        row,
+        input,
+        query,
+        before,
+        recheck,
+        response,
       });
     } catch (error) {
       const code =
         error instanceof Error ? Object.getOwnPropertyDescriptor(error, 'code')?.value : null;
       if (typeof code === 'string' && Object.hasOwn(ERRORS, code)) {
         const [status, message] = ERRORS[code];
-        return reply(response, status, code, message);
+        return response(status, {
+          code,
+          error: message,
+          ...(error.draftInputRejected === true ? { draftInputRejected: true } : {}),
+        });
       }
       return nativePreparationInternalError(event);
     }

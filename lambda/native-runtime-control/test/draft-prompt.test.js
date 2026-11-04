@@ -229,7 +229,7 @@ describe('pre-Start saved prompts', () => {
     await f.save(promptCommand());
     for (const fields of [{}, { promptRevision: 0 }]) {
       expect((await f.api(route('start', { requestId: randomUUID(), ...fields }))).statusCode).toBe(
-        409,
+        fields.promptRevision === undefined ? 400 : 409,
       );
     }
     expect(await f.executionStore.get(IDENTITY)).toBeNull();

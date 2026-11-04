@@ -476,16 +476,28 @@ describe('native execution and committed publication boundary', () => {
       expect(JSON.stringify(result)).not.toContain('private-');
     },
   );
-  it('starts with only the retry identity, and cancels with an empty body', async () => {
+  it('starts with the retry identity and prompt revision, and cancels with an empty body', async () => {
     post.mockResolvedValue({ ...draft, executionAvailable: true, execution });
     await nativeIntentsService.start('project-1', 'run-1', requestId);
     await nativeIntentsService.cancel('project-1', 'run-1');
     expect(post.mock.calls).toEqual([
-      ['/projects/project-1/native-intents/run-1/start', { requestId }],
+      ['/projects/project-1/native-intents/run-1/start', { requestId, promptRevision: 0 }],
       ['/projects/project-1/native-intents/run-1/cancel', {}],
     ]);
     await expect(nativeIntentsService.start('project-1', 'run-1', 'not-a-uuid')).rejects.toThrow();
     expect(post).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    ['a1227042-0661-1843-8138-9d08fdd0a890', 0],
+    ['A1227042-0661-4843-8138-9D08FDD0A890', 0],
+    [requestId, -1],
+    [requestId, 0.5],
+    [requestId, Number.MAX_SAFE_INTEGER + 1],
+  ])('rejects a noncanonical Start identity or revision before POST %#', async (id, revision) => {
+    await expect(
+      nativeIntentsService.start('project-1', 'run-1', id as string, revision as number),
+    ).rejects.toThrow();
+    expect(post).not.toHaveBeenCalled();
   });
   it.each([
     { status: 'SUCCEEDED' },

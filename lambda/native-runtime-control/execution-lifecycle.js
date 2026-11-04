@@ -3,6 +3,7 @@ import { nativeTurnSequence, nativeWriterGeneration } from './execution-store.js
 import { executionIdentity, executionRuntimeConfiguration } from './execution-runtime.js';
 import { recordNativeBoundary } from '../shared/native-lifecycle.js';
 import { nativeDiagnosticError, nativeDiagnosticPhase } from './execution-diagnostics.js';
+import { nativeRuntimeCommand } from '../shared/native-runtime-command.js';
 export const fail = (code) => {
   throw Object.assign(new Error(code), { code });
 };
@@ -237,13 +238,13 @@ const recoveryPayload = async (row, draft, credentials) => {
     material.source?.branch !== row.sourceBranch
   )
     fail('NATIVE_EXECUTION_SOURCE_CHANGED');
-  return {
+  return nativeRuntimeCommand({
     ...common,
     command: 'native-resume',
     schemaVersion: 2,
     sequence: nativeTurnSequence(row),
     credentials: { model: material.model, git: material.git },
-  };
+  });
 };
 
 // Interpret an owned runtime response only after the caller checks its identity.
@@ -477,6 +478,7 @@ export const reconcileNativeDispatch = async ({
       credentials: { model: material.model, git: material.git },
     };
   }
+  nativeRuntimeCommand(payload);
   await check();
   state.row = await store.dispatchAttempted({ row: state.row });
   await check();

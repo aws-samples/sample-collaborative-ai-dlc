@@ -34,6 +34,7 @@ const env = {
 const payload = () => ({
   command: 'native-start',
   schemaVersion: 2,
+  sequence: 1,
   writerGeneration: 1,
   projectId,
   executionId,
@@ -41,6 +42,9 @@ const payload = () => ({
   attemptId: randomUUID(),
   runtimeSessionId: randomUUID(),
   epoch: 1,
+  imageDigest: `sha256:${'a'.repeat(64)}`,
+  package: { candidate: {}, archiveReceipt: {} },
+  credentials: {},
   configuration: {
     recoveryMode: NATIVE_WORKSPACE_RECOVERY,
     harness: 'codex',
@@ -302,17 +306,22 @@ describe('native first-turn executor', () => {
     },
   );
 
-  const reply = (request, head, changes = {}) => ({
-    ...request,
-    command: 'native-continue',
-    sequence: head.sequence + 1,
-    requestId: randomUUID(),
-    priorInteractionId: head.interaction.id,
-    priorPublicationId: head.receipt.id,
-    text: 'Use the colorful proposal.\n',
-    credentials: { model: { provider: 'bedrock', value: 'new-model-credential' } },
-    ...changes,
-  });
+  const reply = (request, head, changes = {}) => {
+    const continuing = { ...request };
+    delete continuing.package;
+    delete continuing.imageDigest;
+    return {
+      ...continuing,
+      command: 'native-continue',
+      sequence: head.sequence + 1,
+      requestId: randomUUID(),
+      priorInteractionId: head.interaction.id,
+      priorPublicationId: head.receipt.id,
+      text: 'Use the colorful proposal.\n',
+      credentials: { model: { provider: 'bedrock', value: 'new-model-credential' } },
+      ...changes,
+    };
+  };
 
   it('captures the admitted request before asynchronous workspace inspection', async () => {
     const entered = Promise.withResolvers();

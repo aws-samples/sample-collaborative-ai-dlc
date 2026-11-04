@@ -52,6 +52,7 @@ export default defineConfig({
       'lambda/intents/test/native-realtime-token.test.js',
       'lambda/shared/test/runtime-target.test.js',
       'lambda/shared/test/native-runtime-binding.test.js',
+      'lambda/shared/test/native-runtime-command.test.js',
       'lambda/discussions/test/services.test.js',
       // Task-2 collaboration (mock-only). The real-graph native discussion
       // suite needs the Docker services and runs under the main config.

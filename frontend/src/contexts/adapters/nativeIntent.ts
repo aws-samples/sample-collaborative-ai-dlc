@@ -210,7 +210,7 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
   const [preparing, setPreparing] = useState(false);
   const [acting, setActing] = useState<'start' | 'cancel' | 'recover' | null>(null);
   const actionInFlight = useRef<'start' | 'cancel' | 'recover' | null>(null);
-  const startRequest = useRef<{ requestId: string; promptRevision?: number } | null>(null);
+  const startRequest = useRef<{ requestId: string; promptRevision: number } | null>(null);
   const [startPending, setStartPending] = useState(false);
   const [startConflict, setStartConflict] = useState(false);
   const [promptDraft, setPromptDraft] = useState<{ text: string; expectedRevision: number } | null>(
@@ -430,14 +430,11 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
       } else if (action === 'start') {
         startRequest.current ??= {
           requestId: crypto.randomUUID(),
-          ...(intent.promptRevision !== undefined ? { promptRevision: intent.promptRevision } : {}),
+          promptRevision: intent.promptRevision ?? 0,
         };
         setStartPending(true);
         const { requestId, promptRevision } = startRequest.current;
-        next =
-          promptRevision === undefined
-            ? await nativeIntentsService.start(projectId, intentId, requestId)
-            : await nativeIntentsService.start(projectId, intentId, requestId, promptRevision);
+        next = await nativeIntentsService.start(projectId, intentId, requestId, promptRevision);
       } else {
         next = await nativeIntentsService.cancel(projectId, intentId);
       }
