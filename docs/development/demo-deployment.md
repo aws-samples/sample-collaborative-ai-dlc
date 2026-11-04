@@ -204,8 +204,9 @@ setup in the deployment account to test the deployed revision, for example an
 AWS DevOps Agent release test. The request is sent only when both environment
 secrets below exist in `demo-main`; otherwise the step is skipped. It runs
 after `Verify deployment` and uses `continue-on-error`, so a failed request
-never fails the deployment. The step assumes the role with the job's OIDC token
-directly (no credentials action), so no role or account identifier is logged.
+never fails the deployment. The step assumes the role through a web-identity
+profile built from the job's OIDC token, separate from the deployment
+credentials.
 
 | Secret                      | Value                                                                              |
 | --------------------------- | ---------------------------------------------------------------------------------- |

@@ -476,28 +476,23 @@ jobs:
             echo "Post-deploy release tests are not configured."
             exit 0
           fi
+          token_file="$RUNNER_TEMP/post-deploy-oidc-token"
+          config_file="$RUNNER_TEMP/post-deploy-aws-config"
           oidc_token="$(curl --fail --silent \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" 2>/dev/null | jq -er .value 2>/dev/null)" \
             || { echo "Post-deploy release tests not requested."; exit 1; }
           echo "::add-mask::$oidc_token"
-          credentials="$(aws sts assume-role-with-web-identity --region us-east-1 \
-            --role-arn "$POST_DEPLOY_TEST_ROLE_ARN" \
-            --role-session-name "aidlc-post-deploy-$GITHUB_RUN_ID" \
-            --web-identity-token "$oidc_token" --duration-seconds 900 \
-            --query Credentials --output json 2>/dev/null)" \
-            || { echo "Post-deploy release tests not requested."; exit 1; }
-          access_key="$(jq -er .AccessKeyId <<<"$credentials" 2>/dev/null)"
-          secret_key="$(jq -er .SecretAccessKey <<<"$credentials" 2>/dev/null)"
-          session_token="$(jq -er .SessionToken <<<"$credentials" 2>/dev/null)"
-          echo "::add-mask::$access_key"
-          echo "::add-mask::$secret_key"
-          echo "::add-mask::$session_token"
+          (umask 077 && printf '%s' "$oidc_token" > "$token_file")
+          # A dedicated web-identity profile: the CLI assumes the role itself,
+          # independently of the deployment credentials already in this job.
+          printf '[profile post-deploy-tests]\nrole_arn = %s\nweb_identity_token_file = %s\nrole_session_name = aidlc-post-deploy-%s\nregion = us-east-1\n' \
+            "$POST_DEPLOY_TEST_ROLE_ARN" "$token_file" "$GITHUB_RUN_ID" > "$config_file"
           payload="$(jq -nc --arg sha "$DEPLOY_COMMIT" --argjson run "$GITHUB_RUN_ID" \
             '{trigger: {runId: $run, headSha: $sha}}')"
-          AWS_ACCESS_KEY_ID="$access_key" AWS_SECRET_ACCESS_KEY="$secret_key" AWS_SESSION_TOKEN="$session_token" \
-            aws lambda invoke --region us-east-1 --function-name "$POST_DEPLOY_TEST_FUNCTION" \
-              --invocation-type Event --cli-binary-format raw-in-base64-out \
-              --payload "$payload" /dev/null >/dev/null 2>&1 \
-            || { echo "Post-deploy release tests not requested."; exit 1; }
+          AWS_CONFIG_FILE="$config_file" aws --profile post-deploy-tests lambda invoke \
+            --function-name "$POST_DEPLOY_TEST_FUNCTION" --invocation-type Event \
+            --cli-binary-format raw-in-base64-out --payload "$payload" /dev/null >/dev/null 2>&1 \
+            || { rm -f "$token_file"; echo "Post-deploy release tests not requested."; exit 1; }
+          rm -f "$token_file"
           echo "Post-deploy release tests requested."
