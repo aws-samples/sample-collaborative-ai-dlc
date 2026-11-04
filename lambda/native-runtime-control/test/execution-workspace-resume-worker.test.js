@@ -240,8 +240,9 @@ describe('confirmed workspace predecessor stop', () => {
         successor = f.row();
         return result;
       });
-      await expect(f.reconcile(f.identity)).rejects.toMatchObject({
-        code: 'NATIVE_EXECUTION_LEASE_LOST',
+      expect(await f.reconcile(f.identity)).toEqual({
+        pending: true,
+        status: 'ownership_lost',
       });
       expect(f.row()).toEqual(successor);
       expect(f.row().writerGeneration).toBe(1);
@@ -506,8 +507,9 @@ describe('interrupted acknowledged workspace resume', () => {
         successor = f.row();
         return result;
       });
-      await expect(f.reconcile(f.identity)).rejects.toMatchObject({
-        code: 'NATIVE_EXECUTION_LEASE_LOST',
+      expect(await f.reconcile(f.identity)).toEqual({
+        pending: true,
+        status: 'ownership_lost',
       });
       expect(f.row()).toEqual(successor);
       expect(f.row().recovery).toBeUndefined();

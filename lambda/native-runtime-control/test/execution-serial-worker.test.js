@@ -257,7 +257,7 @@ describe('serial controller publication and continuation', () => {
       await f.store.cancel(f.bindingIdentity);
       return credentials(row);
     });
-    await expect(f.run(f.identity)).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_LEASE_LOST' });
+    expect(await f.run(f.identity)).toEqual({ pending: true, status: 'ownership_lost' });
     expect(
       f.ports.invoke.mock.calls.some(([call]) => call.payload.command === 'native-continue'),
     ).toBe(false);

@@ -5,6 +5,7 @@ import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { describe, expect, it, vi } from 'vitest';
 import { nativePublicationGraph, projectNativePublication } from '../publication-graph.js';
 import { createNativeExecutionApi } from '../execution-api.js';
+import { createNativeProjectionStore, nativeProjectionStatus } from '../projection-store.js';
 import { createNativePublications, nativeFileId } from '../../shared/native-publication.js';
 import { executionFixture } from './execution-fixtures.js';
 import { OTHER, TABLE } from './fixtures.js';
@@ -94,6 +95,13 @@ const setup = async () => {
   };
   const receipt = await publications.write(publicationInput);
   const row = await f.store.publish({ row: active, publication: receipt });
+  const projection = createNativeProjectionStore({
+    ddb: f.ddb,
+    tableName: TABLE,
+    execution: f.store,
+    preparation: f.preparationStore,
+    now: f.now,
+  });
   const manifest = await publications.read(identity(row), receipt, { verifyFiles: true });
   const authorization = { member: true };
   const recheck = vi.fn(async () => {
@@ -105,6 +113,7 @@ const setup = async () => {
   const api = createNativeExecutionApi({
     enabled: true,
     store: f.store,
+    projectionStatus: (current) => nativeProjectionStatus(f.ddb, TABLE, current),
     publications,
     configure: vi.fn(),
     enqueue: vi.fn(),
@@ -112,12 +121,10 @@ const setup = async () => {
   });
   const authorize = vi.fn(async () => {
     await recheck();
-    const current = await f.store.get(f.identity);
+    const current = await f.preparationStore.get(f.identity);
     if (
-      current.cancelRequested ||
-      current.publication?.id !== receipt.id ||
-      current.bindingId !== row.bindingId ||
-      current.epoch !== row.epoch
+      current?.bindingId !== row.bindingId ||
+      current.projectIdentity !== f.prepared.projectIdentity
     )
       throw Object.assign(new Error('Projection authorization changed'), {
         code: 'NATIVE_EXECUTION_CONFLICT',
@@ -128,6 +135,7 @@ const setup = async () => {
     s3,
     objects,
     publications,
+    projection,
     publicationInput,
     files,
     row,
@@ -576,31 +584,35 @@ describe('replayable native Neptune projection', () => {
     },
   );
 
-  it('does not finish or acknowledge a projection after protected cancellation', async () => {
+  it('projects retained immutable history through cancellation under independent authority', async () => {
     const f = await setup();
     const memory = memoryGraph();
+    const claim = await f.projection.claim(f.identity);
     let checks = 0;
     const authorize = async () => {
       if (++checks === 2) await f.store.cancel(f.bindingIdentity);
       await f.authorize();
     };
-    await expect(
-      projectNativePublication({
-        g: memory.g,
-        draft: f.prepared,
-        publication: f.receipt,
-        manifest: f.manifest,
-        authorize,
-      }),
-    ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CONFLICT' });
-    expect(memory.edges.size).toBe(0);
+    await projectNativePublication({
+      g: memory.g,
+      draft: f.prepared,
+      publication: f.receipt,
+      manifest: f.manifest,
+      authorize,
+    });
+    const cancelled = await f.store.get(f.identity);
+    expect(cancelled.status).toBe('CANCEL_REQUESTED');
+    expect(memory.edges.size).toBeGreaterThan(0);
     expect((await f.store.get(f.identity)).projectionStatus).toBe('pending');
-    await expect(f.store.projected({ row: f.row })).rejects.toHaveProperty('code');
+    await f.projection.acknowledge(claim);
+    expect(await f.store.get(f.identity)).toEqual(cancelled);
+    expect(await nativeProjectionStatus(f.ddb, TABLE, cancelled)).toBe('complete');
   });
 
-  it('acknowledges a successful projection only through the protected native store', async () => {
+  it('acknowledges a successful projection without mutating or releasing the execution owner', async () => {
     const f = await setup();
     const memory = memoryGraph();
+    const claim = await f.projection.claim(f.identity);
     await projectNativePublication({
       g: memory.g,
       draft: f.prepared,
@@ -609,8 +621,8 @@ describe('replayable native Neptune projection', () => {
       authorize: f.authorize,
     });
     const count = f.commands.length;
-    const row = await f.store.projected({ row: f.row });
-    expect(row.projectionStatus).toBe('complete');
+    await f.projection.acknowledge(claim);
+    expect(await f.store.get(f.identity)).toEqual(f.row);
     expect(await f.api.publication(f.prepared, f.recheck)).toMatchObject({
       id: f.receipt.id,
       projectionStatus: 'complete',
@@ -619,10 +631,10 @@ describe('replayable native Neptune projection', () => {
       .slice(count)
       .filter((command) => command instanceof TransactWriteCommand);
     expect(writes).toHaveLength(1);
-    for (const action of writes[0].input.TransactItems) {
-      const operation = action.Put ?? action.ConditionCheck;
-      expect(operation.TableName).toBe(TABLE);
-      expect((operation.Item ?? operation.Key).sk).toBe('EXECUTION');
-    }
+    expect(
+      writes[0].input.TransactItems.filter((action) => action.Put).map(
+        (action) => action.Put.Item.sk,
+      ),
+    ).toEqual(['PROJECTION']);
   });
 });

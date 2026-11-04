@@ -183,8 +183,9 @@ describe('created-workflow recovery availability', () => {
       await f.api.cancel(f.prepared, f.recheck);
       return report;
     });
-    await expect(f.reconcile(f.identity)).rejects.toMatchObject({
-      code: 'NATIVE_EXECUTION_LEASE_LOST',
+    expect(await f.reconcile(f.identity)).toEqual({
+      pending: true,
+      status: 'ownership_lost',
     });
     expect(f.row()).toMatchObject({ status: 'CANCEL_REQUESTED', cancelRequested: true });
     expect(f.ports.stop).toHaveBeenCalledOnce();

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { nativeTurnSequence, nativeWriterGeneration } from './execution-store.js';
 import { executionIdentity, executionRuntimeConfiguration } from './execution-runtime.js';
 import { recordNativeBoundary } from '../shared/native-lifecycle.js';
+import { nativeDiagnosticError, nativeDiagnosticPhase } from './execution-diagnostics.js';
 export const fail = (code) => {
   throw Object.assign(new Error(code), { code });
 };
@@ -87,15 +88,79 @@ export const shortTransportRetry = (error) =>
     'RetryableConflictException',
   ].includes(error?.name) ||
   ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE'].includes(error?.code);
+export const runtimeOwnerRejected = (error) =>
+  statusOwnerErrors.has(error?.code) || runtimeReadFailures.get(error)?.kind === 'OWNER_REJECTED';
 export const statusReadFailure = (error) => {
-  if (statusOwnerErrors.has(error?.code)) return null;
+  if (runtimeOwnerRejected(error)) return null;
   const kind = runtimeReadFailures.get(error)?.kind;
-  if (kind === 'OWNER_REJECTED') return null;
   if (kind) return kind;
   // Injected SDK ports can throw the same transport errors without going
   // through our adapter. A report-identity mismatch is never in this set.
   if (error?.name === 'RuntimeClientError' || shortTransportRetry(error)) return 'SDK_FAILURE';
   return null;
+};
+export const catchUpNativeActivity = async ({
+  row,
+  report,
+  activity,
+  invoke,
+  check,
+  observe,
+  controlCall,
+}) => {
+  if (!activity || !report?.capabilities?.includes('activity-v1')) return { kind: 'ready' };
+  try {
+    let after = await controlCall('activity-cursor', () => activity.cursor(row));
+    for (let page = 0; page < 4; page++) {
+      await check();
+      const batch = await invoke({
+        execution: row,
+        payload: { command: 'native-activity', ...writerPayload(row), after },
+      });
+      await check();
+      const persisted = await controlCall('activity-ingest', () => activity.ingest(row, batch));
+      // Only a durably stored cursor acknowledges activity. A lost transaction
+      // reply must be reconciled by the activity owner before a later pull.
+      if (persisted === after && !batch.events?.length) {
+        if (
+          !batch.complete &&
+          ['publication_ready', 'failed', 'cancelled', 'stopped_needs_review'].includes(
+            report.status,
+          )
+        )
+          return { kind: batch.cold ? 'unclosed' : 'pending' };
+        return { kind: 'ready' };
+      }
+      after = persisted;
+    }
+    return { kind: 'pending' };
+  } catch (error) {
+    // A conditional activity write can fail because execution ownership moved.
+    // Establish that first, even when the transport did not preserve its code.
+    await check();
+    const failureClass = runtimeOwnerRejected(error)
+      ? 'OWNER_REJECTED'
+      : (statusReadFailure(error) ??
+        {
+          NATIVE_EXECUTION_UNAVAILABLE: 'AUTHORITY_UNAVAILABLE',
+          NATIVE_ACTIVITY_CONFLICT: 'ACTIVITY_CONFLICT',
+        }[error?.code] ??
+        (['TransactionCanceledException', 'ConditionalCheckFailedException'].includes(error?.name)
+          ? 'ACTIVITY_CONFLICT'
+          : null));
+    if (!failureClass) throw error;
+    observe({
+      phase: 'activity',
+      stage: 'decision',
+      code: 'ACTIVITY_READ_RETRY',
+      controlStatus: row.status,
+      failureClass,
+      ...nativeDiagnosticError(error),
+    });
+    // The status observation already identified the current writer. A failed
+    // catch-up cannot replace that observation with a recovery verdict.
+    return { kind: 'pending' };
+  }
 };
 export const recoveryReadRejected = (error) =>
   // SDK errors carry the code directly; parsed HTTP rejections retain it in
@@ -302,13 +367,8 @@ export const reconcileNativeRecovery = async ({
       // Use that observation only to deny recovery, never to acknowledge a
       // successor, replay input, or infer success from the prior publication.
       await check();
-      let predecessor;
-      try {
-        predecessor = await status({ predecessor: true });
-      } catch {
-        // A successor may already own the session, or this read may also be
-        // unavailable. Neither permits a verdict about the old workspace.
-      }
+      const observed = await status({ predecessor: true });
+      const predecessor = observed.kind === 'reported' ? observed.report : undefined;
       await check();
       if (predecessor?.recovered === true && priorBoundary(state.row, predecessor)) {
         if (predecessor.workflowResumeState === 'not_created')
@@ -347,26 +407,28 @@ export const reconcileNativeDispatch = async ({
   yieldPending,
   credentials,
   observedInvoke,
-  identity,
-  stop,
+  observe,
 }) => {
   await fence.ensureActive(executionIdentity(state.row), writerOptions(state.row));
+  await check();
   // Once delivery has been attempted, never blindly replay a model turn.
   // Status may prove admission/completion; a cold or conflicting owner
   // cannot prove that a lost command was never executed.
   if (state.row.dispatch) {
-    const report = await status();
-    await check();
-    checkReportIdentity(state.row, report);
+    const observed = await status();
+    if (observed.kind === 'retry') return yieldPending();
+    if (observed.kind === 'owner-rejected') return requireRecovery('DELIVERY_UNCERTAIN');
+    const { report } = observed;
     if (!admitted(state.row, report)) return requireRecovery('DELIVERY_UNCERTAIN');
     if (state.row.response) state.row = await store.dispatched({ row: state.row });
     else await advance({ status: 'RUNNING' });
     return yieldPending();
   }
   if (nativeTurnSequence(state.row) > 1) {
-    const report = await status();
-    await check();
-    checkReportIdentity(state.row, report);
+    const observed = await status();
+    if (observed.kind === 'retry') return yieldPending();
+    if (observed.kind === 'owner-rejected') return requireRecovery('DELIVERY_UNCERTAIN');
+    const { report } = observed;
     if (!priorBoundary(state.row, report)) return requireRecovery('DELIVERY_UNCERTAIN');
     if (report.recovered === true) return requireRecovery('SESSION_LOST');
   }
@@ -418,17 +480,27 @@ export const reconcileNativeDispatch = async ({
   await check();
   state.row = await store.dispatchAttempted({ row: state.row });
   await check();
-  const result = await observedInvoke({ execution: state.row, payload });
+  let result;
   try {
-    await check();
+    result = await observedInvoke({ execution: state.row, payload });
   } catch (error) {
-    const latest = await store.get(identity);
-    if (latest?.cancelRequested) {
-      await fence.cancel(executionIdentity(latest));
-      await stop({ draft, execution: latest });
-    }
-    throw error;
+    const failureClass = statusReadFailure(error);
+    if (!failureClass) throw error;
+    await check();
+    observe({
+      phase: nativeDiagnosticPhase(payload.command),
+      stage: 'decision',
+      code: 'DISPATCH_UNCERTAIN',
+      controlStatus: state.row.status,
+      failureClass,
+      dispatchPresent: true,
+      ...nativeDiagnosticError(error),
+    });
+    // The durable delivery marker forces subsequent workers to read status.
+    // An unreadable acknowledgement cannot authorize another model command.
+    return yieldPending();
   }
+  await check();
   checkReportIdentity(state.row, result);
   if (!admitted(state.row, result)) fail('NATIVE_EXECUTION_RUNTIME_MISMATCH');
   if (response) state.row = await store.dispatched({ row: state.row });

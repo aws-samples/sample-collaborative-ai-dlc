@@ -779,8 +779,7 @@ const retryableConflict = (error) =>
 const runnable = (row) =>
   ['REQUESTED', 'UPGRADING', 'DISPATCHING', 'RUNNING', 'RECOVERING', 'CANCEL_REQUESTED'].includes(
     row.status,
-  ) ||
-  (!row.cancelRequested && row.projectionStatus === 'pending');
+  );
 const unlease = (row) => {
   delete row.leaseToken;
   delete row.leaseExpiresAt;
@@ -790,7 +789,7 @@ const unlease = (row) => {
 /**
  * All identities use {projectId, executionId}; claim/cancel also require
  * bindingId. start returns {row, created}; claim returns {kind, row?}.
- * advance/release/publish/projected take the FULL last returned row and return
+ * advance/release/publish take the FULL last returned row and return
  * the committed row. advance accepts only status, sourceCommit (Git SHA),
  * sourceBranch (resolved non-null branch), target {runtimeArn,runtimeId,
  * runtimeVersion,endpoint,endpointArn,imageDigest,rolePolicySha256} and an
@@ -805,9 +804,10 @@ const unlease = (row) => {
  * publicationEpoch=current epoch, and projectionStatus='pending'. Legacy rows
  * without turnSequence remain sequence 1. A verified ordinary interaction
  * enters AWAITING_USER; it is not a verified workflow question or approval.
- * projected acknowledges trusted ingestion with projectionStatus='complete'
- * under ownership. Cancellation retains publicationEpoch and historical
- * publication metadata, but forbids its pending projection acknowledgement.
+ * Projection progress belongs to the independent PROJECTION row and never
+ * makes an execution runnable. The publishing worker can release its existing
+ * lease; graph catch-up cannot claim, renew or release an execution lease.
+ * Cancellation retains publicationEpoch and historical publication metadata.
  * Authorized member readers must validate committed manifest/file scope against
  * publicationEpoch, not the current cancellation-fenced execution epoch.
  * cancel immediately fences owners/publications and records stop=PENDING.
@@ -952,8 +952,7 @@ export const createNativeExecutionStore = ({
     if (
       !same(current, candidate) ||
       !matches(current.leaseToken, UUID) ||
-      current.leaseExpiresAt <= clock() ||
-      !runnable(current)
+      current.leaseExpiresAt <= clock()
     )
       fail('LEASE_LOST');
     return current;
@@ -1645,12 +1644,6 @@ export const createNativeExecutionStore = ({
           },
         },
       ]);
-    },
-    async projected(input) {
-      shape(input, ['row']);
-      const row = await owned(input.row);
-      if (!row.publication || row.projectionStatus !== 'pending') fail('CONFLICT');
-      return commit(row, unlease({ ...row, projectionStatus: 'complete' }));
     },
   });
 };

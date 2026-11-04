@@ -7,7 +7,7 @@ import {
   nativeSnapshotDiagnostic,
 } from '../shared/native-execution-failure.js';
 
-const PHASES = new Set(['start', 'continue', 'status', 'recover', 'resume', 'unknown']);
+const PHASES = new Set(['start', 'continue', 'status', 'activity', 'recover', 'resume', 'unknown']);
 const STAGES = new Set(['sdk', 'http', 'body', 'report', 'call', 'decision']);
 const OPERATIONS = new Set([
   'authority-read',
@@ -21,6 +21,8 @@ const OPERATIONS = new Set([
   'fence-activate',
   'stop',
   'authority-recovery-stopped',
+  'activity-cursor',
+  'activity-ingest',
 ]);
 const CODES = new Set([
   'SDK_FAILURE',
@@ -35,6 +37,12 @@ const CODES = new Set([
   'RECOVERY_REQUIRED',
   'RUNTIME_TERMINAL',
   'STATUS_READ_RETRY',
+  'DISPATCH_UNCERTAIN',
+  'ACTIVITY_READ_RETRY',
+  'ACTIVITY_PENDING',
+  'ACTIVITY_UNCLOSED',
+  'OWNERSHIP_LOST',
+  'AUTHORITY_UNAVAILABLE',
   'IMAGE_REVOKED',
 ]);
 const READ_FAILURES = new Set([
@@ -44,6 +52,9 @@ const READ_FAILURES = new Set([
   'BODY_READ_FAILED',
   'BODY_JSON_INVALID',
   'HTTP_NON_200',
+  'OWNER_REJECTED',
+  'AUTHORITY_UNAVAILABLE',
+  'ACTIVITY_CONFLICT',
 ]);
 const STATUSES = new Set([
   'preparing',
@@ -60,10 +71,13 @@ const RUNTIME_CODES = new Set(NATIVE_RUNTIME_FAILURE_CODES);
 const ERROR_CODES = new Set([
   'NATIVE_EXECUTION_RUNTIME_UNAVAILABLE',
   'NATIVE_EXECUTION_UNAVAILABLE',
+  'NATIVE_PREPARATION_UNAVAILABLE',
   'NATIVE_EXECUTION_RUNTIME_MISMATCH',
   'NATIVE_EXECUTION_FORBIDDEN',
   'NATIVE_EXECUTION_SOURCE_CHANGED',
   'NATIVE_EXECUTION_LEASE_LOST',
+  'NATIVE_EXECUTION_CONFLICT',
+  'NATIVE_ACTIVITY_CONFLICT',
   'NATIVE_EXECUTION_STOP_UNCONFIRMED',
   'NATIVE_EXECUTION_CANCELLED',
   'NATIVE_EXECUTION_FENCE_INVALID',

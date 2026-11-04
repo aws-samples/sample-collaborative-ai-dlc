@@ -11,7 +11,9 @@ import {
   markRuntimeReadFailure,
   failRuntimeRead,
   shortTransportRetry,
+  runtimeOwnerRejected,
   statusReadFailure,
+  catchUpNativeActivity,
   phaseError,
   checkedCredentials,
   reconcileNativeRecovery,
@@ -94,15 +96,7 @@ export const createNativeExecutionSupervisor =
         throw error;
       }
     };
-    const initial = await controlCall('authority-read', () => store.get(identity));
-    if (!initial) return { pending: false, status: 'missing' };
-    if (!nativeWorkspaceRecovery(initial.configuration)) fail('NATIVE_EXECUTION_INVALID');
-    const claim = await controlCall('authority-claim', () =>
-      store.claim({ ...identity, bindingId: initial.bindingId }),
-    );
-    if (claim.kind !== 'claimed') return { pending: claim.kind === 'busy', status: claim.kind };
-    state.row = claim.row;
-    const draft = await controlCall('preparation-read', () => preparationStore.get(identity));
+    let draft;
     let observation = {};
     let workflowResumeState;
     const observedInvoke = async (input) => {
@@ -114,46 +108,6 @@ export const createNativeExecutionSupervisor =
         });
       try {
         const report = await invoke(input);
-        if (
-          activity &&
-          input.payload.command === 'native-status' &&
-          nativeWriterGeneration(input.execution) === nativeWriterGeneration(state.row) &&
-          report?.capabilities?.includes('activity-v1')
-        ) {
-          checkReportIdentity(state.row, report);
-          let after = await activity.cursor(state.row);
-          for (let page = 0; page < 4; page++) {
-            await check();
-            const batch = await invoke({
-              execution: state.row,
-              payload: {
-                command: 'native-activity',
-                ...writerPayload(state.row),
-                after,
-              },
-            });
-            const persisted = await activity.ingest(state.row, batch);
-            // The next pull is the acknowledgment; this cursor exists only
-            // after persistence. A failed transaction leaves the prior cursor.
-            if (persisted === after && !batch.events?.length) {
-              if (
-                !batch.complete &&
-                ['publication_ready', 'failed', 'cancelled', 'stopped_needs_review'].includes(
-                  report.status,
-                )
-              )
-                throw Object.assign(new Error('Final native activity pending'), {
-                  code: batch.cold ? 'NATIVE_ACTIVITY_UNCLOSED' : 'NATIVE_ACTIVITY_PENDING',
-                });
-              break;
-            }
-            after = persisted;
-            if (page === 3)
-              throw Object.assign(new Error('Native activity catch-up pending'), {
-                code: 'NATIVE_ACTIVITY_PENDING',
-              });
-          }
-        }
         observation = { phase, ...nativeDiagnosticReport(input.execution, report) };
         observe({ ...observation, stage: 'report', code: 'REPORT_OBSERVED' });
         return report;
@@ -290,7 +244,7 @@ export const createNativeExecutionSupervisor =
       } catch (error) {
         if (!shortTransportRetry(error)) throw error;
         await current();
-        return yieldPending();
+        return await yieldPending();
       }
     };
     const status = async ({ predecessor = false } = {}) => {
@@ -307,11 +261,38 @@ export const createNativeExecutionSupervisor =
         ? { ...state.row, writerGeneration: state.row.recovery.previousGeneration }
         : state.row;
       if (!predecessor) workflowResumeState = undefined;
-      const report = await observedInvoke({
-        execution: writer,
-        payload: { command: 'native-status', ...writerPayload(writer) },
-      });
-      checkReportIdentity(writer, report);
+      let report;
+      try {
+        report = await observedInvoke({
+          execution: writer,
+          payload: { command: 'native-status', ...writerPayload(writer) },
+        });
+      } catch (error) {
+        await check();
+        if (runtimeOwnerRejected(error)) return { kind: 'owner-rejected' };
+        const failureClass = statusReadFailure(error);
+        if (!failureClass) throw error;
+        observe({
+          ...observation,
+          phase: 'status',
+          stage: 'decision',
+          code: 'STATUS_READ_RETRY',
+          failureClass,
+          controlStatus: state.row.status,
+          dispatchPresent: Boolean(state.row.dispatch),
+        });
+        return { kind: 'retry' };
+      }
+      await check();
+      try {
+        checkReportIdentity(writer, report);
+      } catch (error) {
+        // A resumed writer can answer a predecessor probe. That is not proof
+        // about the old workspace and cannot acknowledge successor admission.
+        if (predecessor && error?.code === 'NATIVE_EXECUTION_RUNTIME_MISMATCH')
+          return { kind: 'owner-rejected' };
+        throw error;
+      }
       // Only a fresh status response from this exact writer can establish the
       // current filesystem phase. Published files and earlier observations
       // cannot prove that an interrupted turn did or did not create a workflow.
@@ -321,17 +302,28 @@ export const createNativeExecutionSupervisor =
         ['created', 'not_created', 'unavailable'].includes(report.workflowResumeState)
       )
         workflowResumeState = report.workflowResumeState;
-      return report;
+      return { kind: 'reported', report };
     };
     try {
+      const initial = await controlCall('authority-read', () => store.get(identity));
+      if (!initial) return { pending: false, status: 'missing' };
+      if (!nativeWorkspaceRecovery(initial.configuration)) fail('NATIVE_EXECUTION_INVALID');
+      const claim = await controlCall('authority-claim', () =>
+        store.claim({ ...identity, bindingId: initial.bindingId }),
+      );
+      if (claim.kind !== 'claimed') return { pending: claim.kind === 'busy', status: claim.kind };
+      state.row = claim.row;
+      draft = await controlCall('preparation-read', () => preparationStore.get(identity));
       if (state.row.cancelRequested) {
         await current({ allowCancelled: true });
         // A transport accepted before cancellation can arrive after Stop.
         // This controller-only fence also denies that late start in a new VM.
         await fence.cancel(executionIdentity(state.row));
+        await current({ allowCancelled: true });
         // The original session ID remains fixed even after cancellation fences
         // the epoch. Stop uses protected runtime/session pins, never agent text.
         const stopped = await stop({ draft, execution: state.row });
+        await current({ allowCancelled: true });
         await advance({ status: 'CANCELLED' }, stopped);
         return { pending: false, status: 'CANCELLED' };
       }
@@ -351,7 +343,9 @@ export const createNativeExecutionSupervisor =
         observe({ stage: 'decision', code: 'IMAGE_REVOKED', controlStatus: state.row.status });
         await current();
         await fence.cancel(executionIdentity(state.row));
+        await current();
         const stopped = await stop({ draft, execution: state.row });
+        await current();
         await advance({ status: 'FAILED', failureCode: 'native_execution_image_revoked' }, stopped);
         return { pending: false, status: 'FAILED', failureCode: 'native_execution_image_revoked' };
       }
@@ -372,12 +366,12 @@ export const createNativeExecutionSupervisor =
           // runtime again could create a diagnostic VM after a successful stop
           // whose acknowledgement was lost. Retain its proof and stop token.
           workflowResumeState = savedFence.workflowResumeState;
-          return requireRecovery(savedFence.reason);
+          return await requireRecovery(savedFence.reason);
         }
       }
       if (state.row.status === 'REQUESTED') {
         await advance({ status: 'UPGRADING' });
-        return yieldPending();
+        return await yieldPending();
       }
       if (state.row.status === 'UPGRADING') {
         if (!state.row.target) {
@@ -386,7 +380,7 @@ export const createNativeExecutionSupervisor =
             recordNativeBoundary(executionIdentity(state.row), 'targetReady', now());
             await advance({ target: result.target });
           }
-          return yieldPending();
+          return await yieldPending();
         }
         const material = checkedCredentials(state.row, await credentials(state.row));
         await check();
@@ -397,7 +391,7 @@ export const createNativeExecutionSupervisor =
           sourceBranch: material.source.branch,
           status: 'DISPATCHING',
         });
-        return yieldPending();
+        return await yieldPending();
       }
       if (state.row.status === 'RECOVERING') {
         return await reconcileNativeRecovery({
@@ -429,63 +423,41 @@ export const createNativeExecutionSupervisor =
           yieldPending,
           credentials,
           observedInvoke,
-          identity,
-          stop,
+          observe,
         });
-      }
-      if (
-        [
-          'AWAITING_USER',
-          'WAITING_FOR_INPUT',
-          'STOPPED',
-          'FAILED',
-          'CANCELLED',
-          'RECOVERY_REQUIRED',
-        ].includes(state.row.status)
-      ) {
-        state.row = await store.release({ row: state.row });
-        return { pending: false, status: state.row.status };
       }
       if (state.row.status !== 'RUNNING') fail('NATIVE_EXECUTION_RUNTIME_MISMATCH');
-      let report;
-      try {
-        report = await status();
-      } catch (error) {
-        if (statusOwnerErrors.has(error?.code)) {
-          // The SDK can retain a structured runtime rejection without using
-          // its RuntimeClientError class. Gate it durably regardless of name.
-          await check();
-          return requireRecovery('DELIVERY_UNCERTAIN');
-        }
-        const failureClass = statusReadFailure(error);
-        if (!failureClass) throw error;
-        // Start/Continue was already acknowledged. An unreadable status does
-        // not establish that its writer was lost. Recheck authority and yield
-        // to the existing short status-only queue; never resend its prompt.
-        await check();
-        observe({
-          ...observation,
-          phase: 'status',
-          stage: 'decision',
-          code: 'STATUS_READ_RETRY',
-          failureClass,
-          controlStatus: state.row.status,
-          dispatchPresent: Boolean(state.row.dispatch),
-        });
-        return yieldPending();
-      }
-      await check();
-      checkReportIdentity(state.row, report);
+      const observed = await status();
+      if (observed.kind === 'retry') return await yieldPending();
+      if (observed.kind === 'owner-rejected') return await requireRecovery('DELIVERY_UNCERTAIN');
+      const { report } = observed;
       const unavailableWorkflow = nativeWorkspaceRecovery(state.row.configuration)
         ? workflowRecoveryFailure(report.code)
         : null;
-      if (unavailableWorkflow) return requireRecovery(unavailableWorkflow);
+      if (unavailableWorkflow) return await requireRecovery(unavailableWorkflow);
       if (report.recovered === true && !admitted(state.row, report))
-        return requireRecovery('DELIVERY_UNCERTAIN');
+        return await requireRecovery('DELIVERY_UNCERTAIN');
       if (report.sequence !== nativeTurnSequence(state.row))
         fail('NATIVE_EXECUTION_RUNTIME_MISMATCH');
+      const caughtUp = await catchUpNativeActivity({
+        row: state.row,
+        report,
+        activity,
+        invoke: observedInvoke,
+        check,
+        observe,
+        controlCall,
+      });
+      if (caughtUp.kind === 'unclosed') {
+        observe({ phase: 'activity', stage: 'decision', code: 'ACTIVITY_UNCLOSED' });
+        return await requireRecovery('DELIVERY_UNCERTAIN');
+      }
+      if (caughtUp.kind === 'pending') {
+        observe({ phase: 'activity', stage: 'decision', code: 'ACTIVITY_PENDING' });
+        return await yieldPending();
+      }
       if (['preparing', 'running', 'publishing', 'cancelling'].includes(report.status))
-        return yieldPending();
+        return await yieldPending();
       if (report.status === 'publication_ready') {
         return await verifyCompletedNativeTurn({
           state,
@@ -505,56 +477,87 @@ export const createNativeExecutionSupervisor =
         code: 'RUNTIME_TERMINAL',
         controlStatus: state.row.status,
       });
+      await current();
       await fence.cancel(executionIdentity(state.row));
+      await current();
       const stopped = await stop({ draft, execution: state.row });
+      await current();
       await advance({ status: 'FAILED', failureCode: nativeRuntimeFailureCode(report) }, stopped);
       return { pending: false, status: 'FAILED' };
-    } catch (error) {
-      if (
-        ['NATIVE_EXECUTION_RUNTIME_UNAVAILABLE', 'NATIVE_EXECUTION_RUNTIME_MISMATCH'].includes(
-          error?.code,
-        ) ||
-        ownerErrors.has(error?.code) ||
-        error?.name === 'RuntimeClientError'
-      ) {
-        if (state.row.status === 'RECOVERING') return requireRecovery('RESTORE_FAILED');
-        // A confirmed workspace resume runs without a Start/Continue dispatch.
-        // Its current episode, turn and writer still identify in-flight work.
-        const resumedWorkspace =
-          state.row.status === 'RUNNING' &&
-          nativeWorkspaceRecovery(state.row.configuration) &&
-          state.row.workspaceResume?.id === state.row.lastRecoveryId &&
-          state.row.workspaceResume?.sequence === nativeTurnSequence(state.row) &&
-          state.row.workspaceResume?.writerGeneration === nativeWriterGeneration(state.row);
-        if (
-          resumedWorkspace ||
-          (state.row.dispatch && ['DISPATCHING', 'RUNNING'].includes(state.row.status))
-        )
-          return requireRecovery('DELIVERY_UNCERTAIN');
-        if (state.row.status === 'DISPATCHING' && error?.name === 'RuntimeClientError')
-          return requireRecovery('SESSION_LOST');
-      }
-      const terminal = phaseError(error);
-      if (terminal) {
-        try {
+    } catch (cause) {
+      let error = cause;
+      try {
+        if (error?.code === 'NATIVE_EXECUTION_RUNTIME_MISMATCH' || runtimeOwnerRejected(error)) {
+          if (state.row.status === 'RECOVERING') return await requireRecovery('RESTORE_FAILED');
+          // A confirmed workspace resume runs without a Start/Continue dispatch.
+          // Its current episode, turn and writer still identify in-flight work.
+          const resumedWorkspace =
+            state.row.status === 'RUNNING' &&
+            nativeWorkspaceRecovery(state.row.configuration) &&
+            state.row.workspaceResume?.id === state.row.lastRecoveryId &&
+            state.row.workspaceResume?.sequence === nativeTurnSequence(state.row) &&
+            state.row.workspaceResume?.writerGeneration === nativeWriterGeneration(state.row);
+          if (
+            resumedWorkspace ||
+            (state.row.dispatch && ['DISPATCHING', 'RUNNING'].includes(state.row.status))
+          )
+            return await requireRecovery('DELIVERY_UNCERTAIN');
+        }
+        const terminal = phaseError(error);
+        if (terminal) {
           await current();
           await fence.cancel(executionIdentity(state.row));
+          await current();
           const stopped = await stop({ draft, execution: state.row });
+          await current();
           await advance({ status: 'FAILED', failureCode: terminal }, stopped);
           return { pending: false, status: 'FAILED', failureCode: terminal };
-        } catch {
-          /* A changed/cancelled owner wins. Retain its durable record. */
         }
+        if (shortTransportRetry(error) && state.row) {
+          // SDK transport uncertainty retains the same attempt/session. Release
+          // and send a fresh short-delay pointer instead of waiting for the long
+          // queue visibility period reserved for a crashed Lambda invocation.
+          await current({ allowCancelled: state.row.cancelRequested });
+          return await yieldPending();
+        }
+      } catch (failure) {
+        // Preserve the actual failed cleanup/recheck, including ownership loss.
+        // A new worker reconciles durable state; this worker cannot adopt it.
+        error = failure;
       }
-      if (error?.code === 'NATIVE_ACTIVITY_UNCLOSED') return requireRecovery('DELIVERY_UNCERTAIN');
-      if (['NATIVE_ACTIVITY_PENDING', 'NATIVE_ACTIVITY_CONFLICT'].includes(error?.code))
-        return yieldPending();
-      if (shortTransportRetry(error)) {
-        // SDK transport uncertainty retains the same attempt/session. Release
-        // and send a fresh short-delay pointer instead of waiting for the long
-        // queue visibility period reserved for a crashed Lambda invocation.
-        await current({ allowCancelled: state.row.cancelRequested });
-        return yieldPending();
+      if (error?.code === 'NATIVE_EXECUTION_CONFLICT' && state.row) {
+        try {
+          await current({ allowCancelled: state.row.cancelRequested });
+        } catch (changed) {
+          error = changed;
+        }
+        // A conflict under unchanged authority is not evidence of takeover.
+        if (error?.code === 'NATIVE_EXECUTION_CONFLICT') throw error;
+      }
+      if (['NATIVE_EXECUTION_LEASE_LOST', 'NATIVE_EXECUTION_CONFLICT'].includes(error?.code)) {
+        observe({
+          phase: 'unknown',
+          stage: 'decision',
+          code: 'OWNERSHIP_LOST',
+          controlStatus: state.row?.status,
+          ...nativeDiagnosticError(error),
+        });
+        return { pending: true, status: 'ownership_lost' };
+      }
+      if (
+        ['NATIVE_EXECUTION_UNAVAILABLE', 'NATIVE_PREPARATION_UNAVAILABLE'].includes(error?.code) ||
+        (!state.row && shortTransportRetry(error))
+      ) {
+        observe({
+          phase: 'unknown',
+          stage: 'decision',
+          code: 'AUTHORITY_UNAVAILABLE',
+          controlStatus: state.row?.status,
+          ...nativeDiagnosticError(error),
+        });
+        // Ownership is unconfirmed. Leave its lease and delivery marker intact;
+        // a later wakeup must read/claim authority before taking another step.
+        return { pending: true, status: 'authority_unavailable' };
       }
       throw error;
     }
@@ -603,7 +606,7 @@ export const readNativeRuntimeReport = async (
         code: 'OWNER_REJECTED',
         runtimeCode: value.code,
       });
-      fail('NATIVE_EXECUTION_RUNTIME_MISMATCH');
+      failRuntimeRead('NATIVE_EXECUTION_RUNTIME_MISMATCH', 'OWNER_REJECTED', value.code);
     }
     if (response.statusCode !== 200) {
       observe({ stage: 'http', code: 'HTTP_NON_200', runtimeCode: value?.code });

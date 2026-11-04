@@ -9,6 +9,7 @@ import { createNativeInteractions } from '../../shared/native-interaction.js';
 import { createNativeExecutionApi } from '../execution-api.js';
 import { executionIdentity } from '../execution-runtime.js';
 import { nativeTurnSequence } from '../execution-store.js';
+import { createNativeProjectionStore, nativeProjectionStatus } from '../projection-store.js';
 import { executionFixture } from './execution-fixtures.js';
 
 export const SERIAL_SOURCE = { branch: 'develop', commit: 'e'.repeat(40) };
@@ -17,6 +18,14 @@ export const SERIAL_SOURCE = { branch: 'develop', commit: 'e'.repeat(40) };
 // transport is local; no canned manifests, interaction hashes or receipt IDs.
 export const serialFixture = (fixtureOptions) => {
   const f = executionFixture(fixtureOptions);
+  const projection = createNativeProjectionStore({
+    ddb: f.ddb,
+    tableName: TABLE,
+    execution: f.store,
+    preparation: f.preparationStore,
+    now: f.now,
+    leaseMs: 120000,
+  });
   const objects = new Map();
   const reads = [];
   let version = 0;
@@ -62,6 +71,7 @@ export const serialFixture = (fixtureOptions) => {
     createNativeExecutionApi({
       enabled,
       store: f.store,
+      projectionStatus: (row) => nativeProjectionStatus(f.ddb, TABLE, row),
       publications,
       revisions: createNativeArtifactRevisions({ ddb: f.ddb, nativeTable: TABLE, publications }),
       interactions,
@@ -124,9 +134,14 @@ export const serialFixture = (fixtureOptions) => {
       interaction: produced.interactionReceipt,
       interactionContentSha256: produced.body.contentSha256,
     });
-    const row = project
-      ? await f.store.projected({ row: published })
-      : await f.store.release({ row: published });
+    const row = await f.store.release({ row: published });
+    if (project) {
+      // Fixture graph completion is acknowledged by the actual projection
+      // owner, without changing execution status, version or its lease.
+      const projectionClaim = await projection.claim(f.identity);
+      expect(projectionClaim.kind).toBe('claimed');
+      await projection.acknowledge(projectionClaim);
+    }
     return { ...produced, row };
   };
   const replyRequest = (overrides = {}) => ({
@@ -141,6 +156,7 @@ export const serialFixture = (fixtureOptions) => {
   return {
     ...f,
     publications,
+    projection,
     interactions,
     authorization,
     recheck,

@@ -328,22 +328,46 @@ describe('acknowledged native turns retry only unconfirmed status reads', () => 
     },
   );
 
-  it('keeps an ambiguous initial Start behind the delivery guard', async () => {
-    const f = await fixture();
-    f.next('sdk-409', 'native-start');
+  it.each([
+    ['sdk-409', false],
+    ['http-503', true],
+    ['bad-json', false],
+    ['wrong-content', false],
+    ['truncated', false],
+  ])('observes an uncertain Start after %s without replay or recovery', async (kind, raw) => {
+    const f = await fixture({ raw });
+    f.next(kind, 'native-start');
     await f.dispatch();
     expect(f.row()).toMatchObject({
-      status: 'RECOVERY_REQUIRED',
-      recovery: { reason: 'WORKFLOW_STATE_UNAVAILABLE', canRecover: false },
+      status: 'DISPATCHING',
       dispatch: { sequence: 1 },
     });
-    expect(f.ports.stop).toHaveBeenCalledOnce();
+    const before = f.row();
+    expect(before.leaseToken).toBeUndefined();
+    expect(f.ports.stop).not.toHaveBeenCalled();
     expect(f.commands.map((p) => p.command)).toEqual(['native-start']);
-    expect(f.events().some((e) => e.code === 'STATUS_READ_RETRY')).toBe(false);
+    expect(f.events().at(-1)).toMatchObject({
+      phase: 'start',
+      code: 'DISPATCH_UNCERTAIN',
+    });
+    f.next(kind);
+    expect(await f.run(f.identity)).toEqual({ pending: true, status: 'DISPATCHING' });
+    expect(f.row().dispatch).toEqual(before.dispatch);
+    expect(f.events().at(-1)).toMatchObject({
+      phase: 'status',
+      code: 'STATUS_READ_RETRY',
+    });
+    expect(await f.run(f.identity)).toEqual({ pending: true, status: 'RUNNING' });
+    f.unchangedWriter(before);
+    expect(f.commands.map((p) => p.command)).toEqual([
+      'native-start',
+      'native-status',
+      'native-status',
+    ]);
   });
 
   it.each(['preflight', 'continue'])(
-    'preserves the DISPATCHING %s guard after a real accepted reply',
+    'retries the DISPATCHING %s observation without replaying a real accepted reply',
     async (phase) => {
       const f = await fixture();
       await f.dispatch();
@@ -351,21 +375,30 @@ describe('acknowledged native turns retry only unconfirmed status reads', () => 
       await f.run(f.identity);
       await f.run(f.identity);
       await f.respond();
+      const answer = await f.store.response(f.row(), f.row().response.interactionId);
       f.next('sdk-409', phase === 'preflight' ? 'native-status' : 'native-continue');
       await f.run(f.identity);
       expect(f.row()).toMatchObject({
-        status: 'RECOVERY_REQUIRED',
-        recovery: {
-          reason: 'WORKFLOW_STATE_UNAVAILABLE',
-          canRecover: false,
-        },
+        status: 'DISPATCHING',
+        response: { deliveryStatus: 'pending' },
       });
-      expect(f.ports.stop).toHaveBeenCalledOnce();
+      expect(await f.store.response(f.row(), answer.interactionId)).toEqual(answer);
+      expect(f.ports.stop).not.toHaveBeenCalled();
       expect(f.commands.filter((p) => p.command === 'native-start')).toHaveLength(1);
       expect(f.commands.filter((p) => p.command === 'native-continue')).toHaveLength(
         phase === 'preflight' ? 0 : 1,
       );
-      expect(f.events().some((e) => e.code === 'STATUS_READ_RETRY')).toBe(false);
+      expect(f.events().at(-1).code).toBe(
+        phase === 'preflight' ? 'STATUS_READ_RETRY' : 'DISPATCH_UNCERTAIN',
+      );
+      await f.run(f.identity);
+      expect(f.row()).toMatchObject({
+        status: 'RUNNING',
+        response: { deliveryStatus: 'delivered', commandId: answer.commandId },
+      });
+      expect(await f.store.response(f.row(), answer.interactionId)).toEqual(answer);
+      expect(f.commands.filter((p) => p.command === 'native-continue')).toHaveLength(1);
+      expect(f.ports.fence.suspend).not.toHaveBeenCalled();
     },
   );
 
@@ -399,8 +432,9 @@ describe('acknowledged native turns retry only unconfirmed status reads', () => 
       f.next(kind, 'native-status', () => f.store.cancel(f.bindingIdentity), {
         code: 'native_execution_scope_mismatch',
       });
-      await expect(f.run(f.identity)).rejects.toMatchObject({
-        code: 'NATIVE_EXECUTION_LEASE_LOST',
+      expect(await f.run(f.identity)).toEqual({
+        pending: true,
+        status: 'ownership_lost',
       });
       expect(f.row().status).toBe('CANCEL_REQUESTED');
       expect(f.ports.fence.suspend).not.toHaveBeenCalled();

@@ -299,6 +299,8 @@ describe('native mutation authority callers', () => {
   };
   it.each([
     ['execution', 'execution', 'respond'],
+    ['execution', 'execution', 'projected'],
+    ['projection', 'execution', 'projected'],
     ['preparation', 'execution', 'advance'],
     ['projection', 'preparation', 'ready'],
     ['preparation', 'preparation', 'savePrompt'],

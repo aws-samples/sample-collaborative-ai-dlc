@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { GetCommand, QueryCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { nativeExecutionKey, publicationHistoryKey } from './execution-store.js';
 import { nativeRuntimeBindingKey } from '../shared/native-runtime-binding.js';
@@ -40,7 +41,7 @@ export const createNativeProjectionStore = ({
   leaseMs = 180000,
 }) => {
   const get = (Key) => read(ddb, tableName, Key);
-  const commit = async (prior, next, row) => {
+  const commit = async (prior, next, row, leaseMode = 'owned') => {
     const condition = prior
       ? {
           ConditionExpression: '#version = :version',
@@ -48,29 +49,47 @@ export const createNativeProjectionStore = ({
           ExpressionAttributeValues: { ':version': prior.version },
         }
       : { ConditionExpression: 'attribute_not_exists(pk)' };
-    await ddb.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          { Put: { TableName: tableName, Item: next, ...condition } },
-          {
-            ConditionCheck: {
-              TableName: tableName,
-              Key: nativeExecutionKey(row.scope),
-              ConditionExpression: 'bindingId = :binding AND attemptId = :attempt',
-              ExpressionAttributeValues: { ':binding': row.bindingId, ':attempt': row.attemptId },
+    if (prior?.leaseToken) {
+      condition.ConditionExpression += ` AND leaseToken = :leaseToken AND leaseExpiresAt ${leaseMode === 'expired' ? '<=' : '>'} :now`;
+      condition.ExpressionAttributeValues[':leaseToken'] = prior.leaseToken;
+      condition.ExpressionAttributeValues[':now'] = now();
+    }
+    try {
+      await ddb.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            { Put: { TableName: tableName, Item: next, ...condition } },
+            {
+              ConditionCheck: {
+                TableName: tableName,
+                Key: nativeExecutionKey(row.scope),
+                ConditionExpression: 'bindingId = :binding AND attemptId = :attempt',
+                ExpressionAttributeValues: { ':binding': row.bindingId, ':attempt': row.attemptId },
+              },
             },
-          },
-          {
-            ConditionCheck: {
-              TableName: tableName,
-              Key: nativeRuntimeBindingKey(row.scope),
-              ConditionExpression: 'bindingId = :binding',
-              ExpressionAttributeValues: { ':binding': row.bindingId },
+            {
+              ConditionCheck: {
+                TableName: tableName,
+                Key: nativeRuntimeBindingKey(row.scope),
+                ConditionExpression: 'bindingId = :binding',
+                ExpressionAttributeValues: { ':binding': row.bindingId },
+              },
             },
-          },
-        ],
-      }),
-    );
+          ],
+        }),
+      );
+    } catch (error) {
+      // A lost reply acknowledges only this exact progress write. A later
+      // projector's sequence or lease must never be adopted as our own.
+      const current = await get(key(row.scope));
+      if (isDeepStrictEqual(current, next)) return next;
+      if (
+        (current && current.version !== prior?.version) ||
+        ['ConditionalCheckFailedException', 'TransactionCanceledException'].includes(error?.name)
+      )
+        conflict();
+      throw error;
+    }
     return next;
   };
   const nextRevision = async (row, sequence) => {
@@ -151,6 +170,7 @@ export const createNativeProjectionStore = ({
           leaseExpiresAt: now() + leaseMs,
         },
         row,
+        'expired',
       );
       return { kind: 'claimed', row: revision, draft, progress };
     },

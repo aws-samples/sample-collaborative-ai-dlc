@@ -864,17 +864,16 @@ describe('serial control-plane ownership and same-attempt dispatch', () => {
     expect(f.read()).toEqual(row);
   });
 
-  it.each(['advance', 'release', 'publish', 'projected'])(
+  it.each(['advance', 'release', 'publish'])(
     'fences %s if another owner wins after its consistent read but before its write',
     async (operation) => {
       const f = setup();
-      const row = operation === 'projected' ? await f.published() : await f.running();
+      const row = await f.running();
       const gate = f.pause((command) => command instanceof TransactWriteCommand);
       const action = {
         advance: () => f.store.advance({ row, patch: {} }),
         release: () => f.store.release({ row }),
         publish: () => f.store.publish({ row, publication: PUBLICATION }),
-        projected: () => f.store.projected({ row }),
       }[operation];
       const pending = action();
       const rejected = expect(pending).rejects.toMatchObject(rejection('CONFLICT'));
@@ -982,7 +981,7 @@ describe('immutable first publication and transactional ingestion outbox', () =>
     expect(f.read()).toEqual(published);
   });
 
-  it('commits exact manifest metadata/question and pending outbox together, then acknowledges projection', async () => {
+  it('commits exact manifest metadata and immutable history without scheduling projection as execution', async () => {
     const f = setup();
     const row = await f.published();
     expect(row).toMatchObject({
@@ -997,12 +996,12 @@ describe('immutable first publication and transactional ingestion outbox', () =>
     expect(publicationWrites).toHaveLength(1);
     expect(publicationWrites[0].Item.projectionStatus).toBe('pending');
     expect(publicationWrites[0].Item.publicationEpoch).toBe(row.epoch);
-    const projected = await f.store.projected({ row });
-    expect(projected.publication).toEqual(PUBLICATION);
-    expect(projected.publicationEpoch).toBe(row.epoch);
-    expect(projected.projectionStatus).toBe('complete');
-    expect(projected).not.toHaveProperty('leaseToken');
-    expect(await f.store.claim(bindingIdentity)).toEqual({ kind: 'terminal', row: projected });
+    const released = await f.store.release({ row });
+    expect(released.publication).toEqual(PUBLICATION);
+    expect(released.publicationEpoch).toBe(row.epoch);
+    expect(released).not.toHaveProperty('leaseToken');
+    expect(await f.store.claim(bindingIdentity)).toEqual({ kind: 'terminal', row: released });
+    expect(f.read()).toEqual(released);
     expect(f.read(preparationKey).status).toBe('READY');
   });
 
@@ -1013,12 +1012,12 @@ describe('immutable first publication and transactional ingestion outbox', () =>
       publication: { ...PUBLICATION, outcome: 'STOPPED', question: null, filesCount: 0 },
     });
     expect(row.status).toBe('STOPPED');
-    expect((await f.store.claim(bindingIdentity)).kind).toBe('busy');
+    expect((await f.store.claim(bindingIdentity)).kind).toBe('terminal');
     const released = await f.store.release({ row });
     const claimant = await f.store.claim(bindingIdentity);
-    expect(claimant.kind).toBe('claimed');
+    expect(claimant.kind).toBe('terminal');
     expect(claimant.row.attemptId).toBe(released.attemptId);
-    expect((await f.store.projected({ row: claimant.row })).projectionStatus).toBe('complete');
+    expect(f.read()).toEqual(released);
   });
 
   it('same publication replay with the current owner is a no-op; mutation/replacement is rejected', async () => {
@@ -1092,13 +1091,12 @@ describe('immutable first publication and transactional ingestion outbox', () =>
     expect(f.read()).toEqual(row);
   });
 
-  it('cannot publish before dispatch or project without a committed publication', async () => {
+  it('cannot publish before dispatch', async () => {
     const f = setup();
     const row = await f.claimed();
     await expect(f.store.publish({ row, publication: PUBLICATION })).rejects.toMatchObject(
       rejection('CONFLICT'),
     );
-    await expect(f.store.projected({ row })).rejects.toMatchObject(rejection('CONFLICT'));
   });
 
   it('two competing publications cannot replace the first committed manifest', async () => {
@@ -1114,59 +1112,40 @@ describe('immutable first publication and transactional ingestion outbox', () =>
     );
     expect(f.read().publication).toEqual(PUBLICATION);
   });
-
-  it('pending ingestion survives lease takeover but the old owner cannot acknowledge it', async () => {
-    const f = setup();
-    const first = await f.published();
-    f.setTime(1100);
-    const second = await f.store.claim(bindingIdentity);
-    await expect(f.store.projected({ row: first })).rejects.toMatchObject(rejection('LEASE_LOST'));
-    expect(second.row.publication).toEqual(PUBLICATION);
-    expect(second.row.publicationEpoch).toBe(first.publicationEpoch);
-    expect(second.row.projectionStatus).toBe('pending');
-    expect((await f.store.projected({ row: second.row })).projectionStatus).toBe('complete');
-  });
 });
 
 describe('cancellation and publication fences', () => {
-  it.each(['pending', 'complete'])(
-    'keeps %s publication readable with its original epoch throughout cancellation and stop',
-    async (projectionStatus) => {
-      const f = setup();
-      const published = await f.published();
-      if (projectionStatus === 'complete') await f.store.projected({ row: published });
-      await f.store.cancel(bindingIdentity);
-      const stopping = await f.store.get(IDENTITY);
-      expect(stopping).toMatchObject({
-        scope: published.scope,
-        bindingId: published.bindingId,
-        attemptId: published.attemptId,
-        epoch: published.epoch + 1,
-        publicationEpoch: published.epoch,
-        publication: published.publication,
-        projectionStatus,
-        status: 'CANCEL_REQUESTED',
-      });
-      const stopper = (await f.store.claim(bindingIdentity)).row;
-      await expect(f.store.projected({ row: stopper })).rejects.toMatchObject(
-        rejection('CANCELLED'),
-      );
-      await f.store.advance({ row: stopper, patch: { status: 'CANCELLED' } });
-      const stopped = await f.store.get(IDENTITY);
-      expect(stopped).toMatchObject({
-        scope: stopping.scope,
-        bindingId: stopping.bindingId,
-        attemptId: stopping.attemptId,
-        status: 'CANCELLED',
-        epoch: stopping.epoch,
-        publicationEpoch: published.epoch,
-        publication: published.publication,
-        projectionStatus,
-      });
-      expect(await f.store.cancel(bindingIdentity)).toEqual(stopped);
-      expect(await f.store.get({ ...IDENTITY, projectId: 'another-project' })).toBeNull();
-    },
-  );
+  it('keeps publication readable with its original epoch throughout cancellation and stop', async () => {
+    const f = setup();
+    const published = await f.published();
+    await f.store.cancel(bindingIdentity);
+    const stopping = await f.store.get(IDENTITY);
+    expect(stopping).toMatchObject({
+      scope: published.scope,
+      bindingId: published.bindingId,
+      attemptId: published.attemptId,
+      epoch: published.epoch + 1,
+      publicationEpoch: published.epoch,
+      publication: published.publication,
+      projectionStatus: 'pending',
+      status: 'CANCEL_REQUESTED',
+    });
+    const stopper = (await f.store.claim(bindingIdentity)).row;
+    await f.store.advance({ row: stopper, patch: { status: 'CANCELLED' } });
+    const stopped = await f.store.get(IDENTITY);
+    expect(stopped).toMatchObject({
+      scope: stopping.scope,
+      bindingId: stopping.bindingId,
+      attemptId: stopping.attemptId,
+      status: 'CANCELLED',
+      epoch: stopping.epoch,
+      publicationEpoch: published.epoch,
+      publication: published.publication,
+      projectionStatus: 'pending',
+    });
+    expect(await f.store.cancel(bindingIdentity)).toEqual(stopped);
+    expect(await f.store.get({ ...IDENTITY, projectId: 'another-project' })).toBeNull();
+  });
 
   it('revokes live ownership immediately and durably requests stop; stop confirmation needs a new owner', async () => {
     const f = setup();
@@ -1242,7 +1221,7 @@ describe('cancellation and publication fences', () => {
     expect(f.read()).not.toHaveProperty('projectionStatus');
   });
 
-  it('publication winning first remains immutable, but racing cancel fences pending ingestion', async () => {
+  it('publication winning first remains immutable, but racing cancel fences the publishing lease', async () => {
     const f = setup();
     const row = await f.running();
     const gate = f.pause((command) => putOf(command)?.Item.cancelRequested === true);
@@ -1259,38 +1238,23 @@ describe('cancellation and publication fences', () => {
       projectionStatus: 'pending',
       stop: { state: 'PENDING' },
     });
-    await expect(f.store.projected({ row: published })).rejects.toMatchObject(
-      rejection('CANCELLED'),
+    await expect(f.store.release({ row: published })).rejects.toMatchObject(
+      rejection('LEASE_LOST'),
     );
     expect(f.read()).toEqual(cancelled);
   });
 
-  it('cancellation racing a projection acknowledgement fences the old transaction', async () => {
+  it('concurrent cancels increment epoch once and preserve published history', async () => {
     const f = setup();
-    const row = await f.published();
-    const gate = f.pause((command) => putOf(command)?.Item.projectionStatus === 'complete');
-    const pending = f.store.projected({ row });
-    const rejected = expect(pending).rejects.toMatchObject(rejection('CONFLICT'));
-    await gate.waiting;
-    const cancelled = await f.store.cancel(bindingIdentity);
-    gate.resume();
-    await rejected;
-    expect(f.read()).toEqual(cancelled);
-    expect(cancelled.projectionStatus).toBe('pending');
-  });
-
-  it('concurrent cancels increment epoch once and preserve already projected history', async () => {
-    const f = setup();
-    const projected = await f.store.projected({ row: await f.published() });
+    const published = await f.published();
     const results = await Promise.all([
       f.store.cancel(bindingIdentity),
       f.store.cancel(bindingIdentity),
     ]);
     expect(results[0]).toEqual(results[1]);
     expect(results[0].epoch).toBe(2);
-    expect(results[0].publication).toEqual(projected.publication);
-    expect(results[0].publicationEpoch).toBe(projected.publicationEpoch);
-    expect(results[0].projectionStatus).toBe('complete');
+    expect(results[0].publication).toEqual(published.publication);
+    expect(results[0].publicationEpoch).toBe(published.publicationEpoch);
   });
 });
 
@@ -1319,7 +1283,7 @@ describe('acknowledgement loss, transport failure and CAS evidence', () => {
     expect(f.read().projectionStatus).toBe('pending');
   });
 
-  it.each(['claim', 'advance', 'release', 'publish', 'projected', 'cancel', 'stop'])(
+  it.each(['claim', 'advance', 'release', 'publish', 'cancel', 'stop'])(
     'recovers exact committed %s after losing the transaction acknowledgement',
     async (operation) => {
       const f = setup();
@@ -1327,9 +1291,6 @@ describe('acknowledgement loss, transport failure and CAS evidence', () => {
       if (operation === 'claim') {
         await f.start();
         action = async () => (await f.store.claim(bindingIdentity)).row;
-      } else if (operation === 'projected') {
-        const row = await f.published();
-        action = () => f.store.projected({ row });
       } else if (operation === 'stop') {
         await f.start();
         await f.store.cancel(bindingIdentity);
@@ -1351,7 +1312,7 @@ describe('acknowledgement loss, transport failure and CAS evidence', () => {
     },
   );
 
-  it('does not mistake a newer takeover for acknowledgement of an old publication', async () => {
+  it('recovers a publication acknowledgement without allowing a graph-only execution takeover', async () => {
     const f = setup();
     const row = await f.running();
     let takenOver;
@@ -1359,14 +1320,12 @@ describe('acknowledgement loss, transport failure and CAS evidence', () => {
       if (putOf(command)?.Item.publication) {
         delete f.hooks.after;
         f.setTime(1100);
-        takenOver = (await f.store.claim(bindingIdentity)).row;
+        takenOver = await f.store.claim(bindingIdentity);
         throw error();
       }
     };
-    await expect(f.store.publish({ row, publication: PUBLICATION })).rejects.toMatchObject(
-      rejection('CONFLICT'),
-    );
-    expect(f.read()).toEqual(takenOver);
+    expect(await f.store.publish({ row, publication: PUBLICATION })).toEqual(f.read());
+    expect(takenOver).toEqual({ kind: 'terminal', row: f.read() });
     expect(f.read().projectionStatus).toBe('pending');
     expect(f.read().attemptId).toBe(row.attemptId);
   });
@@ -1412,7 +1371,7 @@ describe('acknowledgement loss, transport failure and CAS evidence', () => {
   it('every mutation CAS includes version, binding, epoch, cancellation, attempt/session and lease fence', async () => {
     const f = setup();
     const published = await f.published();
-    await f.store.projected({ row: published });
+    await f.store.release({ row: published });
     await f.store.cancel(bindingIdentity);
     const stopper = await f.store.claim(bindingIdentity);
     await f.store.advance({ row: stopper.row, patch: { status: 'CANCELLED' } });

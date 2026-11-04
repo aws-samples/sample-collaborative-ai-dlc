@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createNativeExecutionSupervisor } from '../execution-worker.js';
+import { Readable } from 'node:stream';
+import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { createNativeExecutionSupervisor, readNativeRuntimeReport } from '../execution-worker.js';
+import { createNativeActivityLog } from '../../agentcore/native/activity.js';
+import { createNativeActivityStore } from '../activity-store.js';
 import { executionIdentity } from '../execution-runtime.js';
 import { executionFixture } from './execution-fixtures.js';
+import { TABLE } from './fixtures.js';
 
 const COMMIT = 'e'.repeat(40);
 const make = async () => {
@@ -202,8 +207,9 @@ describe('connected native supervisor', () => {
         repository: { commit: COMMIT, branch: 'develop' },
       };
     });
-    await expect(f.reconcile(f.identity)).rejects.toMatchObject({
-      code: 'NATIVE_EXECUTION_LEASE_LOST',
+    expect(await f.reconcile(f.identity)).toEqual({
+      pending: true,
+      status: 'ownership_lost',
     });
     expect(f.row()).toMatchObject({ status: 'CANCEL_REQUESTED', epoch: 2 });
     expect(f.row().publication).toBeUndefined();
@@ -309,13 +315,14 @@ describe('connected native supervisor', () => {
       f.tick();
       return value;
     });
-    await expect(f.reconcile(f.identity)).rejects.toMatchObject({
-      code: 'NATIVE_EXECUTION_LEASE_LOST',
+    expect(await f.reconcile(f.identity)).toEqual({
+      pending: true,
+      status: 'ownership_lost',
     });
     expect(f.ports.invoke).not.toHaveBeenCalled();
   });
 
-  it('fences and stops a dispatch whose acknowledgement arrives after cancellation completed', async () => {
+  it('leaves late dispatch cleanup to the cancellation owner without repeating its stop', async () => {
     const f = await make();
     for (let n = 0; n < 3; n++) await f.reconcile(f.identity);
     f.ports.invoke.mockImplementationOnce(async ({ execution }) => {
@@ -330,11 +337,12 @@ describe('connected native supervisor', () => {
         status: 'preparing',
       };
     });
-    await expect(f.reconcile(f.identity)).rejects.toMatchObject({
-      code: 'NATIVE_EXECUTION_LEASE_LOST',
+    expect(await f.reconcile(f.identity)).toEqual({
+      pending: true,
+      status: 'ownership_lost',
     });
-    expect(f.ports.fence.cancel).toHaveBeenCalledTimes(2);
-    expect(f.ports.stop).toHaveBeenCalledTimes(2);
+    expect(f.ports.fence.cancel).toHaveBeenCalledOnce();
+    expect(f.ports.stop).toHaveBeenCalledOnce();
     expect(f.row()).toMatchObject({ status: 'CANCELLED', epoch: 2 });
   });
 
@@ -345,9 +353,7 @@ describe('connected native supervisor', () => {
       Object.assign(new Error('corrupt publication'), { code: 'NATIVE_PUBLICATION_INVALID' }),
     );
     f.ports.stop.mockRejectedValueOnce(new Error('temporary stop failure'));
-    await expect(f.reconcile(f.identity)).rejects.toMatchObject({
-      code: 'NATIVE_PUBLICATION_INVALID',
-    });
+    await expect(f.reconcile(f.identity)).rejects.toThrow('temporary stop failure');
     expect(f.row().status).toBe('RUNNING');
     f.tick();
     await f.reconcile(f.identity);
@@ -381,6 +387,85 @@ describe('connected native supervisor', () => {
       f.ports.invoke.mock.calls.filter(([call]) => call.payload.command === 'native-start'),
     ).toHaveLength(1);
   });
+
+  it.each(['initial-read', 'after-status'])(
+    'retains authority and dispatch through an unavailable %s',
+    async (boundary) => {
+      const f = await make();
+      await f.dispatch();
+      const before = f.row();
+      const unavailable = () => {
+        f.hooks.before = (command) => {
+          if (command instanceof GetCommand) throw new Error('authority transport unavailable');
+        };
+      };
+      const invoke = f.ports.invoke.getMockImplementation();
+      if (boundary === 'initial-read') unavailable();
+      else
+        f.ports.invoke.mockImplementationOnce(async (input) => {
+          const report = await invoke(input);
+          unavailable();
+          return report;
+        });
+      expect(await f.reconcile(f.identity)).toEqual({
+        pending: true,
+        status: 'authority_unavailable',
+      });
+      expect(f.row()).toMatchObject({
+        status: before.status,
+        dispatch: before.dispatch,
+        attemptId: before.attemptId,
+        runtimeSessionId: before.runtimeSessionId,
+      });
+      expect(f.ports.fence.suspend).not.toHaveBeenCalled();
+      expect(f.ports.stop).not.toHaveBeenCalled();
+      delete f.hooks.before;
+      f.tick();
+      await f.reconcile(f.identity);
+      expect(f.row().publication).toEqual(f.publication);
+      expect(
+        f.ports.invoke.mock.calls.filter(([call]) => call.payload.command === 'native-start'),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each(['dispatch', 'publication', 'release'])(
+    'returns ownership loss when %s CAS loses to another worker',
+    async (boundary) => {
+      const f = await make();
+      if (boundary === 'dispatch') for (let n = 0; n < 3; n++) await f.reconcile(f.identity);
+      else await f.dispatch();
+      let successor;
+      f.hooks.before = async (command) => {
+        const next = command.input.TransactItems?.find((item) => item.Put)?.Put.Item;
+        if (
+          next?.sk !== 'EXECUTION' ||
+          (boundary === 'dispatch'
+            ? !next.dispatch
+            : boundary === 'publication'
+              ? !next.publication
+              : next.leaseToken !== undefined)
+        )
+          return;
+        delete f.hooks.before;
+        f.tick();
+        successor = (await f.store.claim(f.bindingIdentity)).row;
+      };
+      if (boundary === 'release')
+        f.ports.invoke.mockImplementationOnce(async ({ execution }) => ({
+          ...executionIdentity(execution),
+          writerGeneration: 1,
+          sequence: 1,
+          status: 'running',
+        }));
+      expect(await f.reconcile(f.identity)).toEqual({ pending: true, status: 'ownership_lost' });
+      expect(f.row()).toEqual(successor);
+      expect(f.ports.fence.cancel).not.toHaveBeenCalled();
+      expect(f.ports.fence.suspend).not.toHaveBeenCalled();
+      expect(f.ports.stop).not.toHaveBeenCalled();
+      if (boundary === 'dispatch') expect(f.ports.invoke).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('administrator image revocation in the supervisor', () => {
@@ -457,10 +542,168 @@ describe('administrator image revocation in the supervisor', () => {
 });
 
 describe('native activity terminal drain', () => {
+  const withActivity = async () => {
+    const f = await make();
+    await f.dispatch();
+    const log = createNativeActivityLog({ writerGeneration: 1, now: f.now });
+    const turn = log.turn({ sequence: 1, harness: 'codex' });
+    turn.write(
+      Buffer.from(
+        JSON.stringify({
+          type: 'item.completed',
+          item: { id: 'final', type: 'agent_message', text: 'Retained tool output' },
+        }) + '\n',
+      ),
+    );
+    turn.close();
+    const activity = createNativeActivityStore({ ddb: f.ddb, tableName: TABLE, now: f.now });
+    const invoke = f.ports.invoke.getMockImplementation();
+    f.ports.invoke.mockImplementation(async (input) =>
+      input.payload.command === 'native-activity'
+        ? { ...executionIdentity(input.execution), ...log.pull(input.payload.after) }
+        : {
+            ...(await invoke(input)),
+            capabilities: ['activity-v1'],
+            workflowResumeState: 'created',
+          },
+    );
+    const diagnostics = vi.fn();
+    const run = createNativeExecutionSupervisor({ ...f.ports, activity, diagnostics });
+    const outputs = () => [...f.rows.values()].filter((row) => row.sk.startsWith('OUTPUT#'));
+    return { ...f, activity, log, run, diagnostics, outputs };
+  };
+
+  it.each(['bad-json', 'http-503', 'owner-rejected', 'cursor', 'ingest', 'wrong-scope'])(
+    'keeps a valid status separate from %s activity catch-up failure',
+    async (failure) => {
+      const f = await withActivity();
+      const secret = 'activity-private-provider-body';
+      const invoke = f.ports.invoke.getMockImplementation();
+      let failed = false;
+      f.ports.invoke.mockImplementation(async (input) => {
+        if (input.payload.command !== 'native-activity' || failed) return invoke(input);
+        failed = true;
+        if (failure === 'wrong-scope')
+          return { ...(await invoke(input)), bindingId: 'foreign-binding' };
+        if (failure === 'cursor' || failure === 'ingest') return invoke(input);
+        return readNativeRuntimeReport({
+          contentType: 'application/json',
+          statusCode: failure === 'bad-json' ? 200 : failure === 'http-503' ? 503 : 409,
+          response: Readable.from([
+            failure === 'bad-json'
+              ? `{"private":"${secret}`
+              : JSON.stringify({
+                  ok: false,
+                  code: failure === 'owner-rejected' ? 'native_execution_owner_conflict' : secret,
+                  message: secret,
+                }),
+          ]),
+        });
+      });
+      if (failure === 'cursor' || failure === 'ingest')
+        vi.spyOn(f.activity, failure).mockRejectedValueOnce(
+          Object.assign(new Error(secret), { code: 'NATIVE_EXECUTION_UNAVAILABLE' }),
+        );
+      expect(await f.run(f.identity)).toEqual({ pending: true, status: 'RUNNING' });
+      expect(f.row().recovery).toBeUndefined();
+      expect(f.row().publication).toBeUndefined();
+      expect(f.outputs()).toHaveLength(0);
+      expect(f.ports.stop).not.toHaveBeenCalled();
+      expect(f.ports.fence.suspend).not.toHaveBeenCalled();
+      expect(f.diagnostics.mock.calls.some(([event]) => event.phase === 'activity')).toBe(true);
+      expect(f.diagnostics.mock.calls.some(([event]) => event.code === 'STATUS_READ_RETRY')).toBe(
+        false,
+      );
+      expect(JSON.stringify(f.diagnostics.mock.calls)).not.toContain(secret);
+      await f.run(f.identity);
+      expect(f.outputs()).toHaveLength(1);
+      expect(f.log.pull(1)).toMatchObject({ complete: true, events: [] });
+      expect(f.row().publication).toEqual(f.publication);
+      expect(
+        f.ports.invoke.mock.calls.filter(([call]) => call.payload.command === 'native-start'),
+      ).toHaveLength(1);
+    },
+  );
+
+  it('reconciles an activity transaction with a lost reply before acknowledging its cursor', async () => {
+    const f = await withActivity();
+    f.hooks.after = (command) => {
+      if (
+        command instanceof TransactWriteCommand &&
+        command.input.TransactItems.some((item) => item.Put?.Item.sk === 'OUTPUT_CURSOR')
+      ) {
+        delete f.hooks.after;
+        throw Object.assign(new Error('Activity acknowledgement lost'), { name: 'TimeoutError' });
+      }
+    };
+    await f.run(f.identity);
+    const persisted = structuredClone(f.outputs());
+    expect(persisted).toHaveLength(1);
+    expect(f.log.pull(0).events).toHaveLength(1);
+    expect(f.row().publication).toBeUndefined();
+    expect(f.ports.stop).not.toHaveBeenCalled();
+    await f.run(f.identity);
+    expect(f.outputs()).toEqual(persisted);
+    expect(f.log.pull(1).events).toEqual([]);
+    expect(
+      f.ports.invoke.mock.calls
+        .filter(([call]) => call.payload.command === 'native-activity')
+        .map(([call]) => call.payload.after),
+    ).toEqual([0, 1]);
+    expect(f.row().publication).toEqual(f.publication);
+  });
+
+  it('cannot commit activity or publication after a successor wins the activity transaction race', async () => {
+    const f = await withActivity();
+    let successor;
+    f.hooks.before = async (command) => {
+      if (
+        command instanceof TransactWriteCommand &&
+        command.input.TransactItems.some((item) => item.Put?.Item.sk === 'OUTPUT_CURSOR')
+      ) {
+        delete f.hooks.before;
+        f.tick();
+        successor = (await f.store.claim(f.bindingIdentity)).row;
+      }
+    };
+    expect(await f.run(f.identity)).toEqual({ pending: true, status: 'ownership_lost' });
+    expect(f.row()).toEqual(successor);
+    expect(f.outputs()).toHaveLength(0);
+    expect(f.log.pull(0).events).toHaveLength(1);
+    expect(f.ports.publications.read).not.toHaveBeenCalled();
+    expect(f.ports.fence.suspend).not.toHaveBeenCalled();
+    expect(f.ports.stop).not.toHaveBeenCalled();
+  });
+
+  it('requires explicit recovery when a cold journal positively reports missing terminal closure', async () => {
+    const f = await withActivity();
+    const invoke = f.ports.invoke.getMockImplementation();
+    f.ports.invoke.mockImplementation(async (input) =>
+      input.payload.command === 'native-activity'
+        ? {
+            ...executionIdentity(input.execution),
+            writerGeneration: 1,
+            after: 0,
+            events: [],
+            complete: false,
+            cold: true,
+          }
+        : invoke(input),
+    );
+    expect(await f.run(f.identity)).toEqual({
+      pending: false,
+      status: 'RECOVERY_REQUIRED',
+      reason: 'DELIVERY_UNCERTAIN',
+    });
+    expect(f.row().recovery).toMatchObject({ canRecover: true, workflowResumeState: 'created' });
+    expect(f.ports.stop).toHaveBeenCalledOnce();
+    expect(f.ports.publications.read).not.toHaveBeenCalled();
+    expect(
+      f.ports.invoke.mock.calls.some(([call]) => call.payload.command === 'native-resume'),
+    ).toBe(false);
+  });
+
   it('drains more than four full batches across wakeups before admitting publication', async () => {
-    const { createNativeActivityLog } = await import('../../agentcore/native/activity.js');
-    const { createNativeActivityStore } = await import('../activity-store.js');
-    const { TABLE } = await import('./fixtures.js');
     const f = await make();
     await f.dispatch();
     const log = createNativeActivityLog({ writerGeneration: 1, now: f.now });
@@ -497,7 +740,6 @@ describe('native activity terminal drain', () => {
   });
 
   it('waits for timer-held output and closure, then acknowledges it before publication', async () => {
-    const { createNativeActivityLog } = await import('../../agentcore/native/activity.js');
     const f = await make();
     await f.dispatch();
     const log = createNativeActivityLog({ writerGeneration: 1 });
