@@ -94,6 +94,7 @@ const validateRollout = async ({ filename, threadId, createReadStreamFn }) => {
   let completeBytes = 0;
   let validBytes = 0;
   let truncated = false;
+  let usage = {};
 
   const consume = (raw) => {
     const line = raw.toString('utf8').trim();
@@ -105,6 +106,10 @@ const validateRollout = async ({ filename, threadId, createReadStreamFn }) => {
       return false;
     }
     firstEvent ??= event;
+    // Codex restores the last token_count with non-null info on resume.
+    if (event.type === 'event_msg' && event.payload?.type === 'token_count' && event.payload.info) {
+      usage = event.payload.info.total_token_usage;
+    }
     lineCount += 1;
     return true;
   };
@@ -144,7 +149,7 @@ const validateRollout = async ({ filename, threadId, createReadStreamFn }) => {
   ) {
     return { ok: false, status: 'corrupt' };
   }
-  return { ok: true, validBytes, truncated };
+  return { ok: true, validBytes, truncated, usage };
 };
 
 export const findCodexRollout = async ({
@@ -195,6 +200,7 @@ export const findCodexRollout = async ({
     relativePath,
     validBytes: selected.validBytes,
     truncated: selected.truncated,
+    usage: selected.usage,
   };
 };
 
@@ -230,6 +236,7 @@ export const restoreCodexRollout = async ({
       ok: true,
       status: 'restored',
       relativePath: found.relativePath,
+      usage: found.usage,
     };
   } catch (error) {
     await fs.rm(localSessions, { recursive: true, force: true }).catch(() => {});

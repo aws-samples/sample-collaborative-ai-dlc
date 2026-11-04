@@ -1,6 +1,7 @@
 import { createOpenCodeJsonlParser } from './cli/opencode-parser.js';
 import { createCodexJsonlParser } from './cli/codex-parser.js';
 import { createKiroJsonlParser } from './cli/kiro-parser.js';
+import { claudeUsageMetrics } from './cli/claude-usage.js';
 
 const TOOL_DISPLAY_TYPES = new Set([
   'message',
@@ -362,7 +363,16 @@ const claudeResultText = (result) => {
 // Codex, OpenCode and Kiro stream JSONL through parsers with one callback
 // surface; render their events identically. Consecutive successful file reads
 // collapse into one batch row.
-const createParsedSink = ({ createParser, label, toolName, emit, onSession, onUsage, onError }) => {
+const createParsedSink = ({
+  createParser,
+  label,
+  toolName,
+  emit,
+  onSession,
+  onUsage,
+  onError,
+  usageBaseline,
+}) => {
   let readBatch = [];
   const flushReadBatch = () => {
     if (!readBatch.length) return;
@@ -377,6 +387,7 @@ const createParsedSink = ({ createParser, label, toolName, emit, onSession, onUs
   const parser = createParser({
     onSession,
     onUsage,
+    usageBaseline,
     onText(text) {
       const content = stripTerminalControls(text);
       send(content, displayForMessage(content));
@@ -471,9 +482,17 @@ export const createCliOutputSink = ({
   onSession = () => {},
   onUsage = () => {},
   onError = () => {},
+  usageBaseline = {},
 }) => {
   if (PARSED_SINKS[cli]) {
-    return createParsedSink({ ...PARSED_SINKS[cli], emit, onSession, onUsage, onError });
+    return createParsedSink({
+      ...PARSED_SINKS[cli],
+      emit,
+      onSession,
+      onUsage,
+      onError,
+      usageBaseline,
+    });
   }
 
   let pending = '';
@@ -484,6 +503,10 @@ export const createCliOutputSink = ({
     if (!line.trim()) return;
     try {
       const event = JSON.parse(line);
+      if (event.type === 'result') {
+        const metrics = claudeUsageMetrics(event.usage);
+        if (metrics) onUsage(metrics, event);
+      }
       const text = stripTerminalControls(textFromClaudeStreamEvent(event));
       if (text) {
         emitEvent(emit, text, displayForMessage(text));

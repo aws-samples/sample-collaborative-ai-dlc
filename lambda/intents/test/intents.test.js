@@ -4264,7 +4264,13 @@ describe('GET list + detail', () => {
       stageInstanceId: si,
       metricId: 'm1',
       resolvedModel: 'us.anthropic.claude-sonnet-4-6',
-      metrics: { tokensInput: 1_000_000, tokensOutput: 1_000_000, contextWindowPct: 40 },
+      metrics: {
+        tokensInput: 1_000_000,
+        tokensOutput: 1_000_000,
+        contextWindowPct: 40,
+        tokensCacheRead: 2_000_000,
+        tokensCacheWrite: 100_000,
+      },
       timestamp: '2026-01-01T00:00:00Z',
     });
     procStore.set(keyOf(`EXEC#${intent.id}`, `METRIC#2026-01-01T00:00:01Z#m2`), {
@@ -4289,13 +4295,16 @@ describe('GET list + detail', () => {
       ).body,
     );
     const byId = Object.fromEntries(dto.metrics.map((m) => [m.metricId, m]));
-    // Sonnet 4.6 = $3/1M in, $15/1M out → 1M+1M = $18. Priced from the fallback.
+    // Display includes cache input, while billing applies separate rates.
     expect(byId.m1.model).toBe('us.anthropic.claude-sonnet-4-6');
     expect(byId.m1.cost.priced).toBe(true);
-    expect(byId.m1.cost.totalCost).toBeCloseTo(18);
+    expect(byId.m1.metrics.tokensInput).toBe(3_100_000);
+    expect(byId.m1.metrics.tokensCacheRead).toBe(2_000_000);
+    expect(byId.m1.cost.totalCost).toBeCloseTo(18 + 0.6 + 0.375);
     // m2 joined the stage-row model and priced 0.5M input tokens at $3/1M = $1.5.
     expect(byId.m2.model).toBe('us.anthropic.claude-sonnet-4-6');
     expect(byId.m2.cost.totalCost).toBeCloseTo(1.5);
+    expect(byId.m2.metrics.tokensInput).toBe(500_000);
   });
 
   it('rolls project metrics up across intents (tokens sum, context peaks)', async () => {
@@ -4317,6 +4326,7 @@ describe('GET list + detail', () => {
       });
     seedMetric(a, '1', { tokensInput: 1_000_000, tokensOutput: 0, contextWindowPct: 40 });
     seedMetric(b, '2', { tokensInput: 1_000_000, tokensOutput: 0, contextWindowPct: 80 });
+    seedMetric(a, '3', { tokensCacheRead: 1_000_000 });
 
     const res = await handler({
       httpMethod: 'GET',
@@ -4328,14 +4338,17 @@ describe('GET list + detail', () => {
     const dto = JSON.parse(res.body);
     expect(dto.perIntent).toHaveLength(2);
     // Tokens sum across intents; context window is peaked (NOT summed to 120%).
-    expect(dto.project.metrics.tokensInput).toBe(2_000_000);
+    expect(dto.project.metrics.tokensInput).toBe(3_000_000);
     expect(dto.project.metrics.contextWindowPct).toBe(80);
-    // 2M input tokens of Sonnet at $3/1M = $6.
-    expect(dto.project.cost.totalCost).toBeCloseTo(6);
+    // 2M uncached input plus 1M cache reads.
+    expect(dto.project.cost.totalCost).toBeCloseTo(6.3);
     expect(dto.project.cost.anyUnpriced).toBe(false);
   });
 
-  it('flags anyUnpriced when an intent ran on an unpriceable model', async () => {
+  it.each([
+    ['claude-opus-4.6', { tokensInput: 500_000 }],
+    ['unknown-model', { tokensCacheRead: 500_000 }],
+  ])('flags anyUnpriced when an intent ran on %s', async (model, metrics) => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const a = JSON.parse((await createIntent(sub, projectId)).body).id;
@@ -4347,8 +4360,8 @@ describe('GET list + detail', () => {
       executionId: a,
       stageInstanceId: 'si',
       metricId: 'k1',
-      resolvedModel: 'claude-opus-4.6',
-      metrics: { tokensInput: 500_000 },
+      resolvedModel: model,
+      metrics,
       timestamp: '2026-01-01T00:00:01Z',
     });
     const dto = JSON.parse(

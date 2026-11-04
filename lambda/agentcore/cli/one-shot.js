@@ -31,6 +31,8 @@ import { parseKiroJsonl } from './kiro-parser.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './opencode-store.js';
 import { cleanupCodexHome as defaultCleanupCodexHome } from './codex-store.js';
 import { isCredentialFailure } from './credential-errors.js';
+import { claudeUsageMetrics } from './claude-usage.js';
+import { captureKiroCreditRate } from './kiro-usage.js';
 
 // Extract the assistant text + token usage from Claude's `--output-format
 // stream-json` stdout (one JSON event per line). Per the headless CLI docs the
@@ -63,15 +65,9 @@ export const parseClaudeOneShot = (stdout = '') => {
         .map((part) => part.text)
         .join('');
       if (t) text = t;
-      if (event.message?.usage) usage = event.message.usage;
     }
   }
-  const tokensInput = Number(usage?.input_tokens);
-  const tokensOutput = Number(usage?.output_tokens);
-  const metrics = {};
-  if (Number.isFinite(tokensInput) && tokensInput > 0) metrics.tokensInput = tokensInput;
-  if (Number.isFinite(tokensOutput) && tokensOutput > 0) metrics.tokensOutput = tokensOutput;
-  return { text, metrics: Object.keys(metrics).length ? metrics : null, resultSubtype };
+  return { text, metrics: claudeUsageMetrics(usage), resultSubtype };
 };
 
 // Bounded raw-output sample attached to FAILED one-shot results so a field
@@ -164,6 +160,23 @@ export const runOneShotPrompt = async ({
     if (cli === 'codex') await cleanupCodexHome({ codexHome, env }).catch(() => false);
   }
   const { exitCode, stdout, stderr, timedOut } = capture;
+  const parsers = {
+    claude: parseClaudeOneShot,
+    codex: parseCodexJsonl,
+    kiro: parseKiroJsonl,
+    opencode: parseOpenCodeJsonl,
+  };
+  const parsed = parsers[cli](stdout);
+  const usage = {
+    metrics: parsed.metrics,
+    ...(parsed.metrics?.credits > 0
+      ? {
+          creditRate: await captureKiroCreditRate({ env, workspaceDir: cwd, spawnFn }).catch(
+            () => null,
+          ),
+        }
+      : {}),
+  };
 
   if (capture.credentialError)
     return {
@@ -173,7 +186,7 @@ export const runOneShotPrompt = async ({
       cli,
       model: model ?? null,
       exitCode,
-      metrics: null,
+      ...usage,
     };
   if (timedOut) {
     return {
@@ -183,7 +196,7 @@ export const runOneShotPrompt = async ({
       cli,
       model: model ?? null,
       exitCode: null,
-      metrics: null,
+      ...usage,
     };
   }
   if (exitCode !== 0) {
@@ -196,13 +209,13 @@ export const runOneShotPrompt = async ({
         cli,
         model: model ?? null,
         exitCode,
-        metrics: null,
+        ...usage,
       };
     }
     // Kiro reports its failure as a late JSONL runError; the metadata and
     // messages before it can fill the bounded sample, so sample the parsed
     // error and keep the raw prefix only when no structured error exists.
-    const failure = cli === 'kiro' ? parseKiroJsonl(stdout).errors.join('\n') : '';
+    const failure = cli === 'kiro' ? parsed.errors.join('\n') : '';
     return {
       ok: false,
       reason: 'cli_failed',
@@ -210,13 +223,13 @@ export const runOneShotPrompt = async ({
       cli,
       model: model ?? null,
       exitCode,
-      metrics: null,
+      ...usage,
       sample: sampleOf(failure || stdout),
     };
   }
 
   if (cli === 'claude') {
-    const { text, metrics, resultSubtype } = parseClaudeOneShot(stdout);
+    const { text, resultSubtype } = parsed;
     return {
       ok: Boolean(text),
       reason: text ? null : 'empty_answer',
@@ -224,16 +237,10 @@ export const runOneShotPrompt = async ({
       cli,
       model: model ?? null,
       exitCode,
-      metrics,
+      ...usage,
       ...(text ? {} : { sample: sampleOf(stdout), resultSubtype }),
     };
   }
-  const parsed =
-    cli === 'codex'
-      ? parseCodexJsonl(stdout)
-      : cli === 'kiro'
-        ? parseKiroJsonl(stdout)
-        : parseOpenCodeJsonl(stdout);
   const text = parsed.text.trim();
   return {
     ok: Boolean(text),
@@ -242,7 +249,7 @@ export const runOneShotPrompt = async ({
     cli,
     model: model ?? null,
     exitCode,
-    metrics: parsed.metrics,
+    ...usage,
     ...(text
       ? {}
       : {

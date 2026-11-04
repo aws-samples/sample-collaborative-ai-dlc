@@ -36,10 +36,9 @@ import {
   getDriver,
   buildKiroListSessions,
   parseKiroSessionSource,
-  buildKiroUsage,
-  parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild, captureChild } from '../cli/spawn.js';
+import { createUsageRecorder } from '../cli/usage-recorder.js';
 import { isCredentialFailure, isCreditExhaustion } from '../cli/credential-errors.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
@@ -557,6 +556,8 @@ const runReviewer = async ({
     })
     .catch(() => {});
   const dispatch = await dispatchPersona({
+    store,
+    publish,
     role: 'reviewer',
     stageId: stage.stageId,
     // The stage's resolved policy travels with the reviewer too: the annex's
@@ -1494,35 +1495,6 @@ const kiroSessionSource = async ({ env, workspaceDir, sessionId, spawnFn }) => {
     spawnFn,
   });
   return parseKiroSessionSource(stdout ?? '', workspaceDir, sessionId);
-};
-
-// Capture Kiro's $/credit overage rate by running the `/usage` slash command
-// headless and parsing "billed at $X.XX per credit" (printed on STDERR). The
-// rate changes at most with the plan, so it's cached for the container's life —
-// one extra kiro-cli spawn per container, not per stage. `/usage` only calls
-// Kiro's usage API; it does not itself spend credits. Null (and cached null on
-// hard failure only) when the rate can't be read — the credits metric is then
-// recorded unpriced rather than priced at a guess. A lost credential leaves the
-// cache empty so the next stage retries.
-let cachedKiroCreditRate; // undefined = not fetched; null/number = fetched
-export const resetKiroCreditRateCache = () => {
-  cachedKiroCreditRate = undefined;
-};
-const captureKiroCreditRate = async ({ env, driver, workspaceDir, spawnFn }) => {
-  if (cachedKiroCreditRate !== undefined) return cachedKiroCreditRate;
-  const usage = buildKiroUsage();
-  const { stdout, stderr, credentialError } = await captureChild({
-    command: usage.command,
-    args: usage.args,
-    env: driver.envForAuth(env),
-    cwd: workspaceDir,
-    captureStderr: true,
-    spawnFn,
-  });
-  const rate = parseKiroCreditRate(`${stderr ?? ''}\n${stdout ?? ''}`);
-  if (rate == null && credentialError) return null;
-  cachedKiroCreditRate = rate;
-  return rate;
 };
 
 // Recognise Kiro's BENIGN empty-final-completion crash. kiro-cli's ACP layer
@@ -2623,6 +2595,7 @@ const runStageAttempt = async (
 
   let codexHome = null;
   let codexHomePrepared = false;
+  let codexUsageBaseline = null;
   if ((resumeFrom || reviewFeedback) && !demotedResume && cli === 'codex') {
     codexHome = resolveCodexHome({ scope: stageScope, env });
     let restored;
@@ -2645,6 +2618,7 @@ const runStageAttempt = async (
       Boolean(resolveCodexStore({ env, codexHome })) && restoreStatus !== 'unconfigured';
     if (restoredOk) {
       codexHomePrepared = true;
+      codexUsageBaseline = restored.usage ?? null;
     } else if (storeConfigured) {
       const detail = `${restoreStatus ?? 'restore_failed'}${
         restored?.error?.code ? ` (${restored.error.code})` : ''
@@ -3583,12 +3557,23 @@ const runStageAttempt = async (
       .catch(() => {});
   };
   let sessionUpdateQueue = Promise.resolve();
+  const usage = createUsageRecorder({
+    store,
+    scope: { executionId, stageInstanceId, unitSlug, sectionIndex },
+    model,
+    publish,
+    env,
+    workspaceDir,
+    spawnFn,
+  });
   // Error events the JSON-output CLIs report on stdout (never agent text or
   // tool output), kept for failure classification next to the stderr tail.
   const reportedErrors = [];
   const cliOutput = createCliOutputSink({
     cli,
     emit: emitCliOutput,
+    onUsage: usage.onUsage,
+    usageBaseline: cli === 'codex' && !freshRun ? codexUsageBaseline : {},
     onError: (message) => {
       reportedErrors.push(message);
       if (reportedErrors.length > 8) reportedErrors.shift();
@@ -3656,6 +3641,7 @@ const runStageAttempt = async (
     spawnError = e;
   }
   cliOutput.flush();
+  await usage.flush();
   await outputQueue;
   await sessionUpdateQueue;
 
@@ -3765,49 +3751,6 @@ const runStageAttempt = async (
     kiroStorePersisted = await persistKiroStore({ env }).catch(() => false);
     if (!kiroStorePersisted) {
       logger.error('kiro store not persisted', { stageInstanceId });
-    }
-  }
-
-  // Kiro only: record the run's credit spend. kiro-cli's stream-json reports
-  // per-turn metering (`meteringUsage`, in credits), which the output parser
-  // sums — record it as a `credits` metric sample, stamped with the trusted model
-  // AND the $/credit overage rate (from `/usage`, cached per container) so the
-  // read path can price it as an ESTIMATE (Kiro is credit-based; in-plan credits
-  // are covered by the plan). Runs on ANY exit — a parked or crashed turn still
-  // spent its credits. Best-effort: no metering / no rate never affects the
-  // stage outcome.
-  if (cli === 'kiro') {
-    try {
-      const credits = cliOutput.state?.metrics?.credits ?? null;
-      if (credits != null && credits > 0) {
-        const creditRate = await captureKiroCreditRate({
-          env,
-          driver,
-          workspaceDir,
-          spawnFn,
-        }).catch(() => null);
-        const row = await store.recordMetric({
-          executionId,
-          stageInstanceId,
-          unitSlug,
-          sectionIndex,
-          metrics: { credits },
-          resolvedModel: model ?? null,
-          creditRate,
-        });
-        // Live-parity with the bridge's collect_metric broadcast so the UI can
-        // refresh usage without waiting for the next full DTO fetch.
-        await publish({
-          action: 'agent.metric',
-          stageInstanceId,
-          unitSlug,
-          sectionIndex,
-          metricId: row.metricId,
-          metrics: { credits },
-        });
-      }
-    } catch (e) {
-      logger.error('kiro credits not recorded', e, { stageInstanceId });
     }
   }
 
@@ -4571,7 +4514,11 @@ const runStageAttempt = async (
           model,
           ...mcpKwargs,
         });
-        const repairSink = createCliOutputSink({ cli, emit: emitCliOutput });
+        const repairSink = createCliOutputSink({
+          cli,
+          emit: emitCliOutput,
+          onUsage: usage.onUsage,
+        });
         const spawnRepair = () =>
           runChild({
             command: repair.command,
@@ -4597,6 +4544,7 @@ const runStageAttempt = async (
           }
         } finally {
           repairSink.flush();
+          await usage.flush();
           await outputQueue;
           if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
         }

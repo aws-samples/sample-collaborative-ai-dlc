@@ -539,8 +539,8 @@ For each selected CLI, the harness:
 5. Removes the container, answers the gate directly in the process store, and
    starts a new container with the same workspace volume.
 6. Resumes the same CLI session.
-7. Requires `create_artifact`, `send_output`, and `collect_metric`.
-8. Verifies the successful stage, graph edge, output, metric, session identity,
+7. Requires `create_artifact` and `send_output`.
+8. Verifies the successful stage, graph edge, output, measured CLI usage, session identity,
    native edit parsing, output timestamps, and Git runtime exclusions.
 
 Starting fresh and resume legs in separate containers exercises Claude's and

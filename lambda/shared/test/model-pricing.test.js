@@ -47,6 +47,44 @@ describe('makePriceResolver', () => {
 });
 
 describe('costForMetrics', () => {
+  it.each([
+    ['global.anthropic.claude-sonnet-5', 2],
+    ['us.anthropic.claude-sonnet-5', 2.2],
+    ['amazon-bedrock/eu.anthropic.claude-sonnet-5', 2.2],
+  ])('prices cache reads and mixed-TTL writes using %s input rates', (model, inputRate) => {
+    const c = costForMetrics(
+      {
+        tokensInput: 1_000_000,
+        tokensOutput: 1_000_000,
+        tokensCacheRead: 2_000_000,
+        tokensCacheWrite: 1_000_000,
+        tokensCacheWrite1h: 400_000,
+      },
+      model,
+    );
+    expect(c.inputCost).toBeCloseTo(inputRate * (1 + 2 * 0.1 + 0.6 * 1.25 + 0.4 * 2));
+    expect(c.outputCost).toBeCloseTo(inputRate * 5);
+    expect(c.totalCost).toBeCloseTo(c.inputCost + c.outputCost);
+    expect(c.priced).toBe(true);
+  });
+
+  it('uses refreshed input rates and the default five-minute write price', () => {
+    const resolver = makePriceResolver({ 'claude-sonnet-4-6': { input: 4, output: 20 } });
+    const c = costForMetrics(
+      { tokensCacheRead: 1_000_000, tokensCacheWrite: 1_000_000 },
+      'us.anthropic.claude-sonnet-4-6',
+      resolver,
+    );
+    expect(c.inputCost).toBeCloseTo(0.4 + 5);
+    expect(c.priced).toBe(true);
+  });
+
+  it('does not invent cache prices for a non-Claude model', () => {
+    const resolver = makePriceResolver({ 'openai.gpt-5.5': { input: 1, output: 2 } });
+    const c = costForMetrics({ tokensCacheRead: 1000 }, 'openai.gpt-5.5', resolver);
+    expect(c.priced).toBe(false);
+  });
+
   it('computes input+output cost for a priced model', () => {
     const c = costForMetrics(
       { tokensInput: 1_000_000, tokensOutput: 1_000_000, contextWindowPct: 40 },
@@ -128,6 +166,30 @@ describe('parsePriceList', () => {
   it('tolerates JSON-string products and malformed rows', () => {
     const table = parsePriceList([JSON.stringify(skus[0]), JSON.stringify(skus[1]), 'not json']);
     expect(table['claude-sonnet-4-6']).toEqual({ input: 3, output: 15 });
+  });
+
+  it('keeps cache SKUs separate from standard input, regardless of order', () => {
+    const cache = (usagetype, rate) => ({
+      product: { attributes: { model: 'Claude Sonnet 4.6', usagetype } },
+      terms: {
+        OnDemand: { t: { priceDimensions: { d: { pricePerUnit: { USD: String(rate) } } } } },
+      },
+    });
+    const products = [
+      ...skus,
+      cache('CacheReadInputTokenCount', 0.0000003),
+      cache('CacheWriteInputTokenCount', 0.00000375),
+      cache('CacheWrite1HourInputTokenCount', 0.000006),
+    ];
+    for (const rows of [products, products.toReversed()]) {
+      expect(parsePriceList(rows)['claude-sonnet-4-6']).toEqual({
+        input: 3,
+        output: 15,
+        cacheRead: 0.3,
+        cacheWrite: 3.75,
+        cacheWrite1h: 6,
+      });
+    }
   });
 });
 

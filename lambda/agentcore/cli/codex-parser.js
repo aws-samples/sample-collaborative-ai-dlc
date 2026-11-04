@@ -1,9 +1,11 @@
+import { aggregateMetrics } from '../../shared/metric-classification.js';
+
 // Incremental parser for `codex exec --json` JSONL output.
 //
 // Codex emits one event per line on stdout (progress goes to stderr):
 //   {"type":"thread.started","thread_id":"..."}          → session id
 //   {"type":"item.completed","item":{...}}               → completed items
-//   {"type":"turn.completed","usage":{...}}              → token usage
+//   {"type":"turn.completed","usage":{...}}              → cumulative thread usage
 //   {"type":"turn.failed","error":{...}} / {"type":"error",...} → errors
 //
 // Completed item types map to the runtime's normalized events:
@@ -134,8 +136,13 @@ export const createCodexJsonlParser = ({
   onSession = () => {},
   onUsage = () => {},
   onDiagnostic = () => {},
+  usageBaseline = {},
 } = {}) => {
   let pending = '';
+  // Codex 0.162.1 emits ThreadTokenUsage.total, including restored history.
+  // Normalize to invocation deltas for the shared recorder. A null baseline
+  // means a resumed thread's prior usage is unavailable; do not guess it.
+  let previousMetrics = usageBaseline === null ? null : (usageFrom({ usage: usageBaseline }) ?? {});
   const state = {
     text: '',
     sessionId: null,
@@ -187,9 +194,16 @@ export const createCodexJsonlParser = ({
     }
 
     if (type === 'turn.completed') {
-      const metrics = usageFrom(event);
-      if (metrics) {
-        state.metrics = { ...state.metrics, ...metrics };
+      const total = usageFrom(event);
+      if (total && previousMetrics !== null) {
+        const metrics = Object.fromEntries(
+          Object.entries(total).map(([key, value]) => [
+            key,
+            Math.max(0, value - (previousMetrics[key] ?? 0)),
+          ]),
+        );
+        previousMetrics = total;
+        state.metrics = aggregateMetrics([{ metrics: state.metrics }, { metrics }]);
         onUsage(metrics, event);
       }
       return;

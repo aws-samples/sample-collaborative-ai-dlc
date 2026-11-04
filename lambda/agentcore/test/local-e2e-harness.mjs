@@ -150,7 +150,6 @@ Call these tools exactly once and in this order:
 1. create_artifact with artifactType "e2e-result", id "${artifactId}", title
    "Local ${selectedCli} E2E", and content that states the cold resume succeeded.
 2. send_output with content "Local ${selectedCli} cold resume completed."
-3. collect_metric with metrics {"e2eLifecycle": 1}.
 Then end with a short non-empty final sentence.
 `.trim();
 
@@ -451,8 +450,18 @@ const handlers = {
     ) {
       throw new Error(`${cli} numbered patch line leaked through as a message event`);
     }
-    if (!records.metrics.some((row) => Number(row.metrics?.e2eLifecycle) === 1)) {
-      throw new Error(`${cli} collect_metric row is missing`);
+    if (
+      !records.metrics.some(
+        (row) =>
+          (row.metrics?.tokensInput ?? 0) +
+            (row.metrics?.tokensOutput ?? 0) +
+            (row.metrics?.tokensCacheRead ?? 0) +
+            (row.metrics?.tokensCacheWrite ?? 0) +
+            (row.metrics?.credits ?? 0) >
+          0,
+      )
+    ) {
+      throw new Error(`${cli} measured CLI usage is missing`);
     }
     const outputFile = await readFile(`${workspaceDir}/${ids.outputFile}`, 'utf8');
     if (outputFile.trim() !== `agent output parser fixture for ${cli}`) {

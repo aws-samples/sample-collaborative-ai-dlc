@@ -21,6 +21,8 @@
 
 import { getDriver } from './cli/drivers.js';
 import { runChild } from './cli/spawn.js';
+import { createCliOutputSink } from './output-normalizer.js';
+import { createUsageRecorder } from './cli/usage-recorder.js';
 import { withOpenCodeStore as defaultWithOpenCodeStore } from './cli/opencode-store.js';
 import { resolveStageModel } from './model-resolver.js';
 import {
@@ -167,6 +169,8 @@ export const dispatchPersona = async ({
   unitSlug,
   sectionIndex,
   ids,
+  store,
+  publish,
   timeoutMs = 0,
   // Ensemble persona sessions run as their own process group (see runChild); the
   // reviewer keeps the plain spawn it always had.
@@ -260,6 +264,16 @@ export const dispatchPersona = async ({
       maxTurns,
       ...mcpKwargs,
     });
+    const usage = createUsageRecorder({
+      store,
+      scope: { executionId, stageInstanceId, unitSlug, sectionIndex },
+      model,
+      publish,
+      env,
+      workspaceDir,
+      spawnFn,
+    });
+    const output = createCliOutputSink({ cli, emit: () => {}, onUsage: usage.onUsage });
     const execute = () =>
       runChild({
         command: invocation.command,
@@ -271,6 +285,7 @@ export const dispatchPersona = async ({
         timeoutMs,
         processGroup,
         spawnFn,
+        onStdout: (chunk) => output.write(chunk),
       });
     let childResult;
     try {
@@ -280,6 +295,8 @@ export const dispatchPersona = async ({
         childResult = await execute();
       }
     } finally {
+      output.flush();
+      await usage.flush();
       if (cli === 'codex') {
         await cleanupCodexHome({ codexHome: mcpKwargs.codexHome, env }).catch(() => false);
       }

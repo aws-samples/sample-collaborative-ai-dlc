@@ -5,6 +5,55 @@ import { createCliOutputSink } from '../output-normalizer.js';
 const line = (value) => `${JSON.stringify(value)}\n`;
 
 describe('Codex JSONL parser', () => {
+  it('subtracts restored thread usage and emits deltas between cumulative totals', () => {
+    const onUsage = vi.fn();
+    const sink = createCliOutputSink({
+      cli: 'codex',
+      emit: () => {},
+      onUsage,
+      usageBaseline: {
+        input_tokens: 100,
+        cached_input_tokens: 50,
+        cache_write_input_tokens: 10,
+        output_tokens: 20,
+        reasoning_output_tokens: 5,
+      },
+    });
+    const usage = {
+      input_tokens: 140,
+      cached_input_tokens: 75,
+      cache_write_input_tokens: 15,
+      output_tokens: 30,
+      reasoning_output_tokens: 8,
+    };
+    sink.write(line({ type: 'turn.completed', usage }));
+    sink.write(line({ type: 'turn.completed', usage }));
+    sink.flush();
+    expect(onUsage.mock.calls.map(([metrics]) => metrics)).toEqual([
+      {
+        tokensInput: 40,
+        tokensCacheRead: 25,
+        tokensCacheWrite: 5,
+        tokensOutput: 10,
+        tokensReasoning: 3,
+      },
+      {
+        tokensInput: 0,
+        tokensCacheRead: 0,
+        tokensCacheWrite: 0,
+        tokensOutput: 0,
+        tokensReasoning: 0,
+      },
+    ]);
+    expect(sink.state.metrics).toEqual({
+      tokensInput: 40,
+      tokensCacheRead: 25,
+      tokensCacheWrite: 5,
+      tokensOutput: 10,
+      tokensReasoning: 3,
+    });
+  });
+
   it('captures the thread id, agent-message text, and turn usage', () => {
     const parsed = parseCodexJsonl(
       [

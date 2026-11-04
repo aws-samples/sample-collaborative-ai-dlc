@@ -57,9 +57,8 @@ export const buildEnrichmentPrompt = ({ artifactType, title, content }) => {
   ].join('\n');
 };
 
-// Enrich one artifact via the one-shot CLI. Returns { enriched, metrics } or
-// { skipped, sample? } — never throws (fail-open contract).
-const enrichArtifact = async ({ artifact, extraction, graph, oneShot, cliArgs }) => {
+// Enrich one artifact via the one-shot CLI, recording spend before interpreting its answer.
+const enrichArtifact = async ({ artifact, extraction, graph, oneShot, cliArgs, recordUsage }) => {
   // Unchanged content keeps its existing summary — no repeat spend.
   if (
     artifact.enrichment_source_hash &&
@@ -73,6 +72,7 @@ const enrichArtifact = async ({ artifact, extraction, graph, oneShot, cliArgs })
     content: artifact.content,
   });
   const out = await oneShot({ prompt, ...cliArgs });
+  await recordUsage(out);
   if (!out.ok) return { skipped: out.reason ?? 'cli_failed', sample: out.sample ?? null };
   const parsed = extractJsonObject(out.text);
   const gist = typeof parsed?.gist === 'string' ? parsed.gist.trim() : '';
@@ -85,7 +85,7 @@ const enrichArtifact = async ({ artifact, extraction, graph, oneShot, cliArgs })
     model: out.model,
     sourceHash: extraction.contentHash,
   });
-  return { enriched: true, metrics: out.metrics, model: out.model };
+  return { enriched: true };
 };
 
 export const deriveArtifacts = async (payload, deps) => {
@@ -199,24 +199,28 @@ export const deriveArtifacts = async (payload, deps) => {
         continue;
       }
       try {
-        const result = await enrichArtifact({ artifact, extraction, graph, oneShot, cliArgs });
-        if (result.enriched) {
-          enriched += 1;
-          if (result.metrics) {
-            // Standard spend keys (tokensInput/tokensOutput/credits) so the
-            // read-time pricer costs the sample like any other; the extra
-            // `enrichmentCalls` key lets the audit view split enrichment
-            // spend from stage-agent spend.
+        const result = await enrichArtifact({
+          artifact,
+          extraction,
+          graph,
+          oneShot,
+          cliArgs,
+          recordUsage: async (out) => {
+            if (!out.metrics) return;
             await store
               ?.recordMetric?.({
                 executionId,
                 stageInstanceId,
                 unitSlug,
-                metrics: { ...result.metrics, enrichmentCalls: 1 },
-                resolvedModel: result.model ?? null,
+                metrics: { ...out.metrics, enrichmentCalls: 1 },
+                resolvedModel: out.model ?? null,
+                creditRate: out.creditRate ?? null,
               })
               .catch(() => {});
-          }
+          },
+        });
+        if (result.enriched) {
+          enriched += 1;
         } else if (result.skipped && result.skipped !== 'unchanged') {
           enrichmentSkips.push({
             artifactId: artifact.id,
