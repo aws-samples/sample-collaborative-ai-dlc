@@ -2075,6 +2075,74 @@ describe('runStage — LLM reviewer axis', () => {
     return store;
   };
 
+  // The human answers "Request changes" while reading the reviewer's findings,
+  // often by reference ("apply 1 and 3"). The resumed author gets the review the
+  // human saw at that gate, not a later run.
+  describe('a validation revision', () => {
+    const GATE_ID = 'gate-validation-1';
+    const OPENED_AT = '2026-11-04T10:00:00.000Z';
+    const SEEN = '1. Missing acceptance criteria\n2. Vague scope\n3. No error states';
+    const revision = ({ rows, feedback = 'Apply findings 1 and 3' } = {}) => {
+      const store = spyStore({
+        humanTask: {
+          humanTaskId: GATE_ID,
+          kind: 'validation',
+          status: 'answered',
+          stageInstanceId: BASE_STAGE_INSTANCE_ID,
+          createdAt: OPENED_AT,
+          answer: { decision: 'request-changes', feedback },
+        },
+        stage: {
+          state: 'WAITING_FOR_HUMAN',
+          pendingHumanTaskId: GATE_ID,
+          cli: 'claude',
+          cliSessionId: 'session-1',
+        },
+      });
+      store.listSensorRuns = async () => rows;
+      const prompts = [];
+      const spawnFn = (_command, args) => {
+        prompts.push(args.join(' '));
+        return { ...okSpawn(), stdin: { end: (text) => text && prompts.push(String(text)) } };
+      };
+      const deps = baseDeps({
+        store,
+        spawnFn,
+        loadLibrary: async () => ({ workflow: workflow(), library: libWithReviewer() }),
+      });
+      return { deps, prompts };
+    };
+    const resumeText = (prompts) => prompts.find((p) => p.includes('requested changes')) ?? '';
+
+    it('includes the findings the human saw with their feedback', async () => {
+      const { deps, prompts } = revision({
+        rows: [
+          { ...reviewerRow('NOT-READY', SEEN), timestamp: '2026-11-04T09:59:00.000Z' },
+          { ...reviewerRow('READY', 'a later review'), timestamp: '2026-11-04T10:30:00.000Z' },
+        ],
+      });
+      await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      const text = resumeText(prompts);
+      expect(text).toContain('Apply findings 1 and 3');
+      expect(text).toContain('(aidlc-reviewer-agent, NOT-READY)');
+      expect(text).toContain('3. No error states');
+      expect(text).toContain('apply the findings it asks for, and only those');
+      expect(text).not.toContain('a later review');
+    });
+
+    it('sends only the feedback when the review recorded no findings', async () => {
+      const { deps, prompts } = revision({
+        rows: [{ ...reviewerRow('NOT-READY', ''), timestamp: '2026-11-04T09:59:00.000Z' }],
+      });
+      await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      const text = resumeText(prompts);
+      expect(text).toContain('Apply findings 1 and 3');
+      expect(text).not.toContain('The independent review the human saw');
+    });
+  });
+
   it('fails a reviewer-only stage when the reviewer returns NOT-READY', async () => {
     const deps = baseDeps({
       store: storeWithVerdict('NOT-READY', 'missing acceptance criteria'),
@@ -2480,6 +2548,12 @@ describe('buildReviewerPrompt — read scope + identity marker', () => {
     knowledge: '',
     round: 1,
   };
+
+  it('asks for numbered findings, each with its required action', () => {
+    const prompt = buildReviewerPrompt(args);
+    expect(prompt).toContain('Number every finding, starting at 1');
+    expect(prompt).toContain('refer to findings by number');
+  });
 
   it('instructs the identity marker: reviewer arg + verbatim first findings line', () => {
     const prompt = buildReviewerPrompt(args);

@@ -441,6 +441,8 @@ const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
     `You are ${reviewerAgent}, the independent reviewer for this stage.`,
     'Do not modify artifacts. Use only read tools to inspect the intent graph, inputs, and produced artifacts.',
     'When done, call submit_review exactly once with verdict READY or NOT-READY and concrete findings.',
+    'Number every finding, starting at 1, and give each one its required action, so the human',
+    'can refer to findings by number when they ask for changes.',
     // Upstream §12a identity marker: the first finding line names the reviewer
     // verbatim so the audit trail records which reviewer ran. The runtime also
     // stamps the trusted identity server-side; this keeps the artifact-visible
@@ -495,6 +497,35 @@ const buildReviewerPrompt = ({
     // itself, so this passes only the policy the rest of the row reads.
     policy: stage.policy ?? null,
   });
+
+// The review a human saw at the gate they answered with "Request changes". The
+// reviewer runs before the gate opens, so its latest run for this stage recorded
+// no later than the gate is that review. Null when the stage has no reviewer, the
+// answer is not a revision, or the review recorded no findings.
+const REVISION_FINDINGS_LIMIT = 8000;
+const reviewFindingsForGate = async ({ store, executionId, stageInstanceId, stage, gate }) => {
+  const reviewerAgent = stage?.reviewer?.reviewerAgent;
+  if (!reviewerAgent || !isRevisionAnswer(gate)) return null;
+  if (typeof store.listSensorRuns !== 'function') return null;
+  const openedAt = gate.createdAt ?? null;
+  const rows = await store.listSensorRuns(executionId, { stageInstanceId }).catch(() => []);
+  const run = [...rows]
+    .toReversed()
+    .find(
+      (r) =>
+        r.kind === 'reviewer' &&
+        r.sensorId === `reviewer:${reviewerAgent}` &&
+        (!openedAt || !r.timestamp || r.timestamp <= openedAt),
+    );
+  const findings = String(run?.detail?.findings ?? '').trim();
+  if (!findings) return null;
+  return {
+    reviewerAgent,
+    verdict: run.detail?.verdict ?? (run.result === 'PASS' ? 'READY' : 'NOT-READY'),
+    findings: findings.slice(0, REVISION_FINDINGS_LIMIT),
+    truncated: findings.length > REVISION_FINDINGS_LIMIT,
+  };
+};
 
 const latestReviewerVerdict = async ({ store, executionId, stageInstanceId, reviewerAgent }) => {
   if (typeof store.listSensorRuns !== 'function') return null;
@@ -1332,11 +1363,41 @@ const runCheckpointLadder = async ({
   };
 };
 
+// A validation gate, or an engine gate, answered "Request changes": the answer
+// re-enters the stage as a revision.
+const isRevisionAnswer = (gate) =>
+  Boolean(gate) && (gate.kind === 'validation' || gate.answer?.decision === 'request-changes');
+
+// The reviewer's findings, shown with the human's requested changes. The human
+// reads them at the gate and often answers by reference ("apply the required
+// actions", "fix 1, 2 and 5"), so the author needs the same text. Agent-authored
+// text crossing a session boundary, so template tokens are neutralized.
+const reviewFindingsBlock = ({ reviewerAgent, verdict, findings, truncated }) =>
+  [
+    `The independent review the human saw at this gate (${reviewerAgent}, ${verdict}):`,
+    '',
+    neutralizeTokens(findings),
+    ...(truncated ? ['', '(The review is longer than this and was cut short here.)'] : []),
+    '',
+    'The human\u2019s feedback may refer to these findings by number or by their wording.',
+    'Read it against them: apply the findings it asks for, and only those. Where the',
+    'feedback and a finding disagree, follow the feedback.',
+  ].join('\n');
+
+const formatRevisionAnswer = (a, reviewFindings) => {
+  const text =
+    typeof a === 'string'
+      ? a
+      : (a?.feedback ?? a?.freeText ?? a?.decision ?? JSON.stringify(a ?? {}));
+  const review = reviewFindings ? `\n\n${reviewFindingsBlock(reviewFindings)}` : '';
+  return `The human reviewed this stage's output and requested changes:\n${text}${review}\n\nRevise the stage artifacts to address this feedback, then finish again.`;
+};
+
 // Render an answered gate into the message that re-enters the parked conversation.
 // The agent asked structured questions; we feed back the human's answer so it
 // continues from where it parked. Tolerant of the answer shapes the resume lambda
 // / phaseb-answer write (`perQuestion[]`, `freeText`, or a raw string).
-const formatResumeAnswer = (gate, stageId) => {
+const formatResumeAnswer = (gate, stageId, { reviewFindings = null } = {}) => {
   const a = gate?.answer ?? null;
   // A checkpoint gate (summary confirmation / plan approval) is a `question` row
   // carrying `detail.checkpoint`, so it must be recognised BEFORE the generic
@@ -1380,13 +1441,7 @@ const formatResumeAnswer = (gate, stageId) => {
   // Validation gates AND engine gates answered request-changes (skeleton /
   // batch revision loops, docs/v2-parallel.md WP5) both re-enter the stage as
   // a REVISION with the human's feedback.
-  if (gate?.kind === 'validation' || a?.decision === 'request-changes') {
-    const text =
-      typeof a === 'string'
-        ? a
-        : (a?.feedback ?? a?.freeText ?? a?.decision ?? JSON.stringify(a ?? {}));
-    return `The human reviewed this stage's output and requested changes:\n${text}\n\nRevise the stage artifacts to address this feedback, then finish again.`;
-  }
+  if (isRevisionAnswer(gate)) return formatRevisionAnswer(a, reviewFindings);
   if (a && Array.isArray(a.perQuestion) && a.perQuestion.length) {
     const lines = a.perQuestion.map((p) => `- ${p.text ?? 'Q'}: ${p.answer ?? ''}`);
     return `The human answered your question(s):\n${lines.join('\n')}\n\nContinue the stage with these answers.`;
@@ -2464,7 +2519,16 @@ const runStageAttempt = async (
     // change-control block renders the decision into the prompt instead.
     resumeAnswer = preAgentGate
       ? null
-      : reviewFeedbackPrompt || formatResumeAnswer(resumeGate, stageId);
+      : reviewFeedbackPrompt ||
+        formatResumeAnswer(resumeGate, stageId, {
+          reviewFindings: await reviewFindingsForGate({
+            store,
+            executionId,
+            stageInstanceId,
+            stage,
+            gate: resumeGate,
+          }),
+        });
     // A pre-agent gate re-enters as a fresh run even when the row names a
     // session: the conversation was never started, and resuming it would send
     // the CLI neither the stage prompt nor the change-control decision.
@@ -3906,8 +3970,17 @@ const runStageAttempt = async (
               : await store
                   .getHumanTask(executionId, validationGateId, { consistentRead: true })
                   .catch(() => null);
-          if (validationGate) revisionFeedback = formatResumeAnswer(validationGate, stageId);
-          else
+          if (validationGate) {
+            revisionFeedback = formatResumeAnswer(validationGate, stageId, {
+              reviewFindings: await reviewFindingsForGate({
+                store,
+                executionId,
+                stageInstanceId,
+                stage,
+                gate: validationGate,
+              }),
+            });
+          } else
             logger.error('validation gate not readable for revision feedback', {
               stageInstanceId,
               validationGateId,

@@ -575,4 +575,33 @@ describe('a parked checkpoint is delivered to the agent as a decision, not a Q&A
       formatResumeAnswer({ kind: 'validation', answer: { feedback: 'tighten it' } }),
     ).toContain('requested changes');
   });
+
+  it('adds the reviewer findings to a revision, neutralized and bounded', () => {
+    const reviewFindings = {
+      reviewerAgent: 'aidlc-product-lead-agent',
+      verdict: 'NOT-READY',
+      findings: '1. Fix the scope\n2. Add error states',
+      truncated: true,
+    };
+    const revision = formatResumeAnswer(
+      { kind: 'validation', answer: { decision: 'request-changes', feedback: 'do 2' } },
+      'requirements-analysis',
+      { reviewFindings },
+    );
+    expect(revision).toContain('requested changes:\ndo 2');
+    expect(revision).toContain('(aidlc-product-lead-agent, NOT-READY):');
+    expect(revision).toContain('2. Add error states');
+    expect(revision).toContain('was cut short');
+    expect(revision.indexOf('do 2')).toBeLessThan(revision.indexOf('Fix the scope'));
+    expect(revision.trimEnd().endsWith('then finish again.')).toBe(true);
+
+    // Findings never ride on an ordinary question's answer.
+    expect(
+      formatResumeAnswer(
+        { kind: 'question', answer: { freeText: 'MVP' } },
+        'requirements-analysis',
+        { reviewFindings },
+      ),
+    ).not.toContain('Fix the scope');
+  });
 });
