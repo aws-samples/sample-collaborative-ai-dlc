@@ -11,6 +11,7 @@ export interface TrackerLabel {
 }
 
 export interface TrackerIssue {
+  externalProjectId?: string;
   resourceId: string;
   resourceUrl: string;
   resourceType: 'issue';
@@ -82,6 +83,8 @@ export interface TrackerConnection {
 }
 
 export interface AddTrackerInput {
+  bindingId?: string;
+  confirmDelegation?: boolean;
   provider: string;
   instance: string;
   externalProjectKey: string;
@@ -92,6 +95,7 @@ export interface AddTrackerInput {
 // Today only jira-cloud implements it (Phase 3); github-issues uses
 // free-form repo input rather than a picker.
 export interface ExternalProject {
+  id?: string;
   key: string;
   name: string;
   displayKey?: string;

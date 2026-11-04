@@ -129,7 +129,13 @@ export function IntentSourcePicker({ project, selected, onSelect }: Props) {
   // sub-task level can have children. Discovery items are joined by links.
   const canDrill = (issue: TrackerIssue) => {
     if (!isJira) return false;
-    if (isDiscovery) return true;
+    // Foreign linked issues can be selected, but their own links are outside
+    // the space's delegation. Project IDs survive Jira key renames.
+    if (isDiscovery)
+      return binding?.externalProjectId
+        ? issue.externalProjectId === binding.externalProjectId
+        : !!binding?.externalProjectKey &&
+            issue.resourceId.startsWith(`${binding.externalProjectKey}-`);
     const t = issue.entityType ? typeByName.get(issue.entityType) : undefined;
     return !!t && !t.subtask && t.hierarchyLevel >= 0;
   };

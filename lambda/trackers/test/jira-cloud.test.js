@@ -12,6 +12,7 @@ import {
   refreshAccessToken,
   listAccessibleResources,
   persistConnection,
+  verifyProject,
   ProviderError,
 } from '../providers/jira-cloud.js';
 
@@ -1116,6 +1117,188 @@ describe('jira-cloud — provider methods', () => {
       expect(typeof ProviderError).toBe('function');
       const err = new ProviderError(400, 'x');
       expect(err.status).toBe(400);
+    });
+  });
+
+  describe('shared token refresh recovery', () => {
+    it.each(['proactive', 'reactive'])(
+      'uses a concurrently rotated token after %s invalid_grant',
+      async (mode) => {
+        const reads = ssmMock
+          .on(GetParameterCommand)
+          .resolvesOnce(seedTokenParam(mode === 'proactive' ? { expiresAt: Date.now() - 1 } : {}));
+        if (mode === 'reactive') {
+          reads.resolvesOnce(seedTokenParam());
+          fetchMock.mockResolvedValueOnce(errResponse(401, {}));
+        }
+        reads.resolves(
+          seedTokenParam({ accessToken: 'concurrent-at', refreshToken: 'concurrent-rt' }),
+        );
+        fetchMock
+          .mockResolvedValueOnce(errResponse(400, { error: 'invalid_grant' }))
+          .mockResolvedValueOnce(okResponse({ issues: [issueFixture()] }));
+        const result = await jiraProvider.listIssues(ctx(), 'PROJ');
+        expect(result.items).toHaveLength(1);
+        expect(fetchMock.mock.calls.at(-1)[1].headers.Authorization).toBe('Bearer concurrent-at');
+        expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/oauth/token'))).toHaveLength(
+          1,
+        );
+        expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+      },
+    );
+
+    it('reuses a newer token on API 401 without refreshing it again', async () => {
+      ssmMock
+        .on(GetParameterCommand)
+        .resolvesOnce(seedTokenParam())
+        .resolves(seedTokenParam({ accessToken: 'concurrent-at', refreshToken: 'concurrent-rt' }));
+      fetchMock
+        .mockResolvedValueOnce(errResponse(401, {}))
+        .mockResolvedValueOnce(okResponse({ issues: [] }));
+      await jiraProvider.listIssues(ctx(), 'PROJ');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer concurrent-at');
+      expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+    });
+
+    it('retries once with a newer refresh token when its access token has expired', async () => {
+      ssmMock
+        .on(GetParameterCommand)
+        .resolvesOnce(seedTokenParam({ expiresAt: 1 }))
+        .resolves(
+          seedTokenParam({
+            accessToken: 'concurrent-at',
+            refreshToken: 'concurrent-rt',
+            expiresAt: 1,
+          }),
+        );
+      fetchMock
+        .mockResolvedValueOnce(errResponse(400, { error: 'invalid_grant' }))
+        .mockResolvedValueOnce(
+          okResponse({ access_token: 'fresh-at', refresh_token: 'fresh-rt', expires_in: 3600 }),
+        )
+        .mockResolvedValueOnce(okResponse({ issues: [] }));
+      await jiraProvider.listIssues(ctx(), 'PROJ');
+      expect(JSON.parse(fetchMock.mock.calls[1][1].body).refresh_token).toBe('concurrent-rt');
+      expect(fetchMock.mock.calls[2][1].headers.Authorization).toBe('Bearer fresh-at');
+      const saved = JSON.parse(ssmMock.commandCalls(PutParameterCommand)[0].args[0].input.Value);
+      expect(saved).toMatchObject({ accessToken: 'fresh-at', refreshToken: 'fresh-rt' });
+    });
+
+    it('confirms invalid_grant only when SSM still contains the rejected tokens', async () => {
+      ssmMock.on(GetParameterCommand).resolves(seedTokenParam({ expiresAt: 1 }));
+      fetchMock.mockResolvedValueOnce(errResponse(400, { error: 'invalid_grant' }));
+      await expect(jiraProvider.listIssues(ctx(), 'PROJ')).rejects.toMatchObject({
+        code: 'JIRA_GRANT_REVOKED',
+        extra: { reconnect: true },
+      });
+      expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(2);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not declare revocation if tokens keep changing during the bounded retry', async () => {
+      ssmMock
+        .on(GetParameterCommand)
+        .resolvesOnce(seedTokenParam({ expiresAt: 1 }))
+        .resolvesOnce(
+          seedTokenParam({ accessToken: 'second-at', refreshToken: 'second-rt', expiresAt: 1 }),
+        )
+        .resolves(
+          seedTokenParam({ accessToken: 'third-at', refreshToken: 'third-rt', expiresAt: 1 }),
+        );
+      fetchMock.mockResolvedValue(errResponse(400, { error: 'invalid_grant' }));
+      await expect(jiraProvider.listIssues(ctx(), 'PROJ')).rejects.toMatchObject({
+        status: 503,
+        extra: {},
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+    });
+  });
+
+  describe('delegated Jira issue scope', () => {
+    const delegated = () => ({ ...ctx(), resolveConnection: async () => seedConnectionRow().Item });
+
+    it('uses stable project identity for reads and searches after a key rename', async () => {
+      const connection = { ...delegated(), externalProjectId: '10000' };
+      const renamed = issueFixture({
+        key: 'NEW-1',
+        fields: { project: { id: '10000', key: 'NEW' } },
+      });
+      fetchMock.mockResolvedValueOnce(okResponse(renamed));
+      await expect(jiraProvider.getIssue(connection, 'OLD', 'OLD-1')).resolves.toMatchObject({
+        resourceId: 'NEW-1',
+        externalProjectId: '10000',
+      });
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [renamed] }));
+      await jiraProvider.listIssues(connection, 'OLD');
+      expect(new URL(fetchMock.mock.calls[1][0]).searchParams.get('jql')).toContain(
+        'project = "10000"',
+      );
+      // The comment scope check also authorizes by ID, despite the saved old key.
+      fetchMock
+        .mockResolvedValueOnce(okResponse(renamed))
+        .mockResolvedValueOnce(okResponse({ id: 'comment-1' }));
+      await expect(
+        jiraProvider.addIssueComment(connection, 'OLD', 'OLD-1', 'Delivered'),
+      ).resolves.toMatchObject({ id: 'comment-1' });
+    });
+
+    it('rejects a different project even if it reuses the old key', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okResponse({ fields: { project: { id: '20000', key: 'OLD' } } }),
+      );
+      await expect(
+        jiraProvider.listIssues({ ...delegated(), externalProjectId: '10000' }, 'OLD', {
+          parent: 'OLD-1',
+        }),
+      ).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('resolves a renamed legacy key when verifying delegation', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ id: '10000', key: 'NEW' }));
+      await expect(verifyProject(ctx(), 'OLD', 'OLD')).resolves.toMatchObject({
+        externalProjectId: '10000',
+      });
+    });
+
+    it('rejects reconnection to a different stable project', async () => {
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ id: '20000', key: 'OTHER' }))
+        .mockResolvedValueOnce(okResponse({ id: '10000', key: 'NEW' }));
+      await expect(verifyProject(ctx(), 'OTHER', '10000')).rejects.toMatchObject({ status: 400 });
+    });
+
+    it('allows a directly linked Product Discovery issue in another project', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse(issueFixture({ key: 'WORK-1', fields: { project: { key: 'WORK' } } })),
+        )
+        .mockResolvedValueOnce(okResponse({ projectTypeKey: 'product_discovery' }))
+        .mockResolvedValueOnce(okResponse({ issues: [{ key: 'IDEAS659-1' }] }));
+      const result = await jiraProvider.getIssue(delegated(), 'IDEAS659', 'WORK-1');
+      expect(result.resourceId).toBe('WORK-1');
+      const query = new URL(fetchMock.mock.calls[2][0]).searchParams.get('jql');
+      expect(query).toBe('project = "IDEAS659" AND issue in linkedIssues("WORK-1")');
+    });
+
+    it('rejects a foreign parent before listing linked issues', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ fields: { project: { key: 'FOREIGN' } } }));
+      await expect(
+        jiraProvider.listIssues(delegated(), 'IDEAS659', { parent: 'FOREIGN-1' }),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses to post to an issue with no link to the bound project', async () => {
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ fields: { project: { key: 'FOREIGN' } } }))
+        .mockResolvedValueOnce(okResponse({ projectTypeKey: 'product_discovery' }))
+        .mockResolvedValueOnce(okResponse({ issues: [] }));
+      await expect(
+        jiraProvider.addIssueComment(delegated(), 'IDEAS660', 'FOREIGN-1', 'hello'),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(fetchMock.mock.calls.some(([, options]) => options.method === 'POST')).toBe(false);
     });
   });
 });

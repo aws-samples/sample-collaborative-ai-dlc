@@ -343,3 +343,75 @@ describe('TrackersTab — tracker reconnection', () => {
     expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
   });
 });
+
+describe('TrackersTab — shared Jira binding', () => {
+  const jiraProject = () =>
+    makeProject({
+      trackers: [
+        makeTracker({
+          id: 'jira-binding',
+          provider: 'jira-cloud',
+          externalProjectKey: 'ENG',
+          externalProjectId: '10000',
+          displayName: 'Engineering',
+          status: 'active',
+          connectionUserId: 'another-admin',
+          cloudId: 'site-1',
+        }),
+      ],
+    });
+
+  it('shows the shared binding to another admin without asking them to connect', async () => {
+    render(<TrackersTab project={jiraProject()} canEdit reload={vi.fn()} />);
+    expect(await screen.findByText('Shared with all space members')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect Jira Cloud' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add Jira project' })).toBeInTheDocument();
+  });
+
+  it('reconnects the same binding after explicit consent and limits selection to its project', async () => {
+    vi.mocked(trackersService.listExternalProjects).mockResolvedValue([
+      { id: '10000', key: 'RENAMED', name: 'Engineering' },
+      { id: '20000', key: 'OTHER', name: 'Other project' },
+    ]);
+    const reload = vi.fn();
+    render(<TrackersTab project={jiraProject()} canEdit reload={reload} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Reconnect' }));
+    const radio = await screen.findByRole('radio', { name: /Engineering/ });
+    expect(screen.queryByRole('radio', { name: /Other project/ })).not.toBeInTheDocument();
+    fireEvent.click(radio);
+    const dialog = screen.getByRole('dialog');
+    const { within } = await import('@testing-library/react');
+    const save = within(dialog).getByRole('button', { name: 'Reconnect' });
+    expect(save).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(trackersService.addToProject).toHaveBeenCalledWith('project-1', {
+        bindingId: 'jira-binding',
+        provider: 'jira-cloud',
+        instance: 'cloud',
+        externalProjectKey: 'RENAMED',
+        displayName: 'Engineering',
+        confirmDelegation: true,
+      }),
+    );
+    expect(reload).toHaveBeenCalled();
+  });
+
+  it('restores the binding to reconnect after OAuth', async () => {
+    vi.mocked(trackersService.listExternalProjects).mockResolvedValue([
+      { id: '10000', key: 'ENG', name: 'Engineering' },
+    ]);
+    render(
+      <TrackersTab project={jiraProject()} canEdit reload={vi.fn()} />,
+      '/space/project-1/settings?tab=trackers&reconnectJiraBinding=jira-binding',
+    );
+    expect(
+      await screen.findByRole('dialog', { name: 'Reconnect Jira project' }),
+    ).toBeInTheDocument();
+    expect(await screen.findByRole('radio', { name: /Engineering/ })).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      /^\/space\/project-1\/settings\?tab=trackers$/,
+    );
+  });
+});
