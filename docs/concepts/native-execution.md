@@ -2734,8 +2734,9 @@ format checks pass. Earlier accepted backend/frontend, package and static suites
 were not repeated; their sealed evidence and the explained root release-suite
 exception remain unchanged.
 
-**Runtime, controller and frontend deployment, independent deployed verification
-and live proof remain pending.** After review, the exact operator action is:
+At this installed-image qualification boundary, **runtime, controller and
+frontend deployment, independent deployed verification and live proof were
+pending**. The exact operator command prepared for that stage was:
 
 ```bash
 bash /Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne06-2026-11-04-image-qualification/handoff/deploy-ne06.sh
@@ -2759,6 +2760,98 @@ frontend bytes against this candidate. No Terraform operation, image push,
 deployment, cloud runtime/model invocation, cloud cleanup or fresh live test was
 performed here. Existing development executions remain disposable; preserving or
 retiring them and clearing old queues are not prerequisites for this handoff.
+
+### NE-06 deployed acceptance — 2026-11-04
+
+**Deployment and independent deployed artifact verification are complete** for
+`619848c73b789a3f6404323e1387bf66cad5b905`. Its production source is identical to
+qualified commit `5dff13ca055e909665d8f37d959abf9e18025c1b`; only this canonical
+document differs. The user's deployment-only attempt started at **16:00:57 UTC**
+and finished at **16:12:24 UTC**, with matching candidate and qualified-image
+receipts. Its original log, saved plan, receipts and single-attempt guard remain
+unchanged. **Do not rerun that handoff, clear its guard or reapply its plan.**
+
+Independent reads used `solution-read` in account `746558295630`, region
+`us-east-1`. STS and IAM confirmed the assumed `ReadOnly` role, its
+`ReadOnlyAccess` managed policy and absence of inline policies. The saved plan was
+decoded locally with `terraform show -json`; no plan, refresh or apply ran during
+verification. Its **152 added / 55 changed / 152 destroyed** totals match the
+deployment log. The replacement pairs are 47 `local_file`, 47 `null_resource`,
+56 `terraform_data`, one local `docker_image` and one `docker_registry_image`
+with `keep_remotely=true`. **There are no AWS resource replacements in this
+plan.** The 55 AWS changes are in-place updates to 48 Lambda functions, six
+aliases and the shared AgentCore runtime. The full deployment's shared-source
+package triggers explain this broader scope: 36 Lambda updates have no
+environment change and 12 update image configuration. The sixth alias is the
+v2 orchestrator's `live` alias; independent package-byte acceptance here covers
+the nine native functions and five authority aliases.
+
+All **nine downloaded native Lambda entrypoints** match the candidate bundles,
+and all **105 bundle source inputs** match the deployed commit. Their ZIP
+checksums match Lambda's reported checksums; every function is Active with a
+Successful update. Authority, execution, cancellation and credentials are the
+four changed owners versus NE-05; the other five entrypoints are unchanged.
+The authority's **commands, execution, preparation, projection and results**
+aliases all route without weights to published **version 23**, whose downloaded
+package and configuration also match.
+
+The current ECR tag **`9f2b66d03e798aca`** resolves to these independently hashed
+artifacts:
+
+| Artifact                   | SHA256                                                             |
+| -------------------------- | ------------------------------------------------------------------ |
+| Registry index             | `b8ba493868fc2b7d45bcc924b11197df61423aa09c24e0d43e695cf4be4cc5df` |
+| Linux ARM64 image manifest | `d57b1dbc1ee98329bdf69b9e730285a4a1199015ea6b88a8a7c365ee755c074d` |
+| OCI configuration          | `6ececa1aeaee84cb7c1d7e054dd068a373f4a05f76f818b168bf7e6b82566737` |
+
+The platform manifest and configuration digest exactly match the sealed local
+qualification build. All **23 ordered filesystem layer identities** and the
+complete runtime configuration match immutable local image
+`sha256:45d5a43214073bd2742df5fe3e2dc4280b73d5cc4f73ac06d3d40d379b09697e`.
+This establishes equality of the actual registry runtime, installed CLIs and
+dependency bytes, including the **270 packaged production files** and
+`/opt/shared/native-runtime-command.js`. Those source hashes also match the
+deployed commit and the previously recorded production manifest. The registry
+index and local image ID remain distinct identities. No image execution,
+pull or qualification repeat was needed for this proof.
+
+All **33 image pins across 12 current Lambda consumers** select the verified
+registry digest or its immutable URI. The shared AgentCore runtime and its
+DEFAULT endpoint are both **READY on version 143**, using that image and the
+planned VPC configuration. These are current defaults for new executions;
+historical execution pins were neither queried nor retargeted.
+
+A fresh inventory verifies **all 523 current frontend files** against the
+deployment build, an exact production rebuild from committed source and verified
+public deployment configuration, downloaded S3 objects and CloudFront responses.
+The root page, its asset references and the native service code in
+`index-2cSux8wZ.js` and `useNativeIntents-Cji9kpM4.js` match. The distribution is
+Deployed and enabled, its default origin is the expected bucket, and the
+deployment invalidation is Completed. The complete bucket listing contains
+1,953 objects, including 1,430 retained objects outside this build; they are not
+current candidate files or a cleanup gate. CDN byte proof covers the responding
+**DUS51-P7** point of presence at the recorded times, not every edge or an
+existing browser cache.
+
+Fresh evidence is sealed under
+`.native-evidence/ne06-2026-11-04-deployed-619848c7/`, including the user receipt,
+read helpers and exit logs, plan-scope explanation, downloaded packages,
+source/image/configuration comparisons, frontend inventory and byte receipts,
+completion report and integrity manifest. An initial sandbox plugin-startup
+failure was resolved by permitting the local saved-plan decoder. An isolated
+frontend rebuild with symlinked dependencies changed preload ordering; rebuilding
+the verified source at its original dependency-resolution root matched every
+deployment file. Both diagnostic attempts remain recorded. No production repair
+or broad test/installed-qualification repeat was needed.
+
+**No operator action remains for NE-06 deployed artifact acceptance.** The local
+public-command done criteria and installed-CLI scopes above remain their own
+evidence. This verification does not claim a fresh live workflow, deployed
+Start/reply/cancel/resume behavior, human-gate handling, model behavior or browser
+interaction: none was invoked. Existing development executions remain disposable,
+with no preservation, migration, retirement or queue-cleanup gate. Earlier sealed
+evidence remains historical and unchanged. Kiro stays deferred to NE-18, generated
+application quality is outside scope, and NE-07 has not started.
 
 ## Integration and simplification checklist
 
@@ -2870,11 +2963,13 @@ the current contract for newly created executions.
       current frontend/API/runtime shapes are covered by 44 public-command tests,
       with the full backend/frontend and bounded packaging/static evidence above.
       The subsequent packaged-image qualification passes 162 Linux regressions
-      and the finite installed Claude/Codex/OpenCode scopes above. The fresh
-      deployment-only handoff pins that evidence; coordinated runtime/controller/
-      frontend deployment, independent deployed verification and live proof remain
-      pending. The user's development-data decision is resolved and creates no
-      preservation or cleanup gate.
+      and the finite installed Claude/Codex/OpenCode scopes above. **Deployed
+      acceptance completed 2026-11-04:** all nine native packages, five authority
+      aliases at version 23, registry runtime and installed bytes, 33 current
+      image pins, shared runtime/DEFAULT version 143 and all 523 frontend files
+      are independently verified. Fresh live behavior was not exercised and is
+      not required for this artifact acceptance. The user's development-data
+      decision is resolved and creates no preservation or cleanup gate.
 - [ ] **NE-07 — Simplify harness output and workflow question adapters.** Select a
       decoder for each harness and a supported methodology interaction contract.
       Remove obsolete parser state and question-format fallbacks; keep AI-DLC as
