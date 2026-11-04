@@ -197,6 +197,26 @@ state would plan replacement of the release deployment rather than a second
 stack. Sharing the bucket is safe when the key and lock-file permissions are
 separate.
 
+### Optional post-deploy release tests
+
+After a successful `main` deployment, the workflow can ask a release-testing
+setup in the deployment account to test the deployed revision, for example an
+AWS DevOps Agent release test. The request is sent only when both environment
+secrets below exist in `demo-main`; otherwise the step is skipped. It runs
+after `Verify deployment` and uses `continue-on-error`, so a failed request
+never fails the deployment. The step assumes the role with the job's OIDC token
+directly (no credentials action), so no role or account identifier is logged.
+
+| Secret                      | Value                                                                              |
+| --------------------------- | ---------------------------------------------------------------------------------- |
+| `POST_DEPLOY_TEST_ROLE_ARN` | An OIDC role trusted like the deployment role, allowed only to invoke the function |
+| `POST_DEPLOY_TEST_FUNCTION` | Name of the Lambda function in `us-east-1` that starts the tests                   |
+
+The workflow invokes the function asynchronously with the run ID and the
+deployed commit, and prints nothing from AWS, so public logs contain no
+account-specific values. The function should verify the run through the GitHub
+API before acting on it.
+
 ### Create or update the main-demo deployment role
 
 Reuse the account's existing GitHub Actions OIDC provider, but prefer a separate
