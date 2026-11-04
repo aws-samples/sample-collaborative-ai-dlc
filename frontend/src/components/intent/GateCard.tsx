@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import type { GateAnswer, IntentGate } from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
-import QuestionEditor from '@/components/QuestionEditor';
+import QuestionEditor, { type QuestionReferences } from '@/components/QuestionEditor';
+import { useIntentGraph } from '@/hooks/useIntentGraph';
 import type { Question } from '@/services/questions';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -41,7 +42,15 @@ export interface GateCardProps {
 
 export function GateCard({ gate, projectId, intentId, userName, onAnswer }: GateCardProps) {
   const navigate = useNavigate();
-  const { stageNameOf: gateStageNameOf, detail } = useIntent();
+  const {
+    stageNameOf: gateStageNameOf,
+    detail,
+    openArtifactPreview,
+    openItemPreview,
+  } = useIntent();
+  // Shared graph cache: lets references such as FR2.4 or dec-session-tokens in a question
+  // link to the matching artifact or derived-item preview.
+  const { derivedItems } = useIntentGraph(projectId, intentId);
   // Steering (docs/v2-steering.md): an optional course correction riding the
   // answer — injected into the resumed agent conversation right after it, so
   // the human can redirect the agent's direction while answering.
@@ -66,6 +75,16 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
       createdAt: gate.createdAt ?? '',
     };
   }, [gate]);
+  const artifacts = detail?.artifacts;
+  const references = useMemo<QuestionReferences>(
+    () => ({
+      artifacts: artifacts ?? [],
+      derivedItems,
+      onOpenArtifact: openArtifactPreview,
+      onOpenItem: openItemPreview,
+    }),
+    [artifacts, derivedItems, openArtifactPreview, openItemPreview],
+  );
   const walkingSkeletonBranch = useMemo<UnitBranchItem | null>(() => {
     if (!gate.prompt?.startsWith('Walking skeleton') || !gate.unitSlug) return null;
     return (
@@ -268,6 +287,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
     <div>
       <QuestionEditor
         question={question}
+        references={references}
         scope={{ kind: 'intent', id: intentId, projectId }}
         userName={userName}
         onAnswer={(structuredAnswer) =>
