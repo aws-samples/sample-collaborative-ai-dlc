@@ -2649,44 +2649,116 @@ files without them. Successful broad suites were not repeated after these final
 results. Local commit hooks were skipped after explicit checks to avoid duplicate
 tests and network audits.
 
-**Deployment and installed-image qualification remain pending.** All nine native
+At the initial local implementation boundary, **deployment and installed-image
+qualification were pending**. All nine native
 packages have local byte manifests from **105 production source inputs**;
 authority, execution, cancellation and credentials differ from the deployed NE-05
 candidate. The other five entrypoints are byte-identical, although Terraform's
 shared source triggers can rebuild their packages. Runtime and frontend bytes also
 change. The **270 runtime source files** compute tag **`9f2b66d03e798aca`** with
-the existing dev interaction fixture enabled. This is a source-derived tag, not a
-qualified local image ID or a verified registry digest. NE-05's earlier image and
-installed qualification cannot prove these new runtime bytes.
+the existing dev interaction fixture enabled. This is a source-derived tag;
+NE-05's earlier image and installed qualification cannot prove these new runtime
+bytes.
 
-After review, the next operator action is the fresh, single-use handoff:
+The original combined handoff,
+`.native-evidence/ne06-2026-11-04-public-command-contract/handoff/qualify-and-deploy.sh`,
+was prepared at that boundary and remains **unattempted**. Its sealed evidence and
+guard remain unchanged. The completed qualification below supersedes that handoff
+with a deployment-only command; the operator need not repeat local qualification.
 
-```bash
-bash /Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne06-2026-11-04-public-command-contract/handoff/qualify-and-deploy.sh
+### NE-06 installed-image qualification — 2026-11-04
+
+**Local installed-image qualification passes** for committed candidate
+`5dff13ca055e909665d8f37d959abf9e18025c1b`, including implementation
+`390642ed2ca610660a57f2b97a44006592249023`. No production repair was needed. The
+production Dockerfile built an exact committed source archive for Linux ARM64
+with `ENABLE_NATIVE_INTERACTION_PROBE=true`. The immutable local image is:
+
+```text
+sha256:45d5a43214073bd2742df5fe3e2dc4280b73d5cc4f73ac06d3d40d379b09697e
 ```
 
-Its `--check-only` mode verifies the reviewed branch/HEAD, clean tracked tree,
-configuration/input hashes and local validation without credentials or deployment.
-The handoff pins the final candidate in `handoff/candidate.json`, uses profile
-`solution` in account `746558295630`, region `us-east-1`, and checks the standalone
-ECR helper. It archives the committed runtime source, builds a new ARM64 image,
-and runs the existing packaged-image Linux and installed Claude/Codex/OpenCode
-qualification against that immutable local image. Qualification uses the existing
-cached fixture assets and no provider network. Any failure stops before deployment
-and preserves this handoff's attempt directory.
+The archive SHA256 is
+`866d11499189afa0b3e20b8b6c0459f25a9815e6bdc3ccd3666bace252f05cc3`.
+All four qualification containers independently audited the actual **270
+production files under `/opt`**, including `shared/native-runtime-command.js`.
+Their source manifest SHA256 is
+`1f1deaf6e83572afee5fcd8b5a8b14bf9d8757d13521f2110f8ced9acccae13a`.
+Candidate production files were not mounted over the image. The separately
+staged candidate Lambda adapter has its own recorded hash.
 
-Only after qualification succeeds does the operator script call
-`scripts/deploy-terraform.sh dev --phase all --skip-seed` with a fresh retained plan,
-then `scripts/deploy-frontend.sh dev`. The wrapper builds/pushes its own image;
-independent deployed verification must subsequently match native bundle/alias
-bytes, the registry image and its installed qualification, and frontend bytes.
-The local image ID is not substituted for registry proof. This task performs none
-of those operator mutations, no runtime/model call, and no fresh live workflow.
-Old execution preservation and queue cleanup are not deployment prerequisites.
-A completion receipt and integrity manifest accompany the handoff; they preserve
-failed attempts as evidence and distinguish local, installed, deployed and live
-status. Generated application content is opaque fixture data; Kiro remains
-deferred to NE-18. NE-07 and NE-08 are not part of this implementation.
+Fresh qualification fixtures were prepared and independently verified through
+`scripts/native-qualification-package.mjs --workflow 2.11.1`: six pinned public
+release assets, the 32 locked OpenCode dependency-cache packages and Linux ARM64
+bindings `1.1.5`. All **235 fixture files** were hashed again after qualification
+and remained unchanged. No private CLI state was reused. The real installed
+package verifier checked the offline release attestations.
+
+`scripts/native-qualification.mjs --installed-only --packaged-image
+--cli claude,codex,opencode` ran against the immutable image ID and verified
+fixtures, cache and bindings. The overall command and all four container tiers
+exited zero:
+
+| Tier / installed CLI | Result | Finite evidence                                                                                                                                             |
+| -------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Linux regressions    | PASS   | **162 tests** across four files, exercising process, filesystem, manifest, executor and controller EFS boundaries.                                          |
+| Claude **2.1.296**   | PASS   | 11 publications, 12 CLI turns, three sessions; real review completion, two session losses, preserved gate and explicit fixture-human approval.              |
+| Codex **0.162.1**    | PASS   | 10 publications, 10 CLI turns, two sessions; resumed stage/gate, explicit reconciliation answer and surviving dependency rebuild.                           |
+| OpenCode **1.19.0**  | PASS   | Seven publications, seven CLI turns, two sessions; resumed binding, stage and gate. Dependency rebuild and the reconciliation-question branch are excluded. |
+
+All three installed CLIs ran on Node **24.19.0** and additionally passed login-shell
+workflow dispatch, rejection of an unconfigured launcher, failed and incomplete
+output handling, and cancellation of real descendant processes. The containers
+used `--network none`, an unprivileged user, a read-only image and disposable
+local workspace directories. Scripted local providers and injected AWS ports
+keep this evidence offline: it does not qualify cloud model behavior, deployed
+IAM, real EFS service wiring, browser behavior or deployed latency. Generated
+application content remains opaque fixture data. Kiro remains deferred to NE-18;
+NE-07 and NE-08 are outside this work.
+
+An initial Public ECR authentication attempt with `solution-read` was denied
+`sts:GetServiceBearerToken` before the build. Using `solution` solely for
+nonmutating public registry authentication through the existing temporary-config
+wrapper resolved it. The failed command and sanitized reason are retained;
+credentials were not retained and the user's global Docker configuration is
+unchanged.
+
+Fresh evidence is under
+`.native-evidence/ne06-2026-11-04-image-qualification/`: the source archive and
+manifests, immutable image metadata, fresh fixtures, complete command stdout,
+stderr and exit receipts, `qualification.json`, handoff validation, completion
+receipt and integrity manifest. The **24 handoff checks** pass, including
+side-effect-free `--check-only`, source/fixture/image/qualification drift, denied
+credential-helper responses and repeat-attempt refusal. Shell syntax and targeted
+format checks pass. Earlier accepted backend/frontend, package and static suites
+were not repeated; their sealed evidence and the explained root release-suite
+exception remain unchanged.
+
+**Runtime, controller and frontend deployment, independent deployed verification
+and live proof remain pending.** After review, the exact operator action is:
+
+```bash
+bash /Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne06-2026-11-04-image-qualification/handoff/deploy-ne06.sh
+```
+
+The fresh deployment-only handoff pins the final documentation candidate in
+`handoff/candidate.json` and permits only this canonical documentation to differ
+from the qualified commit. `--check-only` verifies branch/HEAD, clean tracked
+source, deployment configuration, runtime/bundle inputs, immutable qualification
+receipts and every fixture hash before any credential setup or mutation. Normal
+execution uses profile `solution`, account `746558295630`, region `us-east-1`,
+checks the standalone ECR helper, and preserves one deployment attempt with its
+log, plan and receipts. It calls `scripts/deploy-terraform.sh dev --phase all
+--skip-seed` with a fresh retained plan, then `scripts/deploy-frontend.sh dev`.
+It does not repeat the completed Linux or installed-CLI qualification.
+
+Terraform builds and pushes its own deployment image. The qualified local image
+ID is not its registry digest: subsequent independent verification must match the
+actual registry artifact and installed bytes, native bundle/alias bytes and
+frontend bytes against this candidate. No Terraform operation, image push,
+deployment, cloud runtime/model invocation, cloud cleanup or fresh live test was
+performed here. Existing development executions remain disposable; preserving or
+retiring them and clearing old queues are not prerequisites for this handoff.
 
 ## Integration and simplification checklist
 
@@ -2797,10 +2869,12 @@ the current contract for newly created executions.
       needed to pass them. **Completed locally 2026-11-04:** explicit routes and
       current frontend/API/runtime shapes are covered by 44 public-command tests,
       with the full backend/frontend and bounded packaging/static evidence above.
-      The fresh guarded handoff names the coordinated runtime/controller/frontend
-      deployment and required installed-image qualification; neither is claimed
-      complete by these local tests. The user's development-data decision is resolved
-      and creates no preservation or cleanup gate.
+      The subsequent packaged-image qualification passes 162 Linux regressions
+      and the finite installed Claude/Codex/OpenCode scopes above. The fresh
+      deployment-only handoff pins that evidence; coordinated runtime/controller/
+      frontend deployment, independent deployed verification and live proof remain
+      pending. The user's development-data decision is resolved and creates no
+      preservation or cleanup gate.
 - [ ] **NE-07 — Simplify harness output and workflow question adapters.** Select a
       decoder for each harness and a supported methodology interaction contract.
       Remove obsolete parser state and question-format fallbacks; keep AI-DLC as
