@@ -22,7 +22,7 @@ it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
       gate: { stage: 'requirements-analysis' },
       messagesText: 'Approve or Request Changes',
       spec: {
-        version: 1,
+        version: 2,
         questions: [
           {
             prompt: 'Review the exact requirements',

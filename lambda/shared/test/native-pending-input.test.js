@@ -4,8 +4,10 @@ import {
   nativeAnswerText,
   nativePendingInput,
   nativeSelection,
+  nativeMethodologyInteractionContract,
 } from '../native-pending-input.js';
 import { proposedPlanSpec } from './fixtures/native-plan-ask.js';
+import { aidlc211Identity } from './fixtures/native-aidlc-211-interactions.js';
 
 const planChoiceText = [
   '**Plan Choice** — No ready-made plan clearly fits. How should I proceed?',
@@ -14,7 +16,7 @@ const planChoiceText = [
   '3. **Other** — Name another scope',
 ].join('\n');
 const planSpec = {
-  version: 1,
+  version: 2,
   questions: [
     {
       prompt: 'No ready-made plan clearly fits. How should I proceed?',
@@ -28,7 +30,7 @@ const planSpec = {
   ],
 };
 const approvalSpec = {
-  version: 1,
+  version: 2,
   questions: [
     {
       prompt: 'Requirements complete. How would you like to proceed?',
@@ -48,6 +50,39 @@ const approvalTurn = {
 };
 
 describe('native pending input display contract', () => {
+  it('selects the current interaction contract only from the verified package identity', () => {
+    expect(nativeMethodologyInteractionContract(aidlc211Identity)).toBe('aidlc-2.11.1');
+    for (const identity of [
+      null,
+      { ...aidlc211Identity, version: '2.11.0' },
+      { ...aidlc211Identity, source: { ...aidlc211Identity.source, repository: 'example/fork' } },
+      { ...aidlc211Identity, source: { ...aidlc211Identity.source, commit: 'a'.repeat(40) } },
+      { ...aidlc211Identity, assets: { runtime: { sha256: 'a'.repeat(64) } } },
+    ])
+      expect(nativeMethodologyInteractionContract(identity)).toBeNull();
+  });
+
+  it('preserves literal recommendation labels and exact prompt/header/description text', () => {
+    const spec = {
+      version: 2,
+      questions: [
+        {
+          prompt: 'Which approach?\nKeep the explanatory line.',
+          header: 'Approach',
+          options: [
+            { label: 'Simple (Recommended)', description: 'Keep existing behavior.' },
+            { label: 'Simple', description: 'Use the other explicit choice.' },
+          ],
+        },
+      ],
+    };
+    const input = buildNativePendingInput({ spec });
+    expect(input.questions[0]).toEqual({ id: 'q1', multiSelect: false, ...spec.questions[0] });
+    expect(nativeAnswerText(input, { answers: [{ selectedOptions: [0] }] })).toBe(
+      'Simple (Recommended)',
+    );
+  });
+
   it('preserves every explicit proposed-plan choice, including a choice needing more input', () => {
     const input = buildNativePendingInput({
       spec: proposedPlanSpec,
@@ -89,7 +124,10 @@ describe('native pending input display contract', () => {
     'renders exact explicit definitions independently of prose: %s',
     (messagesText) => {
       const input = buildNativePendingInput({ spec: { ...planSpec, version: 2 }, messagesText });
-      expect(input.questions[0].options.map((o) => o.label)).toEqual(['Compose', 'Express']);
+      expect(input.questions[0].options.map((o) => o.label)).toEqual([
+        'Compose (Recommended)',
+        'Express',
+      ]);
       expect(input.questions[0].prompt).toBe(planSpec.questions[0].prompt);
     },
   );
@@ -155,8 +193,11 @@ describe('native pending input display contract', () => {
   ])('rejects unusable display shape without inventing questions: %j', (spec) => {
     expect(buildNativePendingInput({ spec })).toBeNull();
   });
-  it('retains v1 and refuses malformed stored approvals', () => {
-    expect(buildNativePendingInput({ spec: planSpec }).schemaVersion).toBe(1);
+  it('rejects the retired v1 spec and malformed stored approvals', () => {
+    expect(buildNativePendingInput({ spec: { ...planSpec, version: 1 } })).toBeNull();
+    expect(() =>
+      nativePendingInput({ ...buildNativePendingInput({ spec: planSpec }), schemaVersion: 1 }),
+    ).toThrow();
     const input = buildNativePendingInput(approvalTurn);
     input.questions[0].options = [
       { label: 'Approve', description: null },
@@ -215,7 +256,9 @@ describe('native answer rendering', () => {
   const choice = buildNativePendingInput({ spec: planSpec, messagesText: planChoiceText });
   const gate = buildNativePendingInput(approvalTurn);
   it('sends the bare exact label for one question, never a number', () => {
-    expect(nativeAnswerText(choice, { answers: [{ selectedOptions: [0] }] })).toBe('Compose');
+    expect(nativeAnswerText(choice, { answers: [{ selectedOptions: [0] }] })).toBe(
+      'Compose (Recommended)',
+    );
     expect(nativeAnswerText(gate, { answers: [{ selectedOptions: [0] }] })).toBe('Approve');
   });
   it('keeps request-changes feedback separate from the decision label', () => {
@@ -232,7 +275,7 @@ describe('native answer rendering', () => {
       }),
     ).toBe('Use the bugfix scope');
     const batch = nativePendingInput({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: 'choice',
       source: 'rendered-question',
       stage: null,

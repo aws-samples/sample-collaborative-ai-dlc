@@ -6,11 +6,13 @@ import {
   nativeSelectionPayload,
   nativeFormError,
 } from './nativePendingInput';
+// @ts-expect-error Verify both trust boundaries against the same mutations.
+import { nativePendingInput as backendPendingInput } from '../../../lambda/shared/native-pending-input.js';
 
 // Same vectors as lambda/shared/test/native-pending-input.test.js: the
 // controller rejects a reply whose text differs from its own rendering.
 const gate = nativePendingInput({
-  schemaVersion: 1,
+  schemaVersion: 2,
   kind: 'approval',
   source: 'engine-gate',
   stage: 'requirements-analysis',
@@ -28,7 +30,7 @@ const gate = nativePendingInput({
   ],
 });
 const batch = nativePendingInput({
-  schemaVersion: 1,
+  schemaVersion: 2,
   kind: 'choice',
   source: 'rendered-question',
   stage: null,
@@ -58,7 +60,52 @@ const batch = nativePendingInput({
 });
 
 describe('native answer rendering parity', () => {
-  it('supports bounded v2 mixed forms without changing legacy question or gate contracts', () => {
+  it.each([
+    (value: Record<string, unknown>) => {
+      value.schemaVersion = 1;
+    },
+    (value: Record<string, unknown>) => {
+      value.stage = ['requirements-analysis'];
+    },
+    (value: Record<string, unknown>) => {
+      value.stage = null;
+    },
+    (value: Record<string, unknown>) => {
+      value.questions = [{ ...gate.questions[0], prompt: 'x'.repeat(2001) }];
+    },
+    (value: Record<string, unknown>) => {
+      value.questions = [{ ...gate.questions[0], prompt: 'Question\u0000?' }];
+    },
+    (value: Record<string, unknown>) => {
+      value.questions = [{ ...gate.questions[0], multiSelect: true }];
+    },
+    (value: Record<string, unknown>) => {
+      value.questions = [
+        {
+          ...gate.questions[0],
+          options: [gate.questions[0].options[0], gate.questions[0].options[0]],
+        },
+      ];
+    },
+    (value: Record<string, unknown>) => {
+      value.questions = [
+        {
+          ...gate.questions[0],
+          options: [
+            { label: 'Ship it', description: null },
+            { label: 'Revise', description: null },
+          ],
+        },
+      ];
+    },
+  ])('rejects malformed public pending data at both boundaries %#', (mutate) => {
+    const value = structuredClone(gate) as unknown as Record<string, unknown>;
+    mutate(value);
+    expect(() => backendPendingInput(value)).toThrow();
+    expect(() => nativePendingInput(value)).toThrow();
+  });
+
+  it('supports the current bounded mixed form and exact gate contract', () => {
     const questions = Array.from({ length: 6 }, (_, index) => ({
       ...batch.questions[0],
       id: `q${index + 1}`,

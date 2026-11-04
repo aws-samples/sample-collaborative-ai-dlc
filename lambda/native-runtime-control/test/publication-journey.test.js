@@ -47,6 +47,7 @@ it.each([
 ])('Claude publication journey: %j', async (scenario) => {
   const f = executionFixture({
     harness: 'claude',
+    packageVersion: '2.11.1',
     model: 'fixture-sonnet',
   });
   await f.start();
@@ -271,7 +272,13 @@ it.each([
         { mode: 0o600 },
       );
       return {
-        package: { directory, binaryPath, version: '2.9.0', packageId: f.configuration.packageId },
+        package: {
+          directory,
+          binaryPath,
+          version: '2.11.1',
+          interactionContract: 'aidlc-2.11.1',
+          packageId: f.configuration.packageId,
+        },
         repositoryCommit: 'c'.repeat(40),
         authEnv: { AWS_BEARER_TOKEN_BEDROCK: 'fixture-model-token' },
       };

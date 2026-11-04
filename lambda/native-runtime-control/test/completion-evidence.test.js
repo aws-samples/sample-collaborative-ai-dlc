@@ -14,7 +14,7 @@ const gate = buildNativePendingInput({
   gate: { stage: 'requirements-analysis' },
   messagesText: text,
   spec: {
-    version: 1,
+    version: 2,
     questions: [
       {
         prompt: 'Review this proposal',

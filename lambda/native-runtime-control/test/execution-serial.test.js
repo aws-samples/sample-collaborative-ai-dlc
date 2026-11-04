@@ -361,7 +361,7 @@ describe('task-2 accepted answer attribution and revocation races', () => {
 
 describe('task-3 structured answers', () => {
   const pendingInput = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'approval',
     source: 'engine-gate',
     stage: 'requirements-analysis',

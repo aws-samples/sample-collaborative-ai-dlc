@@ -1,6 +1,6 @@
 import type { Question, StructuredAnswer } from '@/services/questions';
 
-// Task-3 structured native questions. Mirrors lambda/shared/native-pending-input.js:
+// Current structured native questions. Mirrors lambda/shared/native-pending-input.js:
 // the controller re-renders a selection with the same algorithm and rejects a
 // reply whose text differs, so keep the two implementations identical.
 
@@ -18,7 +18,7 @@ export interface NativePendingQuestion {
 }
 
 export interface NativePendingInput {
-  schemaVersion: 1 | 2;
+  schemaVersion: 2;
   kind: 'approval' | 'choice';
   source: 'engine-gate' | 'rendered-question';
   stage: string | null;
@@ -36,19 +36,27 @@ const singleLine = (value: unknown, max: number): value is string =>
   value.trim() === value &&
   // eslint-disable-next-line no-control-regex
   !/[\u0000-\u001f\u007f]/u.test(value);
+const prose = (value: unknown, max: number): value is string =>
+  typeof value === 'string' &&
+  value.trim().length > 0 &&
+  value.length <= max &&
+  // eslint-disable-next-line no-control-regex
+  !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value);
 
 /** Structural check of the server-validated pending input; throws if malformed. */
 export function nativePendingInput(value: unknown): NativePendingInput {
   if (
     !record(value) ||
     !keysExactly(value, ['schemaVersion', 'kind', 'source', 'stage', 'questions']) ||
-    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
+    value.schemaVersion !== 2 ||
     !['approval', 'choice'].includes(String(value.kind)) ||
     value.source !== (value.kind === 'approval' ? 'engine-gate' : 'rendered-question') ||
-    (value.stage !== null && typeof value.stage !== 'string') ||
+    (value.stage !== null &&
+      (typeof value.stage !== 'string' || !/^[a-z][a-z0-9-]{0,127}$/.test(value.stage))) ||
+    (value.kind === 'approval' && value.stage === null) ||
     !Array.isArray(value.questions) ||
     value.questions.length < 1 ||
-    value.questions.length > (value.schemaVersion === 1 ? 4 : 32)
+    value.questions.length > 32
   )
     throw new Error('Invalid native question');
   const questions = value.questions.map((entry: unknown, index: number): NativePendingQuestion => {
@@ -56,13 +64,11 @@ export function nativePendingInput(value: unknown): NativePendingInput {
       !record(entry) ||
       !keysExactly(entry, ['id', 'prompt', 'header', 'multiSelect', 'options']) ||
       entry.id !== `q${index + 1}` ||
-      typeof entry.prompt !== 'string' ||
-      !entry.prompt.trim() ||
+      !prose(entry.prompt, 2000) ||
       (entry.header !== null && !singleLine(entry.header, 80)) ||
       typeof entry.multiSelect !== 'boolean' ||
       !Array.isArray(entry.options) ||
-      (entry.options.length < 2 &&
-        !(value.schemaVersion === 2 && entry.options.length === 0 && !entry.multiSelect)) ||
+      (entry.options.length < 2 && !(entry.options.length === 0 && !entry.multiSelect)) ||
       entry.options.length > 16
     )
       throw new Error('Invalid native question');
@@ -76,6 +82,8 @@ export function nativePendingInput(value: unknown): NativePendingInput {
         throw new Error('Invalid native question');
       return { label: option.label, description: option.description as string | null };
     });
+    if (new Set(options.map((option) => option.label)).size !== options.length)
+      throw new Error('Invalid native question');
     return {
       id: entry.id,
       prompt: entry.prompt,
@@ -84,6 +92,21 @@ export function nativePendingInput(value: unknown): NativePendingInput {
       options,
     };
   });
+  if (value.kind === 'approval') {
+    const gate = questions[0];
+    const labels = gate.options.map((option) => option.label);
+    if (
+      questions.length !== 1 ||
+      gate.multiSelect ||
+      !['Approve', 'Request Changes'].every((label) => labels.includes(label)) ||
+      labels.some(
+        (label) =>
+          !['Approve', 'Request Changes', 'Accept as-is'].includes(label) &&
+          !/^Add [A-Za-z0-9][A-Za-z0-9 -]{0,80}$/.test(label),
+      )
+    )
+      throw new Error('Invalid native question');
+  }
   return {
     schemaVersion: value.schemaVersion,
     kind: value.kind as NativePendingInput['kind'],

@@ -48,6 +48,14 @@ import NativeIntentPage from './NativeIntentPage';
 import { buildNativePendingInput } from '../../../lambda/shared/native-pending-input.js';
 // @ts-expect-error Shared synthetic protocol fixture has no frontend declarations.
 import { proposedPlanSpec } from '../../../lambda/shared/test/fixtures/native-plan-ask.js';
+// @ts-expect-error Backend composition fixture deliberately exercises real public producers.
+import { publishInteractionFixture } from '../../../lambda/native-runtime-control/test/interaction-presentation-fixture.js';
+// @ts-expect-error Pinned methodology/protocol vectors have no frontend declarations.
+import * as aidlcFixture from '../../../lambda/shared/test/fixtures/native-aidlc-211-interactions.js';
+// @ts-expect-error Validate the serialized selection at its backend owner too.
+import { nativeAnswerText as backendAnswerText } from '../../../lambda/shared/native-pending-input.js';
+
+const { aidlc211InteractionCases, aidlc211Identity } = aidlcFixture;
 
 const messages: NativeInteractionView['messages'] = [
   { type: 'text', text: 'Choose a workflow for these changes.' },
@@ -912,6 +920,161 @@ it.each([401, 403, 404])(
     renderPage();
     await screen.findByText(/Native intent access is no longer available/);
     cleared();
+  },
+);
+
+type PresentationCase = {
+  name: string;
+  spec: {
+    version: number;
+    questions?: { prompt: string; options: { label: string }[] }[];
+    ask?: { choices?: { label: string }[]; scope_commands?: { scope: string }[] };
+  } | null;
+  readReason?: string;
+  degraded?: string;
+  selections?: number[][];
+  approval?: boolean;
+};
+const presentationMatrix = (['claude', 'codex', 'opencode'] as const).flatMap((harness) =>
+  (aidlc211InteractionCases as PresentationCase[]).map((scenario) => ({ harness, ...scenario })),
+);
+
+it.each(presentationMatrix)(
+  'NE-07 $harness / AI-DLC 2.11.1 / $name: decoded publication renders and replies exactly',
+  async ({ harness, ...scenario }) => {
+    const published = await publishInteractionFixture({ harness, ...scenario });
+    interaction = { ...published.interaction, response: null };
+    publication = published.publication;
+    intent = {
+      ...intent,
+      harness,
+      package: {
+        version: '2.11.1',
+        source: { provider: 'github', repository: 'awslabs/aidlc-workflows', release: 'v2.11.1' },
+      },
+      execution: {
+        ...intent.execution!,
+        publicationId: publication.id,
+        interactionId: interaction.id,
+      },
+    };
+    const displayed = structuredClone(interaction);
+    transport.post.mockImplementation(async (_path: string, request: NativeReplyRequest) => {
+      expect(request.interactionId).toBe(displayed.id);
+      expect(request.contentSha256).toBe(displayed.contentSha256);
+      if (displayed.pendingInput)
+        expect(request.text).toBe(backendAnswerText(displayed.pendingInput, request.selection));
+      else expect(request).not.toHaveProperty('selection');
+      const response = { ...receipt(request.text), interactionId: displayed.id };
+      interaction = { ...interaction, response };
+      intent = {
+        ...intent,
+        execution: {
+          ...intent.execution!,
+          status: 'DISPATCHING',
+          turnSequence: 2,
+          responsePending: true,
+        },
+      };
+      return { executionAvailable: true, execution: intent.execution, response };
+    });
+    renderPage();
+    await screen.findByText('Inspect this response and the saved proposal.');
+    expect(transport.post).not.toHaveBeenCalled();
+    expect(document.body).not.toHaveTextContent('aidlc engine');
+    expect(document.body).not.toHaveTextContent('fixture-request');
+    if (scenario.degraded) {
+      expect(displayed.pendingInput).toBeNull();
+      expect(displayed.presentation).toEqual({ status: 'degraded', reason: scenario.degraded });
+      await screen.findByText(
+        'The structured question form is unavailable for this turn. The response and published files are saved.',
+      );
+      expect(screen.queryByRole('form', { name: 'Workflow questions' })).not.toBeInTheDocument();
+      fireEvent.change(await screen.findByRole('textbox', { name: 'Reply to AI-DLC' }), {
+        target: { value: 'Please show every current question and option.' },
+      });
+      const form = screen.getByRole('form', { name: 'Reply to AI-DLC' });
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    } else {
+      const input = displayed.pendingInput!;
+      expect(input.kind).toBe(scenario.approval ? 'approval' : 'choice');
+      expect(input.schemaVersion).toBe(2);
+      const labels =
+        scenario.spec?.version === 3
+          ? [
+              scenario.spec.ask?.choices?.map((choice) => choice.label) ?? [
+                'compose',
+                ...scenario.spec.ask!.scope_commands!.map((row) => row.scope),
+              ],
+            ]
+          : scenario.spec!.questions!.map((question) =>
+              question.options.map((option) => option.label),
+            );
+      expect(
+        input.questions.map((question) => question.options.map((option) => option.label)),
+      ).toEqual(labels);
+      const form = await screen.findByRole('form', { name: 'Workflow questions' });
+      const submit = within(form).getByRole('button', {
+        name: input.questions.length === 1 ? 'Submit Answer' : 'Submit All Answers',
+      });
+      expect(submit).toBeDisabled();
+      const renderedText = form.textContent;
+      for (const [index, question] of input.questions.entries()) {
+        expect(renderedText).toContain(question.prompt);
+        for (const option of question.options) expect(renderedText).toContain(option.label);
+        for (const choice of scenario.selections![index])
+          fireEvent.click(within(form).getByText(question.options[choice].label));
+        if (!question.options.length) {
+          expect(submit).toBeDisabled();
+          fireEvent.change(
+            within(form).getByRole('textbox', { name: `Answer question ${index + 1}` }),
+            {
+              target: { value: 'Keep this exact written constraint.' },
+            },
+          );
+        }
+      }
+      expect(submit).toBeEnabled();
+      fireEvent.submit(form);
+      fireEvent.submit(form);
+    }
+    await screen.findByText('Reply accepted. Delivery pending.');
+    expect(transport.post).toHaveBeenCalledTimes(1);
+    expect(transport.post.mock.calls[0][1].requestId).toMatch(/^[a-f0-9-]{36}$/);
+    // Submitting a human reply never rewrites the published question or its hash.
+    expect(await published.interactions.read(published.identity, published.receipt)).toEqual(
+      published.body,
+    );
+    expect(intent.execution?.status).toBe('DISPATCHING');
+  },
+);
+
+it.each([
+  { version: '2.11.0' },
+  { source: { ...aidlc211Identity.source, repository: 'example/fork' } },
+  { assets: { runtime: { sha256: 'f'.repeat(64) } } },
+])(
+  'NE-07 a similar unqualified methodology remains an inspectable written interaction: %j',
+  async (override) => {
+    const published = await publishInteractionFixture({
+      harness: 'codex',
+      spec: proposedPlanSpec,
+      packageIdentity: { ...aidlc211Identity, ...override },
+    });
+    interaction = { ...published.interaction, response: null };
+    publication = published.publication;
+    intent.execution = {
+      ...intent.execution!,
+      publicationId: publication.id,
+      interactionId: interaction.id,
+    };
+    renderPage();
+    expect(interaction.presentation?.reason).toBe('unsupported_methodology');
+    await screen.findByText('Inspect this response and the saved proposal.');
+    expect(await screen.findByRole('textbox', { name: 'Reply to AI-DLC' })).toBeEnabled();
+    expect(screen.queryByRole('form', { name: 'Workflow questions' })).not.toBeInTheDocument();
+    expect(transport.post).not.toHaveBeenCalled();
   },
 );
 

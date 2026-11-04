@@ -7,6 +7,7 @@ import {
   describeNativePackageArchiveReceipt,
 } from '../../shared/native-package-archive.js';
 import { describeNativePackagePin } from '../../shared/native-package-pin.js';
+import { nativeMethodologyInteractionContract } from '../../shared/native-pending-input.js';
 import { workflowSourceIdentity } from '../../shared/workflow-source-bindings.js';
 import { createNativePublications } from '../../shared/native-publication.js';
 import { createNativeInteractions } from '../../shared/native-interaction.js';
@@ -426,6 +427,7 @@ export const createNativeExecutionPorts = ({
           version: pin.identity.version,
           packageId: pin.packageId,
           sourceRepository: pin.identity.source.repository,
+          interactionContract: nativeMethodologyInteractionContract(pin.identity),
         },
         repositoryCommit: commit,
         authEnv: {
@@ -585,6 +587,7 @@ export const createNativeExecutionPorts = ({
           version: pin.identity.version,
           packageId: pin.packageId,
           sourceRepository: pin.identity.source.repository,
+          interactionContract: nativeMethodologyInteractionContract(pin.identity),
         },
       };
     },

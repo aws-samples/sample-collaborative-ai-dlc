@@ -125,6 +125,7 @@ it.each([
           directory,
           binaryPath: join(directory, 'aidlc'),
           version: '2.11.1',
+          interactionContract: 'aidlc-2.11.1',
           packageId: f.configuration.packageId,
         };
         await fs.mkdir(join(project, 'aidlc/spaces/default/intents'), {

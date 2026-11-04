@@ -57,7 +57,7 @@ const payload = () => ({
       branch: 'main',
       commit: 'a'.repeat(40),
     },
-    packageVersion: '2.9.0',
+    packageVersion: '2.11.1',
   },
 });
 const nativeIntentPath = 'aidlc/spaces/design/intents/260929-real-pipe-request';
@@ -152,6 +152,7 @@ const make = (options = {}) => {
         directory,
         binaryPath: join(directory, 'aidlc'),
         version: request.configuration.packageVersion,
+        interactionContract: 'aidlc-2.11.1',
         packageId: `sha256:${'b'.repeat(64)}`,
       },
       repositoryCommit: request.configuration.repository.commit,
@@ -548,7 +549,7 @@ describe('native first-turn executor', () => {
             await fs.writeFile(
               join(root, 'project/.native-control/pending-question.json'),
               JSON.stringify({
-                version: 1,
+                version: 2,
                 questions: [
                   { prompt: 'Which option?', options: labels().map((label) => ({ label })) },
                 ],
@@ -651,7 +652,7 @@ describe('native first-turn executor', () => {
         await fs.writeFile(
           join(root, 'project/.native-control/pending-question.json'),
           JSON.stringify({
-            version: 1,
+            version: 2,
             questions: [
               {
                 prompt: texts[2],
@@ -1598,6 +1599,7 @@ describe('created-workflow requirement for EFS fresh sessions', () => {
             directory: join(root, 'packages'),
             binaryPath: join(root, 'packages/aidlc'),
             version: request.configuration.packageVersion,
+            interactionContract: 'aidlc-2.11.1',
             packageId: `sha256:${'b'.repeat(64)}`,
           },
         })),

@@ -157,7 +157,8 @@ const NATIVE_PENDING_SPEC_INSTRUCTION =
   'For an engine compose-offer or scope-confirm ask, copy its complete JSON unchanged into ' +
   '{"version":3,"ask":<engine ask object>} instead; the native adapter renders its explicit ' +
   'scope_commands and choices. Do not invent a plan list or convert typed choices to prose. ' +
-  'For other questions copy exact workflow labels without numbering or recommendation suffixes. ' +
+  'For other questions copy exact workflow wording, labels, descriptions and order. ' +
+  'Do not add numbering or remove literal recommendation text from a label. ' +
   'Use options:[] and multiSelect:false for a written answer. Keep normal explanatory prose; ' +
   'it need not repeat the form verbatim. Every question requires an answer. Do not include ' +
   'credentials, commands as labels, or questions from a prior/future step. Remove this file if ' +
@@ -1026,6 +1027,7 @@ export const createNativeExecutor = ({
       bytes: files.totalBytes,
     });
     const { pendingInput, presentation } = decodeNativeTurnInteraction({
+      interactionContract: pkg.interactionContract,
       snapshot: files,
       rendered,
       messages: completed.messages,

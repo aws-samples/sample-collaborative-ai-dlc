@@ -7,50 +7,12 @@ import {
   nativeRuntimeFailureCode,
 } from '../../shared/native-execution-failure.js';
 
+import { createNativeHarnessDecoder, invalidNativeOutput as invalid } from './harness-output.js';
+
 const OVERFLOW = Symbol('oversized-field');
 const LIMIT = 64 * 1024;
 const SESSION = /^[A-Za-z0-9_-]{1,128}$/;
 const jsonWhitespace = (character) => [' ', '\t', '\r', '\n'].includes(character);
-// Claude 2.1.257 permits informational frames after its single result.
-// They are not assistant content and cannot replace or complete another turn.
-const CLAUDE_POST_RESULT_SYSTEM = new Set([
-  'status',
-  'task_notification',
-  'session_state_changed',
-  'background_tasks_changed',
-  'task_started',
-  'task_updated',
-  'task_progress',
-  'task_summary',
-  'post_turn_summary',
-  'turn_duration',
-  'files_persisted',
-  'commands_changed',
-  'vcs_state_changed',
-  'code_change_published',
-  'memory_saved',
-  'notification',
-  'informational',
-]);
-const invalid = (suffix = 'json', reason = suffix === 'json' ? 'json_grammar' : suffix) => {
-  throw Object.assign(new Error(`native_execution_output_${suffix}`), {
-    code: `native_execution_output_${suffix}`,
-    outputReason: reason,
-  });
-};
-// Claude 2.1.296's result producer removes only these bounded memory annotations.
-// Keep the original assistant bytes in the interaction; normalize solely for
-// comparison with the terminal result, after the original credential check.
-const claudeResultText = (text) =>
-  text.replace(
-    /<\/?(?:cc-memory|cc_memory|ccmemory|CC-MEMORY|CC_MEMORY|CCMEMORY)(?=[\s/>])[^>]{0,1024}>/g,
-    '',
-  );
-const CLAUDE_SILENT_RESPONSE = 'No response requested.';
-const claudeResponseMatches = (response, result) =>
-  [response.text, response.lastBlock].some(
-    (text) => text === result || claudeResultText(text) === result,
-  );
 const leaf = true;
 const projection = {
   type: leaf,
@@ -266,23 +228,11 @@ export const createNativeTurnOutput = ({
   const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   let failure = null;
   let session = null;
-  let completed = false;
-  let started = false;
   let bytes = 0;
   let ended = false;
-  let claudeQueryStart = 0;
-  let claudeQueries = 1;
-  let claudeResultCount = 0;
-  let claudeMatchedResponse = -1;
-  let claudeLastResult = null;
-  let claudeSilentResults = 0;
-  let claudeTrailingSilent = 0;
-  const claudeResponses = [];
   let records = 0;
   let recordType = 'none';
-  let resultBytes = 0;
   const messages = [];
-  const ids = new Set();
   const secrets = forbiddenBytes
     .map((value) => Buffer.from(value).toString('utf8'))
     .filter(Boolean);
@@ -304,137 +254,28 @@ export const createNativeTurnOutput = ({
       invalid('session');
     session = value;
   };
-  const recordClaudeResponse = (start) => {
-    const parts = messages.slice(start);
-    claudeResponses.push({
-      text: parts.map((message) => message.text).join(''),
-      lastBlock: parts.at(-1).text,
-      silent: parts.length === 1 && parts[0].text === CLAUDE_SILENT_RESPONSE,
-    });
-  };
-  const sealClaudeBatch = () => {
-    for (let n = 0; n < claudeTrailingSilent; n++) bytes -= Buffer.byteLength(messages.pop().text);
-    claudeTrailingSilent = 0;
-  };
-  const afterCompleted = (event) => {
-    // The installed engine can hold successful parent results while background
-    // work runs, then drain them FIFO after later parent responses. Each result
-    // must match a distinct response in order; EOF still requires the last one.
-    if (
-      harness === 'claude' &&
-      event.type === 'result' &&
-      [undefined, null].includes(event.parent_tool_use_id)
-    ) {
-      if (completed && event.result !== '' && claudeMatchedResponse === claudeResponses.length - 1)
-        invalid('terminal');
-      completeClaudeQuery(event);
-      return;
-    }
-    // Claude 2.1.296 may consume a completed background-agent notification
-    // in another parent query before this same CLI process exits. A new
-    // same-session init explicitly starts that query; every query must still
-    // end successfully. Never treat an earlier result as the final stop.
-    if (
-      harness === 'claude' &&
-      completed &&
-      event.type === 'system' &&
-      event.subtype === 'init' &&
-      event.session_id === session &&
-      [undefined, null].includes(event.parent_tool_use_id) &&
-      [undefined, false].includes(event.prevent_continuation)
-    ) {
-      if (++claudeQueries > 32) invalid('limit', 'query_limit');
-      sealClaudeBatch();
-      completed = false;
-      claudeQueryStart = messages.length;
-      claudeResultCount = 0;
-      claudeMatchedResponse = -1;
-      claudeLastResult = null;
-      claudeSilentResults = 0;
-      claudeResponses.length = 0;
-      return;
-    }
-    const informational =
-      harness === 'claude' &&
-      typeof event.session_id === 'string' &&
-      (event.type === 'prompt_suggestion' ||
-        (event.type === 'system' && CLAUDE_POST_RESULT_SYSTEM.has(event.subtype))) &&
-      (event.prevent_continuation === undefined || event.prevent_continuation === false);
-    if (informational) return;
-    invalid('terminal');
-  };
-  // Terminal projection has its own contract; it never admits a publication.
-  const completeClaudeQuery = (event) => {
-    if (event.subtype !== 'success' || event.is_error !== false) invalid('failed');
-    // Success is also used for deferred tools and interrupted queries.
-    // Explicit reasons must establish a completed response, independently
-    // of subtype/is_error. Older/local-command results can omit the reason.
-    if (
-      (event.terminal_reason !== undefined && event.terminal_reason !== 'completed') ||
-      ![undefined, null, 'end_turn', 'stop_sequence'].includes(event.stop_reason) ||
-      Object.hasOwn(event, 'deferred_tool_use')
-    )
-      invalid('terminal');
-    // Result text is a CLI projection, not necessarily a verbatim copy:
-    // current producers use the last text block and remove memory markup;
-    // retained producers/fixtures concatenate a multi-block response.
-    resultBytes = typeof event.result === 'string' ? Buffer.byteLength(event.result) : 0;
-    if (typeof event.result !== 'string' || resultBytes > LIMIT) invalid('result', 'result_shape');
-    if (secrets.some((secret) => event.result.includes(secret))) invalid('credential');
-    if (claudeResultCount++ > 0 && ++claudeQueries > 32) invalid('limit', 'query_limit');
-    if (event.result.length === 0) {
-      // A background notification can start a second parent query which
-      // completes without another response. Only retain work from an
-      // already completed query in THIS invocation, never a prior checkpoint.
-      if (
-        !(claudeQueryStart > 0 || claudeLastResult) ||
-        event.terminal_reason !== 'completed' ||
-        event.stop_reason !== 'end_turn'
-      )
-        invalid('result', 'result_empty');
-      claudeSilentResults++;
-      let last = claudeResponses.length - 1;
-      while (last >= 0 && claudeResponses[last].silent) last--;
-      const trailing = claudeResponses.length - 1 - last;
-      completed =
-        trailing <= claudeSilentResults &&
-        (last < 0
-          ? claudeQueryStart > 0
-          : claudeLastResult !== null &&
-            last > claudeLastResult.after &&
-            claudeResponseMatches(claudeResponses[last], claudeLastResult.text));
-      claudeTrailingSilent = completed ? trailing : 0;
-      return;
-    }
-    claudeSilentResults = 0;
-    claudeTrailingSilent = 0;
-    if (!claudeResponses.length) {
-      if (claudeResultCount !== 1) invalid('result', 'result_mismatch');
-      const start = messages.length;
-      add(event.result);
-      recordClaudeResponse(start);
-    }
-    const after = claudeMatchedResponse;
-    // Keep the earliest possible match so identical question text in separate
-    // queries remains distinguishable. Completion also requires a possible
-    // match at the final response, never merely an earlier successful result.
-    claudeMatchedResponse = claudeResponses.findIndex(
-      (response, index) => index > after && claudeResponseMatches(response, event.result),
-    );
-    if (claudeMatchedResponse < 0) invalid('result', 'result_mismatch');
-    claudeLastResult = { text: event.result, after };
-    completed =
-      claudeResponses.length - 1 > after &&
-      claudeResponseMatches(claudeResponses.at(-1), event.result);
-  };
+  const harnessDecoder = createNativeHarnessDecoder(harness, {
+    expectedSession,
+    add,
+    messages,
+    session: () => session,
+    credential: (text) => {
+      if (secrets.some((secret) => text.includes(secret))) invalid('credential');
+    },
+    removeTrailing: (count) => {
+      for (let n = 0; n < count; n++) bytes -= Buffer.byteLength(messages.pop().text);
+    },
+  });
   const parser = createProjectionParser((event) => {
     records++;
     if (!event || typeof event !== 'object' || Array.isArray(event))
       invalid('shape', 'record_shape');
     recordType = event.type;
-    // Incremental ACP presentation is independent of the final interaction record.
+    // The bridge's incremental activity is not an interaction record.
     if (harness === 'kiro' && event.transport === 'kiro-acp-activity' && event.schemaVersion === 1)
       return;
+    // Retain conflict checks across all identity fields, but only the selected
+    // decoder can recognize its protocol's records and terminal boundary.
     for (const value of [
       event.thread_id,
       event.session_id,
@@ -444,73 +285,7 @@ export const createNativeTurnOutput = ({
       event.part?.sessionId,
     ])
       observeSession(value);
-    if (completed || (harness === 'claude' && claudeResultCount > 0)) {
-      afterCompleted(event);
-      return;
-    }
-    if (harness === 'codex') {
-      // Codex 0.145 emits `error` for every server error notification,
-      // including retried stream disconnects ("Reconnecting... 1/5"), and keeps
-      // running. Only the turn's final status decides: `turn.failed` (or no
-      // `turn.completed`, for an interrupted turn) is never a completed turn.
-      if (event.type === 'turn.failed') invalid('failed');
-      if (event.type === 'turn.started') {
-        if (started) invalid('terminal');
-        started = true;
-      }
-      if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
-        if (!started || !session) invalid('incomplete');
-        if (typeof event.item.id !== 'string' || ids.has(event.item.id))
-          invalid('shape', 'message_shape');
-        ids.add(event.item.id);
-        add(event.item.text);
-      }
-      if (event.type === 'turn.completed') {
-        if (!started || !session) invalid('incomplete');
-        completed = true;
-      }
-    } else if (harness === 'claude') {
-      if (event.parent_tool_use_id !== undefined && event.parent_tool_use_id !== null) return;
-      if (event.type === 'assistant') {
-        if (event.message?.role !== 'assistant' || !session) invalid('session');
-        if (!Array.isArray(event.message.content)) invalid('shape', 'message_shape');
-        const start = messages.length;
-        for (const part of event.message.content) {
-          if (!part || typeof part !== 'object') invalid('shape', 'message_shape');
-          if (part.type === 'text') add(part.text);
-        }
-        if (messages.length > start) {
-          recordClaudeResponse(start);
-        }
-      }
-      if (event.type === 'result') completeClaudeQuery(event);
-    } else if (harness === 'opencode') {
-      if (event.type === 'error') invalid('failed');
-      if (event.type === 'text' && event.part?.type === 'text') {
-        if (!session) invalid('session');
-        add(event.part.text);
-      }
-      if (event.type === 'step_finish') {
-        if (event.part?.reason === 'stop') completed = true;
-        else if (event.part?.reason !== 'tool-calls') invalid('terminal');
-      }
-    } else {
-      if (
-        event.schemaVersion !== 1 ||
-        event.transport !== 'kiro-acp' ||
-        event.ok !== true ||
-        event.stopReason !== 'end_turn' ||
-        event.modelVerified !== true ||
-        event.textTruncated === true ||
-        (expectedSession &&
-          (event.priorPromptObserved !== true ||
-            event.priorAssistantObserved !== true ||
-            event.historyMode !== 'latest-turn'))
-      )
-        invalid('terminal');
-      add(event.text);
-      completed = true;
-    }
+    harnessDecoder.write(event);
   });
   const reject = (error) => {
     if (failure) return;
@@ -523,10 +298,10 @@ export const createNativeTurnOutput = ({
       reason: reason ?? 'unexpected',
       recordType: typeof recordType === 'string' ? recordType : 'other',
       recordIndex: code === 'native_execution_output_json' ? records + 1 : records,
-      queries: claudeQueries,
+      queries: harnessDecoder.diagnostic().queries,
       messages: messages.length,
       textBytes: bytes,
-      resultBytes,
+      resultBytes: harnessDecoder.diagnostic().resultBytes,
     });
     failure = Object.assign(new Error(code), { code, outputDiagnostic: diagnostic });
     try {
@@ -559,8 +334,8 @@ export const createNativeTurnOutput = ({
       try {
         parser.write(decode(undefined, false));
         parser.end();
-        if (!completed || !session) invalid('incomplete');
-        if (harness === 'claude') sealClaudeBatch();
+        harnessDecoder.finish();
+        if (!session) invalid('incomplete');
         if (!messages.some((message) => message.text.trim())) invalid('text', 'no_visible_text');
         let normalized;
         try {

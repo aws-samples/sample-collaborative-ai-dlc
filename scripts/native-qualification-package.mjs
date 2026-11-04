@@ -10,6 +10,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { delimiter } from 'node:path';
+import { nativeMethodologyInteractionContract } from '../lambda/shared/native-pending-input.js';
 
 const assets = {
   'aidlc-linux-arm64': {
@@ -235,7 +236,18 @@ export async function prepareQualificationPackage(root, source) {
     `#!/bin/sh\nexec ${gh} "$@" --custom-trusted-root /assets/trusted-root.jsonl\n`,
     { mode: 0o700 },
   );
-  return { directory, binaryPath, tools, version };
+  const manifest = JSON.parse(await fs.readFile(join(directory, 'version.json'), 'utf8'));
+  const interactionContract = nativeMethodologyInteractionContract({
+    version,
+    source: {
+      provider: 'github',
+      repository: 'awslabs/aidlc-workflows',
+      release: `v${version}`,
+      commit: manifest.sourceDigest,
+    },
+    assets: { runtime: releases[version][`aidlc-runtime-${version}.tar.gz`] },
+  });
+  return { directory, binaryPath, tools, version, interactionContract };
 }
 
 async function prepareOpenCodeCache(cache) {

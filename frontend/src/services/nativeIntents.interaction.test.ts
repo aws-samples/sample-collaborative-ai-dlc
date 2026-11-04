@@ -473,7 +473,7 @@ describe('ordinary reply contract', () => {
 
 describe('task-3 structured question contract', () => {
   const pendingInput = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'approval',
     source: 'engine-gate',
     stage: 'requirements-analysis',

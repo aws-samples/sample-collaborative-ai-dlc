@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import {
   buildNativePendingInput,
+  NATIVE_AIDLC_INTERACTION_CONTRACT,
   NATIVE_PENDING_INPUT_LIMITS,
   NATIVE_TYPED_ASK_TYPES,
 } from '../../shared/native-pending-input.js';
@@ -179,8 +180,7 @@ export const readNativePendingSpec = async (
 /**
  * Recognize only the observed v2 native active-space/intent, stage cursor and
  * unanswered-question format. A successful CLI exit is never workflow success.
- * The directive's state hash can precede the question write (observed v2.9);
- * these references describe exact evidence, not an approval or signed state.
+ * These references describe exact evidence, not an approval or signed state.
  */
 export const classifyNativeFirstWait = ({ snapshot, harness, beforeFiles = [] }) => {
   const unknown = { kind: 'stopped_needs_review', code: 'native_wait_format_unrecognized' };
@@ -256,6 +256,7 @@ export const classifyNativeFirstWait = ({ snapshot, harness, beforeFiles = [] })
 };
 
 export const decodeNativeTurnInteraction = ({
+  interactionContract,
   snapshot,
   rendered,
   messages,
@@ -263,17 +264,18 @@ export const decodeNativeTurnInteraction = ({
   onDiagnostic = () => {},
 }) => {
   const renderedSpec = rendered.spec;
-  const pendingInput = buildNativePendingInput({
-    gate: nativeGateFromSnapshot(snapshot),
-    spec: renderedSpec,
-    messagesText: messages.map((message) => message.text).join('\n'),
-  });
+  const supported = interactionContract === NATIVE_AIDLC_INTERACTION_CONTRACT;
+  const pendingInput = supported
+    ? buildNativePendingInput({ gate: nativeGateFromSnapshot(snapshot), spec: renderedSpec })
+    : null;
   const presentation = pendingInput
     ? null
     : {
         status: 'degraded',
-        reason:
-          rendered.reason ?? (renderedSpec?.version === 3 ? 'unsupported_ask' : 'invalid_schema'),
+        reason: !supported
+          ? 'unsupported_methodology'
+          : (rendered.reason ??
+            (renderedSpec?.version === 3 ? 'unsupported_ask' : 'invalid_schema')),
       };
   // Persist only fixed categories/counts in owner status and lifecycle logs;
   // raw rejected JSON is discarded. The immutable interaction retains the

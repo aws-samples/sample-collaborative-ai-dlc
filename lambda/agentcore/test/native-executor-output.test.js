@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createNativeTurnOutput } from '../native/turn-output.js';
+import { nativeHarnessRecords } from '../../shared/test/fixtures/native-aidlc-211-interactions.js';
 
 const session = 'verified-session';
 const codex = (text = 'Which proposal do you prefer?') => [
@@ -8,8 +9,8 @@ const codex = (text = 'Which proposal do you prefer?') => [
   { type: 'item.completed', item: { id: 'a', type: 'agent_message', text } },
   { type: 'turn.completed' },
 ];
-// Claude 2.1.257 bundled SDK schema and result producer, binary SHA-256
-// 22f7d48f17193952c3c2d0b8bf2f31db2cd08fd5fb09a374fa321496b711d017.
+// Installed Claude 2.1.296 SDK/result producer, binary SHA-256
+// f1f6e96e0d8342b9dbf41d7e88255397a6a52ce3d8736ad6a4c6b59c9b62fefa.
 // This is protocol fixture coverage, not a model or live CLI invocation.
 const claude = (text = 'Proposal and question') => [
   { type: 'system', subtype: 'init', session_id: session },
@@ -331,7 +332,7 @@ describe('bounded completed native turn output', () => {
         session_id: session,
         subtype: 'success',
         is_error: false,
-        result: 'Proposal\nQuestion?',
+        result: 'Question?',
       },
     ];
     expect(collect(events, { harness: 'claude' }, 1).messages).toEqual([
@@ -629,4 +630,48 @@ it('bounds the number of declared Claude queries within one invocation', () => {
   expect(() =>
     collect(Array.from({ length: 33 }, () => claude('short')).flat(), { harness: 'claude' }),
   ).toThrow('output_limit');
+});
+
+it('rejects the retired concatenated Claude terminal projection instead of guessing its producer', () => {
+  const events = nativeHarnessRecords('claude', ['Proposal\n', 'Exact current question?']);
+  events.at(-1).result = 'Proposal\nExact current question?';
+  expect(() => collect(events, { harness: 'claude' })).toThrow('output_result');
+});
+
+it.each(['claude', 'codex', 'opencode'])(
+  'keeps %s terminal, session and partial-record evidence separate from visible text',
+  (harness) => {
+    const events = nativeHarnessRecords(harness, ['Exact current question?'], session);
+    expect(collect(events, { harness }, 1).messages).toEqual([
+      { type: 'text', text: 'Exact current question?' },
+    ]);
+    for (const invalidEvents of [
+      events.slice(0, -1),
+      [...events, events.at(-1)],
+      [events.at(-1), ...events.slice(0, -1)],
+      [...events.slice(0, -1), { ...events.at(-1), sessionId: 'another-turn' }],
+    ])
+      expect(() => collect(invalidEvents, { harness, nativeSessionId: session })).toThrow();
+    const partial = createNativeTurnOutput({ harness, nativeSessionId: session });
+    partial.write(Buffer.from(events.map(JSON.stringify).join('\n') + '\n{"type":'));
+    expect(() => partial.finish()).toThrow('output_incomplete');
+  },
+);
+
+it('rejects duplicate Codex thread starts and a foreign protocol identity field', () => {
+  const events = codex();
+  expect(() => collect([events[0], ...events])).toThrow('output_session');
+  expect(() =>
+    collect([{ type: 'thread.started', session_id: session }, ...events.slice(1)]),
+  ).toThrow('output_session');
+});
+
+it('requires the OpenCode sessionID producer and a session on each queued Claude result', () => {
+  const openCode = nativeHarnessRecords('opencode', ['Question?'], session);
+  openCode[1].sessionId = openCode[1].sessionID;
+  delete openCode[1].sessionID;
+  expect(() => collect(openCode, { harness: 'opencode' })).toThrow('output_session');
+  const events = [...claude('First'), ...claude('Second')];
+  delete events.at(-1).session_id;
+  expect(() => collect(events, { harness: 'claude' })).toThrow('output_session');
 });

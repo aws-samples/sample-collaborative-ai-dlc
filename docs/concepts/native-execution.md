@@ -76,6 +76,23 @@ Current forms support up to 32 questions and 16 options per question, with writt
 answers where required. Unsupported forms must remain explicit rather than lose
 questions or choices.
 
+Structured interaction support selects the verified official AI-DLC **2.11.1**
+package identity and runtime archive bytes. A different version or fork does not
+inherit support from a similar JSON shape. The adapter preserves question text,
+literal option labels (including recommendation text), descriptions, order and
+single/multiple selection semantics. The current scope-confirm offer includes
+three choices: its alternative-plan choice has no command and remains available
+for a human reply and AI-DLC follow-up. Scope/compose commands stay with the
+workflow's existing validation and binding owner; they are not browser actions.
+
+The current display transport accepts complete rendered question groups
+(`version: 2`) or the two pinned typed intake asks (`version: 3`,
+`scope-confirm`/`compose-offer`). Both produce the same validated pending-input
+schema, version 2. The obsolete four-question version 1 is removed. Unsupported,
+conflicting, unavailable or over-limit forms degrade to the inspectable response
+and eligible written reply without truncation, invented choices or implied
+approval. A stopped harness turn alone never establishes workflow completion.
+
 Shared answer drafts use the platform's real-time collaboration service. Accepted
 answers are durable separately from those drafts. Unsubmitted native drafts are
 not guaranteed to survive a collaboration-server restart or expiry after all
@@ -2851,7 +2868,50 @@ Start/reply/cancel/resume behavior, human-gate handling, model behavior or brows
 interaction: none was invoked. Existing development executions remain disposable,
 with no preservation, migration, retirement or queue-cleanup gate. Earlier sealed
 evidence remains historical and unchanged. Kiro stays deferred to NE-18, generated
-application quality is outside scope, and NE-07 has not started.
+application quality is outside scope. NE-07 had not started at the end of this
+deployed-artifact verification.
+
+### NE-07 harness and question adapters — 2026-11-04
+
+This stage starts from `c69276b89033ec098c2f7a35dceafe8e02690d84`, after the
+independently verified NE-06 deployment. Implementation is underway; its fresh
+evidence is isolated under
+`.native-evidence/ne07-2026-11-04-harness-question-adapters/`. Earlier evidence and
+attempted deployment plans remain unchanged.
+
+`turn-output.js` retains bounded UTF-8/JSON framing, credential rejection and
+cross-field session checks, then selects one explicit harness decoder in
+`harness-output.js`. Each decoder owns its protocol's terminal state. Codex uses
+its thread/start/completion sequence, OpenCode its session-bound text and stop
+records, and Claude its current parent-query/result sequence. The installed
+Claude 2.1.296 producer selects the last text block; the obsolete concatenated
+multi-block terminal alternative is removed. Deferred FIFO results, silent
+background queries, memory-annotation comparison and reason-less local-command
+results remain supported because the current producer still emits them.
+Original visible bytes remain intact. Kiro's existing bridge decoder is retained,
+but admission and full qualification remain deferred to NE-18.
+
+Package preparation selects the official AI-DLC 2.11.1 interaction contract only
+after existing package verification. The selection binds upstream commit
+`895a35d86d20336d9b7bc4aedc9440e4a12c83ab` and runtime archive SHA-256
+`9f213c8254e646123b3f4bcefe347a61c95c72fee9fda4bf9afab42ccb20f44a`.
+Question decoding accepts the current rendered groups and pinned typed asks;
+it removes version-1 compatibility, wording cleanup and speculative
+approval-then-choice parsing. Actual rendered approval labels and a current
+engine gate determine approval presentation; summary confirmations stay
+separate. Backend, immutable publication/interaction admission and frontend
+validation retain their own trust boundaries.
+
+Fresh verified package assets establish the scope/compose producers and the
+stage/question protocols for all three enabled harness distributions. Synthetic
+fixtures follow those contracts through chunked harness decoding, turn
+interaction decoding, public publication and pending-input validation, the real
+Intent page and reply serialization. They cover grouped choices and required
+written answers, interaction mode, scope/compose, exact approvals and optional
+choices, separate summaries, the 32-question/16-option bounds and explicit
+degradation. They are deterministic contract tests, not live model observations.
+NE-04 turn/cancellation ownership and NE-06 public-command guarantees remain
+unchanged. No workflow engine, old-run migration or cleanup system is added.
 
 ## Integration and simplification checklist
 
@@ -2977,6 +3037,12 @@ the current contract for newly created executions.
       questions, scope/compose offers, approval and written replies render exact
       choices for every supported combination, with explicit degraded behavior
       for unsupported output and no wrapper-created workflow engine.
+      **Underway 2026-11-04:** bounded implementation and local installed-image
+      qualification start from `c69276b89033ec098c2f7a35dceafe8e02690d84`.
+      AI-DLC 2.11.1 and the enabled Claude/Codex/OpenCode harnesses are the
+      qualification scope; Kiro remains deferred to NE-18. Deployment is a
+      separate operator step. Evidence is under
+      `.native-evidence/ne07-2026-11-04-harness-question-adapters/`.
 - [ ] **NE-08 — Complete normal intent creation.** Integrate native into the normal
       **New intent** entry, including the backend/default choice, verified package
       selection and application source. Reuse the shared creation and configuration

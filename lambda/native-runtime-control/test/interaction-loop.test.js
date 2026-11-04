@@ -20,7 +20,7 @@ import { ACTOR } from './fixtures.js';
 // The inert harness is a real subprocess with a large tool event before its
 // ordered composer messages. It performs no network or model invocation.
 it.each([false, true])('native interaction cycle (structured: %s)', async (structured) => {
-  const f = executionFixture();
+  const f = executionFixture({ packageVersion: '2.11.1' });
   const temp = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-interaction-loop-')));
   const root = join(temp, 'mount');
   const homeRoot = join(temp, 'homes');
@@ -46,7 +46,7 @@ it.each([false, true])('native interaction cycle (structured: %s)', async (struc
         '- **Current Stage**: requirements-analysis\\n- [' + (turn === 3 ? 'x' : '?') + '] requirements-analysis — EXECUTE\\n');
       await fs.writeFile(dir + '/plan.md', turn === 1 ? 'Original plan\\n' : 'Revised plan: accessibility check\\n');
       if (turn < 3) await fs.writeFile('.native-control/pending-question.json', JSON.stringify({
-        version: 1,
+        version: 2,
         questions: [{
           prompt: 'How should the requirements proceed?',
           options: [{ label: 'Approve' }, { label: 'Request Changes' }],
@@ -129,7 +129,8 @@ it.each([false, true])('native interaction cycle (structured: %s)', async (struc
       package: {
         directory,
         binaryPath: join(directory, 'aidlc'),
-        version: '2.9.0',
+        version: '2.11.1',
+        interactionContract: 'aidlc-2.11.1',
         packageId: f.configuration.packageId,
       },
       repositoryCommit: 'c'.repeat(40),

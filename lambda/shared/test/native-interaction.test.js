@@ -281,7 +281,7 @@ describe('native completed-turn content', () => {
 
 describe('task-3 structured pending input (schema v2)', () => {
   const pendingInput = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'choice',
     source: 'rendered-question',
     stage: null,
