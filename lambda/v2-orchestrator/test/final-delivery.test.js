@@ -302,18 +302,49 @@ describe('final delivery with real DynamoDB ownership', () => {
     expect((await row()).status).toBe('failed');
   });
 
-  it('does not assess an unpinned legacy workflow as verified', async () => {
+  it('does not assess an unpinned legacy workflow with unit work as verified', async () => {
     const legacy = { ...meta };
     delete legacy.methodologyPins;
+    const records = await store.getExecutionRecords(meta.executionId);
+    records.unitPlan = { units: [{ slug: 'api' }] };
+    records.units = [{ slug: 'api', sectionIndex: 1, state: 'MERGED' }];
     await expect(
       previewDelivery({
         meta: legacy,
-        records: await store.getExecutionRecords(meta.executionId),
-        plan: workflowPlan,
+        records,
+        plan: { stages: [{ stageId: 'code', parallelSection: 1 }] },
         operation,
       }),
     ).rejects.toMatchObject({ code: 'delivery_unverified' });
     expect(operation).not.toHaveBeenCalled();
+  });
+
+  it('accepts an unpinned legacy serial run whose serial stages all finished', async () => {
+    const legacy = await store.updateExecution({
+      executionId: meta.executionId,
+      methodologyPins: null,
+    });
+    const plan = { stages: [{ stageId: 'requirements' }, { stageId: 'build' }] };
+    const records = await store.getExecutionRecords(meta.executionId);
+    records.stages = [
+      { stageId: 'requirements', state: 'SUCCEEDED' },
+      { stageId: 'build', state: 'SKIPPED' },
+    ];
+    const p = await previewDelivery({ meta: legacy, records, plan, operation });
+    expect(p).toMatchObject({ historical: true, retryable: true });
+    expect(p.delivery.repositories.map((r) => r.status)).toEqual(['pending', 'pending']);
+    records.stages[1].state = 'FAILED';
+    await expect(previewDelivery({ meta: legacy, records, plan, operation })).rejects.toMatchObject(
+      { code: 'delivery_stage_incomplete' },
+    );
+    await expect(
+      previewDelivery({
+        meta: legacy,
+        records,
+        plan: { stages: [...plan.stages, { stageId: 'code', parallelSection: 1 }] },
+        operation,
+      }),
+    ).rejects.toMatchObject({ code: 'delivery_missing_plan' });
   });
 
   it('fences delivery plan changes and keeps lease exclusion on completion/recovery transactions', async () => {
