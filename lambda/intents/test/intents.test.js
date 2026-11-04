@@ -3956,6 +3956,67 @@ describe('realtime-token', () => {
   });
 });
 
+describe('route dispatch and request lifetime', () => {
+  it.each(['resolve', 'reject'])(
+    'keeps the graph connection open until the route read settles (%s)',
+    async (outcome) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      const readStarted = Promise.withResolvers();
+      const readResult = Promise.withResolvers();
+      const close = vi.spyOn(gremlin.driver.DriverRemoteConnection.prototype, 'close');
+      ddbMock.on(GetCommand, { Key: { pk: `EXEC#${intent.id}`, sk: 'META' } }).callsFake(() => {
+        readStarted.resolve();
+        return readResult.promise;
+      });
+      const pending = handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}/graph`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      try {
+        await readStarted.promise;
+        expect(close).not.toHaveBeenCalled();
+        if (outcome === 'reject') {
+          readResult.reject(new Error('route read failed'));
+        } else {
+          readResult.resolve({ Item: procStore.get(keyOf(`EXEC#${intent.id}`, 'META')) });
+        }
+        const res = await pending;
+        expect(res.statusCode).toBe(outcome === 'reject' ? 500 : 200);
+        if (outcome === 'reject') {
+          expect(JSON.parse(res.body)).toEqual({ error: 'Internal server error' });
+        }
+        expect(close).toHaveBeenCalledTimes(1);
+      } finally {
+        readResult.resolve({});
+        await pending.catch(() => {});
+        close.mockRestore();
+      }
+    },
+  );
+
+  it.each(['graph', 'audit', 'outputs'])(
+    'keeps edit-state preflight ahead of the %s read',
+    async (route) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      const res = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}/${route}`,
+        pathParameters: { projectId, intentId: intent.id },
+        queryStringParameters: { editState: 'draft' },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ draftRevision: 0, status: 'DRAFT' });
+    },
+  );
+});
+
 describe('GET list + detail', () => {
   it('lists project intents and returns assembled detail', async () => {
     const sub = `u-${randomUUID()}`;
