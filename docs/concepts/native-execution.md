@@ -2294,7 +2294,76 @@ outside the verdict; Kiro remains deferred to NE-18. The prior **282 sealed
 evidence files** remain unchanged. Commands, registry identity, installed checks,
 deployed pins and browser/authority receipts are recorded under
 `.native-evidence/ne04-2026-11-04-deployed-5e5ad76c/`.
-NE-05 has not started.
+NE-05 had not started at that verification boundary.
+
+### NE-05 controller observations and projection ownership — 2026-11-04
+
+Implementation `4f82d70161999943a090983901fff878a185404e` on
+`feat/native-aidlc-execution` separates observation failures from execution
+decisions under the existing authority. Unreadable responses cannot establish
+that the writer was lost. The observer now returns explicit outcomes:
+
+| Observation                              | Controller behavior                                                                                                                                                                                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Unreadable runtime status                | Recheck authority and retry status for the same execution. A structured owner rejection or a verified conflicting report still requires recovery.                                                                                                      |
+| Uncertain Start or reply acknowledgement | Retain the durable dispatch marker and accepted answer. Read status before another decision; never resend the attempted model command.                                                                                                                 |
+| Pending or unavailable activity catch-up | Keep activity separate from the successful status observation. Acknowledge only persisted cursors and wait for terminal closure before admitting publication. A cold journal that positively reports missing closure still requires explicit recovery. |
+| Lost execution ownership                 | Return `ownership_lost` and leave a wakeup for the current authority. Do not adopt another lease, repeat cancellation cleanup or commit a stale publication/activity batch.                                                                            |
+| Unavailable authority                    | Return `authority_unavailable`, retaining the existing lease and delivery marker until authority can be read and claimed again.                                                                                                                        |
+| Pending graph projection                 | Claim and acknowledge the independent `PROJECTION` row. Pending graph work cannot make a waiting or stopped execution runnable.                                                                                                                        |
+
+These outcomes and allowlisted diagnostics belong to the controller; public
+execution states and member request shapes are unchanged. The obsolete
+execution `projected()` mutation is deleted. Projection fixtures now use the
+actual projection owner, including takeover, cancellation, lost acknowledgement
+and concurrent reply cases. Projection writes condition on their own version,
+lease and source binding; an ambiguous acknowledgement succeeds only for the
+exact committed progress record. Public publication history can still project
+after cancellation while current membership and source authorization hold.
+Stored publication metadata and existing public-history projection readers
+remain separate from dispatch authority.
+
+Local validation passes **1,404 controller tests** and **3,044 AgentCore tests
+with 8 skipped**. The controller run includes the new **DynamoDB Local**
+projection/accepted-answer race, existing graph integration, SDK/HTTP observation,
+EFS recovery, member gates, publication, history and export coverage. Seven
+new uncertainty cases failed against the original controller and now pass.
+The broader run also identified one remaining test expecting a thrown lease-loss
+error; it now checks the explicit outcome, and the entire controller project
+passes again. **12 packaging/deployment and architecture regressions**, lint,
+formatting, scoped secret checks, dependency/SDK checks, the architecture check
+and documentation build pass. Commit hooks retain their existing advisory
+dependency-audit findings; dependencies were not changed.
+
+All **nine** controller packages build from **104** source inputs. Compared with
+the verified NE-04 deployment, bundle bytes change for **authority, execution,
+cancellation and credentials**. The other five packages remain byte-identical.
+The **269 runtime source files**, Terraform image tag `0a7e090fc869ab30`,
+frontend, infrastructure and deployment inputs are unchanged. The image baseline
+is the previously verified registry digest
+`sha256:32fc8539bf72d2dfba07c2ba352c12d8f9b7d3470a34fff35b1e822acbcbb33d`;
+no new installed-image qualification is claimed. The prior **95 sealed NE-04
+evidence files**, **329 committed source references** and **18 external
+references** verify unchanged.
+
+**NE-05 is complete locally; controller deployment and independent deployed
+verification remain pending.** The operator handoff pins the reviewed checkout,
+commit, bundle inputs and validation, preserves a fresh Terraform plan and
+refuses a repeated attempt. Its command is:
+
+```bash
+bash /Users/jwthewes/development/sample-collaborative-ai-dlc/.native-evidence/ne05-2026-11-04-controller-transitions/handoff/deploy-controller.sh
+```
+
+The handoff uses profile `solution` for the dev deployment. It does not require
+a frontend deployment, runtime-image change or another workspace fault. After
+the operator reports completion, verify deployed controller bytes and aliases,
+existing image pins, scoped diagnostics and the preserved publication/history/
+unanswered gate. This local stage performs no cloud mutation or fresh live flow
+and makes no new deployed/browser claim. Generated-output quality remains outside
+the verdict; Kiro remains deferred to NE-18, and NE-06 has not started.
+Evidence and exact validation commands are under
+`.native-evidence/ne05-2026-11-04-controller-transitions/`.
 
 ## Integration and simplification checklist
 
@@ -2371,12 +2440,19 @@ with previous native development executions.
       original publication, history and unanswered gate remain intact. The
       record above distinguishes installed checks from deployed and browser
       observations. Generated-output quality is outside the verdict.
-- [ ] **NE-05 — Simplify controller transitions and observation failures.** Make status
+- [x] **NE-05 — Simplify controller transitions and observation failures.** Make status
       reads, activity catch-up, lost ownership and uncertain dispatch produce explicit
       outcomes under the existing execution authority. Remove the obsolete execution
       `projected()` mutation and move its fixtures to the actual projection owner.
       **Done when:** transient reads cannot cause replay or unnecessary recovery,
       stale workers cannot commit, and projection remains independent of dispatch.
+      **Completed locally 2026-11-04:** explicit observation and ownership outcomes
+      retain dispatch and answer authority; activity catch-up is separate, and
+      projection uses its own fenced progress row. The obsolete execution mutation
+      is removed and its fixtures use the actual owner. The 4,448 passing host
+      tests (8 skipped), DynamoDB Local integration and packaging/static checks
+      are recorded above. Controller deployment and deployed preservation checks
+      are pending; the existing runtime image and frontend require no change.
 - [ ] **NE-06 — Consolidate the public command contract.** Replace concentrated route
       classification with simple route definitions and align frontend requests,
       API validation and runtime command shapes. Keep validation at each trust
