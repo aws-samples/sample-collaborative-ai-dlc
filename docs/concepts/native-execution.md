@@ -2423,12 +2423,12 @@ control repeatedly lost the selected window. The successful visible observation
 is preserved, but no authenticated HTTP request receipts or separate history/
 export page render were captured.
 
-**An existing operational issue remains open.** Bounded diagnostics from
+**An existing operational issue was left open at this verification boundary.** Bounded diagnostics from
 **09:25:31–10:06:05 UTC** found execution and projection retries, rather than a
 quiet deployment period. Five-minute samples before and after deployment both
 return **`NATIVE_EXECUTION_INVALID`**; the sampled execution diagnostic fails
 `authority-read` for a scope hash that does not match the four preserved
-fixtures. Its actual intent and rejected record field remain unidentified.
+fixtures. Its actual intent and rejected record field were then unidentified.
 At 09:25 UTC, before deployment, metrics already showed **2,332 execution** and
 **5,334 projection** messages in flight. At approximately 13:40 UTC their
 approximate counts were **2,383** and **6,405**. Cancellation, provisioning and
@@ -2444,8 +2444,8 @@ it. Its cause and disposition require a separate scoped investigation.
 Neither quiet metrics nor these observations prove fresh fault-injection,
 uncertain-dispatch, lease-race or real-model behavior.
 
-**The deployment, candidate bytes and preserved fixtures are verified. Full
-NE-05 operational verification remains pending the invalid-scope investigation.**
+**At this boundary, the deployment, candidate bytes and preserved fixtures were
+verified; full NE-05 operational verification awaited the invalid-scope investigation.**
 No deployment retry is needed. A guarded follow-up, complete report, completion
 record and integrity manifest are under
 `.native-evidence/ne05-2026-11-04-deployed-7de995bc/`. All **12 referenced prior
@@ -2454,6 +2454,114 @@ references** verify unchanged. No deployment, runtime/model invocation, workflow
 answer or replay, queue mutation or workspace fault was performed by this
 verifier. Generated-output quality remains outside scope; Kiro remains deferred
 to NE-18, and **NE-06 has not started**.
+
+### NE-05 invalid-scope investigation — 2026-11-04
+
+The follow-up identified the exact rejected records without invoking a runtime,
+answering a gate, receiving queue messages or changing cloud state. A complete
+one-page inventory of the identity-only `NativeByProjectCreatedAt` index returned
+**47 identities** in one project. Consistent primary reads found **35 execution
+records**; the other 12 identities have no execution row. This is complete for
+the discovered keys, not a claim about orphan records absent from that
+eventually consistent index.
+
+Diagnostic scope hash
+`b14dfc8af1a2430e8c21341b146917703d11a28e9b06ebec24970f0810a1e82b`
+matches project `22371643-2db5-42a4-a571-e47fc35745f5`, execution
+**`3a70749e-24ab-42c3-8ba2-592592fbf2c0`**, using the actual diagnostic and
+partition-key functions. Its version **5890** is `RECOVERING`, phase `FENCING`,
+turn 14, writer 2, with proposed writer 3. The stored
+**`recovery.workflowResumeState` is absent**. `validateRecovery()` requires
+`"created"` for a `RECOVERING` row; all other conditions in that check pass.
+The latest recorded recovery request is **2026-10-27 07:59:54.921 UTC**.
+
+The unmodified captured row fails `createNativeExecutionStore().get()` through
+a local read-only port at that exact condition under both the deployed NE-05
+code and pre-NE-05 candidate `5e5ad76c`. Its canonical hash is
+`020fb78b670e7bae445c3cdc21e160a5981b6e8b21e446738525a369b3c8a1da`.
+The same row passes the pre-NE-03 validator at
+`a6ebc303cbdd167e3ff2c768368805b11584de8a`. Commit
+`ce718ec8450743ce19a46d304036772996042564` introduced the explicit requirement
+when deleting the prior recovery contract. A local cloned-row probe adding only
+that field passes both later validators, isolating the rejection; it does
+**not** prove the current workspace contains a resumable workflow or authorize
+backfilling the field. Current recovery admission requires the recorded
+`"created"` observation, carries it into `RECOVERING`, and validates before
+writing.
+
+All **35** captured execution rows have identical validation outcomes before
+and after NE-05: **nine accepted, 26 rejected**. The other 25 rejections are
+older development contracts:
+
+| First rejected condition                           | Records | New periodic projection targets |
+| -------------------------------------------------- | ------- | ------------------------------- |
+| Removed `recoveryCheckpoint` row field             | 18      | 18                              |
+| Missing required turn or writer generation fields  | 4       | 2                               |
+| Missing required `configuration.recoveryMode`      | 3       | 0                               |
+| Missing recovery workflow state on the scope above | 1       | 1                               |
+
+All 25 older records also lack `configuration.recoveryMode`. The exact identities,
+versions, binding/attempt IDs and captured hashes are retained in
+`affected-scopes.json`; no old mode or record was rewritten. Only the named
+`RECOVERING` execution produces a new periodic execution pointer. There are
+**21 rejecting projection targets** and five other rejected rows with no new
+periodic target under the current routing rules. This does not identify every
+previously queued pointer.
+
+The retry mechanism is established beyond its pre-deployment timestamp. The
+enabled repair rule runs every **five minutes**. Its routing uses execution
+status and publication presence; it does not validate the execution contract or
+consult completed projection progress. All **30 published heads** already have
+complete version-2 projection records and no active projection lease. The
+projection claimant nevertheless reads and validates the execution first, so
+the 21 incompatible published rows fail before reading their completed progress.
+Local calls through that actual claimant reproduce the rejection before any
+preparation read or projection write.
+
+Both deployed consumers use batch size 1 and `ReportBatchItemFailures`; their
+queues have **720-second visibility**, **14-day retention** and no redrive
+policy or receive-count cutoff. A thrown domain rejection therefore keeps its
+existing pointer retrying, while repair adds another pointer. Three logged
+repair sweeps each report 31 sends. From **13:45–14:00 UTC**, each five-minute
+metric period reports **one execution send and zero deletions**, and **30
+projection sends and nine deletions**, matching the observed routing. These
+aggregate metrics do not identify individual messages.
+
+The complete filtered **13:59–14:01 UTC** window contains **95 execution
+diagnostic/retry pairs**, correlated by request ID and log stream, all for the
+named scope and `NATIVE_EXECUTION_INVALID`. It also contains **1,161 projection
+retries** with that code. Projection logs omit scope identity, so no individual
+projection message is attributed to a particular rejected row. The authority
+inventory and actual claimant establish the multiple rejected contracts.
+At approximately **14:02 UTC**, the queues still held **2,387 execution** and
+**6,510 projection** messages in flight. No throttle datapoints were positive;
+this is ongoing failed processing, not a healthy-queue verdict.
+
+The target's **354 projected authority/history records** remain unchanged
+through the investigation, including metadata for 13 publications, 13 saved
+responses and 24 answer observations. Token fields and private bodies were not
+retained. The known original intent `0c886f19-89da-4c1c-927a-b48bed4a634b` still
+has the exact accepted execution and publication hashes, zero answer rows and
+the unchanged fence version. Earlier package, image, frontend and full test
+evidence was accepted without repeating those checks.
+
+**NE-05's scoped done criteria and deployed verification are complete.** The
+investigation establishes incompatibility with previous development executions,
+which this checklist explicitly excludes; it finds no new NE-05 replay,
+ownership or projection regression. This does not declare the development
+queues healthy. The remaining decision is an explicit disposition of the
+26 incompatible development executions: retire their automatic processing
+under exact identity/version/hash guards while retaining records, publications,
+accepted answers and workspaces, or separately qualify recovery for selected
+retained executions. No retirement, acknowledgement of queued work, data-retention
+policy, compatibility restoration or field backfill was authorized or performed.
+
+The complete report, validator/source comparisons, bounded cloud reads,
+preservation receipts, disposition proposal and integrity manifest are under
+`.native-evidence/ne05-2026-11-04-invalid-scope-investigation/`. The original
+deployment and sealed verification directories remain unchanged. Generated
+application quality is outside scope, Kiro remains deferred to NE-18, and
+**NE-06 has not started**.
 
 ## Integration and simplification checklist
 
@@ -2544,10 +2652,13 @@ with previous native development executions.
       are recorded above. **Deployed bytes and preservation verified 2026-11-04:**
       all nine packages and authority version 22 match the candidate, and the
       existing image, frontend, publication, history and answers remain intact.
-      **Full operational verification remains pending:** the dated record above
-      preserves an invalid-scope retry backlog observed before and after deployment,
-      its bounded diagnostics and the guarded investigation handoff. No deployment
-      retry or fresh workflow is needed.
+      **Scoped acceptance completed 2026-11-04:** the follow-up above identifies
+      the exact prior-development recovery contract and the other incompatible
+      records, reproduces identical rejection before and after NE-05, and confirms
+      current-record and publication preservation. The separate decision about
+      retiring incompatible development executions from automatic processing
+      remains open; the queues are not declared healthy. No deployment retry,
+      legacy compatibility or fresh workflow is required for NE-05 acceptance.
 - [ ] **NE-06 — Consolidate the public command contract.** Replace concentrated route
       classification with simple route definitions and align frontend requests,
       API validation and runtime command shapes. Keep validation at each trust
