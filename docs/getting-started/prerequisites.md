@@ -82,7 +82,7 @@ You must also have an AWS account with permissions to manage the following servi
 | Networking    | Amazon VPC, Amazon API Gateway (REST and WebSocket), Amazon CloudFront, Elastic Load Balancing, Amazon Route 53 _(optional)_                                                            |
 | Storage       | Amazon S3, Amazon DynamoDB, Amazon Neptune                                                                                                                                              |
 | Security      | Amazon Cognito, AWS Identity and Access Management (IAM), AWS KMS, AWS Secrets Manager, AWS Systems Manager Parameter Store, AWS WAF _(optional)_, AWS Certificate Manager _(optional)_ |
-| Integration   | Amazon Elastic Container Registry (Amazon ECR), Amazon EventBridge, Amazon SQS                                                                                                          |
+| Integration   | Amazon Elastic Container Registry (Amazon ECR), Amazon EventBridge, Amazon SQS, AWS Cloud Control API (AgentCore deployment)                                                            |
 | Observability | Amazon CloudWatch (Logs and alarms)                                                                                                                                                     |
 
 At runtime the application also calls Amazon Inspector (managed environment image scan results), the AWS Price List API (Bedrock cost estimates), and Amazon Bedrock (model discovery and invocation). CodeCommit is optional for spaces using it as their code host. If service control policies restrict these calls, permit the Regions actually used:
