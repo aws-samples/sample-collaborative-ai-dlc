@@ -2874,8 +2874,9 @@ deployed-artifact verification.
 ### NE-07 harness and question adapters — 2026-11-04
 
 This stage starts from `c69276b89033ec098c2f7a35dceafe8e02690d84`, after the
-independently verified NE-06 deployment. Implementation is underway; its fresh
-evidence is isolated under
+independently verified NE-06 deployment. Implementation and local installed-image
+qualification are complete for
+`01a776358678a33894e0c53853b95490e692a65b`. Fresh evidence is isolated under
 `.native-evidence/ne07-2026-11-04-harness-question-adapters/`. Earlier evidence and
 attempted deployment plans remain unchanged.
 
@@ -2884,10 +2885,10 @@ cross-field session checks, then selects one explicit harness decoder in
 `harness-output.js`. Each decoder owns its protocol's terminal state. Codex uses
 its thread/start/completion sequence, OpenCode its session-bound text and stop
 records, and Claude its current parent-query/result sequence. The installed
-Claude 2.1.296 producer selects the last text block; the obsolete concatenated
+Claude 2.1.296 producer selects the final content block when it is text; the obsolete concatenated
 multi-block terminal alternative is removed. Deferred FIFO results, silent
-background queries, memory-annotation comparison and reason-less local-command
-results remain supported because the current producer still emits them.
+background queries, memory-annotation comparison and local-command results
+that omit reasons remain supported because the current producer still emits them.
 Original visible bytes remain intact. Kiro's existing bridge decoder is retained,
 but admission and full qualification remain deferred to NE-18.
 
@@ -2912,6 +2913,69 @@ choices, separate summaries, the 32-question/16-option bounds and explicit
 degradation. They are deterministic contract tests, not live model observations.
 NE-04 turn/cancellation ownership and NE-06 public-command guarantees remain
 unchanged. No workflow engine, old-run migration or cleanup system is added.
+
+The composed matrix contains **57 cases** across Claude, Codex and OpenCode,
+plus **three** unsupported-methodology cases through the same frontend path.
+The full backend suite passes **11,204 tests**, with **eight skipped**; the full
+frontend suite passes **2,172 tests**. NE-06's **44** actual frontend-to-public-router
+cases remain green. The full release suite passes **358 tests** in a clean
+candidate snapshot whose **1,715** source files match the implementation commit.
+Unrelated `.worktrees/` content remains intact. Lint, formatting, secrets, SDK
+alignment, module boundaries, the **412-module** architecture check, native
+packaging, **22** wiring checks, frontend TypeScript/production build, Terraform
+formatting and docs sync/build pass. Module boundaries retain **15 warnings**
+and no errors.
+
+The first focused runs exposed an obsolete concatenated-result fixture, a
+missing-thread error classification change and slow assertions over the
+512-option form. Each was corrected and rerun successfully. Formatting also
+moved a TypeScript suppression comment off a multiline test import; the corrected
+import passes the **138-test** page suite and complete frontend build. These
+nonzero attempts remain recorded and are not labeled PASS.
+
+The production Dockerfile built committed source for **Linux ARM64** with
+`ENABLE_NATIVE_INTERACTION_PROBE=true`. The qualified immutable local image is
+`sha256:f556dbadbd65d2856d016ad5fc32c3d73d226433b9393a60f0359cbcda35f0d4`;
+the source-derived runtime tag is **`20fdffca5bcde73e`**. Global Docker
+configuration is unchanged. Fresh fixture preparation and independent
+verification cover AI-DLC **2.11.1**, the **32-package** frozen OpenCode cache
+and Linux binding **1.1.5**; all **235** fixture files retain their recorded
+bytes and modes after qualification.
+
+Packaged-image qualification passes **162 Linux tests** and the finite installed
+**Claude 2.1.296**, **Codex 0.162.1** and **OpenCode 1.19.0** scopes. Each of
+the four qualification containers audits the same **271 production files**
+under `/opt`, with source SHA-256
+`06a9447c70a0ab2b16523fc1118833d5071aedf94182da5777e87461d976e894`;
+checkout production files are not overlaid. The controller adapter is packaged
+separately. Fresh private CLI state exercises actual installed protocols,
+workflow dispatch, failed/incomplete turns, cancellation and the existing
+workflow-resume/approval journeys with fixed local provider responses. Claude
+retains the three-choice scope offer and records **11** publications; Codex
+records **10** and OpenCode **seven**. OpenCode's finite scope does not include
+the shell dependency-build or reconciliation-question proof. None of this is
+live model compliance, deployed IAM/runtime/EFS or browser proof.
+
+Compared with the accepted NE-06 bundle manifest, bytes change for **authority,
+execution, credentials, projection, results and cancellation**. API, provisioner
+and wakeup bundle bytes match. The runtime image and frontend also change:
+the new **523-file** frontend manifest has **404** identical files, **118** new
+hashed paths and a changed `index.html`. There is no Terraform configuration or
+dependency-version change. The normal deployment wrapper may still rebuild
+other package resources because their shared-source packaging hash changes.
+
+**Deployment remains an operator action.** The fresh deployment-only handoff is
+`.native-evidence/ne07-2026-11-04-harness-question-adapters/handoff/deploy-ne07.sh`.
+Its `candidate.json` pins the final reviewed HEAD, qualified source/image,
+configuration and validation evidence. Run it with `--check-only` first, then
+without arguments from the user's terminal. It checks local inputs before
+credential setup, refuses another attempt in its single-use deployment
+directory, preserves logs/plan/start/finish receipts and uses profile `solution`.
+It does not repeat the completed local qualification. The eventual registry
+digest is separate from the qualified local image ID: independent deployed
+bundle/alias, image platform/config/layer, current runtime-pin and frontend-byte
+verification follows the terminal deployment. Kiro remains deferred to NE-18;
+NE-08, NE-09 and NE-11 are not advanced by this stage.
 
 ## Integration and simplification checklist
 
@@ -3030,18 +3094,22 @@ the current contract for newly created executions.
       are independently verified. Fresh live behavior was not exercised and is
       not required for this artifact acceptance. The user's development-data
       decision is resolved and creates no preservation or cleanup gate.
-- [ ] **NE-07 — Simplify harness output and workflow question adapters.** Select a
+- [x] **NE-07 — Simplify harness output and workflow question adapters.** Select a
       decoder for each harness and a supported methodology interaction contract.
       Remove obsolete parser state and question-format fallbacks; keep AI-DLC as
       the owner of stages, plans and gates. **Done when:** current-step grouped
       questions, scope/compose offers, approval and written replies render exact
       choices for every supported combination, with explicit degraded behavior
       for unsupported output and no wrapper-created workflow engine.
-      **Underway 2026-11-04:** bounded implementation and local installed-image
-      qualification start from `c69276b89033ec098c2f7a35dceafe8e02690d84`.
-      AI-DLC 2.11.1 and the enabled Claude/Codex/OpenCode harnesses are the
-      qualification scope; Kiro remains deferred to NE-18. Deployment is a
-      separate operator step. Evidence is under
+      **Completed locally and in the installed image 2026-11-04:** explicit
+      harness decoders and the verified AI-DLC 2.11.1 interaction contract
+      preserve exact grouped questions, typed scope/compose offers, approvals
+      and written replies. Obsolete format/state fallbacks are removed.
+      The 60 composed presentation cases, full backend/frontend/release checks,
+      162 packaged Linux regressions and finite installed Claude/Codex/OpenCode
+      scopes pass as recorded above. Kiro remains deferred to NE-18. A guarded
+      deployment-only handoff is ready for operator execution, followed by
+      independent deployed verification. Evidence is under
       `.native-evidence/ne07-2026-11-04-harness-question-adapters/`.
 - [ ] **NE-08 — Complete normal intent creation.** Integrate native into the normal
       **New intent** entry, including the backend/default choice, verified package
