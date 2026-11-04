@@ -498,11 +498,13 @@ const buildReviewerPrompt = ({
     policy: stage.policy ?? null,
   });
 
+// The most review text a revision carries, the same bound as the repair turn's.
+const REVISION_FINDINGS_LIMIT = 8000;
+
 // The review a human saw at the gate they answered with "Request changes". The
 // reviewer runs before the gate opens, so its latest run for this stage recorded
 // no later than the gate is that review. Null when the stage has no reviewer, the
 // answer is not a revision, or the review recorded no findings.
-const REVISION_FINDINGS_LIMIT = 8000;
 const reviewFindingsForGate = async ({ store, executionId, stageInstanceId, stage, gate }) => {
   const reviewerAgent = stage?.reviewer?.reviewerAgent;
   if (!reviewerAgent || !isRevisionAnswer(gate)) return null;
