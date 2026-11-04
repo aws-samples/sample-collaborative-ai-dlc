@@ -955,13 +955,25 @@ describe('jira-cloud — provider methods', () => {
     });
 
     it('rejects attachments from a Jira issue outside the bound project', async () => {
-      fetchMock.mockResolvedValueOnce(
-        okResponse({ fields: { project: { key: 'OTHER' }, attachment: [] } }),
-      );
-      await expect(jiraProvider.issueAttachments(ctx(), 'PROJ', 'OTHER-1')).rejects.toMatchObject({
-        status: 403,
-      });
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const delegated = {
+        ...ctx(),
+        resolveConnection: async () => seedConnectionRow().Item,
+        externalProjectId: '10000',
+      };
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({
+            fields: {
+              project: { id: '20000', key: 'OTHER' },
+              attachment: [{ id: '1', filename: 'a.png', size: 1 }],
+            },
+          }),
+        )
+        .mockResolvedValueOnce(okResponse({ projectTypeKey: 'software' }));
+      await expect(
+        jiraProvider.issueAttachments(delegated, 'PROJ', 'OTHER-1', { attachmentId: '1' }),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
     it('returns the mapped issue', async () => {
