@@ -8,63 +8,39 @@ import userEvent from '@testing-library/user-event';
 // picker.
 // Per-test switch: the "App path without OAuth" test flips this to false.
 let oauthConnected = true;
+// CodeCommit's "connection" is the one platform role an admin configures; the
+// modal reads it through the same status hook. Its own switch so a test can be
+// "not configured" without touching the OAuth providers.
+let codecommitConfigured = true;
 vi.mock('../hooks/useGitProviderStatus', () => ({
-  useGitProviderStatus: () => ({
-    status: { connected: oauthConnected },
+  useGitProviderStatus: (provider: string) => ({
+    status: { connected: provider === 'codecommit' ? codecommitConfigured : oauthConnected },
     loading: false,
     error: null,
     refresh: () => {},
   }),
 }));
 vi.mock('./GitConnectButton', () => ({ GitConnectButton: () => null }));
-// The CodeCommit connect form is stubbed to a single "verify" button that
-// reports a proven role plus the repositories it can see, standing in for the
-// trust-policy + STS round-trip.
 const CODECOMMIT_ARN = 'arn:aws:codecommit:eu-west-1:123456789012:widgets';
-vi.mock('./CodeCommitConnectForm', () => ({
-  CodeCommitConnectForm: ({
-    onVerified,
-  }: {
-    onVerified: (result: {
-      connection: { roleArn: string; externalId: string; region: string };
-      repos: { accountId: string; region: string; repositories: { fullName: string }[] };
-    }) => void;
-  }) => (
-    <button
-      type="button"
-      onClick={() =>
-        onVerified({
-          connection: {
-            roleArn: 'arn:aws:iam::123456789012:role/aidlc-access',
-            externalId: 'aidlc:0f8fad5b-d9cb-469f-a165-70867728950e',
-            region: 'eu-west-1',
-          },
-          repos: {
-            accountId: '123456789012',
-            region: 'eu-west-1',
-            repositories: [{ fullName: CODECOMMIT_ARN }],
-          },
-        })
-      }
-    >
-      verify-codecommit
-    </button>
-  ),
-}));
+// The repo picker is stubbed to a single "select" button. CodeCommit now lists
+// through the generic provider path (no pre-fetched list prop), so the stub
+// returns an ARN id for codecommit and an owner/repo id otherwise.
 vi.mock('./GitRepoSelect', () => ({
   GitRepoSelect: ({
+    provider,
     onChange,
-    repoSource,
-    repos,
   }: {
+    provider: string;
     onChange: (repos: { fullName: string }[]) => void;
-    repoSource?: string;
-    repos?: { fullName: string }[];
   }) => (
     <button
       type="button"
       onClick={() =>
-        onChange(repoSource === 'codecommit-role' ? (repos ?? []) : [{ fullName: 'acme/widgets' }])
+        onChange(
+          provider === 'codecommit'
+            ? [{ fullName: CODECOMMIT_ARN }]
+            : [{ fullName: 'acme/widgets' }],
+        )
       }
     >
       select-repo
@@ -96,6 +72,7 @@ vi.mock('../services/gitProvider', async (importOriginal) => {
       getStatus: vi.fn().mockResolvedValue({ configured: true }),
       listRepos: vi.fn().mockResolvedValue([]),
     },
+    codecommitStatus: vi.fn().mockResolvedValue({ configured: true, region: 'eu-west-1' }),
   };
 });
 vi.mock('../services/sourceControl', async (importOriginal) => {
@@ -121,6 +98,7 @@ describe('CreateProjectModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     oauthConnected = true;
+    codecommitConfigured = true;
     vi.mocked(projectsService.create).mockResolvedValue({ id: 'p1' } as never);
     vi.mocked(projectsService.delete).mockResolvedValue(undefined as never);
     vi.mocked(sourceControlService.bind).mockResolvedValue({
@@ -277,23 +255,36 @@ describe('CreateProjectModal', () => {
     expect(projectsService.delete).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });
-  it('connects CodeCommit through a verified IAM role and binds with the role and external id', async () => {
+  it('blocks Next and shows an admin message when CodeCommit is not configured', async () => {
     oauthConnected = false;
+    codecommitConfigured = false;
+    await renderModal(
+      <CreateProjectModal onClose={() => {}} onCreated={() => {}} initialProvider="codecommit" />,
+    );
+
+    // No per-user IAM form; a platform admin must set up the connection first,
+    // so Next stays blocked (same pattern as the GitHub App path).
+    expect(screen.queryByRole('button', { name: 'verify-codecommit' })).not.toBeInTheDocument();
+    expect(screen.getByText('CodeCommit is not set up yet.')).toBeInTheDocument();
+    expect(screen.getByText(/Ask a platform admin to set up CodeCommit/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled());
+  });
+
+  it('creates a CodeCommit space via the platform connection, binding without a role', async () => {
+    oauthConnected = false;
+    codecommitConfigured = true;
     const user = userEvent.setup();
     const onCreated = vi.fn();
     await renderModal(
       <CreateProjectModal onClose={() => {}} onCreated={onCreated} initialProvider="codecommit" />,
     );
 
-    // No OAuth connection exists and none is needed, but Next stays blocked
-    // until the role has been proven.
+    // Connection configured by an admin → Next is enabled with no IAM form.
     const nextButton = screen.getByRole('button', { name: 'Next' });
-    expect(nextButton).toBeDisabled();
-    await user.click(screen.getByRole('button', { name: 'verify-codecommit' }));
     await waitFor(() => expect(nextButton).toBeEnabled());
     await user.click(nextButton);
 
-    // Step 2 lists the repositories the role returned (ARN ids).
+    // Step 2 lists repositories through the generic path (ARN ids).
     await user.click(screen.getByRole('button', { name: 'select-repo' }));
     await user.click(screen.getByRole('button', { name: 'Next' }));
     const createBtn = await screen.findByRole('button', { name: 'Create Space' });
@@ -310,12 +301,10 @@ describe('CreateProjectModal', () => {
         repos: [{ url: CODECOMMIT_ARN, role: 'primary' }],
       }),
     );
+    // No roleArn and no external id: the backend resolves the platform
+    // connection server-side.
     expect(sourceControlService.bind).toHaveBeenCalledWith('p1', {
-      // The external id is never sent: the backend resolves the caller's own.
-      codecommit: {
-        authType: 'codecommit-role',
-        roleArn: 'arn:aws:iam::123456789012:role/aidlc-access',
-      },
+      codecommit: { authType: 'codecommit-role' },
     });
     expect(onCreated).toHaveBeenCalled();
   });

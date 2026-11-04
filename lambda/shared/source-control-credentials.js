@@ -15,7 +15,7 @@ import {
   roleCredentialRef,
 } from './source-control-bindings.js';
 import { assumeCodeCommitRole, isCodeCommitRoleArn, roleAccountId } from './codecommit-role.js';
-import { resolveCodeCommitExternalId } from './codecommit-connection.js';
+import { getCodeCommitConnection, platformExternalId } from './codecommit-platform-config.js';
 import { parseCodeCommitRepo } from './git-providers/codecommit-repo.js';
 import { signCodeCommitGitCredential } from './git-providers/codecommit-credential.js';
 import { DEFAULT_AUTHOR_NAME, defaultAuthorEmail } from './git-providers/codecommit.js';
@@ -166,40 +166,41 @@ const verifyGitHubAppBinding = async ({ ssm, secrets, repo }) => {
 // author of engine-made commits is configured on the binding. The defaults are
 // the provider's own (git-providers/codecommit.js), so a binding and a
 // server-side merge always name the same author.
-const verifyCodeCommitRoleBinding = async ({
-  ddb,
-  sts,
-  repo,
-  userId,
-  selection = {},
-  projectBindings = [],
-}) => {
+const verifyCodeCommitRoleBinding = async ({ ssm, sts, repo, selection = {} }) => {
   if (!sts) {
     throw Object.assign(new Error('STS client is required for CodeCommit role verification'), {
       code: 'STS_UNAVAILABLE',
     });
   }
-  const roleArn = String(selection.roleArn || '').trim();
+  // The role and external ID come from the one platform connection (issue
+  // #531), never from the selection: a space creator picks repositories, not
+  // an ARN. `selection.roleArn`/`externalId` are ignored.
+  const connection = await getCodeCommitConnection(ssm);
+  const roleArn = connection.roleArn;
+  const externalId = platformExternalId();
   if (!isCodeCommitRoleArn(roleArn)) {
-    throw Object.assign(new Error('A valid IAM role ARN is required for CodeCommit'), {
-      code: 'ROLE_ARN_REQUIRED',
+    // No connection yet: a platform admin must configure CodeCommit first.
+    // Surfaced per-repo under the existing 409 SOURCE_CONTROL_VERIFICATION_FAILED.
+    throw Object.assign(new Error('CodeCommit is not configured on this deployment'), {
+      code: 'CODECOMMIT_NOT_CONFIGURED',
     });
   }
-  // Resolved server-side: the external id this project already uses for the
-  // role, else the caller's own connection. A selection naming any other
-  // external id is refused here, before STS sees it.
-  const externalId = await resolveCodeCommitExternalId({
-    ddb,
-    userId,
-    roleArn,
-    requested: selection.externalId,
-    projectBindings,
-  });
   const target = parseCodeCommitRepo(repo);
   if (!target.arn) {
     throw Object.assign(new Error('CodeCommit repositories must be bound by ARN'), {
       code: 'INVALID_REPOSITORY',
     });
+  }
+  // The connection is one region: discovery lists only that region, so a
+  // bind or rebind must not reach past it even when the AWS role allows more.
+  // Checked before STS, so a mismatch assumes nothing and writes nothing.
+  // Runtime resolution keeps the stored binding region (existing bindings stay
+  // pinned until an explicit rebind).
+  if (target.region !== connection.region) {
+    throw Object.assign(
+      new Error(`CodeCommit repositories must be in the connection region (${connection.region})`),
+      { code: 'CODECOMMIT_REGION_MISMATCH' },
+    );
   }
   const accountId = roleAccountId(roleArn);
   // Prove the whole chain once, with the write-scoped session policy the
@@ -261,7 +262,6 @@ const verifyBindingCredential = async ({
   confirmDelegation = false,
   actorName = null,
   selection = {},
-  projectBindings = [],
 }) => {
   if (authType === 'github-app') {
     if (provider !== 'github') throw new Error('GitHub App auth is only valid for GitHub');
@@ -270,7 +270,7 @@ const verifyBindingCredential = async ({
   if (authType === 'codecommit-role') {
     if (provider !== 'codecommit')
       throw new Error('CodeCommit role auth is only valid for CodeCommit');
-    return verifyCodeCommitRoleBinding({ ddb, sts, repo, userId, selection, projectBindings });
+    return verifyCodeCommitRoleBinding({ ssm, sts, repo, selection });
   }
   if (authType !== `${provider}-oauth`) {
     throw new Error(`Invalid auth type ${authType} for ${provider}`);

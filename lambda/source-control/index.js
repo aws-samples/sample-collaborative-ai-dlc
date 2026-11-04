@@ -143,9 +143,8 @@ const normalizeProviderSelections = (data = {}) => {
       selections[item.provider] = {
         authType: item.authType,
         confirmDelegation: item.confirmDelegation,
-        // codecommit-role: the tenant role and the committer identity.
-        ...(item.roleArn ? { roleArn: item.roleArn } : {}),
-        ...(item.externalId ? { externalId: item.externalId } : {}),
+        // codecommit-role: only the committer identity. The role and external
+        // ID come from the one platform connection, not the selection (#531).
         ...(item.committerName ? { committerName: item.committerName } : {}),
         ...(item.committerEmail ? { committerEmail: item.committerEmail } : {}),
       };
@@ -528,7 +527,6 @@ export const handler = async (event, context) => {
             authType: selection.authType,
             userId,
             selection,
-            projectBindings: existing,
             confirmDelegation:
               selection.confirmDelegation === true || data.confirmDelegation === true,
             actorName:
@@ -548,6 +546,9 @@ export const handler = async (event, context) => {
             createdBy: prior?.createdBy,
           });
         } catch (error) {
+          // A platform fault (SSM read) is not a repository verdict: let the
+          // outer handler return its safe 5xx instead of a 409.
+          if (error.code === 'CODECOMMIT_CONNECTION_UNAVAILABLE') throw error;
           failures.push({
             provider: repo.provider,
             repo: repo.repo,

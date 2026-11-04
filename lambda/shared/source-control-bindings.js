@@ -251,15 +251,25 @@ const invalidateBindingsByCredentialRef = async (ddb, credentialRef, reason, opt
 };
 
 // Persist the invalidation an error calls for. A refused CodeCommit role takes
-// down every binding on the same (role, external ID) pair (same
-// credentialRef), across projects;
-// anything else only the binding that failed. Best-effort: callers are already
-// on an error path and rethrow the original error.
+// down every legacy per-user binding on the same (role, external ID) pair
+// (same credentialRef), across projects; anything else only the binding that
+// failed. Best-effort: callers are already on an error path and rethrow the
+// original error.
+//
+// A refused PLATFORM binding is the exception (issue #531): a broken platform
+// trust is the admin's doing, not the space owner's, so it invalidates nothing
+// and every space works again once the admin fixes the trust (no rebind). A
+// platform binding is the one whose external ID is the per-deployment value in
+// CODECOMMIT_EXTERNAL_ID; legacy per-user bindings carry another external ID.
 const invalidateBindingsForError = async (ddb, binding, error, options = {}) => {
   const reason = invalidationReasonForError(error);
   if (!reason || !binding) return 0;
-  if (error?.code === 'ROLE_ASSUMPTION_DENIED' && binding.credentialRef) {
-    return invalidateBindingsByCredentialRef(ddb, binding.credentialRef, reason, options);
+  if (error?.code === 'ROLE_ASSUMPTION_DENIED') {
+    const platformExternalId = process.env.CODECOMMIT_EXTERNAL_ID;
+    if (platformExternalId && binding.externalId === platformExternalId) return 0;
+    if (binding.credentialRef) {
+      return invalidateBindingsByCredentialRef(ddb, binding.credentialRef, reason, options);
+    }
   }
   await markBindingInvalid(ddb, binding, reason, options);
   return 1;
@@ -291,6 +301,9 @@ const KNOWN_ERROR_CODES = Object.freeze([
   'APP_CREDENTIAL_FAILED',
   'APP_INSTALLATION_UNAVAILABLE',
   'BINDING_INVALID',
+  'CODECOMMIT_CONNECTION_UNAVAILABLE',
+  'CODECOMMIT_NOT_CONFIGURED',
+  'CODECOMMIT_REGION_MISMATCH',
   'CONNECTION_REQUIRED',
   'CREDENTIAL_REFRESH_FAILED',
   'DELEGATION_CONFIRMATION_REQUIRED',
@@ -331,10 +344,11 @@ const loggableErrorCode = (error, fallback = 'UNKNOWN') => {
 //   - a provider denial scoped to one operation (a CodeCommit pull-request API
 //     the role does not grant) invalidates nothing: repository access may be
 //     intact, and the operation itself already failed;
-//   - STS refusing the tenant role (trust policy or external id changed, role
-//     deleted) invalidates every binding on that role and external ID: they
-//     share the credential, so none of them can work any more. Bindings of
-//     another user on the same role carry another external ID and are kept;
+//   - STS refusing a legacy per-user role (trust policy or external id
+//     changed, role deleted) invalidates every binding on that role and
+//     external ID: they share the credential, so none of them can work any
+//     more. A refused platform role invalidates nothing: the admin fixes the
+//     trust and every space recovers (invalidateBindingsForError, #531);
 //   - a transient STS failure or a session policy the platform built wrongly
 //     invalidates nothing: neither is the tenant's doing, and a retry (or a
 //     platform fix) recovers without a rebind.
@@ -378,9 +392,9 @@ const sanitizeBinding = (binding, { privileged = false } = {}) => {
       out.installationAccount = binding.installationAccount || null;
     }
     if (binding.authType === 'codecommit-role') {
-      // Role ARN, account and region identify the tenant's role. The external
-      // ID stays server-side: re-verification resolves it from the stored
-      // binding, so no caller (not even a co-admin) needs to read it.
+      // Role ARN, account and region identify the role the binding uses. The
+      // external ID stays server-side: runtime reads it from the stored binding
+      // and a rebind takes the platform one, so no caller needs to read it.
       out.roleArn = binding.roleArn || null;
       out.roleAccountId = binding.roleAccountId || null;
       out.region = binding.region || null;
