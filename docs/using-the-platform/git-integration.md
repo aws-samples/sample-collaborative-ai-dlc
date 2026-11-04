@@ -199,7 +199,9 @@ PR-per-unit workflows keep their existing unit review process; this action
 covers their final intent-to-base publication only.
 
 Older completed runs initially show **Delivery not yet verified**. Checking them
-does not rewrite their history. **Save delivery assessment** records a reconciled
+does not rewrite their history. An older serial run without a pinned workflow
+version can be checked when all of its stages succeeded or were skipped; one with
+unit work stays unverified because its historical sections cannot be proven. **Save delivery assessment** records a reconciled
 or refused result when no publication is needed. Missing ownership or unfinished
 workflow/unit records require execution recovery first.
 

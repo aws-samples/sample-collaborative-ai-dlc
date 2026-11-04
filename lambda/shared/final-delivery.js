@@ -106,13 +106,13 @@ export const assertDeliveryComplete = async (meta, records, plan) => {
       'delivery_completion_changed',
       'The plan or completion decision changed. Review completion diagnostics before delivery.',
     );
-  // No unit diagnostic on a legacy serial execution is not evidence of its
-  // historical workflow definition. Publication still requires verified scope.
-  const completion =
-    (await assessExecutionCompletion({
-      records: { ...records, meta },
-      loadPlan: async () => ({ valid: true, plan }),
-    })) ?? unverifiedCompletion('legacy_workflow_unpinned');
+  // `null` is a legacy serial run without unit work: no unit plan or unit rows,
+  // and no parallel section in the plan (checked above). Its serial stage rows
+  // below decide; unpinned runs with unit work stay unverified.
+  const completion = (await assessExecutionCompletion({
+    records: { ...records, meta },
+    loadPlan: async () => ({ valid: true, plan }),
+  })) ?? { ...unverifiedCompletion(null), state: 'complete' };
   if (!['complete', 'partial'].includes(completion.state))
     throw fail(
       completion.state === 'unknown' ? 'delivery_unverified' : 'delivery_incomplete',
