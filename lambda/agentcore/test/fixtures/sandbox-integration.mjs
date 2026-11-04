@@ -12,6 +12,7 @@ import { captureChild, runChild } from '../../cli/spawn.js';
 import { DEFAULT_SANDBOX_CONFIG, withSandbox } from '../../sandbox/launcher.js';
 
 const script = fileURLToPath(import.meta.url);
+const outputPaddingBytes = 1024 * 1024;
 const attempt = async (operation) => {
   try {
     await operation();
@@ -26,6 +27,30 @@ const attempt = async (operation) => {
 const workload = async ([workspace, readPath, writePath, nestedWritePath, port]) => {
   let stdin = '';
   for await (const chunk of process.stdin) stdin += chunk;
+  // Native CLIs expect blocking stdout. Exercise a large write after proxy
+  // activity, which can lazily initialize the worker's Node output streams.
+  const writer = spawnSync(
+    'python3',
+    [
+      '-c',
+      [
+        'import os, sys, urllib.request',
+        'try:',
+        ' urllib.request.urlopen("https://denied.example.invalid", timeout=3)',
+        'except Exception:',
+        ' pass',
+        'remaining = sys.stdin.buffer.read()',
+        'while remaining:',
+        ' remaining = remaining[os.write(1, remaining):]',
+      ].join('\n'),
+    ],
+    {
+      stdio: ['pipe', 'inherit', 'inherit'],
+      input: ' '.repeat(outputPaddingBytes),
+    },
+  );
+  assert.ifError(writer.error);
+  assert.equal(writer.status, 0, 'large native stdout write must not fail');
   const output = join(workspace, 'allowed.txt');
   await writeFile(output, 'allowed write');
   const workspaceWrite = (await readFile(output, 'utf8')) === 'allowed write';
@@ -142,7 +167,11 @@ const runCase = async (enabled, helper) => {
       {
         enabled,
         settings: {
-          network: { allowedDomains: [], deniedDomains: [], strictAllowlist: true },
+          network: {
+            allowedDomains: [],
+            deniedDomains: ['denied.example.invalid'],
+            strictAllowlist: true,
+          },
           filesystem: {
             allowWrite: [workspace, nestedDirectory],
             denyRead: [readDirectory],
@@ -155,7 +184,9 @@ const runCase = async (enabled, helper) => {
       () => (helper === 'capture' ? captureChild(options) : runChild(options)),
     );
     assert.equal(result.exitCode, 0, result.stderr ?? result.stderrTail);
-    const checks = JSON.parse(helper === 'capture' ? result.stdout : stdout);
+    const output = helper === 'capture' ? result.stdout : stdout;
+    const checks = JSON.parse(output);
+    assert.equal(output.length, outputPaddingBytes + JSON.stringify(checks).length + 1);
     const after = (await readdir(tmpdir())).filter((name) => name.startsWith('aidlc-srt-'));
     const scratchCleaned = after.every((name) => before.includes(name));
     const report = {

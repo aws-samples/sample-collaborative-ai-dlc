@@ -4,11 +4,22 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { childEnvironment } from '../cli/environment.js';
 
 const commandEntry = fileURLToPath(new URL('./command.js', import.meta.url));
 const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
+const forwardOutput = (source, destination) =>
+  pipeline(
+    source,
+    new Writable({
+      write(chunk, encoding, callback) {
+        destination.write(chunk, encoding, callback);
+      },
+    }),
+  );
 const bounded = (value) =>
   String(value ?? '')
     .replace(/[\p{Cc}\p{Cf}<>]/gu, ' ')
@@ -117,18 +128,27 @@ export const runSandboxWorker = async (
     child = spawnFn(wrapped.argv[0], wrapped.argv.slice(1), {
       env: outerEnv,
       shell: false,
-      stdio: 'inherit',
+      stdio: ['inherit', 'pipe', 'pipe'],
     });
+    const completed = new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, exitSignal) => resolve({ code, signal: exitSignal }));
+    });
+    // Node can lazily make its own stdout/stderr nonblocking during proxy
+    // activity. Separate pipes keep that change out of native harnesses.
+    // Drain both streams before exiting so large tool results stay complete.
+    const forwarding = [
+      forwardOutput(child.stdout, process.stdout),
+      forwardOutput(child.stderr, process.stderr),
+    ];
     signal?.addEventListener('abort', cancel, { once: true });
     if (signal?.aborted) cancel();
     emit({
       type: 'sandbox.starting',
       fileWriteObservation: request.observeFileWrites ? 'requested' : 'disabled',
     });
-    return await new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('exit', (code, exitSignal) => resolve({ code, signal: exitSignal }));
-    });
+    const [outcome] = await Promise.all([completed, ...forwarding]);
+    return outcome;
   } finally {
     signal?.removeEventListener('abort', cancel);
     // Attempt every cleanup step without replacing the command's result or

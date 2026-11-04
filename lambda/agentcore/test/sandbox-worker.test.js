@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { runSandboxWorker, violationEvent } from '../sandbox/worker.js';
 import { harnessEnvironment } from '../sandbox/command.js';
@@ -51,6 +52,13 @@ const fixtureManager = () => {
 };
 const fixtureChild = () => {
   const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.once('exit', (code, signal) => {
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', code, signal);
+  });
   child.kill = vi.fn(() => {
     child.emit('exit', null, 'SIGKILL');
   });
@@ -72,7 +80,7 @@ describe('SRT worker', () => {
     expect(spawnFn).toHaveBeenCalledWith(
       '/bin/bash',
       ['-c', 'sandbox-wrapper'],
-      expect.objectContaining({ shell: false, stdio: 'inherit' }),
+      expect.objectContaining({ shell: false, stdio: ['inherit', 'pipe', 'pipe'] }),
     );
     expect(spawnFn.mock.calls[0][2].env.KIRO_API_KEY).toBeUndefined();
     expect(spawnFn.mock.calls[0][2].env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
@@ -130,7 +138,7 @@ describe('SRT worker', () => {
         {
           manager,
           spawnFn: (command, args, options) => {
-            const child = spawn(command, args, { ...options, stdio: ['pipe', 'pipe', 'inherit'] });
+            const child = spawn(command, args, { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
             child.stdout.on('data', (chunk) => (output += chunk));
             child.stdin.end('prompt through stdin');
             return child;
