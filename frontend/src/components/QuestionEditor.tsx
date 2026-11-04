@@ -10,6 +10,12 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { Loader2 } from 'lucide-react';
 import { DiscussButton } from '@/components/discussion';
+import {
+  ArtifactMarkdown,
+  PreviewReferenceText,
+  type MarkdownArtifactLink,
+  type MarkdownDerivedItemLink,
+} from '@/components/intent/ArtifactMarkdown';
 import type {
   Question,
   StructuredQuestion,
@@ -17,8 +23,20 @@ import type {
   QuestionOption,
 } from '../services/questions';
 
+/**
+ * The artifacts and derived items a question may mention. When given, matching
+ * references in the question and its options link to their previews.
+ */
+export interface QuestionReferences {
+  artifacts: MarkdownArtifactLink[];
+  derivedItems: MarkdownDerivedItemLink[];
+  onOpenArtifact: (artifactId: string) => void;
+  onOpenItem: (itemId: string) => void;
+}
+
 interface Props {
   question: Question;
+  references?: QuestionReferences;
   scope: CollabScope;
   userName: string;
   onAnswer: (structuredAnswer: StructuredAnswer) => Promise<void>;
@@ -29,6 +47,7 @@ interface Props {
 
 export default function QuestionEditor({
   question,
+  references,
   scope,
   userName,
   onAnswer,
@@ -122,6 +141,7 @@ export default function QuestionEditor({
           <StructuredQuestionBlock
             key={qIdx}
             question={q}
+            references={references}
             questionIndex={qIdx}
             totalQuestions={question.questions.length}
             selectedOptions={selections.get(qIdx) || []}
@@ -166,6 +186,37 @@ export default function QuestionEditor({
   );
 }
 
+function QuestionMarkdown({
+  content,
+  references,
+}: {
+  content: string;
+  references?: QuestionReferences;
+}) {
+  if (!references) return <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>;
+  return <ArtifactMarkdown content={content} {...references} preserveReferenceText />;
+}
+
+function QuestionOptionText({
+  text,
+  references,
+}: {
+  text: string;
+  references?: QuestionReferences;
+}) {
+  if (!references) return <>{text}</>;
+  // Links sit inside the option's clickable row, so a link click must not select it.
+  return (
+    <PreviewReferenceText
+      text={text}
+      {...references}
+      preserveReferenceText
+      stopLinkPropagation
+      linkClassName="text-primary underline underline-offset-2 hover:text-primary/80"
+    />
+  );
+}
+
 function splitLeadingBlock(text: string): [string, string | null] {
   const idx = text.indexOf('\n\n');
   if (idx === -1) return [text, null];
@@ -192,6 +243,7 @@ function requiresFreeTextOption(opt: QuestionOption): boolean {
 /** Renders a single structured question with options + free text */
 function StructuredQuestionBlock({
   question,
+  references,
   questionIndex,
   totalQuestions,
   selectedOptions,
@@ -206,6 +258,7 @@ function StructuredQuestionBlock({
   trailing,
 }: {
   question: StructuredQuestion;
+  references?: QuestionReferences;
   questionIndex: number;
   totalQuestions: number;
   selectedOptions: number[];
@@ -278,13 +331,13 @@ function StructuredQuestionBlock({
             </span>
           )}
           <div className="min-w-0 flex-1 text-sm text-foreground prose prose-sm dark:prose-invert max-w-none">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{titleMd}</ReactMarkdown>
+            <QuestionMarkdown content={titleMd} references={references} />
           </div>
           {trailing && <div className="shrink-0">{trailing}</div>}
         </div>
         {bodyMd && (
           <div className="text-sm text-foreground prose prose-sm dark:prose-invert max-w-none">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{bodyMd}</ReactMarkdown>
+            <QuestionMarkdown content={bodyMd} references={references} />
           </div>
         )}
       </div>
@@ -341,9 +394,13 @@ function StructuredQuestionBlock({
                   )}
                 </span>
                 <span className="text-sm">
-                  <span className="font-medium text-foreground">{opt.label}</span>
+                  <span className="font-medium text-foreground">
+                    <QuestionOptionText text={opt.label} references={references} />
+                  </span>
                   {opt.description && (
-                    <span className="text-muted-foreground ml-1">&mdash; {opt.description}</span>
+                    <span className="text-muted-foreground ml-1">
+                      &mdash; <QuestionOptionText text={opt.description} references={references} />
+                    </span>
                   )}
                 </span>
               </label>
