@@ -270,7 +270,10 @@ completion marker. Changing an alias does not upgrade their durable checkpoints.
 The new API can assess a completed old history without changing its execution
 pins; publication retry creates its own history on the configured fixed target.
 This release requires no status migration, production recovery or model E2E as
-part of deployment. The existing tracker handoff is scheduled after complete publication, including
-a successful retry; graph projection retains its owner. Publication recovery
+part of deployment. The existing tracker handoff is scheduled after complete
+publication, including a successful retry; while only some repositories are
+published, the intent's activity records a `v2.tracker.blocked` note naming how
+many are published, and the tracker receives nothing until the rest are. Graph
+projection retains its owner. Publication recovery
 exposes durable PR links directly. Existing historical tracker rows are not
 rewritten.

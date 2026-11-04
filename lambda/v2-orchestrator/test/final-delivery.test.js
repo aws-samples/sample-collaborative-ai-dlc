@@ -819,6 +819,51 @@ describe('final delivery with real DynamoDB ownership', () => {
     expect((await store.getTrackerSync(meta.executionId)).pullRequests).toHaveLength(2);
     expect((await row()).status).toBe('succeeded');
   });
+  it.each(['start', 'retry-delivery'])(
+    'records a tracker handoff deferred by partial publication through %s',
+    async (action) => {
+      const original = operation.getMockImplementation();
+      operation.mockImplementation((call) =>
+        call.operation === 'create-pr' && call.repo === 'owner/web'
+          ? { conflict: true }
+          : original(call),
+      );
+      let attemptId;
+      if (action === 'retry-delivery') {
+        const p = await preview();
+        attemptId = (await store.claimDelivery({ meta, delivery: p.delivery, attemptId: 'retry' }))
+          .attemptId;
+      } else
+        meta = await store.updateExecution({ executionId: meta.executionId, status: 'CREATED' });
+      await __durableHandler(
+        {
+          action,
+          executionId: meta.executionId,
+          intentId: meta.intentId,
+          projectId: meta.projectId,
+          runId: meta.orchestratorRunId,
+          attemptId,
+        },
+        { step: (_name, fn) => fn() },
+        {
+          store,
+          loadPlan,
+          publishDelivery: (args) => publishFinalDelivery({ ...args, operation, loadPlan }),
+          invokeRuntime: vi.fn(async () => ({ ok: true })),
+          broadcast: vi.fn(),
+        },
+      );
+      meta = await store.getExecution(meta.executionId);
+      expect((await row()).status).toBe('partial');
+      expect(await store.getTrackerSync(meta.executionId)).toBeNull();
+      const deferred = (await store.listEvents(meta.executionId)).filter(
+        (e) => e.eventType === 'v2.tracker.blocked',
+      );
+      expect(deferred).toHaveLength(1);
+      expect(deferred[0].summary).toContain('1 of 2 published');
+    },
+  );
+
   it.each(['unavailable', 'replaced-plan'])(
     'withholds initial publication at the actual start entrypoint when evidence becomes %s',
     async (fault) => {

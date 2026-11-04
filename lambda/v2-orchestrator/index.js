@@ -431,6 +431,9 @@ const defaultDeps = () => ({
 
 // The existing tracker handoff consumes the complete set of published PRs.
 // Publication retry does not add another tracker/provider polling loop.
+// Partial publication withholds the handoff; say so instead of staying silent.
+const trackerDeferredSummary = (published, total) =>
+  `Tracker synchronization waits until every repository's pull request is published (${published} of ${total} published). Check delivery for the remaining repositories.`;
 const publishTrackerDelivery = (store, meta, pullRequests) =>
   store.putTrackerSync({
     executionId: meta.executionId,
@@ -490,12 +493,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       }),
     );
     const publishedPrs = results.map((result) => result.pr).filter(Boolean);
-    if (
-      publishedPrs.length &&
-      !results.some((result) => result.eventType === 'v2.pr.failed') &&
-      retryMeta.source?.bindingId &&
-      retryMeta.source?.resourceId
-    ) {
+    const trackerBound = Boolean(retryMeta.source?.bindingId && retryMeta.source?.resourceId);
+    const trackerDeferred =
+      trackerBound &&
+      publishedPrs.length > 0 &&
+      results.some((result) => result.eventType === 'v2.pr.failed');
+    if (publishedPrs.length && !trackerDeferred && trackerBound) {
       await ctx.step('delivery-tracker', async () => {
         try {
           await publishTrackerDelivery(store, retryMeta, publishedPrs);
@@ -511,6 +514,12 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     await ctx.step('delivery-notify', async () => {
       for (const result of results)
         await store.appendEvent({ executionId, type: result.eventType, summary: result.summary });
+      if (trackerDeferred)
+        await store.appendEvent({
+          executionId,
+          type: 'v2.tracker.blocked',
+          summary: trackerDeferredSummary(publishedPrs.length, results.length),
+        });
       await broadcast(intentId, { action: 'agent.pr', summary: 'Delivery status updated' });
     });
     return { ok: true };
@@ -2860,6 +2869,14 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             'Tracker synchronization could not be scheduled',
           );
         }
+      } else if (meta.source?.bindingId && meta.source?.resourceId) {
+        // Only reachable with deliveryPolicyVersion: new histories, new step.
+        await emitEvent(
+          ctx,
+          'tracker-sync-deferred',
+          'v2.tracker.blocked',
+          trackerDeferredSummary(openedPrs.length, prResults.length),
+        );
       }
       const recordResult = await ctx.step('record-pr', async () => {
         try {
