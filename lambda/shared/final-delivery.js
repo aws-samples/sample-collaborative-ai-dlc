@@ -95,29 +95,37 @@ export const assertDeliveryComplete = async (meta, records, plan) => {
       'The current unit plan is missing. Review execution recovery before delivery.',
     );
   const receipt = meta.completionValidation;
-  if (
-    (meta.completionPolicyVersion >= 1 || receipt?.version >= 1) &&
-    (receipt?.runId !== meta.orchestratorRunId ||
+  let completion;
+  if (meta.completionPolicyVersion >= 1 || receipt?.version >= 1) {
+    // #534 committed this run's completion decision together with SUCCEEDED.
+    // Trust it while it still describes the current run, plan and sections;
+    // claim and creation fence META and the unit plan it names.
+    if (
+      receipt?.runId !== meta.orchestratorRunId ||
       !['complete', 'partial'].includes(receipt?.state) ||
       receipt?.unitPlanIdentity !== unitPlanIdentity(records.unitPlan) ||
-      canonicalJson(receipt?.expectedSections) !== canonicalJson(sections))
-  )
-    throw fail(
-      'delivery_completion_changed',
-      'The plan or completion decision changed. Review completion diagnostics before delivery.',
-    );
-  // `null` is a legacy serial run without unit work: no unit plan or unit rows,
-  // and no parallel section in the plan (checked above). Its serial stage rows
-  // below decide; unpinned runs with unit work stay unverified.
-  const completion = (await assessExecutionCompletion({
-    records: { ...records, meta },
-    loadPlan: async () => ({ valid: true, plan }),
-  })) ?? { ...unverifiedCompletion(null), state: 'complete' };
-  if (!['complete', 'partial'].includes(completion.state))
-    throw fail(
-      completion.state === 'unknown' ? 'delivery_unverified' : 'delivery_incomplete',
-      completionMessage(completion),
-    );
+      canonicalJson(receipt?.expectedSections) !== canonicalJson(sections)
+    )
+      throw fail(
+        'delivery_completion_changed',
+        'The plan or completion decision changed. Review completion diagnostics before delivery.',
+      );
+    completion = receipt;
+  } else {
+    // Older runs have no receipt: assess their recorded evidence once, before
+    // the claim. `null` is a legacy serial run without unit work (no unit plan
+    // or unit rows, and no parallel section in the plan, checked above); its
+    // serial stage rows below decide.
+    completion = (await assessExecutionCompletion({
+      records: { ...records, meta },
+      loadPlan: async () => ({ valid: true, plan }),
+    })) ?? { ...unverifiedCompletion(null), state: 'complete' };
+    if (!['complete', 'partial'].includes(completion.state))
+      throw fail(
+        completion.state === 'unknown' ? 'delivery_unverified' : 'delivery_incomplete',
+        completionMessage(completion),
+      );
+  }
   for (const stage of plan.stages.filter((s) => s.parallelSection == null)) {
     const row = records.stages.find((r) => r.stageId === stage.stageId && !r.unitSlug);
     if (!row || !['SUCCEEDED', 'SKIPPED'].includes(row.state))
@@ -269,6 +277,8 @@ export const previewDelivery = async ({ meta, records, plan, operation }) => {
   const delivery = {
     ...previous,
     repositories,
+    // The claim records which unit plan this completion check covered.
+    unitPlanIdentity: unitPlanIdentity(records.unitPlan),
     status: repositories.some((r) => r.status === 'pending')
       ? 'pending'
       : deliveryStatus(repositories),
@@ -296,6 +306,13 @@ export const previewDelivery = async ({ meta, records, plan, operation }) => {
   };
 };
 
+// A cancelled pre-create fence means ownership or the unit plan changed; a
+// retry of this run would be refused, so the reason must not offer one.
+const withheldReason = (error) =>
+  ['ConditionalCheckFailedException', 'TransactionCanceledException'].includes(error?.name)
+    ? 'Execution ownership or the unit plan changed before the pull request was created. Review completion diagnostics; publication was withheld.'
+    : null;
+
 // Called by the orchestrator in one versioned durable step. Retry uses the same
 // code with an already claimed attempt. No runtime/model/Git integration calls.
 export const publishFinalDelivery = async ({
@@ -306,35 +323,13 @@ export const publishFinalDelivery = async ({
   claimed = null,
   loadPlan,
 }) => {
-  // Re-resolve only captured methodology coordinates; this never runs stages or
-  // reads a mutable graph DAG. Both initial publication and retry enter here.
-  const verifyCompletion = async () => {
-    try {
-      const records = await store.getCompletionRecords(meta.executionId, { includeStages: true });
-      const latest = records.meta;
-      if (
-        latest?.orchestratorRunId !== meta.orchestratorRunId ||
-        latest?.projectId !== meta.projectId
-      )
-        throw fail('delivery_owner_changed', 'Execution ownership changed before delivery.');
-      const resolved = await loadPlan(latest);
-      if (!resolved?.valid || !Array.isArray(resolved.plan?.stages))
-        throw fail('delivery_unverified', 'The pinned workflow cannot be verified for delivery.');
-      await assertDeliveryComplete(
-        { ...latest, completionPolicyVersion: meta.completionPolicyVersion },
-        records,
-        resolved.plan,
-      );
-      return records;
-    } catch (error) {
-      if (error.statusCode === 409) throw error;
-      throw fail(
-        'delivery_unverified',
-        'Completion evidence could not be read. Review completion diagnostics before delivery.',
-      );
-    }
-  };
+  // One consistent read serves the completion check, the claim fence and the
+  // PR body. Only captured methodology coordinates are re-resolved; this never
+  // runs stages or reads a mutable graph DAG.
+  const readRecords = () =>
+    store.getExecutionRecords(meta.executionId, { includeOutputs: false, consistentRead: true });
   let delivery = claimed;
+  let records = null;
   if (!delivery) {
     const latest = await store.getExecution(meta.executionId, { consistentRead: true });
     if (latest?.orchestratorRunId !== meta.orchestratorRunId || latest?.status !== 'SUCCEEDED')
@@ -342,12 +337,30 @@ export const publishFinalDelivery = async ({
     const previous = await store.getDelivery(meta.executionId, meta.orchestratorRunId);
     if (previous && ['succeeded', 'no_change'].includes(previous.status))
       return resultsFor(previous);
-    const completionRecords = await verifyCompletion();
+    records = await readRecords();
+    if (
+      records.meta?.orchestratorRunId !== meta.orchestratorRunId ||
+      records.meta?.projectId !== meta.projectId
+    )
+      throw fail('delivery_owner_changed', 'Execution ownership changed before delivery.');
+    const resolved = await loadPlan(records.meta);
+    if (!resolved?.valid || !Array.isArray(resolved.plan?.stages))
+      throw fail('delivery_unverified', 'The pinned workflow cannot be verified for delivery.');
+    // The only completion check of initial publication. Retry performs it in
+    // its preview; the claim fences the META revision and unit plan it read.
+    await assertDeliveryComplete(
+      { ...records.meta, completionPolicyVersion: meta.completionPolicyVersion },
+      records,
+      resolved.plan,
+    );
     delivery = await store.claimDelivery({
-      meta: completionRecords.meta,
-      delivery: previous ?? { repositories: targets(meta) },
+      meta: records.meta,
+      delivery: {
+        ...(previous ?? { repositories: targets(meta) }),
+        unitPlanIdentity: unitPlanIdentity(records.unitPlan),
+      },
       attemptId: randomUUID(),
-      ifUnitPlan: completionRecords.unitPlan,
+      ifUnitPlan: records.unitPlan,
     });
   }
   // Safe to repeat after a interrupted step: load saved repository results. A
@@ -357,25 +370,28 @@ export const publishFinalDelivery = async ({
   if (delivery?.attemptId !== expectedAttemptId) return [];
   if (delivery.status !== 'in_progress') return resultsFor(delivery);
   await store.saveDelivery({ delivery });
-  let completionRecords;
-  try {
-    completionRecords = await verifyCompletion();
-  } catch (error) {
-    const reason =
-      error.statusCode === 409
-        ? error.message
-        : 'Completion evidence could not be read. Review completion diagnostics before delivery.';
+  const withhold = async (reason, retryable = false) => {
     delivery.repositories = delivery.repositories.map((repo) =>
-      done(repo) ? repo : { ...repo, status: 'failed', retryable: false, reason },
+      done(repo) ? repo : { ...repo, status: 'failed', retryable, reason },
     );
     delivery.status = deliveryStatus(delivery.repositories);
     await store.saveDelivery({ delivery, finished: true });
     return [{ eventType: 'v2.pr.failed', summary: `Final publication withheld: ${reason}` }];
+  };
+  if (!records) {
+    try {
+      records = await readRecords();
+    } catch {
+      return withhold(
+        'Execution records could not be read. Retry delivery; existing pull requests will be checked first.',
+        true,
+      );
+    }
+    if (unitPlanIdentity(records.unitPlan) !== delivery.unitPlanIdentity)
+      return withhold(
+        'The unit plan changed after delivery was checked. Review completion diagnostics before delivery.',
+      );
   }
-  const records = await store.getExecutionRecords(meta.executionId, {
-    includeOutputs: false,
-    consistentRead: true,
-  });
   for (let i = 0; i < delivery.repositories.length; i++) {
     let repo = delivery.repositories[i];
     if (done(repo)) continue;
@@ -383,6 +399,7 @@ export const publishFinalDelivery = async ({
     delivery.repositories[i] = repo;
     await store.saveDelivery({ delivery }); // pin branch and remote identity BEFORE create
     if (repo.status !== 'pending') continue;
+    let withheld = null;
     try {
       const cmp = await callFor(operation, meta, repo, 'compare', {
         base: repo.baseBranch,
@@ -414,17 +431,28 @@ export const publishFinalDelivery = async ({
           applicationUrl,
           comparePrBranches: async () => cmp,
           openPr: async ({ branch, baseBranch, title, body, attemptKey }) => {
-            // Provider inspection may take time. Recheck completion and atomically
-            // fence its plan with the active attempt immediately before creation.
-            // The same write records the create request: a later check accepts
-            // a closed or merged PR as this run's only after this marker.
-            completionRecords = await verifyCompletion();
+            // Record the create request and fence ownership and the unit plan
+            // atomically with it, immediately before the provider mutation. A
+            // later check accepts a closed or merged PR only after this marker.
             const requested = {
               ...repo,
               createRequestedAt: repo.createRequestedAt ?? new Date().toISOString(),
             };
             delivery.repositories[i] = requested;
-            await store.saveDelivery({ delivery, ifUnitPlan: completionRecords.unitPlan });
+            try {
+              await store.saveDelivery({ delivery, ifUnitPlan: records.unitPlan });
+            } catch (error) {
+              delivery.repositories[i] = repo;
+              withheld = withheldReason(error);
+              return withheld
+                ? { failed: true, reason: 'withheld', error: withheld }
+                : {
+                    failed: true,
+                    reason: 'delivery_record_unavailable',
+                    error:
+                      'The delivery record could not be saved. Retry delivery; existing pull requests will be checked first.',
+                  };
+            }
             repo = requested;
             let providerResult;
             try {
@@ -454,6 +482,10 @@ export const publishFinalDelivery = async ({
             };
           },
         });
+        if (withheld) {
+          delivery.repositories[i] = repo;
+          return withhold(withheld);
+        }
         repo = {
           ...repo,
           status: result.pr
@@ -467,13 +499,7 @@ export const publishFinalDelivery = async ({
         };
       }
     } catch (error) {
-      const completionFailure = error.code?.startsWith('delivery_');
-      repo = {
-        ...repo,
-        status: 'failed',
-        retryable: !completionFailure,
-        reason: completionFailure ? error.message : safeError(error),
-      };
+      repo = { ...repo, status: 'failed', retryable: true, reason: safeError(error) };
     }
     delivery.repositories[i] = repo;
     await store.saveDelivery({ delivery });
