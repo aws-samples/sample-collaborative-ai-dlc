@@ -183,8 +183,8 @@ graph projection was unavailable. **No changes to publish** is a verified
 no-diff outcome; missing records and failed reads are not treated as success.
 
 A project owner or admin can choose **Check delivery**. This is read-only: it
-checks the pinned workflow's completion, the captured branches and existing PRs.
-Review the repository results, then choose **Retry delivery**. This publishes
+checks the run's recorded completion decision, the captured branches and existing
+PRs. Review the repository results, then choose **Retry delivery**. This publishes
 only unfinished repositories from their existing intent branches. It does not
 run a model, repeat stages or gates, regenerate code, integrate units again, or
 merge the final PR. Deliberately accepted partial work remains partial.
@@ -223,15 +223,23 @@ success means the PR was created or reconciled, not that it was merged. Graph
 projection failure does not erase the durable remote identity.
 
 `POST .../intents/{intentId}/delivery` requires project owner/admin membership and
-entity scope. `{"preview":true}` resolves the original methodology/plan, checks
-expected sections including missing rows, and reads provider state. A subsequent
-`{"previewToken":"..."}` must match the refreshed preview. Unknown legacy runs
+entity scope. `{"preview":true}` resolves the original methodology/plan and
+reads provider state. A run finalized under the completion policy carries a
+`completionValidation` receipt: when it names the current run, unit plan identity
+and the plan's expected sections, it is the completion decision and is not
+re-assessed. Older runs without a receipt are assessed from their records,
+including missing rows, once: in the preview for a retry, or immediately before
+the claim for initial publication. A subsequent `{"previewToken":"..."}` must
+match the refreshed preview. Unknown legacy runs
 are never automatically migrated. Accepted omission receipts and section-scoped
 legacy halt decisions are honored; unfinished work requires ordinary execution recovery or a new intent.
 
 The process store claims publication with one transaction over META, the checked
-UNITPLAN snapshot and the run's delivery row. It compares the current success
-status, run, META timestamp and delivery revision; only an expired or absent lease can be claimed. Progress
+UNITPLAN snapshot and the run's delivery row, which records that snapshot's
+identity. Publication confirms the identity and fences the UNITPLAN snapshot
+again in the write that records each create request; a changed plan or lost
+ownership withholds the repository as non-retryable with a readable reason. It
+compares the current success status, run, META timestamp and delivery revision; only an expired or absent lease can be claimed. Progress
 and result writes require the same run, attempt and revision. Status/run changes
 in `updateExecution` refuse an active delivery lease, preventing rewind or a new
 run from racing publication. A provider mutation requires at least 150 seconds

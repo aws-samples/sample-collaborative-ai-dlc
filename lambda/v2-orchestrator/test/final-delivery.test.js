@@ -199,14 +199,13 @@ describe('final delivery with real DynamoDB ownership', () => {
     },
   );
 
-  it.each(
-    ['initial', 'retry'].flatMap((path) =>
-      ['blocked', 'missing-section', 'multi-repo', 'read-failure', 'changed-plan'].map((reason) => [
-        path,
-        reason,
-      ]),
-    ),
-  )('withholds %s publication after %s completion evidence changes', async (path, reason) => {
+  it.each([
+    ['initial', 'missing-section'],
+    ['initial', 'read-failure'],
+    ['initial', 'changed-plan'],
+    ['retry', 'read-failure'],
+    ['retry', 'changed-plan'],
+  ])('withholds %s publication after %s completion evidence changes', async (path, reason) => {
     await completeParallelWork();
     let claimed;
     if (path === 'retry') {
@@ -218,7 +217,7 @@ describe('final delivery with real DynamoDB ownership', () => {
     if (reason === 'read-failure')
       checkedStore = {
         ...store,
-        getCompletionRecords: async () => {
+        getExecutionRecords: async () => {
           throw new Error('read unavailable');
         },
       };
@@ -226,21 +225,11 @@ describe('final delivery with real DynamoDB ownership', () => {
       workflowPlan = {
         stages: [...workflowPlan.stages, { stageId: 'verify', parallelSection: 2 }],
       };
-    else if (reason === 'changed-plan')
+    else
       await store.putUnitPlan({
         executionId: meta.executionId,
         units: [{ slug: 'replacement' }],
         batches: [['replacement']],
-      });
-    else
-      await store.updateUnitState({
-        executionId: meta.executionId,
-        sectionIndex: 1,
-        slug: 'web',
-        state: reason === 'blocked' ? 'BLOCKED' : 'MERGED',
-        ...(reason === 'multi-repo'
-          ? { fields: { integrationResults: [{ repo: 'owner/api', merged: true }] } }
-          : {}),
       });
     const before = await store.getExecution(meta.executionId);
     const invokeRuntime = vi.fn();
@@ -262,14 +251,39 @@ describe('final delivery with real DynamoDB ownership', () => {
           broadcast: vi.fn(),
         },
       );
-      expect((await row()).status).toBe('failed');
+      const saved = await row();
+      expect(saved.status).toBe('failed');
+      // A read failure is transient; a changed plan makes this run's retry futile.
+      expect(saved.repositories.every((r) => r.retryable === (reason === 'read-failure'))).toBe(
+        true,
+      );
       expect((await store.getExecution(meta.executionId)).deliveryLeaseUntil).toBeUndefined();
-    } else await expect(publish({ store: checkedStore })).rejects.toThrow();
+    } else {
+      await expect(publish({ store: checkedStore })).rejects.toThrow();
+      expect(await row()).toBeNull();
+    }
     expect(operation).not.toHaveBeenCalled();
     expect(invokeRuntime).not.toHaveBeenCalled();
     const after = await store.getExecution(meta.executionId);
     expect(after.completionValidation).toEqual(before.completionValidation);
     expect(after.status).toBe('SUCCEEDED');
+  });
+
+  it("publishes from the current run's completion receipt without re-assessing unit rows", async () => {
+    await completeParallelWork();
+    const getCompletionRecords = vi.fn(store.getCompletionRecords);
+    // Unit rows are not delivery evidence once #534 committed the receipt; only
+    // META (run, revision, receipt) and the unit plan it names are fenced.
+    await store.updateUnitState({
+      executionId: meta.executionId,
+      sectionIndex: 1,
+      slug: 'web',
+      state: 'BLOCKED',
+    });
+    await publish({ store: { ...store, getCompletionRecords } });
+    expect(getCompletionRecords).not.toHaveBeenCalled();
+    expect(createCalls()).toHaveLength(2);
+    expect((await row()).status).toBe('succeeded');
   });
 
   it.each([false, true])(
@@ -293,22 +307,59 @@ describe('final delivery with real DynamoDB ownership', () => {
     },
   );
 
-  it('withholds a provider mutation when evidence changes during provider inspection', async () => {
+  it('withholds a provider mutation when the unit plan changes during provider inspection', async () => {
     await completeParallelWork();
     const original = operation.getMockImplementation();
     operation.mockImplementation(async (call) => {
-      if (call.operation === 'compare')
-        await store.updateUnitState({
+      if (call.operation === 'compare' && call.repo === 'owner/api')
+        await store.putUnitPlan({
           executionId: meta.executionId,
-          sectionIndex: 1,
-          slug: 'web',
-          state: 'BLOCKED',
+          units: [{ slug: 'replacement' }],
+          batches: [['replacement']],
         });
       return original(call);
     });
-    await publish();
+    const results = await publish();
     expect(createCalls()).toHaveLength(0);
-    expect((await row()).status).toBe('failed');
+    const saved = await row();
+    expect(saved.status).toBe('failed');
+    for (const repo of saved.repositories) {
+      expect(repo).toMatchObject({ status: 'failed', retryable: false });
+      expect(repo.reason).toContain('unit plan changed before the pull request was created');
+      expect(repo.reason).not.toMatch(/Transaction|Conditional|cancel/i);
+      expect(repo.createRequestedAt).toBeUndefined();
+    }
+    expect(results).toEqual([
+      expect.objectContaining({
+        eventType: 'v2.pr.failed',
+        summary: expect.stringContaining('Final publication withheld'),
+      }),
+    ]);
+    expect((await store.getExecution(meta.executionId)).deliveryLeaseUntil).toBeUndefined();
+    // The check that follows refuses too, so no retry was offered for nothing.
+    await expect(preview()).rejects.toMatchObject({ code: 'delivery_completion_changed' });
+  });
+
+  it('keeps an unreadable pre-create save retryable with a readable reason', async () => {
+    let failFence = true;
+    const flakyStore = {
+      ...store,
+      saveDelivery: async (input) => {
+        if (input.ifUnitPlan !== undefined && failFence) {
+          failFence = false;
+          throw Object.assign(new Error('socket hang up'), { name: 'TimeoutError' });
+        }
+        return store.saveDelivery(input);
+      },
+    };
+    await publish({ store: flakyStore });
+    expect(createCalls().map((c) => c.repo)).toEqual(['owner/web']);
+    const [api, web] = (await row()).repositories;
+    expect(api).toMatchObject({ status: 'failed', retryable: true });
+    expect(api.reason).toContain('delivery record could not be saved');
+    expect(api.reason).not.toContain('socket hang up');
+    expect(api.createRequestedAt).toBeUndefined();
+    expect(web).toMatchObject({ status: 'succeeded', createRequestedAt: expect.any(String) });
   });
 
   it('does not assess an unpinned legacy workflow with unit work as verified', async () => {
@@ -577,7 +628,9 @@ describe('final delivery with real DynamoDB ownership', () => {
       },
     };
     await expect(publish({ store: badStore })).rejects.toThrow('unreadable');
-    expect((await row()).status).toBe('in_progress');
+    // Evidence is read before the claim: nothing is leased for an unreadable run.
+    expect(await row()).toBeNull();
+    expect((await store.getExecution(meta.executionId)).deliveryLeaseUntil).toBeUndefined();
     expect(createCalls()).toHaveLength(0);
   });
   it('refuses no-diff after engine push failure and failed strict provider reads', async () => {
@@ -774,10 +827,10 @@ describe('final delivery with real DynamoDB ownership', () => {
       let capturedMeta;
       const guardedStore = {
         ...store,
-        getCompletionRecords: async (...args) => {
+        getExecutionRecords: async (...args) => {
           if (publishing && fault === 'unavailable')
             throw new Error('completion store unavailable');
-          return store.getCompletionRecords(...args);
+          return store.getExecutionRecords(...args);
         },
       };
       const invokeRuntime = vi.fn(async () => ({ ok: true }));
@@ -795,6 +848,7 @@ describe('final delivery with real DynamoDB ownership', () => {
                 });
             }
             const value = await fn();
+            publishing = false;
             if (name === 'load-meta') capturedMeta = value;
             return value;
           },
