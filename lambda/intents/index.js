@@ -58,7 +58,17 @@ import { CONSTRUCTION_AUTONOMY_MODES, isHumanTaskAnswerStatus } from '../shared/
 import { deleteIntentCascade, IntentRunningError } from '../shared/intent-deletion.js';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
-import { fetchMembershipRole, projectTrackersFoldStep, mapBinding } from '../shared/trackers.js';
+import {
+  fetchMembershipRole,
+  listMemberships,
+  projectTrackersFoldStep,
+  mapBinding,
+} from '../shared/trackers.js';
+import {
+  aggregatePendingQuestions,
+  parsePendingQuestionsParams,
+  PendingQuestionsError,
+} from './pending-questions.js';
 import { signRealtimeToken } from '../shared/realtime-token.js';
 import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
 import { parseTierModels, mergeTierModels } from '../shared/tier-models.js';
@@ -1762,8 +1772,53 @@ const authorize = async (g, projectId, sub, response) => {
   return { role };
 };
 
+// GET /users/me/pending-questions (lambda/intents/pending-questions.js).
+const handlePendingQuestions = async ({ event, g, sub, response, startedAt }) => {
+  if (!sub) return response(401, { error: 'Unauthorized' });
+  const noStore = { 'Cache-Control': 'private, no-store' };
+  let params;
+  try {
+    params = parsePendingQuestionsParams(event.queryStringParameters);
+  } catch (err) {
+    if (err instanceof PendingQuestionsError)
+      return response(err.status, { error: err.message, code: err.code });
+    throw err;
+  }
+  let memberships;
+  try {
+    memberships = await listMemberships(g, sub);
+  } catch (err) {
+    // The authorized set is unknown: never answer with an empty list.
+    logger.error('pending-questions membership read failed', {
+      errorName: err?.name,
+      errorMessage: err?.message,
+    });
+    return response(503, {
+      error: 'Could not load your spaces',
+      code: 'MEMBERSHIP_UNAVAILABLE',
+      retryable: true,
+    });
+  }
+  try {
+    const { stats, ...body } = await aggregatePendingQuestions({
+      userId: sub,
+      memberships,
+      store,
+      params,
+      startedAt,
+      logger,
+    });
+    logger.info('pending-questions', stats);
+    return response(200, body, noStore);
+  } catch (err) {
+    if (err instanceof PendingQuestionsError)
+      return response(err.status, { error: err.message, code: err.code });
+    throw err;
+  }
+};
 export const handler = async (event, context) => {
-  const cleanupDeadline = Date.now() + 10_000;
+  const requestStartedAt = Date.now();
+  const cleanupDeadline = requestStartedAt + 10_000;
   if (context) logger.addContext(context);
   logger.resetKeys();
   logSafeEventIfEnabled(logger, event);
@@ -1822,6 +1877,12 @@ export const handler = async (event, context) => {
       );
     }
 
+    // The caller's pending questions across every space they belong to. Not
+    // project-scoped, so it runs before `authorize`: the aggregator reads only
+    // the caller's own memberships.
+    if (httpMethod === 'GET' && path?.endsWith('/users/me/pending-questions')) {
+      return await handlePendingQuestions({ event, g, sub, response, startedAt: requestStartedAt });
+    }
     const auth = await authorize(g, projectId, sub, response);
     if (auth.res) return auth.res;
 

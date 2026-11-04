@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, act, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Routes, Route } from 'react-router';
+import { MemoryRouter, Routes, Route, Outlet, useLocation, useNavigate } from 'react-router';
 import { formatTimelineTimestamp } from '@/lib/timeAgo';
 
 const yjsMock = vi.hoisted(() => ({ docs: new Map<string, unknown>() }));
@@ -2439,4 +2439,183 @@ describe('terminal completion diagnostics without terminal recovery', () => {
       expect(repair).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('IntentView — ?gate= deep link from My work', () => {
+  beforeEach(() => {
+    clearIntentCache();
+    get.mockReset();
+    answerGate.mockReset();
+    graph.mockReset().mockResolvedValue({ nodes: [], edges: [] });
+    compiled.mockReset().mockResolvedValue({ graph: { nodes: [], edges: [] } });
+    workflowGet.mockReset().mockResolvedValue({ phases: [] });
+    yjsMock.docs.clear();
+  });
+
+  const NOTICE = /This question is no longer waiting for an answer/;
+
+  const gate = (id: string, status = 'pending') => ({
+    humanTaskId: id,
+    stageInstanceId: `si-${id}`,
+    status,
+    kind: 'review-verdict',
+    prompt: `Verdict ${id}?`,
+    options: ['Accept', 'Reject'],
+    questions: null,
+    createdAt: '2026-01-01T00:00:00Z',
+  });
+  const withGates = (...gates: ReturnType<typeof gate>[]) => ({
+    ...baseDetail({ status: 'WAITING', pendingHumanTaskId: 'h1' }),
+    gates,
+  });
+
+  function Search() {
+    return <div data-testid="search">{useLocation().search}</div>;
+  }
+  const renderWithSearch = (entry: string) =>
+    render(
+      <MemoryRouter initialEntries={[entry]}>
+        <Routes>
+          <Route
+            path="/space/:projectId/intent/:intentId"
+            element={
+              <IntentProvider>
+                <IntentView />
+                <Search />
+              </IntentProvider>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+  const deferred = () => {
+    let resolve!: (v: unknown) => void;
+    const promise = new Promise((res) => {
+      resolve = res;
+    });
+    return { promise, resolve };
+  };
+  // Mounts once so the intent cache holds `cached`, then remounts with the
+  // detail fetch held open so the cached copy renders first.
+  const primeCache = async (cached: unknown) => {
+    get.mockResolvedValueOnce(cached);
+    const first = renderWithSearch('/space/p1/intent/i1');
+    await screen.findByText('Questions for you');
+    first.unmount();
+  };
+
+  it('selects the linked pending gate tab', async () => {
+    get.mockResolvedValue(withGates(gate('h1'), gate('h2'), gate('h3')));
+    renderWithSearch('/space/p1/intent/i1?gate=h3');
+    expect(await screen.findByTestId('gate-panel-h3')).toBeInTheDocument();
+    expect(screen.queryByTestId('gate-panel-h1')).not.toBeInTheDocument();
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+  });
+
+  it('switches to the linked gate when the fresh load adds it to cached tabs', async () => {
+    await primeCache(withGates(gate('h1'), gate('h2')));
+    const next = deferred();
+    get.mockReturnValueOnce(next.promise);
+    renderWithSearch('/space/p1/intent/i1?gate=h3');
+    expect(await screen.findByTestId('gate-panel-h1')).toBeInTheDocument();
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+    await act(async () => next.resolve(withGates(gate('h1'), gate('h2'), gate('h3'))));
+    expect(await screen.findByTestId('gate-panel-h3')).toBeInTheDocument();
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+  });
+
+  it('shows the notice once the fresh load shows the cached pending gate answered', async () => {
+    await primeCache(withGates(gate('h1'), gate('h2')));
+    const next = deferred();
+    get.mockReturnValueOnce(next.promise);
+    renderWithSearch('/space/p1/intent/i1?gate=h2');
+    expect(await screen.findByTestId('gate-panel-h2')).toBeInTheDocument();
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+    await act(async () => next.resolve(withGates(gate('h1'), gate('h2', 'answered'))));
+    expect(await screen.findByText(NOTICE)).toBeInTheDocument();
+    // The sibling stays answerable (single remaining gate, no tab strip).
+    expect(screen.getByText('Verdict h1?')).toBeInTheDocument();
+  });
+
+  it('answering the linked gate here shows no notice, drops the param and keeps siblings', async () => {
+    get.mockResolvedValueOnce(withGates(gate('h1'), gate('h2')));
+    renderWithSearch('/space/p1/intent/i1?gate=h2');
+    const panel = await screen.findByTestId('gate-panel-h2');
+    answerGate.mockResolvedValue({});
+    get.mockResolvedValue(withGates(gate('h1'), gate('h2', 'answered')));
+    await userEvent.click(within(panel).getByRole('button', { name: 'Accept' }));
+    expect(answerGate).toHaveBeenCalledWith('p1', 'i1', 'h2', {
+      answer: 'Accept',
+      status: 'answered',
+    });
+    await waitFor(() => expect(screen.getByTestId('search')).toHaveTextContent(/^$/));
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+    expect(screen.getByText('Verdict h1?')).toBeInTheDocument();
+  });
+
+  it('shows a stale link notice above the sibling tabs; dismiss drops the param', async () => {
+    get.mockResolvedValue(withGates(gate('h1'), gate('h2')));
+    renderWithSearch('/space/p1/intent/i1?gate=gone&space=keep');
+    const notice = await screen.findByText(NOTICE);
+    const tabs = screen.getByRole('region', { name: 'Pending questions' });
+    expect(notice.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId('gate-panel-h1')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+    expect(screen.getByTestId('search')).toHaveTextContent('?space=keep');
+    expect(screen.getByTestId('gate-panel-h1')).toBeInTheDocument();
+  });
+
+  it('returning via a non-intent route with a persistent provider shows no notice before the load', async () => {
+    // Provider above the routes, as AppShell mounts it.
+    function MyWorkStub() {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate('/space/p1/intent/i1?gate=h3')}>Open question</button>;
+    }
+    function ToMyWork() {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate('/my-work')}>My work</button>;
+    }
+    get.mockResolvedValueOnce(withGates(gate('h1'), gate('h2')));
+    render(
+      <MemoryRouter initialEntries={['/space/p1/intent/i1']}>
+        <Routes>
+          <Route
+            element={
+              <IntentProvider>
+                <Outlet />
+              </IntentProvider>
+            }
+          >
+            <Route
+              path="/space/:projectId/intent/:intentId"
+              element={
+                <>
+                  <IntentView />
+                  <ToMyWork />
+                </>
+              }
+            />
+            <Route path="/my-work" element={<MyWorkStub />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByTestId('gate-panel-h1')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'My work' }));
+    const next = deferred();
+    get.mockReturnValueOnce(next.promise);
+    await userEvent.click(screen.getByRole('button', { name: 'Open question' }));
+    expect(await screen.findByTestId('gate-panel-h1')).toBeInTheDocument();
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+    await act(async () => next.resolve(withGates(gate('h1'), gate('h2'), gate('h3'))));
+    expect(await screen.findByTestId('gate-panel-h3')).toBeInTheDocument();
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+  });
+  it('without the param, selects the intent pending gate and shows no notice', async () => {
+    get.mockResolvedValue(withGates(gate('h1'), gate('h2')));
+    renderWithSearch('/space/p1/intent/i1');
+    expect(await screen.findByTestId('gate-panel-h1')).toBeInTheDocument();
+    expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+  });
 });

@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
-import { Navigate, useNavigate, useParams } from 'react-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Navigate, useNavigate, useParams, useSearchParams } from 'react-router';
 import {
   intentsService,
+  type GateAnswer,
+  type IntentGate,
   type NativeExportHarness,
   type NativeWorkflowExport,
 } from '@/services/intents';
@@ -105,6 +107,7 @@ export default function IntentView() {
     intentId,
     detail,
     loading,
+    fresh,
     error: loadError,
     gates,
     pendingGates,
@@ -120,6 +123,7 @@ export default function IntentView() {
   } = useIntent();
   const navigate = useNavigate();
   const { humanTaskId: reviewGateId } = useParams<{ humanTaskId?: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const userName = user?.displayName || user?.email || '';
   // Role gate for the destructive delete (owner/admin — the API enforces it
@@ -168,6 +172,45 @@ export default function IntentView() {
       cancelled = true;
     };
   }, []);
+
+  // `?gate=<humanTaskId>` (linked from My work) selects that question's tab
+  // while it is pending. Once the fresh detail shows it is not, a notice says
+  // so, unless it was answered on this page, which just drops the param.
+  const gateParam = searchParams.get('gate');
+  const linkedGate = gateParam ? gates.find((g) => g.humanTaskId === gateParam) : undefined;
+  const linkedPending = linkedGate?.status === 'pending';
+  const answeredHere = useRef<string | null>(null);
+  const clearGateParam = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete('gate');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [setSearchParams]);
+  const answerLinkedAware = useCallback(
+    async (gate: IntentGate, input: GateAnswer) => {
+      const mine = gate.humanTaskId === gateParam;
+      if (mine) answeredHere.current = gate.humanTaskId;
+      try {
+        await answerGate(gate, input);
+      } catch (e) {
+        if (mine) answeredHere.current = null;
+        throw e;
+      }
+    },
+    [answerGate, gateParam],
+  );
+  useEffect(() => {
+    if (gateParam && answeredHere.current === gateParam && !linkedPending) {
+      answeredHere.current = null;
+      clearGateParam();
+    }
+  }, [gateParam, linkedPending, clearGateParam]);
+  const showGateGoneNotice =
+    Boolean(gateParam) && fresh && !linkedPending && answeredHere.current !== gateParam;
 
   // A stage failure retries from the earliest failed stage, preserving all
   // completed upstream work. Failures before any stage row exists (init-ws,
@@ -794,7 +837,7 @@ export default function IntentView() {
           projectId={projectId}
           intentId={intentId}
           userName={userName}
-          onAnswer={answerGate}
+          onAnswer={answerLinkedAware}
           onBack={() => navigate(`/space/${projectId}/intent/${intentId}`)}
         />
       ) : reviewGateId ? (
@@ -815,11 +858,25 @@ export default function IntentView() {
         </Card>
       ) : (
         <>
+          {showGateGoneNotice && (
+            <Card role="status">
+              <CardContent className="flex items-start justify-between gap-3 py-3">
+                <p className="text-sm text-muted-foreground">
+                  This question is no longer waiting for an answer. It may have been answered,
+                  cancelled or replaced by a rewind.
+                </p>
+                <Button variant="ghost" size="sm" onClick={clearGateParam}>
+                  Dismiss
+                </Button>
+              </CardContent>
+            </Card>
+          )}
           {/* Pending human gates — tabs: one GateCard at a time */}
           {pendingGates.length > 0 && (
             <PendingQuestionsTabs
+              key={linkedPending ? `gate:${gateParam}` : undefined}
               gates={pendingGates}
-              activeGateId={intent.pendingHumanTaskId}
+              activeGateId={linkedPending ? gateParam : intent.pendingHumanTaskId}
               gateContext={(gate) => {
                 // stageNameOf falls back to the raw instance id when the stage
                 // row is unknown — no prefix beats an opaque id on the tab.
@@ -834,7 +891,7 @@ export default function IntentView() {
                   projectId={projectId}
                   intentId={intentId}
                   userName={userName}
-                  onAnswer={answerGate}
+                  onAnswer={answerLinkedAware}
                 />
               )}
             />

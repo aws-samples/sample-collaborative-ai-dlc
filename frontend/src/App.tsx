@@ -23,6 +23,7 @@ import Login from './pages/Login';
 import AuthCallback from './pages/AuthCallback';
 
 const Dashboard = lazy(() => import('./pages/Dashboard'));
+const MyWork = lazy(() => import('./pages/MyWork'));
 const Project = lazy(() => import('./pages/Project'));
 const ProjectSettings = lazy(() => import('./pages/ProjectSettings'));
 const IntentView = lazy(() => import('./pages/IntentView'));
@@ -101,6 +102,7 @@ function App() {
                   }
                 >
                   <Route path="/dashboard" element={<Dashboard />} />
+                  <Route path="/my-work" element={<MyWork />} />
                   <Route path="/account/settings" element={<AccountSettings />} />
                   <Route
                     path="/admin"

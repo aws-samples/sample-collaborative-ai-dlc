@@ -33,6 +33,8 @@ Every space has members with one of three roles, managed in **Space Settings →
 
 Non-members have no access to a space's intents, discussions, or real-time channels.
 
+[My work](my-work.md) lists the questions waiting for an answer in every space you are a member of.
+
 ### The platform-admin role
 
 Platform-wide administration is gated by the Cognito **`platform-admin`** group — separate from space roles. Platform admins see two extra entries in the sidebar:

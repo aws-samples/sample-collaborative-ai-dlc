@@ -83,6 +83,36 @@ const fetchMembershipRole = async (g, projectId, userId) => {
   if (r.done) return null;
   return r.value || 'member';
 };
+// Every space a user is a member of, as [{ projectId, projectName, kind, role }]
+// sorted by projectId, in one traversal. Role handling matches
+// fetchMembershipRole: an edge without a role is not a membership, and an empty
+// role is 'member'. A project without `kind` is 'v1'.
+const field = (m, k) => (m instanceof Map ? m.get(k) : m[k]);
+const listMemberships = async (g, userId) => {
+  const rows = await g
+    .V()
+    .has('User', 'id', userId)
+    .inE('HAS_MEMBER')
+    .as('e')
+    .outV()
+    .hasLabel('Project')
+    .project('projectId', 'projectName', 'kind', 'role')
+    .by('id')
+    .by(__.coalesce(__.values('name'), __.constant('')))
+    .by(__.coalesce(__.values('kind'), __.constant('v1')))
+    .by(__.select('e').values('role').fold())
+    .toList();
+  return rows
+    .map((m) => ({ m, roles: field(m, 'role') ?? [] }))
+    .filter(({ roles }) => roles.length > 0)
+    .map(({ m, roles }) => ({
+      projectId: field(m, 'projectId'),
+      projectName: field(m, 'projectName'),
+      kind: field(m, 'kind'),
+      role: roles[0] || 'member',
+    }))
+    .toSorted((a, b) => (a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0));
+};
 
 export {
   getVal,
@@ -90,6 +120,7 @@ export {
   projectTrackersFoldStep,
   mapBinding,
   fetchMembershipRole,
+  listMemberships,
 };
 export default {
   getVal,
@@ -97,4 +128,5 @@ export default {
   projectTrackersFoldStep,
   mapBinding,
   fetchMembershipRole,
+  listMemberships,
 };

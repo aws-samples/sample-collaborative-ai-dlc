@@ -2207,13 +2207,19 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     });
   };
 
-  // List a project's executions (intents) newest-first via GSI1. Optionally
+  // List a project's executions (intents) via GSI1, newest first unless
+  // `oldestFirst` (GSI1SK embeds the start time). Optionally
   // filter to a single status. Returns the META rows only — the intents list
   // view doesn't need the full per-execution record set. Paginated up to
   // `limit`: DynamoDB stops a page at min(Limit, 1MB), and META rows carry the
   // unbounded user prompt — without the drain, a project with large prompts
   // would silently list fewer intents than exist.
-  const listProjectExecutions = async ({ projectId, status = null, limit = 100 } = {}) => {
+  const listProjectExecutions = async ({
+    projectId,
+    status = null,
+    limit = 100,
+    oldestFirst = false,
+  } = {}) => {
     const values = { ':pk': projectPk(projectId) };
     let keyCond = 'GSI1PK = :pk';
     if (status) {
@@ -2229,7 +2235,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
           IndexName: 'GSI1',
           KeyConditionExpression: keyCond,
           ExpressionAttributeValues: values,
-          ScanIndexForward: false, // newest first
+          ScanIndexForward: oldestFirst,
           Limit: limit - items.length,
           ExclusiveStartKey,
         }),
@@ -2238,6 +2244,34 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       ExclusiveStartKey = page.LastEvaluatedKey;
     } while (ExclusiveStartKey && items.length < limit);
     return items;
+  };
+  // One execution's pending human gates via GSI2 (answer and supersede move
+  // GSI2SK out of the pending prefix), ordered by humanTaskId, up to `limit`.
+  // GSI reads are eventually consistent, so the status is re-checked.
+  const listPendingHumanTasks = async (executionId, { limit = 51 } = {}) => {
+    const { GSI2PK, GSI2SK } = executionTypeStateIndex({
+      executionId,
+      type: 'HUMAN',
+      state: 'pending',
+      id: '',
+    });
+    const items = [];
+    let ExclusiveStartKey;
+    do {
+      const page = await ddb.send(
+        new QueryCommand({
+          TableName: table(),
+          IndexName: 'GSI2',
+          KeyConditionExpression: 'GSI2PK = :pk AND begins_with(GSI2SK, :sk)',
+          ExpressionAttributeValues: { ':pk': GSI2PK, ':sk': GSI2SK },
+          Limit: limit - items.length,
+          ExclusiveStartKey,
+        }),
+      );
+      items.push(...(page.Items ?? []));
+      ExclusiveStartKey = page.LastEvaluatedKey;
+    } while (ExclusiveStartKey && items.length < limit);
+    return items.filter((item) => item.status === 'pending');
   };
 
   // Completion does not need outputs, model prompts, metrics or graph state.
@@ -3497,6 +3531,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     listEvents,
     createHumanTask,
     getHumanTask,
+    listPendingHumanTasks,
     markGateCallbackConsumed,
     setGateCallbackId,
     answerHumanTask,

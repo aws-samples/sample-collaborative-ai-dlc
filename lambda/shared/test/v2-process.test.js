@@ -42,6 +42,7 @@ import {
   HUMAN_TASK_ANSWER_STATUSES,
   isHumanTaskAnswerStatus,
   humanTaskMatchesOwner,
+  isHumanTaskAnswerable,
   STEERING_KINDS,
   STEERING_STATUSES,
   UNIT_STATES,
@@ -464,6 +465,34 @@ describe('v2-process-keys', () => {
         engineGates: true,
       }),
     ).toBe(false);
+  });
+  it('isHumanTaskAnswerable applies the answer transaction ownership rule', () => {
+    const meta = { status: 'WAITING', orchestratorRunId: 'run1' };
+    const task = {
+      status: 'pending',
+      orchestratorRunId: 'run1',
+      stageInstanceId: 's1',
+      stageCallbackId: 'cb1',
+    };
+    const stage = { stageCallbackId: 'cb1' };
+    const ok = (over = {}) => isHumanTaskAnswerable({ task, meta, stage, ...over });
+    expect(ok()).toBe(true);
+    expect(ok({ task: null })).toBe(false);
+    expect(ok({ meta: null })).toBe(false);
+    for (const status of ['answered', 'approved', 'rejected', 'superseded'])
+      expect(ok({ task: { ...task, status } })).toBe(false);
+    expect(ok({ meta: { ...meta, status: 'RUNNING' } })).toBe(true);
+    for (const status of ['CREATED', 'FAILED', 'CANCELLED', 'SUCCEEDED'])
+      expect(ok({ meta: { ...meta, status } })).toBe(false);
+    // Run identity: a rewind moves META to a retired run id.
+    expect(ok({ meta: { ...meta, orchestratorRunId: 'retired-run1' } })).toBe(false);
+    expect(ok({ task: { ...task, orchestratorRunId: undefined } })).toBe(true);
+    // Stage attempt: a re-dispatch re-claims the stage with a new callback.
+    expect(ok({ stage: { stageCallbackId: 'cb2' } })).toBe(false);
+    expect(ok({ stage: null })).toBe(false);
+    // Legacy rows and engine gates carry no callback; gates with no stage skip the clause.
+    expect(ok({ task: { ...task, stageCallbackId: undefined }, stage: null })).toBe(true);
+    expect(ok({ task: { ...task, stageInstanceId: null }, stage: null })).toBe(true);
   });
 
   it('builds a question human-task carrying the structured payload', () => {
@@ -1258,6 +1287,49 @@ describe('createProcessStore', () => {
     });
     const all = await store.listProjectExecutions({ projectId: 'p1', limit: 1 });
     expect(all).toHaveLength(1);
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(1);
+  });
+  it('listProjectExecutions reads oldest-first only when asked', async () => {
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.listProjectExecutions({ projectId: 'p1', status: 'WAITING', oldestFirst: true });
+    await store.listProjectExecutions({ projectId: 'p1', status: 'WAITING' });
+    const [oldest, newest] = ddb.commandCalls(QueryCommand).map((c) => c.args[0].input);
+    expect(oldest.ScanIndexForward).toBe(true);
+    expect(newest.ScanIndexForward).toBe(false);
+  });
+  it('listPendingHumanTasks queries GSI2 for pending HUMAN rows, drains pages, and drops non-pending rows', async () => {
+    ddb
+      .on(QueryCommand)
+      .resolvesOnce({
+        Items: [{ humanTaskId: 'h1', status: 'pending' }],
+        LastEvaluatedKey: { pk: 'x', sk: 'y' },
+      })
+      .resolvesOnce({
+        Items: [
+          { humanTaskId: 'h2', status: 'answered' },
+          { humanTaskId: 'h3', status: 'pending' },
+        ],
+      });
+    const rows = await store.listPendingHumanTasks('e1', { limit: 5 });
+    expect(rows.map((r) => r.humanTaskId)).toEqual(['h1', 'h3']);
+    const calls = ddb.commandCalls(QueryCommand).map((c) => c.args[0].input);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      TableName: 'v2-proc',
+      IndexName: 'GSI2',
+      KeyConditionExpression: 'GSI2PK = :pk AND begins_with(GSI2SK, :sk)',
+      ExpressionAttributeValues: { ':pk': 'EXEC#e1', ':sk': 'TYPE#HUMAN#STATE#pending#' },
+      Limit: 5,
+    });
+    expect(calls[1].Limit).toBe(4);
+    expect(calls[1].ExclusiveStartKey).toEqual({ pk: 'x', sk: 'y' });
+  });
+  it('listPendingHumanTasks stops paging once `limit` rows have arrived', async () => {
+    ddb.on(QueryCommand).resolves({
+      Items: [{ humanTaskId: 'h1', status: 'pending' }],
+      LastEvaluatedKey: { pk: 'x', sk: 'y' },
+    });
+    expect(await store.listPendingHumanTasks('e1', { limit: 1 })).toHaveLength(1);
     expect(ddb.commandCalls(QueryCommand)).toHaveLength(1);
   });
 
