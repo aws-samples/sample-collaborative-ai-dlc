@@ -793,6 +793,10 @@ locals {
     }, local.mcp_gateway_enabled ? {
     AIDLC_MCP_GATEWAY_URL    = aws_bedrockagentcore_gateway.mcp[0].gateway_url
     AIDLC_MCP_GATEWAY_TARGET = aws_bedrockagentcore_gateway_target.aidlc[0].name
+    } : {}, length(local.mcp_gateway_custom_targets) > 0 ? {
+    # Tells the runtime to materialize the customer-tool proxy; it carries no
+    # target, endpoint or credential.
+    AIDLC_MCP_GATEWAY_CUSTOM_TARGETS = "true"
     } : {}, local.engine_data_enabled ? {
     ENGINE_DATA_FUNCTION    = module.engine_data_lambda[0].lambda_function_name
     SOURCE_CONTROL_FUNCTION = local.source_control_runtime_alias_arn

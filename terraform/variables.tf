@@ -393,3 +393,39 @@ variable "enforce_runtime_grants" {
   type        = bool
   default     = false
 }
+
+variable "mcp_gateway_custom_targets" {
+  description = "Customer MCP servers (for example Confluence) served behind the AgentCore Gateway as remote MCP targets, keyed by an immutable target name. The Gateway injects each target's credential from an AgentCore Identity credential provider created out of band; the interceptor allows a call only from a stage session whose signed grant matches the target's allow rule (spaces, optional stages, optional tools). Requires enable_mcp_gateway. Field reference and validation: modules/compute/agentcore/variables.tf; how-to: docs/using-the-platform/customer-mcp-servers.md."
+  type = map(object({
+    endpoint    = string
+    description = optional(string)
+    auth = object({
+      type                    = string
+      credential_provider_arn = string
+      secret_arn              = string
+      scopes                  = optional(list(string), [])
+      credential_location     = optional(string)
+      parameter_name          = optional(string)
+      prefix                  = optional(string)
+    })
+    private_endpoint = optional(object({
+      managed_vpc_resource = optional(object({
+        vpc_identifier           = string
+        subnet_ids               = list(string)
+        endpoint_ip_address_type = string
+        security_group_ids       = optional(list(string))
+        routing_domain           = optional(string)
+      }))
+      self_managed_lattice_resource = optional(object({
+        resource_configuration_identifier = string
+      }))
+    }))
+    allow = object({
+      project_ids = list(string)
+      stage_ids   = optional(list(string))
+      tools       = optional(list(string))
+    })
+  }))
+  default  = {}
+  nullable = false
+}
