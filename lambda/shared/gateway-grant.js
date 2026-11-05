@@ -3,8 +3,8 @@
 // the built-in MCP Gateway.
 //
 // Issued by a Lambda OUTSIDE the runtime (orchestrator / discussions) and
-// verified by the MCP tools Lambda behind AgentCore Gateway. The runtime only
-// relays it, so code running in the agent's VM cannot mint a grant for another
+// verified by the Gateway's MCP interceptor in front of every target. The runtime
+// only relays it, so code running in the agent's VM cannot mint a grant for another
 // space. It is a compact ES256 JWT. Using it as the Gateway's CUSTOM_JWT inbound
 // credential would need an OIDC discovery document and JWKS for the KMS key, an
 // issuer and algorithm the authorizer accepts, and the same live checks behind
