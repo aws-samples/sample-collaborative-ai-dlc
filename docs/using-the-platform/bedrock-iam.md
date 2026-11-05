@@ -24,7 +24,7 @@ Managed environments must run an image with IAM authentication support. Publish 
 2. Enter the inference account, region, role name or path, and optional ExternalId. The inference account and region can differ from the application, within the same AWS partition.
 3. For a new role, run the generated CloudShell commands in their indicated accounts. For an existing role, select **I already have an inference role**, then **Continue to connection test**. This skips the AWS setup step. The trust policy names the credential broker; the broker policy allows assumption of that exact inference role.
 4. Choose **Test connection**. This checks STS assumption and paginated Bedrock model discovery from the runtime. It does not invoke a model or prove model entitlements/Mantle access.
-5. Choose **Review connection change**, inspect the proposed role, region and impact, then **Apply reviewed change**.
+5. Choose **Review connection change**, check the proposed role and region and any work it says is affected, then **Confirm change** (**Confirm anyway** when started work is affected).
 6. Select models available in the inference account and region. The policy supports Bedrock Runtime inference for Claude Code/OpenCode and Bedrock Mantle for Codex.
 
 An existing role that passes the connection test can proceed directly to review. If the test fails, the wizard shows setup for connecting this deployment to the role. You can also open it with **Connect this deployment to the role** before testing. Required trust and permissions are available under a separate details panel for administrators.
