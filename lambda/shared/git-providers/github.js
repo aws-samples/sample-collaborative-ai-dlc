@@ -688,7 +688,12 @@ const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
     if (!res.ok) throw new ProviderError(res.status, 'Pull-request lookup failed');
     const rows = await res.json();
     if (!Array.isArray(rows)) throw new ProviderError(502, 'Invalid pull-request lookup');
-    for (const pr of rows.filter((row) => row.head?.ref === sourceBranch))
+    // `head=owner:branch` also matches a fork the same owner holds; delivery
+    // publishes only from this repository.
+    const self = `${owner}/${repo}`.toLowerCase();
+    const fromHere = (row) =>
+      !row.head?.repo?.full_name || row.head.repo.full_name.toLowerCase() === self;
+    for (const pr of rows.filter((row) => row.head?.ref === sourceBranch && fromHere(row)))
       prs.push({
         number: pr.number,
         url: pr.html_url,

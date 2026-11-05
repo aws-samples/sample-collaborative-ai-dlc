@@ -267,4 +267,64 @@ describe('strict delivery provider reads', () => {
       mock.restore();
     }
   });
+  it.each(['github', 'gitlab', 'bitbucket'])(
+    '%s lists only PRs whose source is this repository, not a same-named fork branch',
+    async (name) => {
+      const row = (number, own) =>
+        ({
+          github: {
+            number,
+            html_url: `https://example.test/pr/${number}`,
+            head: { ref: 'intent', sha: 'sha', repo: { full_name: own ? 'org/repo' : 'org/fork' } },
+            base: { ref: 'develop', repo: { full_name: 'org/repo' } },
+            state: 'open',
+          },
+          gitlab: {
+            iid: number,
+            web_url: `https://example.test/pr/${number}`,
+            source_branch: 'intent',
+            target_branch: 'develop',
+            source_project_id: own ? 1 : 2,
+            target_project_id: 1,
+            state: 'opened',
+          },
+          bitbucket: {
+            id: number,
+            links: { html: { href: `https://example.test/pr/${number}` } },
+            state: 'OPEN',
+            source: {
+              branch: { name: 'intent' },
+              repository: { full_name: own ? 'org/repo' : 'org/fork' },
+            },
+            destination: { branch: { name: 'develop' }, repository: { full_name: 'org/repo' } },
+          },
+        })[name];
+      const rows = [row(1, false), row(2, true)];
+      const fetchImpl = async () => fetchResponse(name === 'bitbucket' ? { values: rows } : rows);
+      const listed = await getProvider(name).listPullRequests(
+        { token: 'test', fetchImpl },
+        'org/repo',
+        { sourceBranch: 'intent' },
+      );
+      expect(listed.map((pr) => pr.number)).toEqual([2]);
+    },
+  );
+  it('GitLab lists a locked merge request (mid-merge) as open, not closed', async () => {
+    const fetchImpl = async () =>
+      fetchResponse([
+        {
+          iid: 3,
+          web_url: 'https://example.test/pr/3',
+          source_branch: 'intent',
+          target_branch: 'develop',
+          state: 'locked',
+        },
+      ]);
+    const [mr] = await getProvider('gitlab').listPullRequests(
+      { token: 'test', fetchImpl },
+      'org/repo',
+      { sourceBranch: 'intent' },
+    );
+    expect(mr.state).toBe('open');
+  });
 });

@@ -730,14 +730,23 @@ const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
     if (!res.ok) throw new ProviderError(res.status, 'Merge-request lookup failed');
     const rows = await res.json();
     if (!Array.isArray(rows)) throw new ProviderError(502, 'Invalid merge-request lookup');
-    for (const mr of rows.filter((row) => row.source_branch === sourceBranch))
+    // The project's list includes merge requests from forks; delivery publishes
+    // only from this project.
+    const fromHere = (row) =>
+      row.source_project_id == null || row.source_project_id === row.target_project_id;
+    for (const mr of rows.filter((row) => row.source_branch === sourceBranch && fromHere(row)))
       mrs.push({
         number: mr.iid,
         url: mr.web_url,
         sourceBranch: mr.source_branch,
         targetBranch: mr.target_branch ?? null,
         headSha: mr.sha ?? mr.diff_refs?.head_sha ?? null,
-        state: mr.state === 'opened' ? 'open' : mr.state === 'merged' ? 'merged' : 'closed',
+        // `locked` is an open merge request while GitLab merges it.
+        state: ['opened', 'locked'].includes(mr.state)
+          ? 'open'
+          : mr.state === 'merged'
+            ? 'merged'
+            : 'closed',
         body: mr.description ?? '',
       });
     if (rows.length < 100) return mrs;

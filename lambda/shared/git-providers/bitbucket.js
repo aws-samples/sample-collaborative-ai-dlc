@@ -756,7 +756,16 @@ const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
     if (!res.ok) throw new ProviderError(res.status, 'Pull-request lookup failed');
     const data = await res.json();
     if (!Array.isArray(data.values)) throw new ProviderError(502, 'Invalid pull-request lookup');
-    for (const pr of data.values.filter((row) => row.source?.branch?.name === sourceBranch))
+    // A pull request from a fork targets this repository too; delivery
+    // publishes only from this repository.
+    const fromHere = (row) => {
+      const source = row.source?.repository?.full_name;
+      const destination = row.destination?.repository?.full_name;
+      return !source || !destination || source.toLowerCase() === destination.toLowerCase();
+    };
+    for (const pr of data.values.filter(
+      (row) => row.source?.branch?.name === sourceBranch && fromHere(row),
+    ))
       prs.push({
         number: pr.id,
         url: pr.links?.html?.href,
