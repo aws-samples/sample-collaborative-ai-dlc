@@ -8,16 +8,20 @@
 // H2), so one of those counts only in a column headed as an identifier, or when
 // the same document defines another with the same prefix (U1 … U26). Ids with a
 // hyphen or dotted parts (CR-10, OQ-01, US6.11) count on their own.
+//
+// Documents are read with the same parser and GFM extension the preview renders
+// with, so the index and the preview's anchors agree on where every block starts
+// and ends.
+
+import remarkGfm from 'remark-gfm';
+import remarkParse from 'remark-parse';
+import { unified } from 'unified';
 
 // One to eight capitals, an optional hyphen, then a number with optional dotted
 // parts and one trailing letter: U26, U8b, US6.11, AC1.1.2, CR-10, OQ-01.
 const ID_SOURCE = '[A-Z]{1,8}-?\\d+(?:\\.\\d+)*[a-z]?';
 const ID_RE = new RegExp(`^${ID_SOURCE}$`);
 const LEADING_ID_RE = new RegExp(`^(${ID_SOURCE})(?=$|[\\s:,;(\\u2013\\u2014-])`);
-const HEADING_RE = /^ {0,3}#{1,6}\s+(.*?)\s*#*\s*$/;
-const TABLE_SEPARATOR_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
-const LIST_BOLD_RE = /^\s*(?:[-*+]|\d+[.)])\s+(?:\*\*|__)(.+?)(?:\*\*|__)/;
-const FENCE_RE = /^\s*(```|~~~)/;
 // A header naming the identifier column: ID, Ref, Key, Code, #, No., or "<thing> ID".
 const ID_HEADER_RE = /^(?:id|ref|reference|key|code|#|no\.?|.+\sid)$/i;
 
@@ -78,99 +82,95 @@ export function referenceAnchor(artifactId: string, id: string): string {
   return `ref-${anchorPart(artifactId)}--${anchorPart(id)}`;
 }
 
-function splitTableRow(line: string): string[] {
-  return line
-    .trim()
-    .replace(/^\|/, '')
-    .replace(/\|$/, '')
-    .split(/(?<!\\)\|/)
-    .map((cell) => cell.trim());
+/** The part of an mdast node the definition walk and the preview's transforms use. */
+export type MdastNode = {
+  type: string;
+  value?: string;
+  children?: MdastNode[];
+  url?: string;
+  title?: string;
+  data?: { hProperties?: Record<string, unknown>; referenceDefinition?: boolean };
+};
+
+/** A node's text, including inline code, without markup. */
+export function nodeText(node: MdastNode): string {
+  if (node.type === 'text' || node.type === 'inlineCode') return node.value ?? '';
+  return (node.children ?? []).map(nodeText).join('');
 }
 
-const hasCellSeparator = (line: string) => /(?<!\\)\|/.test(line);
+/**
+ * Where a document defines an identifier. `target` is the heading, table row or
+ * list item that gets the anchor; `cell` is the table cell holding the id, and
+ * `label` the heading or bold list label it leads.
+ */
+export interface DefinitionSite {
+  id: string;
+  kind: ReferenceDefinitionKind;
+  explicit: boolean;
+  target: MdastNode;
+  cell: MdastNode | null;
+  label: MdastNode;
+}
 
-// A GFM table starts where a header row is followed by a delimiter row with the same
-// number of cells. Outer pipes are optional, but a row needs at least one pipe.
-function startsTable(lines: string[], index: number): boolean {
-  const header = lines[index];
-  const delimiter = lines[index + 1] ?? '';
-  return (
-    hasCellSeparator(header) &&
-    hasCellSeparator(delimiter) &&
-    TABLE_SEPARATOR_RE.test(delimiter) &&
-    splitTableRow(header).length === splitTableRow(delimiter).length
+// Every heading, table row and bold-led list item that defines an id, in document
+// order. Code blocks are leaves in the tree, so nothing inside them counts.
+function collectSites(tree: MdastNode): DefinitionSite[] {
+  const sites: DefinitionSite[] = [];
+  const visit = (node: MdastNode) => {
+    if (node.type === 'heading') {
+      const id = leadingReferenceId(nodeText(node));
+      if (id)
+        sites.push({ id, kind: 'heading', explicit: false, target: node, cell: null, label: node });
+      return;
+    }
+    if (node.type === 'table') {
+      const [header, ...rows] = node.children ?? [];
+      const { column, explicit } = referenceIdColumn((header?.children ?? []).map(nodeText));
+      for (const row of rows) {
+        const cell = row.children?.[column];
+        const id = cell ? cellReferenceId(nodeText(cell)) : null;
+        if (cell && id) sites.push({ id, kind: 'table', explicit, target: row, cell, label: cell });
+      }
+      return;
+    }
+    if (node.type === 'listItem') {
+      const label = node.children?.[0]?.children?.[0];
+      const id = label?.type === 'strong' ? leadingReferenceId(nodeText(label)) : null;
+      if (label && id)
+        sites.push({ id, kind: 'list', explicit: false, target: node, cell: null, label });
+    }
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(tree);
+  return sites;
+}
+
+/**
+ * The definitions in a parsed document: the first site of each id, dropping plain
+ * tokens (S3, Q3) that nothing backs up as an id: a column headed as an identifier,
+ * a hyphen or dotted parts, or a sibling with the same prefix (U1 alongside U26).
+ */
+export function definitionSites(tree: MdastNode): DefinitionSite[] {
+  const first = new Map<string, DefinitionSite>();
+  for (const site of collectSites(tree)) if (!first.has(site.id)) first.set(site.id, site);
+  const prefixCounts = new Map<string, number>();
+  for (const id of first.keys()) {
+    prefixCounts.set(idPrefix(id), (prefixCounts.get(idPrefix(id)) ?? 0) + 1);
+  }
+  return [...first.values()].filter(
+    (site) =>
+      site.explicit || hasDistinctForm(site.id) || (prefixCounts.get(idPrefix(site.id)) ?? 0) > 1,
   );
 }
 
-// A table's body runs to the first blank line or the next heading or fence.
-const endsTableBody = (line: string) =>
-  line.trim() === '' || HEADING_RE.test(line) || FENCE_RE.test(line);
-
-// The identifiers in a table's identifier column, and the index of the line after it.
-function tableDefinitions(
-  lines: string[],
-  headerIndex: number,
-): { ids: string[]; explicit: boolean; next: number } {
-  const { column, explicit } = referenceIdColumn(splitTableRow(lines[headerIndex]));
-  const ids: string[] = [];
-  let i = headerIndex + 2;
-  for (; i < lines.length && !endsTableBody(lines[i]); i += 1) {
-    const id = cellReferenceId(splitTableRow(lines[i])[column] ?? '');
-    if (id) ids.push(id);
-  }
-  return { ids, explicit, next: i };
-}
-
-// Drops plain tokens (S3, Q3) that nothing in the document backs up as an id: a
-// column headed as an identifier, a hyphen or dotted parts, or a sibling with the
-// same prefix (U1 alongside U26).
-function corroborated(
-  found: Map<string, { kind: ReferenceDefinitionKind; explicit: boolean }>,
-): Array<Pick<ReferenceDefinition, 'id' | 'kind'>> {
-  const prefixCounts = new Map<string, number>();
-  for (const id of found.keys()) {
-    prefixCounts.set(idPrefix(id), (prefixCounts.get(idPrefix(id)) ?? 0) + 1);
-  }
-  return [...found]
-    .filter(
-      ([id, { explicit }]) =>
-        explicit || hasDistinctForm(id) || (prefixCounts.get(idPrefix(id)) ?? 0) > 1,
-    )
-    .map(([id, { kind }]) => ({ id, kind }));
-}
+const markdownParser = unified().use(remarkParse).use(remarkGfm);
 
 /** Every identifier one document defines, in document order, first definition only. */
 export function definitionsInArtifact(
   artifact: DefinableArtifact,
 ): Array<Pick<ReferenceDefinition, 'id' | 'kind'>> {
-  const lines = String(artifact.content ?? '').split(/\r?\n/);
-  const found = new Map<string, { kind: ReferenceDefinitionKind; explicit: boolean }>();
-  const define = (id: string | null, kind: ReferenceDefinitionKind, explicit = false) => {
-    if (id && !found.has(id)) found.set(id, { kind, explicit });
-  };
-  let inFence = false;
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (FENCE_RE.test(line)) {
-      inFence = !inFence;
-      continue;
-    }
-    if (inFence) continue;
-    const heading = HEADING_RE.exec(line);
-    if (heading) {
-      define(leadingReferenceId(heading[1]), 'heading');
-      continue;
-    }
-    if (startsTable(lines, i)) {
-      const table = tableDefinitions(lines, i);
-      for (const id of table.ids) define(id, 'table', table.explicit);
-      i = table.next - 1;
-      continue;
-    }
-    const listLabel = LIST_BOLD_RE.exec(line);
-    if (listLabel) define(leadingReferenceId(listLabel[1]), 'list');
-  }
-  return corroborated(found);
+  const tree = markdownParser.parse(String(artifact.content ?? '')) as MdastNode;
+  return definitionSites(tree).map(({ id, kind }) => ({ id, kind }));
 }
 
 const indexCache = new WeakMap<readonly DefinableArtifact[], Map<string, ReferenceDefinition>>();

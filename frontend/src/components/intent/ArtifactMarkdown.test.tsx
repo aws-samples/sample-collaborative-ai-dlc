@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import mermaid from 'mermaid';
 import { ArtifactMarkdown, PreviewReferenceText } from '@/components/intent/ArtifactMarkdown';
+import { buildReferenceDefinitions } from '@/components/intent/artifactReferences';
 
 vi.mock('mermaid', () => ({
   default: {
@@ -320,5 +321,32 @@ describe('ArtifactMarkdown — identifiers defined in documents', () => {
       'href',
       '#artifact-units/ref-units--u2',
     );
+  });
+
+  it('anchors every indexed definition where blocks interrupt a table', () => {
+    const doc = {
+      id: 'units',
+      title: 'Units',
+      content: [
+        'Unit ID | Name',
+        '--- | ---',
+        'U1 | Alpha',
+        '    U9',
+        '',
+        'Unit ID | Name',
+        '--- | ---',
+        'U2 | Beta',
+        '- **U3** — Gamma',
+      ].join('\n'),
+    };
+    const { container } = render(
+      <ArtifactMarkdown content={doc.content} artifactId="units" artifacts={[doc]} />,
+    );
+
+    const anchors = [...container.querySelectorAll('[id^="ref-units--"]')].map(
+      (element) => `${element.id}:${element.tagName}`,
+    );
+    expect(anchors).toEqual(['ref-units--u1:TR', 'ref-units--u2:TR', 'ref-units--u3:LI']);
+    expect(buildReferenceDefinitions([doc]).has('U9')).toBe(false);
   });
 });

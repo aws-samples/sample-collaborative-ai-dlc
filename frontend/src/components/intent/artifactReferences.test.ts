@@ -115,6 +115,24 @@ describe('definitionsInArtifact', () => {
     expect(definitionsInArtifact(prose)).toEqual([]);
   });
 
+  it('ends a table where any other block interrupts it, as GFM does', () => {
+    const table = 'Unit ID | Name\n--- | ---\nU1 | Alpha\n';
+    const after = (tail: string) =>
+      definitionsInArtifact({ id: 'units', title: 'Units', content: table + tail });
+
+    // Indented code, a quote and raw HTML end the table and define nothing.
+    expect(after('    U9 | Code')).toEqual([{ id: 'U1', kind: 'table' }]);
+    expect(after('> U9 | Quoted')).toEqual([{ id: 'U1', kind: 'table' }]);
+    expect(after('<div>U9 | Html</div>')).toEqual([{ id: 'U1', kind: 'table' }]);
+    // A bold-led list item after it is a list definition, not a row.
+    expect(after('- **U2** — Beta')).toEqual([
+      { id: 'U1', kind: 'table' },
+      { id: 'U2', kind: 'list' },
+    ]);
+    // A row without outer pipes still continues the table.
+    expect(after('U2 | Beta').map((d) => d.kind)).toEqual(['table', 'table']);
+  });
+
   it('ignores ordinary technical tokens that nothing corroborates', () => {
     const services = {
       id: 'design',

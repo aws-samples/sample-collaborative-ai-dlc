@@ -13,11 +13,10 @@ import remarkGfm from 'remark-gfm';
 import type { PluggableList } from 'unified';
 import {
   buildReferenceDefinitions,
-  cellReferenceId,
-  definitionsInArtifact,
-  leadingReferenceId,
+  definitionSites,
+  nodeText,
   referenceAnchor,
-  referenceIdColumn,
+  type MdastNode,
   type ReferenceDefinition,
 } from '@/components/intent/artifactReferences';
 
@@ -34,15 +33,6 @@ export interface MarkdownDerivedItemLink {
   slug?: string | null;
   label: string;
 }
-
-type MdastNode = {
-  type: string;
-  value?: string;
-  children?: MdastNode[];
-  url?: string;
-  title?: string;
-  data?: { hProperties?: Record<string, unknown>; referenceDefinition?: boolean };
-};
 
 const WIKI_LINK_RE = /\[\[([^\]\r\n]+)\]\]/g;
 
@@ -186,20 +176,16 @@ function referenceNode({ text, href, title }: PreviewReferenceSegment): MdastNod
     : { type: 'text', value: text };
 }
 
-function nodeText(node: MdastNode): string {
-  if (node.type === 'text' || node.type === 'inlineCode') return node.value ?? '';
-  return (node.children ?? []).map(nodeText).join('');
-}
-
 // Gives each heading, table row and bold-led list item where this document defines
-// an identifier the element id its references scroll to. Where this document is
-// also the one the identifier links to, the defining text is marked so it isn't a
-// link to itself: the whole cell in a table, only the leading identifier in a
-// heading or list label, so other references beside it still link. A copy another
-// document wins still links to the winner.
+// an identifier the element id its references scroll to. The sites come from the
+// same walk the definition index uses, over the tree being rendered, so every
+// indexed definition has its anchor. Where this document is also the one the
+// identifier links to, the defining text is marked so it isn't a link to itself:
+// the whole cell in a table, only the leading identifier in a heading or list
+// label, so other references beside it still link. A copy another document wins
+// still links to the winner.
 interface ReferenceAnchorOptions {
   artifactId: string;
-  ownIds: ReadonlySet<string>;
   winners: ReadonlyMap<string, ReferenceDefinition>;
 }
 
@@ -229,50 +215,17 @@ function markLeadingToken(node: MdastNode, id: string): void {
   );
 }
 
-function remarkReferenceAnchors({ artifactId, ownIds, winners }: ReferenceAnchorOptions) {
+function remarkReferenceAnchors({ artifactId, winners }: ReferenceAnchorOptions) {
   return (tree: MdastNode) => {
-    const seen = new Set<string>();
-    // `defining` is the table cell that holds the id, or null for a heading or list
-    // label, where only the leading token is marked.
-    const mark = (
-      target: MdastNode,
-      defining: MdastNode | null,
-      id: string | null,
-      labelNode: MdastNode = target,
-    ) => {
-      if (!id || !ownIds.has(id) || seen.has(id)) return;
-      seen.add(id);
+    for (const { id, target, cell, label } of definitionSites(tree)) {
       target.data = {
         ...target.data,
         hProperties: { ...target.data?.hProperties, id: referenceAnchor(artifactId, id) },
       };
-      if (winners.get(id)?.artifactId !== artifactId) return;
-      if (defining) defining.data = { ...defining.data, referenceDefinition: true };
-      else markLeadingToken(labelNode, id);
-    };
-    const visit = (node: MdastNode) => {
-      if (node.type === 'heading') {
-        mark(node, null, leadingReferenceId(nodeText(node)));
-        return;
-      }
-      if (node.type === 'table') {
-        const [header, ...rows] = node.children ?? [];
-        const { column } = referenceIdColumn((header?.children ?? []).map(nodeText));
-        for (const row of rows) {
-          const cell = row.children?.[column];
-          if (cell) mark(row, cell, cellReferenceId(nodeText(cell)));
-        }
-        return;
-      }
-      if (node.type === 'listItem') {
-        const label = node.children?.[0]?.children?.[0];
-        if (label?.type === 'strong') {
-          mark(node, null, leadingReferenceId(nodeText(label)), label);
-        }
-      }
-      for (const child of node.children ?? []) visit(child);
-    };
-    visit(tree);
+      if (winners.get(id)?.artifactId !== artifactId) continue;
+      if (cell) cell.data = { ...cell.data, referenceDefinition: true };
+      else markLeadingToken(label, id);
+    }
   };
 }
 
@@ -431,15 +384,7 @@ export function ArtifactMarkdown({
         ? [
             [
               remarkReferenceAnchors,
-              {
-                artifactId,
-                ownIds: new Set(
-                  definitionsInArtifact({ id: artifactId, title: null, content }).map(
-                    (definition) => definition.id,
-                  ),
-                ),
-                winners: buildReferenceDefinitions(artifacts),
-              },
+              { artifactId, winners: buildReferenceDefinitions(artifacts) },
             ] as [typeof remarkReferenceAnchors, ReferenceAnchorOptions],
           ]
         : []),
@@ -450,7 +395,7 @@ export function ArtifactMarkdown({
         }),
       ] as [typeof remarkPreviewLinks, PreviewReferenceIndex],
     ],
-    [artifacts, derivedItems, preserveReferenceText, artifactId, content],
+    [artifacts, derivedItems, preserveReferenceText, artifactId],
   );
   const components = useMemo(
     () => ({
