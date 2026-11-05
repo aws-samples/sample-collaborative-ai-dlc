@@ -154,3 +154,9 @@ export const groupMessages = (sorted: DiscussionMessage[]): MessageGroup[] => {
   }
   return groups;
 };
+
+/** Instructions in a leading Quorum mention; null means an ordinary message. */
+export const quorumMention = (text: string): string | null => {
+  const match = /^@quorum(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  return match ? match[1]?.trim() || '' : null;
+};

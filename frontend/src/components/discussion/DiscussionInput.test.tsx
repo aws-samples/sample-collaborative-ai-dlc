@@ -29,14 +29,14 @@ describe('DiscussionInput Quorum mention', () => {
     expect(screen.getByPlaceholderText('Write a message...')).toHaveValue('@quorum ');
   });
 
-  it('sends the full @quorum message with instructions for an ask after persistence', async () => {
+  it('sends the full @quorum question through the normal message path', async () => {
     const user = userEvent.setup();
     const props = renderInput();
 
     await user.type(screen.getByPlaceholderText('Write a message...'), '@quorum check the risks');
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
-    expect(props.onSend).toHaveBeenCalledWith('@quorum check the risks', [], 'check the risks');
+    expect(props.onSend).toHaveBeenCalledWith('@quorum check the risks', []);
     expect(props.onAssist).not.toHaveBeenCalled();
     expect(screen.getByPlaceholderText('Write a message...')).toHaveValue('');
   });
@@ -50,7 +50,7 @@ describe('DiscussionInput Quorum mention', () => {
     await user.click(screen.getByRole('button', { name: /alice/i }));
     await user.click(screen.getByRole('button', { name: 'Send message' }));
 
-    expect(props.onSend).toHaveBeenCalledWith('@quorum ask @alice', ['u1'], 'ask @alice');
+    expect(props.onSend).toHaveBeenCalledWith('@quorum ask @alice', ['u1']);
   });
 
   it('keeps slash commands as direct assist requests', async () => {

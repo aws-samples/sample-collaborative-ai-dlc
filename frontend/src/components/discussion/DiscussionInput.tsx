@@ -13,7 +13,7 @@ import type { AssistCommand } from '@/services/discussions';
 // (non-members stripped) — the combobox just makes them typeable.
 
 interface Props {
-  onSend: (content: string, mentions: string[], assistInstructions?: string) => void;
+  onSend: (content: string, mentions: string[]) => void;
   onAssist?: (command: AssistCommand, instructions?: string) => void;
   onTyping: (typing: boolean) => void;
   members: Member[];
@@ -36,12 +36,6 @@ const slashCommand = (text: string): { command: AssistCommand; instructions: str
   const match = /^\/(summarize|explain|brainstorm|ask)(?:\s+([\s\S]*))?$/i.exec(text.trim());
   if (!match) return null;
   return { command: match[1].toLowerCase() as AssistCommand, instructions: match[2]?.trim() || '' };
-};
-
-const quorumMention = (text: string): string | null => {
-  const match = /^@quorum(?:\s+([\s\S]*))?$/i.exec(text.trim());
-  if (!match) return null;
-  return match[1]?.trim() || '';
 };
 
 export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled }: Props) {
@@ -121,16 +115,11 @@ export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled 
       requestAnimationFrame(autoGrow);
       return;
     }
-    const quorumAsk = onAssist ? quorumMention(trimmed) : null;
     // Only count mentions whose @label text survived editing — matched on a
     // token boundary so a prefix label (john) isn't falsely counted from a
     // longer one (@johnny).
     const mentions = mentionedUserIds(trimmed, mentioned);
-    if (quorumAsk !== null) {
-      onSend(trimmed, mentions, quorumAsk);
-    } else {
-      onSend(trimmed, mentions);
-    }
+    onSend(trimmed, mentions);
     onTyping(false);
     setValue('');
     setMentioned(new Map());

@@ -50,12 +50,18 @@ const renderDiscussion = () =>
   );
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   collaboration.doc = new Y.Doc();
-  vi.mocked(discussionsService.assist).mockResolvedValue({
-    requestId: 'assist-1',
-    message: { ...persisted, id: 'reply-1', content: 'The risks are…', authorType: 'agent' },
-  });
+  vi.mocked(discussionsService.assist).mockImplementation(async (_scope, _id, input) => ({
+    requestId: input.requestId,
+    message: {
+      ...persisted,
+      id: 'reply-1',
+      requestId: input.requestId,
+      content: 'The risks are…',
+      authorType: 'agent',
+    },
+  }));
 });
 
 afterEach(() => {
@@ -75,7 +81,7 @@ describe('useDiscussion Quorum questions', () => {
     let sending!: Promise<void>;
 
     act(() => {
-      sending = result.current.sendMessage(question, [], 'check the risks');
+      sending = result.current.sendMessage(question, []);
     });
 
     expect(discussionsService.postMessage).toHaveBeenCalledWith(
@@ -114,7 +120,7 @@ describe('useDiscussion Quorum questions', () => {
     const { result } = renderDiscussion();
 
     await act(async () => {
-      await result.current.sendMessage(question, [], 'check the risks');
+      await result.current.sendMessage(question, ['u2']);
     });
 
     expect(discussionsService.assist).not.toHaveBeenCalled();
@@ -131,6 +137,9 @@ describe('useDiscussion Quorum questions', () => {
       id,
       id,
     ]);
+    expect(vi.mocked(discussionsService.postMessage).mock.calls[1][2]).toEqual(
+      vi.mocked(discussionsService.postMessage).mock.calls[0][2],
+    );
     expect(discussionsService.assist).toHaveBeenCalledTimes(1);
     expect(discussionsService.assist).toHaveBeenCalledWith(
       scope,
@@ -139,6 +148,120 @@ describe('useDiscussion Quorum questions', () => {
     );
     expect(result.current.pending).toEqual([]);
     expect(result.current.messages[0].content).toBe(question);
+  });
+
+  it('retains a failed assist submission and retries with the same request ID', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(discussionsService.postMessage).mockImplementation(async (_scope, _id, input) => ({
+      ...persisted,
+      ...input,
+    }));
+    vi.mocked(discussionsService.assist).mockRejectedValueOnce(new Error('unavailable'));
+    const { result } = renderDiscussion();
+
+    await act(async () => {
+      await result.current.sendMessage(question, ['u2']);
+    });
+
+    expect(result.current.messages[0].content).toBe(question);
+    expect(result.current.pending).toEqual([
+      expect.objectContaining({ status: 'failed', mentions: ['u2'] }),
+    ]);
+    const id = result.current.pending[0].id;
+
+    await act(async () => {
+      await result.current.retryMessage(id);
+    });
+
+    const calls = vi.mocked(discussionsService.assist).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[1][2]).toEqual(calls[0][2]);
+    expect(calls[0][2].requestId).toBe(`assist-${id}`);
+    expect(result.current.pending).toEqual([]);
+    expect(result.current.messages.filter((m) => m.authorType === 'user')).toHaveLength(1);
+  });
+
+  it('retains an ask after its broadcast arrives but the message POST response is lost', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(discussionsService.postMessage)
+      .mockImplementationOnce(async (_scope, _id, input) => {
+        collaboration.doc!.getMap<DiscussionMessage>('messages').set(input.id, {
+          ...persisted,
+          ...input,
+        });
+        throw new Error('response lost');
+      })
+      .mockImplementationOnce(async (_scope, _id, input) => ({ ...persisted, ...input }));
+    const { result } = renderDiscussion();
+
+    await act(async () => {
+      await result.current.sendMessage(question, ['u2']);
+    });
+
+    expect(result.current.messages).toHaveLength(1);
+    expect(result.current.pending[0].status).toBe('failed');
+    expect(discussionsService.assist).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await result.current.retryMessage(result.current.pending[0].id);
+    });
+
+    const calls = vi.mocked(discussionsService.postMessage).mock.calls;
+    expect(calls[1][2]).toEqual(calls[0][2]);
+    expect(calls[1][2].mentions).toEqual(['u2']);
+    expect(result.current.pending).toEqual([]);
+    expect(discussionsService.assist).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers unanswered persisted asks after reopening, scoped to the current author', async () => {
+    collaboration.doc!.getMap<DiscussionMessage>('messages').set(persisted.id, {
+      ...persisted,
+      mentions: ['u2'],
+    });
+    collaboration.doc!.getMap<DiscussionMessage>('messages').set('other-question', {
+      ...persisted,
+      id: 'other-question',
+      authorId: 'u2',
+    });
+    vi.mocked(discussionsService.postMessage).mockImplementation(async (_scope, _id, input) => ({
+      ...persisted,
+      ...input,
+    }));
+    const { result } = renderDiscussion();
+
+    expect(result.current.pending).toEqual([
+      expect.objectContaining({ id: persisted.id, status: 'failed', mentions: ['u2'] }),
+    ]);
+
+    await act(async () => {
+      await result.current.retryMessage(persisted.id);
+    });
+
+    expect(discussionsService.assist).toHaveBeenCalledWith(
+      scope,
+      'd1',
+      expect.objectContaining({
+        requestId: `assist-${persisted.id}`,
+        instructions: 'check the risks',
+      }),
+    );
+    expect(result.current.pending).toEqual([]);
+  });
+
+  it('does not recover an ask with an existing assist after its submission response is lost', () => {
+    collaboration.doc!.getMap<DiscussionMessage>('messages').set(persisted.id, persisted);
+    collaboration.doc!.getMap<DiscussionMessage>('messages').set('reply', {
+      ...persisted,
+      id: 'reply',
+      authorType: 'agent',
+      requestId: `assist-${persisted.id}`,
+      assistStatus: 'running',
+    });
+
+    const { result } = renderDiscussion();
+
+    expect(result.current.pending).toEqual([]);
+    expect(discussionsService.assist).not.toHaveBeenCalled();
   });
 
   it('does not request assist for ordinary messages', async () => {
@@ -157,7 +280,7 @@ describe('useDiscussion Quorum questions', () => {
     const { result } = renderDiscussion();
 
     await act(async () => {
-      await result.current.sendMessage('@quorum', [], '');
+      await result.current.sendMessage('@quorum', []);
     });
 
     expect(discussionsService.assist).toHaveBeenCalledWith(
