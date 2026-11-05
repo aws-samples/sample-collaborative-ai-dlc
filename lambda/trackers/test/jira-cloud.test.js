@@ -12,6 +12,7 @@ import {
   refreshAccessToken,
   listAccessibleResources,
   persistConnection,
+  verifyProject,
   ProviderError,
 } from '../providers/jira-cloud.js';
 
@@ -86,6 +87,7 @@ const seedConnectionRow = (overrides = {}) => ({
   Item: {
     userId: 'user-1',
     providerInstance: 'jira-cloud#cloud',
+    oauthClientId: CLIENT_ID,
     parameterName: PARAM_NAME,
     cloudId: CLOUD_ID,
     baseUrl: `https://api.atlassian.com/ex/jira/${CLOUD_ID}`,
@@ -183,6 +185,17 @@ describe('jira-cloud — OAuth helpers', () => {
     ).rejects.toMatchObject({ status: 401, extra: { reconnect: true } });
   });
 
+  it.each([
+    [503, 'temporarily_unavailable'],
+    [429, 'rate_limited'],
+    [401, 'invalid_client'],
+  ])('does not request authorization for a %s refresh failure (%s)', async (status, error) => {
+    fetchMock.mockResolvedValueOnce(errResponse(status, { error }));
+    await expect(
+      refreshAccessToken({ clientId: 'cid', clientSecret: 'cs', refreshToken: 'r1' }),
+    ).rejects.toMatchObject({ status, extra: { reconnect: false } });
+  });
+
   it('listAccessibleResources maps each site to {cloudId, name, host}', async () => {
     fetchMock.mockResolvedValueOnce(
       okResponse([
@@ -216,6 +229,7 @@ describe('jira-cloud — persistConnection', () => {
       ddb: DynamoDBDocumentClient.from(new DynamoDBClient({})),
       ssm: new SSMClient({}),
       userId: 'user-1',
+      clientId: CLIENT_ID,
       resource: {
         cloudId: CLOUD_ID,
         name: 'Acme',
@@ -231,6 +245,7 @@ describe('jira-cloud — persistConnection', () => {
     expect(ddbCall.args[0].input.Item).toMatchObject({
       userId: 'user-1',
       providerInstance: 'jira-cloud#cloud',
+      oauthClientId: CLIENT_ID,
       cloudId: CLOUD_ID,
       siteHost: SITE_HOST,
       baseUrl: `https://api.atlassian.com/ex/jira/${CLOUD_ID}`,
@@ -264,6 +279,174 @@ describe('jira-cloud — provider methods', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
+  });
+
+  describe('OAuth client ownership', () => {
+    it.each([undefined, 'previous-client'])(
+      'requires authorization before using a connection issued to %s',
+      async (oauthClientId) => {
+        ddbMock
+          .on(GetCommand, { TableName: TRACKER_TABLE })
+          .resolves(seedConnectionRow({ oauthClientId }));
+        await expect(jiraProvider.listExternalProjects(ctx())).rejects.toMatchObject({
+          status: 401,
+          extra: { reconnect: true },
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(ssmMock).not.toHaveReceivedCommand(GetParameterCommand);
+        expect(ddbMock).not.toHaveReceivedCommand(PutCommand);
+      },
+    );
+
+    describe.each([
+      [
+        'listIssues',
+        ['PROJ', {}],
+        { issues: [issueFixture()], isLast: true },
+        { items: [{ resourceId: 'PROJ-42' }] },
+      ],
+      ['getIssue', ['PROJ', 'PROJ-42'], issueFixture(), { resourceId: 'PROJ-42' }],
+      [
+        'getIssueDiscussion',
+        ['PROJ', 'PROJ-42'],
+        { comments: [{ id: '1001', body: adfDoc('Existing comment') }] },
+        [{ id: '1001' }],
+      ],
+      [
+        'addIssueComment',
+        ['PROJ', 'PROJ-42', 'Delivery complete'],
+        { id: '1002', body: adfDoc('Delivery complete') },
+        { id: '1002' },
+      ],
+    ])('existing connection: %s', (method, args, response, expected) => {
+      it.each(['valid', 'expired', 'rejected'])(
+        'keeps a legacy connection working when the access token is %s',
+        async (tokenState) => {
+          ddbMock
+            .on(GetCommand, { TableName: TRACKER_TABLE })
+            .resolves(seedConnectionRow({ oauthClientId: undefined }));
+          if (tokenState === 'expired') {
+            ssmMock
+              .on(GetParameterCommand)
+              .resolves(seedTokenParam({ expiresAt: Date.now() - 1000 }));
+          }
+          if (tokenState === 'rejected') {
+            fetchMock.mockResolvedValueOnce(errResponse(401, {}));
+          }
+          if (tokenState !== 'valid') {
+            fetchMock.mockResolvedValueOnce(
+              okResponse({ access_token: 'fresh-at', refresh_token: 'fresh-rt', expires_in: 3600 }),
+            );
+          }
+          fetchMock.mockResolvedValueOnce(okResponse(response));
+
+          await expect(jiraProvider[method](ctx(), ...args)).resolves.toMatchObject(expected);
+          expect(fetchMock.mock.lastCall[1].headers.Authorization).toBe(
+            `Bearer ${tokenState === 'valid' ? ACCESS_TOKEN : 'fresh-at'}`,
+          );
+          const refreshCalls = fetchMock.mock.calls.filter(([url]) => url.endsWith('/oauth/token'));
+          expect(refreshCalls).toHaveLength(tokenState === 'valid' ? 0 : 1);
+          // Refresh must not invent ownership metadata for a legacy grant.
+          for (const call of ddbMock.commandCalls(PutCommand)) {
+            expect(call.args[0].input.Item.oauthClientId).toBeUndefined();
+          }
+        },
+      );
+
+      it('rejects a known client mismatch before accessing the old tokens', async () => {
+        ddbMock
+          .on(GetCommand, { TableName: TRACKER_TABLE })
+          .resolves(seedConnectionRow({ oauthClientId: 'previous-client' }));
+        await expect(jiraProvider[method](ctx(), ...args)).rejects.toMatchObject({
+          status: 401,
+          extra: { reconnect: true },
+        });
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(ssmMock).not.toHaveReceivedCommand(GetParameterCommand);
+      });
+    });
+
+    it('authorizes a legacy connection once, then uses it for project listings', async () => {
+      ddbMock
+        .on(GetCommand, { TableName: TRACKER_TABLE })
+        .resolves(seedConnectionRow({ oauthClientId: undefined }));
+      await expect(jiraProvider.listExternalProjects(ctx())).rejects.toMatchObject({
+        extra: { reconnect: true },
+      });
+      await persistConnection({
+        ...ctx(),
+        clientId: CLIENT_ID,
+        resource: { cloudId: CLOUD_ID, host: SITE_HOST, name: 'Acme' },
+        tokens: { accessToken: 'new-at', refreshToken: 'new-rt', expiresIn: 3600 },
+      });
+      const row = ddbMock.commandCalls(PutCommand)[0].args[0].input.Item;
+      const parameter = ssmMock.commandCalls(PutParameterCommand)[0].args[0].input.Value;
+      ddbMock.on(GetCommand, { TableName: TRACKER_TABLE }).resolves({ Item: row });
+      ssmMock.on(GetParameterCommand).resolves({ Parameter: { Value: parameter } });
+      fetchMock.mockResolvedValue(okResponse({ values: [{ key: 'NEW', name: 'New project' }] }));
+
+      await expect(jiraProvider.listExternalProjects(ctx())).resolves.toEqual([
+        { key: 'NEW', displayKey: 'NEW', name: 'New project' },
+      ]);
+      await jiraProvider.listExternalProjects(ctx());
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer new-at');
+      expect(fetchMock.mock.calls.every(([url]) => !url.includes('/oauth/token'))).toBe(true);
+    });
+
+    it('silently refreshes using a rotated secret when the client ID is unchanged', async () => {
+      secretsMock.on(GetSecretValueCommand).resolves({
+        SecretString: JSON.stringify({ client_id: CLIENT_ID, client_secret: 'rotated-secret' }),
+      });
+      ssmMock.on(GetParameterCommand).resolves(seedTokenParam({ expiresAt: Date.now() - 1000 }));
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+        )
+        .mockResolvedValueOnce(okResponse({ values: [] }));
+
+      await expect(jiraProvider.listExternalProjects(ctx())).resolves.toEqual([]);
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+        client_id: CLIENT_ID,
+        client_secret: 'rotated-secret',
+        refresh_token: REFRESH_TOKEN,
+      });
+      expect(
+        JSON.parse(ssmMock.commandCalls(PutParameterCommand)[0].args[0].input.Value),
+      ).toMatchObject({
+        refreshToken: 'new-rt',
+      });
+      expect(ddbMock.commandCalls(PutCommand)[0].args[0].input.Item.oauthClientId).toBe(CLIENT_ID);
+    });
+
+    it('does not turn a reactive refresh outage into a reauthorization request', async () => {
+      fetchMock
+        .mockResolvedValueOnce(errResponse(401, {}))
+        .mockResolvedValueOnce(errResponse(503, { error: 'temporarily_unavailable' }));
+      await expect(jiraProvider.listExternalProjects(ctx())).rejects.toMatchObject({
+        status: 503,
+        extra: { reconnect: false },
+      });
+      expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+    });
+
+    it('does not refresh with a different client if the configuration changes mid-request', async () => {
+      secretsMock
+        .on(GetSecretValueCommand)
+        .resolvesOnce({
+          SecretString: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET }),
+        })
+        .resolves({
+          SecretString: JSON.stringify({ client_id: 'new-client', client_secret: CLIENT_SECRET }),
+        });
+      fetchMock.mockResolvedValueOnce(errResponse(401, {}));
+      await expect(jiraProvider.listExternalProjects(ctx())).rejects.toMatchObject({
+        status: 401,
+        extra: { reconnect: true },
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+    });
   });
 
   describe('listIssues', () => {
@@ -317,6 +500,177 @@ describe('jira-cloud — provider methods', () => {
       // decoding so JQL clauses read like the user wrote them.
       const url = decodeURIComponent(fetchMock.mock.calls[0][0].replace(/\+/g, ' '));
       expect(url).toContain('text ~ "foo\\" OR bar"');
+    });
+
+    const jqlOf = (call) => new URL(call[0]).searchParams.get('jql');
+
+    it('orders by most recently updated', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'PROJ', {});
+      expect(jqlOf(fetchMock.mock.calls[0])).toBe(
+        'project = "PROJ" AND statusCategory != Done ORDER BY updated DESC',
+      );
+    });
+
+    it('lists every state with state=all', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'PROJ', { state: 'all' });
+      expect(jqlOf(fetchMock.mock.calls[0])).not.toContain('statusCategory');
+    });
+
+    it('adds a prefix match on summary so part-typed words match', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'PROJ', { q: 'auth (sso' });
+      expect(jqlOf(fetchMock.mock.calls[0])).toContain(
+        '(text ~ "auth (sso" OR summary ~ "auth sso*")',
+      );
+    });
+
+    it('puts an exact key match first and skips it from the search results', async () => {
+      const exact = issueFixture({ key: 'PROJ-7' });
+      exact.fields.project = { key: 'PROJ' };
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({
+            issues: [issueFixture({ key: 'PROJ-9' }), issueFixture({ key: 'PROJ-7' })],
+            isLast: true,
+          }),
+        )
+        .mockResolvedValueOnce(okResponse(exact));
+      const page = await jiraProvider.listIssues(ctx(), 'PROJ', { q: 'proj-7' });
+      expect(page.items.map((i) => i.resourceId)).toEqual(['PROJ-7', 'PROJ-9']);
+      expect(fetchMock.mock.calls[1][0]).toContain('/rest/api/3/issue/PROJ-7?');
+    });
+
+    it('ignores a key match from another project', async () => {
+      const other = issueFixture({ key: 'OTHER-7' });
+      other.fields.project = { key: 'OTHER' };
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }))
+        .mockResolvedValueOnce(okResponse(other));
+      const page = await jiraProvider.listIssues(ctx(), 'PROJ', { q: 'OTHER-7' });
+      expect(page.items).toEqual([]);
+    });
+
+    it('ignores a key that does not exist', async () => {
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }))
+        .mockResolvedValueOnce(errResponse(404, { errorMessages: ['Issue does not exist'] }));
+      const page = await jiraProvider.listIssues(ctx(), 'PROJ', { q: 'PROJ-99999' });
+      expect(page.items).toEqual([]);
+    });
+
+    it('filters by issue type, using the names the project actually has', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse({ issueTypes: [{ name: 'Epic' }, { name: 'Story' }, { name: 'Bug' }] }),
+        )
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'TYPES1', { type: 'epic,STORY,Idea' });
+      expect(fetchMock.mock.calls[0][0]).toContain('/rest/api/3/project/TYPES1');
+      expect(jqlOf(fetchMock.mock.calls[1])).toContain('issuetype in ("Epic", "Story")');
+    });
+
+    it('returns an empty page when the project has none of the requested types', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ issueTypes: [{ name: 'Task' }] }));
+      const page = await jiraProvider.listIssues(ctx(), 'TYPES2', { type: 'Idea' });
+      expect(page).toMatchObject({ items: [], hasNext: false });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    });
+
+    it('caches project issue types across pages', async () => {
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ issueTypes: [{ name: 'Idea' }] }))
+        .mockResolvedValueOnce(okResponse({ issues: [], nextPageToken: 'c2' }))
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'TYPES3', { type: 'Idea' });
+      await jiraProvider.listIssues(ctx(), 'TYPES3', { type: 'Idea', pageToken: 'c2' });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(jqlOf(fetchMock.mock.calls[2])).toContain('issuetype in ("Idea")');
+    });
+
+    const projectMeta = (projectTypeKey, issueTypes) => okResponse({ projectTypeKey, issueTypes });
+
+    it('returns every project issue type, highest level first, when asked', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          projectMeta('software', [
+            { name: 'Sub-task', subtask: true, hierarchyLevel: -1, iconUrl: 'st' },
+            { name: 'Story', hierarchyLevel: 0, iconUrl: 's' },
+            { name: 'Spike', hierarchyLevel: 0, iconUrl: 'sp' },
+            { name: 'Initiative', hierarchyLevel: 2, iconUrl: 'i' },
+            { name: 'Epic', hierarchyLevel: 1, iconUrl: 'e' },
+          ]),
+        )
+        .mockResolvedValueOnce(okResponse({ issues: [], nextPageToken: 'c2' }));
+      const page = await jiraProvider.listIssues(ctx(), 'META1', { withTypes: '1' });
+      expect(page.projectTypeKey).toBe('software');
+      expect(page.issueTypes.map((t) => t.name)).toEqual([
+        'Initiative',
+        'Epic',
+        'Spike',
+        'Story',
+        'Sub-task',
+      ]);
+      expect(page.issueTypes.at(-1)).toEqual({
+        name: 'Sub-task',
+        iconUrl: 'st',
+        hierarchyLevel: -1,
+        subtask: true,
+      });
+    });
+
+    it('does not look up issue types for a plain list', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      const page = await jiraProvider.listIssues(ctx(), 'META2', {});
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(page.issueTypes).toBeUndefined();
+    });
+
+    it('lists the children of a software issue through the parent field', async () => {
+      fetchMock
+        .mockResolvedValueOnce(projectMeta('software', [{ name: 'Epic', hierarchyLevel: 1 }]))
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'SW1', { parent: 'sw1-10', q: 'SW1-11' });
+      const jql = jqlOf(fetchMock.mock.calls[1]);
+      expect(jql).toContain('parent = "SW1-10"');
+      expect(jql).toContain('project = "SW1"');
+      // A key typed while browsing children doesn't trigger the direct lookup.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('lists the linked items of a Product Discovery issue', async () => {
+      fetchMock
+        .mockResolvedValueOnce(projectMeta('product_discovery', [{ name: 'Idea' }]))
+        .mockResolvedValueOnce(okResponse({ issues: [], isLast: true }));
+      await jiraProvider.listIssues(ctx(), 'JPD1', { parent: 'JPD1-3', state: 'all' });
+      const jql = jqlOf(fetchMock.mock.calls[1]);
+      expect(jql).toContain('issue in linkedIssues("JPD1-3")');
+      // Delivery work linked to an idea usually sits in another project.
+      expect(jql).not.toContain('project =');
+    });
+
+    it('rejects a malformed parent key', async () => {
+      await expect(
+        jiraProvider.listIssues(ctx(), 'PROJ', { parent: 'x" OR 1=1' }),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("maps an issue's parent", async () => {
+      const child = issueFixture({ key: 'PROJ-50' });
+      child.fields.parent = {
+        key: 'PROJ-5',
+        fields: { summary: 'Login epic', issuetype: { name: 'Epic' } },
+      };
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [child], isLast: true }));
+      const page = await jiraProvider.listIssues(ctx(), 'PROJ', {});
+      expect(page.items[0].parent).toEqual({
+        resourceId: 'PROJ-5',
+        title: 'Login epic',
+        entityType: 'Epic',
+      });
+      expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get('fields')).toContain('parent');
     });
 
     it('forwards an opaque pageToken cursor when provided', async () => {
@@ -763,6 +1117,188 @@ describe('jira-cloud — provider methods', () => {
       expect(typeof ProviderError).toBe('function');
       const err = new ProviderError(400, 'x');
       expect(err.status).toBe(400);
+    });
+  });
+
+  describe('shared token refresh recovery', () => {
+    it.each(['proactive', 'reactive'])(
+      'uses a concurrently rotated token after %s invalid_grant',
+      async (mode) => {
+        const reads = ssmMock
+          .on(GetParameterCommand)
+          .resolvesOnce(seedTokenParam(mode === 'proactive' ? { expiresAt: Date.now() - 1 } : {}));
+        if (mode === 'reactive') {
+          reads.resolvesOnce(seedTokenParam());
+          fetchMock.mockResolvedValueOnce(errResponse(401, {}));
+        }
+        reads.resolves(
+          seedTokenParam({ accessToken: 'concurrent-at', refreshToken: 'concurrent-rt' }),
+        );
+        fetchMock
+          .mockResolvedValueOnce(errResponse(400, { error: 'invalid_grant' }))
+          .mockResolvedValueOnce(okResponse({ issues: [issueFixture()] }));
+        const result = await jiraProvider.listIssues(ctx(), 'PROJ');
+        expect(result.items).toHaveLength(1);
+        expect(fetchMock.mock.calls.at(-1)[1].headers.Authorization).toBe('Bearer concurrent-at');
+        expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/oauth/token'))).toHaveLength(
+          1,
+        );
+        expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+      },
+    );
+
+    it('reuses a newer token on API 401 without refreshing it again', async () => {
+      ssmMock
+        .on(GetParameterCommand)
+        .resolvesOnce(seedTokenParam())
+        .resolves(seedTokenParam({ accessToken: 'concurrent-at', refreshToken: 'concurrent-rt' }));
+      fetchMock
+        .mockResolvedValueOnce(errResponse(401, {}))
+        .mockResolvedValueOnce(okResponse({ issues: [] }));
+      await jiraProvider.listIssues(ctx(), 'PROJ');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer concurrent-at');
+      expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+    });
+
+    it('retries once with a newer refresh token when its access token has expired', async () => {
+      ssmMock
+        .on(GetParameterCommand)
+        .resolvesOnce(seedTokenParam({ expiresAt: 1 }))
+        .resolves(
+          seedTokenParam({
+            accessToken: 'concurrent-at',
+            refreshToken: 'concurrent-rt',
+            expiresAt: 1,
+          }),
+        );
+      fetchMock
+        .mockResolvedValueOnce(errResponse(400, { error: 'invalid_grant' }))
+        .mockResolvedValueOnce(
+          okResponse({ access_token: 'fresh-at', refresh_token: 'fresh-rt', expires_in: 3600 }),
+        )
+        .mockResolvedValueOnce(okResponse({ issues: [] }));
+      await jiraProvider.listIssues(ctx(), 'PROJ');
+      expect(JSON.parse(fetchMock.mock.calls[1][1].body).refresh_token).toBe('concurrent-rt');
+      expect(fetchMock.mock.calls[2][1].headers.Authorization).toBe('Bearer fresh-at');
+      const saved = JSON.parse(ssmMock.commandCalls(PutParameterCommand)[0].args[0].input.Value);
+      expect(saved).toMatchObject({ accessToken: 'fresh-at', refreshToken: 'fresh-rt' });
+    });
+
+    it('confirms invalid_grant only when SSM still contains the rejected tokens', async () => {
+      ssmMock.on(GetParameterCommand).resolves(seedTokenParam({ expiresAt: 1 }));
+      fetchMock.mockResolvedValueOnce(errResponse(400, { error: 'invalid_grant' }));
+      await expect(jiraProvider.listIssues(ctx(), 'PROJ')).rejects.toMatchObject({
+        code: 'JIRA_GRANT_REVOKED',
+        extra: { reconnect: true },
+      });
+      expect(ssmMock.commandCalls(GetParameterCommand)).toHaveLength(2);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not declare revocation if tokens keep changing during the bounded retry', async () => {
+      ssmMock
+        .on(GetParameterCommand)
+        .resolvesOnce(seedTokenParam({ expiresAt: 1 }))
+        .resolvesOnce(
+          seedTokenParam({ accessToken: 'second-at', refreshToken: 'second-rt', expiresAt: 1 }),
+        )
+        .resolves(
+          seedTokenParam({ accessToken: 'third-at', refreshToken: 'third-rt', expiresAt: 1 }),
+        );
+      fetchMock.mockResolvedValue(errResponse(400, { error: 'invalid_grant' }));
+      await expect(jiraProvider.listIssues(ctx(), 'PROJ')).rejects.toMatchObject({
+        status: 503,
+        extra: {},
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(ssmMock).not.toHaveReceivedCommand(PutParameterCommand);
+    });
+  });
+
+  describe('delegated Jira issue scope', () => {
+    const delegated = () => ({ ...ctx(), resolveConnection: async () => seedConnectionRow().Item });
+
+    it('uses stable project identity for reads and searches after a key rename', async () => {
+      const connection = { ...delegated(), externalProjectId: '10000' };
+      const renamed = issueFixture({
+        key: 'NEW-1',
+        fields: { project: { id: '10000', key: 'NEW' } },
+      });
+      fetchMock.mockResolvedValueOnce(okResponse(renamed));
+      await expect(jiraProvider.getIssue(connection, 'OLD', 'OLD-1')).resolves.toMatchObject({
+        resourceId: 'NEW-1',
+        externalProjectId: '10000',
+      });
+      fetchMock.mockResolvedValueOnce(okResponse({ issues: [renamed] }));
+      await jiraProvider.listIssues(connection, 'OLD');
+      expect(new URL(fetchMock.mock.calls[1][0]).searchParams.get('jql')).toContain(
+        'project = "10000"',
+      );
+      // The comment scope check also authorizes by ID, despite the saved old key.
+      fetchMock
+        .mockResolvedValueOnce(okResponse(renamed))
+        .mockResolvedValueOnce(okResponse({ id: 'comment-1' }));
+      await expect(
+        jiraProvider.addIssueComment(connection, 'OLD', 'OLD-1', 'Delivered'),
+      ).resolves.toMatchObject({ id: 'comment-1' });
+    });
+
+    it('rejects a different project even if it reuses the old key', async () => {
+      fetchMock.mockResolvedValueOnce(
+        okResponse({ fields: { project: { id: '20000', key: 'OLD' } } }),
+      );
+      await expect(
+        jiraProvider.listIssues({ ...delegated(), externalProjectId: '10000' }, 'OLD', {
+          parent: 'OLD-1',
+        }),
+      ).rejects.toMatchObject({ status: 404 });
+    });
+
+    it('resolves a renamed legacy key when verifying delegation', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ id: '10000', key: 'NEW' }));
+      await expect(verifyProject(ctx(), 'OLD', 'OLD')).resolves.toMatchObject({
+        externalProjectId: '10000',
+      });
+    });
+
+    it('rejects reconnection to a different stable project', async () => {
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ id: '20000', key: 'OTHER' }))
+        .mockResolvedValueOnce(okResponse({ id: '10000', key: 'NEW' }));
+      await expect(verifyProject(ctx(), 'OTHER', '10000')).rejects.toMatchObject({ status: 400 });
+    });
+
+    it('allows a directly linked Product Discovery issue in another project', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          okResponse(issueFixture({ key: 'WORK-1', fields: { project: { key: 'WORK' } } })),
+        )
+        .mockResolvedValueOnce(okResponse({ projectTypeKey: 'product_discovery' }))
+        .mockResolvedValueOnce(okResponse({ issues: [{ key: 'IDEAS659-1' }] }));
+      const result = await jiraProvider.getIssue(delegated(), 'IDEAS659', 'WORK-1');
+      expect(result.resourceId).toBe('WORK-1');
+      const query = new URL(fetchMock.mock.calls[2][0]).searchParams.get('jql');
+      expect(query).toBe('project = "IDEAS659" AND issue in linkedIssues("WORK-1")');
+    });
+
+    it('rejects a foreign parent before listing linked issues', async () => {
+      fetchMock.mockResolvedValueOnce(okResponse({ fields: { project: { key: 'FOREIGN' } } }));
+      await expect(
+        jiraProvider.listIssues(delegated(), 'IDEAS659', { parent: 'FOREIGN-1' }),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses to post to an issue with no link to the bound project', async () => {
+      fetchMock
+        .mockResolvedValueOnce(okResponse({ fields: { project: { key: 'FOREIGN' } } }))
+        .mockResolvedValueOnce(okResponse({ projectTypeKey: 'product_discovery' }))
+        .mockResolvedValueOnce(okResponse({ issues: [] }));
+      await expect(
+        jiraProvider.addIssueComment(delegated(), 'IDEAS660', 'FOREIGN-1', 'hello'),
+      ).rejects.toMatchObject({ status: 404 });
+      expect(fetchMock.mock.calls.some(([, options]) => options.method === 'POST')).toBe(false);
     });
   });
 });

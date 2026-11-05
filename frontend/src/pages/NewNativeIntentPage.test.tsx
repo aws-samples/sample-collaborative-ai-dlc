@@ -406,6 +406,24 @@ it('does not create a replacement draft when recovery is temporarily unavailable
   expect(create).not.toHaveBeenCalled();
 });
 
+it('disables each platform-disabled CLI while retaining the temporary Kiro restriction', async () => {
+  capabilities.mockResolvedValue({
+    preparationEnabled: true,
+    executionEnabled: true,
+    unavailableHarnesses: {
+      codex: 'agent_cli_disabled',
+      opencode: 'agent_cli_disabled',
+      kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+    },
+  });
+  renderPage();
+  expect(await screen.findByRole('option', { name: 'Codex' })).toBeDisabled();
+  expect(screen.getByRole('option', { name: 'OpenCode' })).toBeDisabled();
+  expect(screen.getByRole('option', { name: /Kiro/ })).toBeDisabled();
+  expect(screen.getByRole('option', { name: 'Claude Code' })).toBeEnabled();
+  expect(create).not.toHaveBeenCalled();
+});
+
 it.each(['disabled', 'source-changed', 'package-not-ready'])(
   'blocks creation for %s',
   async (scenario) => {

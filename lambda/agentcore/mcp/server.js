@@ -211,7 +211,6 @@ export const buildToolHandlers = ({ writer, graph, bridge }) => {
       guard(() => bridge.sendOutput({ content, kind: kind ?? 'text' })),
     record_project_type: ({ projectType }) =>
       guard(() => bridge.recordProjectType({ projectType })),
-    collect_metric: ({ metrics }) => guard(() => bridge.collectMetric({ metrics })),
     emit_stage_note: ({ summary, type, loopBackRecommended }) =>
       guard(() => bridge.emitStageNote({ summary, type, loopBackRecommended })),
     submit_review: ({ reviewer, verdict, findings, round }) =>
@@ -247,11 +246,10 @@ export const AUTHOR_TOOLS = [
   'record_learning_rule',
   'ask_question',
   'send_output',
-  'collect_metric',
   'emit_stage_note',
 ];
 
-export const REVIEWER_TOOLS = [...READ_TOOLS, 'collect_metric', 'submit_review'];
+export const REVIEWER_TOOLS = [...READ_TOOLS, 'submit_review'];
 export const WORKSPACE_DETECTION_TOOLS = ['record_project_type'];
 
 // Tools the resolved release policy ADDS or WITHDRAWS,
@@ -482,11 +480,6 @@ export const toolSchemas = (z, policy = null) => ({
     description:
       'Workspace Detection only: persist the deterministic workspace classification for later stages and native exports.',
     shape: { projectType: z.enum(['greenfield', 'brownfield']) },
-  },
-  collect_metric: {
-    description:
-      'Record a numeric metric sample (e.g. tokensInput, tokensOutput, contextWindowPct).',
-    shape: { metrics: z.record(z.string(), z.number()) },
   },
   submit_review: {
     description:

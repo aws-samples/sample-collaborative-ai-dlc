@@ -32,7 +32,7 @@ arrow in the thread header returns to the thread list.
 ## Messages
 
 - Markdown is supported (no raw HTML).
-- `@` opens a mention picker over the project members. Mentioned users who are
+- `@` opens a mention picker over the space members. Mentioned users who are
   **currently online** get an in-app notification with a jump-to-thread link.
   Offline users see the unread badge on their next visit — there is no email
   or push delivery yet.
@@ -45,7 +45,7 @@ arrow in the thread header returns to the thread list.
 
 ## Resolving a thread
 
-Any project member can resolve a thread (the action is fully audited — the
+Any space member can resolve a thread (the action is fully audited — the
 resolver's name is shown in the thread header). When resolving you can record
 a **resolution summary** — the durable "what did we decide" — and optionally
 mark one message as the accepted outcome.
@@ -54,7 +54,7 @@ Resolved threads can be reopened by any member.
 
 ## Moderation (redaction)
 
-Project **admins and owners** can redact any message from the message context
+Space **admins and owners** can redact any message from the message context
 menu. Redaction **replaces** the content with `[redacted by {name}]` — the
 original text is purged from the database while the audit trail (who redacted,
 when) is preserved.

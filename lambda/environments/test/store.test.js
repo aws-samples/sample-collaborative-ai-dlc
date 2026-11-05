@@ -456,3 +456,64 @@ describe('environment registry store', () => {
     });
   });
 });
+
+describe('resolvePublishedEnvironment (default environment check)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const storeFor = (revision) => {
+    const items = new Map([
+      [
+        'ENV#team|META',
+        {
+          pk: 'ENV#team',
+          sk: 'META',
+          environmentId: 'team',
+          name: 'Team',
+          status: 'PUBLISHED',
+          publishedRevisionId: 'r-1',
+        },
+      ],
+      [
+        'ENV#team|REV#r-1',
+        {
+          pk: 'ENV#team',
+          sk: 'REV#r-1',
+          environmentId: 'team',
+          revisionId: 'r-1',
+          status: 'PUBLISHED',
+          runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/team',
+          imageDigest: `sha256:${'e'.repeat(64)}`,
+          runtimeCompatibilityVersion: '2',
+          verification: { status: 'PASSED' },
+          ...revision,
+        },
+      ],
+    ]);
+    return createEnvironmentStore({ ddb: createDdb(items), tableName: 'registry' });
+  };
+
+  it('resolves a verified, compatible published revision', async () => {
+    vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', '2');
+    const { snapshot } = await storeFor().resolvePublishedEnvironment('team');
+    expect(snapshot).toMatchObject({ environmentId: 'team', revisionId: 'r-1' });
+  });
+
+  it.each([
+    [
+      'failed verification',
+      { verification: { status: 'FAILED' } },
+      '2',
+      'ENVIRONMENT_REVISION_UNVERIFIED',
+    ],
+    ['no runtime', { runtimeArn: null }, '2', 'ENVIRONMENT_REVISION_INCOMPLETE'],
+    ['an unpublished revision', { status: 'READY' }, '2', 'ENVIRONMENT_NOT_PUBLISHED'],
+    ['an older compatibility version', {}, '4', 'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED'],
+  ])('rejects %s', async (_case, revision, compatibilityVersion, code) => {
+    vi.stubEnv('RUNTIME_COMPATIBILITY_VERSION', compatibilityVersion);
+    await expect(storeFor(revision).resolvePublishedEnvironment('team')).rejects.toMatchObject({
+      code,
+    });
+  });
+});

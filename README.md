@@ -52,7 +52,7 @@ When an agent session ends, the reasoning goes with it. Requirements sit in one 
 | [**Human approval gates**](https://aws-samples.github.io/sample-collaborative-ai-dlc/concepts/execution/#human-gates-park-and-resume)   | An ambiguous decision parks the run. The agent resumes only after a person answers in the UI — execution state is preserved, not restarted.    |
 | [**Real-time collaboration**](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/real-time-collaboration/)    | Any number of teammates can edit, discuss, and resolve the same intent at the same time. Presence and selections sync over Yjs and WebSockets. |
 | [**Requirement-to-code traceability**](https://aws-samples.github.io/sample-collaborative-ai-dlc/concepts/)                             | Typed graph relationships link requirements, questions, decisions, artifacts, and the code structure they produced.                            |
-| [**Cost and execution visibility**](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/intent-observability/) | Stage duration, sensor verdicts, token usage, and cost per stage, intent, and project — computed from live model pricing.                      |
+| [**Cost and execution visibility**](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/intent-observability/) | Stage duration, sensor verdicts, token usage, and cost per stage, intent, and space — computed from live model pricing.                        |
 
 <p align="center">
   <img src="docs/assets/readme/traceability-graph.png" alt="The intent graph: requirements, questions, decisions, and code structure linked by typed relationships around one intent" width="100%" />
@@ -123,7 +123,7 @@ Then configure agent credentials in **Admin → Agents** (a Bedrock API key for 
 
 ## How it works
 
-Work is organized around **intents**. An intent is a title and a prompt (a feature, a bugfix, a whole greenfield system) scoped to a project. Starting an intent executes a workflow whose stages progress through three phases: **Inception** (requirements, user stories, units of work), **Construction** (parallel per-unit implementation lanes), and **Delivery** (fan-in, build and test, pull request).
+Work is organized around **intents**. An intent is a title and a prompt (a feature, a bugfix, a whole greenfield system) scoped to a space. Starting an intent executes a workflow whose stages progress through three phases: **Inception** (requirements, user stories, units of work), **Construction** (parallel per-unit implementation lanes), and **Delivery** (fan-in, build and test, pull request).
 
 1. **Create an intent.** Write a prompt, or import a tracker issue (GitHub Issues, GitLab Issues, Jira Cloud). Pick a scope such as feature, bugfix, or greenfield.
 2. **Start it.** A durable orchestrator compiles the pinned workflow into an execution plan and walks its stages. Each stage runs a headless agent CLI in an isolated Bedrock AgentCore session; agents write typed artifacts into the graph through MCP tools, and the engine owns all git operations.
@@ -146,14 +146,14 @@ Full documentation lives at [aws-samples.github.io/sample-collaborative-ai-dlc](
 | [Methodology map](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/methodology-map/) | Upstream AI-DLC vocabulary mapped to platform concepts                      |
 | [Concepts](https://aws-samples.github.io/sample-collaborative-ai-dlc/concepts/)                               | Founding principles, lifecycle, execution model, workflows and blocks       |
 | [Architecture](https://aws-samples.github.io/sample-collaborative-ai-dlc/concepts/architecture/)              | Request path, agent runtime, data stores, end-to-end flow                   |
-| [Using the platform](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/projects/)  | Projects, intents, discussions, git integration, observability, settings    |
+| [Using the platform](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/projects/)  | Spaces, intents, discussions, git integration, observability, settings      |
 | [Testing guide](https://aws-samples.github.io/sample-collaborative-ai-dlc/development/testing/)               | AgentCore test project and credentialed agent E2E                           |
 
 ## Prerequisites
 
 | Tool                         | Version                                 |
 | ---------------------------- | --------------------------------------- |
-| Node.js                      | 22+                                     |
+| Node.js                      | 22.22+                                  |
 | Terraform                    | 1.7+                                    |
 | AWS CLI                      | v2                                      |
 | Docker                       | Recent stable                           |
@@ -361,7 +361,7 @@ In local/hybrid mode, the installer creates the first Cognito user and grants `p
 
 ### Provider OAuth apps
 
-The platform integrates with external providers as **code hosts** (GitHub, GitLab, Bitbucket, AWS CodeCommit) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud), so an intent can be started from a tracker issue. All providers are optional; skip any you don't need and the corresponding **Connect** buttons in the UI stay disabled. CodeCommit needs no OAuth app: a space connects an IAM role from the repository account that trusts the platform under a per-user external ID (see [docs/getting-started/setup.md](docs/getting-started/setup.md#codecommit-code-host)).
+The platform integrates with external providers as **code hosts** (GitHub, GitLab, Bitbucket, AWS CodeCommit) and **issue trackers** (GitHub Issues, GitLab Issues, Jira Cloud), so an intent can be started from a tracker issue. All providers are optional; skip any you don't need and the corresponding **Connect** buttons in the UI stay disabled. CodeCommit needs no OAuth app: a platform admin connects one IAM role from the repository account that trusts the platform under the deployment's external ID (see [docs/getting-started/setup.md](docs/getting-started/setup.md#codecommit-code-host)).
 
 For each provider you want to enable, register an OAuth app with it, then paste the credentials into **Admin → Trackers** (GitHub Issues, GitLab, Jira) or **Admin → Source Control** (Bitbucket, GitHub App) in the deployed app. For GitHub and GitLab a single OAuth app serves both the code host and that provider's issue tracker. Bitbucket registers a single OAuth app for repository access (code host only). Jira Cloud is a tracker only. Tracker integrations post delivery comments; GitHub and GitLab issues also close after all final delivery requests merge.
 
@@ -374,7 +374,7 @@ For each provider you want to enable, register an OAuth app with it, then paste 
 | Bitbucket    | `https://<your-app-domain>/bitbucket/callback`           | Account (Read, Email), Repositories (R/W), Pull requests (R/W)          |
 | Jira Cloud   | `https://<your-app-domain>/trackers/callback/jira-cloud` | `read:jira-work`, `read:jira-user`, `write:jira-work`, `offline_access` |
 
-GitHub also supports a **GitHub App** authentication type, configured independently in **Admin → Source Control → GitHub** with the App ID and private key; OAuth and App can be enabled simultaneously, and each project chooses its authentication type. Installation IDs are discovered per repository when a project is bound. See [Setup → Configure provider OAuth apps](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/setup/#configure-provider-oauth-apps) for the full step-by-step per provider, including GitHub App permissions and reauthorization notes.
+GitHub also supports a **GitHub App** authentication type, configured independently in **Admin → Source Control → GitHub** with the App ID and private key; OAuth and App can be enabled simultaneously, and each space chooses its authentication type. Installation IDs are discovered per repository when a space is bound. See [Setup → Configure provider OAuth apps](https://aws-samples.github.io/sample-collaborative-ai-dlc/getting-started/setup/#configure-provider-oauth-apps) for the full step-by-step per provider, including GitHub App permissions and reauthorization notes.
 
 You can rotate credentials later by entering new values into the same form; clicking **Save** overwrites the previously stored secret.
 
@@ -416,7 +416,7 @@ aws cognito-idp admin-add-user-to-group \
   --group-name platform-admin
 ```
 
-Group membership is read from the ID token, so users need to sign out and back in after being added. Once the first administrator exists, additional admins can be granted or revoked from the UI under **Admin → Users**. Day-to-day access to a project's intents, discussions, and settings is governed by per-project membership roles, not Cognito groups; see [Projects and settings](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/projects/).
+Group membership is read from the ID token, so users need to sign out and back in after being added. Once the first administrator exists, additional admins can be granted or revoked from the UI under **Admin → Users**. Day-to-day access to a space's intents, discussions, and settings is governed by per-space membership roles, not Cognito groups; see [Spaces and settings](https://aws-samples.github.io/sample-collaborative-ai-dlc/using-the-platform/projects/).
 
 ### Frontend deployment and local development
 
@@ -473,6 +473,18 @@ npm run secretlint       # scan the repo for committed secrets
 npm run audit:prod:all   # npm audit on production deps for root + frontend (high+ severity)
 npm run typecheck:frontend  # tsc -b on the frontend package
 ```
+
+Inspect cognitive complexity with the free SonarJS ESLint plugin:
+
+```bash
+npm run complexity          # advisory warnings for function scores above 15
+npm run complexity:compare  # compare origin/main's merge base with HEAD
+```
+
+CI combines complexity changes, backend/frontend branch coverage, and importer counts in one PR comment,
+helping reviewers find new or worsening complex functions and coverage regressions.
+These signals are advisory. See [PR quality reports](docs/development/pr-quality.md)
+for coverage details, thresholds, matching limits, and CI behavior.
 
 Analyze backend module coupling with [dependency-cruiser](https://github.com/sverweij/dependency-cruiser). The rules — no circular dependencies, no cross-workspace imports, `lambda/shared/` kept as a leaf foundation, and no production code importing test files — live in `.dependency-cruiser.cjs` and are enforced by the pre-commit hook and CI:
 

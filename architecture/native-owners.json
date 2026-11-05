@@ -117,24 +117,76 @@
   },
   "complexityExceptions": {
     "lambda/agentcore/commands/run-stage.js:/runStageAttempt:1": {
-      "maximum": 254,
-      "reason": "Inherited unchanged from main 1a5f8ae8; the merge-base score was 252. Preserve stage side-effect ordering during this merge; further complexity growth remains blocked."
+      "maximum": 255,
+      "reason": "Main 3f90d8ca contributes the managed behavior (score 255); feature 279104ef scored 254, combined 255. Preserve existing durable ordering and atomic ownership; no new native product behavior or further complexity growth is allowed."
     },
     "lambda/intents/index.js:/handler:1": {
-      "maximum": 557,
-      "reason": "Main 1a5f8ae8 adds 44 to the merge-base score of 507; the existing native branch adds 6. Preserve the native backend boundary and the upstream settings and gate contracts; further complexity growth remains blocked."
+      "maximum": 54,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 48); the combined score is 54. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
     },
     "lambda/shared/v2-process-store.js:/createProcessStore/updateExecution:1": {
-      "maximum": 81,
-      "reason": "Inherited unchanged from main 1a5f8ae8; the merge-base score was 72. Preserve atomic run/stage ownership conditions during this merge; further complexity growth remains blocked."
+      "maximum": 84,
+      "reason": "Main 3f90d8ca contributes the managed behavior (score 84); feature 279104ef scored 81, combined 84. Preserve existing durable ordering and atomic ownership; no new native product behavior or further complexity growth is allowed."
     },
     "lambda/v2-orchestrator/index.js:/handler:1": {
-      "maximum": 98,
-      "reason": "Main 1a5f8ae8 adds 7 to the merge-base score of 89; the existing native branch adds 2. Preserve durable replay names/order and gate recovery during this merge; further complexity growth remains blocked."
+      "maximum": 104,
+      "reason": "Main 3f90d8ca contributes the managed behavior (score 102); feature 279104ef scored 98, combined 104. Preserve existing durable ordering and atomic ownership; no new native product behavior or further complexity growth is allowed."
     },
     "lambda/v2-orchestrator/index.js:/handler/executeStage:1": {
       "maximum": 23,
       "reason": "Inherited unchanged from main 860cdc60. Preserve durable replay names/order and gate recovery during this merge; further complexity growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleUnitReviewFeedback:1": {
+      "maximum": 24,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 24); the combined score is 24. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleExportIntent:1": {
+      "maximum": 25,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 25); the combined score is 25. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleArtifactContentUpdate:1": {
+      "maximum": 25,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 25); the combined score is 25. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleGateAnswer:1": {
+      "maximum": 29,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 29); the combined score is 29. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleStartIntent:1": {
+      "maximum": 34,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 34); the combined score is 34. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleComposeIntent:1": {
+      "maximum": 47,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 47); the combined score is 47. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleUpdateIntent:1": {
+      "maximum": 49,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 49); the combined score is 49. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleRepairIntent:1": {
+      "maximum": 24,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 24); the combined score is 24. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleRewindIntent:1": {
+      "maximum": 37,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 37); the combined score is 37. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleRecomposeIntent:1": {
+      "maximum": 30,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 30); the combined score is 30. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/intents/index.js:/handleCreateIntent:1": {
+      "maximum": 86,
+      "reason": "Main 3f90d8ca extracts this route from the inline router (main score 86); the combined score is 86. Preserve its existing authorization, graph lifetime and command behavior during integration; further growth remains blocked."
+    },
+    "lambda/shared/v2-process-store.js:/createProcessStore/resetStageRow:1": {
+      "maximum": 22,
+      "reason": "Main 3f90d8ca contributes the managed behavior (score 22); feature 279104ef scored 21, combined 22. Preserve existing durable ordering and atomic ownership; no new native product behavior or further complexity growth is allowed."
+    },
+    "lambda/v2-orchestrator/index.js:/openIntentPrs:1": {
+      "maximum": 26,
+      "reason": "Main 3f90d8ca contributes the managed behavior (score 26); feature 279104ef scored 25, combined 26. Preserve existing durable ordering and atomic ownership; no new native product behavior or further complexity growth is allowed."
     }
   }
 }

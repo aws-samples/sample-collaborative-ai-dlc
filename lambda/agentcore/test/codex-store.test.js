@@ -103,6 +103,25 @@ describe('Codex rollout store', () => {
     expect(localFiles).toEqual([path.basename(restored)]);
   });
 
+  it('restores the latest token totals, ignoring later token-count events without info', async () => {
+    const { codexHome, durableHome, env } = await world();
+    const usage = { input_tokens: 100, output_tokens: 20, cached_input_tokens: 50 };
+    await putRollout({
+      home: durableHome,
+      threadId: 'thread-resume',
+      body: rolloutBody('thread-resume', [
+        {
+          type: 'event_msg',
+          payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 10 } } },
+        },
+        { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: usage } } },
+        { type: 'event_msg', payload: { type: 'token_count', info: null } },
+      ]),
+    });
+    const restored = await restoreCodexRollout({ codexHome, env, threadId: 'thread-resume' });
+    expect(restored).toMatchObject({ ok: true, usage });
+  });
+
   it('atomically persists only the selected rollout without replacing sibling sessions', async () => {
     const { codexHome, durableHome, env } = await world();
     const local = await putRollout({

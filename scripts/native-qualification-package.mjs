@@ -324,7 +324,7 @@ export async function downloadQualificationArtifact({ url, integrity, maxBytes, 
 }
 
 const linuxBindingName = '@rolldown/binding-linux-arm64-gnu';
-// Exact unpacked files from the package-lock SHA-512 verified 1.1.5 archive.
+// Exact unpacked files from the package-lock SHA-512 verified 1.2.15 archive.
 // Reusing a prepared directory must verify executable bytes, not only its label.
 const linuxBindingFiles = {
   'README.md': {
@@ -332,12 +332,12 @@ const linuxBindingFiles = {
     sha256: 'ac6d866d042c697683cb134124829f21b997f1dcf00dc69d33def096a3bb30b2',
   },
   'package.json': {
-    bytes: 816,
-    sha256: '6321e37fd886d191e1f0ce9e6478410b5c66a56a7594e0c063c7d6db4639523c',
+    bytes: 892,
+    sha256: 'a39e89532d75eb7e525fdcc4034e16cc895a6a7338875e1d275d063bc796ad1a',
   },
   'rolldown-binding.linux-arm64-gnu.node': {
-    bytes: 17249480,
-    sha256: '6755cfbd9ac1a01bf2c2bea157d0b477c5174e3991e2b2108053e30cdd5aa86c',
+    bytes: 17862304,
+    sha256: '1032f7a6c06f1f0899eb329d38a0b44064833fb010ae739e974a01165d748cdd',
   },
 };
 async function linuxBindingPin() {
@@ -346,7 +346,7 @@ async function linuxBindingPin() {
   assert.ok(
     pin?.integrity.startsWith('sha512-') && pin.resolved.startsWith('https://registry.npmjs.org/'),
   );
-  assert.equal(pin.version, '1.1.5', 'Update verified fixture byte pins when the lock changes');
+  assert.equal(pin.version, '1.2.15', 'Update verified fixture byte pins when the lock changes');
   return pin;
 }
 

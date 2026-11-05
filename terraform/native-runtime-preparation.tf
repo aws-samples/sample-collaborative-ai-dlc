@@ -63,11 +63,13 @@ import {
 }
 
 module "native_runs" {
-  native_repair_table_name = module.dynamodb.native_repair_table_name
-  native_repair_table_arn  = module.dynamodb.native_repair_table_arn
-  native_operations        = var.native_operations
-  source                   = "./modules/compute/native-runs"
-  count                    = var.native_services_enabled ? 1 : 0
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
+  native_repair_table_name     = module.dynamodb.native_repair_table_name
+  native_repair_table_arn      = module.dynamodb.native_repair_table_arn
+  native_operations            = var.native_operations
+  source                       = "./modules/compute/native-runs"
+  count                        = var.native_services_enabled ? 1 : 0
 
   project_name                        = var.project_name
   environment                         = var.environment

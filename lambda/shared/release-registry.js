@@ -696,6 +696,10 @@ const registerCustomRelease = async ({
 // are each classified in their own right, three approximated and judged by annex
 // reach, eleven refused. A list stored by the previous build therefore looks
 // current at revision 5 while still holding blockers this build has answered.
+// Revision 7 classifies AI-DLC 2.11.1's `sensor-<id> --stage` (a sensor run on
+// request from stage prose), which an earlier build stored as an unknown,
+// unannexed family under the bare command — so a record registered before it
+// keeps refusing promotion until its list is recomputed.
 // Promotion therefore re-evaluates such a list from the immutable closure,
 // exactly like a record with no list at all. Other readers (the intent-creation
 // eligibility check) keep using the stored list: a record can only be selected
@@ -704,7 +708,7 @@ const registerCustomRelease = async ({
 // Bump this with EVERY change to what the evidence collector decides. Without
 // it, eligibility would depend on when a record was registered or last
 // refreshed rather than on its immutable closure and this runtime.
-const FIDELITY_EVIDENCE_REVISION = 6;
+const FIDELITY_EVIDENCE_REVISION = 7;
 
 const hasCurrentFidelityEvidence = (release) =>
   Array.isArray(release.fidelityGaps) &&

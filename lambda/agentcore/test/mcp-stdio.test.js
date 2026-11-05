@@ -345,13 +345,13 @@ describe('MCP stdio transport', () => {
     await client.connect(transport);
     expect((await client.listTools()).tools.length).toBeGreaterThan(0);
     const call = await client.callTool({
-      name: 'collect_metric',
-      arguments: { metrics: { tokensInput: 1 } },
+      name: 'get_intent_graph',
+      arguments: {},
     });
     expect(call.isError).not.toBe(true);
     expect(protocolErrors).toEqual([]);
     expect(stderr.join('')).toContain('[agentcore-mcp] connected');
-    expect(stderr.join('')).toContain('[mcp-trace] collect_metric');
+    expect(stderr.join('')).toContain('[mcp-trace] get_intent_graph');
   }, 10_000);
 
   it('recovers before exposing tools and keeps retry diagnostics on stderr', async () => {
@@ -408,9 +408,6 @@ describe('MCP stdio transport', () => {
       DYNAMODB_LOCAL_ENDPOINT: 'http://127.0.0.1:9',
     });
     await client.connect(transport);
-    expect((await client.listTools()).tools.map((tool) => tool.name)).not.toContain(
-      'collect_metric',
-    );
     expect((await client.callTool({ name: 'get_intent_graph', arguments: {} })).isError).not.toBe(
       true,
     );

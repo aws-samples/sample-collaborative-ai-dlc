@@ -38,6 +38,8 @@ import {
 import { ensureWorkspaceSource as defaultEnsureWorkspaceSource } from '../workspace.js';
 import { getDriver, selectCli } from '../cli/drivers.js';
 import { runChild as defaultRunChild } from '../cli/spawn.js';
+import { createCliOutputSink } from '../output-normalizer.js';
+import { createUsageRecorder } from '../cli/usage-recorder.js';
 import { resolveStageModel } from '../model-resolver.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
@@ -269,6 +271,16 @@ const resolveConflictImplementation = async (
       invocation = driver.buildInvocation({ prompt, model, allowedTools: [], mcpConfigPath });
     }
     let result;
+    const usage = createUsageRecorder({
+      store,
+      scope: { executionId, stageInstanceId: scope.stageInstanceId, unitSlug, sectionIndex },
+      model,
+      publish,
+      env,
+      workspaceDir,
+      spawnFn,
+    });
+    const output = createCliOutputSink({ cli, emit: () => {}, onUsage: usage.onUsage });
     const execute = () =>
       runChild({
         command: invocation.command,
@@ -278,6 +290,7 @@ const resolveConflictImplementation = async (
         prompt,
         promptViaStdin: invocation.promptViaStdin,
         spawnFn,
+        onStdout: (chunk) => output.write(chunk),
       });
     try {
       result =
@@ -287,6 +300,8 @@ const resolveConflictImplementation = async (
       await abortAll(conflictedByRepo, dirFor);
       return { ok: false, reason: 'cli_error', detail: e.message };
     } finally {
+      output.flush();
+      await usage.flush();
       if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
       if (cli === 'codex') {
         await cleanupCodexHome({ codexHome, env }).catch(() => false);

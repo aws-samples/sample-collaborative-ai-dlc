@@ -39,6 +39,8 @@ import {
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import { getProvider, KNOWN_PROVIDERS, ProviderError } from './providers/index.js';
+import { jiraBindingContext, prepareJiraDelegation, writeJiraBinding } from './jira-binding.js';
+import { invalidateTrackerBindingsByDelegator } from '../shared/tracker-binding-delegation.js';
 import { createDeliverySynchronizer } from './delivery-sync.js';
 import {
   buildAuthorizeUrl,
@@ -49,6 +51,7 @@ import {
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
+const { cardinality } = gremlin.process;
 
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const ssm = new SSMClient({});
@@ -352,6 +355,24 @@ const graphTraversal = (conn) => {
   return g;
 };
 
+export const bindingContext = (g, projectId, binding) => ({
+  ddb,
+  ssm,
+  secrets,
+  ...(binding.provider === 'jira-cloud'
+    ? jiraBindingContext({ g, ddb, projectId, binding })
+    : {
+        sourceControl: ({ repository, operation, args }) =>
+          invokeProjectSourceControl({
+            projectId,
+            trackerProvider: binding.provider,
+            repository,
+            operation,
+            args,
+          }),
+      }),
+});
+
 const runTrackerDeliveryMaintenance = async (event = {}) => {
   const conn = await getConnection();
   try {
@@ -360,27 +381,7 @@ const runTrackerDeliveryMaintenance = async (event = {}) => {
       store: processStore,
       resolveBinding: (projectId, bindingId) => fetchBinding(g, projectId, bindingId),
       getTrackerProvider: getProvider,
-      trackerContext: (projectId, binding) => {
-        const gitProvider = trackerGitProvider(binding.provider);
-        return {
-          ddb,
-          ssm,
-          secrets,
-          userId: binding.createdBy,
-          ...(gitProvider
-            ? {
-                sourceControl: ({ repository, operation, args }) =>
-                  invokeProjectSourceControl({
-                    projectId,
-                    trackerProvider: binding.provider,
-                    repository,
-                    operation,
-                    args,
-                  }),
-              }
-            : {}),
-        };
-      },
+      trackerContext: (projectId, binding) => bindingContext(g, projectId, binding),
       getPullRequestStatus: ({ projectId, provider, repository, number }) => {
         if (!provider || !repository || number === null || number === undefined) {
           throw new ProviderError(400, 'Final pull request identity is incomplete');
@@ -508,6 +509,16 @@ const disconnectTracker = async (response, userId, provider, instance) => {
     return response(200, { success: true });
   }
   if (provider === 'jira-cloud' && instance === 'cloud') {
+    const conn = await getConnection();
+    try {
+      await invalidateTrackerBindingsByDelegator(
+        graphTraversal(conn),
+        userId,
+        'oauth_disconnected',
+      );
+    } finally {
+      await conn.close();
+    }
     const { Item } = await ddb.send(
       new GetCommand({
         TableName: process.env.TRACKER_CONNECTIONS_TABLE,
@@ -579,7 +590,7 @@ export const handler = async (event, context) => {
         if (path.includes('/trackers/auth/')) {
           if (!userId) return response(401, { error: 'Unauthorized' });
           const { clientId, clientSecret } = await getJiraOAuthCredentials();
-          const state = signEnvelope({ userId, ts: Date.now() }, clientSecret);
+          const state = signEnvelope({ userId, clientId, ts: Date.now() }, clientSecret);
           const url = buildAuthorizeUrl({
             clientId,
             redirectUri: process.env.JIRA_REDIRECT_URI,
@@ -593,7 +604,10 @@ export const handler = async (event, context) => {
         if (!state) return response(400, { error: 'Missing state parameter' });
         const { clientId, clientSecret } = await getJiraOAuthCredentials();
         const statePayload = verifyEnvelope(decodeURIComponent(state), clientSecret);
-        if (!statePayload?.userId) {
+        if (
+          !statePayload?.userId ||
+          (statePayload.clientId && statePayload.clientId !== clientId)
+        ) {
           return response(400, { error: 'Invalid or expired state' });
         }
         const tokens = await exchangeCode({
@@ -611,6 +625,7 @@ export const handler = async (event, context) => {
             ddb,
             ssm,
             userId: statePayload.userId,
+            clientId,
             resource: resources[0],
             tokens,
           });
@@ -621,6 +636,7 @@ export const handler = async (event, context) => {
         const ticket = signEnvelope(
           {
             userId: statePayload.userId,
+            clientId,
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
             expiresIn: tokens.expiresIn,
@@ -670,9 +686,13 @@ export const handler = async (event, context) => {
       if (!data.ticket || !data.cloudId) {
         return response(400, { error: 'ticket and cloudId are required' });
       }
-      const { clientSecret } = await getJiraOAuthCredentials();
+      const { clientId, clientSecret } = await getJiraOAuthCredentials();
       const ticketPayload = verifyEnvelope(data.ticket, clientSecret);
-      if (!ticketPayload?.userId || ticketPayload.userId !== userId) {
+      if (
+        !ticketPayload?.userId ||
+        ticketPayload.userId !== userId ||
+        ticketPayload.clientId !== clientId
+      ) {
         return response(400, { error: 'Invalid or expired ticket' });
       }
       const resources = await listAccessibleResources(ticketPayload.accessToken);
@@ -684,6 +704,7 @@ export const handler = async (event, context) => {
         ddb,
         ssm,
         userId,
+        clientId,
         resource: chosen,
         tokens: {
           accessToken: ticketPayload.accessToken,
@@ -881,6 +902,38 @@ export const handler = async (event, context) => {
         return handleProviderError(response, err);
       }
 
+      let existing;
+      if (data.bindingId) {
+        existing = await fetchBinding(g, projectId, data.bindingId);
+        if (!existing) return response(404, { error: 'Binding not found' });
+        if (provider !== 'jira-cloud') {
+          return response(400, { error: 'Reconnection must preserve the bound Jira project' });
+        }
+      }
+
+      if (provider === 'jira-cloud') {
+        try {
+          const delegation = await prepareJiraDelegation({
+            existing,
+            data,
+            userId,
+            ddb,
+            ssm,
+            secrets,
+          });
+          const binding = await writeJiraBinding(g, {
+            projectId,
+            existing,
+            data,
+            userId,
+            delegation,
+          });
+          return response(existing ? 200 : 201, binding);
+        } catch (err) {
+          return handleProviderError(response, err);
+        }
+      }
+
       // Git-backed trackers use the project binding, not the caller's personal
       // connection. The read probe also rejects repositories not on the project.
       if (provider === 'github-issues') {
@@ -905,16 +958,6 @@ export const handler = async (event, context) => {
         } catch (err) {
           return handleProviderError(response, err);
         }
-      } else if (provider === 'jira-cloud') {
-        const { Item } = await ddb.send(
-          new GetCommand({
-            TableName: process.env.TRACKER_CONNECTIONS_TABLE,
-            Key: { userId, providerInstance: `${provider}#${instance}` },
-          }),
-        );
-        if (!Item) {
-          return response(400, { error: 'Jira Cloud not connected' });
-        }
       }
 
       const id = randomUUID();
@@ -924,13 +967,13 @@ export const handler = async (event, context) => {
         .has('Project', 'id', projectId)
         .as('p')
         .addV('TrackerBinding')
-        .property('id', id)
-        .property('provider', provider)
-        .property('instance', instance)
-        .property('external_project_key', externalProjectKey)
-        .property('display_name', displayName)
-        .property('created_at', createdAt)
-        .property('created_by', userId)
+        .property(cardinality.single, 'id', id)
+        .property(cardinality.single, 'provider', provider)
+        .property(cardinality.single, 'instance', instance)
+        .property(cardinality.single, 'external_project_key', externalProjectKey)
+        .property(cardinality.single, 'display_name', displayName)
+        .property(cardinality.single, 'created_at', createdAt)
+        .property(cardinality.single, 'created_by', userId)
         .as('b')
         .addE('HAS_TRACKER')
         .from_('p')
@@ -987,25 +1030,7 @@ export const handler = async (event, context) => {
       return handleProviderError(response, err);
     }
 
-    const gitProvider = trackerGitProvider(binding.provider);
-    const ctx = {
-      ddb,
-      ssm,
-      secrets,
-      userId,
-      ...(gitProvider
-        ? {
-            sourceControl: ({ repository, operation, args }) =>
-              invokeProjectSourceControl({
-                projectId,
-                trackerProvider: binding.provider,
-                repository,
-                operation,
-                args,
-              }),
-          }
-        : {}),
-    };
+    const ctx = bindingContext(g, projectId, binding);
 
     try {
       const resourceId = pathParameters.resourceId;
@@ -1053,6 +1078,12 @@ export const handler = async (event, context) => {
           // Cursor for providers (Jira Cloud since CHANGE-2046) that require
           // it; ignored by GitHub which uses page-number pagination.
           pageToken: queryStringParameters?.pageToken,
+          // Issue-type filter (Jira Cloud only: Epic, Story, Idea, ...).
+          type: queryStringParameters?.type,
+          // Children of this issue (Jira Cloud only).
+          parent: queryStringParameters?.parent,
+          // Ask for the project's issue types alongside the first page.
+          withTypes: queryStringParameters?.withTypes,
         };
         const issues = await provider.listIssues(ctx, binding.externalProjectKey, options);
         return response(200, issues);

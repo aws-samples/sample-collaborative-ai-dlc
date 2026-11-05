@@ -10,8 +10,12 @@ const build = vi.fn();
 const retry = vi.fn();
 const acceptFindings = vi.fn();
 const recommend = vi.fn();
+const capabilities = vi.fn();
 
 vi.mock('@/services/environments', () => ({
+  environmentsService: {
+    capabilities: (...args: unknown[]) => capabilities(...args),
+  },
   toolsService: {
     list: (...args: unknown[]) => list(...args),
     create: (...args: unknown[]) => create(...args),
@@ -26,6 +30,7 @@ vi.mock('@/services/environments', () => ({
 }));
 
 import { ToolsRegistry } from './ToolsRegistry';
+import { rustInstallerScript } from './tool-presets';
 import { ApiError } from '@/services/api';
 
 const publishedVersion = {
@@ -91,6 +96,7 @@ describe('ToolsRegistry', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    capabilities.mockResolvedValue({ instancesCompute: false, amd64CoreImage: false });
     list.mockResolvedValue([]);
     create.mockImplementation(async (input: { name: string }) => ({
       toolId: input.name === '.NET SDK' ? 'dotnet-sdk' : 'rust-toolchain',
@@ -655,5 +661,196 @@ describe('ToolsRegistry', () => {
       await screen.findByText('Publish and recommend Java JDK before building this version.'),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Build' })).toBeDisabled();
+  });
+
+  describe('x86_64 builds', () => {
+    const x86Version = {
+      ...publishedVersion,
+      versionId: 'tv-go-1-x86',
+      definition: {
+        ...publishedVersion.definition,
+        architecture: 'x86_64' as const,
+        source: { type: 'https' as const, url: 'https://go.dev/dl/go1.24.6.linux-amd64.tar.gz' },
+      },
+    };
+
+    it('hides x86_64 authoring when the deployment has no amd64 core', async () => {
+      list.mockResolvedValue([goTool]);
+      render(<ToolsRegistry />);
+      await screen.findByRole('button', { name: 'Make recommended' });
+      expect(screen.queryByRole('button', { name: 'Add x86_64 build' })).not.toBeInTheDocument();
+    });
+
+    it('prefills an x86_64 build of the selected version with a fresh download', async () => {
+      const user = userEvent.setup();
+      capabilities.mockResolvedValue({ instancesCompute: true, amd64CoreImage: true });
+      list.mockResolvedValue([goTool]);
+      createVersion.mockResolvedValue({ tool: goTool, version: x86Version });
+      build.mockResolvedValue({});
+
+      render(<ToolsRegistry />);
+      await user.click(await screen.findByRole('button', { name: 'Add x86_64 build' }));
+
+      expect(screen.getByLabelText('Linux x86_64 download URL')).toHaveValue('');
+      await user.type(
+        screen.getByLabelText('Linux x86_64 download URL'),
+        'https://go.dev/dl/go1.24.6.linux-amd64.tar.gz',
+      );
+      await user.click(screen.getByRole('button', { name: /build/i, hidden: false }));
+
+      expect(createVersion).toHaveBeenCalledWith(
+        'go',
+        expect.objectContaining({
+          version: '1.24.6',
+          architecture: 'x86_64',
+          source: expect.objectContaining({
+            url: 'https://go.dev/dl/go1.24.6.linux-amd64.tar.gz',
+          }),
+        }),
+      );
+    });
+
+    const rustArm64Version = {
+      ...publishedVersion,
+      toolId: 'rust',
+      versionId: 'tv-rust-1',
+      definition: {
+        ...publishedVersion.definition,
+        version: '1.89.0',
+        source: {
+          type: 'https' as const,
+          url: 'https://static.rust-lang.org/dist/rust-1.89.0-aarch64-unknown-linux-gnu.tar.gz',
+        },
+        installer: { mode: 'script' as const, script: rustInstallerScript('arm64') },
+        executables: [{ name: 'rustc', path: 'bin/rustc' }],
+        aptPackages: [{ name: 'build-essential', version: '12.9' }],
+        environmentVariables: {},
+        verification: {
+          preset: 'rust' as const,
+          versionCommand: { argv: ['rustc', '--version'], expected: '1.89.0' },
+          script: '',
+          files: [],
+        },
+      },
+    };
+    const rustTool = {
+      ...goTool,
+      toolId: 'rust',
+      name: 'Rust Toolchain',
+      publisher: 'The Rust Project',
+      recommendedVersionId: 'tv-rust-1',
+      versions: [rustArm64Version],
+    };
+    const submittedScript = () => {
+      const definition = createVersion.mock.calls.at(-1)?.[1] as {
+        installer: { mode: string; script: string };
+      };
+      expect(definition.installer.mode).toBe('script');
+      return definition.installer.script;
+    };
+
+    it('switches the Rust preset installer to the x86_64 triple with the architecture', async () => {
+      const user = userEvent.setup();
+      capabilities.mockResolvedValue({ instancesCompute: true, amd64CoreImage: true });
+      render(<ToolsRegistry />);
+
+      await user.click(await screen.findByRole('button', { name: 'New tool family' }));
+      await user.type(screen.getByLabelText('Name'), 'Rust Toolchain');
+      await user.type(screen.getByLabelText('Exact version'), '1.89.0');
+      await user.click(screen.getByLabelText('Tool type'));
+      await user.click(await screen.findByRole('option', { name: 'Rust toolchain' }));
+      await user.click(screen.getByLabelText('Architecture'));
+      await user.click(await screen.findByRole('option', { name: /^x86_64/ }));
+      await user.type(
+        screen.getByLabelText('Linux x86_64 download URL'),
+        'https://static.rust-lang.org/dist/rust-1.89.0-x86_64-unknown-linux-gnu.tar.gz',
+      );
+      await user.click(screen.getByRole('button', { name: 'Create and start build' }));
+
+      const script = submittedScript();
+      expect(script).toContain('x86_64-unknown-linux-gnu');
+      expect(script).not.toContain('aarch64');
+      expect(script).toBe(rustInstallerScript('x86_64'));
+    });
+
+    it('uses the x86_64 Rust installer for Add x86_64 build of an arm64 version', async () => {
+      const user = userEvent.setup();
+      capabilities.mockResolvedValue({ instancesCompute: true, amd64CoreImage: true });
+      list.mockResolvedValue([rustTool]);
+      createVersion.mockResolvedValue({
+        tool: rustTool,
+        version: { ...rustArm64Version, versionId: 'tv-rust-1-x86', status: 'DRAFT' },
+      });
+
+      render(<ToolsRegistry />);
+      await user.click(await screen.findByRole('button', { name: 'Add x86_64 build' }));
+      await user.type(
+        screen.getByLabelText('Linux x86_64 download URL'),
+        'https://static.rust-lang.org/dist/rust-1.89.0-x86_64-unknown-linux-gnu.tar.gz',
+      );
+      await user.click(screen.getByRole('button', { name: /build/i, hidden: false }));
+
+      expect(createVersion).toHaveBeenCalledWith(
+        'rust',
+        expect.objectContaining({ version: '1.89.0', architecture: 'x86_64' }),
+      );
+      const script = submittedScript();
+      expect(script).toContain('x86_64-unknown-linux-gnu');
+      expect(script).not.toContain('aarch64');
+    });
+
+    it('keeps a hand-edited installer script on Add x86_64 build', async () => {
+      const user = userEvent.setup();
+      capabilities.mockResolvedValue({ instancesCompute: true, amd64CoreImage: true });
+      const customScript = '#!/usr/bin/env bash\nset -e\n./custom-install.sh "$TOOL_OUTPUT"\n';
+      const customVersion = {
+        ...rustArm64Version,
+        definition: {
+          ...rustArm64Version.definition,
+          installer: { mode: 'script' as const, script: customScript },
+        },
+      };
+      const tool = { ...rustTool, versions: [customVersion] };
+      list.mockResolvedValue([tool]);
+      createVersion.mockResolvedValue({
+        tool,
+        version: { ...customVersion, versionId: 'tv-rust-1-x86', status: 'DRAFT' },
+      });
+
+      render(<ToolsRegistry />);
+      await user.click(await screen.findByRole('button', { name: 'Add x86_64 build' }));
+      await user.type(
+        screen.getByLabelText('Linux x86_64 download URL'),
+        'https://static.rust-lang.org/dist/rust-1.89.0-x86_64-unknown-linux-gnu.tar.gz',
+      );
+      await user.click(screen.getByRole('button', { name: /build/i, hidden: false }));
+
+      expect(submittedScript()).toBe(customScript);
+    });
+
+    it('recommends per architecture without touching the arm64 recommendation', async () => {
+      const user = userEvent.setup();
+      capabilities.mockResolvedValue({ instancesCompute: true, amd64CoreImage: true });
+      const tool = {
+        ...goTool,
+        recommendedVersionId: 'tv-go-1',
+        recommendedX86_64VersionId: null,
+        versions: [x86Version, publishedVersion],
+      };
+      list.mockResolvedValue([tool]);
+      recommend.mockResolvedValue({ tool });
+
+      render(<ToolsRegistry />);
+      // The x86_64 build is not the arm64 recommendation, so it can be made
+      // the x86_64 recommendation (not "replaced").
+      await user.click(await screen.findByRole('button', { name: 'Make recommended' }));
+      expect(
+        within(screen.getByRole('alertdialog')).getByText(/x86_64 default/),
+      ).toBeInTheDocument();
+      await user.click(
+        within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Make recommended' }),
+      );
+      expect(recommend).toHaveBeenCalledWith('go', 'tv-go-1-x86');
+    });
   });
 });

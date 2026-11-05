@@ -116,7 +116,7 @@ beforeEach(async () => {
       }
       if (mode === 'unknown') await writeFile(${JSON.stringify(`${nativeIntentPath}/.aidlc-engine/active-directive.json`)}, '{"version":999}');
       console.log(JSON.stringify({type:'item.completed',item:{id:'answer',type:'agent_message',text:'Here is the proposal. Which option do you prefer?'}}));
-      console.log(JSON.stringify({type:'turn.completed',usage:{}}));
+      console.log(JSON.stringify({type:'turn.completed',usage:mode === 'usage' ? {input_tokens:1000,output_tokens:20} : {}}));
     }
   `,
   );
@@ -743,6 +743,21 @@ describe('native first-turn executor', () => {
       code: 'native_execution_cancelled',
     });
     expect(ports.prepareContinuation).not.toHaveBeenCalled();
+  });
+
+  it('reports fresh Codex usage but does not attribute cumulative resumed usage to the next turn', async () => {
+    const { executor, request } = make({ mode: 'usage' });
+    await executor.start(request);
+    const first = await executor.settle();
+    const activity = await executor.activity({ ...request, after: 0 });
+    expect(JSON.stringify(activity.events)).toContain('input tokens: 1000');
+    await executor.continue(reply(request, first));
+    expect(await executor.settle()).toMatchObject({ status: 'publication_ready', sequence: 2 });
+    const resumed = await executor.activity({ ...request, after: activity.last });
+    const text = JSON.stringify(resumed.events);
+    expect(text).toContain('Usage and cost unavailable');
+    expect(text).not.toContain('input tokens: 1000');
+    expect(resumed.events.every((event) => event.sequence === 2)).toBe(true);
   });
 
   it('continues serially in the same session and workspace with immutable prior receipts', async () => {

@@ -5,6 +5,7 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { buildResponse } from '../shared/response.js';
 import { logSafeEventIfEnabled } from '../shared/safe-event-logger.js';
+import { invalidateTrackerBindingsByDelegator } from '../shared/tracker-binding-delegation.js';
 import { invalidateProjectBindingsByDelegator } from '../shared/source-control-bindings.js';
 import { Logger } from '@aws-lambda-powertools/logger';
 
@@ -297,6 +298,7 @@ export const handler = async (event, context) => {
           }
         }
 
+        await invalidateTrackerBindingsByDelegator(g, targetUserId, 'delegator_removed', projectId);
         await invalidateProjectBindingsByDelegator(
           ddb,
           projectId,

@@ -46,6 +46,21 @@ output "github_app_config_param_arn" {
   value = aws_ssm_parameter.github_app_config.arn
 }
 
+output "codecommit_connection_param_name" {
+  value = aws_ssm_parameter.codecommit_connection.name
+}
+
+output "codecommit_connection_param_arn" {
+  value = aws_ssm_parameter.codecommit_connection.arn
+}
+
+# "aidlc:<uuid>" — the platform external ID the tenant names in the trust
+# policy of their repository access role. Consumed by the codecommit,
+# source-control and credential-broker Lambda env (CODECOMMIT_EXTERNAL_ID).
+output "codecommit_external_id" {
+  value = "aidlc:${random_uuid.codecommit_external_id.result}"
+}
+
 output "git_connections_table_name" {
   value = aws_dynamodb_table.git_connections.name
 }

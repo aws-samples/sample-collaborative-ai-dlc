@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   artifactImpact: vi.fn(),
   verifyArtifact: vi.fn(),
   startQuorumEdit: vi.fn(),
+  graph: vi.fn(),
   questionSubmit: undefined as undefined | ((answer: unknown) => Promise<void>),
 }));
 vi.mock('@/contexts/IntentContext', async (importOriginal) => ({
@@ -27,6 +28,7 @@ vi.mock('@/services/intents', () => ({
     artifactImpact: mocks.artifactImpact,
     verifyArtifact: mocks.verifyArtifact,
     startQuorumEdit: mocks.startQuorumEdit,
+    graph: mocks.graph,
   },
 }));
 vi.mock('@/components/discussion/DiscussButton', () => ({
@@ -106,6 +108,7 @@ beforeEach(() => {
   mocks.artifactImpact.mockResolvedValue({ consumingStages: [], downstream: [] });
   mocks.verifyArtifact.mockResolvedValue({});
   mocks.startQuorumEdit.mockResolvedValue({});
+  mocks.graph.mockResolvedValue({ nodes: [], edges: [] });
   setExecution();
 });
 

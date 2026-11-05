@@ -94,6 +94,7 @@ const ERRORS = {
   NATIVE_EXECUTION_IMAGE_UNAPPROVED: [409, 'The runtime image is no longer approved'],
   NATIVE_EXECUTION_CONFIG_INVALID: [409, 'Native execution configuration is invalid'],
   NATIVE_EXECUTION_CONFIG_UNAVAILABLE: [503, 'Native execution configuration is unavailable'],
+  agent_cli_disabled: [400, 'The selected agent CLI is disabled by the platform administrator'],
   NATIVE_EXECUTION_CONFIG_NOT_READY: [409, 'Prepare the native workspace before starting'],
   NATIVE_EXECUTION_CONFIG_PROMPT_REQUIRED: [409, 'Add a prompt before starting native execution'],
   NATIVE_EXECUTION_CONFIG_PROJECT_CHANGED: [409, 'The project changed; reload before starting'],
@@ -351,11 +352,14 @@ export const createNativeRuntimeApi = ({
         nextCursor: page.nextCursor,
       });
     }
+    const unavailableHarnesses = execution?.availability
+      ? await execution.availability()
+      : nativeUnavailableHarnesses;
     await recheck();
     return response(200, {
       preparationEnabled: admissionEnabled === true,
       executionEnabled: execution?.enabled === true,
-      unavailableHarnesses: nativeUnavailableHarnesses,
+      unavailableHarnesses,
     });
   };
   const createDraft = async (context) => {

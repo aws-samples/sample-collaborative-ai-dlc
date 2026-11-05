@@ -11,11 +11,16 @@ const update = vi.fn();
 const acceptFindings = vi.fn();
 const rebuild = vi.fn();
 const capabilities = vi.fn();
+const getDefault = vi.fn();
+const setDefault = vi.fn();
+const retire = vi.fn();
 
 vi.mock('@/services/environments', () => ({
   environmentsService: {
     list: (...args: unknown[]) => list(...args),
     capabilities: (...args: unknown[]) => capabilities(...args),
+    getDefault: (...args: unknown[]) => getDefault(...args),
+    setDefault: (...args: unknown[]) => setDefault(...args),
     get: (...args: unknown[]) => get(...args),
     build: (...args: unknown[]) => build(...args),
     create: (...args: unknown[]) => create(...args),
@@ -25,7 +30,7 @@ vi.mock('@/services/environments', () => ({
     publish: vi.fn(),
     rebuild: (...args: unknown[]) => rebuild(...args),
     rebuildAll: vi.fn(),
-    retire: vi.fn(),
+    retire: (...args: unknown[]) => retire(...args),
   },
   toolsService: {
     list: (...args: unknown[]) => listTools(...args),
@@ -263,6 +268,7 @@ describe('EnvironmentsTab', () => {
       combinations: [{ type: 'microvms', architecture: 'arm64', available: true }],
     });
     listTools.mockResolvedValue([javaTool]);
+    getDefault.mockResolvedValue({ environmentId: 'standard', updatedAt: null, updatedBy: null });
     get.mockImplementation(async (environmentId: string) =>
       environmentId === 'standard'
         ? standardDetail
@@ -889,5 +895,74 @@ describe('EnvironmentsTab', () => {
     expect(await screen.findByText(/This fixed-tool environment is read-only/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retire' })).toBeInTheDocument();
     expect(screen.queryByText(/Reset/)).not.toBeInTheDocument();
+  });
+
+  describe('default environment for new spaces', () => {
+    const teamBase = {
+      ...custom,
+      environmentId: 'team-base',
+      name: 'Team Base',
+      status: 'PUBLISHED',
+      currentRevisionId: 'r-2',
+      publishedRevisionId: 'r-2',
+    };
+    const teamBaseRevision = {
+      ...revision,
+      environmentId: 'team-base',
+      revisionId: 'r-2',
+      status: 'PUBLISHED',
+    };
+
+    beforeEach(() => {
+      list.mockResolvedValue([teamBase, standard]);
+      get.mockImplementation(async (environmentId: string) =>
+        environmentId === 'standard'
+          ? standardDetail
+          : {
+              environment: teamBase,
+              revisions: [teamBaseRevision],
+              publishedRevision: teamBaseRevision,
+            },
+      );
+    });
+
+    it('sets a published environment as the default after confirmation', async () => {
+      const user = userEvent.setup();
+      setDefault.mockResolvedValue({
+        environmentId: 'team-base',
+        updatedAt: null,
+        updatedBy: null,
+      });
+      render(<EnvironmentsTab />);
+
+      await user.click(await screen.findByRole('button', { name: 'Set as default' }));
+      const dialog = await screen.findByRole('alertdialog');
+      expect(within(dialog).getByText('Use Team Base for new spaces?')).toBeInTheDocument();
+      await user.click(within(dialog).getByRole('button', { name: 'Set as default' }));
+
+      await waitFor(() => expect(setDefault).toHaveBeenCalledWith('team-base'));
+    });
+
+    it('marks the default and will not retire it', async () => {
+      getDefault.mockResolvedValue({
+        environmentId: 'team-base',
+        updatedAt: null,
+        updatedBy: null,
+      });
+      render(<EnvironmentsTab />);
+
+      expect(await screen.findByText('Default for new spaces')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Set as default' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Retire/ })).toBeDisabled();
+      expect(retire).not.toHaveBeenCalled();
+    });
+
+    it('offers no default action while the setting is unavailable', async () => {
+      getDefault.mockRejectedValue(new Error('Forbidden'));
+      render(<EnvironmentsTab />);
+
+      expect(await screen.findByRole('button', { name: /Retire/ })).toBeEnabled();
+      expect(screen.queryByRole('button', { name: 'Set as default' })).not.toBeInTheDocument();
+    });
   });
 });

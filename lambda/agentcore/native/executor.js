@@ -786,6 +786,10 @@ export const createNativeExecutor = ({
       sequence: turn.report.sequence,
       harness: configuration.harness,
       model: configuration.model,
+      // Native does not retain a trusted cumulative usage baseline. A resumed
+      // Codex thread therefore has unknown per-turn usage; fresh sessions start
+      // at zero, including explicitly confirmed fresh-session EFS recovery.
+      usageBaseline: continuing ? null : undefined,
       forbiddenBytes,
       signal,
       onObservation: (boundary, counts) => timing(turn, boundary, counts),

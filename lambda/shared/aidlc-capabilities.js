@@ -120,6 +120,8 @@ const ANNEX_HANDLED_ENGINE_COMMANDS = Object.freeze(
     'engine log answer',
     'engine log decision',
     'engine orchestrate next',
+    // AI-DLC 2.11.1: build-and-test's cross-unit coverage gate.
+    'engine sensor-<id> --stage',
     'engine state set-construction-execution',
     'engine state set-construction-verification-command',
     'engine testing-posture restore',

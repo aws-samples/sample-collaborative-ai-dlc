@@ -16,6 +16,7 @@
 
 import { releaseSession, stopSession } from '../../shared/runtime-session.js';
 import { WORKSPACE_VOLUME_NAME, ensureCapacityProvider } from './capacity-provider.js';
+import { codeBuildOverridesFor } from '../build-fleet.js';
 
 // Invoke errors that mean "the instance is still coming up" rather than "the
 // runtime is broken". The poller adds its own control-plane transients.
@@ -34,13 +35,7 @@ export const createInstancesBackend = ({ architecture = 'x86_64' } = {}) => ({
     platform: architecture === 'x86_64' ? 'linux/amd64' : 'linux/arm64',
     // One CodeBuild project serves both architectures: the default fleet is
     // arm64, x86_64 builds run on an x86 fleet via per-build overrides.
-    codeBuildOverrides:
-      architecture === 'x86_64'
-        ? {
-            environmentTypeOverride: 'LINUX_CONTAINER',
-            imageOverride: 'aws/codebuild/amazonlinux-x86_64-standard:5.0',
-          }
-        : {},
+    codeBuildOverrides: codeBuildOverridesFor(architecture),
   },
 
   // Returns { pending: true } while the capacity provider is still CREATING so

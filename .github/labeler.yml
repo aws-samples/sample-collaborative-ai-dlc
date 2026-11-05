@@ -1,0 +1,49 @@
+# Path-based area/* labels for pull requests, applied by
+# .github/workflows/pr-labels.yml. A PR that touches several areas gets several
+# labels. Labels are only added, never removed, so manual changes are kept.
+
+area/frontend:
+  - changed-files:
+      - any-glob-to-any-file: 'frontend/**'
+
+area/agents:
+  - changed-files:
+      - any-glob-to-any-file: 'lambda/agentcore/**'
+
+area/backend:
+  - changed-files:
+      # One changed file under lambda/ that is not part of the AgentCore runtime.
+      - all-globs-to-any-file: ['lambda/**', '!lambda/agentcore/**']
+
+area/infra:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'terraform/**'
+          - 'scripts/install.sh'
+          - 'scripts/bootstrap.sh'
+          - 'scripts/deploy-*.sh'
+          - 'scripts/destroy.sh'
+          - 'scripts/generate-env.sh'
+
+area/ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/**'
+          - '.husky/**'
+          - 'test/**'
+          - 'scripts/test/**'
+          - 'scripts/release.mjs'
+          - 'scripts/*complexity*.mjs'
+          - '.dependency-cruiser.cjs'
+          - '.oxlintrc.json'
+          - '.oxfmtrc.json'
+          - '.secretlintrc.json'
+          - 'eslint.complexity.config.mjs'
+          - 'lint-staged.config.mjs'
+          - 'vitest*.config.js'
+
+area/docs:
+  - changed-files:
+      # Documentation-only PRs. Most code PRs also update docs, so a label on
+      # any docs change would not tell them apart.
+      - all-globs-to-all-files: '{docs/**,*.md,zensical.toml,pyproject.toml,uv.lock}'

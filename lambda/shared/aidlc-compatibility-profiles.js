@@ -92,6 +92,25 @@ const AIDLC_COMPATIBILITY_PROFILES = Object.freeze({
     trustTier: 'T1',
     currentPlatformBaseline: false,
   }),
+  // 2.11.1 is a patch release on the 2.11 line, promoted exactly like 2.11.0,
+  // with the same frontmatter dialect. It adds one engine command:
+  // build-and-test's cross-unit coverage gate runs
+  // `engine sensor-traceability --stage build-and-test`, a sensor run on
+  // request, which this runtime refuses by name (INVOKE_FAMILY_FIDELITY in
+  // aidlc-compatibility.js, and the dialect annex).
+  'v2.11.1': Object.freeze({
+    id: 'v2.11.1',
+    releaseId: 'aidlc:895a35d86d20336d9b7bc4aedc9440e4a12c83ab',
+    fixtureDigest: '68120a5f56138a4c6ffb09bb5be8748f2f4598687ab92b1e21b0eaef39d7087b',
+    label: 'AI-DLC 2.11.1',
+    upstreamVersion: '2.11.1',
+    upstreamRef: '895a35d86d20336d9b7bc4aedc9440e4a12c83ab',
+    upstreamChannel: 'stable',
+    compatibilityStatus: 'candidate',
+    frontmatterDialect: 'invoke-template-v1',
+    trustTier: 'T1',
+    currentPlatformBaseline: false,
+  }),
 });
 
 const profileFor = (profileIdOrRef) => {

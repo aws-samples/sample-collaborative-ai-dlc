@@ -194,6 +194,7 @@ export const resolveCatalogEnvironmentRecipe = async ({
   baseEnvironmentId,
   baseRevision,
   toolStore,
+  architecture = 'arm64',
 }) => {
   if (
     baseEnvironmentId !== 'standard' &&
@@ -216,6 +217,7 @@ export const resolveCatalogEnvironmentRecipe = async ({
     tools,
     versions,
     providedToolIds: inheritedTools.map((tool) => tool.toolId),
+    architecture,
   });
   const toolById = new Map(tools.map((tool) => [tool.toolId, tool]));
   const selectedTools = selectedVersions.map((version) =>

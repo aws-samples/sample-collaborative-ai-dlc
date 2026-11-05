@@ -17,7 +17,7 @@ import {
   LocalDurableTestRunner,
   WaitingOperationStatus,
 } from '@aws/durable-execution-sdk-js-testing';
-import { __durableHandler } from '../index.js';
+import { __durableHandler } from './fixtures/completion-handler.js';
 
 vi.setConfig({ testTimeout: 60_000 });
 

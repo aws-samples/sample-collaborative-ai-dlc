@@ -1,3 +1,6 @@
+import { __durableHandler as runOrchestrator } from '../../v2-orchestrator/index.js';
+import { createProcessStore } from '../../shared/v2-process-store.js';
+import { unitPlanIdentity } from '../../shared/unit-completion.js';
 import { beforeAll, beforeEach, afterAll, describe, it, expect, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -3142,6 +3145,51 @@ describe('POST /recompose — in-flight reshape', () => {
     expect(events.map((e) => e.eventType)).toContain('v2.execution.recomposed');
   });
 
+  it.each(['ownership race', 'storage failure'])(
+    'stops recompose after a retirement %s',
+    async (failure) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      seedRecomposeFixtures();
+      const intent = await seedRun(sub, projectId, {
+        metaOver: { orchestratorRunId: 'original-run' },
+        rows: [
+          { stageInstanceId: 'si-analyze', stageId: 'analyze', state: 'SUCCEEDED' },
+          { stageInstanceId: 'si-optional', stageId: 'optional', state: 'WAITING_FOR_HUMAN' },
+        ],
+      });
+      const pk = `EXEC#${intent.id}`;
+      seedGate(intent.id, 'keep-pending', { status: 'pending' });
+      if (failure === 'ownership race') {
+        archiveArtifactsSpy.mockImplementationOnce(async () => {
+          procStore.get(keyOf(pk, 'META')).orchestratorRunId = 'concurrent-run';
+          return [];
+        });
+      } else {
+        ddbMock
+          .on(UpdateCommand, {
+            Key: { pk, sk: 'META' },
+            ExpressionAttributeValues: { ':ifOrid': 'original-run' },
+          })
+          .rejects(new Error('storage unavailable'));
+      }
+      const result = await recomposeReq(sub, projectId, intent.id, {
+        composedGrid: { analyze: 'EXECUTE', optional: 'EXECUTE', build: 'SKIP' },
+      });
+      expect(result.statusCode).toBe(failure === 'ownership race' ? 409 : 500);
+      if (failure === 'ownership race')
+        expect(JSON.parse(result.body).code).toBe('execution_changed');
+      expect(procStore.get(keyOf(pk, 'HUMAN#keep-pending')).status).toBe('pending');
+      expect(procStore.get(keyOf(pk, 'STAGE#si-optional'))).toMatchObject({
+        state: 'WAITING_FOR_HUMAN',
+        attempt: 0,
+      });
+      expect(procStore.get(keyOf(pk, 'META')).composedGrid).toBeFalsy();
+      expect(agentcoreMock.commandCalls(StopRuntimeSessionCommand)).toHaveLength(0);
+      expect(orchestratorInvokes()).toHaveLength(0);
+    },
+  );
+
   it('freezes the past: a stage that ran cannot flip to SKIP', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -3481,6 +3529,24 @@ describe('POST /start', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body).code).toBe('agent_cli_required');
+  });
+
+  it('rejects a CLI the platform admin disabled without mutating the DRAFT', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const key = keyOf(`EXEC#${intent.id}`, 'META');
+    const before = { ...procStore.get(key) };
+    ssmMock
+      .on(GetParameterCommand, { Name: '/collab/dev/disabled-clis' })
+      .resolves({ Parameter: { Value: '["kiro"]' } });
+
+    const res = await start(sub, projectId, intent.id);
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('agent_cli_disabled');
+    expect(procStore.get(key)).toEqual(before);
+    expect(orchestratorInvokes()).toHaveLength(0);
   });
 
   it('returns typed SOURCE_CONTROL_NOT_READY before mutating intent state', async () => {
@@ -3890,6 +3956,67 @@ describe('realtime-token', () => {
   });
 });
 
+describe('route dispatch and request lifetime', () => {
+  it.each(['resolve', 'reject'])(
+    'keeps the graph connection open until the route read settles (%s)',
+    async (outcome) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      const readStarted = Promise.withResolvers();
+      const readResult = Promise.withResolvers();
+      const close = vi.spyOn(gremlin.driver.DriverRemoteConnection.prototype, 'close');
+      ddbMock.on(GetCommand, { Key: { pk: `EXEC#${intent.id}`, sk: 'META' } }).callsFake(() => {
+        readStarted.resolve();
+        return readResult.promise;
+      });
+      const pending = handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}/graph`,
+        pathParameters: { projectId, intentId: intent.id },
+        ...claims(sub),
+      });
+      try {
+        await readStarted.promise;
+        expect(close).not.toHaveBeenCalled();
+        if (outcome === 'reject') {
+          readResult.reject(new Error('route read failed'));
+        } else {
+          readResult.resolve({ Item: procStore.get(keyOf(`EXEC#${intent.id}`, 'META')) });
+        }
+        const res = await pending;
+        expect(res.statusCode).toBe(outcome === 'reject' ? 500 : 200);
+        if (outcome === 'reject') {
+          expect(JSON.parse(res.body)).toEqual({ error: 'Internal server error' });
+        }
+        expect(close).toHaveBeenCalledTimes(1);
+      } finally {
+        readResult.resolve({});
+        await pending.catch(() => {});
+        close.mockRestore();
+      }
+    },
+  );
+
+  it.each(['graph', 'audit', 'outputs'])(
+    'keeps edit-state preflight ahead of the %s read',
+    async (route) => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      const res = await handler({
+        httpMethod: 'GET',
+        path: `/projects/${projectId}/intents/${intent.id}/${route}`,
+        pathParameters: { projectId, intentId: intent.id },
+        queryStringParameters: { editState: 'draft' },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ draftRevision: 0, status: 'DRAFT' });
+    },
+  );
+});
+
 describe('GET list + detail', () => {
   it('lists project intents and returns assembled detail', async () => {
     const sub = `u-${randomUUID()}`;
@@ -4137,7 +4264,13 @@ describe('GET list + detail', () => {
       stageInstanceId: si,
       metricId: 'm1',
       resolvedModel: 'us.anthropic.claude-sonnet-4-6',
-      metrics: { tokensInput: 1_000_000, tokensOutput: 1_000_000, contextWindowPct: 40 },
+      metrics: {
+        tokensInput: 1_000_000,
+        tokensOutput: 1_000_000,
+        contextWindowPct: 40,
+        tokensCacheRead: 2_000_000,
+        tokensCacheWrite: 100_000,
+      },
       timestamp: '2026-01-01T00:00:00Z',
     });
     procStore.set(keyOf(`EXEC#${intent.id}`, `METRIC#2026-01-01T00:00:01Z#m2`), {
@@ -4162,13 +4295,16 @@ describe('GET list + detail', () => {
       ).body,
     );
     const byId = Object.fromEntries(dto.metrics.map((m) => [m.metricId, m]));
-    // Sonnet 4.6 = $3/1M in, $15/1M out → 1M+1M = $18. Priced from the fallback.
+    // Display includes cache input, while billing applies separate rates.
     expect(byId.m1.model).toBe('us.anthropic.claude-sonnet-4-6');
     expect(byId.m1.cost.priced).toBe(true);
-    expect(byId.m1.cost.totalCost).toBeCloseTo(18);
+    expect(byId.m1.metrics.tokensInput).toBe(3_100_000);
+    expect(byId.m1.metrics.tokensCacheRead).toBe(2_000_000);
+    expect(byId.m1.cost.totalCost).toBeCloseTo(18 + 0.6 + 0.375);
     // m2 joined the stage-row model and priced 0.5M input tokens at $3/1M = $1.5.
     expect(byId.m2.model).toBe('us.anthropic.claude-sonnet-4-6');
     expect(byId.m2.cost.totalCost).toBeCloseTo(1.5);
+    expect(byId.m2.metrics.tokensInput).toBe(500_000);
   });
 
   it('rolls project metrics up across intents (tokens sum, context peaks)', async () => {
@@ -4190,6 +4326,7 @@ describe('GET list + detail', () => {
       });
     seedMetric(a, '1', { tokensInput: 1_000_000, tokensOutput: 0, contextWindowPct: 40 });
     seedMetric(b, '2', { tokensInput: 1_000_000, tokensOutput: 0, contextWindowPct: 80 });
+    seedMetric(a, '3', { tokensCacheRead: 1_000_000 });
 
     const res = await handler({
       httpMethod: 'GET',
@@ -4201,14 +4338,17 @@ describe('GET list + detail', () => {
     const dto = JSON.parse(res.body);
     expect(dto.perIntent).toHaveLength(2);
     // Tokens sum across intents; context window is peaked (NOT summed to 120%).
-    expect(dto.project.metrics.tokensInput).toBe(2_000_000);
+    expect(dto.project.metrics.tokensInput).toBe(3_000_000);
     expect(dto.project.metrics.contextWindowPct).toBe(80);
-    // 2M input tokens of Sonnet at $3/1M = $6.
-    expect(dto.project.cost.totalCost).toBeCloseTo(6);
+    // 2M uncached input plus 1M cache reads.
+    expect(dto.project.cost.totalCost).toBeCloseTo(6.3);
     expect(dto.project.cost.anyUnpriced).toBe(false);
   });
 
-  it('flags anyUnpriced when an intent ran on an unpriceable model', async () => {
+  it.each([
+    ['claude-opus-4.6', { tokensInput: 500_000 }],
+    ['unknown-model', { tokensCacheRead: 500_000 }],
+  ])('flags anyUnpriced when an intent ran on %s', async (model, metrics) => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const a = JSON.parse((await createIntent(sub, projectId)).body).id;
@@ -4220,8 +4360,8 @@ describe('GET list + detail', () => {
       executionId: a,
       stageInstanceId: 'si',
       metricId: 'k1',
-      resolvedModel: 'claude-opus-4.6',
-      metrics: { tokensInput: 500_000 },
+      resolvedModel: model,
+      metrics,
       timestamp: '2026-01-01T00:00:01Z',
     });
     const dto = JSON.parse(
@@ -5593,6 +5733,20 @@ describe('DELETE /projects/{id}/intents/{intentId}', () => {
       .next();
   };
 
+  it('does not dispatch unknown nested DELETE routes as intent deletion', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const result = await handler({
+      httpMethod: 'DELETE',
+      path: `/projects/${projectId}/intents/${intent.id}/unknown`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(result.statusCode).toBeGreaterThanOrEqual(400);
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META'))).toBeTruthy();
+  });
+
   it('deletes a DRAFT intent (no Neptune anchor yet) — 204 and the META row is gone', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -6481,6 +6635,25 @@ describe('POST /rewind', () => {
 // ── WP4: the unit dimension on the API surface (docs/v2-parallel.md) ─────────
 
 describe('WP4 — unit lanes in the detail DTO', () => {
+  it('keeps an unpinned serial SUCCEEDED intent free of unit completion diagnostics', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    setStatus(intent.id, { status: 'SUCCEEDED', methodologyRelease: null, methodologyPins: null });
+    const result = await handler({
+      httpMethod: 'GET',
+      path: `/projects/${projectId}/intents/${intent.id}`,
+      pathParameters: { projectId, intentId: intent.id },
+      ...claims(sub),
+    });
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toMatchObject({
+      intent: { status: 'SUCCEEDED' },
+      unitCompletion: null,
+      unitPlan: null,
+      units: [],
+    });
+  });
   it('surfaces unitPlan + units and lane attribution on stages/gates/events', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
@@ -6667,13 +6840,233 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       .next();
   };
 
-  const repair = (sub, projectId, intentId) =>
+  const repair = (sub, projectId, intentId, input = {}) =>
     handler({
       httpMethod: 'POST',
       path: `/projects/${projectId}/intents/${intentId}/repair`,
       pathParameters: { projectId, intentId },
+      body: JSON.stringify(input),
       ...claims(sub),
     });
+
+  const falseSuccess = async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    seedSectionPlan();
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    await seedIntentAnchor(intent.id);
+    setStatus(intent.id, {
+      status: 'SUCCEEDED',
+      orchestratorRunId: 'finished-run',
+      branch: 'aidlc/feature',
+    });
+    seedStageRow(intent.id, 'units-gen');
+    seedStageRow(intent.id, 'cg', 'foundation', 'SUCCEEDED', 1);
+    seedStageRow(intent.id, 'bt');
+    const pk = `EXEC#${intent.id}`;
+    procStore.set(keyOf(pk, 'UNITPLAN'), {
+      pk,
+      sk: 'UNITPLAN',
+      executionId: intent.id,
+      units: [
+        { slug: 'foundation', dependsOn: [] },
+        { slug: 'feature', dependsOn: ['foundation'] },
+      ],
+      batches: [['foundation'], ['feature']],
+      walkingSkeleton: 'feature',
+      autonomyMode: 'autonomous',
+    });
+    for (const [slug, state] of [
+      ['foundation', 'MERGED'],
+      ['feature', 'BLOCKED'],
+      ['old-plan-unit', 'PENDING'],
+    ]) {
+      procStore.set(keyOf(pk, `UNIT#S1#${slug}`), {
+        pk,
+        sk: `UNIT#S1#${slug}`,
+        type: 'Unit',
+        executionId: intent.id,
+        sectionIndex: 1,
+        slug,
+        state,
+        branch: `aidlc/feature--${slug}`,
+      });
+    }
+    await g
+      .addV('PullRequest')
+      .property('id', `pr-${intent.id}`)
+      .property('repository', 'owner/repo')
+      .property('pr_number', 533)
+      .property('pr_url', 'https://github.com/owner/repo/pull/533')
+      .property('branch', 'aidlc/feature')
+      .addE('HAS_PR')
+      .from_(gremlin.process.statics.V().has('Intent', 'id', intent.id))
+      .next();
+    sourceControlOperationHandler = (request) =>
+      request.operation === 'pr-status' ? { state: 'open', sourceBranch: 'aidlc/feature' } : null;
+    return { sub, projectId, intent, pk };
+  };
+
+  it.each(['rewind', 'start'])(
+    'completes publication after %s without rebuilding pre-deploy multi-repo integrated units',
+    async (action) => {
+      const { sub, projectId, intent, pk } = await falseSuccess();
+      const repos = ['owner/repo', 'owner/second'];
+      setStatus(intent.id, { status: action === 'start' ? 'FAILED' : 'SUCCEEDED', repos });
+      const plan = procStore.get(keyOf(pk, 'UNITPLAN'));
+      plan.walkingSkeleton = 'foundation';
+      procStore.get(keyOf(pk, 'UNIT#S1#feature')).state = 'MERGED';
+      seedStageRow(intent.id, 'cg', 'feature', 'SUCCEEDED', 1);
+      const before = ['foundation', 'feature'].map((slug) =>
+        structuredClone(procStore.get(keyOf(pk, `UNIT#S1#${slug}`))),
+      );
+      expect(before.every((row) => !Object.hasOwn(row, 'integrationResults'))).toBe(true);
+      const result = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/${action}`,
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify(action === 'rewind' ? { fromStageId: 'bt' } : {}),
+        ...claims(sub),
+      });
+      expect(result.statusCode).toBe(202);
+      const event = JSON.parse(
+        Buffer.from(orchestratorInvokes().at(-1).args[0].input.Payload).toString(),
+      );
+      const doc = DynamoDBDocumentClient.from(
+        new (await import('@aws-sdk/client-dynamodb')).DynamoDBClient({}),
+      );
+      const store = createProcessStore({ ddb: doc, tableName: 'v2-proc-test' });
+      const runtime = vi.fn(async () => ({ ok: true, state: 'SUCCEEDED' }));
+      const openPr = vi.fn(async ({ repo }) => ({
+        number: 42,
+        url: `https://example.test/${repo}/pull/42`,
+      }));
+      const ctx = {
+        logger: { info() {}, error() {}, debug() {} },
+        step: async (_name, fn) => fn(),
+        createCallback: async (name) => {
+          if (name.startsWith('await-')) {
+            const humanTaskId = name.slice('await-'.length);
+            await store.answerHumanTask({
+              executionId: intent.id,
+              humanTaskId,
+              status: 'answered',
+              answer: { decision: 'approve' },
+              answeredBy: sub,
+            });
+            return [Promise.resolve({ answer: { decision: 'approve' } }), `cb-${name}`];
+          }
+          return [Promise.resolve({ ok: true, state: 'SUCCEEDED' }), `cb-${name}`];
+        },
+        runInChildContext: async (_name, fn) => fn(ctx),
+        promise: {
+          allSettled: async (_name, promises) => Promise.allSettled(promises),
+          race: async (_name, promises) => Promise.race(promises),
+        },
+      };
+      const completed = await runOrchestrator(event, ctx, {
+        store,
+        loadPlan: (args) => planSpy.actual({ ddb: doc, tableName: 'v2-blocks-test', ...args }),
+        invokeRuntime: runtime,
+        stopSession: async () => ({ stopped: true }),
+        broadcast: async () => {},
+        comparePrBranches: async () => ({ status: 'ahead' }),
+        openPr,
+      });
+      expect(completed, JSON.stringify(completed)).toMatchObject({ ok: true });
+      expect((await store.getExecution(intent.id)).status).toBe('SUCCEEDED');
+      expect(openPr).toHaveBeenCalledTimes(2);
+      expect(runtime.mock.calls.filter(([p]) => p.unitSlug || p.command === 'merge-lane')).toEqual(
+        [],
+      );
+      expect(
+        ['foundation', 'feature'].map((slug) => procStore.get(keyOf(pk, `UNIT#S1#${slug}`))),
+      ).toEqual(before);
+      doc.destroy();
+    },
+  );
+  it.each(['ownership race', 'storage failure'])(
+    'stops rewind after a retirement %s',
+    async (failure) => {
+      const { sub, projectId, intent, pk } = await falseSuccess();
+      seedGate(intent.id, 'keep-pending', { status: 'pending' });
+      if (failure === 'ownership race') {
+        archiveArtifactsSpy.mockImplementationOnce(async () => {
+          procStore.get(keyOf(pk, 'META')).orchestratorRunId = 'concurrent-run';
+          return [];
+        });
+      } else {
+        ddbMock
+          .on(UpdateCommand, {
+            Key: { pk, sk: 'META' },
+            ExpressionAttributeValues: { ':ifOrid': 'finished-run' },
+          })
+          .rejects(new Error('storage unavailable'));
+      }
+      const result = await handler({
+        httpMethod: 'POST',
+        path: `/projects/${projectId}/intents/${intent.id}/rewind`,
+        pathParameters: { projectId, intentId: intent.id },
+        body: JSON.stringify({ fromStageId: 'cg' }),
+        ...claims(sub),
+      });
+      expect(result.statusCode).toBe(failure === 'ownership race' ? 409 : 500);
+      if (failure === 'ownership race')
+        expect(JSON.parse(result.body).code).toBe('execution_changed');
+      expect(procStore.get(keyOf(pk, 'HUMAN#keep-pending')).status).toBe('pending');
+      expect(procStore.get(keyOf(pk, `STAGE#${siOf('cg', 'foundation', 1)}`))).toMatchObject({
+        state: 'SUCCEEDED',
+        attempt: 0,
+      });
+      expect(procStore.get(keyOf(pk, 'UNIT#S1#foundation')).state).toBe('MERGED');
+      expect(agentcoreMock.commandCalls(StopRuntimeSessionCommand)).toHaveLength(0);
+      expect(orchestratorInvokes()).toHaveLength(0);
+    },
+  );
+
+  it('ordinary rewind explicitly clears a prior omission without changing the answered gate', async () => {
+    const { sub, projectId, intent, pk } = await falseSuccess();
+    procStore.get(keyOf(pk, 'UNIT#S1#feature')).completionSkip = {
+      humanTaskId: 'old-halt',
+      planIdentity: 'old-plan',
+    };
+    seedGate(intent.id, 'old-halt', { status: 'answered' });
+    procStore.get(keyOf(pk, 'HUMAN#old-halt')).answer = { decision: 'skip' };
+    const result = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/rewind`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ fromStageId: 'cg' }),
+      ...claims(sub),
+    });
+    expect(result.statusCode).toBe(202);
+    expect(procStore.get(keyOf(pk, 'UNIT#S1#feature'))).toMatchObject({
+      state: 'PENDING',
+      completionSkip: null,
+    });
+    expect(procStore.get(keyOf(pk, 'HUMAN#old-halt'))).toMatchObject({
+      status: 'answered',
+      answer: { decision: 'skip' },
+    });
+  });
+  it.each(['complete', 'partial', 'incomplete'])(
+    'keeps terminal %s work outside ordinary repair',
+    async (state) => {
+      const { sub, projectId, intent, pk } = await falseSuccess();
+      const unit = procStore.get(keyOf(pk, 'UNIT#S1#feature'));
+      if (state === 'complete') unit.state = 'MERGED';
+      if (state === 'partial')
+        unit.completionSkip = {
+          humanTaskId: 'accepted',
+          planIdentity: unitPlanIdentity(procStore.get(keyOf(pk, 'UNITPLAN'))),
+        };
+      const before = structuredClone([...procStore.entries()]);
+      for (const input of [{}, { preview: true }])
+        expect((await repair(sub, projectId, intent.id, input)).statusCode).toBe(409);
+      expect([...procStore.entries()]).toEqual(before);
+      expect(orchestratorInvokes()).toHaveLength(0);
+    },
+  );
 
   it('repairs orphaned parallel waits while preserving merged units', async () => {
     const sub = `u-${randomUUID()}`;
@@ -6966,6 +7359,7 @@ describe('WP4 — rewind expands per-unit stage instances', () => {
       status: 'RUNNING',
       durableExecutionArn: 'arn:aws:lambda:eu-central-1:123:durable-execution:old',
     });
+    seedStageRow(intent.id, 'units-gen');
     seedStageRow(intent.id, 'cg', 'asset-containment', 'WAITING_FOR_HUMAN', 1);
     procStore.set(keyOf(`EXEC#${intent.id}`, 'UNIT#S1#asset-containment'), {
       pk: `EXEC#${intent.id}`,

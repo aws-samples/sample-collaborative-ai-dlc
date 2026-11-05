@@ -36,10 +36,9 @@ import {
   getDriver,
   buildKiroListSessions,
   parseKiroSessionSource,
-  buildKiroUsage,
-  parseKiroCreditRate,
 } from '../cli/drivers.js';
 import { runChild, captureChild } from '../cli/spawn.js';
+import { createUsageRecorder } from '../cli/usage-recorder.js';
 import { isCredentialFailure, isCreditExhaustion } from '../cli/credential-errors.js';
 import {
   materializeMcpConfig as defaultMaterializeMcpConfig,
@@ -442,6 +441,8 @@ const buildReviewerBrief = ({ stage, unit = null, reviewerAgent, round }) => {
     `You are ${reviewerAgent}, the independent reviewer for this stage.`,
     'Do not modify artifacts. Use only read tools to inspect the intent graph, inputs, and produced artifacts.',
     'When done, call submit_review exactly once with verdict READY or NOT-READY and concrete findings.',
+    'Number every finding, starting at 1, and give each one its required action, so the human',
+    'can refer to findings by number when they ask for changes.',
     // Upstream §12a identity marker: the first finding line names the reviewer
     // verbatim so the audit trail records which reviewer ran. The runtime also
     // stamps the trusted identity server-side; this keeps the artifact-visible
@@ -496,6 +497,39 @@ const buildReviewerPrompt = ({
     // itself, so this passes only the policy the rest of the row reads.
     policy: stage.policy ?? null,
   });
+
+// The most review text a revision carries, the same bound as the repair turn's.
+const REVISION_FINDINGS_LIMIT = 8000;
+
+// The review a human saw at the gate they answered with "Request changes". The
+// reviewer runs before the gate opens, so its latest run for this stage recorded
+// no later than the gate is that review. Null when the stage has no reviewer, the
+// answer is not a revision, or the review recorded no findings. A failed read
+// throws: the caller must not resume the author without the review the feedback
+// may refer to.
+const reviewFindingsForGate = async ({ store, executionId, stageInstanceId, stage, gate }) => {
+  const reviewerAgent = stage?.reviewer?.reviewerAgent;
+  if (!reviewerAgent || !isRevisionAnswer(gate)) return null;
+  if (typeof store.listSensorRuns !== 'function') return null;
+  const openedAt = gate.createdAt ?? null;
+  const rows = await store.listSensorRuns(executionId, { stageInstanceId });
+  const run = [...rows]
+    .toReversed()
+    .find(
+      (r) =>
+        r.kind === 'reviewer' &&
+        r.sensorId === `reviewer:${reviewerAgent}` &&
+        (!openedAt || !r.timestamp || r.timestamp <= openedAt),
+    );
+  const findings = String(run?.detail?.findings ?? '').trim();
+  if (!findings) return null;
+  return {
+    reviewerAgent,
+    verdict: run.detail?.verdict ?? (run.result === 'PASS' ? 'READY' : 'NOT-READY'),
+    findings: findings.slice(0, REVISION_FINDINGS_LIMIT),
+    truncated: findings.length > REVISION_FINDINGS_LIMIT,
+  };
+};
 
 const latestReviewerVerdict = async ({ store, executionId, stageInstanceId, reviewerAgent }) => {
   if (typeof store.listSensorRuns !== 'function') return null;
@@ -557,6 +591,8 @@ const runReviewer = async ({
     })
     .catch(() => {});
   const dispatch = await dispatchPersona({
+    store,
+    publish,
     role: 'reviewer',
     stageId: stage.stageId,
     // The stage's resolved policy travels with the reviewer too: the annex's
@@ -1331,11 +1367,41 @@ const runCheckpointLadder = async ({
   };
 };
 
+// A validation gate, or an engine gate, answered "Request changes": the answer
+// re-enters the stage as a revision.
+const isRevisionAnswer = (gate) =>
+  Boolean(gate) && (gate.kind === 'validation' || gate.answer?.decision === 'request-changes');
+
+// The reviewer's findings, shown with the human's requested changes. The human
+// reads them at the gate and often answers by reference ("apply the required
+// actions", "fix 1, 2 and 5"), so the author needs the same text. Agent-authored
+// text crossing a session boundary, so template tokens are neutralized.
+const reviewFindingsBlock = ({ reviewerAgent, verdict, findings, truncated }) =>
+  [
+    `The independent review the human saw at this gate (${reviewerAgent}, ${verdict}):`,
+    '',
+    neutralizeTokens(findings),
+    ...(truncated ? ['', '(The review is longer than this and was cut short here.)'] : []),
+    '',
+    'The human\u2019s feedback may refer to these findings by number or by their wording.',
+    'Read it against them: apply the findings it asks for, and only those. Where the',
+    'feedback and a finding disagree, follow the feedback.',
+  ].join('\n');
+
+const formatRevisionAnswer = (a, reviewFindings) => {
+  const text =
+    typeof a === 'string'
+      ? a
+      : (a?.feedback ?? a?.freeText ?? a?.decision ?? JSON.stringify(a ?? {}));
+  const review = reviewFindings ? `\n\n${reviewFindingsBlock(reviewFindings)}` : '';
+  return `The human reviewed this stage's output and requested changes:\n${text}${review}\n\nRevise the stage artifacts to address this feedback, then finish again.`;
+};
+
 // Render an answered gate into the message that re-enters the parked conversation.
 // The agent asked structured questions; we feed back the human's answer so it
 // continues from where it parked. Tolerant of the answer shapes the resume lambda
 // / phaseb-answer write (`perQuestion[]`, `freeText`, or a raw string).
-const formatResumeAnswer = (gate, stageId) => {
+const formatResumeAnswer = (gate, stageId, { reviewFindings = null } = {}) => {
   const a = gate?.answer ?? null;
   // A checkpoint gate (summary confirmation / plan approval) is a `question` row
   // carrying `detail.checkpoint`, so it must be recognised BEFORE the generic
@@ -1379,13 +1445,7 @@ const formatResumeAnswer = (gate, stageId) => {
   // Validation gates AND engine gates answered request-changes (skeleton /
   // batch revision loops, docs/v2-parallel.md WP5) both re-enter the stage as
   // a REVISION with the human's feedback.
-  if (gate?.kind === 'validation' || a?.decision === 'request-changes') {
-    const text =
-      typeof a === 'string'
-        ? a
-        : (a?.feedback ?? a?.freeText ?? a?.decision ?? JSON.stringify(a ?? {}));
-    return `The human reviewed this stage's output and requested changes:\n${text}\n\nRevise the stage artifacts to address this feedback, then finish again.`;
-  }
+  if (isRevisionAnswer(gate)) return formatRevisionAnswer(a, reviewFindings);
   if (a && Array.isArray(a.perQuestion) && a.perQuestion.length) {
     const lines = a.perQuestion.map((p) => `- ${p.text ?? 'Q'}: ${p.answer ?? ''}`);
     return `The human answered your question(s):\n${lines.join('\n')}\n\nContinue the stage with these answers.`;
@@ -1494,35 +1554,6 @@ const kiroSessionSource = async ({ env, workspaceDir, sessionId, spawnFn }) => {
     spawnFn,
   });
   return parseKiroSessionSource(stdout ?? '', workspaceDir, sessionId);
-};
-
-// Capture Kiro's $/credit overage rate by running the `/usage` slash command
-// headless and parsing "billed at $X.XX per credit" (printed on STDERR). The
-// rate changes at most with the plan, so it's cached for the container's life —
-// one extra kiro-cli spawn per container, not per stage. `/usage` only calls
-// Kiro's usage API; it does not itself spend credits. Null (and cached null on
-// hard failure only) when the rate can't be read — the credits metric is then
-// recorded unpriced rather than priced at a guess. A lost credential leaves the
-// cache empty so the next stage retries.
-let cachedKiroCreditRate; // undefined = not fetched; null/number = fetched
-export const resetKiroCreditRateCache = () => {
-  cachedKiroCreditRate = undefined;
-};
-const captureKiroCreditRate = async ({ env, driver, workspaceDir, spawnFn }) => {
-  if (cachedKiroCreditRate !== undefined) return cachedKiroCreditRate;
-  const usage = buildKiroUsage();
-  const { stdout, stderr, credentialError } = await captureChild({
-    command: usage.command,
-    args: usage.args,
-    env: driver.envForAuth(env),
-    cwd: workspaceDir,
-    captureStderr: true,
-    spawnFn,
-  });
-  const rate = parseKiroCreditRate(`${stderr ?? ''}\n${stdout ?? ''}`);
-  if (rate == null && credentialError) return null;
-  cachedKiroCreditRate = rate;
-  return rate;
 };
 
 // Recognise Kiro's BENIGN empty-final-completion crash. kiro-cli's ACP layer
@@ -2290,6 +2321,8 @@ const runStageAttempt = async (
   let cliSessionId = null;
   let resumeAnswer = null;
   let resumeGate = null;
+  // The review the resumed gate's revision refers to, read with the gate.
+  let resumeReviewFindings = null;
   // A resume we had to demote to a fresh run because its conversation is
   // unavailable: re-runs fresh with the human's answer injected into the prompt.
   // A missing session ID does not imply that the shared Kiro store was lost.
@@ -2334,11 +2367,21 @@ const runStageAttempt = async (
         ? await store.getHumanTask(executionId, resumeFrom, { consistentRead: true })
         : null;
       row = await store.getStage(executionId, stageInstanceId, { consistentRead: true });
+      // Read with the answer it belongs to: a revision must not resume without it.
+      resumeReviewFindings = resumeGate
+        ? await reviewFindingsForGate({
+            store,
+            executionId,
+            stageInstanceId,
+            stage,
+            gate: resumeGate,
+          })
+        : null;
     } catch {
       return fail(
         ownership ? stageInstanceId : null,
         'resume_state_unavailable',
-        'The saved stage or answer could not be read. Retry when storage is available; the saved conversation has not been reset.',
+        'The saved stage, answer or review could not be read. Retry when storage is available; the saved conversation has not been reset.',
       );
     }
     if (resumeFrom && !resumeGate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
@@ -2492,7 +2535,8 @@ const runStageAttempt = async (
     // change-control block renders the decision into the prompt instead.
     resumeAnswer = preAgentGate
       ? null
-      : reviewFeedbackPrompt || formatResumeAnswer(resumeGate, stageId);
+      : reviewFeedbackPrompt ||
+        formatResumeAnswer(resumeGate, stageId, { reviewFindings: resumeReviewFindings });
     // A pre-agent gate re-enters as a fresh run even when the row names a
     // session: the conversation was never started, and resuming it would send
     // the CLI neither the stage prompt nor the change-control decision.
@@ -2623,6 +2667,7 @@ const runStageAttempt = async (
 
   let codexHome = null;
   let codexHomePrepared = false;
+  let codexUsageBaseline = null;
   if ((resumeFrom || reviewFeedback) && !demotedResume && cli === 'codex') {
     codexHome = resolveCodexHome({ scope: stageScope, env });
     let restored;
@@ -2645,6 +2690,7 @@ const runStageAttempt = async (
       Boolean(resolveCodexStore({ env, codexHome })) && restoreStatus !== 'unconfigured';
     if (restoredOk) {
       codexHomePrepared = true;
+      codexUsageBaseline = restored.usage ?? null;
     } else if (storeConfigured) {
       const detail = `${restoreStatus ?? 'restore_failed'}${
         restored?.error?.code ? ` (${restored.error.code})` : ''
@@ -3583,12 +3629,23 @@ const runStageAttempt = async (
       .catch(() => {});
   };
   let sessionUpdateQueue = Promise.resolve();
+  const usage = createUsageRecorder({
+    store,
+    scope: { executionId, stageInstanceId, unitSlug, sectionIndex },
+    model,
+    publish,
+    env,
+    workspaceDir,
+    spawnFn,
+  });
   // Error events the JSON-output CLIs report on stdout (never agent text or
   // tool output), kept for failure classification next to the stderr tail.
   const reportedErrors = [];
   const cliOutput = createCliOutputSink({
     cli,
     emit: emitCliOutput,
+    onUsage: usage.onUsage,
+    usageBaseline: cli === 'codex' && !freshRun ? codexUsageBaseline : {},
     onError: (message) => {
       reportedErrors.push(message);
       if (reportedErrors.length > 8) reportedErrors.shift();
@@ -3656,6 +3713,7 @@ const runStageAttempt = async (
     spawnError = e;
   }
   cliOutput.flush();
+  await usage.flush();
   await outputQueue;
   await sessionUpdateQueue;
 
@@ -3765,49 +3823,6 @@ const runStageAttempt = async (
     kiroStorePersisted = await persistKiroStore({ env }).catch(() => false);
     if (!kiroStorePersisted) {
       logger.error('kiro store not persisted', { stageInstanceId });
-    }
-  }
-
-  // Kiro only: record the run's credit spend. kiro-cli's stream-json reports
-  // per-turn metering (`meteringUsage`, in credits), which the output parser
-  // sums — record it as a `credits` metric sample, stamped with the trusted model
-  // AND the $/credit overage rate (from `/usage`, cached per container) so the
-  // read path can price it as an ESTIMATE (Kiro is credit-based; in-plan credits
-  // are covered by the plan). Runs on ANY exit — a parked or crashed turn still
-  // spent its credits. Best-effort: no metering / no rate never affects the
-  // stage outcome.
-  if (cli === 'kiro') {
-    try {
-      const credits = cliOutput.state?.metrics?.credits ?? null;
-      if (credits != null && credits > 0) {
-        const creditRate = await captureKiroCreditRate({
-          env,
-          driver,
-          workspaceDir,
-          spawnFn,
-        }).catch(() => null);
-        const row = await store.recordMetric({
-          executionId,
-          stageInstanceId,
-          unitSlug,
-          sectionIndex,
-          metrics: { credits },
-          resolvedModel: model ?? null,
-          creditRate,
-        });
-        // Live-parity with the bridge's collect_metric broadcast so the UI can
-        // refresh usage without waiting for the next full DTO fetch.
-        await publish({
-          action: 'agent.metric',
-          stageInstanceId,
-          unitSlug,
-          sectionIndex,
-          metricId: row.metricId,
-          metrics: { credits },
-        });
-      }
-    } catch (e) {
-      logger.error('kiro credits not recorded', e, { stageInstanceId });
     }
   }
 
@@ -3963,8 +3978,29 @@ const runStageAttempt = async (
               : await store
                   .getHumanTask(executionId, validationGateId, { consistentRead: true })
                   .catch(() => null);
-          if (validationGate) revisionFeedback = formatResumeAnswer(validationGate, stageId);
-          else
+          if (validationGate) {
+            let reviewFindings = resumeReviewFindings;
+            if (validationGate !== resumeGate) {
+              try {
+                reviewFindings = await reviewFindingsForGate({
+                  store,
+                  executionId,
+                  stageInstanceId,
+                  stage,
+                  gate: validationGate,
+                });
+              } catch {
+                // Before any persona session starts: they must not revise without
+                // the review the feedback may refer to.
+                return fail(
+                  stageInstanceId,
+                  'resume_state_unavailable',
+                  'The review for this revision could not be read. Retry when storage is available.',
+                );
+              }
+            }
+            revisionFeedback = formatResumeAnswer(validationGate, stageId, { reviewFindings });
+          } else
             logger.error('validation gate not readable for revision feedback', {
               stageInstanceId,
               validationGateId,
@@ -4571,7 +4607,11 @@ const runStageAttempt = async (
           model,
           ...mcpKwargs,
         });
-        const repairSink = createCliOutputSink({ cli, emit: emitCliOutput });
+        const repairSink = createCliOutputSink({
+          cli,
+          emit: emitCliOutput,
+          onUsage: usage.onUsage,
+        });
         const spawnRepair = () =>
           runChild({
             command: repair.command,
@@ -4597,6 +4637,7 @@ const runStageAttempt = async (
           }
         } finally {
           repairSink.flush();
+          await usage.flush();
           await outputQueue;
           if (cli === 'kiro') await persistKiroStore({ env }).catch(() => false);
         }

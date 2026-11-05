@@ -5,7 +5,6 @@ import {
   BitbucketIcon,
   CodeCommitIcon,
 } from '@/components/icons/git-providers';
-import { CodeCommitConnectForm, type CodeCommitConnectResult } from './CodeCommitConnectForm';
 import { projectsService, type CreateProjectInput } from '../services/projects';
 import { workflowsService, type WorkflowSummary } from '../services/workflows';
 import { trackersService } from '../services/trackers';
@@ -14,6 +13,7 @@ import { GitConnectButton } from './GitConnectButton';
 import { GitRepoSelect } from './GitRepoSelect';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import {
+  codecommitStatus,
   githubAppService,
   gitProviderTerminology,
   isOAuthGitProvider,
@@ -70,10 +70,10 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   // Whether the platform GitHub App is configured — gates the App option in
   // step 1. null = still loading.
   const [appConfigured, setAppConfigured] = useState<boolean | null>(null);
+  // The configured CodeCommit region, for the step-3 summary. null until the
+  // status route answers (or when the provider is not CodeCommit).
+  const [codecommitRegion, setCodecommitRegion] = useState<string | null>(null);
   const [delegationConfirmed, setDelegationConfirmed] = useState(false);
-  // CodeCommit: the proven role + the repositories it can see, from the connect
-  // form. Step 2 lists these; submit binds with the same role and external id.
-  const [codecommit, setCodecommit] = useState<CodeCommitConnectResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -87,6 +87,25 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
       })
       .catch(() => {
         if (!cancelled) setAppConfigured(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [formData.gitProvider]);
+
+  // The configured CodeCommit region drives the step-3 summary label.
+  useEffect(() => {
+    if (formData.gitProvider !== 'codecommit') {
+      setCodecommitRegion(null);
+      return;
+    }
+    let cancelled = false;
+    codecommitStatus()
+      .then((status) => {
+        if (!cancelled) setCodecommitRegion(status.region);
+      })
+      .catch(() => {
+        if (!cancelled) setCodecommitRegion(null);
       });
     return () => {
       cancelled = true;
@@ -155,7 +174,6 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   const handleProviderChange = (provider: GitProvider) => {
     setFormData((prev) => ({ ...prev, gitProvider: provider, gitRepo: '' }));
     setSourceControlAuthType(defaultAuthTypeFor(provider));
-    setCodecommit(null);
     setSelectedRepos([]);
     setPrimaryRepo('');
     setDelegationConfirmed(false);
@@ -216,9 +234,6 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
           [gitProvider]: {
             authType: sourceControlAuthType,
             ...(sourceControlAuthType.endsWith('-oauth') ? { confirmDelegation: true } : {}),
-            ...(sourceControlAuthType === 'codecommit-role' && codecommit
-              ? { roleArn: codecommit.connection.roleArn }
-              : {}),
           },
         });
       } catch (bindingError) {
@@ -257,9 +272,10 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
   const canProceedStep1 = formData.gitProvider
     ? sourceControlAuthType === 'github-app'
       ? appConfigured === true
-      : sourceControlAuthType === 'codecommit-role'
-        ? codecommit !== null
-        : gitStatus?.connected
+      : // OAuth and CodeCommit both gate on a platform-level connection the
+        // status route reports (OAuth: the caller connected; CodeCommit: an
+        // admin configured the one platform role).
+        Boolean(gitStatus?.connected)
     : false;
   const canProceedStep2 = selectedRepos.length > 0;
   const repoCount = selectedRepos.length;
@@ -347,13 +363,11 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 </SelectItem>
               </SelectContent>
             </Select>
-            {gitStatusError &&
-              sourceControlAuthType !== 'github-app' &&
-              sourceControlAuthType !== 'codecommit-role' && (
-                <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 text-sm">
-                  {gitStatusError}
-                </div>
-              )}
+            {gitStatusError && sourceControlAuthType !== 'github-app' && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4 text-sm">
+                {gitStatusError}
+              </div>
+            )}
             {!formData.gitProvider ? (
               <p className="text-sm text-gray-500 dark:text-gray-400">
                 Select a git provider to continue.
@@ -400,17 +414,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                     </label>
                   </div>
                 )}
-                {sourceControlAuthType === 'codecommit-role' ? (
-                  <CodeCommitConnectForm
-                    onVerified={(result) => {
-                      setCodecommit(result);
-                      setSelectedRepos([]);
-                      setPrimaryRepo('');
-                    }}
-                    onInvalidated={() => setCodecommit(null)}
-                    compact
-                  />
-                ) : sourceControlAuthType === 'github-app' ? (
+                {sourceControlAuthType === 'github-app' ? (
                   appConfigured === null ? (
                     <p className="text-sm text-gray-500 dark:text-gray-400">
                       Checking GitHub App configuration...
@@ -426,6 +430,18 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                     missingScopes={gitStatus?.missingScopes}
                     onDisconnect={gitRefresh}
                   />
+                ) : formData.gitProvider === 'codecommit' && !gitStatus?.connected ? (
+                  // Not configured: a platform admin sets up the one CodeCommit
+                  // connection. Same pattern as the GitHub App — Next is blocked
+                  // until it exists (canProceedStep1).
+                  <div className="rounded border border-amber-200 bg-amber-50 px-4 py-3 text-sm dark:border-amber-800/60 dark:bg-amber-900/20">
+                    <p className="font-medium text-amber-800 dark:text-amber-300">
+                      CodeCommit is not set up yet.
+                    </p>
+                    <p className="mt-0.5 text-xs text-amber-800/80 dark:text-amber-300/80">
+                      Ask a platform admin to set up CodeCommit in Platform Admin › Source Control.
+                    </p>
+                  </div>
                 ) : null}
               </>
             )}
@@ -460,14 +476,7 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
               multiple
               value={selectedRepos}
               onChange={handleReposChange}
-              repoSource={
-                sourceControlAuthType === 'github-app'
-                  ? 'github-app'
-                  : sourceControlAuthType === 'codecommit-role'
-                    ? 'codecommit-role'
-                    : 'oauth'
-              }
-              repos={codecommit?.repos.repositories}
+              repoSource={sourceControlAuthType === 'github-app' ? 'github-app' : 'oauth'}
             />
             {selectedRepos.length > 1 && (
               <div className="mt-3 border dark:border-gray-600 rounded divide-y dark:divide-gray-600">
@@ -565,10 +574,12 @@ export function CreateProjectModal({ onClose, onCreated, initialProvider = '' }:
                 {sourceControlAuthType === 'github-app'
                   ? 'GitHub App installation'
                   : sourceControlAuthType === 'codecommit-role'
-                    ? `IAM role ${codecommit?.connection.roleArn ?? ''}`
+                    ? `AWS CodeCommit (${codecommitRegion ?? 'region set by your platform admin'})`
                     : `Delegated ${formData.gitProvider ? gitProviderTerminology(formData.gitProvider).label : 'Git'} OAuth identity`}
                 <span className="block text-xs text-gray-500 dark:text-gray-400">
-                  Chosen in step 1 — go back to change it.
+                  {sourceControlAuthType === 'codecommit-role'
+                    ? 'Managed by your platform admin.'
+                    : 'Chosen in step 1 — go back to change it.'}
                 </span>
               </p>
               {sourceControlAuthType.endsWith('-oauth') && (

@@ -36,6 +36,11 @@ export interface ProjectRepo {
 // only writes synthetic GitHub-issues bindings via the migration; Phase 3
 // adds Jira and the connect/select UI.
 export interface TrackerBinding {
+  connectionUserId?: string | null;
+  cloudId?: string | null;
+  externalProjectId?: string | null;
+  status?: 'active' | 'invalid';
+  invalidReason?: string | null;
   id: string;
   provider: string;
   instance: string | null;

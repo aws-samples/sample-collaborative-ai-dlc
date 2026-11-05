@@ -1,5 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render as renderComponent, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import type { ReactElement } from 'react';
+import { MemoryRouter, useLocation } from 'react-router';
+import { ApiError } from '@/services/api';
+import { trackersService } from '@/services/trackers';
 import type { Project, TrackerBinding } from '@/services/projects';
 import type { ProjectSourceControlStatus } from '@/services/sourceControl';
 
@@ -16,6 +20,7 @@ vi.mock('@/services/trackers', async (importOriginal) => {
       addToProject: vi.fn(),
       removeFromProject: vi.fn(),
       getAuthUrl: vi.fn(),
+      listExternalProjects: vi.fn(),
     },
   };
 });
@@ -37,6 +42,19 @@ vi.mock('@/services/sourceControl', async (importOriginal) => {
 });
 
 import { TrackersTab } from './TrackersTab';
+
+function CurrentLocation() {
+  const location = useLocation();
+  return <output data-testid="location">{location.pathname + location.search}</output>;
+}
+
+const render = (ui: ReactElement, entry = '/space/project-1/settings?tab=trackers') =>
+  renderComponent(
+    <MemoryRouter initialEntries={[entry]}>
+      {ui}
+      <CurrentLocation />
+    </MemoryRouter>,
+  );
 
 const makeProject = (overrides: Partial<Project>): Project =>
   ({
@@ -76,8 +94,115 @@ const sourceControlStatus = (
 });
 
 beforeEach(() => {
+  sessionStorage.clear();
   listConnections.mockReset().mockResolvedValue([]);
   getSourceControlStatus.mockReset().mockResolvedValue({ ready: false, repositories: [] });
+  vi.mocked(trackersService.listExternalProjects).mockReset().mockResolvedValue([]);
+  vi.mocked(trackersService.getAuthUrl).mockReset();
+});
+
+describe('TrackersTab — adding Jira projects', () => {
+  it.each(['close', 'cancel', 'escape', 'unmount'])(
+    'cancels the pending OAuth redirect when the user chooses to %s',
+    async (action) => {
+      listConnections.mockResolvedValue([{ provider: 'jira-cloud', instance: 'cloud' }]);
+      vi.mocked(trackersService.listExternalProjects).mockRejectedValue(
+        new ApiError(401, 'Jira account authorization required', { reconnect: true }),
+      );
+      let resolveAuth!: (value: { url: string }) => void;
+      vi.mocked(trackersService.getAuthUrl).mockReturnValue(
+        new Promise((resolve) => {
+          resolveAuth = resolve;
+        }),
+      );
+      const view = render(
+        <TrackersTab project={makeProject({ trackers: [] })} canEdit reload={vi.fn()} />,
+      );
+      fireEvent.click(await screen.findByRole('button', { name: 'Add Jira project' }));
+      await screen.findByText('Connecting to Jira…');
+      const originalUrl = window.location.href;
+      if (action === 'unmount') {
+        view.unmount();
+      } else {
+        if (action === 'close' || action === 'cancel') {
+          fireEvent.click(
+            screen.getByRole('button', { name: action === 'close' ? 'Close' : 'Cancel' }),
+          );
+        } else fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+        await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+      }
+      try {
+        // A hash change exposes navigation in jsdom without an external page load.
+        await act(async () =>
+          resolveAuth({ url: `${originalUrl.split('#')[0]}#stale-jira-oauth` }),
+        );
+        expect(window.location.href).toBe(originalUrl);
+        expect(sessionStorage.getItem('oauth_return_to')).toBeNull();
+      } finally {
+        window.history.replaceState(null, '', originalUrl);
+      }
+    },
+  );
+
+  it('starts authorization automatically for an old account in a new space', async () => {
+    listConnections.mockResolvedValue([{ provider: 'jira-cloud', instance: 'cloud' }]);
+    vi.mocked(trackersService.listExternalProjects).mockRejectedValue(
+      new ApiError(401, 'Jira account authorization required', { reconnect: true }),
+    );
+    // Keep the redirect on this page so jsdom does not need external navigation.
+    vi.mocked(trackersService.getAuthUrl).mockResolvedValue({ url: window.location.href });
+    render(<TrackersTab project={makeProject({ trackers: [] })} canEdit reload={vi.fn()} />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Add Jira project' }));
+    await screen.findByText('Connecting to Jira…');
+    await waitFor(() =>
+      expect(sessionStorage.getItem('oauth_return_to')).toBe(
+        '/space/project-1/settings?tab=trackers&addJiraProject=1',
+      ),
+    );
+    expect(trackersService.getAuthUrl).toHaveBeenCalledExactlyOnceWith('jira-cloud');
+    expect(screen.queryByRole('button', { name: /Reconnect/ })).not.toBeInTheDocument();
+  });
+
+  it('automatically reopens the picker after authorization and consumes the return flag', async () => {
+    vi.mocked(trackersService.listExternalProjects).mockResolvedValue([
+      { key: 'CAREER', name: 'Career Compass' },
+    ]);
+    render(
+      <TrackersTab project={makeProject({ trackers: [] })} canEdit reload={vi.fn()} />,
+      '/space/project-1/settings?tab=trackers&addJiraProject=1',
+    );
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(await screen.findByText('Career Compass')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent(
+        /^\/space\/project-1\/settings\?tab=trackers$/,
+      ),
+    );
+    expect(trackersService.getAuthUrl).not.toHaveBeenCalled();
+  });
+
+  it('shows a persistent authorization error after returning instead of redirecting in a loop', async () => {
+    vi.mocked(trackersService.listExternalProjects).mockRejectedValue(
+      new ApiError(401, 'Jira authorization still unavailable', { reconnect: true }),
+    );
+    render(
+      <TrackersTab project={makeProject({ trackers: [] })} canEdit reload={vi.fn()} />,
+      '/space/project-1/settings?tab=trackers&addJiraProject=1',
+    );
+    expect(await screen.findByText('Jira authorization still unavailable')).toBeInTheDocument();
+    expect(trackersService.getAuthUrl).not.toHaveBeenCalled();
+  });
+
+  it('does not automatically open the picker for a read-only member', async () => {
+    render(
+      <TrackersTab project={makeProject({ trackers: [] })} canEdit={false} reload={vi.fn()} />,
+      '/space/project-1/settings?tab=trackers&addJiraProject=1',
+    );
+    await waitFor(() => expect(listConnections).toHaveBeenCalledOnce());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(trackersService.listExternalProjects).not.toHaveBeenCalled();
+  });
 });
 
 describe('TrackersTab — git tracker CTA', () => {
@@ -216,5 +341,77 @@ describe('TrackersTab — tracker reconnection', () => {
     );
 
     expect(await screen.findByRole('button', { name: 'Reconnect' })).toBeInTheDocument();
+  });
+});
+
+describe('TrackersTab — shared Jira binding', () => {
+  const jiraProject = () =>
+    makeProject({
+      trackers: [
+        makeTracker({
+          id: 'jira-binding',
+          provider: 'jira-cloud',
+          externalProjectKey: 'ENG',
+          externalProjectId: '10000',
+          displayName: 'Engineering',
+          status: 'active',
+          connectionUserId: 'another-admin',
+          cloudId: 'site-1',
+        }),
+      ],
+    });
+
+  it('shows the shared binding to another admin without asking them to connect', async () => {
+    render(<TrackersTab project={jiraProject()} canEdit reload={vi.fn()} />);
+    expect(await screen.findByText('Shared with all space members')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Connect Jira Cloud' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add Jira project' })).toBeInTheDocument();
+  });
+
+  it('reconnects the same binding after explicit consent and limits selection to its project', async () => {
+    vi.mocked(trackersService.listExternalProjects).mockResolvedValue([
+      { id: '10000', key: 'RENAMED', name: 'Engineering' },
+      { id: '20000', key: 'OTHER', name: 'Other project' },
+    ]);
+    const reload = vi.fn();
+    render(<TrackersTab project={jiraProject()} canEdit reload={reload} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Reconnect' }));
+    const radio = await screen.findByRole('radio', { name: /Engineering/ });
+    expect(screen.queryByRole('radio', { name: /Other project/ })).not.toBeInTheDocument();
+    fireEvent.click(radio);
+    const dialog = screen.getByRole('dialog');
+    const { within } = await import('@testing-library/react');
+    const save = within(dialog).getByRole('button', { name: 'Reconnect' });
+    expect(save).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox'));
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(trackersService.addToProject).toHaveBeenCalledWith('project-1', {
+        bindingId: 'jira-binding',
+        provider: 'jira-cloud',
+        instance: 'cloud',
+        externalProjectKey: 'RENAMED',
+        displayName: 'Engineering',
+        confirmDelegation: true,
+      }),
+    );
+    expect(reload).toHaveBeenCalled();
+  });
+
+  it('restores the binding to reconnect after OAuth', async () => {
+    vi.mocked(trackersService.listExternalProjects).mockResolvedValue([
+      { id: '10000', key: 'ENG', name: 'Engineering' },
+    ]);
+    render(
+      <TrackersTab project={jiraProject()} canEdit reload={vi.fn()} />,
+      '/space/project-1/settings?tab=trackers&reconnectJiraBinding=jira-binding',
+    );
+    expect(
+      await screen.findByRole('dialog', { name: 'Reconnect Jira project' }),
+    ).toBeInTheDocument();
+    expect(await screen.findByRole('radio', { name: /Engineering/ })).toBeInTheDocument();
+    expect(screen.getByTestId('location')).toHaveTextContent(
+      /^\/space\/project-1\/settings\?tab=trackers$/,
+    );
   });
 });

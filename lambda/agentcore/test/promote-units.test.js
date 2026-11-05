@@ -62,6 +62,23 @@ beforeEach(() => {
   };
 });
 
+it.each(['checkout', 'renamed-unit', ''])(
+  'replaces unsupported old skeleton %s before approving a regenerated DAG',
+  async (walkingSkeleton) => {
+    store.getUnitPlan.mockResolvedValue({ walkingSkeleton, autonomyMode: 'gated' });
+    const result = await promoteUnits(basePayload, deps);
+    expect(result.ok).toBe(true);
+    expect(result.walkingSkeleton).toBe('auth');
+    expect(result.selectionProblem).toBeFalsy();
+    expect(store.putUnitPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ walkingSkeleton: 'auth', autonomyMode: 'gated' }),
+    );
+    expect(store.appendEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'v2.units.skeleton_reselected' }),
+    );
+  },
+);
+
 describe('pickCurrentArtifact', () => {
   it('prefers non-superseded rows and the newest timestamp', () => {
     const rows = [

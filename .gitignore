@@ -66,6 +66,8 @@ site/
 # E2E test run artifacts (generated screenshots, reports, summaries)
 test/e2e/artifacts/
 frontend/public/dev/agent-output-fixtures.json
+# Copied from AIDLC_BRANDING_DIR by scripts/deploy-frontend.sh
+frontend/public/branding/
 
 # Terraform plan files (any environment suffix)
 tfplan*
@@ -89,3 +91,11 @@ reports/architecture/
 
 # Separate package repair Lambda bundle
 lambda/native-package-worker/.repair-build/
+# Local cognitive-complexity analysis
+reports/complexity/
+
+# Generated Isobar previews and local tooling
+.isobar/previews/
+.isobar/upstream/
+scripts/pr-impact/.venv/
+scripts/pr-impact/__pycache__/

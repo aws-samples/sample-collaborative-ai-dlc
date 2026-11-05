@@ -313,6 +313,102 @@ describe('managed environment handler', () => {
     expect(store.createEnvironment).not.toHaveBeenCalled();
   });
 
+  describe('x86_64 environments with catalog tools', () => {
+    const amdDigest = `sha256:${'b'.repeat(64)}`;
+    const standard = {
+      environmentId: 'standard',
+      status: 'PUBLISHED',
+      publishedRevisionId: 'core-1',
+    };
+    const standardRevision = {
+      ...BASE,
+      environmentId: 'standard',
+      status: 'PUBLISHED',
+      recipe: CATALOG_RECIPE,
+      flattenedRecipe: CATALOG_RECIPE,
+      amd64Image: { imageUri: BASE.imageUri, imageDigest: amdDigest },
+    };
+    const toolVersion = (versionId, architecture) => ({
+      toolId: 'go',
+      versionId,
+      status: 'PUBLISHED',
+      imageUri: '111111111111.dkr.ecr.eu-west-1.amazonaws.com/tools',
+      imageDigest: `sha256:${(architecture === 'x86_64' ? 'e' : 'f').repeat(64)}`,
+      definition: {
+        version: '1.24.6',
+        ...(architecture === 'x86_64' ? { architecture } : {}),
+        executables: [{ name: 'go', path: 'bin/go' }],
+        dependencies: [],
+        aptPackages: [],
+        environmentVariables: {},
+        verification: { preset: 'go' },
+      },
+    });
+    const toolStore = {
+      listTools: vi.fn().mockResolvedValue([{ toolId: 'go', name: 'Go SDK' }]),
+      listAllVersions: vi
+        .fn()
+        .mockResolvedValue([toolVersion('tv-go-arm', 'arm64'), toolVersion('tv-go-x86', 'x86_64')]),
+    };
+    const create = (toolVersionIds) => {
+      const store = {
+        ...storeBase(),
+        getEnvironment: vi
+          .fn()
+          .mockImplementation(async (id) => (id === 'standard' ? standard : null)),
+        getRevision: vi.fn().mockResolvedValue(standardRevision),
+        createEnvironment: vi.fn().mockImplementation(async (item) => item),
+      };
+      const handler = createHandler({ store, toolStore });
+      return {
+        store,
+        response: handler({
+          httpMethod: 'POST',
+          path: '/environments',
+          body: JSON.stringify({
+            environmentId: 'go-x86',
+            name: 'Go x86',
+            compute: { type: 'instances', architecture: 'x86_64' },
+            recipe: { ...CATALOG_RECIPE, toolVersionIds },
+          }),
+          ...claims('platform-admin'),
+        }),
+      };
+    };
+
+    beforeEach(() => {
+      vi.stubEnv('MANAGED_INSTANCES_OPERATOR_ROLE_ARN', 'arn:aws:iam::1:role/operator');
+      vi.stubEnv('MANAGED_INSTANCES_SUBNETS', '["subnet-1"]');
+      vi.stubEnv('MANAGED_INSTANCES_SECURITY_GROUPS', '["sg-1"]');
+      vi.stubEnv('MANAGED_INSTANCES_ALLOWED_TYPES', '["m6i.large"]');
+      vi.stubEnv('CORE_IMAGE_URI_AMD64', BASE.imageUri);
+      vi.stubEnv('CORE_IMAGE_DIGEST_AMD64', amdDigest);
+    });
+
+    it('builds from the amd64 core with the x86_64 tool image', async () => {
+      const { store, response } = create(['tv-go-x86']);
+      const result = await response;
+      expect(result.statusCode).toBe(201);
+      const { recipe, flattenedRecipe } = store.createEnvironment.mock.calls[0][0];
+      expect(recipe.architecture).toBe('x86_64');
+      expect(recipe.base.imageDigest).toBe(amdDigest);
+      expect(recipe.tools).toEqual([
+        expect.objectContaining({ versionId: 'tv-go-x86', architecture: 'x86_64' }),
+      ]);
+      expect(flattenedRecipe.resolvedTools).toEqual([
+        expect.objectContaining({ versionId: 'tv-go-x86' }),
+      ]);
+    });
+
+    it('rejects an arm64 tool build with an actionable error', async () => {
+      const { store, response } = create(['tv-go-arm']);
+      const result = await response;
+      expect(result.statusCode).toBe(409);
+      expect(JSON.parse(result.body)).toMatchObject({ code: 'TOOL_ARCHITECTURE_MISMATCH' });
+      expect(store.createEnvironment).not.toHaveBeenCalled();
+    });
+  });
+
   it('rejects retrying a failed revision pinned to an outdated base', async () => {
     const environment = {
       environmentId: 'go',
@@ -832,5 +928,195 @@ describe('managed environment handler', () => {
     expect(response.statusCode).toBe(409);
     expect(JSON.parse(response.body).error).toMatch(/create a cycle/);
     expect(store.createRevision).not.toHaveBeenCalled();
+  });
+});
+
+describe('default environment for new spaces', () => {
+  const teamBase = {
+    environmentId: 'team-base',
+    name: 'Team Base',
+    status: 'PUBLISHED',
+    baseEnvironmentId: 'standard',
+    publishedRevisionId: 'r-1',
+    currentRevisionId: 'r-1',
+  };
+  const environments = {
+    'team-base': teamBase,
+    draft: { ...teamBase, environmentId: 'draft', status: 'DRAFT', publishedRevisionId: null },
+    retired: { ...teamBase, environmentId: 'retired', status: 'RETIRED' },
+    unverified: { ...teamBase, environmentId: 'unverified' },
+    incompatible: { ...teamBase, environmentId: 'incompatible' },
+    // Created before `default` was a platform path.
+    default: { ...teamBase, environmentId: 'default', name: 'Default' },
+  };
+  // Mirrors resolvePublishedEnvironment (covered against the registry in store.test.js).
+  const resolutionErrors = {
+    draft: 'ENVIRONMENT_NOT_PUBLISHED',
+    retired: 'ENVIRONMENT_NOT_PUBLISHED',
+    unverified: 'ENVIRONMENT_REVISION_UNVERIFIED',
+    incompatible: 'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED',
+  };
+
+  const storeWith = (current = null) => ({
+    ...storeBase(),
+    getEnvironment: vi.fn(async (environmentId) => environments[environmentId] ?? null),
+    resolvePublishedEnvironment: vi.fn(async (environmentId) => {
+      const code = resolutionErrors[environmentId];
+      if (code) throw Object.assign(new Error('Environment is not usable'), { code });
+      return { environment: environments[environmentId] };
+    }),
+    listRevisions: vi.fn().mockResolvedValue([]),
+    getRevision: vi.fn().mockResolvedValue({ revisionId: 'r-1', status: 'PUBLISHED' }),
+    getDefaultEnvironment: vi.fn().mockResolvedValue(current),
+    setDefaultEnvironment: vi.fn(async ({ environmentId, actor }) =>
+      environmentId === 'standard'
+        ? null
+        : { environmentId, updatedBy: actor, updatedAt: '2026-10-23T00:00:00.000Z' },
+    ),
+    updateEnvironment: vi.fn(async (environmentId, patch) => ({
+      ...environments[environmentId],
+      ...patch,
+    })),
+  });
+
+  const call = (handler, httpMethod, path, body, groups = 'platform-admin') =>
+    handler({
+      httpMethod,
+      path,
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...claims(groups),
+    });
+
+  beforeEach(() => {
+    vi.stubEnv('CORE_IMAGE_URI', BASE.imageUri);
+    vi.stubEnv('CORE_IMAGE_DIGEST', BASE.imageDigest);
+    vi.stubEnv('CORE_RUNTIME_ARN', 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/core');
+  });
+
+  it('reports standard when no default is set', async () => {
+    const response = await call(
+      createHandler({ store: storeWith() }),
+      'GET',
+      '/environments/settings/default',
+    );
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      environmentId: 'standard',
+      updatedAt: null,
+      updatedBy: null,
+    });
+  });
+
+  it('sets a published environment as the default', async () => {
+    const store = storeWith();
+    const response = await call(createHandler({ store }), 'PUT', '/environments/settings/default', {
+      environmentId: 'team-base',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      environmentId: 'team-base',
+      updatedBy: 'user@example.com',
+    });
+    expect(store.setDefaultEnvironment).toHaveBeenCalledWith({
+      environmentId: 'team-base',
+      actor: 'user@example.com',
+    });
+  });
+
+  it('resets the default to standard', async () => {
+    const store = storeWith({ environmentId: 'team-base' });
+    const response = await call(createHandler({ store }), 'PUT', '/environments/settings/default', {
+      environmentId: 'standard',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).environmentId).toBe('standard');
+    expect(store.setDefaultEnvironment).toHaveBeenCalledWith({
+      environmentId: 'standard',
+      actor: 'user@example.com',
+    });
+  });
+
+  it.each([
+    ['draft', 'ENVIRONMENT_NOT_PUBLISHED'],
+    ['retired', 'ENVIRONMENT_NOT_PUBLISHED'],
+    ['unverified', 'ENVIRONMENT_REVISION_UNVERIFIED'],
+    ['incompatible', 'ENVIRONMENT_COMPATIBILITY_UNSUPPORTED'],
+  ])('refuses a %s environment as the default', async (environmentId, code) => {
+    const store = storeWith();
+    const response = await call(createHandler({ store }), 'PUT', '/environments/settings/default', {
+      environmentId,
+    });
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).code).toBe(code);
+    expect(store.resolvePublishedEnvironment).toHaveBeenCalledWith(environmentId);
+    expect(store.setDefaultEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('refuses a missing environment as the default', async () => {
+    const store = storeWith();
+    const response = await call(createHandler({ store }), 'PUT', '/environments/settings/default', {
+      environmentId: 'missing',
+    });
+    expect(response.statusCode).toBe(404);
+    expect(store.setDefaultEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('keeps an existing environment with the id default reachable', async () => {
+    const store = storeWith();
+    const response = await call(createHandler({ store }), 'GET', '/environments/default');
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body).environment.environmentId).toBe('default');
+    expect(store.getDefaultEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('requires an environmentId', async () => {
+    const response = await call(
+      createHandler({ store: storeWith() }),
+      'PUT',
+      '/environments/settings/default',
+      {},
+    );
+    expect(response.statusCode).toBe(400);
+  });
+
+  it.each(['GET', 'PUT'])('is platform-admin only (%s)', async (method) => {
+    const store = storeWith();
+    const response = await call(
+      createHandler({ store }),
+      method,
+      '/environments/settings/default',
+      { environmentId: 'team-base' },
+      'member',
+    );
+    expect(response.statusCode).toBe(403);
+    expect(store.setDefaultEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('reserves the settings id for new environments', async () => {
+    const store = { ...storeWith(), createEnvironment: vi.fn() };
+    const response = await call(createHandler({ store }), 'POST', '/environments', {
+      name: 'Settings',
+      environmentId: 'settings',
+    });
+    expect(response.statusCode).toBe(400);
+    expect(store.createEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('will not retire the default environment', async () => {
+    const store = storeWith({ environmentId: 'team-base' });
+    const response = await call(createHandler({ store }), 'POST', '/environments/team-base/retire');
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body).code).toBe('DEFAULT_ENVIRONMENT');
+    expect(store.updateEnvironment).not.toHaveBeenCalled();
+  });
+
+  it('retires an environment that is not the default', async () => {
+    const store = storeWith({ environmentId: 'other' });
+    const response = await call(createHandler({ store }), 'POST', '/environments/team-base/retire');
+    expect(response.statusCode).toBe(200);
+    expect(store.updateEnvironment).toHaveBeenCalledWith(
+      'team-base',
+      expect.objectContaining({ status: 'RETIRED' }),
+    );
   });
 });

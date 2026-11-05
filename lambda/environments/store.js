@@ -19,6 +19,8 @@ import {
   projectedEnvironmentImageSize,
 } from './catalog-recipe.js';
 import { queryAll, scanAll } from './registry.js';
+import { readDefaultEnvironment, writeDefaultEnvironment } from '../shared/environment-default.js';
+import { resolvePublishedEnvironment as resolvePublished } from '../shared/environment-snapshot.js';
 
 const environmentPk = (environmentId) => `ENV#${environmentId}`;
 const environmentKey = (environmentId) => ({ pk: environmentPk(environmentId), sk: 'META' });
@@ -542,7 +544,7 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     return changed;
   };
 
-  const markToolUpdatesAvailable = async (toolId, recommendedVersionId) => {
+  const markToolUpdatesAvailable = async (toolId, recommendedVersionId, architecture = 'arm64') => {
     const environments = await listEnvironments();
     const changed = [];
     for (const environment of environments) {
@@ -554,6 +556,9 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
         (tool) => tool.toolId === toolId,
       );
       if (!selected || selected.versionId === recommendedVersionId) continue;
+      // A recommendation only applies to environments of the same
+      // architecture; the other architecture has its own slot.
+      if ((selected.architecture === 'x86_64' ? 'x86_64' : 'arm64') !== architecture) continue;
       const toolUpdates = [
         ...(environment.toolUpdates ?? []).filter((update) => update.toolId !== toolId),
         {
@@ -867,9 +872,25 @@ export const createEnvironmentStore = ({ ddb, tableName, clock, ids } = {}) => {
     }
   };
 
+  // Default environment for new spaces (shared/environment-default.js).
+  const getDefaultEnvironment = () => readDefaultEnvironment({ ddb, tableName: table() });
+  const setDefaultEnvironment = ({ environmentId, actor }) =>
+    writeDefaultEnvironment({ ddb, tableName: table(), environmentId, actor, now: now() });
+  // The check space and intent creation apply; throws an environment resolution error.
+  const resolvePublishedEnvironment = (environmentId) =>
+    resolvePublished({
+      ddb,
+      tableName: table(),
+      environmentId,
+      fallback: { compatibilityVersion: compatibilityVersion() },
+    });
+
   return {
     getEnvironment,
     getRevision,
+    getDefaultEnvironment,
+    setDefaultEnvironment,
+    resolvePublishedEnvironment,
     listEnvironments,
     listRevisions,
     createEnvironment,

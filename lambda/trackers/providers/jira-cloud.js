@@ -86,7 +86,12 @@ export const refreshAccessToken = async ({ clientId, clientSecret, refreshToken 
   });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
-    const err = new ProviderError(401, 'Jira token refresh failed', { reconnect: true });
+    // Only an invalid grant needs user authorization. An upstream outage or
+    // invalid app secret must not send the browser through an OAuth loop.
+    const reconnect = data.error === 'invalid_grant';
+    const err = new ProviderError(reconnect ? 401 : r.status, 'Jira token refresh failed', {
+      reconnect,
+    });
     err.code = 'REFRESH_FAILED';
     throw err;
   }
@@ -123,7 +128,8 @@ export const listAccessibleResources = async (accessToken) => {
 
 // Persist the connection row + SSM token. Used by both the single-resource
 // and the multi-resource finalize paths in the trackers handler.
-export const persistConnection = async ({ ddb, ssm, userId, resource, tokens }) => {
+export const persistConnection = async ({ ddb, ssm, userId, clientId, resource, tokens }) => {
+  if (!clientId) throw new Error('Jira OAuth client ID is required');
   const parameterName = `/${requireEnv('JIRA_TOKEN_SSM_PREFIX')}/${userId}`;
   if (!JIRA_TOKEN_PARAM_PATTERN.test(parameterName)) {
     throw new Error('Invalid SSM parameter name format');
@@ -152,6 +158,7 @@ export const persistConnection = async ({ ddb, ssm, userId, resource, tokens }) 
       Item: {
         userId,
         providerInstance: PROVIDER_INSTANCE,
+        oauthClientId: clientId,
         parameterName,
         cloudId: resource.cloudId,
         baseUrl: `https://api.atlassian.com/ex/jira/${resource.cloudId}`,
@@ -169,15 +176,16 @@ export const persistConnection = async ({ ddb, ssm, userId, resource, tokens }) 
 // Connection resolution + auto-refresh, used by every resource call.
 // ---------------------------------------------------------------------------
 
-const getConnectionRow = async (ddb, userId) => {
+export const getConnectionRow = async (ddb, userId) => {
   const { Item } = await ddb.send(
     new GetCommand({
       TableName: requireEnv('TRACKER_CONNECTIONS_TABLE'),
       Key: { userId, providerInstance: PROVIDER_INSTANCE },
+      ConsistentRead: true,
     }),
   );
   if (!Item) {
-    const err = new Error('Jira Cloud not connected');
+    const err = new ProviderError(400, 'Jira Cloud not connected', { reconnect: true });
     err.code = 'NOT_CONNECTED';
     throw err;
   }
@@ -231,39 +239,86 @@ const getOAuthCredentials = async (secrets) => {
   return { clientId: parsed.client_id, clientSecret: parsed.client_secret };
 };
 
+const requireCurrentOAuthClient = (row, clientId, requireRecordedClientId = false) => {
+  // Only project discovery requires legacy connections to authorize once.
+  // Existing issue/comment operations can keep using and refreshing their grant.
+  if (row.oauthClientId !== clientId && (row.oauthClientId || requireRecordedClientId)) {
+    const error = new ProviderError(401, 'Jira account authorization required for this OAuth app', {
+      reconnect: true,
+    });
+    error.code = 'OAUTH_CLIENT_CHANGED';
+    throw error;
+  }
+};
+
+const usableTokens = (tokens) =>
+  !!tokens.accessToken && Date.now() < tokens.expiresAt - REFRESH_SAFETY_MARGIN_MS;
+
+// Atlassian allows refresh-token reuse for ten minutes to tolerate concurrent
+// exchanges. If an exchange nevertheless rejects our grant, check SSM before
+// declaring it revoked: another invocation may already have rotated it.
+// https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/#use-a-refresh-token-to-get-another-access-token-and-refresh-token
+const refreshStoredTokens = async ({ ddb, ssm, row }, creds, initialTokens) => {
+  let tokens = initialTokens;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let fresh;
+    try {
+      fresh = await refreshAccessToken({ ...creds, refreshToken: tokens.refreshToken });
+    } catch (error) {
+      if (error.code !== 'REFRESH_FAILED' || !error.extra?.reconnect) throw error;
+      const latest = await readTokens(ssm, row.parameterName);
+      if (
+        latest.refreshToken === tokens.refreshToken &&
+        latest.accessToken === tokens.accessToken
+      ) {
+        error.code = 'JIRA_GRANT_REVOKED';
+        throw error;
+      }
+      if (usableTokens(latest)) return latest;
+      tokens = latest;
+      continue;
+    }
+    const stored = {
+      accessToken: fresh.accessToken,
+      refreshToken: fresh.refreshToken,
+      expiresAt: Date.now() + fresh.expiresIn * 1000,
+    };
+    await writeTokens(ssm, row.parameterName, stored);
+    await updateRowExpiresAt(ddb, row, stored.expiresAt);
+    return stored;
+  }
+  // Repeated concurrent changes are inconclusive, not evidence of revocation.
+  throw new ProviderError(503, 'Jira credentials changed during refresh; retry the operation');
+};
+
 // Returns { accessToken, baseUrl, siteHost, row, parameterName, ddb, ssm }.
 // Refreshes proactively if the cached access token is within the safety
 // margin of expiry. Reactive refresh-on-401 happens inside `jiraFetch`.
-const buildContext = async ({ ddb, ssm, secrets, userId }) => {
-  const row = await getConnectionRow(ddb, userId);
+const buildContext = async ({
+  ddb,
+  ssm,
+  secrets,
+  userId,
+  resolveConnection,
+  externalProjectId,
+  requireRecordedClientId = false,
+}) => {
+  const row = resolveConnection ? await resolveConnection() : await getConnectionRow(ddb, userId);
+  const creds = await getOAuthCredentials(secrets);
+  requireCurrentOAuthClient(row, creds.clientId, requireRecordedClientId);
   const tokens = await readTokens(ssm, row.parameterName);
   let accessToken = tokens.accessToken;
 
-  if (!tokens.expiresAt || Date.now() >= tokens.expiresAt - REFRESH_SAFETY_MARGIN_MS) {
-    try {
-      const creds = await getOAuthCredentials(secrets);
-      const fresh = await refreshAccessToken({
-        clientId: creds.clientId,
-        clientSecret: creds.clientSecret,
-        refreshToken: tokens.refreshToken,
-      });
-      const expiresAt = Date.now() + fresh.expiresIn * 1000;
-      await writeTokens(ssm, row.parameterName, {
-        accessToken: fresh.accessToken,
-        refreshToken: fresh.refreshToken,
-        expiresAt,
-      });
-      await updateRowExpiresAt(ddb, row, expiresAt);
-      accessToken = fresh.accessToken;
-    } catch (err) {
-      if (err.code === 'REFRESH_FAILED') throw err;
-      throw err;
-    }
+  if (!usableTokens(tokens)) {
+    const fresh = await refreshStoredTokens({ ddb, ssm, row }, creds, tokens);
+    accessToken = fresh.accessToken;
   }
 
   return {
     userId,
     accessToken,
+    delegated: !!resolveConnection,
+    externalProjectId,
     baseUrl: row.baseUrl,
     siteHost: row.siteHost,
     row,
@@ -297,26 +352,13 @@ const jiraFetch = async (ctx, path, init = {}) => {
   // Reactive refresh-and-retry once. If the proactive refresh in
   // buildContext already happened, this still covers the rare case where
   // Atlassian invalidates a token mid-flight (revoked at server).
-  let creds;
-  let refreshed;
-  try {
-    creds = await getOAuthCredentials(ctx.secrets);
-    const tokens = await readTokens(ctx.ssm, ctx.row.parameterName);
-    refreshed = await refreshAccessToken({
-      clientId: creds.clientId,
-      clientSecret: creds.clientSecret,
-      refreshToken: tokens.refreshToken,
-    });
-  } catch {
-    throw new ProviderError(401, 'Jira authentication expired', { reconnect: true });
-  }
-  const expiresAt = Date.now() + refreshed.expiresIn * 1000;
-  await writeTokens(ctx.ssm, ctx.row.parameterName, {
-    accessToken: refreshed.accessToken,
-    refreshToken: refreshed.refreshToken,
-    expiresAt,
-  });
-  await updateRowExpiresAt(ctx.ddb, ctx.row, expiresAt);
+  const creds = await getOAuthCredentials(ctx.secrets);
+  requireCurrentOAuthClient(ctx.row, creds.clientId);
+  const tokens = await readTokens(ctx.ssm, ctx.row.parameterName);
+  const refreshed =
+    tokens.accessToken !== ctx.accessToken && usableTokens(tokens)
+      ? tokens
+      : await refreshStoredTokens(ctx, creds, tokens);
   ctx.accessToken = refreshed.accessToken;
 
   r = await fetch(url, {
@@ -349,6 +391,7 @@ const mapIssueToTrackerIssue = (i, siteHost) => {
   const issueType = fields.issuetype || {};
   return {
     resourceId: i.key,
+    externalProjectId: fields.project?.id,
     resourceUrl: url,
     resourceType: 'issue',
     entityType: issueType.name || null,
@@ -363,6 +406,15 @@ const mapIssueToTrackerIssue = (i, siteHost) => {
     },
     createdAt: fields.created || '',
     updatedAt: fields.updated || '',
+    // Where the issue sits in the hierarchy (Epic, Initiative, ...), so the
+    // picker can show it. JPD items have no parent; they use issue links.
+    parent: fields.parent?.key
+      ? {
+          resourceId: fields.parent.key,
+          title: fields.parent.fields?.summary || '',
+          entityType: fields.parent.fields?.issuetype?.name || null,
+        }
+      : null,
   };
 };
 
@@ -466,13 +518,96 @@ const markdownToAdf = (body) => {
 
 const escapeJqlString = (s) => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-const buildJql = (projectKey, { state, q }) => {
-  const parts = [`project = "${escapeJqlString(projectKey)}"`];
+// Characters Jira's text search treats as syntax. Stripped from the
+// prefix-match term only; the plain `text ~` term keeps the user's input.
+const TEXT_SEARCH_SYNTAX = /[+\-&|!(){}[\]^~*?\\:"/]/g;
+
+// Matches an issue key such as PROJ-1341 (Jira keys start with a letter).
+const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
+
+// Search terms. `text ~` matches whole words only, so "auth" never found
+// "authentication" and part-typed words found nothing. A trailing-wildcard
+// summary match covers what the user is still typing.
+const buildSearchClause = (q) => {
+  const raw = q.trim();
+  const clauses = [`text ~ "${escapeJqlString(raw)}"`];
+  const words = raw.replace(TEXT_SEARCH_SYNTAX, ' ').split(/\s+/).filter(Boolean);
+  if (words.length > 0) clauses.push(`summary ~ "${escapeJqlString(`${words.join(' ')}*`)}"`);
+  return `(${clauses.join(' OR ')})`;
+};
+
+// Children of an issue. Software projects use the parent field (Initiative >
+// Epic > Story > Sub-task), within the bound project. Product Discovery items
+// are joined by issue links (an idea and the work items that deliver it), and
+// that delivery work usually sits in other projects, so linked items are not
+// limited to the bound project; Jira still applies the user's permissions.
+const scopeClauses = (projectKey, parentKey, projectTypeKey) => {
+  const project = `project = "${escapeJqlString(projectKey)}"`;
+  if (!parentKey) return [project];
+  if (projectTypeKey === 'product_discovery') {
+    return [`issue in linkedIssues("${escapeJqlString(parentKey)}")`];
+  }
+  return [project, `parent = "${escapeJqlString(parentKey)}"`];
+};
+
+const buildJql = (projectKey, { state, q, types, parentKey, projectTypeKey }) => {
+  const parts = scopeClauses(projectKey, parentKey, projectTypeKey);
   if (state === 'closed') parts.push('statusCategory = Done');
   else if (state !== 'all') parts.push('statusCategory != Done');
-  if (q && q.trim()) parts.push(`text ~ "${escapeJqlString(q.trim())}"`);
-  return parts.join(' AND ');
+  if (types && types.length > 0) {
+    parts.push(`issuetype in (${types.map((t) => `"${escapeJqlString(t)}"`).join(', ')})`);
+  }
+  if (q && q.trim()) parts.push(buildSearchClause(q));
+  // Without an order Jira returns key order, oldest first, so the tickets
+  // people are working on sat pages deep behind the scroll box.
+  return `${parts.join(' AND ')} ORDER BY updated DESC`;
 };
+
+// Issue types are per project, and JQL rejects the whole query if it names a
+// type the site doesn't have. Requested types are matched against the
+// project's own, case-insensitively; cached so paging doesn't refetch them.
+const ISSUE_TYPE_TTL_MS = 10 * 60 * 1000;
+const issueTypeCache = new Map();
+
+const projectMeta = async (ctx, projectKey) => {
+  const cacheKey = `${ctx.baseUrl}|${projectKey}`;
+  const hit = issueTypeCache.get(cacheKey);
+  if (hit && hit.expiresAt > Date.now()) return hit.meta;
+  const r = await jiraFetch(ctx, `/rest/api/3/project/${encodeURIComponent(projectKey)}`);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new ProviderError(r.status, data.errorMessages?.[0] || 'Failed to load Jira issue types');
+  }
+  // Highest level first (Initiative, Epic, ..., Sub-task), then by name.
+  const issueTypes = (Array.isArray(data.issueTypes) ? data.issueTypes : [])
+    .filter((t) => typeof t?.name === 'string' && t.name)
+    .map((t) => ({
+      name: t.name,
+      iconUrl: t.iconUrl || null,
+      hierarchyLevel: Number.isFinite(t.hierarchyLevel) ? t.hierarchyLevel : 0,
+      subtask: t.subtask === true,
+    }))
+    .toSorted((a, b) => b.hierarchyLevel - a.hierarchyLevel || a.name.localeCompare(b.name));
+  const meta = { projectTypeKey: data.projectTypeKey || null, issueTypes };
+  issueTypeCache.set(cacheKey, { meta, expiresAt: Date.now() + ISSUE_TYPE_TTL_MS });
+  return meta;
+};
+
+const parseTypes = (raw) =>
+  typeof raw === 'string'
+    ? [
+        ...new Set(
+          raw
+            .split(',')
+            .map((t) => t.trim())
+            .filter(Boolean),
+        ),
+      ].slice(0, 10)
+    : [];
+
+// Issue fields every list call asks for.
+const ISSUE_LIST_FIELDS =
+  'summary,status,labels,reporter,created,updated,description,issuetype,parent,project';
 
 const DEFAULT_PER_PAGE = 30;
 const MAX_PER_PAGE = 100;
@@ -527,6 +662,7 @@ const fetchProjectPage = async (ctx, startAt) => {
   else isLast = values.length < limit;
   return {
     projects: values.map((p) => ({
+      id: p.id,
       key: p.key,
       name: p.name,
       displayKey: p.key,
@@ -542,7 +678,7 @@ const fetchProjectPage = async (ctx, startAt) => {
 // response ended. Sequential requests also keep any 401 token refresh single
 // (Atlassian rotates refresh tokens, so parallel refreshes would race).
 const listExternalProjects = async ({ ddb, ssm, secrets, userId }) => {
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const ctx = await buildContext({ ddb, ssm, secrets, userId, requireRecordedClientId: true });
   const projects = [];
   const seen = new Set();
   let startAt = 0;
@@ -559,11 +695,30 @@ const listExternalProjects = async ({ ddb, ssm, secrets, userId }) => {
   return projects.slice(0, PROJECT_MAX_RESULTS);
 };
 
-const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) => {
+const matchesProject = (ctx, projectKey, project) =>
+  ctx.externalProjectId ? project?.id === ctx.externalProjectId : project?.key === projectKey;
+
+// The issue with this key, if it is in the bound project and passes the
+// list's state and type filters; otherwise null.
+const findIssueByKey = async (ctx, projectKey, key, { state, types }) => {
+  const params = new URLSearchParams({ fields: ISSUE_LIST_FIELDS });
+  const r = await jiraFetch(ctx, `/rest/api/3/issue/${encodeURIComponent(key)}?${params}`);
+  if (!r.ok) return null;
+  const data = await r.json().catch(() => null);
+  if (!data || !matchesProject(ctx, projectKey, data.fields?.project)) return null;
+  const issue = mapIssueToTrackerIssue(data, ctx.siteHost);
+  if (state === 'open' && issue.state !== 'open') return null;
+  if (state === 'closed' && issue.state !== 'closed') return null;
+  if (types.length > 0 && !types.includes(issue.entityType)) return null;
+  return issue;
+};
+
+const listIssues = async (connection, projectKey, opts = {}) => {
   if (!projectKey) {
     throw new ProviderError(400, 'Invalid externalProjectKey for jira-cloud');
   }
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const ctx = await buildContext(connection);
+  projectKey = ctx.externalProjectId || projectKey;
   const state = ['open', 'closed', 'all'].includes(opts.state) ? opts.state : 'open';
   const page = parsePageNumber(opts.page);
   const perPage = parsePerPage(opts.perPage);
@@ -576,9 +731,57 @@ const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) 
   // generator can drive paging without knowing it's cursor-based; the
   // user-visible `page` is still incremented in the generator and is just
   // a counter on this side.
-  const jql = buildJql(projectKey, { state, q: opts.q });
-  const fields = 'summary,status,labels,reporter,created,updated,description,issuetype';
-  const params = new URLSearchParams({ jql, maxResults: String(perPage), fields });
+  const hasPrev = page > 1;
+  const empty = {
+    items: [],
+    page,
+    perPage,
+    hasNext: false,
+    hasPrev,
+    totalCount: 0,
+    nextPageToken: null,
+  };
+
+  const parentKey =
+    typeof opts.parent === 'string' && ISSUE_KEY.test(opts.parent.trim())
+      ? opts.parent.trim().toUpperCase()
+      : null;
+  if (opts.parent && !parentKey) throw new ProviderError(400, 'Invalid parent issue key');
+  if (parentKey) await requireIssueScope(ctx, projectKey, parentKey, null, false);
+
+  const requestedTypes = parseTypes(opts.type);
+  const withTypes = opts.withTypes === '1' || opts.withTypes === true;
+  // The project's issue types feed the picker's type filter, and the project
+  // type decides how children are found. Fetched only when needed; cached.
+  const meta =
+    requestedTypes.length > 0 || parentKey || withTypes ? await projectMeta(ctx, projectKey) : null;
+  const firstPageExtras =
+    withTypes && !pageToken
+      ? { issueTypes: meta.issueTypes, projectTypeKey: meta.projectTypeKey }
+      : {};
+
+  let types = [];
+  if (requestedTypes.length > 0) {
+    const byLower = new Map(meta.issueTypes.map((t) => [t.name.toLowerCase(), t.name]));
+    types = requestedTypes.map((t) => byLower.get(t.toLowerCase())).filter(Boolean);
+    // The project has none of the requested types (say, Ideas in a software
+    // project): that is an empty list, not a JQL error.
+    if (types.length === 0) return { ...empty, ...firstPageExtras };
+  }
+
+  const q = typeof opts.q === 'string' ? opts.q.trim() : '';
+  const jql = buildJql(projectKey, {
+    state,
+    q,
+    types,
+    parentKey,
+    projectTypeKey: meta?.projectTypeKey ?? null,
+  });
+  const params = new URLSearchParams({
+    jql,
+    maxResults: String(perPage),
+    fields: ISSUE_LIST_FIELDS,
+  });
   if (pageToken) params.set('nextPageToken', pageToken);
   const url = `/rest/api/3/search/jql?${params.toString()}`;
 
@@ -589,29 +792,101 @@ const listIssues = async ({ ddb, ssm, secrets, userId }, projectKey, opts = {}) 
   }
 
   const rawItems = Array.isArray(data.issues) ? data.issues : [];
-  const items = rawItems.map((i) => mapIssueToTrackerIssue(i, ctx.siteHost));
+  let items = rawItems.map((i) => mapIssueToTrackerIssue(i, ctx.siteHost));
+
+  // Typing a key (PROJ-1341) should find that issue. Text search doesn't index
+  // keys, and `key = X` fails the whole JQL query when X doesn't exist, so
+  // look it up directly and put it first. Only on the first page.
+  if (!pageToken && !parentKey && ISSUE_KEY.test(q)) {
+    const exact = await findIssueByKey(ctx, projectKey, q.toUpperCase(), { state, types });
+    if (exact) items = [exact, ...items.filter((i) => i.resourceId !== exact.resourceId)];
+  }
+
   const nextPageToken = typeof data.nextPageToken === 'string' ? data.nextPageToken : null;
   const hasNext = data.isLast === true ? false : !!nextPageToken;
-  const hasPrev = page > 1;
 
-  return { items, page, perPage, hasNext, hasPrev, totalCount: null, nextPageToken };
+  return {
+    items,
+    page,
+    perPage,
+    hasNext,
+    hasPrev,
+    totalCount: null,
+    nextPageToken,
+    ...firstPageExtras,
+  };
 };
 
-const getIssue = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId) => {
+const requireIssueScope = async (ctx, projectKey, resourceId, issue, allowLinked = true) => {
+  if (!ctx.delegated) return;
+  if (!issue) {
+    const r = await jiraFetch(
+      ctx,
+      `/rest/api/3/issue/${encodeURIComponent(resourceId)}?fields=project`,
+    );
+    if (!r.ok) throw new ProviderError(r.status, 'Unable to verify Jira issue scope');
+    issue = await r.json();
+  }
+  if (matchesProject(ctx, projectKey, issue.fields?.project)) return;
+  projectKey = ctx.externalProjectId || projectKey;
+  if (allowLinked && (await projectMeta(ctx, projectKey)).projectTypeKey === 'product_discovery') {
+    const params = new URLSearchParams({
+      jql: `project = "${escapeJqlString(projectKey)}" AND issue in linkedIssues("${escapeJqlString(resourceId)}")`,
+      maxResults: '1',
+      fields: 'key',
+    });
+    const r = await jiraFetch(ctx, `/rest/api/3/search/jql?${params}`);
+    if (!r.ok) throw new ProviderError(r.status, 'Unable to verify linked Jira issue');
+    const data = await r.json();
+    if (data.issues?.length) return;
+  }
+  throw new ProviderError(404, 'Issue is outside this tracker binding');
+};
+
+// Binding creation verifies the selected project using the same authenticated
+// context that supplies its site identity. Never trust a client-supplied site.
+export const verifyProject = async (connection, projectKey, expectedProject) => {
+  const ctx = await buildContext({ ...connection, requireRecordedClientId: true });
+  // Bypass the metadata cache when authorizing a new delegation.
+  const r = await jiraFetch(ctx, `/rest/api/3/project/${encodeURIComponent(projectKey)}`);
+  if (!r.ok) throw new ProviderError(r.status, 'Jira project is not accessible');
+  const project = await r.json();
+  if (!project.id) throw new ProviderError(502, 'Jira project identity is missing');
+  // Existing bindings retain identity even after a key rename. For legacy
+  // bindings, Jira resolves the saved key alias during this first delegation.
+  if (expectedProject && expectedProject !== project.id && expectedProject !== projectKey) {
+    const expected = await jiraFetch(
+      ctx,
+      `/rest/api/3/project/${encodeURIComponent(expectedProject)}`,
+    );
+    if (!expected.ok || (await expected.json()).id !== project.id) {
+      throw new ProviderError(400, 'Reconnection must preserve the bound Jira project');
+    }
+  }
+  return {
+    connectionUserId: ctx.row.userId,
+    cloudId: ctx.row.cloudId,
+    externalProjectId: project.id,
+  };
+};
+
+const getIssue = async (connection, projectKey, resourceId) => {
   if (!resourceId) throw new ProviderError(400, 'Missing resourceId');
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const ctx = await buildContext(connection);
   const r = await jiraFetch(ctx, `/rest/api/3/issue/${encodeURIComponent(resourceId)}`);
   if (r.status === 404) throw new ProviderError(404, 'Not found');
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     throw new ProviderError(r.status, data.errorMessages?.[0] || 'Failed to fetch Jira issue');
   }
+  await requireIssueScope(ctx, projectKey, resourceId, data);
   return mapIssueToTrackerIssue(data, ctx.siteHost);
 };
 
-const getIssueDiscussion = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId) => {
+const getIssueDiscussion = async (connection, projectKey, resourceId) => {
   if (!resourceId) throw new ProviderError(400, 'Missing resourceId');
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const ctx = await buildContext(connection);
+  await requireIssueScope(ctx, projectKey, resourceId);
   const r = await jiraFetch(
     ctx,
     `/rest/api/3/issue/${encodeURIComponent(resourceId)}/comment?maxResults=100`,
@@ -625,10 +900,11 @@ const getIssueDiscussion = async ({ ddb, ssm, secrets, userId }, projectKey, res
   return comments.map(mapCommentToTrackerComment);
 };
 
-const addIssueComment = async ({ ddb, ssm, secrets, userId }, projectKey, resourceId, body) => {
+const addIssueComment = async (connection, projectKey, resourceId, body) => {
   if (!resourceId) throw new ProviderError(400, 'Missing resourceId');
-  const ctx = await buildContext({ ddb, ssm, secrets, userId });
+  const ctx = await buildContext(connection);
   requireWriteScope(ctx);
+  await requireIssueScope(ctx, projectKey, resourceId);
   const r = await jiraFetch(ctx, `/rest/api/3/issue/${encodeURIComponent(resourceId)}/comment`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -641,11 +917,22 @@ const addIssueComment = async ({ ddb, ssm, secrets, userId }, projectKey, resour
   return mapCommentToTrackerComment(data);
 };
 
+const withConnectionErrors =
+  (operation) =>
+  async (connection, ...args) => {
+    try {
+      return await operation(connection, ...args);
+    } catch (error) {
+      if (connection.onConnectionError) return connection.onConnectionError(error);
+      throw error;
+    }
+  };
+
 export const provider = {
   id: 'jira-cloud',
   listExternalProjects,
-  listIssues,
-  getIssue,
-  getIssueDiscussion,
-  addIssueComment,
+  listIssues: withConnectionErrors(listIssues),
+  getIssue: withConnectionErrors(getIssue),
+  getIssueDiscussion: withConnectionErrors(getIssueDiscussion),
+  addIssueComment: withConnectionErrors(addIssueComment),
 };

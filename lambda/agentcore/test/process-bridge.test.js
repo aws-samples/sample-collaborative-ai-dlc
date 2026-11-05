@@ -6,14 +6,12 @@ const fakeStore = () => {
   const humanTasks = new Map();
   const events = [];
   const outputs = [];
-  const metrics = [];
   const execPatches = [];
   let seq = 0;
   return {
     humanTasks,
     events,
     outputs,
-    metrics,
     execPatches,
     async createHumanTask(args) {
       humanTasks.set(args.humanTaskId, {
@@ -46,10 +44,6 @@ const fakeStore = () => {
       const row = { seq, kind, content, timestamp: '2026-07-16T12:34:56.000Z' };
       outputs.push(row);
       return row;
-    },
-    async recordMetric({ metrics: m }) {
-      metrics.push(m);
-      return { metricId: `m${metrics.length}` };
     },
   };
 };
@@ -126,24 +120,7 @@ describe('recordProjectType', () => {
   });
 });
 
-describe('collectMetric + emitStageNote', () => {
-  it('records a metric bag and broadcasts it live', async () => {
-    const store = fakeStore();
-    const sent = [];
-    const bridge = createProcessBridge({ store, scope: SCOPE, broadcast: (p) => sent.push(p) });
-    const res = await bridge.collectMetric({ metrics: { tokensInput: 5, contextWindowPct: 12 } });
-    expect(res).toEqual({ metricId: 'm1' });
-    expect(store.metrics[0]).toEqual({ tokensInput: 5, contextWindowPct: 12 });
-    expect(sent[0]).toMatchObject({
-      action: 'agent.metric',
-      executionId: 'exec-1',
-      intentId: 'intent-1',
-      stageInstanceId: 'si-1',
-      metricId: 'm1',
-      metrics: { tokensInput: 5, contextWindowPct: 12 },
-    });
-  });
-
+describe('emitStageNote', () => {
   it('appends an audit note event and broadcasts it live', async () => {
     const store = fakeStore();
     const sent = [];
@@ -288,7 +265,7 @@ describe('unit-lane scope (V2_UNIT_SLUG)', () => {
     });
   });
 
-  it('sendOutput / collectMetric / emitStageNote broadcasts carry the lane', async () => {
+  it('sendOutput / emitStageNote broadcasts carry the lane', async () => {
     const store = fakeStore();
     const sent = [];
     const bridge = createProcessBridge({
@@ -297,9 +274,8 @@ describe('unit-lane scope (V2_UNIT_SLUG)', () => {
       broadcast: (p) => sent.push(p),
     });
     await bridge.sendOutput({ content: 'hi' });
-    await bridge.collectMetric({ metrics: { tokensInput: 1 } });
     await bridge.emitStageNote({ summary: 'note' });
-    for (const action of ['agent.output', 'agent.metric', 'agent.note']) {
+    for (const action of ['agent.output', 'agent.note']) {
       expect(sent.find((p) => p.action === action)).toMatchObject({ unitSlug: 'billing' });
     }
     expect(store.events.find((e) => e.type === 'v2.stage.note')).toMatchObject({

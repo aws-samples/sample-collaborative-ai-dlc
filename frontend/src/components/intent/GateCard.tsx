@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
 import type { GateAnswer, IntentGate } from '@/services/intents';
 import { useIntent } from '@/contexts/IntentContext';
-import QuestionEditor from '@/components/QuestionEditor';
+import QuestionEditor, { type QuestionReferences } from '@/components/QuestionEditor';
+import { useIntentGraph } from '@/hooks/useIntentGraph';
 import type { Question } from '@/services/questions';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -45,7 +46,15 @@ export interface GateCardProps {
 
 export function GateCard({ gate, projectId, intentId, userName, onAnswer }: GateCardProps) {
   const navigate = useNavigate();
-  const { stageNameOf: gateStageNameOf, detail } = useIntent();
+  const {
+    stageNameOf: gateStageNameOf,
+    detail,
+    openArtifactPreview,
+    openItemPreview,
+  } = useIntent();
+  // Shared graph cache: lets references such as FR2.4 or dec-session-tokens in a question
+  // link to the matching artifact or derived-item preview.
+  const { derivedItems } = useIntentGraph(projectId, intentId);
   const steeringBlocked = executionCapabilityReason(detail?.intent, 'answerRevision');
   const responseBlocked = executionGateResponseReason(detail?.intent, gate);
   const submitAnswer = async (input: GateAnswer) => {
@@ -76,6 +85,16 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
       createdAt: gate.createdAt ?? '',
     };
   }, [gate]);
+  const artifacts = detail?.artifacts;
+  const references = useMemo<QuestionReferences>(
+    () => ({
+      artifacts: artifacts ?? [],
+      derivedItems,
+      onOpenArtifact: openArtifactPreview,
+      onOpenItem: openItemPreview,
+    }),
+    [artifacts, derivedItems, openArtifactPreview, openItemPreview],
+  );
   const walkingSkeletonBranch = useMemo<UnitBranchItem | null>(() => {
     if (!gate.prompt?.startsWith('Walking skeleton') || !gate.unitSlug) return null;
     return (
@@ -288,6 +307,7 @@ export function GateCard({ gate, projectId, intentId, userName, onAnswer }: Gate
       {responseBlocked && <p className="mb-2 text-xs text-muted-foreground">{responseBlocked}</p>}
       <QuestionEditor
         question={question}
+        references={references}
         scope={{ kind: 'intent', id: intentId, projectId }}
         userName={userName}
         disabled={Boolean(responseBlocked)}

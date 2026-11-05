@@ -80,6 +80,7 @@ export const canRecover = (intent: NativeIntent) =>
 // Fixed public responses from lambda/native-runtime-control/api.js. Never
 // render arbitrary ApiError.message/body text, even for a recognized code.
 const nativeActionErrors: Record<string, readonly [number, string]> = {
+  agent_cli_disabled: [400, 'The selected agent CLI is disabled by the platform administrator'],
   NATIVE_PROMPT_INVALID: [400, 'Enter a nonblank prompt of at most 64 KiB without null characters'],
   NATIVE_PROMPT_CONFLICT: [
     409,

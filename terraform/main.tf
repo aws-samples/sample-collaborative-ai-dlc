@@ -288,7 +288,9 @@ module "domain" {
 # This is a singleton per AWS account/region — both the REST API and WebSocket
 # API stages need it configured before they can enable access logging.
 resource "aws_iam_role" "api_gateway_cloudwatch" {
-  name = "${var.project_name}-apigw-cw-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-apigw-cw-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -337,6 +339,9 @@ module "auth" {
   source = "./modules/auth"
 
   deletion_protection = var.deletion_protection
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id       = local.aws_sdk_ua_app_id
   project_name            = var.project_name
@@ -504,6 +509,9 @@ module "lambda" {
   native_preparation_enabled = var.native_services_enabled
   source                     = "./modules/api/lambda"
 
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
+
   aws_sdk_ua_app_id           = local.aws_sdk_ua_app_id
   project_name                = var.project_name
   environment                 = var.environment
@@ -594,6 +602,9 @@ module "lambda" {
   agent_credential_grant_secret_param_arn      = aws_ssm_parameter.agent_credential_grant_secret.arn
   agent_credential_grant_secret_param_name     = aws_ssm_parameter.agent_credential_grant_secret.name
   kms_key_arn                                  = var.kms_key_arn
+  codecommit_connection_param_name             = module.git.codecommit_connection_param_name
+  codecommit_connection_param_arn              = module.git.codecommit_connection_param_arn
+  codecommit_external_id                       = module.git.codecommit_external_id
 
   # Discussions feature
   discussion_locks_table_name      = module.dynamodb.discussion_locks_table_name
@@ -701,6 +712,9 @@ module "api" {
 module "realtime" {
   source = "./modules/realtime"
 
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
+
   aws_sdk_ua_app_id       = local.aws_sdk_ua_app_id
   project_name            = var.project_name
   environment             = var.environment
@@ -723,6 +737,9 @@ module "realtime" {
 # Yjs Server (ECS)
 module "yjs_server" {
   source = "./modules/realtime/yjs-server"
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id             = local.aws_sdk_ua_app_id
   project_name                  = var.project_name
@@ -778,12 +795,15 @@ module "agentcore" {
   aidlc_repo_ref                  = var.aidlc_repo_ref
   bedrock_model                   = var.bedrock_model
   bedrock_region                  = local.bedrock_region
+  iam_role_path                   = var.iam_role_path
+  iam_permissions_boundary_arn    = var.iam_permissions_boundary_arn
   # The kiro-cli build shipped in the agentcore image only accepts the "auto"
   # model selector; a concrete model id (e.g. "claude-opus-4.6") is rejected at
   # spawn with `error: Model '...' does not exist. Available models: auto`,
   # failing every stage with cli_nonzero_exit. Let kiro resolve the model.
   kiro_model          = "auto"
   codex_model         = var.codex_model
+  disabled_clis       = var.disabled_clis
   kms_key_arn         = var.kms_key_arn
   deletion_protection = var.deletion_protection
 
@@ -801,6 +821,9 @@ module "agentcore" {
 
 module "managed_environments" {
   source = "./modules/compute/managed-environments"
+
+  iam_role_path                = var.iam_role_path
+  iam_permissions_boundary_arn = var.iam_permissions_boundary_arn
 
   aws_sdk_ua_app_id             = local.aws_sdk_ua_app_id
   project_name                  = var.project_name

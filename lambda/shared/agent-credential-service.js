@@ -8,14 +8,25 @@ import {
 import { resolveEffectiveCredentialBindingsViaBroker } from './agent-credential-metadata.js';
 import { qualifyAgentAuthRuntime } from './agent-auth-runtime-capabilities.js';
 import { issueAgentCredentialGrant } from './agent-credential-grants.js';
+import { agentCliDisabledError, readDisabledClis } from './agent-cli-availability.js';
 
 // Callers authorize their operation and supply trusted project/user/execution
 // context. This service owns selection and issuance for every command purpose.
+// It is only used for a NEW CLI selection (an execution's pinned CLI never
+// comes through here), so it also enforces the platform's disabled-CLI set.
 export const resolveSelectedAgentCredential = async (
   { projectId, userId, agentCli, runtimeCapabilities },
   {
     resolveBindings = resolveEffectiveCredentialBindingsViaBroker,
     qualifyRuntime = qualifyAgentAuthRuntime,
+    ssm = null,
+    settingsPrefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '',
+    loadDisabledClis = () => {
+      if (settingsPrefix && !ssm) {
+        throw new Error('resolveSelectedAgentCredential requires an SSM client');
+      }
+      return readDisabledClis(ssm, settingsPrefix);
+    },
   } = {},
 ) => {
   const provider = credentialProviderForCli(agentCli);
@@ -29,6 +40,9 @@ export const resolveSelectedAgentCredential = async (
         },
       },
     };
+  if ((await loadDisabledClis()).includes(agentCli)) {
+    return { error: agentCliDisabledError(agentCli) };
+  }
   const bindings = await resolveBindings({
     projectId,
     userId,

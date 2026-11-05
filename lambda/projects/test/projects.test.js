@@ -588,6 +588,56 @@ describe('PUT /projects/:id', () => {
     });
   });
 
+  it('defaults a new space to the first enabled CLI and rejects a disabled one', async () => {
+    const sub = `u-${randomUUID()}`;
+    ssmParams.set('/collab/dev/disabled-clis', '["kiro"]');
+    try {
+      const created = await createProject(sub);
+      expect(created.agentCli).toBe('claude');
+
+      const denied = await handler({
+        httpMethod: 'POST',
+        body: JSON.stringify({ name: 'P', gitRepo: 'r', agentCli: 'kiro' }),
+        ...claims(sub),
+      });
+      expect(denied.statusCode).toBe(400);
+      expect(JSON.parse(denied.body).code).toBe('agent_cli_disabled');
+    } finally {
+      ssmParams.delete('/collab/dev/disabled-clis');
+    }
+  });
+
+  it('rejects recommending an admin-disabled CLI but keeps an existing recommendation', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    ssmParams.set('/collab/dev/disabled-clis', '["codex","kiro"]');
+    try {
+      const update = (agentCli) =>
+        handler({
+          httpMethod: 'PUT',
+          pathParameters: { projectId: id },
+          body: JSON.stringify({ agentCli }),
+          ...claims(sub),
+        });
+
+      const denied = await update('codex');
+      expect(denied.statusCode).toBe(400);
+      expect(JSON.parse(denied.body).code).toBe('agent_cli_disabled');
+
+      // The project already recommends kiro (the default); re-saving it is not a new selection.
+      expect((await update('kiro')).statusCode).toBe(200);
+      expect((await update('claude')).statusCode).toBe(200);
+      const fetched = await handler({
+        httpMethod: 'GET',
+        pathParameters: { projectId: id },
+        ...claims(sub),
+      });
+      expect(JSON.parse(fetched.body).agentCli).toBe('claude');
+    } finally {
+      ssmParams.delete('/collab/dev/disabled-clis');
+    }
+  });
+
   it('persists cliModels overrides', async () => {
     const sub = `u-${randomUUID()}`;
     const { id } = await createProject(sub, {
@@ -776,6 +826,52 @@ describe('GET/PUT /projects/:id/environment', () => {
     pathParameters: { projectId },
     ...(body ? { body: JSON.stringify(body) } : {}),
     ...claims(sub),
+  });
+
+  const withRegistryTable = async (operation) => {
+    const previousTable = process.env.ENVIRONMENT_REGISTRY_TABLE;
+    process.env.ENVIRONMENT_REGISTRY_TABLE = 'environment-registry-test';
+    try {
+      return await operation();
+    } finally {
+      if (previousTable === undefined) delete process.env.ENVIRONMENT_REGISTRY_TABLE;
+      else process.env.ENVIRONMENT_REGISTRY_TABLE = previousTable;
+    }
+  };
+
+  const setDefaultEnvironment = (environmentId) =>
+    environmentRegistryItems.set('SETTINGS#ENVIRONMENTS|DEFAULT', {
+      pk: 'SETTINGS#ENVIRONMENTS',
+      sk: 'DEFAULT',
+      environmentId,
+    });
+
+  it('creates new spaces in the default environment', async () => {
+    installPublishedEnvironment();
+    setDefaultEnvironment('polyglot');
+    await withRegistryTable(async () => {
+      const ownerSub = `u-${randomUUID()}`;
+      const created = await createProject(ownerSub);
+      expect(created.environmentId).toBe('polyglot');
+      const fetched = await handler(event('GET', created.id, ownerSub));
+      expect(JSON.parse(fetched.body)).toMatchObject({
+        environmentId: 'polyglot',
+        revision: { revisionId: 'r-7' },
+      });
+    });
+  });
+
+  it('creates new spaces in Standard when the default is no longer published', async () => {
+    installPublishedEnvironment();
+    environmentRegistryItems.set('ENV#polyglot|META', {
+      ...environmentRegistryItems.get('ENV#polyglot|META'),
+      status: 'RETIRED',
+    });
+    setDefaultEnvironment('polyglot');
+    await withRegistryTable(async () => {
+      const created = await createProject(`u-${randomUUID()}`);
+      expect(created.environmentId).toBe('standard');
+    });
   });
 
   it('lets an owner assign a published environment and read it back', async () => {

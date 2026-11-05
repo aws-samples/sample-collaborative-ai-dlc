@@ -110,7 +110,10 @@ describe('native discussion assist', () => {
               return async () => {
                 traversals.push(steps);
                 const has = steps.filter(([step]) => step === 'has').map(([, args]) => args);
-                if (name === 'toList') return messages;
+                if (name === 'toList')
+                  return steps.some(([step, args]) => step === 'out' && args[0] === 'HAS_MESSAGE')
+                    ? messages
+                    : [];
                 if (has.some(([label]) => label === 'Discussion'))
                   return { done: false, value: discussion };
                 if (has.some(([label]) => label === 'DiscussionMessage')) {
@@ -128,7 +131,14 @@ describe('native discussion assist', () => {
       );
     return { g: { V: (...args) => make([['V', args]]) }, traversals };
   };
-  const run = async (payload, discussion, { availableClis = ['kiro'] } = {}) => {
+  const run = async (
+    payload,
+    discussion,
+    {
+      availableClis = ['kiro'],
+      output = { ok: true, text: 'Looks fair.', metrics: { tokens: 1 } },
+    } = {},
+  ) => {
     const graph = fakeGraph({
       discussion: {
         id: 'd1',
@@ -148,12 +158,12 @@ describe('native discussion assist', () => {
       ],
     });
     const store = {
-      getExecution: vi.fn(),
-      getExecutionRecords: vi.fn(),
-      appendEvent: vi.fn(),
-      recordMetric: vi.fn(),
+      getExecution: vi.fn(async () => ({ status: 'RUNNING', agentCli: 'kiro', cliModels: {} })),
+      getExecutionRecords: vi.fn(async () => ({ events: [] })),
+      appendEvent: vi.fn(async () => {}),
+      recordMetric: vi.fn(async () => {}),
     };
-    const oneShot = vi.fn(async () => ({ ok: true, text: 'Looks fair.', metrics: { tokens: 1 } }));
+    const oneShot = vi.fn(async () => output);
     const materializeCliContextFn = vi.fn(async () => ({ agentName: 'aidlc' }));
     const broadcast = vi.fn();
     const broadcastNative = vi.fn();
@@ -217,6 +227,55 @@ describe('native discussion assist', () => {
     expect(r.broadcastNative).toHaveBeenCalledWith(
       { projectId: 'p1', executionId: 'e1' },
       expect.objectContaining({ action: 'discussion.message', sprintId: ROOT, discussionId: 'd1' }),
+    );
+  });
+
+  it.each([true, false])('records measured managed usage exactly once when ok=%s', async (ok) => {
+    const metrics = { tokensInput: 100, tokensOutput: 20, credits: 0.5 };
+    const r = await run(
+      basePayload,
+      { entity_type: 'intent', entity_id: 'i1' },
+      {
+        output: {
+          ok,
+          text: 'Measured answer',
+          reason: 'cli_failed',
+          metrics,
+          model: 'selected-model',
+          creditRate: 1.5,
+        },
+      },
+    );
+    expect(r.oneShot).toHaveBeenCalledTimes(1);
+    expect(r.store.recordMetric).toHaveBeenCalledExactlyOnceWith({
+      executionId: 'i1',
+      stageInstanceId: null,
+      metrics: { ...metrics, discussionAssistCalls: 1 },
+      resolvedModel: 'selected-model',
+      creditRate: 1.5,
+    });
+    expect(r.store.appendEvent).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        executionId: 'i1',
+        type: ok ? 'v2.discussion_assist.completed' : 'v2.discussion_assist.failed',
+      }),
+    );
+    expect(r.broadcastNative).not.toHaveBeenCalled();
+  });
+
+  it('keeps measured native failures out of managed metrics and events', async () => {
+    const r = await run(nativePayload(artifact), undefined, {
+      output: { ok: false, reason: 'cli_failed', metrics: { tokensInput: 100, tokensOutput: 20 } },
+    });
+    expect(r.oneShot).toHaveBeenCalledTimes(1);
+    expect(r.store.recordMetric).not.toHaveBeenCalled();
+    expect(r.store.appendEvent).not.toHaveBeenCalled();
+    expect(r.broadcastNative).toHaveBeenCalledWith(
+      { projectId: 'p1', executionId: 'e1' },
+      expect.objectContaining({
+        action: 'discussion.message',
+        message: expect.objectContaining({ assistStatus: 'failed' }),
+      }),
     );
   });
 

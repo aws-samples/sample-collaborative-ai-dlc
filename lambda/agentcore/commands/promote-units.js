@@ -34,6 +34,7 @@
 
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { parseBoltDag } from '../../shared/v2-sensor-contract.js';
+import { effectiveSkeleton, skeletonProblem } from '../../shared/unit-completion.js';
 
 const DAG_ARTIFACT_TYPE = 'unit-of-work-dependency';
 
@@ -122,20 +123,39 @@ export const promoteUnits = async (payload, deps) => {
     // batch (batches are sorted). The fan-out approval can override.
     // Consistent: a stale read would drop decisions the fan-out approval saved.
     const existingPlan = await store.getUnitPlan(executionId, { consistentRead: true });
+    const priorSkeleton = existingPlan?.walkingSkeleton;
+    const priorProblem =
+      priorSkeleton == null ? null : skeletonProblem({ units, batches }, priorSkeleton);
+    const walkingSkeleton = priorProblem
+      ? effectiveSkeleton({ units, batches })
+      : effectiveSkeleton({ units, batches, walkingSkeleton: priorSkeleton });
     const plan = await store.putUnitPlan({
       executionId,
       units,
       batches,
       sourceArtifactId: artifact.id ?? null,
       producedByStageInstanceId: stageInstanceId,
-      // Preserve previously captured human decisions across a re-promotion —
-      // a rewind re-produces the DAG, not the humans' skip/skeleton/autonomy
-      // answers (the unit-DAG stage's gate re-confirms them on re-approval).
+      // Keep valid choices across re-promotion. A regenerated DAG can rename
+      // or add dependencies to the old skeleton; choose a valid default BEFORE
+      // the normal fan-out approval, preserving the original answer in history.
       skipMatrix: existingPlan?.skipMatrix ?? {},
-      walkingSkeleton: existingPlan?.walkingSkeleton ?? batches[0]?.[0] ?? null,
+      walkingSkeleton,
       autonomyMode: existingPlan?.autonomyMode ?? null,
     });
-    const sync = await store.syncUnitRows({ executionId, units, batches, sectionIndexes });
+    const sync = await store.syncUnitRows({
+      executionId,
+      units,
+      batches,
+      sectionIndexes,
+    });
+    if (priorProblem)
+      await event(
+        'v2.units.skeleton_reselected',
+        `${priorProblem} Regenerated DAG default: ${walkingSkeleton}; review it at fan-out approval.`,
+      );
+    // Execution still rejects invalid choices in an already approved plan.
+    const selectionProblem = skeletonProblem(plan);
+    if (selectionProblem) await event('v2.units.decisions_invalid', selectionProblem);
 
     // 4. Traceability mirror (never blocks promotion outcome — the DDB truth
     // is already written; a mirror failure is recorded and visible).
@@ -164,6 +184,7 @@ export const promoteUnits = async (payload, deps) => {
       unitCount: units.length,
       batchCount: batches.length,
       walkingSkeleton: plan.walkingSkeleton,
+      selectionProblem,
       sync,
       mirror,
     };

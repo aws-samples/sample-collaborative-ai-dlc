@@ -1,6 +1,8 @@
 resource "aws_iam_role" "projection" {
-  name               = "${local.name}-projection"
-  assume_role_policy = local.lambda_trust
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn != "" ? var.iam_permissions_boundary_arn : null
+  name                 = "${local.name}-projection"
+  assume_role_policy   = local.lambda_trust
 }
 resource "aws_iam_role_policy_attachment" "projection_basic" {
   role       = aws_iam_role.projection.name

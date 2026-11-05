@@ -170,6 +170,7 @@ describe('resolveConflict', () => {
   it('resolves a real conflict: engine merges, agent edits, engine verifies + concludes + pushes', async () => {
     const { remote, ws } = await conflictWorld();
     const store = spyStore();
+    store.recordMetric = vi.fn(async () => ({ metricId: 'm1' }));
     let promptSeen = null;
     const spawnFn = (command, args, opts) => {
       const child = fakeCliSpawn(async (cwd) => {
@@ -178,11 +179,32 @@ describe('resolveConflict', () => {
       })(command, args, opts);
       // The prompt is piped on stdin (E2BIG fix), not on argv.
       child.stdin = { end: (v) => (promptSeen = v) };
+      child.stdout = {
+        on: (event, cb) =>
+          event === 'data' &&
+          cb(
+            Buffer.from(
+              JSON.stringify({
+                type: 'result',
+                usage: { input_tokens: 100, output_tokens: 20 },
+              }),
+            ),
+          ),
+      };
       return child;
     };
     const res = await resolveConflict(basePayload(ws), baseDeps(remote, store, spawnFn));
     expect(res.ok).toBe(true);
     expect(res.resolvedFiles).toEqual(['o/r:shared.txt']);
+    expect(store.recordMetric).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        executionId: 'e1',
+        unitSlug: 'u',
+        sectionIndex: 1,
+        resolvedModel: 'us.anthropic.claude-sonnet-4-6',
+        metrics: { tokensInput: 100, tokensOutput: 20 },
+      }),
+    );
     // The agent got the focused prompt with the actual conflicted file.
     expect(promptSeen).toContain('- o/r: shared.txt');
     // The unit branch on the REMOTE now contains the resolution AND the

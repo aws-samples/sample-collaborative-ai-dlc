@@ -8,7 +8,6 @@
 //                      sentinel so the CLI exits and the session can go idle.
 //   - send_output      persists an OUTPUT# chunk (restore-on-reload) AND
 //                      broadcasts it live.
-//   - collect_metric   appends a METRIC# row (token usage, context window %).
 //   - emit_stage_note  appends an EVENT# audit row.
 //
 // Scope (executionId / intentId / stageInstanceId) comes from the trusted
@@ -139,7 +138,6 @@ export const createProcessBridge = ({
     stageInstanceId = null,
     unitSlug = null,
     sectionIndex = null,
-    model = null,
     reviewerAgent = null,
     stageAttempt = 0,
     // The resolved release policy, or null for a 2.3.3/unpinned run. Its presence
@@ -803,32 +801,6 @@ export const createProcessBridge = ({
     return { projectType };
   };
 
-  // Record a numeric metric sample (token usage, context-window %, etc.) and
-  // broadcast it live so the UI can render usage in real time.
-  const collectMetric = async ({ metrics }) => {
-    // Stamp the trusted resolved model (from the container scope) so read-time
-    // pricing needn't trust the agent bag. Null when the runtime didn't wire it.
-    const row = await store.recordMetric({
-      executionId,
-      stageInstanceId,
-      unitSlug,
-      sectionIndex,
-      metrics,
-      resolvedModel: model,
-    });
-    await broadcast({
-      action: 'agent.metric',
-      executionId,
-      intentId,
-      stageInstanceId,
-      unitSlug,
-      sectionIndex,
-      metricId: row.metricId,
-      metrics,
-    });
-    return { metricId: row.metricId };
-  };
-
   // Append a process/audit note and broadcast it live (progress feed).
   //
   // `loopBackRecommended` is the ONE structured field on this tool: a
@@ -954,7 +926,6 @@ export const createProcessBridge = ({
     activeAuthorizationId: () => activeAuthorizationId,
     sendOutput,
     recordProjectType,
-    collectMetric,
     emitStageNote,
     recordGraphRead,
     submitReview,

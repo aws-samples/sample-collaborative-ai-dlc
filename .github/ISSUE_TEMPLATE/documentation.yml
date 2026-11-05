@@ -1,7 +1,8 @@
 name: Documentation
 description: Report missing, incorrect, or unclear documentation
 title: '[Docs]: '
-labels: ['documentation']
+type: Task
+labels: ['area/docs']
 body:
   - type: markdown
     attributes:

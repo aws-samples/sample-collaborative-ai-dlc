@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import {
@@ -282,6 +282,63 @@ describe('source-control bindings', () => {
       expect(await invalidateBindingsForError(ddb, binding, { status: 403, extra: {} })).toBe(1);
       expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
       expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(1);
+    });
+
+    // Issue #531: a refused PLATFORM binding (its external ID is the
+    // per-deployment CODECOMMIT_EXTERNAL_ID) is the admin's broken trust, not
+    // the space owner's — it invalidates nothing and recovers once the admin
+    // fixes the trust. Legacy per-user bindings (another external ID) keep the
+    // credentialRef fan-out.
+    describe('platform vs legacy on a refused role (#531)', () => {
+      let savedEnv;
+      beforeEach(() => {
+        savedEnv = process.env.CODECOMMIT_EXTERNAL_ID;
+        process.env.CODECOMMIT_EXTERNAL_ID = EXT_A;
+      });
+      afterEach(() => {
+        if (savedEnv === undefined) delete process.env.CODECOMMIT_EXTERNAL_ID;
+        else process.env.CODECOMMIT_EXTERNAL_ID = savedEnv;
+      });
+
+      it('does not invalidate a platform binding and reads/writes nothing', async () => {
+        ddbMock.on(UpdateCommand).resolves({});
+        ddbMock.on(QueryCommand).resolves({ Items: [] });
+        // binding.externalId is the platform value.
+        const platformBinding = { ...binding, externalId: EXT_A };
+        expect(
+          await invalidateBindingsForError(ddb, platformBinding, denied('ROLE_ASSUMPTION_DENIED')),
+        ).toBe(0);
+        expect(ddbMock.commandCalls(QueryCommand)).toHaveLength(0);
+        expect(ddbMock.commandCalls(UpdateCommand)).toHaveLength(0);
+      });
+
+      it('still invalidates a legacy per-user binding by its credentialRef', async () => {
+        // The GSI returns full binding rows. Native invalidation checks the
+        // inspected credential and revision before conditionally writing.
+        const legacyBinding = {
+          ...binding,
+          externalId: EXT_B,
+          credentialRef: roleCredentialRef(ROLE, EXT_B),
+        };
+        ddbMock.on(QueryCommand).resolves({
+          Items: [
+            { ...legacyBinding, projectId: 'p1', bindingKey: binding.bindingKey },
+            {
+              ...legacyBinding,
+              projectId: 'p2',
+              bindingKey: 'codecommit#arn:aws:codecommit:eu-west-2:123456789012:b',
+            },
+          ],
+        });
+        ddbMock.on(UpdateCommand).resolves({});
+        expect(
+          await invalidateBindingsForError(ddb, legacyBinding, denied('ROLE_ASSUMPTION_DENIED')),
+        ).toBe(2);
+        const query = ddbMock.commandCalls(QueryCommand)[0].args[0].input;
+        expect(query.ExpressionAttributeValues[':credentialRef']).toBe(
+          roleCredentialRef(ROLE, EXT_B),
+        );
+      });
     });
   });
 });

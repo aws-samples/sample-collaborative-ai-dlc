@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { GetParameterCommand } from '@aws-sdk/client-ssm';
 import { describe, expect, it, vi } from 'vitest';
 import { createNativeRuntimeApi } from '../api.js';
 import { createNativeAuthority } from '../authority.js';
@@ -16,8 +17,19 @@ const fixture = (harness = 'kiro') => {
   const configure = vi.fn(async () => structuredClone(f.configuration));
   const authorizeSource = vi.fn(async () => {});
   const enqueue = vi.fn(async () => {});
+  const policy = { disabled: [], error: null };
+  const ssm = {
+    send: vi.fn(async (command) => {
+      expect(command).toBeInstanceOf(GetParameterCommand);
+      expect(command.input).toEqual({ Name: '/aidlc/dev/disabled-clis' });
+      if (policy.error) throw policy.error;
+      return { Parameter: { Value: JSON.stringify(policy.disabled) } };
+    }),
+  };
   const execution = createNativeExecutionApi({
     enabled: true,
+    ssm,
+    settingsPrefix: '/aidlc/dev',
     store: f.store,
     configure,
     authorizeSource,
@@ -63,7 +75,7 @@ const fixture = (harness = 'kiro') => {
     expect(result.ok).toBe(true);
     return { status: result.value.statusCode, body: JSON.parse(result.value.body) };
   };
-  return { ...f, membership, configure, authorizeSource, enqueue, calls, invoke };
+  return { ...f, policy, ssm, membership, configure, authorizeSource, enqueue, calls, invoke };
 };
 const writes = (f) =>
   f.calls.mock.calls.filter(([command]) => command instanceof TransactWriteCommand);
@@ -137,7 +149,93 @@ describe('native harness availability through the public command authority', () 
     expect(f.calls).not.toHaveBeenCalled();
     expect(f.configure).not.toHaveBeenCalled();
     expect(f.enqueue).not.toHaveBeenCalled();
+    expect(f.ssm.send).not.toHaveBeenCalled();
   });
+
+  it.each(['claude', 'codex', 'opencode'])(
+    'enforces the shared disabled-%s policy on capabilities, draft status and direct Start',
+    async (harness) => {
+      const f = fixture(harness);
+      f.policy.disabled = [harness];
+      expect(await f.invoke('capabilities')).toMatchObject({
+        status: 200,
+        body: { unavailableHarnesses: { [harness]: 'agent_cli_disabled', kiro: CODE } },
+      });
+      expect(await f.invoke('get')).toMatchObject({
+        status: 200,
+        body: { executionAvailable: false, startUnavailableReason: 'agent_cli_disabled' },
+      });
+      const request = { requestId: randomUUID(), promptRevision: 0 };
+      for (let attempt = 0; attempt < 2; attempt++)
+        expect(await f.invoke('start', request)).toEqual({
+          status: 400,
+          body: {
+            code: 'agent_cli_disabled',
+            error: 'The selected agent CLI is disabled by the platform administrator',
+          },
+        });
+      expect(writes(f)).toHaveLength(0);
+      expect(f.configure).not.toHaveBeenCalled();
+      expect(f.enqueue).not.toHaveBeenCalled();
+      f.policy.disabled = [];
+      expect(await f.invoke('start', request)).toMatchObject({ status: 202 });
+      expect(writes(f)).toHaveLength(1);
+    },
+  );
+
+  it.each(['AccessDeniedException', 'ServiceUnavailableException'])(
+    'fails closed on %s without exposing policy errors or admitting work',
+    async (name) => {
+      const f = fixture('codex');
+      f.policy.error = Object.assign(new Error('private policy error'), { name });
+      for (const route of ['capabilities', 'get', 'start'])
+        expect(await f.invoke(route, { requestId: randomUUID(), promptRevision: 0 })).toEqual({
+          status: 503,
+          body: {
+            code: 'NATIVE_EXECUTION_CONFIG_UNAVAILABLE',
+            error: 'Native execution configuration is unavailable',
+          },
+        });
+      expect(writes(f)).toHaveLength(0);
+      expect(f.configure).not.toHaveBeenCalled();
+      expect(f.enqueue).not.toHaveBeenCalled();
+    },
+  );
+
+  it('allows the shared missing-parameter default while retaining the native Kiro restriction', async () => {
+    const f = fixture('codex');
+    f.policy.error = Object.assign(new Error('missing'), { name: 'ParameterNotFound' });
+    expect(await f.invoke('capabilities')).toMatchObject({
+      status: 200,
+      body: { unavailableHarnesses: { kiro: CODE } },
+    });
+    expect(await f.invoke('start', { requestId: randomUUID(), promptRevision: 0 })).toMatchObject({
+      status: 202,
+    });
+  });
+
+  it.each(['disabled', 'unreadable'])(
+    'keeps an admitted Start identity and configuration when policy becomes %s',
+    async (change) => {
+      const f = fixture('codex');
+      const request = { requestId: randomUUID(), promptRevision: 0 };
+      const result = await f.invoke('start', request);
+      const accepted = structuredClone(f.row());
+      f.policy.disabled = ['codex'];
+      if (change === 'unreadable') f.policy.error = new Error('policy unavailable');
+      f.configuration.model = 'later-project-model';
+      f.ssm.send.mockClear();
+      expect(await f.invoke('start', request)).toEqual(result);
+      expect(await f.invoke('get')).toMatchObject({
+        status: 200,
+        body: { executionAvailable: true, execution: result.body.execution },
+      });
+      expect(f.row()).toEqual(accepted);
+      expect(writes(f)).toHaveLength(1);
+      expect(f.configure).toHaveBeenCalledTimes(1);
+      expect(f.ssm.send).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['claude', 'codex', 'opencode'])(
     'preserves ordinary new Start admission and immutable retry for %s',

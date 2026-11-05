@@ -3137,10 +3137,20 @@ resource "aws_api_gateway_resource" "codecommit_status" {
   path_part   = "status"
 }
 
-resource "aws_api_gateway_resource" "codecommit_connect_info" {
+# /codecommit/admin — platform-admin CodeCommit connection configuration.
+# Mirrors /github/admin: the method only requires authentication; the Lambda
+# additionally enforces the Cognito platform-admin group (requirePlatformAdmin).
+resource "aws_api_gateway_resource" "codecommit_admin" {
   rest_api_id = aws_api_gateway_rest_api.main.id
   parent_id   = aws_api_gateway_resource.codecommit.id
-  path_part   = "connect-info"
+  path_part   = "admin"
+}
+
+# /codecommit/admin/config
+resource "aws_api_gateway_resource" "codecommit_admin_config" {
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.codecommit_admin.id
+  path_part   = "config"
 }
 
 resource "aws_api_gateway_resource" "codecommit_repos" {
@@ -3168,39 +3178,60 @@ resource "aws_api_gateway_integration" "codecommit_status_get" {
   uri                     = var.codecommit_lambda_invoke_arn
 }
 
-# GET /codecommit/connect-info (authenticated)
-resource "aws_api_gateway_method" "codecommit_connect_info_get" {
-  #checkov:skip=CKV2_AWS_53:Cognito-authenticated GET query is validated by the Lambda handler.
+# GET /codecommit/admin/config (authenticated; the Lambda additionally enforces
+# the Cognito platform-admin group — see lambda/shared/authz.js)
+resource "aws_api_gateway_method" "codecommit_admin_config_get" {
+  #checkov:skip=CKV2_AWS_53:Cognito-authenticated GET has no request body to validate.
   rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.codecommit_connect_info.id
+  resource_id   = aws_api_gateway_resource.codecommit_admin_config.id
   http_method   = "GET"
   authorization = "COGNITO_USER_POOLS"
   authorizer_id = aws_api_gateway_authorizer.cognito.id
 }
 
-resource "aws_api_gateway_integration" "codecommit_connect_info_get" {
+resource "aws_api_gateway_integration" "codecommit_admin_config_get" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
-  resource_id             = aws_api_gateway_resource.codecommit_connect_info.id
-  http_method             = aws_api_gateway_method.codecommit_connect_info_get.http_method
+  resource_id             = aws_api_gateway_resource.codecommit_admin_config.id
+  http_method             = aws_api_gateway_method.codecommit_admin_config_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.codecommit_lambda_invoke_arn
 }
 
-# POST /codecommit/repos (authenticated) — body carries roleArn/externalId/region
-resource "aws_api_gateway_method" "codecommit_repos_post" {
+# PUT /codecommit/admin/config (authenticated; platform-admin enforced in Lambda)
+resource "aws_api_gateway_method" "codecommit_admin_config_put" {
   #checkov:skip=CKV2_AWS_53:Cognito-authenticated proxy body is validated by the Lambda handler.
   rest_api_id   = aws_api_gateway_rest_api.main.id
-  resource_id   = aws_api_gateway_resource.codecommit_repos.id
-  http_method   = "POST"
+  resource_id   = aws_api_gateway_resource.codecommit_admin_config.id
+  http_method   = "PUT"
   authorization = "COGNITO_USER_POOLS"
   authorizer_id = aws_api_gateway_authorizer.cognito.id
 }
 
-resource "aws_api_gateway_integration" "codecommit_repos_post" {
+resource "aws_api_gateway_integration" "codecommit_admin_config_put" {
+  rest_api_id             = aws_api_gateway_rest_api.main.id
+  resource_id             = aws_api_gateway_resource.codecommit_admin_config.id
+  http_method             = aws_api_gateway_method.codecommit_admin_config_put.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = var.codecommit_lambda_invoke_arn
+}
+
+# GET /codecommit/repos (authenticated) — lists repositories readable by the
+# platform role, like the other providers (no request body)
+resource "aws_api_gateway_method" "codecommit_repos_get" {
+  #checkov:skip=CKV2_AWS_53:Cognito-authenticated GET has no request body to validate.
+  rest_api_id   = aws_api_gateway_rest_api.main.id
+  resource_id   = aws_api_gateway_resource.codecommit_repos.id
+  http_method   = "GET"
+  authorization = "COGNITO_USER_POOLS"
+  authorizer_id = aws_api_gateway_authorizer.cognito.id
+}
+
+resource "aws_api_gateway_integration" "codecommit_repos_get" {
   rest_api_id             = aws_api_gateway_rest_api.main.id
   resource_id             = aws_api_gateway_resource.codecommit_repos.id
-  http_method             = aws_api_gateway_method.codecommit_repos_post.http_method
+  http_method             = aws_api_gateway_method.codecommit_repos_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = var.codecommit_lambda_invoke_arn
@@ -3212,10 +3243,10 @@ module "cors_codecommit_status" {
   resource_id = aws_api_gateway_resource.codecommit_status.id
 }
 
-module "cors_codecommit_connect_info" {
+module "cors_codecommit_admin_config" {
   source      = "./cors"
   rest_api_id = aws_api_gateway_rest_api.main.id
-  resource_id = aws_api_gateway_resource.codecommit_connect_info.id
+  resource_id = aws_api_gateway_resource.codecommit_admin_config.id
 }
 
 module "cors_codecommit_repos" {

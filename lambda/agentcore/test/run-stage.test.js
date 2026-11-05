@@ -7,12 +7,8 @@ import { buildFromFiles } from '../../shared/block-mappers.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import nodePath from 'node:path';
-import {
-  runStage,
-  resetKiroCreditRateCache,
-  withPlatformSensors,
-  __test,
-} from '../commands/run-stage.js';
+import { runStage, withPlatformSensors, __test } from '../commands/run-stage.js';
+import { resetKiroCreditRateCache } from '../cli/kiro-usage.js';
 import { createProcessBridge } from '../mcp/process-bridge.js';
 import {
   commitAndPushAll as realCommitAndPushAll,
@@ -2079,6 +2075,88 @@ describe('runStage — LLM reviewer axis', () => {
     return store;
   };
 
+  // The human answers "Request changes" while reading the reviewer's findings,
+  // often by reference ("apply 1 and 3"). The resumed author gets the review the
+  // human saw at that gate, not a later run.
+  describe('a validation revision', () => {
+    const GATE_ID = 'gate-validation-1';
+    const OPENED_AT = '2026-11-04T10:00:00.000Z';
+    const SEEN = '1. Missing acceptance criteria\n2. Vague scope\n3. No error states';
+    const revision = ({ rows, feedback = 'Apply findings 1 and 3' } = {}) => {
+      const store = spyStore({
+        humanTask: {
+          humanTaskId: GATE_ID,
+          kind: 'validation',
+          status: 'answered',
+          stageInstanceId: BASE_STAGE_INSTANCE_ID,
+          createdAt: OPENED_AT,
+          answer: { decision: 'request-changes', feedback },
+        },
+        stage: {
+          state: 'WAITING_FOR_HUMAN',
+          pendingHumanTaskId: GATE_ID,
+          cli: 'claude',
+          cliSessionId: 'session-1',
+        },
+      });
+      store.listSensorRuns = async () => rows;
+      const prompts = [];
+      const spawnFn = (_command, args) => {
+        prompts.push(args.join(' '));
+        return { ...okSpawn(), stdin: { end: (text) => text && prompts.push(String(text)) } };
+      };
+      const deps = baseDeps({
+        store,
+        spawnFn,
+        loadLibrary: async () => ({ workflow: workflow(), library: libWithReviewer() }),
+      });
+      return { deps, prompts };
+    };
+    const resumeText = (prompts) => prompts.find((p) => p.includes('requested changes')) ?? '';
+
+    it('includes the findings the human saw with their feedback', async () => {
+      const { deps, prompts } = revision({
+        rows: [
+          { ...reviewerRow('NOT-READY', SEEN), timestamp: '2026-11-04T09:59:00.000Z' },
+          { ...reviewerRow('READY', 'a later review'), timestamp: '2026-11-04T10:30:00.000Z' },
+        ],
+      });
+      await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      const text = resumeText(prompts);
+      expect(text).toContain('Apply findings 1 and 3');
+      expect(text).toContain('(aidlc-reviewer-agent, NOT-READY)');
+      expect(text).toContain('3. No error states');
+      expect(text).toContain('apply the findings it asks for, and only those');
+      expect(text).not.toContain('a later review');
+    });
+
+    it('does not resume the author when the review cannot be read', async () => {
+      const { deps, prompts } = revision({ rows: [] });
+      deps.store.listSensorRuns = vi.fn(async () => {
+        throw new Error('Storage unavailable');
+      });
+      const res = await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      expect(res).toMatchObject({ ok: false, reason: 'resume_state_unavailable' });
+      expect(prompts).toEqual([]);
+      expect(deps.store.calls.some(([op]) => op === 'updateStageState' || op === 'putStage')).toBe(
+        false,
+      );
+    });
+
+    it('sends only the feedback when the review recorded no findings', async () => {
+      const { deps, prompts } = revision({
+        rows: [{ ...reviewerRow('NOT-READY', ''), timestamp: '2026-11-04T09:59:00.000Z' }],
+      });
+      await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      const text = resumeText(prompts);
+      expect(text).toContain('Apply findings 1 and 3');
+      expect(text).not.toContain('The independent review the human saw');
+    });
+  });
+
   it('fails a reviewer-only stage when the reviewer returns NOT-READY', async () => {
     const deps = baseDeps({
       store: storeWithVerdict('NOT-READY', 'missing acceptance criteria'),
@@ -2484,6 +2562,12 @@ describe('buildReviewerPrompt — read scope + identity marker', () => {
     knowledge: '',
     round: 1,
   };
+
+  it('asks for numbered findings, each with its required action', () => {
+    const prompt = buildReviewerPrompt(args);
+    expect(prompt).toContain('Number every finding, starting at 1');
+    expect(prompt).toContain('refer to findings by number');
+  });
 
   it('instructs the identity marker: reviewer arg + verbatim first findings line', () => {
     const prompt = buildReviewerPrompt(args);
@@ -3538,7 +3622,7 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     };
 
   const codexSpawn =
-    ({ threadId = 'thread_7', emitSession = true, capture, exitCode = 0 } = {}) =>
+    ({ threadId = 'thread_7', emitSession = true, capture, exitCode = 0, usage } = {}) =>
     (command, args) => {
       capture?.({ command, args });
       const child = new EventEmitter();
@@ -3557,6 +3641,12 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
             `${JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } })}\n`,
           ),
         );
+        if (usage) {
+          child.stdout.emit(
+            'data',
+            Buffer.from(`${JSON.stringify({ type: 'turn.completed', usage })}\n`),
+          );
+        }
         child.emit('close', exitCode);
       });
       return child;
@@ -3707,7 +3797,11 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     };
     const restoreCodexRollout = vi.fn(async () => {
       order.push('restore');
-      return { ok: true, status: 'restored' };
+      return {
+        ok: true,
+        status: 'restored',
+        usage: { input_tokens: 100, output_tokens: 20, cached_input_tokens: 50 },
+      };
     });
     const persistCodexRollout = vi.fn(async () => {
       order.push('persist');
@@ -3730,6 +3824,7 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
         cleanupCodexHome: vi.fn(async () => true),
         spawnFn: codexSpawn({
           emitSession: false,
+          usage: { input_tokens: 140, output_tokens: 30, cached_input_tokens: 75 },
           capture: ({ args }) => {
             if (args) order.push('spawn');
           },
@@ -3748,6 +3843,13 @@ describe('runStage — OpenCode park/resume lifecycle', () => {
     expect(order.indexOf('restore')).toBeLessThan(order.indexOf('resume-row'));
     expect(order.indexOf('restore')).toBeLessThan(order.indexOf('spawn'));
     expect(order.indexOf('persist')).toBeGreaterThan(order.indexOf('spawn'));
+    expect(
+      store.calls.filter(([method]) => method === 'recordMetric').map(([, row]) => row.metrics),
+    ).toContainEqual({
+      tokensInput: 40,
+      tokensOutput: 10,
+      tokensCacheRead: 25,
+    });
   });
 
   it('demotes a Codex resume when its durable rollout is missing', async () => {
@@ -4701,6 +4803,75 @@ describe('runStage — Kiro store sync (restore before spawn, persist after)', (
     });
     const res = await runStage({ ...baseArgs, requestedCli: 'kiro' }, deps);
     expect(res).toMatchObject({ ok: false, reason: 'credential_invalid' });
+  });
+});
+
+describe('runStage — measured token usage', () => {
+  const usage = {
+    input_tokens: 8,
+    output_tokens: 1700,
+    cache_read_input_tokens: 30000,
+    cache_creation_input_tokens: 2000,
+  };
+  const metrics = {
+    tokensInput: 8,
+    tokensOutput: 1700,
+    tokensCacheRead: 30000,
+    tokensCacheWrite: 2000,
+  };
+  const tokenRows = (deps) =>
+    deps.store.calls.filter(
+      ([name, row]) => name === 'recordMetric' && 'tokensInput' in row.metrics,
+    );
+
+  it.each([0, 1])(
+    'persists and broadcasts terminal usage before returning (exit %s)',
+    async (exitCode) => {
+      const sent = [];
+      const deps = baseDeps({
+        spawnFn: () =>
+          kiroChild({
+            exitCode,
+            stdout: [
+              JSON.stringify({ type: 'assistant', message: { content: [], usage } }),
+              JSON.stringify({ type: 'result', usage, is_error: exitCode !== 0 }),
+            ].join('\n'),
+          }),
+        broadcast: async (event) => sent.push(event),
+      });
+      await runStage(baseArgs, deps);
+      expect(tokenRows(deps)).toHaveLength(1);
+      expect(tokenRows(deps)[0][1]).toMatchObject({
+        executionId: 'e1',
+        stageInstanceId: BASE_STAGE_INSTANCE_ID,
+        resolvedModel: 'us.anthropic.claude-sonnet-4-6',
+        metrics,
+      });
+      expect(sent).toContainEqual(expect.objectContaining({ action: 'agent.metric', metrics }));
+    },
+  );
+
+  it('does not invent usage if the CLI terminates without a result', async () => {
+    const deps = baseDeps({
+      spawnFn: () =>
+        kiroChild({
+          stdout: JSON.stringify({ type: 'assistant', message: { content: [], usage } }),
+        }),
+    });
+    await runStage(baseArgs, deps);
+    expect(tokenRows(deps)).toEqual([]);
+  });
+
+  it('keeps usage persistence failure from failing the stage', async () => {
+    const deps = baseDeps({
+      spawnFn: () => kiroChild({ stdout: JSON.stringify({ type: 'result', usage }) }),
+    });
+    const recordMetric = deps.store.recordMetric;
+    deps.store.recordMetric = async (row) => {
+      if ('tokensInput' in row.metrics) throw new Error('metric unavailable');
+      return recordMetric(row);
+    };
+    expect(await runStage(baseArgs, deps)).toMatchObject({ ok: true });
   });
 });
 
@@ -7150,6 +7321,18 @@ const checkpointRun = ({
     const child = new EventEmitter();
     child.stdin = { end() {} };
     child.stdout = new EventEmitter();
+    const close = (code) => {
+      child.stdout.emit(
+        'data',
+        Buffer.from(
+          JSON.stringify({
+            type: 'result',
+            usage: { input_tokens: 10, output_tokens: spawnCount },
+          }),
+        ),
+      );
+      child.emit('close', code);
+    };
     if (spawnCount === (repairCheckpoint ? 2 : 1)) {
       void bridge
         .confirmSummary({ summary: 'The lead summary' })
@@ -7161,11 +7344,11 @@ const checkpointRun = ({
             task.answeredAt = 'T';
             task.answeredBy = 'alice';
           }
-          setImmediate(() => child.emit('close', 0));
+          setImmediate(() => close(0));
         })
-        .catch(() => setImmediate(() => child.emit('close', 1)));
+        .catch(() => setImmediate(() => close(1)));
     } else {
-      setImmediate(() => child.emit('close', 0));
+      setImmediate(() => close(0));
     }
     return child;
   };
@@ -7354,6 +7537,13 @@ describe('runStage — checkpoint park races', () => {
 
     expect(result).toMatchObject({ ok: true, state: 'WAITING_FOR_HUMAN' });
     expect(run.getSpawnCount()).toBe(2);
+    const usage = run.deps.store.calls
+      .filter(([name, row]) => name === 'recordMetric' && row.metrics.tokensInput != null)
+      .map(([, row]) => row.metrics);
+    expect(usage).toEqual([
+      { tokensInput: 10, tokensOutput: 1 },
+      { tokensInput: 10, tokensOutput: 2 },
+    ]);
     expect(run.stageRow.state).toBe('WAITING_FOR_HUMAN');
     expect([...run.humanTasks.values()]).toHaveLength(1);
     expect([...run.humanTasks.values()][0].status).toBe('pending');

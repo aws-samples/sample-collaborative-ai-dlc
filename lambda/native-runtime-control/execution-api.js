@@ -18,6 +18,7 @@ import { nativeInteractionView } from '../shared/native-interaction.js';
 import { nativeAnswerText } from '../shared/native-pending-input.js';
 import { createNativeRevisionApi } from './revision-api.js';
 import { createNativeResultApi } from './result-api.js';
+import { agentCliDisabledError, readDisabledClis } from '../shared/agent-cli-availability.js';
 
 const fail = (code, message) => {
   throw Object.assign(new Error(message), { code });
@@ -101,8 +102,6 @@ const TERMINAL = new Set(['STOPPED', 'FAILED', 'CANCELLED', 'WAITING_FOR_INPUT']
 export const nativeUnavailableHarnesses = Object.freeze({
   kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
 });
-const startUnavailableReason = (draft) => nativeUnavailableHarnesses[draft.request.harness] ?? null;
-
 export const createNativeExecutionApi = ({
   enabled,
   admissionEnabled = enabled,
@@ -118,7 +117,22 @@ export const createNativeExecutionApi = ({
   images,
   activity,
   deployment,
+  ssm,
+  settingsPrefix,
 }) => {
+  // The shared platform policy gates new selections only. Native has its own
+  // qualified image and an additional Kiro restriction, not managed capabilities.
+  const availability = async () => {
+    try {
+      const disabled = await readDisabledClis(ssm, settingsPrefix);
+      return {
+        ...Object.fromEntries(disabled.map((cli) => [cli, agentCliDisabledError(cli).body.code])),
+        ...nativeUnavailableHarnesses,
+      };
+    } catch {
+      fail('NATIVE_EXECUTION_CONFIG_UNAVAILABLE', 'Native execution configuration is unavailable');
+    }
+  };
   // Fast notification is optional; stream + state reconciliation owns delivery.
   const notify = async (scope) => {
     try {
@@ -200,6 +214,7 @@ export const createNativeExecutionApi = ({
       store,
     }),
     enabled,
+    availability,
     async outputs(draft, after, recheck, afterEvent) {
       const row = await read(draft, recheck);
       if (!row || !activity) return { outputs: [], nextAfter: null };
@@ -212,7 +227,7 @@ export const createNativeExecutionApi = ({
     async status(draft, recheck) {
       const row = await read(draft, recheck);
       const view = nativeExecutionView(row);
-      const unavailable = row ? null : startUnavailableReason(draft);
+      const unavailable = row ? null : ((await availability())[draft.request.harness] ?? null);
       if (row && !TERMINAL.has(row.status) && images && typeof deployment === 'function') {
         // Reads never hide committed results because the policy store is
         // briefly unavailable; the client disables actions for this state and
@@ -244,8 +259,14 @@ export const createNativeExecutionApi = ({
       if (!row) {
         if (!admissionEnabled)
           fail('NATIVE_EXECUTION_DISABLED', 'New native executions are disabled');
-        const unavailable = startUnavailableReason(draft);
-        if (unavailable) fail(unavailable, 'Kiro is temporarily unavailable for native execution');
+        const unavailable = (await availability())[draft.request.harness];
+        if (unavailable) {
+          const message =
+            unavailable === 'agent_cli_disabled'
+              ? agentCliDisabledError(draft.request.harness).body.error
+              : 'Kiro is temporarily unavailable for native execution';
+          fail(unavailable, message);
+        }
         await authorizeSource(draft, actorId);
         const configuration = await configure({ draft, actorId });
         // A new run always pins the current deployment image; an emergency

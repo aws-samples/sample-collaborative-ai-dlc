@@ -3,7 +3,7 @@
 Platform administrators control the software available inside intent runtimes.
 The platform ships one protected **Standard** environment and a catalog of tool
 definitions. Administrators publish exact tool versions, compose those versions
-into environments, and publish environment revisions that project owners can
+into environments, and publish environment revisions that space owners can
 assign.
 
 Standard provides the protected AgentCore runtime plus Node.js and Python.
@@ -22,11 +22,11 @@ Choose the path that matches your task:
 
 | Goal                                              | What to do                                                                                                                                                               |
 | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Use the built-in Node.js and Python runtime       | Use **Standard**. Projects use it automatically until another environment is assigned.                                                                                   |
+| Use the built-in Node.js and Python runtime       | Use **Standard**. New spaces use it unless a [different default](#set-the-default-environment-for-new-spaces) is set.                                                    |
 | Create a Java, Go, Rust, Maven, or Gradle runtime | [Publish the required shipped tool versions](#publish-and-recommend-tools), [create an environment](#create-an-environment), then [publish it](#publish-an-environment). |
 | Add another SDK or CLI                            | [Add and verify a tool](#add-a-new-tool), publish its exact version, then include it in an environment.                                                                  |
 | Upgrade a tool without changing existing runs     | [Add the new tool version](#add-or-update-a-tool-version), create and publish a new environment revision, then create new intents.                                       |
-| Make an environment available to a project        | [Assign the published environment](#select-an-environment-for-a-project) before creating the intent.                                                                     |
+| Make an environment available to a space          | [Assign the published environment](#select-an-environment-for-a-space) before creating the intent.                                                                       |
 | Diagnose a failed or blocked build                | Review [tool failures and security findings](#review-failures-and-security-findings) or [environment build evidence](#what-an-environment-build-verifies).               |
 
 The normal flow is:
@@ -36,13 +36,13 @@ flowchart LR
     T["Publish exact tool versions"] --> E["Build an environment revision"]
     S["Standard<br/>Node.js + Python"] --> E
     E --> P["Publish the environment"]
-    P --> A["Assign it to a project"]
+    P --> A["Assign it to a space"]
     A --> I["Create an intent<br/>runtime snapshot is pinned"]
 ```
 
 Publishing a newer tool or environment revision never changes an existing
 intent. New intents snapshot the currently published revision of the
-project-assigned environment.
+space-assigned environment.
 
 ## Detailed guide
 
@@ -54,8 +54,8 @@ The managed build views are under **Admin -> Environments** and require the
 - **Tools** imports, builds, verifies, publishes, and recommends tool versions.
 - **Environments** composes published tool versions into runtime images.
 
-Project Owners and Admins select a published environment under **Project
-Settings -> Environment**. Project Members can see the assignment but cannot
+Space Owners and Admins select a published environment under **Space
+Settings -> Environment**. Space Members can see the assignment but cannot
 change it.
 
 ### The object model
@@ -64,10 +64,10 @@ change it.
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Standard**             | The protected AgentCore base, Node.js, Python, runtime files, user, entrypoint, port, and health behavior.                                       |
 | **Tool family**          | A stable capability such as `java`, `go`, `rust`, `maven`, `gradle`, or `dotnet-sdk`.                                                            |
-| **Tool version**         | An immutable, verified ARM64 tool artifact for one exact version.                                                                                |
+| **Tool version**         | An immutable, verified tool artifact for one exact version and one architecture (arm64 or x86_64).                                               |
 | **Environment**          | A named toolchain based on one published environment.                                                                                            |
 | **Environment revision** | An immutable image recipe and runtime created from exact tool-version and base-revision snapshots.                                               |
-| **Project assignment**   | The environment whose current published revision will be used by new intents.                                                                    |
+| **Space assignment**     | The environment whose current published revision will be used by new intents.                                                                    |
 | **Intent snapshot**      | The exact environment revision, image digest, runtime target, compatibility version, and verification result captured when an intent is created. |
 
 The important invariants are:
@@ -78,7 +78,7 @@ The important invariants are:
 - Publishing or recommending a tool version never rewrites an existing
   environment revision.
 - Publishing a new environment revision affects new intents for assigned
-  projects. Existing intents stay pinned to their original runtime target.
+  spaces. Existing intents stay pinned to their original runtime target.
 
 ### Shipped tool definitions
 
@@ -97,7 +97,15 @@ The scheduled bootstrap queues independent initial versions for import. Maven
 and Gradle remain drafts until Java has a published recommended version because
 their own functional checks require Java.
 
-These are catalog entries only. They do not create project-selectable
+On a deployment that publishes the x86_64 core image (Instances compute
+enabled), the bootstrap also creates an x86_64 version of each of the five
+tools, next to the arm64 one, and starts the Java, Go, and Rust x86_64 builds.
+Nothing is published or recommended automatically: the x86_64 versions wait
+for the same build, review, publish, and recommend steps as the arm64 ones,
+and x86_64 Maven and Gradle stay drafts until x86_64 Java is published and
+recommended. See [x86_64 tool versions](#x86_64-tool-versions).
+
+These are catalog entries only. They do not create space-selectable
 environments by themselves.
 
 ### Tool-version lifecycle
@@ -131,7 +139,10 @@ the version until it reaches a reviewable or terminal status.
 Before opening the form, identify:
 
 - An exact version.
-- An official Linux ARM64 archive URL.
+- The architecture, `arm64` or `x86_64`. The architecture choice appears only
+  when the deployment publishes the x86_64 core image; otherwise every version
+  is arm64.
+- The publisher's official Linux archive URL for that architecture.
 - The distribution and publisher, for example **Amazon Corretto** and
   **Amazon Web Services**.
 - The tool type, such as **Java JDK**, **Go SDK**, or **Other CLI**.
@@ -181,8 +192,9 @@ Current import limits are:
 5. Enter the **Publisher**, **Category**, and **Description**.
 6. Enter the **Exact version**.
 7. Select the **Tool type**.
-8. Enter the **Linux ARM64 download URL**.
-9. Choose **Create and start build**.
+8. Select the **Architecture** when offered. It defaults to `arm64`.
+9. Enter the **Linux ARM64 download URL** (or **Linux x86_64 download URL**).
+10. Choose **Create and start build**.
 
 Creating the family and creating its first version happen together. A tool
 family can later contain multiple published versions. For the first version,
@@ -285,9 +297,11 @@ Under **Executables, dependencies, and custom verification**:
 - Add non-secret variables as `NAME=value`.
 - Use `${TOOL_ROOT}` when a variable should point at the normalized tool root.
 
-A dependency resolves to that family's published recommended version. A
-dependent version cannot build until every dependency has a published
-recommended version. The platform rejects missing families, self-dependencies,
+A dependency resolves to that family's published recommended version for the
+same architecture. A dependent version cannot build until every dependency has
+a published recommended version of that architecture
+(`TOOL_RECOMMENDED_DEPENDENCY_MISSING`), and a dependency of the other
+architecture is rejected (`TOOL_ARCHITECTURE_MISMATCH`). The platform rejects missing families, self-dependencies,
 dependency cycles, executable collisions, package-version conflicts, and
 environment-variable conflicts.
 
@@ -316,7 +330,8 @@ output. Do not include credentials or production data.
 3. Set **Publisher** to `Microsoft` and **Category** to `Language SDK`.
 4. Enter the exact SDK version.
 5. Select the **.NET SDK** tool type.
-6. Enter Microsoft's official Linux ARM64 SDK archive URL.
+6. Enter Microsoft's official Linux ARM64 SDK archive URL (or the x64 archive,
+   with **Architecture** set to `x86_64`).
 7. Choose **Create and start build**.
 8. Review the source, artifact, package inspection, and functional check.
 9. Publish the version.
@@ -338,7 +353,8 @@ records evidence for:
 3. **Installation**: generated extraction or sandboxed installer output.
 4. **Artifact normalization**: executable paths exist, symlinks remain inside
    the tool root, and output stays within the tool-artifact size limit.
-5. **OCI publication**: an immutable ARM64 tool image and digest.
+5. **OCI publication**: an immutable tool image and digest for the version's
+   architecture. The build checks that the image architecture matches.
 6. **SBOM**: an SPDX document generated from the normalized payload.
 7. **Security scan**: ECR findings with severity, advisory, package, and
    package version where available, or a recorded administrator decision when
@@ -403,8 +419,10 @@ Publishing and recommending are separate decisions:
 | **Publish**          | Makes one exact immutable version available for explicit environment selection.       |
 | **Make recommended** | Makes one published version the default for new selections and dependency resolution. |
 
-Multiple versions of the same tool can remain published. Only one version is
-recommended.
+Multiple versions of the same tool can remain published. Each architecture has
+its own recommendation: one arm64 version and one x86_64 version per tool
+family. **Make recommended** on an x86_64 version sets only the x86_64
+recommendation, and the other way round.
 
 Publishing a newer version does not automatically recommend it. Recommending a
 new version:
@@ -413,7 +431,8 @@ new version:
   in an environment editor.
 - Changes the dependency version automatically selected for tools such as
   Maven or Gradle.
-- Marks affected environments with a tool-update warning.
+- Marks affected environments of the same architecture with a tool-update
+  warning. An x86_64 recommendation never flags arm64 environments.
 - Does not change an existing environment revision.
 - Does not change an active or completed intent.
 
@@ -422,6 +441,8 @@ version within that tool family. The existing recommendation does not need to
 be removed first.
 
 For shipped tools, publish and recommend Java before building Maven or Gradle.
+This applies per architecture: x86_64 Maven and Gradle can only build once
+x86_64 Java is published and recommended.
 
 ### Add or update a tool version
 
@@ -429,8 +450,9 @@ To add a newer version or another distribution:
 
 1. Open the tool family in **Admin -> Environments -> Tools**.
 2. Choose **Add distribution or version**.
-3. Enter the distribution, publisher, exact version, and Linux ARM64 download
-   URL. The existing family supplies the tool type.
+3. Enter the distribution, publisher, exact version, architecture (when
+   offered), and the Linux download URL for that architecture. The existing
+   family supplies the tool type.
 4. Choose **Create and start build**.
 5. Review the lifecycle and evidence.
 6. Publish the version.
@@ -448,6 +470,48 @@ become the default. Both distributions remain selectable.
 
 To correct an unpublished version, use **Edit** while its status is `DRAFT` or
 `FAILED`. Published versions cannot be edited; create another version instead.
+
+### x86_64 tool versions
+
+x86_64 tool versions exist only on deployments that publish the x86_64 core
+image, which `enable_instances_compute` provides (see
+[Compute types](#compute-types-microvms-and-instances)). Without it the
+**Architecture** field and the **Add x86_64 build** action are hidden, and the
+API rejects x86_64 builds with `AMD64_CORE_IMAGE_MISSING`.
+
+Each architecture is a separate tool version of the same family, with its own
+download, checksum, build, security review, publication, and recommendation.
+x86_64 versions build on an x86_64 CodeBuild fleet against the amd64 build of
+the protected core, and their checks run natively on x86_64.
+
+To add the x86_64 build of a version that exists for arm64:
+
+1. Select the arm64 version in the tool family.
+2. Choose **Add x86_64 build**. The form copies the version, layout, installer,
+   and verification of the arm64 version and clears the download URL and
+   publisher checksum.
+3. Enter the publisher's x86_64 archive URL, and its checksum if you record
+   one.
+4. Review the installer when the arm64 version uses a custom installer
+   script. A tool-type preset script, such as the Rust installer, is switched
+   to the x86_64 target automatically; a script you edited by hand is copied
+   unchanged and may still contain arm64-specific paths.
+5. Choose **Create and start build**, then review, publish, and recommend the
+   x86_64 version as usual.
+
+An x86_64 environment can only select x86_64 tool versions and an arm64
+environment only arm64 versions. x86_64 versions show an **x86_64** badge in
+the version list.
+
+Architecture-related errors:
+
+| Code                                  | When                                                                                        |
+| ------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `AMD64_CORE_IMAGE_MISSING`            | An x86_64 tool build or x86_64 environment is requested and no x86_64 core image exists.    |
+| `TOOL_ARCHITECTURE_IMMUTABLE`         | An edit changes the architecture of an existing version. Create a new version instead.      |
+| `TOOL_ARCHITECTURE_MISMATCH`          | A tool depends on, or an environment selects, a tool version of the other architecture.     |
+| `TOOL_RECOMMENDED_DEPENDENCY_MISSING` | A dependency has no published recommended version for the dependent version's architecture. |
+| `BASE_ARCHITECTURE_MISMATCH`          | An environment derives from a base environment of the other architecture.                   |
 
 ### Select a specific Java, Go, Rust, or other tool version
 
@@ -594,13 +658,12 @@ With the flag enabled, **New environment** shows a **Compute** selector:
   deployment allows for that architecture.
 
 Both the compute type and the architecture are fixed at creation and cannot
-be changed afterwards. The architecture — not the compute type — carries the
-build restrictions: an **x86_64** environment currently must derive directly
-from the **Standard** base (the build swaps in the published core revision's
-x86_64 image variant) and cannot select catalog tools, which are built for
-arm64 only today; use apt packages and restricted build commands under
-Advanced settings instead. An arm64 Instances environment has none of these
-restrictions.
+be changed afterwards. The architecture — not the compute type — decides
+which catalog tools and bases apply: an **x86_64** environment lists only
+tool versions with an x86_64 build and derives from **Standard** (the build
+swaps in the published core revision's x86_64 image variant) or from another
+x86_64 environment; an arm64 environment — on either compute type — uses the
+arm64 builds.
 
 The build, security review, and publish flows are the same on both compute
 types, with one difference on Instances: runtime validation first has to
@@ -745,11 +808,11 @@ active intent snapshots reference its runtime artifacts.
 
 After publication:
 
-- The environment appears in **Project Settings -> Environment**.
-- New intents in projects already assigned to that environment use the newly
+- The environment appears in **Space Settings -> Environment**.
+- New intents in spaces already assigned to that environment use the newly
   published revision.
 - Existing intents continue using their snapshotted revision and endpoint.
-- Draft, failed, and ready revisions do not affect project execution until one
+- Draft, failed, and ready revisions do not affect space execution until one
   is published.
 
 ### Update an environment
@@ -789,12 +852,12 @@ newer base is required or the pinned digest is unavailable, use **Rebuild on
 Latest Base** instead.
 
 A failed attempt never replaces the currently published revision and never
-changes project assignments.
+changes space assignments.
 
-### Select an environment for a project
+### Select an environment for a space
 
-1. Open the project.
-2. Open **Project Settings -> Environment**.
+1. Open the space.
+2. Open **Space Settings -> Environment**.
 3. Select a published environment.
 4. Review its included tools, exact published revision, image digest, and
    runtime compatibility version.
@@ -804,7 +867,8 @@ changes project assignments.
 Compatibility warnings compare detected repository stacks with the tools in
 the selected environment. They are advisory; assignment is still allowed.
 
-Projects without an explicit assignment use Standard.
+New spaces are assigned the [default environment](#set-the-default-environment-for-new-spaces),
+which is Standard unless a platform administrator has chosen another.
 
 The assignment stores the environment ID, not a mutable container reference.
 When an intent is created, the platform resolves that environment's current
@@ -819,21 +883,53 @@ published revision and snapshots:
 - Verification result.
 - Resolved tool versions.
 
-Changing the project assignment affects only intents created afterward.
+Changing the space assignment affects only intents created afterward.
 Running, waiting, rewound, cancelled, and resumed intents continue to target
 their original snapshotted runtime and endpoint.
 
 Choose the environment before creating the intent that should use it.
+
+### Set the default environment for new spaces
+
+New spaces use Standard unless a platform administrator chooses
+another default:
+
+1. Open **Admin -> Environments -> Environments**.
+2. Select a published environment and choose **Set as default**. A star marks
+   the current default in the list.
+
+To go back to Standard, choose **Set as default** on Standard.
+
+An environment can only be the default when its published revision passes the
+same check as intent creation: published, verified, with a runtime and image
+digest, and on a supported runtime compatibility version. Otherwise the change
+is refused with the reason.
+
+The default is read when a space is created and stored as that space's
+assignment, so:
+
+- Existing spaces keep their environment when the default changes.
+- Space owners can still assign another environment afterwards.
+- If the default stops passing the check later, for example after a platform
+  upgrade raises the runtime compatibility version, new spaces use Standard and
+  the projects Lambda logs a warning. Space creation is never blocked.
+
+The default environment cannot be retired: retiring it returns
+`DEFAULT_ENVIRONMENT`. Choose another default first.
+
+Platform administrators can also read and change the setting with `GET` and
+`PUT /environments/settings/default`, using a body of
+`{ "environmentId": "<id>" }`.
 
 ### Audit an intent's environment
 
 Intent details and audit output show the immutable environment snapshot used by
 the run. Use those values when diagnosing a difference between two runs:
 
-- A project may have been reassigned after the older intent was created.
+- A space may have been reassigned after the older intent was created.
 - A newer revision may have been published for the same environment ID.
 - A tool recommendation may have changed without that tool version being
   incorporated into the published environment.
 
-The project setting describes what the next intent will use. The intent
+The space setting describes what the next intent will use. The intent
 snapshot describes what that specific intent actually uses.

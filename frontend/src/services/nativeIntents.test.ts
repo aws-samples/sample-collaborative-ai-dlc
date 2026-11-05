@@ -176,6 +176,37 @@ describe('native draft rejection boundary', () => {
   );
 });
 describe('native intent response boundary', () => {
+  it.each(['claude', 'codex', 'opencode'])(
+    'decodes the shared disabled-%s selection policy',
+    async (harness) => {
+      get.mockResolvedValue({
+        preparationEnabled: true,
+        executionEnabled: true,
+        unavailableHarnesses: {
+          [harness]: 'agent_cli_disabled',
+          kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+        },
+      });
+      expect(await nativeIntentsService.capabilities('project-1')).toMatchObject({
+        preparationEnabled: true,
+        executionEnabled: true,
+        unavailableHarnesses: { [harness]: 'agent_cli_disabled' },
+      });
+      get.mockResolvedValue({
+        ...draft,
+        harness,
+        executionAvailable: false,
+        execution: null,
+        startUnavailableReason: 'agent_cli_disabled',
+      });
+      expect(await nativeIntentsService.get('project-1', draft.id)).toMatchObject({
+        harness,
+        executionAvailable: false,
+        startUnavailableReason: 'agent_cli_disabled',
+      });
+    },
+  );
+
   it.each([undefined, { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' }])(
     'decodes temporary Kiro availability and keeps an older controller conservative: %j',
     async (unavailableHarnesses) => {

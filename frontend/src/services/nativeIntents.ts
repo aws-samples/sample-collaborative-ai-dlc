@@ -258,10 +258,15 @@ export interface NativePromptRequest {
   prompt: string;
 }
 export const nativeStartUnavailableMessages = {
+  agent_cli_disabled: 'The selected agent CLI is disabled by the platform administrator.',
   NATIVE_EXECUTION_KIRO_UNAVAILABLE:
     'Kiro is temporarily unavailable for new native executions while AI-DLC input and authentication qualification is pending. Choose Claude Code, Codex or OpenCode.',
 } as const;
 export type NativeStartUnavailableReason = keyof typeof nativeStartUnavailableMessages;
+const validStartUnavailableReason = (harness: string, reason: unknown) =>
+  ['claude', 'codex', 'opencode', 'kiro'].includes(harness) &&
+  (reason === 'agent_cli_disabled' ||
+    (harness === 'kiro' && reason === 'NATIVE_EXECUTION_KIRO_UNAVAILABLE'));
 export interface NativeCapabilities {
   preparationEnabled: boolean;
   executionEnabled: boolean;
@@ -282,7 +287,7 @@ async function capabilities(projectId: string): Promise<NativeCapabilities> {
     typeof result.executionEnabled !== 'boolean' ||
     !record(unavailable) ||
     Object.entries(unavailable).some(
-      ([harness, reason]) => harness !== 'kiro' || reason !== 'NATIVE_EXECUTION_KIRO_UNAVAILABLE',
+      ([harness, reason]) => !validStartUnavailableReason(harness, reason),
     )
   )
     return { preparationEnabled: false, executionEnabled: false, unavailableHarnesses: {} };
@@ -400,8 +405,7 @@ function view(value: unknown, projectId: string, intentId: string): NativeIntent
       (!Number.isSafeInteger(value.promptRevision) || Number(value.promptRevision) < 0)) ||
     (value.executionAvailable !== undefined && typeof value.executionAvailable !== 'boolean') ||
     (value.startUnavailableReason !== undefined &&
-      (value.startUnavailableReason !== 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' ||
-        item.harness !== 'kiro' ||
+      (!validStartUnavailableReason(item.harness, value.startUnavailableReason) ||
         value.executionAvailable !== false ||
         value.execution != null))
   ) {

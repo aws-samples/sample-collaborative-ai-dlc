@@ -87,6 +87,17 @@ The credentialed agent E2E and deployed-stack procedures in the testing guide ma
 
 Record what ran, what passed or failed, and what could not be checked. Distinguish a missing prerequisite or pre-existing failure from a regression introduced by the change. Do not claim a test passed without running it or seeing its result.
 
+## Creating issues
+
+Set the native GitHub issue type (`Bug`, `Feature`, or `Task`) and apply existing labels. Use `gh label list --limit 100` for current names/descriptions and `gh issue create --label` to supply labels when creating issues through the CLI.
+
+- **`area/*` — primary technical area:** `frontend` (React UI), `backend` (APIs/shared/orchestration), `agents` (AgentCore runtime), `infra` (Terraform/install/deploy), `ci` (CI/testing/tooling), or `docs` (documentation).
+- **`topic/*` — optional primary functional topic:** `spaces`, `workflows`, `intents`, `review`, `delivery`, `integrations`, `collaboration`, `knowledge`, `observability`, or `admin`. Workflows covers definitions; intents covers execution. Delivery covers work sent to Git; integrations covers provider connections. Review covers gates/questions; collaboration covers discussions.
+- **`nfr/*` — relevant non-functional concerns:** `security`, `reliability`, `performance`, `cost`, `operations`, or `maintainability`. Use `topic/observability` for user-facing metrics and `nfr/operations` for infrastructure logs, metrics, and alarms.
+- **Other labels, when applicable:** `status/needs-triage`, `status/needs-info`, `status/blocked`, `rfc` (design proposal), `dependencies`, `good first issue`, and `help wanted`.
+
+Verify the resulting type and labels: issue-form automation can supply the area, but CLI-created issues need explicit labels; topic and NFR selection remains manual.
+
 ## PR review standard
 
 When asked to review, provide findings without editing the PR unless fixes are requested. Review the proposed diff against its intended base, then follow changed behavior into callers, consumers, tests, docs, and deployment wiring. Use a merge-base comparison when reviewing a branch; do not include unrelated work from the target branch. If the base or requirements are uncertain, state the assumption.

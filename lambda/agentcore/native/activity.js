@@ -277,7 +277,15 @@ export const createNativeActivityLog = ({
       for (const resolve of resume) resolve();
     }
   };
-  const turn = ({ sequence, harness, model, forbiddenBytes = [], signal, onObservation }) => {
+  const turn = ({
+    sequence,
+    harness,
+    model,
+    usageBaseline,
+    forbiddenBytes = [],
+    signal,
+    onObservation,
+  }) => {
     // The observer receives only numeric/closed-schema telemetry, never the
     // normalized text or raw harness event. A telemetry failure cannot stop work.
     const observe = (boundary, counts = {}) => {
@@ -414,6 +422,7 @@ export const createNativeActivityLog = ({
         cli: harness,
         retainState: false,
         maxPendingTools: 64,
+        usageBaseline,
         emit: (value) => emitPublic(value),
         onUsage: (metrics, event) => {
           if (harness === 'claude') {

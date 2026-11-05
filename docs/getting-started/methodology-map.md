@@ -8,7 +8,7 @@ Use this page as a translation table: if you know AI-DLC, it tells you where eac
 
 | AI-DLC term                      | In this platform                      | Where you find it                                              |
 | -------------------------------- | ------------------------------------- | -------------------------------------------------------------- |
-| Intent                           | **Intent**                            | Project page → _New Intent_                                    |
+| Intent                           | **Intent**                            | Space page → _New Intent_                                      |
 | Phase / Stage                    | **Phase / Stage**                     | Workflow composer, intent progress view                        |
 | Scope                            | **Scope**                             | Compose page (scope picker)                                    |
 | Scope grid (EXECUTE/SKIP)        | **Stages to run** (stage grid)        | Compose page → _Stages to run_                                 |
@@ -27,9 +27,9 @@ Use this page as a translation table: if you know AI-DLC, it tells you where eac
 | Sensor                           | **Sensor**                            | Stage results in the intent view; blocks in the library        |
 | Reviewer                         | **Reviewer**                          | Stage review verdicts in the intent view                       |
 | Memory rules (org/team/project)  | **Rule blocks** (layered)             | Block library; attached to workflows                           |
-| Learnings                        | **Learning rules**                    | Accrued automatically on the project graph                     |
+| Learnings                        | **Learning rules**                    | Accrued automatically on the space graph                       |
 | Knowledge                        | **Knowledge blocks + team knowledge** | Block library; accrued at runtime                              |
-| Agent tiers                      | **Tier → model mapping**              | Admin / project settings → model configuration                 |
+| Agent tiers                      | **Tier → model mapping**              | Admin / space settings → model configuration                   |
 | Workspace detection              | **Initialization stages**             | Run automatically at the start of every intent                 |
 | Conductor / state file           | **The execution engine**              | Invisible — surfaced as the intent timeline                    |
 | Mob elaboration / construction   | **Real-time collaboration**           | Shared editing on drafts, gates, and artifacts                 |
@@ -124,11 +124,11 @@ All three surface in the intent view per stage, with the sensor detail explainin
 
 ### Rules, learnings, knowledge
 
-Upstream's memory files (`org.md` → `team.md` → `project.md` plus phase rules) are **Rule blocks** on the layered chain `org → team → project → phase → stage`, attached to workflows. **Learnings** — corrections agents record during runs — accrue as learning rules on the project graph and are injected into every later relevant stage, so nothing gets re-explained. **Knowledge** blocks carry each agent persona's methodology expertise, and **team knowledge** accrues alongside at runtime.
+Upstream's memory files (`org.md` → `team.md` → `project.md` plus phase rules) are **Rule blocks** on the layered chain `org → team → project → phase → stage`, attached to workflows. **Learnings** — corrections agents record during runs — accrue as learning rules on the space graph and are injected into every later relevant stage, so nothing gets re-explained. **Knowledge** blocks carry each agent persona's methodology expertise, and **team knowledge** accrues alongside at runtime.
 
 ### Agent tiers
 
-Upstream authors each agent with a work-shaped tier — `judgment`, `balanced`, or `templated` — and projects it to a concrete model per tool. Here the same tiers map to models in the Admin (or project) model settings, so a templated planner never burns your most expensive model.
+Upstream authors each agent with a work-shaped tier — `judgment`, `balanced`, or `templated` — and projects it to a concrete model per tool. Here the same tiers map to models in the Admin (or space) model settings, so a templated planner never burns your most expensive model.
 
 ## What you never have to touch
 

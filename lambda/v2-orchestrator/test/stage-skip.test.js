@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { __durableHandler } from '../index.js';
+import { __durableHandler } from './fixtures/completion-handler.js';
 
 // Stage-skipping behaviors of the durable orchestrator (shared/stage-skip.js):
 //   - intent-level skips (META.skipStageIds) ride load-plan, get SKIPPED audit

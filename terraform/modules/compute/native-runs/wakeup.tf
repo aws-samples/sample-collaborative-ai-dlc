@@ -11,8 +11,10 @@ resource "aws_sqs_queue" "projection" {
   sqs_managed_sse_enabled    = true
 }
 resource "aws_iam_role" "wakeup" {
-  name               = "${local.name}-wakeup"
-  assume_role_policy = local.lambda_trust
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn != "" ? var.iam_permissions_boundary_arn : null
+  name                 = "${local.name}-wakeup"
+  assume_role_policy   = local.lambda_trust
 }
 resource "aws_iam_role_policy_attachment" "wakeup_basic" {
   role       = aws_iam_role.wakeup.name

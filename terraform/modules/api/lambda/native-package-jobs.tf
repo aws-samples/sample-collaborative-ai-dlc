@@ -237,7 +237,9 @@ resource "aws_sqs_queue_redrive_allow_policy" "native_package_jobs_dispatch" {
 }
 
 resource "aws_iam_role" "native_package_jobs_pipe" {
-  name = "${var.project_name}-native-package-pipe-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn != "" ? var.iam_permissions_boundary_arn : null
+  name                 = "${var.project_name}-native-package-pipe-${var.environment}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -331,8 +333,10 @@ resource "aws_pipes_pipe" "native_package_jobs" {
 }
 
 resource "aws_iam_role" "native_package_worker" {
-  name               = "${var.project_name}-native-package-worker-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn != "" ? var.iam_permissions_boundary_arn : null
+  name                 = "${var.project_name}-native-package-worker-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 
 resource "aws_iam_role_policy_attachment" "native_package_worker_basic" {
@@ -638,8 +642,10 @@ variable "native_operations" {
 # Read-only package repair is separate from the publisher and its VPC/provider
 # access. Enabling imports still requires the existing dev readiness gates.
 resource "aws_iam_role" "native_package_repair" {
-  name               = "${var.project_name}-native-package-repair-${var.environment}"
-  assume_role_policy = local.lambda_assume_role_policy
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn != "" ? var.iam_permissions_boundary_arn : null
+  name                 = "${var.project_name}-native-package-repair-${var.environment}"
+  assume_role_policy   = local.lambda_assume_role_policy
 }
 resource "aws_iam_role_policy_attachment" "native_package_repair_basic" {
   role       = aws_iam_role.native_package_repair.id

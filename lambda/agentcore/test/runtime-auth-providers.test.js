@@ -309,7 +309,7 @@ describe('runtime capability contributions', () => {
 });
 
 describe('a registered runtime provider through the host views', () => {
-  it('strips every controlled env name from ambient env and reserves it from MCP refs', async () => {
+  it('strips every controlled env name but the platform region from ambient env and reserves it from MCP refs', async () => {
     expect(CREDENTIAL_ADAPTER_ENV_NAMES).toContain(FAKE_CONTROLLED_ENV);
     for (const name of CREDENTIAL_ADAPTER_ENV_NAMES) {
       const auth = await resolveInvocationAgentAuth({
@@ -317,7 +317,11 @@ describe('a registered runtime provider through the host views', () => {
         payload: {},
         env: { PATH: '/usr/bin', [name]: 'ambient' },
       });
-      expect(auth.env).toEqual({ PATH: '/usr/bin' });
+      // The platform's inference region is deployment configuration, kept as the default.
+      expect(auth.env).toEqual({
+        PATH: '/usr/bin',
+        ...(name === 'BEDROCK_REGION' ? { [name]: 'ambient' } : {}),
+      });
       expect(RESERVED_MCP_ENV_KEYS.has(name)).toBe(true);
       await expect(
         resolveMcpSecrets({

@@ -35,8 +35,15 @@ Kiro is temporarily unavailable for new native executions while AI-DLC input
 and authentication qualification is pending. Creation shows the disabled Kiro choice
 and its reason, and a prepared Kiro draft cannot Start through either the
 application or a direct API request. Claude Code, Codex and OpenCode remain
-selectable for development. Existing Kiro configuration and history remain
+selectable for development when enabled by the platform administrator. Existing Kiro configuration and history remain
 readable; other platform Kiro behavior is unchanged.
+
+The platform's **Agent CLIs** setting also gates new native selections. Creation
+and prepared-draft status show disabled choices, and Start checks the shared
+policy before resolving configuration or admitting work. A failed policy read
+blocks new Start requests. An execution already admitted keeps its pinned
+configuration and Start identity when that policy changes or becomes unavailable.
+The dedicated native image and the additional Kiro restriction still apply.
 
 Start captures the request revision, package, application source commit, harness,
 model selection, credential scope and execution image. Later project settings
@@ -318,22 +325,36 @@ The normal **New intent** backend/default decision remains part of NE-08.
 
 ### Current implementation
 
-| Area                        | Current behavior and limit                                                                                                                                                                                                                                                                                                    |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Coding harnesses            | Claude Code, Codex and OpenCode remain selectable for development. Kiro is visibly temporarily unavailable for new native executions, with authoritative Start rejection and an explicit runtime guard. All four harnesses still require release qualification; Kiro's full input and authentication path remains NE-18 work. |
-| Methodology sources         | Import adapters cover GitHub.com, GitLab.com and Bitbucket Cloud with their supported source bindings. Installer and provenance constraints require separate qualification; importing from a provider is not a claim of full workflow support.                                                                                |
-| Application source          | Exactly one connected GitHub, GitLab or Bitbucket repository. Source resolution captures the default branch and exact commit. CodeCommit, multiple repositories, submodule and LFS materialization are not supported by this path.                                                                                            |
-| Package and harness         | Selected for the native draft and pinned for execution. Repository and package instructions remain part of the workspace.                                                                                                                                                                                                     |
-| Models                      | Start captures the resolved project/platform model selection. An unset selection or automatic routing is not an immutable provider-model version.                                                                                                                                                                             |
-| Credentials                 | The starting member's effective credential scope is captured. A responding member does not replace it. Rotation within that scope is allowed; revocation does not silently fall back to another scope.                                                                                                                        |
-| Environments and tools      | Native uses its dedicated runtime. Platform-managed environments, custom MCP server selections and uploaded custom rules do not currently apply. Repository/package configuration can still supply instructions and tools.                                                                                                    |
-| Platform execution controls | Agent-tier assignments, v2 stage scheduling, platform sensors, parallelism, rewind/recompose and per-unit PR strategies do not control native methodology execution.                                                                                                                                                          |
-| Optional features           | Native graph enrichment and debug archive capture are off. Platform preferences do not enable them for native runs.                                                                                                                                                                                                           |
+| Area                        | Current behavior and limit                                                                                                                                                                                                                                                                                                                                           |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Coding harnesses            | Claude Code, Codex and OpenCode remain selectable for development when enabled by the shared platform CLI policy. Kiro is temporarily unavailable for new native executions, with authoritative Start rejection and an explicit runtime guard. All four harnesses still require release qualification; Kiro's full input and authentication path remains NE-18 work. |
+| Methodology sources         | Import adapters cover GitHub.com, GitLab.com and Bitbucket Cloud with their supported source bindings. Installer and provenance constraints require separate qualification; importing from a provider is not a claim of full workflow support.                                                                                                                       |
+| Application source          | Exactly one connected GitHub, GitLab or Bitbucket repository. Source resolution captures the default branch and exact commit. CodeCommit, multiple repositories, submodule and LFS materialization are not supported by this path.                                                                                                                                   |
+| Package and harness         | Selected for the native draft and pinned for execution. Repository and package instructions remain part of the workspace.                                                                                                                                                                                                                                            |
+| Models                      | Start captures the resolved project/platform model selection. An unset selection or automatic routing is not an immutable provider-model version.                                                                                                                                                                                                                    |
+| Credentials                 | The starting member's effective credential scope is captured. A responding member does not replace it. Rotation within that scope is allowed; revocation does not silently fall back to another scope.                                                                                                                                                               |
+| Environments and tools      | Native uses its dedicated runtime. Platform-managed environments, custom MCP server selections and uploaded custom rules do not currently apply. Repository/package configuration can still supply instructions and tools.                                                                                                                                           |
+| Platform execution controls | Agent-tier assignments, v2 stage scheduling, platform sensors, parallelism, rewind/recompose and per-unit PR strategies do not control native methodology execution.                                                                                                                                                                                                 |
+| Optional features           | Native graph enrichment and debug archive capture are off. Platform preferences do not enable them for native runs.                                                                                                                                                                                                                                                  |
 
 The Intent configuration view shows captured settings rather than current defaults.
 Unsupported settings need to remain visible as limitations wherever users choose
 or inspect native execution. The selected package determines its methodology
 agents and reviewers; the platform should not duplicate that workflow model.
+
+Native activity uses the shared usage parser and pricing service, including
+reported cache reads, cache writes and one-hour cache writes. Estimates exclude
+credits and infrastructure. Codex continuation in an existing CLI session has no
+authoritative cumulative baseline, so that turn does not report an invented
+usage delta. A fresh CLI session, including EFS workspace recovery, starts from
+the parser's zero baseline. These activity samples do not decide turn completion,
+publication or question identity; the explicit native harness decoder does.
+Native discussions do not write managed execution metrics or completion events.
+
+The optional organization IAM role path and permissions boundary apply to native
+controller and package roles through the shared Terraform inputs. Dynamically
+created runtime roles keep the dedicated `/native-runs/` path and native runtime
+permissions boundary; these settings do not replace that isolation contract.
 
 Artifact edit/apply, Quorum edits, parallel units, per-unit delivery,
 multi-repository execution and cross-engine migration are outside the serial

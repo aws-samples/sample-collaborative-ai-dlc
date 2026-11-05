@@ -184,7 +184,9 @@ run "configured_native_alarm_routes" {
   command = apply
   module { source = "./modules/compute/native-runs" }
   variables {
-    execution_enabled = false
+    iam_role_path                = "/organization/collab/"
+    iam_permissions_boundary_arn = "arn:aws:iam::123456789012:policy/organization-boundary"
+    execution_enabled            = false
     native_operations = {
       alarm_actions           = ["arn:aws:sns:us-east-1:123456789012:existing-operations"]
       incident_owner          = "test-operations-reference"
@@ -258,6 +260,18 @@ run "configured_native_alarm_routes" {
   override_module {
     target  = module.execution_credentials[0]
     outputs = { lambda_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-execution_credentials[0]", lambda_function_name = "test-execution_credentials[0]", lambda_function_version = "1", lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:test-execution_credentials[0]/invocations" }
+  }
+  assert {
+    condition     = alltrue([for role in [aws_iam_role.api, aws_iam_role.worker, aws_iam_role.authority, aws_iam_role.execution_worker[0], aws_iam_role.execution_credentials[0], aws_iam_role.projection, aws_iam_role.results, aws_iam_role.wakeup] : role.path == var.iam_role_path && role.permissions_boundary == var.iam_permissions_boundary_arn])
+    error_message = "Organization settings must apply to every native controller role."
+  }
+  assert {
+    condition     = strcontains(local.role_arn, ":role/native-runs/") && one([for statement in jsondecode(aws_iam_role_policy.worker.policy).Statement : statement.Condition.ArnEquals["iam:PermissionsBoundary"] if contains(statement.Action, "iam:CreateRole")]) == aws_iam_policy.runtime_boundary.arn
+    error_message = "Controller IAM settings must not retarget native runtime roles or replace their restrictive boundary."
+  }
+  assert {
+    condition     = one([for statement in local.execution_api_statements : statement.Resource if statement.Sid == "ReadNativeCliAvailability"]) == "${local.ssm_prefix_arn}/disabled-clis"
+    error_message = "Native selection must have the exact shared disabled-CLI policy read grant."
   }
   assert {
     condition     = length(aws_sqs_queue.execution) == 1 && length(aws_iam_role.execution_worker) == 1 && length(aws_iam_role.execution_credentials) == 1

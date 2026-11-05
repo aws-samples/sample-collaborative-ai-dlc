@@ -6,7 +6,7 @@
 // outside release mode, and the recommendation behavior at the cap.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { __durableHandler } from '../index.js';
+import { __durableHandler } from './fixtures/completion-handler.js';
 import { LOOP_BACK_RECORDED_EVENT } from '../../shared/stage-loopback.js';
 import { buildStageRow } from '../../shared/v2-process-keys.js';
 

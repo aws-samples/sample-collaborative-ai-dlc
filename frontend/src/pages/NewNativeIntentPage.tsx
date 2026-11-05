@@ -289,14 +289,29 @@ function NativeDraftForm({
                     if (!capabilities?.unavailableHarnesses[next]) setHarness(next);
                   }}
                 >
-                  <option value="claude">Claude Code</option>
-                  <option value="codex">Codex</option>
+                  <option
+                    value="claude"
+                    disabled={Boolean(capabilities?.unavailableHarnesses.claude)}
+                  >
+                    Claude Code
+                  </option>
+                  <option
+                    value="codex"
+                    disabled={Boolean(capabilities?.unavailableHarnesses.codex)}
+                  >
+                    Codex
+                  </option>
                   <option value="kiro" disabled={Boolean(capabilities?.unavailableHarnesses.kiro)}>
                     {capabilities?.unavailableHarnesses.kiro
                       ? 'Kiro (temporarily unavailable)'
                       : 'Kiro'}
                   </option>
-                  <option value="opencode">OpenCode</option>
+                  <option
+                    value="opencode"
+                    disabled={Boolean(capabilities?.unavailableHarnesses.opencode)}
+                  >
+                    OpenCode
+                  </option>
                 </select>
                 <div id="native-harness-availability" className="text-sm text-muted-foreground">
                   {Object.entries(capabilities?.unavailableHarnesses ?? {}).map(

@@ -129,6 +129,60 @@ it('retains activity when a timing observer throws', () => {
 });
 
 describe('native activity public boundary', () => {
+  it('presents both cache TTL categories through the shared Claude decoder and canonical pricing', () => {
+    const log = createNativeActivityLog({ writerGeneration: 1 });
+    const turn = log.turn({
+      sequence: 1,
+      harness: 'claude',
+      model: 'us.anthropic.claude-sonnet-4-6',
+    });
+    write(
+      turn,
+      codex({
+        type: 'result',
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_read_input_tokens: 1000,
+          cache_creation_input_tokens: 200,
+          cache_creation: { ephemeral_1h_input_tokens: 100 },
+        },
+      }),
+    );
+    turn.close();
+    const text = visible(log.pull(0).events).join('\n');
+    expect(text).toContain('cache-write tokens: 200');
+    expect(text).toContain('1h cache-write tokens: 100');
+    expect(text).toContain('Token cost estimate: USD 0.001875');
+    expect(text).toContain('canonical pricing includes reported cache');
+    expect(text).not.toContain('excludes cache');
+  });
+
+  it('uses shared Codex baseline semantics for known, unknown and fresh sessions', () => {
+    const log = createNativeActivityLog({ writerGeneration: 1 });
+    for (const [sequence, usageBaseline] of [
+      [1, { input_tokens: 800, output_tokens: 10 }],
+      [2, null],
+      [3, undefined],
+    ]) {
+      const turn = log.turn({ sequence, harness: 'codex', model: null, usageBaseline });
+      write(
+        turn,
+        codex(thread, { type: 'turn.completed', usage: { input_tokens: 1000, output_tokens: 20 } }),
+      );
+      turn.close();
+    }
+    const events = log.pull(0).events;
+    const text = (sequence) =>
+      visible(events.filter((event) => event.sequence === sequence)).join('\n');
+    expect(text(1)).toContain('input tokens: 200');
+    expect(text(1)).toContain('output tokens: 10');
+    expect(text(2)).toContain('Usage and cost unavailable');
+    expect(text(2)).not.toContain('usage sample');
+    expect(text(3)).toContain('input tokens: 1000');
+    expect(text(3)).toContain('output tokens: 20');
+  });
+
   it.each([
     [
       'codex',
@@ -140,13 +194,13 @@ describe('native activity public boundary', () => {
       'claude',
       { type: 'result', usage: { input_tokens: 20, output_tokens: 5 } },
       'us.anthropic.claude-sonnet-4-6',
-      'Input/output cost estimate: USD',
+      'Token cost estimate: USD',
     ],
     [
       'opencode',
       { type: 'step_finish', part: { tokens: { input: 20, output: 5 } } },
       'amazon-bedrock/us.anthropic.claude-sonnet-4-6',
-      'Input/output cost estimate: USD',
+      'Token cost estimate: USD',
     ],
   ])(
     'reports numeric %s usage with pinned model attribution and explicit pricing limits',

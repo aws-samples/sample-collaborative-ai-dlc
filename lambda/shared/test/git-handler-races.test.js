@@ -482,6 +482,7 @@ describe.each(['github', 'gitlab', 'bitbucket'])('%s handler connection races', 
       expect((await h.repos()).statusCode).toBe(200);
       expect(h.provider.listRepos).toHaveBeenCalledWith(
         expect.objectContaining({ token: `${id}-winner-access` }),
+        { search: undefined },
       );
     },
   );

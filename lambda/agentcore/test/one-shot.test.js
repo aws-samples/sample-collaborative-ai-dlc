@@ -1,10 +1,13 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { resetKiroCreditRateCache } from '../cli/kiro-usage.js';
 import { runOneShotPrompt, parseClaudeOneShot, extractJsonObject } from '../cli/one-shot.js';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+beforeEach(() => resetKiroCreditRateCache());
 
 // Fake child factory for captureChild: emits the given stdout/stderr then closes.
 // `stdin.end` records the piped prompt so tests can assert it goes on stdin (not
@@ -23,6 +26,43 @@ const fakeChild = ({ exitCode = 0, stdout = '', stderr = '' } = {}) => {
 };
 
 describe('parseClaudeOneShot', () => {
+  it('retains measured usage from a failed Claude invocation', async () => {
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['claude'],
+      spawnFn: () =>
+        fakeChild({
+          exitCode: 1,
+          stdout: JSON.stringify({
+            type: 'result',
+            is_error: true,
+            usage: { input_tokens: 10, output_tokens: 2 },
+          }),
+        }),
+    });
+    expect(out).toMatchObject({ ok: false, metrics: { tokensInput: 10, tokensOutput: 2 } });
+  });
+
+  it('returns a captured credit rate with Kiro one-shot usage', async () => {
+    const out = await runOneShotPrompt({
+      prompt: 'p',
+      availableClis: ['kiro'],
+      spawnFn: (_command, args) =>
+        args.includes('/usage')
+          ? fakeChild({ stderr: 'billed at $0.04 per credit' })
+          : fakeChild({
+              exitCode: 1,
+              stdout: JSON.stringify({
+                type: 'metadata',
+                data: { meteringUsage: [{ value: 0.5, unit: 'credit' }] },
+              }),
+            }),
+      restoreKiroStore: async () => true,
+      persistKiroStore: async () => true,
+    });
+    expect(out).toMatchObject({ ok: false, metrics: { credits: 0.5 }, creditRate: 0.04 });
+  });
+
   it('extracts the result text and token usage from stream-json lines', () => {
     const stdout = [
       '{"type":"system","subtype":"init"}',
@@ -138,6 +178,7 @@ describe('runOneShotPrompt', () => {
   it('runs kiro on stream-json and parses the answer and credits', async () => {
     let argv;
     const spawnFn = vi.fn((command, args) => {
+      if (args.includes('/usage')) return fakeChild({ stderr: 'billed at $0.04 per credit' });
       argv = { command, args };
       return fakeChild({
         stdout: kiroStream(

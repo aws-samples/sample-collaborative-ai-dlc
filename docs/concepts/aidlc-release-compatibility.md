@@ -22,7 +22,7 @@ or changes an existing intent.
 
 The built-in profiles are pinned to exact upstream commit SHAs. The allowlist
 includes the current 2.3.3 baseline and the 2.6.18, 2.7.0, 2.8.2, 2.9.0, and
-2.11.0 catalogs. No intermediate release is onboarded: 2.10.0 is not on the
+2.11.0 and 2.11.1 catalogs. No intermediate release is onboarded: 2.10.0 is not on the
 allowlist and registering it is refused as an unknown profile. A custom fork receives a synthesized profile with its own source
 identity; an unknown tag or branch is not treated as an official release.
 
@@ -209,7 +209,7 @@ making is the administrator's call, taken with the table below in hand.
 2.11.0 renames Change Control to **Guard Policy** (adding a third value, `off`)
 and adds **Plan Approval**, **collaborators** and **`existing_code`** as scope
 settings. All four are mapped by the importer, resolved onto the per-stage
-policy, and choosable per intent by a project member before the run starts.
+policy, and choosable per intent by a space member before the run starts.
 Guard Policy `off` means no change-control reopen; **it never removes a human
 approval gate**, and that invariant is asserted for every 2.11 scope and stage.
 
@@ -262,7 +262,20 @@ checkpoint, so the annex offers only what that session has and otherwise says
 the checkpoint cannot be raised there and must be deferred to the stage's own
 session.
 
-2.11.0's sensors run as the release declares them, with one bounded
+### AI-DLC 2.11.1
+
+2.11.1 is a patch release on the 2.11 line. It has the same frontmatter dialect,
+scope settings and sensors as 2.11.0, promotes the same way, and invokes every
+2.11.0 command in the table above. It adds one:
+
+| 2.11.1 behaviour                                                                  | Disposition | What the platform does                                                                                                                                                                                                                                                                                                                               |
+| --------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine sensor-<id> --stage` (build-and-test's cross-unit coverage gate, Step 10) | refused     | The platform runs a stage's declared sensors itself, at the stage's gate, and offers no way to run one on request. The agent writes the coverage report the step asks for from the record it can read, says it is agent-derived rather than sensor-verified, and treats every element it cannot confirm as uncovered, so it is surfaced at the gate. |
+
+The bare `engine sensor-<id>` a sensor block declares as its command is a
+different case, unchanged: the platform's sensor plane runs it at the gate.
+
+2.11.0's sensors, and 2.11.1's, run as the release declares them, with one bounded
 difference:
 
 - **Document-sensor routing and script closures.** 2.11 authors its document
@@ -335,10 +348,10 @@ scripts, and the `command` each sensor declares (a `runtime: sh` command runs
 through `sh -c`), run in the agent runtime with the runtime's own role and no
 separate sandbox. That is how a user's script sensor runs too, but the blast
 radius is wider: a user's sensor runs only in that user's intents, while a
-promoted fork is offered to every project in the deployment. Only a platform
+promoted fork is offered to every space in the deployment. Only a platform
 admin can promote a fork, the guard refuses a fork that authors behavior this
 build has no handler for, and promotion is not revoked once granted. Promote
-only a fork whose sources you would run as your own sensors in every project.
+only a fork whose sources you would run as your own sensors in every space.
 
 Because the registry reevaluates content evidence against the current handler
 registry, adding a handler can make an existing import promotable without
@@ -348,7 +361,7 @@ cannot honour; the admin screen explains a refused promotion.
 
 ### Enable pinning and promote a release
 
-A deployment of this build can run 2.8.2, 2.9.0, 2.11.0 or an admin-promoted
+A deployment of this build can run 2.8.2, 2.9.0, 2.11.0, 2.11.1 or an admin-promoted
 fork as follows. Every step is explicit; none happens on its own.
 
 1. Turn release pinning on. In the Terraform variables for the deployment, set
@@ -634,7 +647,7 @@ gate. Only the lead session can ask the human: no persona session, the
 integrator included, is given `ask_question`, and judgment-class objections are
 quoted at the validation gate instead.
 
-`get_team_knowledge` and `record_team_knowledge` use the project's shared
+`get_team_knowledge` and `record_team_knowledge` use the space's shared
 knowledge. Persona identity scopes authorship; it does not create a private
 knowledge namespace for each persona. Identity checks apply through supported
 tool calls; they are workflow controls, not an isolation boundary against a

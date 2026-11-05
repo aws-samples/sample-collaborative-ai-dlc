@@ -415,6 +415,8 @@ run "configured_package_repair" {
   command = apply
   module { source = "./modules/api/lambda" }
   variables {
+    iam_role_path                      = "/organization/collab/"
+    iam_permissions_boundary_arn       = "arn:aws:iam::123456789012:policy/organization-boundary"
     enable_native_package_jobs         = true
     native_package_jobs_host_qualified = true
     native_operations = {
@@ -422,6 +424,10 @@ run "configured_package_repair" {
       incident_owner          = "test-operations-reference"
       full_scan_alarm_seconds = 900
     }
+  }
+  assert {
+    condition     = alltrue([for role in [aws_iam_role.native_package_jobs_pipe, aws_iam_role.native_package_worker, aws_iam_role.native_package_repair] : role.path == var.iam_role_path && role.permissions_boundary == var.iam_permissions_boundary_arn])
+    error_message = "Organization settings must apply to native package dispatch, worker and repair roles."
   }
   assert {
     condition     = aws_cloudwatch_event_rule.native_package_repair.state == "ENABLED" && aws_lambda_event_source_mapping.native_package_jobs.enabled && length(aws_pipes_pipe.native_package_jobs) == 1

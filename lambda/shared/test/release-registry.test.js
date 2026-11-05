@@ -2303,7 +2303,7 @@ describe('a 2.9.0 whose developer persona carries the engine command', () => {
 // An execution-relevant authored field no adapter consumes is how a future
 // release would silently lose a setting: the closure already records its name,
 // so promotion must name it as a blocker rather than leave it to certification.
-// AI-DLC 2.11.0, end to end on the real release: the exact upstream commit's
+// AI-DLC 2.11.0 and 2.11.1, end to end on the real releases: the exact upstream commit's
 // frontmatter (the pinned compatibility fixture, every blob verified against the
 // upstream git tree when it was generated) plus every `{{INVOKE}} engine` line
 // those files really carry. Publication, registration, promotion and every
@@ -2312,315 +2312,334 @@ describe('a 2.9.0 whose developer persona carries the engine command', () => {
 // It promotes with nothing unhonoured, and it promotes the whole way an
 // administrator may take it: `selectable`, then `certified`, then the `stable`
 // channel.
-describe('a deployment admitting the real AI-DLC 2.11.0', () => {
-  const PROFILE = 'v2.11.0';
-  const SHA = '6a378b53c0a4fe0641ed7d8de8dfff94264d5b6a';
-  // The eleven engine commands 2.11 invokes that this runtime refuses, each
-  // answered by name in the dialect annex, plus the four families 2.9.0 already
-  // answered. Listed verbatim: a command that stopped being answered, or a new
-  // one that started being honoured without an answer, must fail here.
-  const ANSWERED_ENGINE_COMMANDS = Object.freeze([
-    'engine config set',
-    'engine graph ars',
-    'engine log answer',
-    'engine log decision',
-    'engine orchestrate',
-    'engine orchestrate next',
-    'engine recompose',
-    'engine state',
-    'engine state set-construction-execution',
-    'engine state set-construction-verification-command',
-    'engine testing-posture restore',
-    'engine worktree discard',
-    'engine worktree list',
-    'engine worktree purge',
-    'engine worktree restore',
-  ]);
-  const bundle = buildReleaseBundle({ profileId: PROFILE, files: filesWithInvokeLines(PROFILE) });
-  const { releaseId } = bundle.manifest;
+// 2.11.1 answers one command 2.11.0 never invokes: build-and-test's cross-unit
+// coverage gate asks for a sensor run on request.
+const REAL_211_RELEASES = Object.freeze([
+  {
+    PROFILE: 'v2.11.0',
+    SHA: '6a378b53c0a4fe0641ed7d8de8dfff94264d5b6a',
+    VERSION: '2.11.0',
+    ADDED: [],
+  },
+  {
+    PROFILE: 'v2.11.1',
+    SHA: '895a35d86d20336d9b7bc4aedc9440e4a12c83ab',
+    VERSION: '2.11.1',
+    ADDED: ['engine sensor-<id> --stage'],
+  },
+]);
+for (const { PROFILE, SHA, VERSION, ADDED } of REAL_211_RELEASES) {
+  describe(`a deployment admitting the real AI-DLC ${VERSION}`, () => {
+    // The eleven engine commands 2.11 invokes that this runtime refuses, each
+    // answered by name in the dialect annex, plus the four families 2.9.0 already
+    // answered. Listed verbatim: a command that stopped being answered, or a new
+    // one that started being honoured without an answer, must fail here.
+    const ANSWERED_ENGINE_COMMANDS = Object.freeze(
+      [
+        'engine config set',
+        'engine graph ars',
+        'engine log answer',
+        'engine log decision',
+        'engine orchestrate',
+        'engine orchestrate next',
+        'engine recompose',
+        'engine state',
+        'engine state set-construction-execution',
+        'engine state set-construction-verification-command',
+        'engine testing-posture restore',
+        'engine worktree discard',
+        'engine worktree list',
+        'engine worktree purge',
+        'engine worktree restore',
+        ...ADDED,
+      ].toSorted(),
+    );
+    const bundle = buildReleaseBundle({ profileId: PROFILE, files: filesWithInvokeLines(PROFILE) });
+    const { releaseId } = bundle.manifest;
 
-  beforeEach(async () => {
-    installFakes();
-    await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
-  });
-
-  const promote = async (supportState) => {
-    const { release } = await registerRelease(registerArgs(PROFILE));
-    return updateRelease({
-      ...registryArgs(),
-      s3,
-      bucket: BUCKET,
-      releaseId,
-      expectedRevision: release.revision,
-      patch: { supportState },
-      actor: 'admin-1',
-    });
-  };
-
-  it('imports the exact upstream commit under the current importer revision', async () => {
-    const { release } = await registerRelease(registerArgs(PROFILE));
-
-    expect(release).toMatchObject({
-      profileId: PROFILE,
-      sourceSha: SHA,
-      upstreamVersion: '2.11.0',
-      importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
-      trustTier: 'T1',
-      structurallyValid: true,
-      custom: false,
-    });
-  });
-
-  it('records only engine commands the annex answers, and nothing unhonoured', async () => {
-    const { release } = await registerRelease(registerArgs(PROFILE));
-
-    expect(
-      release.fidelityGaps
-        .filter((gap) => gap.blockType === 'BODY')
-        .map((gap) => ({ value: gap.value, annexed: gap.annexed })),
-    ).toEqual(ANSWERED_ENGINE_COMMANDS.map((value) => ({ value, annexed: true })));
-    // The four settings 2.11 renames or adds are MAPPED, so none is reported as
-    // an unmapped execution-relevant field either.
-    expect(release.unhonouredValues).toEqual([]);
-  });
-
-  it('promotes to selectable, offers it, and resolves all eleven scope plans', async () => {
-    const stated = await promote('selectable');
-    await updateRelease({
-      ...registryArgs(),
-      s3,
-      bucket: BUCKET,
-      releaseId,
-      expectedRevision: stated.revision,
-      patch: { visible: true },
-      actor: 'admin-1',
+    beforeEach(async () => {
+      installFakes();
+      await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
     });
 
-    const selected = await resolveSelectableRelease({ ...registryArgs(), releaseId });
-    expect(selected).toMatchObject({ supportState: 'selectable', visible: true, runnable: true });
-
-    const resolved = await expectPinnedPlansResolve(selected);
-    expect(Object.keys(resolved.library.scopesById)).toHaveLength(11);
-  });
-
-  // 2.11 is in the same answered-not-reproduced situation as 2.8.2 and 2.9.0,
-  // which stay certifiable: whether the published handled/approximated/refused
-  // table justifies the claim is the administrator's decision, not the
-  // registry's, so `certified` and the `stable` channel it unlocks must both be
-  // reachable.
-  it('promotes to certified, like 2.9.0', async () => {
-    const certified = await promote('certified');
-
-    expect(certified.supportState).toBe('certified');
-    expect(certified.certifiedBy).toBe('admin-1');
-    expect(certified.certifiedAt).toEqual(expect.any(String));
-  });
-
-  it('may be pointed at by the stable channel once certified', async () => {
-    const certified = await promote('certified');
-    await updateRelease({
-      ...registryArgs(),
-      s3,
-      bucket: BUCKET,
-      releaseId,
-      expectedRevision: certified.revision,
-      patch: { visible: true },
-      actor: 'admin-1',
-    });
-
-    const stable = await setChannel({
-      ...registryArgs(),
-      channel: 'stable',
-      releaseId,
-      expectedRevision: null,
-    });
-    expect(stable.releaseId).toBe(releaseId);
-  });
-
-  it('still refuses an intermediate release nobody onboarded', async () => {
-    await expect(registerRelease(registerArgs('v2.10.0'))).rejects.toMatchObject({
-      code: 'release_profile_unknown',
-    });
-  });
-
-  // A fork of a 2.11-shaped body goes through the SAME guard, borrowing only the
-  // parsing dialect: it stays T0, it is `custom`, and it is never admitted under
-  // the official repository slug.
-  describe('a fork whose body is 2.11-shaped', () => {
-    const FORK_SHA = 'fedcba9876543210fedcba9876543210fedcba98';
-    const FORK_REPOSITORY = 'acme/aidlc-211-fork';
-    const forkProfile = customProfile({
-      repository: FORK_REPOSITORY,
-      sha: FORK_SHA,
-      baseProfileId: PROFILE,
-    });
-    const forkBundle = buildReleaseBundle({
-      profile: forkProfile,
-      files: filesWithInvokeLines(PROFILE),
-    });
-
-    const registerFork = async () => {
-      await publishReleaseBundle({ s3, bucket: BUCKET, bundle: forkBundle });
-      return registerCustomRelease({
+    const promote = async (supportState) => {
+      const { release } = await registerRelease(registerArgs(PROFILE));
+      return updateRelease({
         ...registryArgs(),
         s3,
         bucket: BUCKET,
-        repository: FORK_REPOSITORY,
-        sha: FORK_SHA,
-        baseProfileId: PROFILE,
+        releaseId,
+        expectedRevision: release.revision,
+        patch: { supportState },
         actor: 'admin-1',
       });
     };
 
-    it('promotes through the same guard, stays T0, and is marked custom', async () => {
-      const { release } = await registerFork();
+    it('imports the exact upstream commit under the current importer revision', async () => {
+      const { release } = await registerRelease(registerArgs(PROFILE));
 
       expect(release).toMatchObject({
-        custom: true,
-        trustTier: 'T0',
-        sourceRepository: FORK_REPOSITORY,
-        runnable: false,
+        profileId: PROFILE,
+        sourceSha: SHA,
+        upstreamVersion: VERSION,
+        importerRevision: AIDLC_RELEASE_IMPORTER_REVISION,
+        trustTier: 'T1',
+        structurallyValid: true,
+        custom: false,
       });
-      // The fork borrows the 2.11 PARSING dialect and nothing else: not the
-      // trust tier, not the support state.
-      expect(forkProfile).toMatchObject({
-        baseProfileId: PROFILE,
-        frontmatterDialect: AIDLC_COMPATIBILITY_PROFILES[PROFILE].frontmatterDialect,
-        trustTier: 'T0',
-      });
-      expect(release.unhonouredValues).toEqual([]);
+    });
 
-      const promoted = await updateRelease({
+    it('records only engine commands the annex answers, and nothing unhonoured', async () => {
+      const { release } = await registerRelease(registerArgs(PROFILE));
+
+      expect(
+        release.fidelityGaps
+          .filter((gap) => gap.blockType === 'BODY')
+          .map((gap) => ({ value: gap.value, annexed: gap.annexed })),
+      ).toEqual(ANSWERED_ENGINE_COMMANDS.map((value) => ({ value, annexed: true })));
+      // The four settings 2.11 renames or adds are MAPPED, so none is reported as
+      // an unmapped execution-relevant field either.
+      expect(release.unhonouredValues).toEqual([]);
+    });
+
+    it('promotes to selectable, offers it, and resolves all eleven scope plans', async () => {
+      const stated = await promote('selectable');
+      await updateRelease({
         ...registryArgs(),
         s3,
         bucket: BUCKET,
-        releaseId: release.releaseId,
-        expectedRevision: release.revision,
-        patch: { supportState: 'selectable' },
+        releaseId,
+        expectedRevision: stated.revision,
+        patch: { visible: true },
         actor: 'admin-1',
       });
 
-      expect(promoted).toMatchObject({ supportState: 'selectable', runnable: true });
-      expect(promoted.trustTier).toBe('T0');
-      // The fork resolves only through a pin that names it as a fork; the
-      // official 2.11 identity is a different release id entirely.
-      expect(promoted.releaseId).not.toBe(releaseId);
+      const selected = await resolveSelectableRelease({ ...registryArgs(), releaseId });
+      expect(selected).toMatchObject({ supportState: 'selectable', visible: true, runnable: true });
+
+      const resolved = await expectPinnedPlansResolve(selected);
+      expect(Object.keys(resolved.library.scopesById)).toHaveLength(11);
     });
 
-    // The three approximated families are not gaps because the ANNEX answers
-    // them, and that answer only arrives where a prompt carries the annex. A
-    // SCOPE body is rendered into the compose grounding, which no builder gates
-    // on (`shared/annex-reach.js`), so a fork that moves such an invocation into
-    // a scope has a consuming session instructed to run a command it has no
-    // answer for — the exact invariant `annexed` is supposed to make checkable.
-    // Membership in the approximated list is not evidence of reach, so promotion
-    // must refuse it.
-    describe('a fork that invokes an approximated command from a scope body', () => {
-      const SCOPE_FORK_SHA = '0f0e0d0c0b0a09080706050403020100ffeeddcc';
-      const SCOPE_REPOSITORY = 'acme/aidlc-211-scope-fork';
+    // 2.11 is in the same answered-not-reproduced situation as 2.8.2 and 2.9.0,
+    // which stay certifiable: whether the published handled/approximated/refused
+    // table justifies the claim is the administrator's decision, not the
+    // registry's, so `certified` and the `stable` channel it unlocks must both be
+    // reachable.
+    it('promotes to certified, like 2.9.0', async () => {
+      const certified = await promote('certified');
 
-      const scopeForkFiles = () => {
-        const files = filesWithInvokeLines(PROFILE);
-        const scopePath = [...files.keys()].find((path) => path.startsWith('core/scopes/'));
-        expect(scopePath, 'a scope body').toBeTruthy();
-        files.set(
-          scopePath,
-          `${files.get(scopePath)}\n\nRecord the time with {{INVOKE}} engine now.\n`,
-        );
-        return files;
-      };
+      expect(certified.supportState).toBe('certified');
+      expect(certified.certifiedBy).toBe('admin-1');
+      expect(certified.certifiedAt).toEqual(expect.any(String));
+    });
 
-      it('names the command as unhonoured and refuses promotion', async () => {
-        const bundle = buildReleaseBundle({
-          profile: customProfile({
-            repository: SCOPE_REPOSITORY,
-            sha: SCOPE_FORK_SHA,
-            baseProfileId: PROFILE,
-          }),
-          files: scopeForkFiles(),
-        });
-        await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+    it('may be pointed at by the stable channel once certified', async () => {
+      const certified = await promote('certified');
+      await updateRelease({
+        ...registryArgs(),
+        s3,
+        bucket: BUCKET,
+        releaseId,
+        expectedRevision: certified.revision,
+        patch: { visible: true },
+        actor: 'admin-1',
+      });
 
-        const { release } = await registerCustomRelease({
+      const stable = await setChannel({
+        ...registryArgs(),
+        channel: 'stable',
+        releaseId,
+        expectedRevision: null,
+      });
+      expect(stable.releaseId).toBe(releaseId);
+    });
+
+    it('still refuses an intermediate release nobody onboarded', async () => {
+      await expect(registerRelease(registerArgs('v2.10.0'))).rejects.toMatchObject({
+        code: 'release_profile_unknown',
+      });
+    });
+
+    // A fork of a 2.11-shaped body goes through the SAME guard, borrowing only the
+    // parsing dialect: it stays T0, it is `custom`, and it is never admitted under
+    // the official repository slug.
+    describe('a fork whose body is 2.11-shaped', () => {
+      const FORK_SHA = 'fedcba9876543210fedcba9876543210fedcba98';
+      const FORK_REPOSITORY = 'acme/aidlc-211-fork';
+      const forkProfile = customProfile({
+        repository: FORK_REPOSITORY,
+        sha: FORK_SHA,
+        baseProfileId: PROFILE,
+      });
+      const forkBundle = buildReleaseBundle({
+        profile: forkProfile,
+        files: filesWithInvokeLines(PROFILE),
+      });
+
+      const registerFork = async () => {
+        await publishReleaseBundle({ s3, bucket: BUCKET, bundle: forkBundle });
+        return registerCustomRelease({
           ...registryArgs(),
           s3,
           bucket: BUCKET,
-          repository: SCOPE_REPOSITORY,
-          sha: SCOPE_FORK_SHA,
+          repository: FORK_REPOSITORY,
+          sha: FORK_SHA,
           baseProfileId: PROFILE,
           actor: 'admin-1',
         });
+      };
 
-        expect(release.unhonouredValues).toContainEqual({
-          blockType: 'BODY',
-          field: '{{INVOKE}}',
-          value: 'engine now',
+      it('promotes through the same guard, stays T0, and is marked custom', async () => {
+        const { release } = await registerFork();
+
+        expect(release).toMatchObject({
+          custom: true,
+          trustTier: 'T0',
+          sourceRepository: FORK_REPOSITORY,
+          runnable: false,
         });
-        await expect(
-          updateRelease({
+        // The fork borrows the 2.11 PARSING dialect and nothing else: not the
+        // trust tier, not the support state.
+        expect(forkProfile).toMatchObject({
+          baseProfileId: PROFILE,
+          frontmatterDialect: AIDLC_COMPATIBILITY_PROFILES[PROFILE].frontmatterDialect,
+          trustTier: 'T0',
+        });
+        expect(release.unhonouredValues).toEqual([]);
+
+        const promoted = await updateRelease({
+          ...registryArgs(),
+          s3,
+          bucket: BUCKET,
+          releaseId: release.releaseId,
+          expectedRevision: release.revision,
+          patch: { supportState: 'selectable' },
+          actor: 'admin-1',
+        });
+
+        expect(promoted).toMatchObject({ supportState: 'selectable', runnable: true });
+        expect(promoted.trustTier).toBe('T0');
+        // The fork resolves only through a pin that names it as a fork; the
+        // official 2.11 identity is a different release id entirely.
+        expect(promoted.releaseId).not.toBe(releaseId);
+      });
+
+      // The three approximated families are not gaps because the ANNEX answers
+      // them, and that answer only arrives where a prompt carries the annex. A
+      // SCOPE body is rendered into the compose grounding, which no builder gates
+      // on (`shared/annex-reach.js`), so a fork that moves such an invocation into
+      // a scope has a consuming session instructed to run a command it has no
+      // answer for — the exact invariant `annexed` is supposed to make checkable.
+      // Membership in the approximated list is not evidence of reach, so promotion
+      // must refuse it.
+      describe('a fork that invokes an approximated command from a scope body', () => {
+        const SCOPE_FORK_SHA = '0f0e0d0c0b0a09080706050403020100ffeeddcc';
+        const SCOPE_REPOSITORY = 'acme/aidlc-211-scope-fork';
+
+        const scopeForkFiles = () => {
+          const files = filesWithInvokeLines(PROFILE);
+          const scopePath = [...files.keys()].find((path) => path.startsWith('core/scopes/'));
+          expect(scopePath, 'a scope body').toBeTruthy();
+          files.set(
+            scopePath,
+            `${files.get(scopePath)}\n\nRecord the time with {{INVOKE}} engine now.\n`,
+          );
+          return files;
+        };
+
+        it('names the command as unhonoured and refuses promotion', async () => {
+          const bundle = buildReleaseBundle({
+            profile: customProfile({
+              repository: SCOPE_REPOSITORY,
+              sha: SCOPE_FORK_SHA,
+              baseProfileId: PROFILE,
+            }),
+            files: scopeForkFiles(),
+          });
+          await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+
+          const { release } = await registerCustomRelease({
             ...registryArgs(),
             s3,
             bucket: BUCKET,
-            releaseId: release.releaseId,
-            expectedRevision: release.revision,
-            patch: { supportState: 'selectable' },
+            repository: SCOPE_REPOSITORY,
+            sha: SCOPE_FORK_SHA,
+            baseProfileId: PROFILE,
             actor: 'admin-1',
-          }),
-        ).rejects.toMatchObject({ code: 'release_capability_unhandled' });
-      });
+          });
 
-      // The same command in a body every consuming prompt DOES annex — the
-      // knowledge of an agent that only ever reviews — is answered: the shared
-      // persona tail appends the annex whenever that knowledge instructs, so the
-      // reviewer receives the answer with its recording channel redirected to
-      // the tool it has.
-      it('still honours it in a body whose prompts all carry the annex', async () => {
-        const KNOWLEDGE_SHA = '1f1e1d1c1b1a19181716151413121110ffeeddcc';
-        const REPOSITORY = 'acme/aidlc-211-knowledge-fork';
-        const files = filesWithInvokeLines(PROFILE);
-        const knowledgePath = [...files.keys()].find((path) =>
-          path.startsWith('core/knowledge/aidlc-architecture-reviewer-agent/'),
-        );
-        expect(knowledgePath, 'a reviewer knowledge body').toBeTruthy();
-        files.set(
-          knowledgePath,
-          `${files.get(knowledgePath)}\n\nStamp it with {{INVOKE}} engine now.\n`,
-        );
-        const bundle = buildReleaseBundle({
-          profile: customProfile({
+          expect(release.unhonouredValues).toContainEqual({
+            blockType: 'BODY',
+            field: '{{INVOKE}}',
+            value: 'engine now',
+          });
+          await expect(
+            updateRelease({
+              ...registryArgs(),
+              s3,
+              bucket: BUCKET,
+              releaseId: release.releaseId,
+              expectedRevision: release.revision,
+              patch: { supportState: 'selectable' },
+              actor: 'admin-1',
+            }),
+          ).rejects.toMatchObject({ code: 'release_capability_unhandled' });
+        });
+
+        // The same command in a body every consuming prompt DOES annex — the
+        // knowledge of an agent that only ever reviews — is answered: the shared
+        // persona tail appends the annex whenever that knowledge instructs, so the
+        // reviewer receives the answer with its recording channel redirected to
+        // the tool it has.
+        it('still honours it in a body whose prompts all carry the annex', async () => {
+          const KNOWLEDGE_SHA = '1f1e1d1c1b1a19181716151413121110ffeeddcc';
+          const REPOSITORY = 'acme/aidlc-211-knowledge-fork';
+          const files = filesWithInvokeLines(PROFILE);
+          const knowledgePath = [...files.keys()].find((path) =>
+            path.startsWith('core/knowledge/aidlc-architecture-reviewer-agent/'),
+          );
+          expect(knowledgePath, 'a reviewer knowledge body').toBeTruthy();
+          files.set(
+            knowledgePath,
+            `${files.get(knowledgePath)}\n\nStamp it with {{INVOKE}} engine now.\n`,
+          );
+          const bundle = buildReleaseBundle({
+            profile: customProfile({
+              repository: REPOSITORY,
+              sha: KNOWLEDGE_SHA,
+              baseProfileId: PROFILE,
+            }),
+            files,
+          });
+          await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
+
+          const { release } = await registerCustomRelease({
+            ...registryArgs(),
+            s3,
+            bucket: BUCKET,
             repository: REPOSITORY,
             sha: KNOWLEDGE_SHA,
             baseProfileId: PROFILE,
+            actor: 'admin-1',
+          });
+
+          expect(release.unhonouredValues).toEqual([]);
+        });
+      });
+
+      it('is never admitted under the official repository slug', () => {
+        expect(() =>
+          customProfile({
+            repository: 'awslabs/aidlc-workflows',
+            sha: SHA,
+            baseProfileId: PROFILE,
           }),
-          files,
-        });
-        await publishReleaseBundle({ s3, bucket: BUCKET, bundle });
-
-        const { release } = await registerCustomRelease({
-          ...registryArgs(),
-          s3,
-          bucket: BUCKET,
-          repository: REPOSITORY,
-          sha: KNOWLEDGE_SHA,
-          baseProfileId: PROFILE,
-          actor: 'admin-1',
-        });
-
-        expect(release.unhonouredValues).toEqual([]);
+        ).toThrow(expect.objectContaining({ code: 'custom_repository_official' }));
       });
     });
-
-    it('is never admitted under the official repository slug', () => {
-      expect(() =>
-        customProfile({
-          repository: 'awslabs/aidlc-workflows',
-          sha: SHA,
-          baseProfileId: PROFILE,
-        }),
-      ).toThrow(expect.objectContaining({ code: 'custom_repository_official' }));
-    });
   });
-});
+}
 
 // An execution-relevant authored field no adapter consumes is how a future
 // release would silently lose a setting: the closure already records its name,
@@ -2753,7 +2772,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
 
     expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
     expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
-      fidelityEvidenceRevision: 6,
+      fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION,
     });
   });
 
@@ -2761,7 +2780,7 @@ describe('promotion of a record registered before protocol evidence existed', ()
     await registerRelease(registerArgs(CANDIDATE_PROFILE));
 
     expect(rows.get(keyOf(`AIDLC_RELEASE#${CANDIDATE_RELEASE_ID}`, 'META'))).toMatchObject({
-      fidelityEvidenceRevision: 6,
+      fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION,
     });
   });
 
@@ -3011,7 +3030,7 @@ describe('promotion of a record whose evidence predates the unmapped-field block
 
     expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
     expect(rows.get(key).fidelityGaps).not.toContainEqual(STALE_GAP);
-    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: 6 });
+    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION });
   });
 
   it('reports the recomputed answer when an admin lists it', async () => {
@@ -3022,7 +3041,7 @@ describe('promotion of a record whose evidence predates the unmapped-field block
     const listed = releases.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
     expect(listed.unhonouredValues).toEqual([]);
     expect(listed.fidelityGaps).not.toContainEqual(STALE_GAP);
-    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: 6 });
+    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION });
   });
 });
 
@@ -3069,7 +3088,70 @@ describe('promotion of a record whose evidence predates the 2.11 command classif
 
     expect(promoted).toMatchObject({ supportState: 'selectable', unhonouredValues: [] });
     expect(rows.get(key).fidelityGaps).not.toContainEqual(row.fidelityGaps[0]);
-    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: 6 });
+    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION });
+  });
+});
+
+// A 2.11.1 record registered before `sensor-<id> --stage` was classified: that
+// build stored the bare command as an unknown, unannexed family, at revision 6.
+// Its list looked current, so promotion trusted it and refused the release
+// forever — the bug the revision bump fixes.
+describe('promotion of a 2.11.1 record whose evidence predates the sensor-on-request classification', () => {
+  const PROFILE = 'v2.11.1';
+  const STALE_GAP = Object.freeze({
+    blockType: 'BODY',
+    field: '{{INVOKE}}',
+    value: 'engine sensor-traceability --stage',
+  });
+  const bundle211 = buildReleaseBundle({
+    profileId: PROFILE,
+    files: filesWithInvokeLines(PROFILE),
+  });
+  const releaseId211 = bundle211.manifest.releaseId;
+
+  const registeredByThePreviousBuild = async () => {
+    installFakes();
+    await publishReleaseBundle({ s3, bucket: BUCKET, bundle: bundle211 });
+    await registerRelease(registerArgs(PROFILE));
+    const key = keyOf(`AIDLC_RELEASE#${releaseId211}`, 'META');
+    const row = {
+      ...rows.get(key),
+      fidelityGaps: [
+        ...rows.get(key).fidelityGaps.filter((gap) => gap.value !== 'engine sensor-<id> --stage'),
+        STALE_GAP,
+      ],
+      fidelityEvidenceRevision: 6,
+    };
+    rows.set(key, row);
+    return { key, row };
+  };
+
+  it('is stale, so neither the listing nor promotion trusts that list', async () => {
+    const { key } = await registeredByThePreviousBuild();
+
+    expect(FIDELITY_EVIDENCE_REVISION).toBeGreaterThan(6);
+    const listed = (await listReleases({ ...registryArgs(), s3, bucket: BUCKET })).find(
+      (release) => release.releaseId === releaseId211,
+    );
+    expect(listed.unhonouredValues).toEqual([]);
+    expect(rows.get(key)).toMatchObject({ fidelityEvidenceRevision: FIDELITY_EVIDENCE_REVISION });
+  });
+
+  it('promotes once the closure is re-evaluated', async () => {
+    const { key, row } = await registeredByThePreviousBuild();
+
+    const promoted = await updateRelease({
+      ...registryArgs(),
+      s3,
+      bucket: BUCKET,
+      releaseId: releaseId211,
+      expectedRevision: row.revision,
+      patch: { supportState: 'certified' },
+      actor: 'admin-1',
+    });
+
+    expect(promoted).toMatchObject({ supportState: 'certified', unhonouredValues: [] });
+    expect(rows.get(key).fidelityGaps.map((gap) => gap.value)).not.toContain(STALE_GAP.value);
   });
 });
 
@@ -3213,7 +3295,7 @@ describe('admin listing of a record registered before protocol evidence existed'
     const second = await listReleases({ ...registryArgs(), s3, bucket: BUCKET });
 
     const listed = first.find((release) => release.releaseId === CANDIDATE_RELEASE_ID);
-    expect(cached.fidelityEvidenceRevision).toBe(6);
+    expect(cached.fidelityEvidenceRevision).toBe(FIDELITY_EVIDENCE_REVISION);
     expect(cached.fidelityGaps).toEqual(listed.fidelityGaps);
     expect(cached.fidelityGaps).not.toEqual(legacy.fidelityGaps);
     // Evidence is derived from an immutable closure, never a decision, so the

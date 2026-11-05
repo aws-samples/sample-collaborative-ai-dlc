@@ -62,3 +62,16 @@ variable "native_operations" {
   })
   default = {}
 }
+
+# Deployment-owned controller roles follow the platform IAM settings. Dynamically
+# provisioned runtime roles keep /native-runs/ and the native maximum boundary.
+variable "iam_role_path" {
+  description = "Path for native controller roles; dynamic runtime roles remain under /native-runs/"
+  type        = string
+  default     = "/"
+}
+variable "iam_permissions_boundary_arn" {
+  description = "Optional boundary for native controller roles; does not replace native runtime isolation"
+  type        = string
+  default     = ""
+}

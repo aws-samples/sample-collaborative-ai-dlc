@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import mermaid from 'mermaid';
-import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
+import { ArtifactMarkdown, PreviewReferenceText } from '@/components/intent/ArtifactMarkdown';
 
 vi.mock('mermaid', () => ({
   default: {
@@ -89,5 +89,69 @@ describe('ArtifactMarkdown', () => {
 
     expect(screen.getByText('[[artifact-id]] story-upload-screen')).toBeInTheDocument();
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('matches ids written with dots or underscores to their slugs', () => {
+    const onOpenItem = vi.fn();
+    render(
+      <ArtifactMarkdown
+        content="Covers FR2.4/FR2.12, NFR_1 and dec-session-tokens. Not FR2.4.1 or FR2.1."
+        derivedItems={[
+          { id: 'fr-a', slug: 'fr2-4', label: 'Sign in' },
+          { id: 'fr-b', slug: 'fr2-12', label: 'Sign out' },
+          { id: 'nfr', slug: 'nfr-1', label: 'Fast' },
+          { id: 'dec', slug: 'dec-session-tokens', label: 'Use short-lived session tokens' },
+        ]}
+        onOpenItem={onOpenItem}
+      />,
+    );
+
+    expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual([
+      'Sign in',
+      'Sign out',
+      'Fast',
+      'Use short-lived session tokens',
+    ]);
+  });
+
+  it('keeps the referencing text when asked, with the title on hover', () => {
+    render(
+      <ArtifactMarkdown
+        content="See FR2.4."
+        derivedItems={[{ id: 'fr-a', slug: 'fr2-4', label: 'Sign in' }]}
+        preserveReferenceText
+      />,
+    );
+
+    const link = screen.getByRole('link', { name: 'FR2.4' });
+    expect(link).toHaveAttribute('href', '#item-fr-a');
+    expect(link).toHaveAttribute('title', 'Sign in');
+  });
+});
+
+describe('PreviewReferenceText', () => {
+  it('links references in plain text without reaching enclosing click handlers', () => {
+    const onOpenItem = vi.fn();
+    const onRowClick = vi.fn();
+    render(
+      <div onClick={onRowClick}>
+        <PreviewReferenceText
+          text="Keep **dec-session-tokens** as written"
+          derivedItems={[
+            { id: 'dec', slug: 'dec-session-tokens', label: 'Use short-lived session tokens' },
+          ]}
+          onOpenItem={onOpenItem}
+          preserveReferenceText
+          stopLinkPropagation
+        />
+      </div>,
+    );
+
+    screen.getByRole('link', { name: 'dec-session-tokens' }).click();
+    expect(onOpenItem).toHaveBeenCalledWith('dec');
+    expect(onRowClick).not.toHaveBeenCalled();
+    expect(screen.getByText(/as written/).textContent).toBe(
+      'Keep **dec-session-tokens** as written',
+    );
   });
 });

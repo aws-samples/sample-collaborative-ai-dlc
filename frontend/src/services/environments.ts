@@ -174,6 +174,13 @@ export interface EnvironmentRevision {
   publishedAt?: string | null;
 }
 
+// Platform default for new spaces; `standard` when unset.
+export interface DefaultEnvironment {
+  environmentId: string;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
 export interface EnvironmentDetail {
   environment: ManagedEnvironment;
   revisions: EnvironmentRevision[];
@@ -210,9 +217,13 @@ export interface ToolVerification {
   files: { path: string; content: string }[];
 }
 
+export type ToolArchitecture = 'arm64' | 'x86_64';
+
 export interface ToolVersionDefinition {
   schemaVersion: 1;
   version: string;
+  // Omitted for arm64 (the default); x86_64 builds are separate versions.
+  architecture?: 'x86_64';
   distribution?: string;
   publisher?: string;
   source: {
@@ -273,6 +284,7 @@ export interface ManagedTool {
   publisher: string;
   system: boolean;
   recommendedVersionId: string | null;
+  recommendedX86_64VersionId?: string | null;
   versions: ManagedToolVersion[];
   createdAt: string;
   updatedAt: string;
@@ -322,6 +334,9 @@ export const environmentsService = {
   list: (publishedOnly = false) =>
     api.get<ManagedEnvironment[]>(`/environments${publishedOnly ? '?published=true' : ''}`),
   capabilities: () => api.get<EnvironmentCapabilities>('/environments/capabilities'),
+  getDefault: () => api.get<DefaultEnvironment>('/environments/settings/default'),
+  setDefault: (environmentId: string) =>
+    api.put<DefaultEnvironment>('/environments/settings/default', { environmentId }),
   get: (environmentId: string) => api.get<EnvironmentDetail>(environmentPath(environmentId)),
   create: (input: {
     environmentId?: string;

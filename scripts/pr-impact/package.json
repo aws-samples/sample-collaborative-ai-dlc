@@ -1,0 +1,9 @@
+{
+  "name": "collaborative-ai-dlc-pr-impact",
+  "private": true,
+  "description": "Isolated tooling for deterministic PR impact images",
+  "type": "module",
+  "dependencies": {
+    "tsx": "4.23.15"
+  }
+}

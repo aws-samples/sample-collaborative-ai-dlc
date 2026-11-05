@@ -23,9 +23,11 @@ locals {
 }
 
 resource "aws_iam_role" "authority" {
-  name               = "${local.name}-authority"
-  assume_role_policy = local.lambda_trust
-  tags               = var.tags
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn != "" ? var.iam_permissions_boundary_arn : null
+  name                 = "${local.name}-authority"
+  assume_role_policy   = local.lambda_trust
+  tags                 = var.tags
 }
 resource "aws_iam_role_policy_attachment" "authority_basic" {
   role       = aws_iam_role.authority.name

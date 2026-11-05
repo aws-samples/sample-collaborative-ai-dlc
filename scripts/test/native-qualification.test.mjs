@@ -162,7 +162,7 @@ test('reused Linux bindings reject altered bytes even with the expected package 
     await writeFile(join(module, 'README.md'), Buffer.alloc(112));
     await writeFile(
       join(module, 'package.json'),
-      JSON.stringify({ name: '@rolldown/binding-linux-arm64-gnu', version: '1.1.5' }),
+      JSON.stringify({ name: '@rolldown/binding-linux-arm64-gnu', version: '1.2.15' }),
     );
     await writeFile(join(module, 'rolldown-binding.linux-arm64-gnu.node'), 'corrupt');
     await assert.rejects(

@@ -45,6 +45,12 @@ locals {
       Resource = ["${local.ssm_prefix_arn}/cli-models", "${local.ssm_prefix_arn}/tier-models"]
     },
     {
+      Sid      = "ReadNativeCliAvailability"
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameter"]
+      Resource = "${local.ssm_prefix_arn}/disabled-clis"
+    },
+    {
       Sid      = "ResolveNativeCredentialMetadata"
       Effect   = "Allow"
       Action   = ["lambda:InvokeFunction"]
@@ -145,10 +151,12 @@ resource "aws_sqs_queue" "execution" {
 }
 
 resource "aws_iam_role" "execution_worker" {
-  count              = 1
-  name               = "${local.name}-execution"
-  assume_role_policy = local.lambda_trust
-  tags               = var.tags
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn != "" ? var.iam_permissions_boundary_arn : null
+  count                = 1
+  name                 = "${local.name}-execution"
+  assume_role_policy   = local.lambda_trust
+  tags                 = var.tags
 }
 resource "aws_iam_role_policy_attachment" "execution_worker_basic" {
   count      = 1
@@ -274,10 +282,12 @@ resource "aws_iam_role_policy" "execution_worker" {
 # A new controller-only principal. It intentionally does not share or extend the
 # legacy runtime-callable credential broker role, signing secret or policies.
 resource "aws_iam_role" "execution_credentials" {
-  count              = 1
-  name               = "${local.name}-credentials"
-  assume_role_policy = local.lambda_trust
-  tags               = var.tags
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn != "" ? var.iam_permissions_boundary_arn : null
+  count                = 1
+  name                 = "${local.name}-credentials"
+  assume_role_policy   = local.lambda_trust
+  tags                 = var.tags
 }
 resource "aws_iam_role_policy_attachment" "execution_credentials_basic" {
   count      = 1

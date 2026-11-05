@@ -135,7 +135,9 @@ resource "aws_ecs_cluster" "main" {
 
 # ECS Task Execution Role
 resource "aws_iam_role" "ecs_execution" {
-  name = "${var.project_name}-ecs-execution-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-ecs-execution-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -172,7 +174,9 @@ resource "aws_iam_role_policy" "ecs_execution_doc_secret" {
 
 # ECS Task Role
 resource "aws_iam_role" "ecs_task" {
-  name = "${var.project_name}-yjs-task-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  name                 = "${var.project_name}-yjs-task-${var.environment}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"

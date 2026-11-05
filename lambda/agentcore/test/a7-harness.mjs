@@ -184,7 +184,6 @@ const verify = async () => {
   console.log('\n=== DynamoDB process records ===');
   console.log(`  outputs (send_output): ${records.outputs?.length ?? 0}`);
   for (const o of records.outputs ?? []) console.log(`    • ${String(o.content).slice(0, 80)}`);
-  console.log(`  metrics (collect_metric): ${records.metrics?.length ?? 0}`);
   console.log(`  human gates (ask_question): ${records.humanTasks?.length ?? 0}`);
 };
 

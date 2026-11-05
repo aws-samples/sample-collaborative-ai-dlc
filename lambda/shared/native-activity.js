@@ -25,11 +25,12 @@ const USAGE_FIELDS = {
   tokensOutput: 'output tokens',
   tokensCacheRead: 'cache-read tokens',
   tokensCacheWrite: 'cache-write tokens',
+  tokensCacheWrite1h: '1h cache-write tokens',
   tokensReasoning: 'reasoning tokens',
 };
 
 // Report samples, never infer a complete bill from a missing provider signal.
-// Pricing uses the canonical resolver; this is an input/output estimate only.
+// Pricing uses the canonical resolver, including its cache categories.
 export const nativeUsageSummary = (metrics, model) => {
   const observed = Object.fromEntries(
     Object.entries(metrics ?? {}).filter(
@@ -48,7 +49,7 @@ export const nativeUsageSummary = (metrics, model) => {
   return [
     ...fields,
     priced
-      ? `Input/output cost estimate: USD ${cost.totalCost.toFixed(6)} (canonical pricing; excludes cache, credits and infrastructure)`
+      ? `Token cost estimate: USD ${cost.totalCost.toFixed(6)} (canonical pricing includes reported cache; excludes credits and infrastructure)`
       : 'Cost unavailable',
     'Provider-reported sample; total billing and reviewer attribution unavailable',
   ].join(' · ');

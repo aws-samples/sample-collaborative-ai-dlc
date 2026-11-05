@@ -532,6 +532,17 @@ export const createDiscussionAssistStart = ({
           cwd,
           ...cliContext,
         });
+        if (out.metrics && !native) {
+          await store
+            ?.recordMetric?.({
+              executionId: intentId,
+              stageInstanceId: null,
+              metrics: { ...out.metrics, discussionAssistCalls: 1 },
+              resolvedModel: out.model ?? null,
+              creditRate: out.creditRate ?? null,
+            })
+            .catch(() => {});
+        }
         let message;
         if (out.ok) {
           message = await acceptResult({
@@ -544,16 +555,6 @@ export const createDiscussionAssistStart = ({
             status: 'completed',
             native,
           });
-          if (out.metrics && !native) {
-            await store
-              ?.recordMetric?.({
-                executionId: intentId,
-                stageInstanceId: null,
-                metrics: { ...out.metrics, discussionAssistCalls: 1 },
-                resolvedModel: out.model ?? null,
-              })
-              .catch(() => {});
-          }
           if (!native)
             await store
               ?.appendEvent?.({

@@ -1,6 +1,7 @@
 import { createOpenCodeJsonlParser } from './cli/opencode-parser.js';
 import { createCodexJsonlParser } from './cli/codex-parser.js';
 import { createKiroJsonlParser } from './cli/kiro-parser.js';
+import { claudeUsageMetrics } from './cli/claude-usage.js';
 
 const TOOL_DISPLAY_TYPES = new Set([
   'message',
@@ -372,6 +373,7 @@ const createParsedSink = ({
   onError,
   retainState,
   maxPendingTools,
+  usageBaseline,
 }) => {
   let readBatch = [];
   const flushReadBatch = () => {
@@ -388,6 +390,7 @@ const createParsedSink = ({
     retainState,
     onSession,
     onUsage,
+    usageBaseline,
     onText(text) {
       const content = stripTerminalControls(text);
       send(content, displayForMessage(content));
@@ -485,6 +488,7 @@ export const createCliOutputSink = ({
   onSession = () => {},
   onUsage = () => {},
   onError = () => {},
+  usageBaseline = {},
 }) => {
   if (PARSED_SINKS[cli]) {
     return createParsedSink({
@@ -495,6 +499,7 @@ export const createCliOutputSink = ({
       onError,
       retainState,
       maxPendingTools,
+      usageBaseline,
     });
   }
 
@@ -506,18 +511,9 @@ export const createCliOutputSink = ({
     if (!line.trim()) return;
     try {
       const event = JSON.parse(line);
-      if (event.type === 'result' && event.usage && event.parent_tool_use_id == null) {
-        const metrics = {};
-        for (const [key, field] of Object.entries({
-          tokensInput: 'input_tokens',
-          tokensOutput: 'output_tokens',
-          tokensCacheRead: 'cache_read_input_tokens',
-          tokensCacheWrite: 'cache_creation_input_tokens',
-        })) {
-          const value = event.usage[field];
-          if (Number.isSafeInteger(value) && value >= 0) metrics[key] = value;
-        }
-        if (Object.keys(metrics).length) onUsage(metrics, event);
+      if (event.type === 'result' && event.parent_tool_use_id == null) {
+        const metrics = claudeUsageMetrics(event.usage);
+        if (metrics) onUsage(metrics, event);
       }
       const text = stripTerminalControls(textFromClaudeStreamEvent(event));
       if (text) {

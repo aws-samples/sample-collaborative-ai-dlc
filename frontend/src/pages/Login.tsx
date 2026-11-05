@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Building2, FolderGit2, Loader2, LogIn } from 'lucide-react';
+import { BrandMark } from '@/components/layout/BrandMark';
 
 export default function Login() {
   const [username, setUsername] = useState('');
@@ -213,9 +214,14 @@ export default function Login() {
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
           <div className="flex justify-center mb-2">
-            <div className="h-10 w-10 rounded-lg bg-primary flex items-center justify-center">
-              <FolderGit2 className="h-5 w-5 text-primary-foreground" />
-            </div>
+            <BrandMark
+              wordmarkClassName="h-9"
+              fallback={
+                <div className="h-10 w-10 rounded-lg bg-primary flex items-center justify-center">
+                  <FolderGit2 className="h-5 w-5 text-primary-foreground" />
+                </div>
+              }
+            />
           </div>
           <CardTitle>Sign in to AI-DLC</CardTitle>
           <CardDescription>Collaborative AI-Driven Development</CardDescription>

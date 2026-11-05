@@ -3,7 +3,8 @@
 // (github-issues / gitlab-issues), Jira Cloud connect + project binding, and
 // the legacy-data migration banner.
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { Button } from '@/components/ui/button';
 import { ClipboardList, Loader2, Plus, XCircle } from 'lucide-react';
 import { projectsService, type Project, type TrackerBinding } from '@/services/projects';
@@ -28,6 +29,12 @@ interface Props {
 }
 
 export function TrackersTab({ project, canEdit, reload }: Props) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const resumeJiraBinding = searchParams.get('reconnectJiraBinding');
+  const resumeJiraPicker = searchParams.get('addJiraProject') === '1' || !!resumeJiraBinding;
+  const [reconnectingBindingId, setReconnectingBindingId] = useState<string | null>(
+    resumeJiraBinding,
+  );
   const [error, setError] = useState<string | null>(null);
   const [togglingTracker, setTogglingTracker] = useState(false);
 
@@ -38,8 +45,24 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
   // helper hint when the deployment hasn't populated the secret yet.
   const { providers: trackerProviders } = useTrackerProviders();
   const [connectingJira, setConnectingJira] = useState(false);
-  const [showJiraProjectPicker, setShowJiraProjectPicker] = useState(false);
+  const [showJiraProjectPicker, setShowJiraProjectPicker] = useState(canEdit && resumeJiraPicker);
+  const [jiraAuthorizationAttempted, setJiraAuthorizationAttempted] = useState(resumeJiraPicker);
   const [sourceControl, setSourceControl] = useState<ProjectSourceControlStatus | null>(null);
+
+  useEffect(() => {
+    if (!resumeJiraPicker || !canEdit) return;
+    setShowJiraProjectPicker(true);
+    setJiraAuthorizationAttempted(true);
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.delete('addJiraProject');
+        next.delete('reconnectJiraBinding');
+        return next;
+      },
+      { replace: true },
+    );
+  }, [resumeJiraPicker, canEdit, setSearchParams]);
 
   // Tracker-abstraction migration (#194 Phase 1).
   const [migrating, setMigrating] = useState(false);
@@ -56,6 +79,10 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
   }, []);
 
   const bindings = project.trackers ?? [];
+  const reconnectingBinding = bindings.find(
+    (b) => b.id === reconnectingBindingId && b.provider === 'jira-cloud',
+  );
+  const hasJiraBinding = bindings.some((b) => b.provider === 'jira-cloud');
   const needsSourceControlStatus =
     canEdit &&
     bindings.some(
@@ -102,12 +129,24 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
     }
   };
 
+  const startJiraAuthorization = useCallback(
+    async (signal?: AbortSignal) => {
+      const { url } = await trackersService.getAuthUrl(TRACKER_PROVIDERS['jira-cloud'].id);
+      if (signal?.aborted) return;
+      sessionStorage.setItem(
+        'oauth_return_to',
+        `/space/${project.id}/settings?tab=trackers&${reconnectingBindingId ? `reconnectJiraBinding=${encodeURIComponent(reconnectingBindingId)}` : 'addJiraProject=1'}`,
+      );
+      window.location.href = url;
+    },
+    [project.id, reconnectingBindingId],
+  );
+
   const handleConnectJira = async () => {
     setError(null);
     setConnectingJira(true);
     try {
-      const { url } = await trackersService.getAuthUrl(TRACKER_PROVIDERS['jira-cloud'].id);
-      window.location.href = url;
+      await startJiraAuthorization();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start Jira Cloud OAuth');
       setConnectingJira(false);
@@ -119,6 +158,8 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
     setError(null);
     const jira = TRACKER_PROVIDERS['jira-cloud'];
     await trackersService.addToProject(project.id, {
+      bindingId: reconnectingBinding?.id,
+      confirmDelegation: true,
       provider: jira.id,
       instance: jira.instance,
       externalProjectKey: chosen.key,
@@ -142,6 +183,12 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
 
   const handleReconnectTracker = async (binding: TrackerBinding) => {
     setError(null);
+    if (binding.provider === 'jira-cloud') {
+      setReconnectingBindingId(binding.id);
+      setJiraAuthorizationAttempted(false);
+      setShowJiraProjectPicker(true);
+      return;
+    }
     try {
       // Store the return path so the OAuth callback redirects back here instead
       // of the create-project flow.
@@ -214,7 +261,7 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
         title="Trackers"
         badge={
           <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium leading-4 text-muted-foreground">
-            {bindings.length} connected
+            {bindings.length} configured
           </span>
         }
         description="Issue trackers wired to this space — sprints can start straight from their issues."
@@ -253,6 +300,13 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
                       <p className="truncate text-[11px] text-muted-foreground">
                         {b.displayName || b.externalProjectKey}
                       </p>
+                      {b.provider === 'jira-cloud' && (
+                        <p className="text-xs text-muted-foreground">
+                          {b.status === 'active'
+                            ? 'Shared with all space members'
+                            : 'Needs reconnection by a space owner or admin'}
+                        </p>
+                      )}
                     </div>
                     {canEdit && !isLegacy && (
                       <div className="flex shrink-0 items-center gap-1">
@@ -309,9 +363,10 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
 
           {canEdit && (
             <JiraConnectButton
-              jiraConnected={trackerConnections.some(
-                (c) => c.provider === TRACKER_PROVIDERS['jira-cloud'].id,
-              )}
+              jiraConnected={
+                hasJiraBinding ||
+                trackerConnections.some((c) => c.provider === TRACKER_PROVIDERS['jira-cloud'].id)
+              }
               jiraConfigured={
                 trackerProviders.find((p) => p.id === TRACKER_PROVIDERS['jira-cloud'].id)
                   ?.configured ?? false
@@ -321,6 +376,8 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
               onConnect={handleConnectJira}
               onPickProject={() => {
                 setError(null);
+                setReconnectingBindingId(null);
+                setJiraAuthorizationAttempted(false);
                 setShowJiraProjectPicker(true);
               }}
             />
@@ -329,9 +386,12 @@ export function TrackersTab({ project, canEdit, reload }: Props) {
       </SettingsCard>
 
       <JiraProjectPickerDialog
+        projectKey={reconnectingBinding?.externalProjectKey ?? undefined}
+        projectId={reconnectingBinding?.externalProjectId ?? undefined}
         open={showJiraProjectPicker}
         onOpenChange={setShowJiraProjectPicker}
         onConfirm={handleAddJiraBinding}
+        onAuthorize={jiraAuthorizationAttempted ? undefined : startJiraAuthorization}
       />
     </div>
   );

@@ -293,6 +293,40 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+it('disables Start for a platform-disabled CLI through the public decoder', async () => {
+  intent = {
+    ...initial,
+    harness: 'codex',
+    executionAvailable: false,
+    startUnavailableReason: 'agent_cli_disabled',
+    execution: null,
+  };
+  renderPage();
+  expect(await screen.findByRole('button', { name: 'Start agent' })).toBeDisabled();
+  expect(
+    screen.getByText('The selected agent CLI is disabled by the platform administrator.'),
+  ).toBeVisible();
+  expect(transport.post).not.toHaveBeenCalled();
+});
+
+it('shows the safe shared policy rejection when a stale enabled draft reaches Start', async () => {
+  intent = { ...initial, harness: 'codex', execution: null };
+  transport.post.mockRejectedValueOnce(
+    new ApiError(400, 'private policy detail', {
+      code: 'agent_cli_disabled',
+      error: 'The selected agent CLI is disabled by the platform administrator',
+      message: 'private policy detail',
+    }),
+  );
+  renderPage();
+  await screen.findByRole('button', { name: 'Start agent' });
+  await click('Start agent');
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'The selected agent CLI is disabled by the platform administrator',
+  );
+  expect(screen.queryByText(/private policy detail/)).not.toBeInTheDocument();
+});
+
 it('explains a prepared Kiro draft restriction before Start and in its configuration through the real decoder', async () => {
   intent = {
     ...initial,

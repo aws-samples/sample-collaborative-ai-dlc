@@ -277,7 +277,8 @@ describe('IAM invocation sessions', () => {
     expect(result.resolvedProviders).toEqual(['kiro']);
     expect(result.missingProviders).toEqual(['bedrock']);
     expect(result.env.AWS_BEARER_TOKEN_BEDROCK).toBeUndefined();
-    expect(result.env.BEDROCK_REGION).toBeUndefined();
+    // The region is platform configuration, not a credential, so it survives the failed lease.
+    expect(result.env.BEDROCK_REGION).toBe('us-west-2');
   });
   it('paginates model discovery with the session credentials and inference region', async () => {
     const session = await prepare();
@@ -327,7 +328,12 @@ it.each(['execution', 'compose', 'discussion', 'capabilities', 'verify-connectio
           credentialBinding: binding,
         }),
       },
-      env: { AWS_REGION: 'us-east-1', AWS_BEARER_TOKEN_BEDROCK: 'stale-key' },
+      // The platform's inference region gives way to the binding's region.
+      env: {
+        AWS_REGION: 'us-east-1',
+        BEDROCK_REGION: 'us-east-1',
+        AWS_BEARER_TOKEN_BEDROCK: 'stale-key',
+      },
       broker: async () => ({
         purpose,
         projectId: 'p',

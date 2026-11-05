@@ -1,0 +1,69 @@
+name: PR Quality Comment
+
+on:
+  workflow_run:
+    workflows: [PR Quality]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+  pull-requests: write
+
+concurrency:
+  group: pr-quality-comment-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  comment:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      (github.event.workflow_run.head_repository.id != github.event.repository.id ||
+       github.event.workflow_run.actor.login == 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # workflow_run uses the default branch. Never check out the PR here, run
+      # npm install, or execute anything from its artifact with this write token.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          path: trusted
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /scripts/publish-complexity-comment.mjs
+            /scripts/complexity-report.mjs
+            /scripts/pr-impact/comment.mjs
+            /scripts/pr-impact/publish.mjs
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        id: artifacts
+        with:
+          script: |
+            const { qualityArtifactNames } = await import(
+              `${process.env.GITHUB_WORKSPACE}/trusted/scripts/publish-complexity-comment.mjs`
+            );
+            const run = context.payload.workflow_run;
+            const names = await qualityArtifactNames({
+              github, repo: context.repo, runId: run.id, attempt: run.run_attempt,
+            });
+            core.setOutput('report', names.report);
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.artifacts.outputs.report != ''
+        continue-on-error: true
+        with:
+          name: ${{ steps.artifacts.outputs.report }}
+          path: untrusted-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const { publishComplexityComment } = await import(
+              `${process.env.GITHUB_WORKSPACE}/trusted/scripts/publish-complexity-comment.mjs`
+            );
+            await publishComplexityComment({
+              github, context,
+              reportPath: `${process.env.GITHUB_WORKSPACE}/untrusted-report/comparison.json`,
+              warn: core.warning,
+            });

@@ -750,6 +750,8 @@ export const runEnsembleSessions = async ({
       const reduced = tryIndex > 1;
       const baseline = snapshot ? await snapshot().catch(() => null) : null;
       const dispatchArgs = {
+        store,
+        publish,
         role,
         agentBlock,
         persona,

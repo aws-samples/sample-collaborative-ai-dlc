@@ -1,7 +1,9 @@
 # Derived result artifacts have no publication, recovery, or execution writes.
 resource "aws_iam_role" "results" {
-  name               = "${local.name}-results"
-  assume_role_policy = local.lambda_trust
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn != "" ? var.iam_permissions_boundary_arn : null
+  name                 = "${local.name}-results"
+  assume_role_policy   = local.lambda_trust
 }
 resource "aws_iam_role_policy_attachment" "results_basic" {
   role       = aws_iam_role.results.name

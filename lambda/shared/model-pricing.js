@@ -38,8 +38,7 @@ const TOKENS_PER_UNIT = 1_000_000;
 // 1.1x. Mythos 5 has no Global profile, so only its regional rate is billable.
 // Not covered: Haiku 5.5 bills prompts over 100K tokens at 5x (input
 // $0.50/$0.55, output $2.50/$2.75), but metric samples don't carry per-request
-// prompt length, so the base rate is used. Cache read/write tokens are not
-// priced by costForMetrics.
+// prompt length, so the base rate is used.
 const FALLBACK_PRICES = {
   'claude-fable-5-1': { input: 10, output: 50, regional: { input: 11, output: 55 } },
   'claude-mythos-5-1': { input: 10, output: 50, regional: { input: 11, output: 55 } },
@@ -121,20 +120,29 @@ const makePriceResolver = (table = {}) => {
       currency: 'USD',
       inputPerToken: entry.input / TOKENS_PER_UNIT,
       outputPerToken: entry.output / TOKENS_PER_UNIT,
+      // Anthropic explicit cache pricing, relative to standard input:
+      // https://aws.amazon.com/blogs/machine-learning/optimizing-cost-and-latency-with-amazon-bedrock-prompt-caching/
+      ...(family.startsWith('claude-')
+        ? {
+            cacheReadPerToken: (entry.cacheRead ?? entry.input * 0.1) / TOKENS_PER_UNIT,
+            cacheWritePerToken: (entry.cacheWrite ?? entry.input * 1.25) / TOKENS_PER_UNIT,
+            cacheWrite1hPerToken: (entry.cacheWrite1h ?? entry.input * 2) / TOKENS_PER_UNIT,
+          }
+        : {}),
       priced: true,
     };
   };
 };
 
 // Compute the cost of one metric bag given a price resolver. Reads tokensInput /
-// tokensOutput (token-billed models) and `credits` (Kiro); other keys are
-// ignored (context % has no cost). Always returns a cost object so the DTO shape
-// is stable; `priced: false` means "usage known, price unavailable" (newer model,
+// tokensOutput and cache token categories (token-billed models), and `credits`
+// (Kiro). Stored Claude input excludes cache tokens. Always returns a cost object
+// so the DTO shape is stable; `priced: false` means "usage known, price unavailable" (newer model,
 // or Kiro without a captured credit rate) — the UI must not render this as $0.
 //
 // Credits: Kiro is credit-based, so a `credits` sample is priced as
 // `credits × creditRate` (the $/credit overage rate the runtime scraped from
-// `kiro-cli /usage` at run time — see run-stage.js). That is an ESTIMATE (in-plan
+// `kiro-cli /usage` at run time — see cli/kiro-usage.js). That is an ESTIMATE (in-plan
 // credits are covered by the subscription), so the cost is flagged
 // `estimated: true` and the UI caveats it rather than presenting it as billing
 // truth.
@@ -143,17 +151,28 @@ const costForMetrics = (metrics = {}, modelId, resolver, creditRate = null) => {
   const price = priceFor(modelId);
   const tin = typeof metrics.tokensInput === 'number' ? metrics.tokensInput : 0;
   const tout = typeof metrics.tokensOutput === 'number' ? metrics.tokensOutput : 0;
+  const cacheRead = metrics.tokensCacheRead ?? 0;
+  const cacheWrite = metrics.tokensCacheWrite ?? 0;
+  const cacheWrite1h = Math.min(metrics.tokensCacheWrite1h ?? 0, cacheWrite);
   const credits = typeof metrics.credits === 'number' ? metrics.credits : 0;
   const rate = typeof creditRate === 'number' && creditRate > 0 ? creditRate : null;
-  const inputCost = tin * price.inputPerToken;
+  const inputCost =
+    tin * price.inputPerToken +
+    cacheRead * (price.cacheReadPerToken ?? 0) +
+    (cacheWrite - cacheWrite1h) * (price.cacheWritePerToken ?? 0) +
+    cacheWrite1h * (price.cacheWrite1hPerToken ?? 0);
   const outputCost = tout * price.outputPerToken;
   const creditCost = credits > 0 && rate ? credits * rate : 0;
   // Priced iff every spend the sample carries has a price: token spend needs a
   // model price entry; credit spend needs a captured rate. A no-spend sample
   // (context % only) inherits the model's priceability as before.
-  const tokenSpendPriced = tin + tout === 0 || price.priced;
+  const cachePriced =
+    (cacheRead === 0 || price.cacheReadPerToken != null) &&
+    (cacheWrite === 0 || price.cacheWritePerToken != null) &&
+    (cacheWrite1h === 0 || price.cacheWrite1hPerToken != null);
+  const tokenSpendPriced = (tin + tout === 0 || price.priced) && cachePriced;
   const creditSpendPriced = credits === 0 || rate != null;
-  const priced = credits > 0 ? tokenSpendPriced && creditSpendPriced : price.priced;
+  const priced = credits > 0 ? tokenSpendPriced && creditSpendPriced : price.priced && cachePriced;
   return {
     model: price.model,
     currency: price.currency,
@@ -180,8 +199,8 @@ const familyFromPriceName = (name) => {
   return raw.replace(/[\s.]+/g, '-').replace(/-+$/, '');
 };
 
-// Parse an AWS Price List `GetProducts` page set into a family→{input,output}
-// table. `products` is the flattened array of PriceList JSON strings (or objects)
+// Parse an AWS Price List `GetProducts` page set into a family price table,
+// including cache rates. `products` is the array of PriceList JSON strings (or objects)
 // GetProducts returns. Best-effort: only Anthropic Claude on-demand token SKUs
 // with a usdPerToken price and a recognizable family are kept. Unrecognized rows
 // are skipped, never thrown.
@@ -211,8 +230,17 @@ const parsePriceList = (products = []) => {
     if (perToken == null) continue;
     const per1M = perToken * TOKENS_PER_UNIT;
     table[family] = table[family] ?? {};
-    if (isInput) table[family].input = per1M;
-    if (isOutput) table[family].output = per1M;
+    // Cache SKUs also say "input token"; never let them overwrite the base rate.
+    if (/cache/.test(blob)) {
+      if (/read/.test(blob)) table[family].cacheRead = per1M;
+      else if (/write/.test(blob)) {
+        const key = /1.?hour|1.?hr|1h\b/.test(blob) ? 'cacheWrite1h' : 'cacheWrite';
+        table[family][key] = per1M;
+      }
+    } else {
+      if (isInput) table[family].input = per1M;
+      if (isOutput) table[family].output = per1M;
+    }
   }
   // Keep only families that resolved BOTH directions; a half-populated entry
   // would misprice, so let it fall back to the static seed instead.

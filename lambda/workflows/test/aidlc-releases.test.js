@@ -21,11 +21,13 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 import { customProfile, filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
 import { buildReleaseBundle, publishReleaseBundle } from '../../shared/aidlc-release.js';
+import { __test as releaseRegistryTest } from '../../shared/release-registry.js';
 import {
   __test as releaseResolverTest,
   methodologyReleasePinFromManifest,
 } from '../../shared/release-resolver.js';
 
+const { FIDELITY_EVIDENCE_REVISION } = releaseRegistryTest;
 const BLOCKS_TABLE = 'blocks-test';
 const ARTIFACTS_BUCKET = 'artifacts-test';
 const BASELINE_PROFILE = 'current-stable';
@@ -1427,7 +1429,7 @@ describe('GET /aidlc-releases — gap lists stored before protocol evidence', ()
     const readsAfterFirst = s3Mock.commandCalls(GetObjectCommand).length;
     const second = parse(await listReleases());
 
-    expect(rows.get(key).fidelityEvidenceRevision).toBe(6);
+    expect(rows.get(key).fidelityEvidenceRevision).toBe(FIDELITY_EVIDENCE_REVISION);
     expect(rows.get(key).fidelityGaps).not.toEqual(legacy.fidelityGaps);
     expect(s3Mock.commandCalls(GetObjectCommand).length).toBe(readsAfterFirst);
     expect(second.body.releases).toEqual(first.body.releases);

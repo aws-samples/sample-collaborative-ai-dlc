@@ -113,6 +113,8 @@ export const createNativeRuntimeLambda =
       });
       executionApi = createNativeExecutionApi({
         enabled: true,
+        ssm,
+        settingsPrefix: env.AGENT_SETTINGS_SSM_PREFIX,
         admissionEnabled:
           (env.NATIVE_EXECUTION_ADMISSION_ENABLED ?? env.NATIVE_EXECUTION_ENABLED) === 'true',
         store: executionStore,

@@ -270,8 +270,13 @@ describe('managed tool control API', () => {
       toolId: 'java',
       versionId: 'tv-java-21',
       actor: 'admin@example.com',
+      architecture: 'arm64',
     });
-    expect(environmentStore.markToolUpdatesAvailable).toHaveBeenCalledWith('java', 'tv-java-21');
+    expect(environmentStore.markToolUpdatesAvailable).toHaveBeenCalledWith(
+      'java',
+      'tv-java-21',
+      'arm64',
+    );
   });
 
   it('rejects missing and cyclic recommended dependencies', async () => {

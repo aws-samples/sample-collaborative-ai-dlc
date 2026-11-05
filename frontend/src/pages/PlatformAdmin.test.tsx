@@ -13,6 +13,9 @@ vi.mock('@/components/admin/UserManagementCard', () => ({
 vi.mock('@/components/admin/AgentCredentialsCard', () => ({
   AgentCredentialsCard: () => <div data-testid="agent-credentials-card" />,
 }));
+vi.mock('@/components/admin/AgentClisCard', () => ({
+  AgentClisCard: () => <div data-testid="agent-clis-card" />,
+}));
 vi.mock('@/components/admin/DefaultModelsCard', () => ({
   DefaultModelsCard: () => <div data-testid="default-models-card" />,
 }));

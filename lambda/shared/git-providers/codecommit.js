@@ -33,8 +33,8 @@ import {
   EvaluatePullRequestApprovalRulesCommand,
   GetBranchCommand,
   GetCommentsForPullRequestCommand,
+  GetDifferencesCommand,
   GetFileCommand,
-  GetFolderCommand,
   GetMergeOptionsCommand,
   GetPullRequestCommand,
   GetRepositoryCommand,
@@ -354,51 +354,54 @@ const getRepositoryAccess = async (ctx, repoId) => {
   };
 };
 
-// GetFolder is neither recursive nor paginated, so a full tree is a
-// breadth-first walk of one call per folder. Both caps below are defensive: 20
-// directory levels is CodeCommit's own path limit, and 500 folders bounds the
-// call count on a pathological repository. Hitting either sets a non-enumerable
-// `truncated` flag on the returned array (so the JSON shape stays a plain list).
-const TREE_MAX_FOLDERS = 500;
-const TREE_MAX_DEPTH = 20;
+// GetDifferences with no `beforeCommitSpecifier` reports every file in the
+// commit as an addition, recursively and paginated, so a full tree costs one
+// call per 400 files. A breadth-first GetFolder walk needs one call per folder
+// and, on a few hundred folders, outlasts API Gateway's 29-second integration
+// timeout or is throttled. The page cap is defensive (20,000 files); hitting it
+// sets a non-enumerable `truncated` flag on the returned array (so the JSON
+// shape stays a plain list).
+const TREE_PAGE_SIZE = 400;
+const TREE_MAX_PAGES = 50;
+// Symbolic links and submodules are not blobs; the fetch-based providers filter
+// them out too.
+const NON_BLOB_MODES = new Set(['120000', '160000']);
 
 const getTree = async (ctx, repoId, branch = 'main') => {
   const { repositoryName } = parseRepo(repoId);
   const client = clientFor(ctx, repoId);
   const files = [];
-  const queue = [{ folderPath: '/', depth: 0 }];
-  let folders = 0;
+  let nextToken;
+  let pages = 0;
   let truncated = false;
 
-  while (queue.length) {
-    if (folders >= TREE_MAX_FOLDERS) {
+  do {
+    if (pages >= TREE_MAX_PAGES) {
       truncated = true;
       break;
     }
-    const { folderPath, depth } = queue.shift();
-    folders += 1;
+    pages += 1;
     const res = await call(
       client,
-      new GetFolderCommand({ repositoryName, commitSpecifier: branch, folderPath }),
-      'GetFolder',
+      new GetDifferencesCommand({
+        repositoryName,
+        afterCommitSpecifier: branch,
+        MaxResults: TREE_PAGE_SIZE,
+        NextToken: nextToken,
+      }),
+      'GetDifferences',
     );
-    for (const file of res.files ?? []) {
-      // GetFolder carries no file size; callers treat null as "unknown".
-      files.push({ path: file.absolutePath, sha: file.blobId ?? '', size: null });
+    for (const difference of res.differences ?? []) {
+      const blob = difference.afterBlob;
+      if (!blob?.path || NON_BLOB_MODES.has(blob.mode)) continue;
+      // GetDifferences carries no file size; callers treat null as "unknown".
+      files.push({ path: blob.path, sha: blob.blobId ?? '', size: null });
     }
-    for (const folder of res.subFolders ?? []) {
-      if (depth + 1 > TREE_MAX_DEPTH) {
-        truncated = true;
-        continue;
-      }
-      queue.push({ folderPath: folder.absolutePath, depth: depth + 1 });
-    }
-    // Submodules and symbolic links are not blobs; the fetch-based providers
-    // filter them out too.
-  }
+    nextToken = res.NextToken;
+  } while (nextToken);
 
   if (truncated) {
-    logger.warn('CodeCommit tree walk truncated', { repositoryName, branch, folders });
+    logger.warn('CodeCommit tree listing truncated', { repositoryName, branch, pages });
   }
   Object.defineProperty(files, 'truncated', { value: truncated, enumerable: false });
   return files;

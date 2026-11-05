@@ -5,7 +5,7 @@
 // exactly the gates it opened before the mode existed.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { __durableHandler } from '../index.js';
+import { __durableHandler } from './fixtures/completion-handler.js';
 
 const makeCtx = (over = {}) => {
   const stageCallbacks = new Map();
