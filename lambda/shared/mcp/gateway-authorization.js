@@ -40,6 +40,9 @@ const DENIAL_TEXT = {
   invalid_arguments: 'Tool call denied: the arguments do not match the tool schema.',
   tool_not_allowed_for_role: 'Tool call denied: this tool is not available in this session.',
   lane_outside_grant: 'Tool call denied: this session is limited to its own unit lane.',
+  tool_not_allowed_for_target:
+    'Tool call denied: this tool is not enabled for this space and stage.',
+  mode_not_allowed_for_target: 'Tool call denied: this tool is only available in stage sessions.',
 };
 export const gatewayDenialText = (reason) =>
   (Object.hasOwn(DENIAL_TEXT, reason) && DENIAL_TEXT[reason]) || 'Tool call denied.';

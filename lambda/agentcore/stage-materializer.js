@@ -17,7 +17,7 @@ import path from 'node:path';
 import { attachmentPromptManifest } from './attachments.js';
 import { fileURLToPath } from 'node:url';
 import { renderStructureContracts } from '../shared/artifact-structure-contract.js';
-import { MCP_SERVER_NAME } from './cli/drivers.js';
+import { GATEWAY_TOOLS_SERVER_NAME, MCP_SERVER_NAME } from './cli/drivers.js';
 import { APPLICATION_CREDENTIAL_ENV, INFERENCE_CREDENTIAL_ENV } from './cli/environment.js';
 import { CREDENTIAL_ADAPTER_ENV_NAMES } from './credential-material-registry.js';
 import { currentCredentialSession } from './credential-session.js';
@@ -571,15 +571,25 @@ const scrubCustomMcpAuth = (customServers = {}) =>
 // validated + reserved-name-filtered upstream) are scrubbed and spread FIRST so
 // the reserved `aidlc` entry, written last, always wins a name collision — a
 // custom entry can never override the runtime bridge.
+//
+// With customer MCP targets behind the Gateway, the runtime-owned
+// `aidlc-gateway-tools` entry relays to the passthrough proxy over its own
+// socket. It is also written after the custom servers, so it wins a name
+// collision too, and it carries no endpoint or credential.
+const relayEntry = (socketPath) => ({
+  command: process.execPath,
+  args: [new URL('./mcp/stdio-relay.js', import.meta.url).pathname, socketPath],
+  env: CUSTOM_MCP_AUTH_ENV_SCRUB,
+});
+
 export const buildMcpConfig = ({ mcpEntry, scope, env = {}, customServers = {} }) => ({
   mcpServers: {
     ...scrubCustomMcpAuth(customServers),
+    ...(env.AIDLC_GATEWAY_TOOLS_SOCKET
+      ? { [GATEWAY_TOOLS_SERVER_NAME]: relayEntry(env.AIDLC_GATEWAY_TOOLS_SOCKET) }
+      : {}),
     aidlc: env.AIDLC_MCP_SOCKET
-      ? {
-          command: process.execPath,
-          args: [new URL('./mcp/stdio-relay.js', import.meta.url).pathname, env.AIDLC_MCP_SOCKET],
-          env: CUSTOM_MCP_AUTH_ENV_SCRUB,
-        }
+      ? relayEntry(env.AIDLC_MCP_SOCKET)
       : {
           command: 'node',
           args: [mcpEntry],
@@ -682,6 +692,31 @@ export const mcpServerLaunch = ({ mcpEntry, trustedEnv, env, grant }) => {
   };
 };
 
+// The customer-tool proxy runs only for a stage session (the interceptor
+// denies discussion and conflict grants on customer targets anyway) of a
+// deployment with customer targets behind its Gateway. It reuses the aidlc
+// launch's trusted env, so it presents the same grant and session.
+export const gatewayToolsLaunch = ({ launch, env, scope }) =>
+  env.AIDLC_MCP_GATEWAY_URL &&
+  env.AIDLC_MCP_GATEWAY_CUSTOM_TARGETS === 'true' &&
+  (scope.mode ?? 'stage') === 'stage'
+    ? {
+        entry: GATEWAY_PROXY_ENTRY,
+        trustedEnv: { ...launch.trustedEnv, AIDLC_MCP_GATEWAY_MODE: 'passthrough' },
+      }
+    : null;
+
+const ownedBridge = async (session, launch) => {
+  const bridge = await createRuntimeMcpBridge(launch);
+  try {
+    session.own(() => bridge.dispose());
+  } catch (error) {
+    await bridge.dispose();
+    throw error;
+  }
+  return bridge;
+};
+
 const prepareMcpEnvironment = async ({ mcpEntry, scope, env }) => {
   const session = currentCredentialSession();
   if (!session) return env; // Pure/local harness callers own their process lifetime.
@@ -691,14 +726,15 @@ const prepareMcpEnvironment = async ({ mcpEntry, scope, env }) => {
     env,
     grant: currentGatewayGrant(),
   });
-  const bridge = await createRuntimeMcpBridge(launch);
-  try {
-    session.own(() => bridge.dispose());
-  } catch (error) {
-    await bridge.dispose();
-    throw error;
-  }
-  return { ...env, AIDLC_MCP_SOCKET: bridge.socketPath, AIDLC_MCP_CONTEXT_ID: randomUUID() };
+  const bridge = await ownedBridge(session, launch);
+  const toolsLaunch = gatewayToolsLaunch({ launch, env, scope });
+  const toolsBridge = toolsLaunch ? await ownedBridge(session, toolsLaunch) : null;
+  return {
+    ...env,
+    AIDLC_MCP_SOCKET: bridge.socketPath,
+    ...(toolsBridge ? { AIDLC_GATEWAY_TOOLS_SOCKET: toolsBridge.socketPath } : {}),
+    AIDLC_MCP_CONTEXT_ID: randomUUID(),
+  };
 };
 
 // Concatenate the bodies of the rule blocks resolved for this stage (universal +
@@ -996,6 +1032,11 @@ export const toCodexMcpToml = (mcpServers = {}, refEnv = {}) => {
       // Inserted directly after the table header — TOML keys must precede any
       // nested table ([….env]) inside the same section.
       lines.splice(1, 0, 'required = true', 'startup_timeout_sec = 30', 'tool_timeout_sec = 600');
+    } else if (name === GATEWAY_TOOLS_SERVER_NAME) {
+      // Customer tools go through the Gateway proxy: the same timeouts as the
+      // built-in tools, but not required, so a customer outage does not stop
+      // the stage from starting.
+      lines.splice(1, 0, 'startup_timeout_sec = 30', 'tool_timeout_sec = 600');
     }
     sections.push(lines.join('\n'));
   }
