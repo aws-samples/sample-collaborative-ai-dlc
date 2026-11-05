@@ -1,52 +1,67 @@
+import { useEffect, useId, useRef, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import type { AgentAuthAction, AgentAuthImpactReview, AgentAuthModeView } from '@/services/agents';
-import { agentAuthProviderUi } from './agent-auth/registry';
-import { summarizeConfiguration } from './agent-auth/summary';
+import { useProjectsCache } from '@/hooks/useProjectsCache';
+import { cn } from '@/lib/utils';
+import type { AgentAuthImpactReview, AgentAuthModeView } from '@/services/agents';
+import {
+  AFFECTING_OUTCOMES,
+  APPLIES_AT_NEXT_START,
+  NOT_AFFECTED_MESSAGE,
+  affectingMessage,
+  continuingMessage,
+  describeCandidate,
+  outcomeCount,
+} from './agent-auth/impact';
 
-const labels: Record<string, string> = {
-  continues: 'Continues with existing identity',
-  'next-start': 'Uses new configuration on next start',
-  'loses-access': 'Next invocation or renewal loses access',
-  repair: 'Needs reconnect or credential repair',
-  unknown: 'Cannot yet determine',
+type ReviewItem = AgentAuthImpactReview['items'][number];
+
+const WORK_NOUNS: Record<string, string> = {
+  Execution: 'Intent run',
+  AgentInvocation: 'Running agent',
+  AgentSelection: 'Agent that is starting',
+  EnvironmentRevision: 'Runtime environment',
+  Compose: 'AI draft',
+  QuorumEdit: 'Discussion edit',
 };
 
-// Describes the normalized candidate the server stored, not what the form sent.
-function CandidateDescription({
-  candidate,
-  modes,
-}: {
-  candidate: AgentAuthAction;
-  modes?: readonly AgentAuthModeView[];
-}) {
-  if (candidate.kind === 'connection-create') {
-    const { connection } = candidate;
-    const ui = agentAuthProviderUi(connection.mode);
-    const summary = summarizeConfiguration(ui, connection.configuration);
-    return (
-      <div className="break-all text-xs">
-        <p>
-          {`Proposed ${connection.source === 'user' ? 'personal' : connection.source} ${ui?.noun ?? 'connection'}`}
-        </p>
-        {summary.map((line) => (
-          <p key={line.label}>
-            {line.label}: {line.value}
+const OUTCOME_LABELS: Record<string, string> = {
+  continues: 'Keeps working',
+  'loses-access': 'Will lose access',
+  repair: 'Needs reconnecting',
+  unknown: 'Could not be checked',
+};
+
+// Rendered only once a person opens the details, so space names load on demand.
+function AffectedWorkList({ items }: { items: ReviewItem[] }) {
+  const { projects } = useProjectsCache();
+  const spaceName = (projectId: string | null) =>
+    projectId === null
+      ? 'Platform'
+      : (projects.find((entry) => entry.project.id === projectId)?.project.name ?? 'A space');
+  return (
+    <ul className="mt-2 space-y-2">
+      {items.map((item) => (
+        <li key={item.key} className="rounded border bg-background p-2">
+          <p className="font-medium">
+            {spaceName(item.projectId)} · {WORK_NOUNS[item.type] ?? 'Work item'}
+            {item.status ? ` (${item.status.toLowerCase()})` : ''}
           </p>
-        ))}
-      </div>
-    );
-  }
-  if (candidate.kind === 'space-selection' && candidate.connectionId === null)
-    return <p className="text-xs">Use the platform connection for new work in this space.</p>;
-  if (candidate.kind === 'policy-change')
-    return (
-      <p className="text-xs">
-        Proposed mode: {modes?.find((mode) => mode.id === candidate.mode)?.label ?? candidate.mode}
-      </p>
-    );
-  return null;
+          <p>{OUTCOME_LABELS[item.outcome] ?? item.outcome}</p>
+          <p className="text-muted-foreground">
+            {item.reason} {item.action}
+          </p>
+        </li>
+      ))}
+    </ul>
+  );
 }
 
+/**
+ * Confirmation for a server-prepared authentication change. Says in plain words
+ * what the change does and, only when work that already started is affected,
+ * which work and what to do. Technical detail stays behind "Show details".
+ */
 export function AuthenticationImpactReview({
   review,
   modes,
@@ -60,66 +75,84 @@ export function AuthenticationImpactReview({
   onApply: () => void;
   onCancel: () => void;
 }) {
+  const headingId = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  // The panel replaces the button that opened it; move focus so keyboard and
+  // screen reader users land on the question instead of losing their place.
+  useEffect(() => headingRef.current?.focus(), [review.id]);
+
+  const change = describeCandidate(review.candidate, modes);
+  const affecting = AFFECTING_OUTCOMES.flatMap((outcome) => {
+    const count = outcomeCount(review, outcome);
+    return count ? [{ outcome, ...affectingMessage(outcome, count) }] : [];
+  });
+  const continuing = outcomeCount(review, 'continues');
+  const startedWork = review.items.filter((item) => item.outcome !== 'next-start');
+  const warn = affecting.length > 0;
+
   return (
-    <section aria-label="Authentication change impact" className="space-y-3 rounded-md border p-4">
-      <p className="text-sm font-medium">Review authentication change</p>
-      <p className="text-xs text-muted-foreground">
-        Prepared {new Date(review.createdAt).toLocaleString()} · Configuration revision{' '}
-        {review.policyRevision}
-      </p>
-      {review.candidate && <CandidateDescription candidate={review.candidate} modes={modes} />}
-      {review.limitations.map((limitation) => (
-        <p key={limitation} className="text-xs text-muted-foreground">
-          {limitation}
-        </p>
-      ))}
-      <ul className="space-y-1 text-xs">
-        {Object.entries(review.counts).map(([outcome, count]) => (
-          <li key={outcome}>
-            {labels[outcome] ?? outcome}: {count}
-          </li>
+    <section
+      aria-labelledby={headingId}
+      className={cn(
+        'space-y-3 rounded-md border p-4 text-sm',
+        warn && 'border-agent-warning/50 bg-agent-warning/5',
+      )}
+    >
+      <h4
+        id={headingId}
+        ref={headingRef}
+        tabIndex={-1}
+        className="flex items-center gap-2 font-medium focus:outline-none"
+      >
+        {warn && <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />}
+        {warn ? 'Some work that already started may be affected' : 'Confirm this change'}
+      </h4>
+      <div className="space-y-1">
+        {change.lines.map((line) => (
+          <p key={line}>{line}</p>
         ))}
-      </ul>
-      <details>
-        <summary className="cursor-pointer text-sm">
-          Affected spaces and work ({review.items.length})
-        </summary>
-        <div className="max-h-72 overflow-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr>
-                <th className="p-2">Space / work</th>
-                <th className="p-2">Activity / identity</th>
-                <th className="p-2">Effect and action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {review.items.map((item) => (
-                <tr key={item.key} className="border-t">
-                  <td className="p-2">
-                    {item.projectId ?? 'Platform'}
-                    <br />
-                    {item.id}
-                  </td>
-                  <td className="p-2">
-                    {item.status ?? item.type}
-                    <br />
-                    {item.connectionId ?? 'Selected at next start'}
-                  </td>
-                  <td className="p-2">
-                    <strong>{labels[item.outcome] ?? item.outcome}</strong>
-                    <p>{item.reason}</p>
-                    <p>{item.action}</p>
-                  </td>
-                </tr>
+        {change.details.length > 0 && (
+          <div className="break-all text-xs text-muted-foreground">
+            {change.details.map((line) => (
+              <p key={line.label}>
+                {line.label}: {line.value}
+              </p>
+            ))}
+          </div>
+        )}
+        <p className="text-muted-foreground">{APPLIES_AT_NEXT_START}</p>
+      </div>
+      {warn ? (
+        <ul className="list-disc space-y-1 pl-5">
+          {affecting.map((entry) => (
+            <li key={entry.outcome}>
+              {entry.text} <span className="text-muted-foreground">{entry.action}</span>
+            </li>
+          ))}
+          {continuing > 0 && <li>{continuingMessage(continuing)}</li>}
+        </ul>
+      ) : (
+        <p>{continuing > 0 ? continuingMessage(continuing) : NOT_AFFECTED_MESSAGE}</p>
+      )}
+      {startedWork.length > 0 && (
+        <details className="text-xs" onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
+          <summary className="cursor-pointer text-muted-foreground">Show details</summary>
+          {detailsOpen && (
+            <>
+              <AffectedWorkList items={startedWork} />
+              {review.limitations.map((limitation) => (
+                <p key={limitation} className="mt-2 text-muted-foreground">
+                  {limitation}
+                </p>
               ))}
-            </tbody>
-          </table>
-        </div>
-      </details>
+            </>
+          )}
+        </details>
+      )}
       <div className="flex gap-2">
         <Button type="button" size="sm" onClick={onApply} disabled={applying}>
-          {applying ? 'Applying…' : 'Apply reviewed change'}
+          {applying ? 'Saving…' : warn ? 'Confirm anyway' : 'Confirm change'}
         </Button>
         <Button type="button" size="sm" variant="outline" onClick={onCancel} disabled={applying}>
           Cancel

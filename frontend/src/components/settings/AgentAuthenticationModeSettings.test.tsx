@@ -162,10 +162,12 @@ describe('AgentAuthenticationModeSettings', () => {
       mode: 'test-connection',
       configuration: { endpoint: 'https://next.example' },
     });
-    expect(await screen.findByText('Proposed platform test link')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Agents will use this test link, unless a space has its own.'),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Test setup' })).not.toBeInTheDocument();
     expect(apply).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Apply reviewed change' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm change' }));
     await waitFor(() => expect(apply).toHaveBeenCalledWith('review-1'));
     expect(onApplied).toHaveBeenCalledOnce();
   });
@@ -198,7 +200,7 @@ describe('AgentAuthenticationModeSettings', () => {
       mode: 'keys',
       defaultConnectionId: 'keys-platform-default',
     });
-    expect(await screen.findByText('Proposed mode: Keys')).toBeInTheDocument();
+    expect(await screen.findByText('Agents will switch to Keys.')).toBeInTheDocument();
     expect(apply).not.toHaveBeenCalled();
   });
 
@@ -273,7 +275,9 @@ describe('AgentAuthenticationModeSettings', () => {
       projectId: 'p1',
       configuration: { endpoint: 'https://next.example' },
     });
-    expect(await screen.findByText('Proposed space test link')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Agents in this space will use this test link.'),
+    ).toBeInTheDocument();
   });
 
   it('restores platform inheritance for a space override', async () => {
@@ -297,7 +301,7 @@ describe('AgentAuthenticationModeSettings', () => {
       connectionId: null,
     });
     expect(
-      await screen.findByText('Use the platform connection for new work in this space.'),
+      await screen.findByText('Agents in this space will use the platform connection again.'),
     ).toBeInTheDocument();
   });
 
@@ -315,20 +319,20 @@ describe('AgentAuthenticationModeSettings', () => {
     ).toBeInTheDocument();
   });
 
-  it('derives personal copy from the personal mechanisms and the mode label', () => {
-    const { unmount } = renderSettings({ scope: 'personal' });
-    expect(
-      screen.getByText(/Personal overrides are unavailable while the platform uses Test gateway/),
-    ).toBeInTheDocument();
+  it('shows people nothing about the shared connection unless it stops agents from starting', () => {
+    const { container, unmount } = renderSettings({ scope: 'personal' });
+    expect(container).toBeEmptyDOMElement();
     unmount();
 
     renderSettings({
       scope: 'personal',
       authentication: view({
-        policy: { mode: 'keys', revision: 3, defaultConnectionId: 'keys-platform-default' },
-        personalMechanisms: ['api-key'],
+        connection: { ...platformConnection, state: 'reconnect-required' },
       }),
     });
-    expect(screen.getByText(/Personal overrides use API keys\./)).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'An administrator must reconnect this shared connection before agents can start.',
+    );
+    expect(screen.queryByText(/Platform mode|Kiro uses|Connection:/)).not.toBeInTheDocument();
   });
 });

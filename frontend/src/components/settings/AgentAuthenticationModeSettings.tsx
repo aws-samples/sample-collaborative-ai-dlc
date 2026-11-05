@@ -10,8 +10,6 @@ import { AuthenticationImpactReview } from './AuthenticationImpactReview';
 import { agentAuthProviderUi } from './agent-auth/registry';
 import { summarizeConfiguration } from './agent-auth/summary';
 
-const MECHANISM_LABELS: Record<string, string> = { 'api-key': 'API keys' };
-
 export function AgentAuthenticationModeSettings({
   authentication,
   scope,
@@ -52,6 +50,17 @@ export function AgentAuthenticationModeSettings({
       setBusy(false);
     }
   };
+  const reconnectNotice = connection?.state === 'reconnect-required' && (
+    <p role="status">
+      An administrator must reconnect this shared connection before agents can start.
+    </p>
+  );
+  // People only manage their own keys, which the card already explains; the
+  // shared connection matters to them only when it stops agents from starting.
+  if (scope === 'personal')
+    return reconnectNotice ? (
+      <div className="rounded-md bg-muted/40 p-3 text-xs">{reconnectNotice}</div>
+    ) : null;
   const preview = (request: AgentAuthChangeRequest) =>
     perform(async () => setReview(await agentsService.previewAuthenticationChange(request)));
   // Failures propagate so the provider's Setup can show them and stay open.
@@ -123,16 +132,6 @@ export function AgentAuthenticationModeSettings({
             ` · ${hasOverride ? `Space ${targetUi?.noun ?? 'key'} override` : 'Inherits platform connection'}`}
         </p>
       )}
-      {scope === 'personal' && (
-        <p>
-          {authentication.personalMechanisms.length
-            ? `Personal overrides use ${authentication.personalMechanisms
-                .map((mechanism) => MECHANISM_LABELS[mechanism] ?? mechanism)
-                .join(' or ')}.`
-            : `Personal overrides are unavailable while the platform uses ${labelFor(policy.mode)}.`}{' '}
-          Shared connections are managed by platform administrators.
-        </p>
-      )}
       {scope === 'space' &&
         targetUi &&
         (authentication.canManageConnections && spaceProjectId ? (
@@ -175,11 +174,7 @@ export function AgentAuthenticationModeSettings({
           ))}
         </div>
       )}
-      {connection?.state === 'reconnect-required' && (
-        <p role="status">
-          An administrator must reconnect this shared connection before new invocations can run.
-        </p>
-      )}
+      {reconnectNotice}
       <p>Kiro uses its separate key settings.</p>
       {error && (
         <p role="alert" className="text-destructive">
@@ -201,7 +196,7 @@ export function AgentAuthenticationModeSettings({
           onCancel={() => setReview(null)}
         />
       )}
-      {setupOpen && targetUi && scope !== 'personal' && (
+      {setupOpen && targetUi && (
         <targetUi.Setup
           scope={scope}
           projectId={spaceProjectId}

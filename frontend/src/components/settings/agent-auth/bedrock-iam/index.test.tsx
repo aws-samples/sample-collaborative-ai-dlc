@@ -84,7 +84,7 @@ const verifyAndSubmit = async (user: ReturnType<typeof userEvent.setup>) => {
   await screen.findByRole('status');
   await user.click(screen.getByRole('button', { name: 'Review connection change' }));
 };
-const impactReview = () => screen.findByRole('region', { name: 'Authentication change impact' });
+const impactReview = () => screen.findByRole('region', { name: 'Confirm this change' });
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -156,7 +156,9 @@ describe('reviewed IAM controls', () => {
     await verifyAndSubmit(user);
 
     const review = await impactReview();
-    expect(within(review).getByText('Proposed space IAM role')).toBeInTheDocument();
+    expect(
+      within(review).getByText('Agents in this space will use this IAM role.'),
+    ).toBeInTheDocument();
     expect(within(review).getByText(`Role: ${config.roleArn}`)).toBeInTheDocument();
     expect(within(review).getByText('Region: eu-west-1')).toBeInTheDocument();
     expect(providerAction).toHaveBeenCalledWith('iam', 'verify', { config, projectId: 'p' });
@@ -168,7 +170,7 @@ describe('reviewed IAM controls', () => {
     });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(apply).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Apply reviewed change' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm change' }));
     await waitFor(() => expect(apply).toHaveBeenCalledWith('review'));
     expect(onApplied).toHaveBeenCalledOnce();
   });
@@ -217,7 +219,9 @@ describe('reviewed IAM controls', () => {
       configuration: platformRole,
     });
     const review = await impactReview();
-    expect(within(review).getByText('Proposed platform IAM role')).toBeInTheDocument();
+    expect(
+      within(review).getByText('Agents will use this IAM role, unless a space has its own.'),
+    ).toBeInTheDocument();
     expect(within(review).getByText(`Role: ${platformRole.roleArn}`)).toBeInTheDocument();
     expect(screen.queryByText(/external-fixture/)).not.toBeInTheDocument();
   });
@@ -254,7 +258,7 @@ describe('reviewed IAM controls', () => {
       connectionId: null,
     });
     expect(
-      await screen.findByText('Use the platform connection for new work in this space.'),
+      await screen.findByText('Agents in this space will use the platform connection again.'),
     ).toBeInTheDocument();
     result.unmount();
     render(

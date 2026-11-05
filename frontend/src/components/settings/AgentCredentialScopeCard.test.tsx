@@ -236,7 +236,7 @@ describe('AgentCredentialScopeCard', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Credential service unavailable');
     await user.click(screen.getByRole('button', { name: 'Retry' }));
 
-    expect(await screen.findByText('1 provider configured')).toBeInTheDocument();
+    expect(await screen.findByText('Using your own Bedrock key')).toBeInTheDocument();
     expect(getPersonalCredentials).toHaveBeenCalledTimes(2);
   });
 

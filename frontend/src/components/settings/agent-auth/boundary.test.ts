@@ -10,6 +10,7 @@ const SHELL_FILES = [
   'components/settings/AgentCredentialScopeCard.tsx',
   'components/settings/AuthenticationImpactReview.tsx',
   'components/settings/agent-auth/contract.ts',
+  'components/settings/agent-auth/impact.ts',
   'components/settings/agent-auth/summary.ts',
   'services/agents.ts',
 ] as const;
