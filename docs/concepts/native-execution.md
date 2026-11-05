@@ -3109,6 +3109,112 @@ executions remain disposable, with no compatibility, preservation, migration or
 cleanup prerequisite. Kiro stays deferred to NE-18; NE-08, NE-09, NE-11, Git
 delivery and lifecycle cleanup were not advanced.
 
+### Main integration before NE-08 — 2026-11-05
+
+Local implementation and installed-image qualification are complete for merge
+`513005a19163b1f5fdf4e9a64fe7a1926cb19e04`. Its parents are the NE-07 checkpoint
+`279104efd6778d45ad6e6a44787aa24360ea6844` and reviewed `origin/main`
+`3f90d8cab8fcf0b245e08bbc1726867bd15d821c`. The integration preserves both
+histories. A fresh main fetch before the commit found no movement. Evidence is
+under `.native-evidence/main-integration-2026-11-05/`; the accepted assessment and
+previous deployment receipts remain unchanged.
+
+The merge retains main's named intent handlers, awaited graph lifetime, shared
+question reference previews/header/branding, managed completion labels, CLI
+administration, source-control configuration and dependency updates. Native
+backend/access guards, realtime scope, answer/revision and submission checks,
+debug settings, binding revision/invalidation protection and both discussion
+bundles remain. Main's deleted legacy CodeCommit connection modules stay deleted;
+native application source support remains GitHub, GitLab and Bitbucket.
+
+New native Start uses the shared disabled-CLI policy at admission, with the
+authority's exact `disabled-clis` SSM grant and safe public/UI availability
+mapping. Policy read failures reject new work; duplicate Start and existing
+execution configuration remain pinned. Native's additional Kiro restriction
+and dedicated image are unchanged. Native discussions exclude managed metrics
+and events; managed measured success and failure record metrics once. Native
+usage includes the shared cache categories/pricing and treats a continuing Codex
+session's cumulative baseline as unknown. The explicit NE-07 decoder still owns
+turn, publication and question identity. Organization IAM inputs reach native
+controller/package roles while runtime roles retain their native path and boundary.
+
+The full backend suite passes **11,568 tests**, with **eight skipped**; the full
+frontend suite passes **2,267 tests** and its TypeScript/production build. The
+backend skips are five optional Bun sensor checks on the host and three Linux
+process checks; the latter run in the packaged Linux tier below. All **503**
+release/script tests, **31** mocked Terraform tests, init/validate, formatting,
+lint, secrets, SDK alignment, **421-module** architecture check, **22** native
+wiring tests and docs build pass. Dependency direction has no errors and reports
+**17** warnings. Function-specific complexity allowances record main's inherited
+scores; the old inline intent handler allowance falls from 557 to 54.
+
+Owning-package installs/builds produce **52** bundle outputs. **17** standalone
+imports cover the native packages and affected SDK packaging boundaries,
+including both discussion outputs. The frontend installs DOMPurify **3.4.17**.
+Production audits pass their high-severity threshold: the backend retains five
+moderate archiver-chain findings, the frontend none. These audit results do not
+establish exploitability.
+
+Initial focused/full failures were fixture mismatches: full binding rows,
+managed graph reads, the exact safe native error body, the new question-preview
+graph dependency and main's repository-search argument. Corrected fixtures and
+the full reruns pass; the original nonzero receipts remain. The inherited
+complexity check and a newline-escaping error in an inert handoff output stub
+also retain their failed attempts and successful corrections.
+
+The production Dockerfile built the exact merge source for **Linux ARM64** with
+`ENABLE_NATIVE_INTERACTION_PROBE=true`. The immutable local image is
+`sha256:6b535e24e44adc580e45564dba174dd41eb077937665ebb65cebb078cbabd564`,
+with source-derived tag **`0176cd52b080ec91`**. Public ECR read authentication
+used the authorized `solution` fallback after a verified `solution-read`
+`GetServiceBearerToken` denial. Global Docker configuration is unchanged.
+
+Fresh verified AI-DLC **2.11.1** assets, **32** frozen OpenCode cache packages
+and the merged lock's Linux Rolldown binding **1.2.15** support qualification.
+All **235** fixture files retain their bytes and modes. Packaged qualification
+passes **163 Linux tests**, then the finite installed **Claude 2.1.296**,
+**Codex 0.162.1** and **OpenCode 1.19.0** scopes. Each of four containers audits
+the same **278** production files under `/opt`, with source SHA-256
+`38ff0451a893d55634788c9ec15348d461ba872e6de576713376352c470b09a6`.
+No checkout production modules are mounted over them. The separately bundled
+controller adapter is also identified in every audit.
+
+The image's actual dependency closure is recorded independently of the root lock:
+Node **24.19.0**, Zod **4.6.7**, MCP SDK **1.32.2** and AWS SDK **3.1162.0**.
+The production Dockerfile installs from its owning package ranges. Its extracted
+lock audit has one moderate Hono finding and no high/critical findings. Installed
+journeys use fresh private CLI state, disabled networking and deterministic local
+providers. They cover workflow dispatch, failure/incomplete output, cancellation
+and workspace resume/approval; Claude records **11** publications, Codex **10**
+and OpenCode **seven**. OpenCode's finite scope excludes dependency-build and
+reconciliation-question proof. Live models, deployed IAM/runtime/EFS, browser
+behavior and generated application quality are not qualified here.
+
+Deployment spans the shared platform. Source/package manifests identify **49**
+Lambda function targets affected by shared/native packaging hashes, the ARM64
+runtime and native image pins, managed environment/tool control and core metadata,
+API/IAM/SSM/maintenance configuration, and frontend. Among the nine native
+packages, authority, execution, credentials, projection and cancellation have
+changed bundle bytes; the other four match NE-07 but share packaging invalidation.
+Default development settings keep optional organization boundaries, Instances/
+amd64 builds and the storage diagnostic disabled. The Yjs image source is
+unchanged. Unchanged SYSTEM baseline inputs justify `--skip-seed`; publishing a
+managed methodology release remains separate from deploying its code support.
+This is a source-derived surface inventory, not a remote Terraform plan.
+
+The deployment-only handoff is
+`.native-evidence/main-integration-2026-11-05/handoff/deploy-main-integration.sh`.
+Its local checks pin the final feature HEAD, qualified source/image, fixtures,
+configuration and validation evidence before credentials or mutation. Ten
+execution/logging scenarios and 32 drift-guard cases pass with inert tools,
+including real Bash 3.2 success/failure, large/delayed output, `--check-only` and
+repeat refusal. Logging uses the independently tested FIFO child correction,
+with preserved single-attempt log/plan/start/finish receipts. Local qualification
+is not repeated by deployment. The local image ID is not a registry digest;
+deployment and independent deployed-byte/configuration verification remain
+later stages. No push, deployment, cloud mutation or credentialed model call
+was performed. NE-08 remains unstarted; NE-09 and NE-18 scope is unchanged.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
