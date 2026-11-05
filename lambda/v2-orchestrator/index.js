@@ -110,6 +110,12 @@ import { buildIntentAttribution } from './pr-attribution.js';
 import { bindGateCallback, ownsAnsweredGate, unparkGate } from './gate-callback.js';
 import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
 import { intentSessionIdFor } from '../shared/runtime-session-ids.js';
+import {
+  RUNTIME_MCP_GATEWAY_ONLY,
+  RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+  gatewayOnlyMcp,
+  hasDirectMcpServers,
+} from '../shared/runtime-mcp-policy.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -2910,8 +2916,19 @@ const runStage = async (
   // reaches the run's failure path.
   let dispatch;
   try {
-    dispatch = await ctx.step(`run-${attemptKey}`, async () =>
-      invokeRuntime(
+    dispatch = await ctx.step(`run-${attemptKey}`, async () => {
+      // gateway_only: a pinned (or legacy inline) config with direct MCP
+      // servers never reaches the runtime. Decided inside the existing
+      // dispatch step, so step names and order are unchanged for replay; the
+      // refusal settles like any other dispatch refusal below.
+      if (gatewayOnlyMcp() && hasDirectMcpServers(mcpServersByTier)) {
+        return {
+          ok: false,
+          reason: RUNTIME_MCP_GATEWAY_ONLY,
+          detail: RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+        };
+      }
+      return invokeRuntime(
         {
           command: 'run-stage-start',
           // Launch-latency anchor (cold start metric): stamped at dispatch,
@@ -2966,8 +2983,8 @@ const runStage = async (
         },
         sessionId,
         { policy: stage.policy ?? null, gatewayGrantId },
-      ),
-    );
+      );
+    });
   } catch (error) {
     if (!(await retireGrant({ state: 'FAILED' }))) {
       throw new GatewayGrantRetirementExhaustedError(gatewayGrantId, { cause: error });

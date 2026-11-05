@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { mockClient } from 'aws-sdk-client-mock';
 import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
@@ -1254,6 +1254,55 @@ describe('runStage — MCP secret resolution + child-env injection', () => {
       }
     },
   );
+
+  describe('with runtime_mcp_credentials = gateway_only', () => {
+    const SENTINEL = 'sentinel-runtime-mcp-secret-e21b';
+    afterEach(() => vi.unstubAllEnvs());
+
+    it.each([
+      ['a stdio server with a secret ref', serversByTier, undefined],
+      [
+        'a remote server with an inline header',
+        {
+          global: {
+            wiki: { type: 'http', url: 'https://wiki.example/mcp', headers: { A: SENTINEL } },
+          },
+          project: {},
+        },
+        undefined,
+      ],
+      ['a stdio server on resume', serversByTier, 'q-1'],
+    ])(
+      'fails the stage on %s before resolving secrets or spawning',
+      async (_l, byTier, resumeFrom) => {
+        vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+        const resolveMcpSecrets = vi.fn(async () => ({ secretEnv: { MYSERVER_KEY: SENTINEL } }));
+        const { cap, spawnFn } = capturingSpawn();
+        const deps = baseDeps({ spawnFn, resolveMcpSecrets });
+        const res = await runStage({ ...baseArgs, resumeFrom, mcpServersByTier: byTier }, deps);
+
+        expect(res).toMatchObject({ ok: false, reason: 'runtime_mcp_gateway_only' });
+        expect(res.detail).toContain('mcp_gateway_custom_targets');
+        expect(resolveMcpSecrets).not.toHaveBeenCalled();
+        expect(cap.env).toBeNull();
+        expect(JSON.stringify(deps.store.calls)).not.toContain(SENTINEL);
+        expect(
+          deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
+        ).toBe(true);
+      },
+    );
+
+    it('runs a stage without custom MCP servers unchanged', async () => {
+      vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+      const { cap, spawnFn } = capturingSpawn();
+      const res = await runStage(
+        { ...baseArgs, mcpServersByTier: { global: {}, project: {} } },
+        baseDeps({ spawnFn, resolveMcpSecrets: async () => ({ secretEnv: {} }) }),
+      );
+      expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+      expect(cap.env).not.toBeNull();
+    });
+  });
 
   it('injects the resolved secretEnv into the child spawn env', async () => {
     const { cap, spawnFn } = capturingSpawn();

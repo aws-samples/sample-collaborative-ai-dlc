@@ -133,6 +133,12 @@ const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'r
 import { REGISTRY } from '../../shared/artifact-extractors.js';
 import { invokeSourceControlOperation } from '../clients.js';
 import { resolveStageMcpSecrets } from '../mcp-secret-broker.js';
+import {
+  RUNTIME_MCP_GATEWAY_ONLY,
+  RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+  gatewayOnlyMcp,
+  hasDirectMcpServers,
+} from '../../shared/runtime-mcp-policy.js';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -2163,6 +2169,12 @@ const runStageAttempt = async (
         `Invalid ${tier} MCP configuration at ${fields}.${httpsHint} Correct MCP settings, then retry the intent to reload the corrected configuration.`,
       );
     }
+  }
+  // gateway_only, defense in depth behind the orchestrator's dispatch check:
+  // a direct MCP server would connect from here with secrets resolved into
+  // this VM. Fail before any resolution or launch, never drop it silently.
+  if (gatewayOnlyMcp() && hasDirectMcpServers(mcpServersByTier)) {
+    return fail(stageInstanceId, RUNTIME_MCP_GATEWAY_ONLY, RUNTIME_MCP_GATEWAY_ONLY_MESSAGE);
   }
 
   // Release-authored scope policy can silently REMOVE verification (a reviewer, a

@@ -28,6 +28,11 @@ import {
 } from '../mcp-secret-resolver.js';
 import { mcpSecretPaths } from '../mcp-secret-paths.js';
 import { resolveVerificationMcpSecrets } from '../mcp-secret-broker.js';
+import {
+  RUNTIME_MCP_GATEWAY_ONLY,
+  RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+  gatewayOnlyMcp,
+} from '../../shared/runtime-mcp-policy.js';
 
 const { validateMcpServers, toMcpServerMap, extractSecretRefs } = mcpValidatorPkg;
 
@@ -133,6 +138,12 @@ export const verifyMcp = async (payload, deps = {}) => {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     resolveMcpSecrets = defaultResolveMcpSecrets,
   } = deps;
+
+  // gateway_only: the agents Lambda refuses verification before dispatch; the
+  // runtime refuses it too, before resolving or connecting to anything.
+  if (gatewayOnlyMcp()) {
+    return { error: RUNTIME_MCP_GATEWAY_ONLY_MESSAGE, code: RUNTIME_MCP_GATEWAY_ONLY };
+  }
 
   const projectId = payload?.projectId || null;
   // Normalize input into the two-tier shape. Legacy single-map payloads (older

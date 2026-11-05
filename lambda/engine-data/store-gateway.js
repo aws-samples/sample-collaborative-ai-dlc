@@ -21,12 +21,17 @@
 //      the only ones it may call, every stage, unit, section and leg id they name
 //      must be the grant's signed one, and the attempt-fenced writes must carry
 //      exactly the grant's ownership (none when the grant names no leg).
+// Under runtime_mcp_credentials = gateway_only, every response that carries the
+// META row (getExecution, getExecutionRecords' `meta`, and the META that
+// createExecution and updateExecution return) omits the stored direct MCP
+// configuration; the record itself is untouched.
 // There is deliberately no execution/stage status gate: a grant may keep
 // acting on its own execution, never outside it. The real store method then
 // runs unchanged (its CAS and transaction-conflict retries stay server-side),
 // and its errors travel back by name so CAS callers keep working.
 import { ENGINE_DATA_OP_PREFIX, ENGINE_DATA_STORE_METHODS } from '../shared/engine-data-ops.js';
 import { STAGE_ATTEMPT_METHODS } from '../shared/stage-attempt.js';
+import { gatewayOnlyMcp, withoutDirectMcpConfig } from '../shared/runtime-mcp-policy.js';
 import { RESERVED_ATTRIBUTES, STORE_OPS } from './store-schemas.js';
 import {
   ENGINE_GRANT_MODES,
@@ -128,7 +133,28 @@ const parseArgs = (spec, args) => {
   return { parsed, stripped };
 };
 
-export const createStoreGateway = ({ verifyGrant, createStore, audit = () => {} }) => {
+// The allowlisted methods whose result is, or contains, the META row.
+const META_RESULTS = Object.freeze({
+  getExecution: withoutDirectMcpConfig,
+  createExecution: withoutDirectMcpConfig,
+  updateExecution: withoutDirectMcpConfig,
+  getExecutionRecords: (records) =>
+    records && typeof records === 'object'
+      ? { ...records, meta: withoutDirectMcpConfig(records.meta) }
+      : records,
+});
+
+export const createStoreGateway = ({
+  verifyGrant,
+  createStore,
+  audit = () => {},
+  env = process.env,
+}) => {
+  // Read once: an invalid profile fails the cold start, not a write's response.
+  const gatewayOnly = gatewayOnlyMcp(env);
+  const project = (method, result) =>
+    gatewayOnly && Object.hasOwn(META_RESULTS, method) ? META_RESULTS[method](result) : result;
+
   const authorize = async (event, record) => {
     const grant = await verifyGrantOrDeny(verifyGrant, event?.grant);
     Object.assign(record, grantAudit(grant));
@@ -257,7 +283,7 @@ export const createStoreGateway = ({ verifyGrant, createStore, audit = () => {} 
       audit({ ...record, decision: 'allow', outcome: 'ok', ms: Date.now() - startedAt });
       // `ok` marks success explicitly: a method that returns nothing has no
       // `result` key once the response is serialized.
-      return { ok: true, result };
+      return { ok: true, result: project(authorized.method, result) };
     } catch (error) {
       audit({
         ...record,
