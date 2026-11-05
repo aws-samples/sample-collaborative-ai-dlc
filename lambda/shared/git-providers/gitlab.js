@@ -696,28 +696,9 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
 const findPullRequest = async (
   ctx,
   repoId,
-  { sourceBranch, targetBranch = null, state = 'opened', strict = false },
+  { sourceBranch, targetBranch = null, state = 'opened' },
 ) => {
   const project = encodeProject(repoId);
-  if (strict) {
-    for (let page = 1; page <= 10; page++) {
-      const res = await glFetch(
-        ctx,
-        `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(sourceBranch)}&state=${state}&per_page=100&page=${page}`,
-      );
-      if (!res.ok) throw new ProviderError(res.status, 'Merge-request lookup failed');
-      const rows = await res.json();
-      if (!Array.isArray(rows)) throw new ProviderError(502, 'Invalid merge-request lookup');
-      const match = rows.find(
-        (mr) =>
-          mr.source_branch === sourceBranch &&
-          (targetBranch === null || mr.target_branch === targetBranch),
-      );
-      if (match) return match;
-      if (rows.length < 100) return null;
-    }
-    throw new ProviderError(409, 'Merge-request lookup truncated');
-  }
   const res = await glFetch(
     ctx,
     `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(
@@ -733,6 +714,35 @@ const findPullRequest = async (
           (targetBranch === null || mr.target_branch === targetBranch),
       ) ?? null)
     : null;
+};
+
+// Every merge request from `sourceBranch` in any state, across all pages, for
+// final-delivery ownership checks. Strict: a failed, malformed or truncated
+// listing throws instead of reporting none.
+const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
+  const project = encodeProject(repoId);
+  const mrs = [];
+  for (let page = 1; page <= 10; page++) {
+    const res = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/merge_requests?source_branch=${encodeURIComponent(sourceBranch)}&state=all&per_page=100&page=${page}`,
+    );
+    if (!res.ok) throw new ProviderError(res.status, 'Merge-request lookup failed');
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new ProviderError(502, 'Invalid merge-request lookup');
+    for (const mr of rows.filter((row) => row.source_branch === sourceBranch))
+      mrs.push({
+        number: mr.iid,
+        url: mr.web_url,
+        sourceBranch: mr.source_branch,
+        targetBranch: mr.target_branch ?? null,
+        headSha: mr.sha ?? mr.diff_refs?.head_sha ?? null,
+        state: mr.state === 'opened' ? 'open' : mr.state === 'merged' ? 'merged' : 'closed',
+        body: mr.description ?? '',
+      });
+    if (rows.length < 100) return mrs;
+  }
+  throw new ProviderError(409, 'Merge-request lookup truncated');
 };
 
 // Create a merge request. Enforces the unmerged-construction-task-branch guard
@@ -959,7 +969,6 @@ const getPullRequestStatus = async (ctx, repoId, mrIid) => {
     mergedAt: mr.merged_at ?? null,
     closedAt: mr.closed_at ?? null,
     updatedAt: mr.updated_at ?? null,
-    createdAt: mr.created_at ?? null,
     title: mr.title ?? '',
   };
 };
@@ -1094,6 +1103,7 @@ export {
   cleanupConstructionTaskBranches,
   getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
@@ -1134,6 +1144,7 @@ export default {
   cleanupConstructionTaskBranches,
   getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,

@@ -62,7 +62,7 @@ describe('strict delivery provider reads', () => {
     },
   );
   it.each(['github', 'gitlab'])(
-    '%s drains strict lookup pages and refuses a truncated response',
+    '%s drains every listing page and refuses a truncated listing',
     async (name) => {
       const provider = getProvider(name);
       let calls = 0;
@@ -77,154 +77,192 @@ describe('strict delivery provider reads', () => {
         ),
       );
       expect(
-        await provider.findPullRequest({ token: 'test', fetchImpl }, 'org/repo', {
+        await provider.listPullRequests({ token: 'test', fetchImpl }, 'org/repo', {
           sourceBranch: 'intent',
-          state: 'all',
-          strict: true,
         }),
-      ).toBeNull();
+      ).toEqual([]);
       expect(calls).toBe(2);
+      expect(fetchImpl.mock.calls[0][0]).toContain('state=all');
       await expect(
-        provider.findPullRequest(
+        provider.listPullRequests(
           {
             token: 'test',
             fetchImpl: async () => fetchResponse(Array.from({ length: 100 }, () => ({}))),
           },
           'org/repo',
-          { sourceBranch: 'intent', state: 'all', strict: true },
+          { sourceBranch: 'intent' },
         ),
       ).rejects.toThrow(/truncated/);
     },
   );
   it.each(['github', 'gitlab'])(
-    '%s reconciles only open PRs unless this run requested creation before a closed one',
+    '%s inspection returns every PR on the branch with its markers, never its description',
     async (name) => {
-      const provider = getProvider(name);
-      const raw =
+      const own = 'aidlc-delivery-' + 'a'.repeat(32);
+      const other = 'aidlc-delivery-' + 'b'.repeat(32);
+      const rows =
         name === 'github'
-          ? {
-              number: 7,
-              html_url: 'https://example.test/pr/7',
+          ? [
+              ['closed', null, `old <!-- aidlc-delivery: ${other} -->`],
+              ['closed', '2026-10-01T00:00:00Z', 'merged by hand'],
+              ['closed', null, `mine <!-- aidlc-delivery: ${own} -->`],
+            ].map(([state, mergedAt, body], index) => ({
+              number: index + 1,
+              html_url: `https://example.test/pr/${index + 1}`,
               head: { ref: 'intent', sha: 'sha' },
               base: { ref: 'develop' },
-              state: 'closed',
-              merged_at: null,
-              created_at: '2026-10-01T12:00:00Z',
-            }
-          : {
-              iid: 7,
-              web_url: 'https://example.test/pr/7',
+              state,
+              merged_at: mergedAt,
+              body,
+            }))
+          : [
+              ['closed', `old <!-- aidlc-delivery: ${other} -->`],
+              ['merged', 'merged by hand'],
+              ['closed', `mine <!-- aidlc-delivery: ${own} -->`],
+            ].map(([state, description], index) => ({
+              iid: index + 1,
+              web_url: `https://example.test/pr/${index + 1}`,
               source_branch: 'intent',
               target_branch: 'develop',
               sha: 'sha',
-              state: 'closed',
-              created_at: '2026-10-01T12:00:00Z',
-            };
-      const urls = [];
-      const fetchImpl = async (url) => {
-        urls.push(url);
-        if (url.includes('/7')) return fetchResponse(raw);
-        if (url.includes('pulls?') || url.includes('merge_requests?'))
-          return fetchResponse(/state=(open|opened)&/.test(url) ? [] : [raw]);
-        return fetchResponse(
-          name === 'github' ? { object: { sha: 'sha' } } : { commit: { id: 'sha' } },
+              state,
+              description,
+            }));
+      const fetchImpl = async (url) =>
+        fetchResponse(
+          url.includes('pulls?') || url.includes('merge_requests?')
+            ? rows
+            : name === 'github'
+              ? { object: { sha: 'sha' } }
+              : { commit: { id: 'sha' } },
         );
-      };
-      const inspect = (createdAfter) =>
-        inspectDelivery(provider, { token: 'test', fetchImpl }, 'org/repo', {
+      const result = await inspectDelivery(
+        getProvider(name),
+        { token: 'test', fetchImpl },
+        'org/repo',
+        {
           branch: 'intent',
           baseBranch: 'develop',
-          createdAfter,
-        });
-      // An earlier run's closed PR on the same intent branch is history.
-      expect((await inspect(null)).pr).toBeNull();
-      expect(urls.filter((u) => /pulls\?|merge_requests\?/.test(u))).toHaveLength(1);
-      expect((await inspect('2026-10-02T12:00:00Z')).pr).toBeNull();
-      // This run asked for creation, then the response was lost and the PR closed.
-      expect((await inspect('2026-10-01T12:01:00Z')).pr).toMatchObject({
-        number: 7,
-        state: 'closed',
-        sourceBranch: 'intent',
-        targetBranch: 'develop',
-        createdAt: expect.stringMatching(/^2026-10-01T12:00:00/),
-      });
+        },
+      );
+      expect(result.pullRequests).toEqual([
+        expect.objectContaining({ number: 1, state: 'closed', markers: [other] }),
+        expect.objectContaining({ number: 2, state: 'merged', markers: [] }),
+        expect.objectContaining({ number: 3, state: 'closed', markers: [own] }),
+      ]);
+      expect(JSON.stringify(result)).not.toMatch(/mine|old|by hand/);
     },
   );
-  it('Bitbucket checks terminal states only after a create request and rejects incomplete negative lookup', async () => {
-    const provider = getProvider('bitbucket');
+  it('Bitbucket lists every state on every page and refuses a foreign or truncated page link', async () => {
     const urls = [];
+    const pr = (id, state) => ({
+      id,
+      links: { html: { href: `https://bitbucket.example/pr/${id}` } },
+      state,
+      source: { branch: { name: 'intent' }, commit: { hash: 'sha' } },
+      destination: { branch: { name: 'develop' } },
+      description: id === 2 ? '<!-- aidlc-delivery: aidlc-delivery-' + 'c'.repeat(32) + ' -->' : '',
+    });
     const fetchImpl = async (url) => {
       urls.push(decodeURIComponent(url));
-      return fetchResponse(url.includes('/refs/') ? { target: { hash: 'sha' } } : { values: [] });
+      if (url.includes('/refs/')) return fetchResponse({ target: { hash: 'sha' } });
+      return fetchResponse(
+        url.includes('page=2')
+          ? { values: [pr(2, 'DECLINED')] }
+          : {
+              values: [pr(1, 'MERGED')],
+              next: 'https://api.bitbucket.org/2.0/repositories/org/repo/pullrequests?page=2',
+            },
+      );
     };
-    const inspect = (createdAfter) =>
-      inspectDelivery(provider, { token: 'test', fetchImpl }, 'org/repo', {
-        branch: 'intent',
-        baseBranch: 'develop',
-        createdAfter,
-      });
-    expect((await inspect(null)).pr).toBeNull();
-    expect(urls.filter((u) => u.includes('/pullrequests?'))).toHaveLength(1);
-    expect(urls.join('\n')).toContain('state="OPEN"');
-    urls.length = 0;
-    expect((await inspect('2026-10-01T12:00:00Z')).pr).toBeNull();
-    expect(urls.filter((u) => u.includes('/pullrequests?'))).toHaveLength(4);
-    expect(urls.join('\n')).toContain('state="MERGED"');
+    const result = await inspectDelivery(
+      getProvider('bitbucket'),
+      { token: 'test', fetchImpl },
+      'org/repo',
+      { branch: 'intent', baseBranch: 'develop' },
+    );
+    expect(result.pullRequests.map((p) => [p.number, p.state, p.markers.length])).toEqual([
+      [1, 'merged', 0],
+      [2, 'closed', 1],
+    ]);
+    const listing = urls.find((u) => u.includes('/pullrequests?q='));
+    for (const state of ['OPEN', 'MERGED', 'DECLINED', 'SUPERSEDED'])
+      expect(listing).toContain(`state="${state}"`);
+    expect(listing).toContain('fields=+values.description');
     await expect(
-      provider.findPullRequest(
-        { token: 'test', fetchImpl: async () => fetchResponse({ values: [], next: 'next-page' }) },
+      getProvider('bitbucket').listPullRequests(
+        {
+          token: 'test',
+          fetchImpl: async () =>
+            fetchResponse({ values: [], next: 'https://elsewhere.example/steal-token' }),
+        },
         'org/repo',
-        { sourceBranch: 'intent', strict: true },
+        { sourceBranch: 'intent' },
       ),
-    ).rejects.toThrow(/incomplete/);
+    ).rejects.toThrow(/page link/);
+    await expect(
+      getProvider('bitbucket').listPullRequests(
+        {
+          token: 'test',
+          fetchImpl: async (url) =>
+            fetchResponse({ values: [], next: `${url.split('&page=')[0]}&page=9` }),
+        },
+        'org/repo',
+        { sourceBranch: 'intent' },
+      ),
+    ).rejects.toThrow(/truncated/);
   });
-  it('CodeCommit uses GetBranch and searches closed PRs only after a create request', async () => {
+  it('CodeCommit lists every status on every page without an author filter', async () => {
     const mock = mockClient(CodeCommitClient);
     try {
       mock.on(GetBranchCommand).resolves({ branch: { commitId: 'sha' } });
       mock
-        .on(ListPullRequestsCommand, { pullRequestStatus: 'OPEN' })
-        .resolves({ pullRequestIds: [] })
-        .on(ListPullRequestsCommand, { pullRequestStatus: undefined })
-        .resolves({ pullRequestIds: ['7'] });
-      mock.on(GetPullRequestCommand).resolves({
+        .on(ListPullRequestsCommand, { nextToken: undefined })
+        .resolves({ pullRequestIds: ['7', '8'], nextToken: 'page-2' })
+        .on(ListPullRequestsCommand, { nextToken: 'page-2' })
+        .resolves({ pullRequestIds: ['9'] });
+      const raw = (id, status, source, description = '') => ({
         pullRequest: {
-          pullRequestId: '7',
-          pullRequestStatus: 'CLOSED',
-          creationDate: new Date('2026-10-01T12:00:00Z'),
+          pullRequestId: id,
+          pullRequestStatus: status,
+          description,
           pullRequestTargets: [
             {
               repositoryName: 'repo',
-              sourceReference: 'refs/heads/intent',
+              sourceReference: `refs/heads/${source}`,
               destinationReference: 'refs/heads/develop',
               sourceCommit: 'sha',
+              mergeMetadata: { isMerged: id === '7' },
             },
           ],
         },
       });
-      const provider = getProvider('codecommit');
-      const inspect = (createdAfter) =>
-        inspectDelivery(
-          provider,
-          {
-            token: {
-              assumedRoleArn: 'arn:aws:sts::123456789012:assumed-role/test/session',
-              credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
-            },
+      mock
+        .on(GetPullRequestCommand, { pullRequestId: '7' })
+        .resolves(raw('7', 'CLOSED', 'intent'))
+        .on(GetPullRequestCommand, { pullRequestId: '8' })
+        .resolves(raw('8', 'OPEN', 'other'))
+        .on(GetPullRequestCommand, { pullRequestId: '9' })
+        .resolves(raw('9', 'CLOSED', 'intent', 'aidlc-delivery-' + 'd'.repeat(32)));
+      const result = await inspectDelivery(
+        getProvider('codecommit'),
+        {
+          token: {
+            assumedRoleArn: 'arn:aws:sts::123456789012:assumed-role/test/session',
+            credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
           },
-          'arn:aws:codecommit:eu-west-1:123456789012:repo',
-          { branch: 'intent', baseBranch: 'develop', createdAfter },
-        );
-      expect((await inspect(null)).pr).toBeNull();
-      const lookups = () =>
-        mock.commandCalls(ListPullRequestsCommand).map((call) => call.args[0].input);
-      expect(lookups()).toEqual([
-        expect.objectContaining({ pullRequestStatus: 'OPEN', authorArn: undefined }),
+        },
+        'arn:aws:codecommit:eu-west-1:123456789012:repo',
+        { branch: 'intent', baseBranch: 'develop' },
+      );
+      expect(result.pullRequests.map((p) => [p.number, p.state, p.markers.length])).toEqual([
+        ['7', 'merged', 0],
+        ['9', 'closed', 1],
       ]);
-      const result = await inspect('2026-10-01T11:59:00Z');
-      expect(result.pr).toMatchObject({ state: 'closed', createdAt: '2026-10-01T12:00:00.000Z' });
-      expect(lookups().at(-1).pullRequestStatus).toBeUndefined();
-      expect(lookups().at(-1).authorArn).toBeUndefined();
+      for (const call of mock.commandCalls(ListPullRequestsCommand)) {
+        expect(call.args[0].input.pullRequestStatus).toBeUndefined();
+        expect(call.args[0].input.authorArn).toBeUndefined();
+      }
     } finally {
       mock.restore();
     }

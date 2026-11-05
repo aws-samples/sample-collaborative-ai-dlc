@@ -10,6 +10,7 @@ const labels: Record<string, string> = {
   failed: 'Delivery needs attention',
   partial: 'Some repositories need attention',
   no_change: 'No changes to publish',
+  uncertain: 'Pull request ownership unconfirmed',
 };
 export function DeliveryStatus({
   projectId,

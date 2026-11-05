@@ -193,8 +193,21 @@ merged PR that this run created (for example after its create response was lost)
 a changed intent branch or a missing branch is shown with an actionable refusal;
 retry does not recreate closed work or choose a different target. Rewind and
 relaunch keep the intent branch: a PR that an earlier run opened and a reviewer
-closed or merged is history, and the new run publishes a new PR. Restore a missing captured branch, fix repository access,
-or review a separate execution/recovery plan as the displayed reason directs.
+closed or merged is history, and the new run publishes a new PR. Restore a
+missing captured branch, fix repository access, or review a separate
+execution/recovery plan as the displayed reason directs.
+
+Each PR that final delivery creates ends with a delivery marker, an HTML
+comment such as `<!-- aidlc-delivery: aidlc-delivery-… -->`. GitHub and GitLab
+hide it; Bitbucket and CodeCommit may show it as a line of text. Leave it in
+place: it is how a later check recognizes this run's own closed or merged PR. When a
+create response was lost and a closed or merged PR on the branch has no marker
+(for example because its description was edited), the repository shows
+**Pull request ownership unconfirmed**. Delivery neither adopts that PR nor
+opens a duplicate. Check the branch's PRs at the provider: reopen the PR if it
+holds this run's work (the next check reconciles the open PR), or start a new
+run, which publishes a new PR.
+
 PR-per-unit workflows keep their existing unit review process; this action
 covers their final intent-to-base publication only.
 
@@ -248,15 +261,34 @@ the invocation might already be accepted; a later check recovers abandonment.
 Retry invokes a separate durable `retry-delivery` history through the configured
 orchestrator target. It only uses the shared publication logic and the existing
 source-control service. It never invokes AgentCore, stages, Git integration or
-models. A failed or incomplete provider lookup blocks creation. Strict lookup reads open
-PRs for the intent branch. Closed and merged PRs are considered only after this
-run recorded a create request (`createRequestedAt` on the repository entry, written
-immediately before the provider call), and only those the provider created at
-most five minutes (clock tolerance) before that request. A changed source SHA,
-missing branch, retargeted PR or this run's closed work requires review instead
-of implicit replacement. External repository edits
-remain outside DynamoDB ownership; branch identity is rechecked immediately
-before creation. No provider merge-state polling is added.
+models. A failed or incomplete provider lookup blocks creation. Strict lookup
+lists every PR from the intent branch in every state on every page, reduced to
+number, state, branches, head SHA and the delivery markers its description
+carries; descriptions do not leave the source-control service. Ownership is
+decided over the whole list by exact identity, never by timestamps or list
+order. Before `create-pr`, the fenced write that records the create request
+stores `createRequestedAt` and a random `deliveryMarker` on the repository
+entry; the PR description carries the same marker, and retries in the run reuse
+it. CodeCommit additionally keeps its per-run idempotency token.
+
+| PR on the intent branch                | No create request recorded | Create request recorded  |
+| -------------------------------------- | -------------------------- | ------------------------ |
+| Open, onto the captured target         | Reused as the current PR   | Reused as the current PR |
+| Open, onto another target only         | Refused (no retarget)      | Refused (no retarget)    |
+| Closed or merged, this entry's marker  | Not applicable             | This run's: refused      |
+| Closed or merged, another run's marker | Ignored                    | Ignored                  |
+| Closed or merged, no marker            | Ignored                    | Uncertain                |
+| None of the above                      | Published                  | Published                |
+
+Two closed or merged PRs carrying the same marker are also uncertain. An
+uncertain entry is not retryable and never blocks a new run: a new run has no
+recorded request. Entries written before markers existed (`createRequestedAt`
+without `deliveryMarker`) can prove no closed PR, so an unmarked one is
+uncertain. The delivery view links only a published or reconciled PR, or one
+proven by this run's marker. A changed source SHA, missing branch, retargeted PR
+or this run's closed work requires review instead of implicit replacement.
+External repository edits remain outside DynamoDB ownership; branch identity is
+rechecked immediately before creation. No provider merge-state polling is added.
 
 Deploy source-control first (strict lookup and branch preconditions), then the
 orchestrator and intents API with the delivery route, then the frontend. Install
