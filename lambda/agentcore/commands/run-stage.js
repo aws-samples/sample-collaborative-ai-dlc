@@ -504,13 +504,15 @@ const REVISION_FINDINGS_LIMIT = 8000;
 // The review a human saw at the gate they answered with "Request changes". The
 // reviewer runs before the gate opens, so its latest run for this stage recorded
 // no later than the gate is that review. Null when the stage has no reviewer, the
-// answer is not a revision, or the review recorded no findings.
+// answer is not a revision, or the review recorded no findings. A failed read
+// throws: the caller must not resume the author without the review the feedback
+// may refer to.
 const reviewFindingsForGate = async ({ store, executionId, stageInstanceId, stage, gate }) => {
   const reviewerAgent = stage?.reviewer?.reviewerAgent;
   if (!reviewerAgent || !isRevisionAnswer(gate)) return null;
   if (typeof store.listSensorRuns !== 'function') return null;
   const openedAt = gate.createdAt ?? null;
-  const rows = await store.listSensorRuns(executionId, { stageInstanceId }).catch(() => []);
+  const rows = await store.listSensorRuns(executionId, { stageInstanceId });
   const run = [...rows]
     .toReversed()
     .find(
@@ -2319,6 +2321,8 @@ const runStageAttempt = async (
   let cliSessionId = null;
   let resumeAnswer = null;
   let resumeGate = null;
+  // The review the resumed gate's revision refers to, read with the gate.
+  let resumeReviewFindings = null;
   // A resume we had to demote to a fresh run because its conversation is
   // unavailable: re-runs fresh with the human's answer injected into the prompt.
   // A missing session ID does not imply that the shared Kiro store was lost.
@@ -2363,11 +2367,21 @@ const runStageAttempt = async (
         ? await store.getHumanTask(executionId, resumeFrom, { consistentRead: true })
         : null;
       row = await store.getStage(executionId, stageInstanceId, { consistentRead: true });
+      // Read with the answer it belongs to: a revision must not resume without it.
+      resumeReviewFindings = resumeGate
+        ? await reviewFindingsForGate({
+            store,
+            executionId,
+            stageInstanceId,
+            stage,
+            gate: resumeGate,
+          })
+        : null;
     } catch {
       return fail(
         ownership ? stageInstanceId : null,
         'resume_state_unavailable',
-        'The saved stage or answer could not be read. Retry when storage is available; the saved conversation has not been reset.',
+        'The saved stage, answer or review could not be read. Retry when storage is available; the saved conversation has not been reset.',
       );
     }
     if (resumeFrom && !resumeGate) return fail(stageInstanceId, 'gate_not_found', resumeFrom);
@@ -2522,15 +2536,7 @@ const runStageAttempt = async (
     resumeAnswer = preAgentGate
       ? null
       : reviewFeedbackPrompt ||
-        formatResumeAnswer(resumeGate, stageId, {
-          reviewFindings: await reviewFindingsForGate({
-            store,
-            executionId,
-            stageInstanceId,
-            stage,
-            gate: resumeGate,
-          }),
-        });
+        formatResumeAnswer(resumeGate, stageId, { reviewFindings: resumeReviewFindings });
     // A pre-agent gate re-enters as a fresh run even when the row names a
     // session: the conversation was never started, and resuming it would send
     // the CLI neither the stage prompt nor the change-control decision.
@@ -3973,15 +3979,27 @@ const runStageAttempt = async (
                   .getHumanTask(executionId, validationGateId, { consistentRead: true })
                   .catch(() => null);
           if (validationGate) {
-            revisionFeedback = formatResumeAnswer(validationGate, stageId, {
-              reviewFindings: await reviewFindingsForGate({
-                store,
-                executionId,
-                stageInstanceId,
-                stage,
-                gate: validationGate,
-              }),
-            });
+            let reviewFindings = resumeReviewFindings;
+            if (validationGate !== resumeGate) {
+              try {
+                reviewFindings = await reviewFindingsForGate({
+                  store,
+                  executionId,
+                  stageInstanceId,
+                  stage,
+                  gate: validationGate,
+                });
+              } catch {
+                // Before any persona session starts: they must not revise without
+                // the review the feedback may refer to.
+                return fail(
+                  stageInstanceId,
+                  'resume_state_unavailable',
+                  'The review for this revision could not be read. Retry when storage is available.',
+                );
+              }
+            }
+            revisionFeedback = formatResumeAnswer(validationGate, stageId, { reviewFindings });
           } else
             logger.error('validation gate not readable for revision feedback', {
               stageInstanceId,

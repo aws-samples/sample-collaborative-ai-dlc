@@ -2131,6 +2131,20 @@ describe('runStage — LLM reviewer axis', () => {
       expect(text).not.toContain('a later review');
     });
 
+    it('does not resume the author when the review cannot be read', async () => {
+      const { deps, prompts } = revision({ rows: [] });
+      deps.store.listSensorRuns = vi.fn(async () => {
+        throw new Error('Storage unavailable');
+      });
+      const res = await runStage({ ...baseArgs, resumeFrom: GATE_ID }, deps);
+
+      expect(res).toMatchObject({ ok: false, reason: 'resume_state_unavailable' });
+      expect(prompts).toEqual([]);
+      expect(deps.store.calls.some(([op]) => op === 'updateStageState' || op === 'putStage')).toBe(
+        false,
+      );
+    });
+
     it('sends only the feedback when the review recorded no findings', async () => {
       const { deps, prompts } = revision({
         rows: [{ ...reviewerRow('NOT-READY', ''), timestamp: '2026-11-04T09:59:00.000Z' }],
