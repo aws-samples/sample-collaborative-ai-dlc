@@ -282,6 +282,42 @@ describe('GitLab custom sources', () => {
     );
     expect(error.message).not.toContain('glpat-secret');
   });
+  // A GitLab instance or proxy may reflect the Authorization header in its
+  // error body; that body must never carry the token into the error.
+  it.each([
+    ['in a JSON message', (t) => JSON.stringify({ message: `401 Unauthorized for Bearer ${t}` })],
+    ['in a plain-text body', (t) => `denied: Authorization: Bearer ${t}\n`],
+    ['bare, without the Bearer prefix', (t) => JSON.stringify({ error: `bad token ${t}` })],
+    ['URL-encoded', (t) => `denied: ?private_token=${encodeURIComponent(t)}`],
+    ['across the truncation point', (t) => `${'x'.repeat(290)} ${t} ${'y'.repeat(50)}`],
+  ])('redacts a token GitLab reflects %s', async (_label, body) => {
+    const token = 'glpat-review/secret+1';
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      text: async () => body(token),
+    });
+
+    const error = await fetchCoreFiles(SHA, gitlab({ token })).catch((e) => e);
+
+    expect(error.message).toMatch(/ returned 401 Unauthorized/);
+    for (const fragment of [token, encodeURIComponent(token), 'glpat-', 'secret+1']) {
+      expect(error.message).not.toContain(fragment);
+    }
+  });
+  it('still reports the reason once the token is redacted', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      text: async () => JSON.stringify({ message: '401 Unauthorized: token glpat-abc expired' }),
+    });
+
+    await expect(fetchCoreFiles(SHA, gitlab({ token: 'glpat-abc' }))).rejects.toThrow(
+      / returned 401 Unauthorized: 401 Unauthorized: token \[redacted\] expired$/,
+    );
+  });
   it('never sends a token to codeload', async () => {
     globalThis.fetch = vi.fn();
     await expect(

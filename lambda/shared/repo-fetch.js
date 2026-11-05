@@ -204,10 +204,27 @@ const responseToBuffer = async (res, maxBytes) => {
   return buffer;
 };
 
-// `: <message>` from a GitLab error body, bounded and single-line.
-const gitlabErrorDetail = async (res) => {
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Removes the request's credential from server-controlled text. A GitLab
+// instance or proxy may reflect the Authorization header in an error body, and
+// that body reaches the thrown error, the Lambda response and the logs. Runs
+// before any truncation, so a cut can never leave part of the token behind.
+const redactCredential = (text, token) => {
+  let out = text.replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]');
+  if (token) {
+    for (const form of new Set([token, encodeURIComponent(token)])) {
+      out = out.replace(new RegExp(escapeRegExp(form), 'g'), '[redacted]');
+    }
+  }
+  return out;
+};
+
+// `: <message>` from a GitLab error body, bounded, single-line, and with the
+// request's token redacted.
+const gitlabErrorDetail = async (res, token = null) => {
   if (typeof res.text !== 'function') return '';
-  const text = (await res.text()).slice(0, 2000);
+  const text = redactCredential(await res.text(), token).slice(0, 2000);
   let message = text;
   try {
     const body = JSON.parse(text);
@@ -216,7 +233,7 @@ const gitlabErrorDetail = async (res) => {
   } catch {
     // Not JSON: keep the text.
   }
-  message = message.replace(/\s+/g, ' ').trim().slice(0, 300);
+  message = redactCredential(message.replace(/\s+/g, ' ').trim(), token).slice(0, 300);
   return message ? `: ${message}` : '';
 };
 
@@ -267,7 +284,7 @@ const fetchRepoFiles = async (
   if (!res.ok) {
     // GitLab explains a refusal in a short JSON body (for example its archive
     // rate limit, or a missing scope); codeload's body adds nothing.
-    const detail = provider === 'gitlab' ? await gitlabErrorDetail(res).catch(() => '') : '';
+    const detail = provider === 'gitlab' ? await gitlabErrorDetail(res, token).catch(() => '') : '';
     throw new Error(
       `${`repo-fetch: ${url} returned ${res.status} ${res.statusText}`.trimEnd()}${detail}`,
     );
