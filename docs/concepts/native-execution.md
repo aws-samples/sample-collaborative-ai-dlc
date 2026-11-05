@@ -2964,18 +2964,129 @@ hashed paths and a changed `index.html`. There is no Terraform configuration or
 dependency-version change. The normal deployment wrapper may still rebuild
 other package resources because their shared-source packaging hash changes.
 
-**Deployment remains an operator action.** The fresh deployment-only handoff is
+**At this local-stage handoff, deployment remained an operator action.** The
+deployment-only handoff was prepared at
 `.native-evidence/ne07-2026-11-04-harness-question-adapters/handoff/deploy-ne07.sh`.
 Its `candidate.json` pins the final reviewed HEAD, qualified source/image,
-configuration and validation evidence. Run it with `--check-only` first, then
-without arguments from the user's terminal. It checks local inputs before
+configuration and validation evidence. The operator instructions required
+`--check-only` first, then execution from the user's terminal. It checks local inputs before
 credential setup, refuses another attempt in its single-use deployment
 directory, preserves logs/plan/start/finish receipts and uses profile `solution`.
-It does not repeat the completed local qualification. The eventual registry
-digest is separate from the qualified local image ID: independent deployed
-bundle/alias, image platform/config/layer, current runtime-pin and frontend-byte
-verification follows the terminal deployment. Kiro remains deferred to NE-18;
-NE-08, NE-09 and NE-11 are not advanced by this stage.
+It does not repeat the completed local qualification. At that point, the
+registry digest and independent deployed bundle/alias, image platform/config/layer,
+current runtime-pin and frontend-byte verification remained pending. The
+subsequent operator attempt and independent verification are recorded below.
+Kiro remains deferred to NE-18; NE-08, NE-09 and NE-11 are not advanced by this stage.
+
+### NE-07 deployed acceptance and receipt diagnosis — 2026-11-05
+
+**Independent deployed artifact verification is complete** for
+`095041b78405c3dfe7fb7347167977a548e0b2e6`, whose production bytes match qualified
+source `01a776358678a33894e0c53853b95490e692a65b`. The original command receipt
+remains **`COMMANDS_FAILED`, exit 1, phase `finished`**. The user's attempt ran
+on November 4 from **21:02:34 UTC** through **21:13:47 UTC**. Its log contains
+the completed Terraform apply, frontend deployment, final local preflight and
+“Deployment commands finished” messages. Those milestones do not rewrite the
+failed receipt. All four original files—start receipt, finish receipt, log and
+saved plan—retain their original hashes.
+
+The returned “already attempted” message is the single-attempt guard. It runs
+before credentials and log capture, so it neither retries deployment nor changes
+the original attempt. **Do not rerun that handoff, clear the guard or reapply the
+saved plan.**
+
+The logger has a confirmed portability defect on the installed `/bin/bash`
+**3.2.57**. It starts `tee` through process substitution, captures `$!`, restores
+stdout/stderr in its EXIT trap and waits on that PID. Three isolated minimal
+reproductions exit the body successfully, but `wait` returns **127**, reporting
+“not a child of this shell”; the trap converts initial exit 0 to exit 1.
+Two copied wrappers with fully successful inert deployment stubs reproduce the
+original `finished`/exit-1 receipt and complete log. The wait diagnostic goes to
+restored terminal stderr, outside `deploy.log`. This strongly explains the
+historical receipt; the original terminal stderr, initial EXIT status and actual
+`tee` exit were not retained, so those historical values remain unrecorded.
+
+The original 56 guard cases exercised a forced credential failure and direct
+success-receipt creation, but missed successful wrapper completion through EXIT.
+A small future-handoff correction starts `tee` as an explicit background child
+reading a private FIFO. Nine isolated wrapper cases cover the original defect,
+corrected success, a large/delayed log, credential/Terraform/frontend failures,
+logger failure and the preserved repeat guard. The correction and fixtures live
+only in the new evidence directory. The attempted handoff is unchanged, and a
+logger correction does not require another deployment.
+
+Independent cloud reads used `solution-read` in account `746558295630`, region
+`us-east-1`. STS and IAM confirmed the `ReadOnly` role, only the managed
+`ReadOnlyAccess` policy and no inline policies. Local `terraform show -json`
+decoded the preserved plan without plan, refresh or apply. Its **152 added /
+55 changed / 152 destroyed** totals match the log. Replacement pairs comprise
+47 `local_file`, 47 `null_resource`, 56 `terraform_data`, one local `docker_image`
+and one `docker_registry_image` with `keep_remotely=true`. **No AWS resource is
+replaced.** The broader shared-source deployment updates 48 Lambda functions,
+six aliases and the shared runtime in place; 12 Lambda updates change image
+configuration. The sixth alias belongs to the v2 orchestrator. Byte acceptance
+here covers the nine native functions and five authority aliases.
+
+All **nine downloaded native Lambda entrypoints** match the candidate bundles,
+their ZIP checksums match Lambda, and all **105 source inputs** match committed
+source. Every function is Active with a Successful update. The changed owners
+are **authority, execution, credentials, projection, results and cancellation**;
+API, provisioner and wakeup bytes match NE-06. The **commands, execution,
+preparation, projection and results** authority aliases all route without
+weights to downloaded and verified published **version 24**. Published
+configuration matches the current function configuration.
+
+ECR tag **`20fdffca5bcde73e`** resolves to these independently hashed artifacts:
+
+| Artifact                   | SHA256                                                             |
+| -------------------------- | ------------------------------------------------------------------ |
+| Registry index             | `347bea34a7fe3cc8e7c9fca0d00a59a84d83974948bdc03862f48fce4751ce01` |
+| Linux ARM64 image manifest | `4fa5f149c33b2c357d088824f599f2b59ae14cab1ef31818e0b1aa6e2d0631fa` |
+| OCI configuration          | `6aba3f6083566560c2573daa9add507107edb6e68182b87b9f8ee2a3139bac93` |
+
+The platform manifest and configuration digest match the sealed qualification
+build. All **23 ordered filesystem layers** and the complete runtime
+configuration match the qualified local image recorded above. This establishes
+equality of the **271 packaged production files**, installed CLIs and dependency
+bytes. The packaged source SHA-256 remains
+`06a9447c70a0ab2b16523fc1118833d5071aedf94182da5777e87461d976e894`.
+The registry index and local image ID are distinct. No image pull, image
+execution or installed-qualification repeat was needed.
+
+All **33 image pins across 12 current Lambda consumers** select that verified
+digest or immutable URI. The shared runtime and its DEFAULT endpoint are
+**READY on version 144**, with the planned VPC configuration. These checks cover
+current defaults for new executions. All **101 pinned deployment configuration
+inputs** retain their candidate hashes.
+
+All **523 current frontend files** match the sealed candidate, the actual
+deployment build, downloaded S3 objects and CloudFront responses. The **528
+source/configuration inputs** match, and public build configuration matches the
+saved plan. The entrypoint references verified assets; the changed native
+question/service code in `useNativeIntents-BnZ7bKlB.js` includes
+`unsupported_methodology` and matches at S3 and the CDN. The distribution is
+Deployed and enabled, its default origin is the expected bucket, and the
+deployment invalidation is Completed. The complete bucket inventory contains
+2,071 objects, with 1,548 outside the current build; those retained objects are
+not a cleanup gate. CDN proof covers responding **DUS51-P7** at the recorded
+times, not every edge or an existing browser cache. No frontend rebuild or
+application-test repeat was necessary because every deployment file matches the
+already-qualified candidate.
+
+Fresh evidence is under `.native-evidence/ne07-2026-11-05-deployed-095041b7/`,
+including separate original receipt/milestone conclusions, logger reproductions,
+read identity and calls, downloaded artifacts, configuration/frontend proofs,
+the completion report and integrity manifest. A local configuration-check helper
+initially assumed a byte-count field absent from the sealed hash manifest; its
+failed attempt remains recorded, and the corrected SHA-256 comparison passes.
+Earlier sealed evidence and unrelated `.worktrees/` remain unchanged.
+
+**No operator action remains for NE-07 deployed artifact acceptance.** This
+does not establish fresh live workflow/model, Start/reply/cancel/resume,
+human-gate, EFS or browser behavior: none was invoked. Existing development
+executions remain disposable, with no compatibility, preservation, migration or
+cleanup prerequisite. Kiro stays deferred to NE-18; NE-08, NE-09, NE-11, Git
+delivery and lifecycle cleanup were not advanced.
 
 ## Integration and simplification checklist
 
@@ -3107,10 +3218,14 @@ the current contract for newly created executions.
       and written replies. Obsolete format/state fallbacks are removed.
       The 60 composed presentation cases, full backend/frontend/release checks,
       162 packaged Linux regressions and finite installed Claude/Codex/OpenCode
-      scopes pass as recorded above. Kiro remains deferred to NE-18. A guarded
-      deployment-only handoff is ready for operator execution, followed by
-      independent deployed verification. Evidence is under
-      `.native-evidence/ne07-2026-11-04-harness-question-adapters/`.
+      scopes pass as recorded above. **Deployed artifact acceptance completed
+      2026-11-05:** nine native packages, five authority aliases at version 24,
+      qualified registry image bytes, current runtime/default version 144 and
+      all 523 frontend files are independently verified. The original exit-1
+      receipt remains preserved with the reproduced logger defect; no deployment
+      retry is required. Kiro remains deferred to NE-18. Evidence is under
+      `.native-evidence/ne07-2026-11-04-harness-question-adapters/` and
+      `.native-evidence/ne07-2026-11-05-deployed-095041b7/`.
 - [ ] **NE-08 — Complete normal intent creation.** Integrate native into the normal
       **New intent** entry, including the backend/default choice, verified package
       selection and application source. Reuse the shared creation and configuration
