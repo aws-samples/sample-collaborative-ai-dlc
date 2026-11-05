@@ -3,6 +3,7 @@ site_description = "AIDLC Collaborative Workflow"
 site_url = "https://aws-samples.github.io/sample-collaborative-ai-dlc/"
 repo_url = "https://github.com/aws-samples/sample-collaborative-ai-dlc"
 repo_name = "aws-samples/sample-collaborative-ai-dlc"
+extra_css = ["stylesheets/aws-services.css"]
 
 nav = [
   { "Home" = "index.md" },
@@ -18,6 +19,7 @@ nav = [
   { "How it works" = [
     "concepts/index.md",
     "concepts/architecture.md",
+    "concepts/aws-services.md",
     "concepts/data-model.md",
     "concepts/workflows-and-blocks.md",
     "concepts/execution.md",

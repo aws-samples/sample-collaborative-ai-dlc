@@ -9,7 +9,7 @@ The architecture is presented as two complementary top-to-bottom views:
 - The **request path** — what happens when a signed-in user clicks a button in the UI.
 - The **agent runtime** — what happens after the request path triggers an agent job.
 
-Together they cover every component the platform is built from.
+Together they cover every component the platform is built from. For the complete list of AWS services the Terraform stack provisions or calls, see [AWS services](aws-services.md).
 
 ## Request path
 
