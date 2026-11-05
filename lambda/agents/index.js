@@ -51,6 +51,14 @@ import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validat
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
 import { getVal } from '../shared/trackers.js';
 import { fetchMembershipRole } from '../shared/space-membership.js';
+import {
+  RUNTIME_MCP_GATEWAY_ONLY,
+  RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+  RuntimeMcpPolicyError,
+  assertDirectMcpConfigAllowed,
+  assertMcpSecretWritesAllowed,
+  gatewayOnlyMcp,
+} from '../shared/runtime-mcp-policy.js';
 import { listClaudeModels } from '../shared/bedrock-models.js';
 import { PRICE_LIST_PROVIDERS, PRICE_LIST_SERVICE_CODE } from '../shared/model-pricing.js';
 import { createModelCatalog, createModelPricing, runtimeLookups } from './model-catalog.js';
@@ -932,6 +940,8 @@ export const handler = async (event, context) => {
                 ),
               }
             : {}),
+          // Only in the strict profile, so the default response is unchanged.
+          ...(gatewayOnlyMcp() ? { runtimeMcpCredentials: 'gateway_only' } : {}),
         });
       } catch (err) {
         logger.error('[settings] GET failed', err);
@@ -999,6 +1009,25 @@ export const handler = async (event, context) => {
           }
           throw error;
         }
+      }
+
+      // gateway_only: refuse direct MCP servers and secret values before ANY
+      // setting in this request is written. An invalid config is left to the
+      // validation below.
+      try {
+        if (input.customMcpServers !== undefined) {
+          const raw =
+            typeof input.customMcpServers === 'string'
+              ? input.customMcpServers
+              : JSON.stringify(input.customMcpServers ?? {});
+          if (validateMcpServersJson(raw || '{}').valid) {
+            assertDirectMcpConfigAllowed(JSON.parse(raw || '{}'));
+          }
+        }
+        if (input.mcpSecrets !== undefined) assertMcpSecretWritesAllowed(input.mcpSecrets);
+      } catch (error) {
+        if (!(error instanceof RuntimeMcpPolicyError)) throw error;
+        return response(400, { error: error.message, code: error.code });
       }
 
       if (input.authenticationChange) {
@@ -1301,6 +1330,16 @@ export const handler = async (event, context) => {
         if (denied) {
           return response(denied.statusCode, { error: denied.error, code: denied.code });
         }
+      }
+
+      // gateway_only: the probe would connect from the runtime and resolve the
+      // config's secrets (saved or just typed) into it. Refused before any
+      // grant is issued or the runtime is invoked.
+      if (gatewayOnlyMcp()) {
+        return response(400, {
+          error: RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+          code: RUNTIME_MCP_GATEWAY_ONLY,
+        });
       }
 
       const raw =
