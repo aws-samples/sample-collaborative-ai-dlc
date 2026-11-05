@@ -450,6 +450,17 @@ variable "enforce_runtime_grants" {
   default     = false
 }
 
+variable "runtime_mcp_credentials" {
+  description = "Custom MCP credential profile: \"allow\" (default) or \"gateway_only\", in which the credential broker, projects, intents and orchestrator Lambdas keep direct custom MCP servers and their secrets out of the runtime"
+  type        = string
+  default     = "allow"
+
+  validation {
+    condition     = contains(["allow", "gateway_only"], var.runtime_mcp_credentials)
+    error_message = "runtime_mcp_credentials must be \"allow\" or \"gateway_only\"."
+  }
+}
+
 variable "gateway_grant_key_arn" {
   description = "KMS key that signs AgentCore MCP Gateway grants (used only when enable_mcp_gateway is true)"
   type        = string

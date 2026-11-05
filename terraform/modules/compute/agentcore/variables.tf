@@ -344,3 +344,14 @@ variable "mcp_gateway_custom_targets" {
     error_message = "mcp_gateway_custom_targets private_endpoint sets exactly one of managed_vpc_resource or self_managed_lattice_resource."
   }
 }
+
+variable "runtime_mcp_credentials" {
+  description = "Custom MCP credential profile: \"allow\" (default) or \"gateway_only\", in which the runtime refuses direct custom MCP servers and its role can read no MCP secret and fetch no AgentCore Identity credential (requires enable_mcp_gateway and enable_engine_data)"
+  type        = string
+  default     = "allow"
+
+  validation {
+    condition     = contains(["allow", "gateway_only"], var.runtime_mcp_credentials)
+    error_message = "runtime_mcp_credentials must be \"allow\" or \"gateway_only\"."
+  }
+}

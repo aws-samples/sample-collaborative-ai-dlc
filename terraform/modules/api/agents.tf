@@ -71,7 +71,9 @@ module "agents_lambda" {
     BEDROCK_REGION                = var.bedrock_region
     ENVIRONMENT_REGISTRY_TABLE    = var.environment_registry_table_name
     RUNTIME_COMPATIBILITY_VERSION = var.runtime_compatibility_version
-  }, var.enable_engine_data ? { ENGINE_DATA_ENABLED = "true" } : {})
+    }, var.enable_engine_data ? { ENGINE_DATA_ENABLED = "true" } : {},
+    # Set only in the strict profile (lambda/shared/runtime-mcp-policy.js).
+  var.runtime_mcp_credentials == "gateway_only" ? { RUNTIME_MCP_CREDENTIALS = "gateway_only" } : {})
 }
 
 
