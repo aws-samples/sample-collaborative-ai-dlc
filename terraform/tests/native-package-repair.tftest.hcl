@@ -63,6 +63,7 @@ override_module {
   target = module.source_control_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:source_control_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:source_control_lambda"
     lambda_function_name       = "source_control_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:source_control_lambda/invocations"
@@ -93,6 +94,7 @@ override_module {
   target = module.projects_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:projects_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:projects_lambda"
     lambda_function_name       = "projects_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:projects_lambda/invocations"
@@ -103,6 +105,7 @@ override_module {
   target = module.users_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:users_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:users_lambda"
     lambda_function_name       = "users_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:users_lambda/invocations"
@@ -113,6 +116,7 @@ override_module {
   target = module.sprints_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:sprints_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:sprints_lambda"
     lambda_function_name       = "sprints_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:sprints_lambda/invocations"
@@ -123,6 +127,7 @@ override_module {
   target = module.requirements_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:requirements_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:requirements_lambda"
     lambda_function_name       = "requirements_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:requirements_lambda/invocations"
@@ -133,6 +138,7 @@ override_module {
   target = module.user_stories_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:user_stories_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:user_stories_lambda"
     lambda_function_name       = "user_stories_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:user_stories_lambda/invocations"
@@ -143,6 +149,7 @@ override_module {
   target = module.tasks_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:tasks_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:tasks_lambda"
     lambda_function_name       = "tasks_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:tasks_lambda/invocations"
@@ -153,6 +160,7 @@ override_module {
   target = module.code_files_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:code_files_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:code_files_lambda"
     lambda_function_name       = "code_files_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:code_files_lambda/invocations"
@@ -163,6 +171,7 @@ override_module {
   target = module.reviews_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:reviews_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:reviews_lambda"
     lambda_function_name       = "reviews_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:reviews_lambda/invocations"
@@ -173,6 +182,7 @@ override_module {
   target = module.questions_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:questions_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:questions_lambda"
     lambda_function_name       = "questions_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:questions_lambda/invocations"
@@ -183,6 +193,7 @@ override_module {
   target = module.sprint_graph_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:sprint_graph_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:sprint_graph_lambda"
     lambda_function_name       = "sprint_graph_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:sprint_graph_lambda/invocations"
@@ -193,6 +204,7 @@ override_module {
   target = module.general_info_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:general_info_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:general_info_lambda"
     lambda_function_name       = "general_info_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:general_info_lambda/invocations"
@@ -203,6 +215,7 @@ override_module {
   target = module.github_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:github_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:github_lambda"
     lambda_function_name       = "github_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:github_lambda/invocations"
@@ -213,6 +226,7 @@ override_module {
   target = module.gitlab_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:gitlab_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:gitlab_lambda"
     lambda_function_name       = "gitlab_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:gitlab_lambda/invocations"
@@ -223,6 +237,7 @@ override_module {
   target = module.bitbucket_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:bitbucket_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:bitbucket_lambda"
     lambda_function_name       = "bitbucket_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:bitbucket_lambda/invocations"
@@ -233,6 +248,7 @@ override_module {
   target = module.trackers_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:trackers_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:trackers_lambda"
     lambda_function_name       = "trackers_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:trackers_lambda/invocations"
@@ -243,6 +259,7 @@ override_module {
   target = module.timeline_events_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:timeline_events_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:timeline_events_lambda"
     lambda_function_name       = "timeline_events_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:timeline_events_lambda/invocations"
@@ -253,6 +270,7 @@ override_module {
   target = module.discussions_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:discussions_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:discussions_lambda"
     lambda_function_name       = "discussions_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:discussions_lambda/invocations"
@@ -273,6 +291,7 @@ override_module {
   target = module.cognito_users_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:cognito_users_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:cognito_users_lambda"
     lambda_function_name       = "cognito_users_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:cognito_users_lambda/invocations"
@@ -303,6 +322,7 @@ override_module {
   target = module.building_blocks_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:building_blocks_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:building_blocks_lambda"
     lambda_function_name       = "building_blocks_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:building_blocks_lambda/invocations"
@@ -323,6 +343,7 @@ override_module {
   target = module.workflows_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:workflows_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:workflows_lambda"
     lambda_function_name       = "workflows_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:workflows_lambda/invocations"
@@ -333,6 +354,7 @@ override_module {
   target = module.intents_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:intents_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:intents_lambda"
     lambda_function_name       = "intents_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:intents_lambda/invocations"
@@ -343,6 +365,7 @@ override_module {
   target = module.intent_pin_lookup_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:intent_pin_lookup_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:intent_pin_lookup_lambda"
     lambda_function_name       = "intent_pin_lookup_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:intent_pin_lookup_lambda/invocations"
@@ -393,15 +416,61 @@ override_module {
   target = module.workflow_sources_lambda
   outputs = {
     lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:workflow_sources_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:workflow_sources_lambda"
     lambda_function_name       = "workflow_sources_lambda"
     lambda_function_version    = "1"
     lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:workflow_sources_lambda/invocations"
     lambda_role_arn            = "arn:aws:iam::123456789012:role/test"
   }
 }
+override_module {
+  target = module.codecommit_lambda
+  outputs = {
+    lambda_function_arn        = "arn:aws:lambda:us-east-1:123456789012:function:codecommit_lambda"
+    lambda_function_arn_static = "arn:aws:lambda:us-east-1:123456789012:function:codecommit_lambda"
+    lambda_function_name       = "codecommit_lambda"
+  }
+}
 run "disabled_package_repair" {
   command = apply
   module { source = "./modules/api/lambda" }
+  assert {
+    condition = (
+      output.projects_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:projects_lambda/invocations" &&
+      output.users_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:users_lambda/invocations" &&
+      output.sprints_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:sprints_lambda/invocations" &&
+      output.requirements_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:requirements_lambda/invocations" &&
+      output.user_stories_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:user_stories_lambda/invocations" &&
+      output.tasks_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:tasks_lambda/invocations" &&
+      output.code_files_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:code_files_lambda/invocations" &&
+      output.reviews_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:reviews_lambda/invocations" &&
+      output.questions_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:questions_lambda/invocations" &&
+      output.sprint_graph_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:sprint_graph_lambda/invocations" &&
+      output.general_info_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:general_info_lambda/invocations" &&
+      output.github_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:github_lambda/invocations" &&
+      output.gitlab_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:gitlab_lambda/invocations" &&
+      output.bitbucket_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:bitbucket_lambda/invocations" &&
+      output.codecommit_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:codecommit_lambda/invocations" &&
+      output.source_control_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:source_control_lambda/invocations" &&
+      output.trackers_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:trackers_lambda/invocations" &&
+      output.timeline_events_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:timeline_events_lambda/invocations" &&
+      output.building_blocks_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:building_blocks_lambda/invocations" &&
+      output.workflows_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:workflows_lambda/invocations" &&
+      output.cognito_users_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:cognito_users_lambda/invocations" &&
+      output.discussions_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:discussions_lambda/invocations" &&
+      output.intents_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:intents_lambda/invocations" &&
+      output.workflow_sources_lambda_invoke_arn == "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:workflow_sources_lambda/invocations"
+    )
+    error_message = "API integration identities must preserve every function target and the API Gateway invocation URI format."
+  }
+  assert {
+    condition = jsondecode(aws_iam_role_policy.workflows_intent_lookup.policy).Statement == [{
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = "arn:aws:lambda:us-east-1:123456789012:function:intent_pin_lookup_lambda"
+    }]
+    error_message = "Static identity must preserve the workflows grant to only the intent lookup function."
+  }
   assert {
     condition     = aws_cloudwatch_event_rule.native_package_repair.state == "DISABLED" && !aws_lambda_event_source_mapping.native_package_jobs.enabled && length(aws_pipes_pipe.native_package_jobs) == 0 && length(aws_cloudwatch_metric_alarm.native_package_repair_stalled) == 0
     error_message = "Disabled imports must not schedule repair, dispatch, consume, or alarm on missing successful scans."

@@ -3340,9 +3340,10 @@ resource "aws_iam_role_policy" "workflows_intent_lookup" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = ["lambda:InvokeFunction"]
-      Resource = module.intent_pin_lookup_lambda.lambda_function_arn
+      Effect = "Allow"
+      Action = ["lambda:InvokeFunction"]
+      # The grant targets function identity; code changes must not defer workflows metadata reads.
+      Resource = module.intent_pin_lookup_lambda.lambda_function_arn_static
     }]
   })
 }

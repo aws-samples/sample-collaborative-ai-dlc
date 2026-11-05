@@ -3297,11 +3297,12 @@ configuration and current routing, then permits a fresh Terraform plan containin
 only an API deployment replacement and the existing stage pointer update. It
 rejects any other managed resource change, preserves a single attempt and its
 receipts, and passes **16 inert-port guard/logging scenarios**. Its `--check-only`
-path performs no credentials, cloud reads or Terraform operation. **This
-corrective action has not been executed or authorized by the verification
-request.** A separately authorized refresh and independent confirmation of the
-new 407-method snapshot remain necessary for exact route-set acceptance; the
-original deployment handoff and saved plan must not be replayed.
+path performs no credentials, cloud reads or Terraform operation. At the end of
+this verification stage, the corrective action had not been executed or
+authorized by that request. The subsequent attempt is recorded below. A refresh
+and independent confirmation of the new 407-method snapshot remain necessary
+for exact route-set acceptance; the original deployment handoff and saved plan
+must not be replayed.
 
 All **628 current frontend artifacts** match the candidate, actual S3 objects
 and responding CloudFront bytes, with **539 source/configuration inputs** linked
@@ -3315,6 +3316,73 @@ Verification made no cloud changes or public command, Lambda/runtime/model,
 human-gate, EFS or browser invocation. Existing development executions remain
 disposable and were not inventoried. Live product behavior remains unexercised;
 NE-08 is unstarted, NE-09 unchanged and Kiro deferred to NE-18.
+
+### API snapshot refresh correction — 2026-11-05
+
+The operator attempted the reviewed API refresh at **11:12:25Z**. Terraform
+planning succeeded, but the handoff stopped at **11:17:05Z** with
+`plan_exceeds_two_API_resources`, before any apply. The saved plan contains
+**63 changed managed resources**: the intended deployment replacement and stage
+update, plus **15 Lambda updates, one alias update and 45 local package
+bookkeeping replacements**. Its counts are **46 add / 17 change / 46 destroy**;
+two deferred data reads bring the changed/read entry count to 65. The failed
+plan, log and start/finish receipts remain unchanged and must not be applied or
+retried through their original guard.
+
+The API integration URIs depended on complete Lambda resources, which pulled
+package preparation into the target graph. The upstream package helper hashes
+the whole source directory, including generated `.build` files, before building
+its archive. Main's deployment changed those generated files. Replacing only
+their bytes in memory with the pre-deployment bundles reproduces all **15** main
+package filenames; current files reproduce all **14** known new filenames in
+the failed plan. Current compiled bundles still match the already verified
+main-deployment archives. The fifteenth package read, for workflows, was deferred
+through its module-wide dependency on the lookup grant; the managed orchestrator
+update also made its published version and alias target unknown. These are
+package-input and dependency effects, not evidence of a new qualified payload.
+All root variable values match the main deployment plan. The external helper's
+changed working-directory metadata is not part of its content hash.
+
+The bounded Terraform correction reuses the Lambda module's static function ARN
+for **24 shared API URI outputs**, the API-owned agents integrations, and the
+workflows lookup grant. Function targets, URI values and that narrow permission
+remain identical. Lambda invocation permissions retain their function-resource
+dependencies. The actual Terraform graph, generated with a temporary local
+backend and outbound IP traffic denied, excludes **all 61 unintended managed
+changes** from the two API targets after the repair. Other dependencies remain;
+any unreviewed change still causes the operator guard to stop. Generated-package
+hashing itself is unchanged, and no package/runtime/frontend rebuild is part of
+this correction.
+
+The stage's access logging is unchanged. Its real provider unknown mask is
+`access_log_settings = [{}]`, with no unknown leaf; only `deployment_id` is
+unknown. The new guard compares exact known settings and recursively checks
+unknown leaves. It rejects unknown logging fields, changed settings, additional
+resources, deferred apply-time reads, output changes and unreviewed refresh
+observations. A fresh, independently authenticated `solution-read` check still
+finds `dev` on **`meoh0y`**, with **407 correct current methods** and **410 published
+methods**, including the same three retired methods. Full current method,
+authorizer and published integration/configuration hashes are pinned.
+
+Local-backend initialization/validation, the affected **two mocked Terraform
+runs**, and **25 handoff tests** pass. The handoff tests include the real failed
+plan shape, exact provider masks, positive API-only plan fixtures, source/config
+and saved-plan drift, authorization/integration changes, nonzero commands,
+delayed output exceeding 2 MiB, `--check-only` and repeat refusal. These are
+local/mock results: **no real corrected Terraform plan or apply has run**.
+
+Fresh evidence and the replacement handoff are under
+`.native-evidence/main-integration-2026-11-05-api-refresh-correction/`. Its
+`handoff/refresh-api-stage.py` pins the final reviewed feature HEAD and inputs,
+checks locally before credentials, uses profile `solution`, and allows only a
+new API deployment plus the existing stage pointer update (**1 add / 1 change /
+1 destroy**). It preserves one attempt's plan/log/start/finish receipts, repeats
+full route/configuration checks before apply, verifies the resulting exact
+published snapshot, and still requires independent confirmation afterward.
+The failed attempt and all prior evidence remain sealed. Main integration's
+exact deployed API acceptance is pending this operator action and confirmation;
+NE-08 remains unstarted, Kiro stays deferred to NE-18, and prior image, package,
+frontend and live-boundary conclusions are unchanged.
 
 ## Integration and simplification checklist
 

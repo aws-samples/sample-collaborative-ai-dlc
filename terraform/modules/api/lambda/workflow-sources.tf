@@ -183,7 +183,7 @@ output "workflow_sources_lambda_name" {
 
 output "workflow_sources_lambda_invoke_arn" {
   description = "API Gateway invoke ARN of the dedicated workflow-source API Lambda"
-  value       = module.workflow_sources_lambda.lambda_function_invoke_arn
+  value       = "arn:${local.partition}:apigateway:${data.aws_region.current.region}:lambda:path/2015-03-31/functions/${module.workflow_sources_lambda.lambda_function_arn_static}/invocations"
 }
 
 output "workflow_sources_lambda_arn" {

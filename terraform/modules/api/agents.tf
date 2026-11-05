@@ -13,7 +13,9 @@
 #     (SSM parameters consumed by the v2 AgentCore runtime and intents lambda)
 
 locals {
-  agents_shared_dir = "${path.module}/../../../lambda/shared"
+  # API identity must not pull this function's generated package into a snapshot refresh.
+  agents_lambda_invoke_arn = "arn:${data.aws_partition.current.partition}:apigateway:${data.aws_region.current.region}:lambda:path/2015-03-31/functions/${module.agents_lambda.lambda_function_arn_static}/invocations"
+  agents_shared_dir        = "${path.module}/../../../lambda/shared"
   agents_shared_sources_hash = sha256(join("", [
     for f in sort(fileset(local.agents_shared_dir, "**/*.{js,mjs,cjs,json}")) :
     filesha256("${local.agents_shared_dir}/${f}")
@@ -121,7 +123,7 @@ resource "aws_api_gateway_integration" "project_agents_get" {
   http_method             = aws_api_gateway_method.project_agents_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 # /projects/{projectId}/agent-credentials
@@ -145,7 +147,7 @@ resource "aws_api_gateway_integration" "project_agent_credentials_get" {
   http_method             = aws_api_gateway_method.project_agent_credentials_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 resource "aws_api_gateway_method" "project_agent_credentials_put" {
@@ -162,7 +164,7 @@ resource "aws_api_gateway_integration" "project_agent_credentials_put" {
   http_method             = aws_api_gateway_method.project_agent_credentials_put.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 module "cors_project_agent_credentials" {
@@ -192,7 +194,7 @@ resource "aws_api_gateway_integration" "project_agent_capabilities_get" {
   http_method             = aws_api_gateway_method.project_agent_capabilities_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 module "cors_project_agent_capabilities" {
@@ -222,7 +224,7 @@ resource "aws_api_gateway_integration" "project_agents_tasks_get" {
   http_method             = aws_api_gateway_method.project_agents_tasks_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 # /agents resource
@@ -253,7 +255,7 @@ resource "aws_api_gateway_integration" "agent_task_get" {
   http_method             = aws_api_gateway_method.agent_task_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 # /agents/{taskId}/questions
@@ -277,7 +279,7 @@ resource "aws_api_gateway_integration" "agent_questions_get" {
   http_method             = aws_api_gateway_method.agent_questions_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 # /agents/capabilities
@@ -301,7 +303,7 @@ resource "aws_api_gateway_integration" "agent_capabilities_get" {
   http_method             = aws_api_gateway_method.agent_capabilities_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 module "cors_agent_capabilities" {
@@ -331,7 +333,7 @@ resource "aws_api_gateway_integration" "agent_verify_mcp_post" {
   http_method             = aws_api_gateway_method.agent_verify_mcp_post.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 module "cors_agent_verify_mcp" {
@@ -362,7 +364,7 @@ resource "aws_api_gateway_integration" "agent_authentication_setup_post" {
   http_method             = aws_api_gateway_method.agent_authentication_setup_post.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 module "cors_agent_authentication_setup" {
@@ -392,7 +394,7 @@ resource "aws_api_gateway_integration" "agent_settings_get" {
   http_method             = aws_api_gateway_method.agent_settings_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 resource "aws_api_gateway_method" "agent_settings_put" {
@@ -409,7 +411,7 @@ resource "aws_api_gateway_integration" "agent_settings_put" {
   http_method             = aws_api_gateway_method.agent_settings_put.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 module "cors_agent_settings" {
@@ -445,7 +447,7 @@ resource "aws_api_gateway_integration" "user_agent_credentials_get" {
   http_method             = aws_api_gateway_method.user_agent_credentials_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 resource "aws_api_gateway_method" "user_agent_credentials_put" {
@@ -462,7 +464,7 @@ resource "aws_api_gateway_integration" "user_agent_credentials_put" {
   http_method             = aws_api_gateway_method.user_agent_credentials_put.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
-  uri                     = module.agents_lambda.lambda_function_invoke_arn
+  uri                     = local.agents_lambda_invoke_arn
 }
 
 module "cors_user_agent_credentials" {
