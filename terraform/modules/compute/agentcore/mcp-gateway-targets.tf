@@ -180,3 +180,56 @@ resource "aws_bedrockagentcore_gateway_target" "custom" {
     aws_iam_role_policy.mcp_gateway_custom_targets,
   ]
 }
+
+# ---------------------------------------------------------------------------
+# runtime_mcp_credentials = gateway_only: the runtime role (shared with managed
+# environment runtimes) loses its MCP secret read above, and an explicit Deny
+# keeps every custom MCP credential out of reach whatever is granted later:
+# the space and platform MCP secrets, AgentCore Identity tokens and API keys,
+# and the configured providers' secrets.
+# ---------------------------------------------------------------------------
+
+resource "terraform_data" "runtime_mcp_credentials_preconditions" {
+  count = var.runtime_mcp_credentials == "gateway_only" ? 1 : 0
+
+  lifecycle {
+    precondition {
+      condition     = local.mcp_gateway_enabled && local.engine_data_enabled
+      error_message = "runtime_mcp_credentials = \"gateway_only\" requires enable_mcp_gateway and enable_engine_data."
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "agentcore_deny_custom_mcp_credentials" {
+  count = var.runtime_mcp_credentials == "gateway_only" ? 1 : 0
+
+  name = "deny-custom-mcp-credentials"
+  role = aws_iam_role.agentcore.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = concat([
+      {
+        Sid    = "DenyMcpSecrets"
+        Effect = "Deny"
+        Action = ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath"]
+        Resource = [
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/mcp-secrets/*",
+          "arn:${local.partition}:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${var.project_name}/${var.environment}/projects/*/mcp-secrets/*",
+        ]
+      },
+      {
+        Sid      = "DenyIdentityCredentials"
+        Effect   = "Deny"
+        Action   = ["bedrock-agentcore:GetResourceOauth2Token", "bedrock-agentcore:GetResourceApiKey"]
+        Resource = "*"
+      },
+      ], length(local.mcp_gateway_custom_targets) > 0 ? [{
+        Sid      = "DenyCustomTargetProviderSecrets"
+        Effect   = "Deny"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = sort(distinct([for t in values(local.mcp_gateway_custom_targets) : t.auth.secret_arn]))
+    }] : [])
+  })
+
+  depends_on = [terraform_data.runtime_mcp_credentials_preconditions]
+}

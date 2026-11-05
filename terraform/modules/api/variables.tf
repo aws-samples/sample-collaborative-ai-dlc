@@ -230,6 +230,17 @@ variable "enable_engine_data" {
   default     = false
 }
 
+variable "runtime_mcp_credentials" {
+  description = "Custom MCP credential profile: \"allow\" (default) or \"gateway_only\", in which the agents Lambda refuses direct custom MCP servers, their secrets and runtime MCP verification"
+  type        = string
+  default     = "allow"
+
+  validation {
+    condition     = contains(["allow", "gateway_only"], var.runtime_mcp_credentials)
+    error_message = "runtime_mcp_credentials must be \"allow\" or \"gateway_only\"."
+  }
+}
+
 
 
 

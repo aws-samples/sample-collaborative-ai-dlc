@@ -1,7 +1,8 @@
 # Customer MCP servers behind the AgentCore Gateway: one remote MCP target per
 # entry, credentials from AgentCore Identity on the Gateway role only, the
 # interceptor's caller envelope as the only forwarded header, and the allow
-# rules (never endpoints or credentials) handed to the interceptor. Mock
+# rules (never endpoints or credentials) handed to the interceptor. Plus the
+# runtime_mcp_credentials = gateway_only profile's runtime wiring. Mock
 # providers only.
 mock_provider "aws" {
   mock_data "aws_partition" { defaults = { partition = "aws", dns_suffix = "amazonaws.com" } }
@@ -107,6 +108,11 @@ override_module {
   outputs = { lambda_function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:test-mcp-interceptor-test", lambda_function_name = "test-mcp-interceptor-test" }
 }
 
+
+override_module {
+  target  = module.engine_data_lambda
+  outputs = { lambda_function_arn = "arn:aws:lambda:eu-central-1:123456789012:function:test-engine-data-test", lambda_function_name = "test-engine-data-test" }
+}
 
 run "customer_targets_behind_the_gateway" {
   command = apply
@@ -438,4 +444,87 @@ run "rejects_qualified_tool_name" {
     }
   }
   expect_failures = [var.mcp_gateway_custom_targets]
+}
+
+run "gateway_only_keeps_custom_mcp_credentials_out_of_the_runtime" {
+  command = apply
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    enable_engine_data      = true
+    runtime_mcp_credentials = "gateway_only"
+  }
+
+  assert {
+    condition     = output.runtime_environment_variables["RUNTIME_MCP_CREDENTIALS"] == "gateway_only"
+    error_message = "The runtime (and managed environments, which share its environment) must know the strict profile."
+  }
+  assert {
+    condition = !anytrue([
+      for s in jsondecode(aws_iam_role_policy.agentcore.policy).Statement :
+      s.Effect == "Allow" && anytrue([for r in flatten([s.Resource]) : strcontains(r, "mcp-secrets")])
+    ])
+    error_message = "The runtime role must not read MCP secrets in the strict profile."
+  }
+  assert {
+    condition = (
+      aws_iam_role_policy.agentcore_deny_custom_mcp_credentials[0].role == aws_iam_role.agentcore.id &&
+      alltrue([for s in jsondecode(aws_iam_role_policy.agentcore_deny_custom_mcp_credentials[0].policy).Statement : s.Effect == "Deny"]) &&
+      toset(flatten([for s in jsondecode(aws_iam_role_policy.agentcore_deny_custom_mcp_credentials[0].policy).Statement : s.Action])) == toset([
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:GetParametersByPath",
+        "bedrock-agentcore:GetResourceOauth2Token",
+        "bedrock-agentcore:GetResourceApiKey",
+        "secretsmanager:GetSecretValue",
+      ]) &&
+      toset(flatten([for s in jsondecode(aws_iam_role_policy.agentcore_deny_custom_mcp_credentials[0].policy).Statement : s.Resource if s.Sid == "DenyCustomTargetProviderSecrets"])) == toset([
+        "arn:aws:secretsmanager:eu-central-1:123456789012:secret:bedrock-agentcore-identity!default/oauth2/confluence-AbCdEf",
+        "arn:aws:secretsmanager:eu-central-1:123456789012:secret:bedrock-agentcore-identity!default/apikey/jira-GhIjKl",
+      ])
+    )
+    error_message = "An explicit Deny keeps MCP secrets, Identity credentials and the providers' secrets away from the runtime role."
+  }
+}
+
+run "allow_keeps_todays_runtime_mcp_secret_access" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+
+  assert {
+    condition = (
+      anytrue([
+        for s in jsondecode(aws_iam_role_policy.agentcore.policy).Statement :
+        s.Effect == "Allow" && anytrue([for r in flatten([s.Resource]) : strcontains(r, "/mcp-secrets/*")])
+      ]) &&
+      length(aws_iam_role_policy.agentcore_deny_custom_mcp_credentials) == 0 &&
+      !contains(keys(output.runtime_environment_variables), "RUNTIME_MCP_CREDENTIALS")
+    )
+    error_message = "The default profile keeps the runtime's MCP secret read and sets no strict environment."
+  }
+}
+
+run "gateway_only_requires_engine_data" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    runtime_mcp_credentials = "gateway_only"
+  }
+  expect_failures = [terraform_data.runtime_mcp_credentials_preconditions]
+}
+
+run "rejects_an_unknown_runtime_mcp_profile" {
+  command = plan
+  module {
+    source = "./modules/compute/agentcore"
+  }
+  variables {
+    runtime_mcp_credentials = "deny"
+  }
+  expect_failures = [var.runtime_mcp_credentials]
 }
