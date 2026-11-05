@@ -6,6 +6,7 @@ import { createProcessStore } from '../shared/v2-process-store.js';
 import { kmsPublicKeyResolver, verifyGatewayGrant } from '../shared/gateway-grant.js';
 import { gatewayGrantRetirementCheckFromEnv } from '../shared/gateway-grant-retirement.js';
 import { createGatewayAuthorizer } from '../shared/mcp/gateway-authorization.js';
+import { customTargetsFromEnv } from '../shared/mcp/gateway-custom-targets.js';
 import { createGatewayInterceptor } from './interceptor.js';
 
 const logger = new Logger({ persistentKeys: { component: 'mcp-interceptor' } });
@@ -18,6 +19,11 @@ const publicKeyFor = kmsPublicKeyResolver({
 
 const isRetired = gatewayGrantRetirementCheckFromEnv({ ddb });
 
+// Parsed on first use and per request until it parses, so a malformed registry
+// denies requests instead of failing the Lambda's initialization.
+let customTargets;
+const loadCustomTargets = () => (customTargets ??= customTargetsFromEnv(process.env));
+
 export const handler = createGatewayInterceptor({
   authorizer: createGatewayAuthorizer({
     verifyGrant: (token) => verifyGatewayGrant(token, { publicKeyFor, isRetired }),
@@ -25,6 +31,7 @@ export const handler = createGatewayInterceptor({
     openGraph,
     closeGraphSource,
     processTable: process.env.V2_PROCESS_TABLE,
+    customTargets: loadCustomTargets,
   }),
   audit: (record) =>
     record.decision === 'deny'
