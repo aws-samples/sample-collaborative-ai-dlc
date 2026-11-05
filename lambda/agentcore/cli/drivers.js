@@ -23,6 +23,7 @@ export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['agent.max-turns@v1']
 
 // The MCP server name we register under in mcp-config (see stage-materializer).
 import { BEDROCK_BACKEND } from './backend-adapters.js';
+import { gatewayOnlyMcp } from '../../shared/runtime-mcp-policy.js';
 
 export const MCP_SERVER_NAME = 'aidlc';
 // The runtime-owned entry relaying the customer MCP targets behind the Gateway.
@@ -66,11 +67,15 @@ const claudeDriver = {
     allowedTools = [],
     sessionId = null,
     maxTurns = null,
+    exclusiveMcp = gatewayOnlyMcp(),
   }) {
     const args = ['-p'];
     // MCP config is optional: a plain one-shot prompt (e.g. derive-time
     // enrichment) runs without any tool surface.
     if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath);
+    // gateway_only (cli/exclusive-mcp.js): no project, user or plugin server
+    // loads beside `--mcp-config` — none at all without it.
+    if (exclusiveMcp) args.push('--strict-mcp-config');
     args.push('--permission-mode', 'bypassPermissions');
     // Force the conversation id up front so the orchestrator persists it without
     // scraping it back. `--session-id` is NEW-session-only — resume uses --resume.
@@ -86,16 +91,16 @@ const claudeDriver = {
   // servers (--mcp-config) so the parked tool surface is live again. Never reuse
   // --session-id here (it errors "already in use") — only --resume <uuid>.
   // Answer piped on STDIN too, for the same ARG_MAX reason as the fresh run.
-  buildResumeInvocation({ sessionId, answerMessage, mcpConfigPath, model }) {
-    const args = [
-      '--resume',
-      sessionId,
-      '-p',
-      '--mcp-config',
-      mcpConfigPath,
-      '--permission-mode',
-      'bypassPermissions',
-    ];
+  buildResumeInvocation({
+    sessionId,
+    answerMessage,
+    mcpConfigPath,
+    model,
+    exclusiveMcp = gatewayOnlyMcp(),
+  }) {
+    const args = ['--resume', sessionId, '-p', '--mcp-config', mcpConfigPath];
+    if (exclusiveMcp) args.push('--strict-mcp-config');
+    args.push('--permission-mode', 'bypassPermissions');
     if (model) args.push('--model', model);
     args.push('--output-format', 'stream-json', '--verbose');
     return { command: 'claude', args, env: {}, prompt: answerMessage, promptViaStdin: true };

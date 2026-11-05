@@ -25,6 +25,10 @@
 //   7. a conflict grant (resolve-conflict, one unit lane) may only read META
 //      and append its lane's events and spend metric, each naming exactly the
 //      grant's unit and section and no stage.
+// Under runtime_mcp_credentials = gateway_only, every response that carries the
+// META row (getExecution, getExecutionRecords' `meta`, and the META that
+// createExecution and updateExecution return) omits the stored direct MCP
+// configuration; the record itself is untouched.
 // There is deliberately no execution/stage status gate: a grant may keep
 // acting on its own execution, never outside it. The real store method then
 // runs unchanged (its CAS and transaction-conflict retries stay server-side),
@@ -35,6 +39,7 @@ import {
   ENGINE_DATA_STORE_METHODS,
 } from '../shared/engine-data-ops.js';
 import { STAGE_ATTEMPT_METHODS } from '../shared/stage-attempt.js';
+import { gatewayOnlyMcp, withoutDirectMcpConfig } from '../shared/runtime-mcp-policy.js';
 import { RESERVED_ATTRIBUTES, STORE_OPS } from './store-schemas.js';
 import {
   ENGINE_GRANT_MODES,
@@ -143,12 +148,29 @@ const parseArgs = (spec, args) => {
   return { parsed, stripped };
 };
 
+// The allowlisted methods whose result is, or contains, the META row.
+const META_RESULTS = Object.freeze({
+  getExecution: withoutDirectMcpConfig,
+  createExecution: withoutDirectMcpConfig,
+  updateExecution: withoutDirectMcpConfig,
+  getExecutionRecords: (records) =>
+    records && typeof records === 'object'
+      ? { ...records, meta: withoutDirectMcpConfig(records.meta) }
+      : records,
+});
+
 export const createStoreGateway = ({
   verifyGrant,
   createStore,
   audit = () => {},
   maxResponseBytes = MAX_RESPONSE_BYTES,
+  env = process.env,
 }) => {
+  // Read once: an invalid profile fails the cold start, not a write's response.
+  const gatewayOnly = gatewayOnlyMcp(env);
+  const project = (method, result) =>
+    gatewayOnly && Object.hasOwn(META_RESULTS, method) ? META_RESULTS[method](result) : result;
+
   const authorize = async (event, record) => {
     const grant = await verifyGrantOrDeny(verifyGrant, event?.grant);
     Object.assign(record, grantAudit(grant));
@@ -278,7 +300,9 @@ export const createStoreGateway = ({
     }
 
     try {
-      const result = await store[authorized.method](...authorized.args);
+      // The size is measured on what is returned: the gateway_only projection
+      // of the META row, not the stored row.
+      const result = project(authorized.method, await store[authorized.method](...authorized.args));
       // Whole-partition reads (listEvents, getExecutionRecords) have no page
       // size; past the Invoke limit Lambda would answer with an opaque
       // FunctionError, so the overflow is named here instead.

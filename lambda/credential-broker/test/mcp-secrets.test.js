@@ -468,3 +468,65 @@ describe('MCP broker request and logging boundary', () => {
     }
   });
 });
+
+describe('runtime_mcp_credentials = gateway_only', () => {
+  const gatewayOnly = (deps) => ({
+    ...deps,
+    env: { ...deps.env, RUNTIME_MCP_CREDENTIALS: 'gateway_only' },
+  });
+
+  it('refuses a stage request for a pinned config before any secret read', async () => {
+    const deps = gatewayOnly(harness());
+    await expect(
+      authorizeMcpSecretRequest(
+        { action: 'resolve-mcp-secrets', gatewayGrant: await token() },
+        deps,
+      ),
+    ).rejects.toMatchObject({ code: 'MCP_SECRETS_GATEWAY_ONLY' });
+    expect(deps.ssmClient.send).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stage request naming servers before reading the execution', async () => {
+    const deps = gatewayOnly(harness());
+    await expect(
+      authorizeMcpSecretRequest(
+        { action: 'resolve-mcp-secrets', gatewayGrant: await token(), mcpServersByTier: config },
+        deps,
+      ),
+    ).rejects.toMatchObject({ code: 'MCP_SECRETS_GATEWAY_ONLY' });
+    expect(deps.ddbClient.send).not.toHaveBeenCalled();
+    expect(deps.ssmClient.send).not.toHaveBeenCalled();
+  });
+
+  it('refuses a verification request, including typed secrets, before any read', async () => {
+    const deps = gatewayOnly(harness());
+    await expect(
+      authorizeMcpSecretRequest({ ...request(), unsavedSecrets: { PK: 'typed' } }, deps),
+    ).rejects.toMatchObject({ code: 'MCP_SECRETS_GATEWAY_ONLY' });
+    expect(deps.ssmClient.send).not.toHaveBeenCalled();
+  });
+
+  it('resolves nothing, and reads nothing, for an execution without servers', async () => {
+    const deps = gatewayOnly(harness({ meta: { mcpServersByTier: { global: {}, project: {} } } }));
+    expect(
+      await authorizeMcpSecretRequest(
+        { action: 'resolve-mcp-secrets', gatewayGrant: await token() },
+        deps,
+      ),
+    ).toEqual({ ok: true, secretEnv: {} });
+    expect(deps.ssmClient.send).not.toHaveBeenCalled();
+  });
+
+  it('returns only the allowlisted code through the handler', async () => {
+    vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+    vi.stubEnv('ENGINE_DATA_ENABLED', 'true');
+    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    const ssm = mockClient(SSMClient);
+    try {
+      expect(await handler(request())).toEqual({ ok: false, code: 'MCP_SECRETS_GATEWAY_ONLY' });
+      expect(ssm.commandCalls(GetParameterCommand)).toHaveLength(0);
+    } finally {
+      ssm.restore();
+    }
+  });
+});

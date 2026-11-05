@@ -53,6 +53,21 @@ const serverCount = (servers) =>
 export const hasDirectMcpServers = (serversByTier) =>
   serverCount(serversByTier?.global) > 0 || serverCount(serversByTier?.project) > 0;
 
+// The execution META fields that carry direct MCP configuration, inline
+// headers and environment values included. An intent started under `allow`
+// keeps them after the deployment moves to gateway_only, so every runtime-facing
+// response that carries META (engine-data) projects them out. The runtime never
+// reads them from META: run-stage receives its tiers from the orchestrator.
+export const DIRECT_MCP_META_FIELDS = Object.freeze(['mcpServersByTier', 'customMcpServers']);
+
+export const withoutDirectMcpConfig = (record) => {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return record;
+  if (!DIRECT_MCP_META_FIELDS.some((field) => Object.hasOwn(record, field))) return record;
+  const projected = { ...record };
+  for (const field of DIRECT_MCP_META_FIELDS) delete projected[field];
+  return projected;
+};
+
 // `config` is one tier's name-keyed map (an editor save).
 export const assertDirectMcpConfigAllowed = (config, env = process.env) => {
   if (gatewayOnlyMcp(env) && serverCount(config) > 0) throw new RuntimeMcpPolicyError();
