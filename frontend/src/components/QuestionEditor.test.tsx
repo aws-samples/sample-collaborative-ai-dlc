@@ -97,4 +97,43 @@ describe('QuestionEditor references', () => {
     fireEvent.click(screen.getByText('Use server sessions'));
     expect(setSelection).toHaveBeenCalledWith(0, [1]);
   });
+
+  it('links identifiers defined in the intent documents, in text and options', () => {
+    const references: QuestionReferences = {
+      artifacts: [
+        {
+          id: 'unit-of-work',
+          title: 'Units of work',
+          content: '| Unit ID | Directory |\n|---|---|\n| U2 | u2-reporting |',
+        },
+      ],
+      derivedItems: [],
+      onOpenArtifact: vi.fn(),
+      onOpenItem: vi.fn(),
+    };
+    render(
+      <QuestionEditor
+        question={{
+          ...question,
+          questions: [
+            {
+              text: 'Should U2 own the export?',
+              type: 'single',
+              options: [{ label: 'Yes', description: 'U2 owns it' }, { label: 'No' }],
+            },
+          ],
+        }}
+        references={references}
+        scope={{ kind: 'intent', id: 'i', projectId: 'p' }}
+        userName="u"
+        onAnswer={vi.fn()}
+      />,
+    );
+
+    const links = screen.getAllByRole('link', { name: 'U2' });
+    expect(links).toHaveLength(2);
+    fireEvent.click(links[1]);
+    expect(references.onOpenArtifact).toHaveBeenCalledWith('unit-of-work', 'ref-unit-of-work--u2');
+    expect(setSelection).not.toHaveBeenCalled();
+  });
 });

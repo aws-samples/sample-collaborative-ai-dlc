@@ -28,7 +28,8 @@ import { focusWorkProduct } from '@/components/intent/workProductsFocus';
 import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/ArtifactEditControls';
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
-import { ArtifactMarkdown } from '@/components/intent/ArtifactMarkdown';
+import { ArtifactMarkdown, type OpenArtifact } from '@/components/intent/ArtifactMarkdown';
+import { scrollToReference } from '@/components/layout/scrollToReference';
 import { AgentOutputTranscript } from '@/components/agent-output/AgentOutputTranscript';
 import { useIntentGraph, type GraphNeighbor } from '@/hooks/useIntentGraph';
 import { nodeTypeBadge, shortNodeType, humanEdgeLabel } from '@/components/graph/nodeStyles';
@@ -585,10 +586,15 @@ function PreviewTab() {
     intentId,
     previewArtifactId,
     previewItemId,
+    previewSeq,
+    previewAnchor,
+    clearPreviewAnchor,
     openArtifactPreview,
     openItemPreview,
   } = useIntent();
   const discussions = useDiscussions();
+  const previewRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   // Shared module-level SWR cache + in-flight dedup → no extra fetch.
   const { derivedItems, getNeighbors } = useIntentGraph(projectId, intentId);
   const artifact = detail?.artifacts.find((a) => a.id === previewArtifactId) ?? null;
@@ -596,6 +602,18 @@ function PreviewTab() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [overlayOpen, setOverlayOpen] = useState(false);
   const editing = artifact != null && editingId === artifact.id;
+  // A link to an identifier's definition opens its document at that row or
+  // heading, in whichever view of the preview is showing. Once per click: the
+  // anchor is cleared afterwards, so edits, refreshes and opening the overlay
+  // don't pull the reader back to it.
+  useEffect(() => {
+    if (!previewAnchor) return;
+    scrollToReference(
+      () => overlayRef.current ?? previewRef.current,
+      previewAnchor,
+      clearPreviewAnchor,
+    );
+  }, [previewAnchor, previewSeq, clearPreviewAnchor]);
 
   if (item) {
     return (
@@ -625,18 +643,20 @@ function PreviewTab() {
   return (
     <>
       <ScrollArea className="flex-1">
-        <ArtifactPreviewContent
-          artifact={artifact}
-          artifacts={detail?.artifacts ?? []}
-          derivedItems={derivedItems}
-          onOpenArtifact={openArtifactPreview}
-          onOpenItem={openItemPreview}
-          editing={editing}
-          onDoneEditing={() => setEditingId(null)}
-          onStartEdit={() => setEditingId(artifact.id)}
-          onOpenOverlay={() => setOverlayOpen(true)}
-          discussions={discussions}
-        />
+        <div ref={previewRef}>
+          <ArtifactPreviewContent
+            artifact={artifact}
+            artifacts={detail?.artifacts ?? []}
+            derivedItems={derivedItems}
+            onOpenArtifact={openArtifactPreview}
+            onOpenItem={openItemPreview}
+            editing={editing}
+            onDoneEditing={() => setEditingId(null)}
+            onStartEdit={() => setEditingId(artifact.id)}
+            onOpenOverlay={() => setOverlayOpen(true)}
+            discussions={discussions}
+          />
+        </div>
       </ScrollArea>
       <Dialog open={overlayOpen} onOpenChange={setOverlayOpen}>
         <DialogContent className="grid h-[92vh] w-[min(96vw,1200px)] max-w-none grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0">
@@ -649,19 +669,21 @@ function PreviewTab() {
             </DialogDescription>
           </DialogHeader>
           <ScrollArea className="min-h-0">
-            <ArtifactPreviewContent
-              artifact={artifact}
-              artifacts={detail?.artifacts ?? []}
-              derivedItems={derivedItems}
-              onOpenArtifact={openArtifactPreview}
-              onOpenItem={openItemPreview}
-              editing={editing}
-              onDoneEditing={() => setEditingId(null)}
-              onStartEdit={() => setEditingId(artifact.id)}
-              discussions={discussions}
-              className="px-6 py-5"
-              contentClassName="prose-base"
-            />
+            <div ref={overlayRef}>
+              <ArtifactPreviewContent
+                artifact={artifact}
+                artifacts={detail?.artifacts ?? []}
+                derivedItems={derivedItems}
+                onOpenArtifact={openArtifactPreview}
+                onOpenItem={openItemPreview}
+                editing={editing}
+                onDoneEditing={() => setEditingId(null)}
+                onStartEdit={() => setEditingId(artifact.id)}
+                discussions={discussions}
+                className="px-6 py-5"
+                contentClassName="prose-base"
+              />
+            </div>
           </ScrollArea>
         </DialogContent>
       </Dialog>
@@ -686,7 +708,7 @@ function ArtifactPreviewContent({
   artifact: IntentArtifact;
   artifacts: IntentArtifact[];
   derivedItems: ReturnType<typeof useIntentGraph>['derivedItems'];
-  onOpenArtifact: (artifactId: string) => void;
+  onOpenArtifact: OpenArtifact;
   onOpenItem: (itemId: string) => void;
   editing: boolean;
   onDoneEditing: () => void;
@@ -750,6 +772,7 @@ function ArtifactPreviewContent({
           <div className={cn('prose prose-sm dark:prose-invert max-w-none', contentClassName)}>
             <ArtifactMarkdown
               content={artifact.content}
+              artifactId={artifact.id}
               artifacts={artifacts}
               derivedItems={derivedItems}
               onOpenArtifact={onOpenArtifact}

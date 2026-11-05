@@ -155,3 +155,107 @@ describe('PreviewReferenceText', () => {
     );
   });
 });
+
+describe('ArtifactMarkdown — identifiers defined in documents', () => {
+  const units = {
+    id: 'unit-of-work',
+    title: 'Units of work',
+    content: '| Unit ID | Directory |\n|---|---|\n| U1 | u1-auth |\n| U26 | u26-reporting |',
+  };
+  const stories = {
+    id: 'stories',
+    title: 'User stories',
+    content: '## US6.11 Export a monthly report\n\nDepends on U1.',
+  };
+
+  it('links an identifier to the row that defines it, keeping its text', () => {
+    const onOpenArtifact = vi.fn();
+    render(
+      <ArtifactMarkdown
+        content="U26 depends on U8, and US6.11 goes to U18."
+        artifacts={[units, stories]}
+        onOpenArtifact={onOpenArtifact}
+      />,
+    );
+
+    const unit = screen.getByRole('link', { name: 'U26' });
+    expect(unit).toHaveAttribute('href', '#artifact-unit-of-work/ref-unit-of-work--u26');
+    expect(unit).toHaveAttribute('title', 'Units of work');
+    unit.click();
+    expect(onOpenArtifact).toHaveBeenCalledWith('unit-of-work', 'ref-unit-of-work--u26');
+
+    expect(screen.getByRole('link', { name: 'US6.11' })).toHaveAttribute(
+      'href',
+      '#artifact-stories/ref-stories--us6-11',
+    );
+    // Neither U8 nor U18 is defined anywhere.
+    expect(screen.queryByRole('link', { name: 'U8' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'U18' })).not.toBeInTheDocument();
+  });
+
+  it('gives definitions their anchor in their own document and does not link them', () => {
+    const { container } = render(
+      <ArtifactMarkdown content={units.content} artifactId="unit-of-work" artifacts={[units]} />,
+    );
+
+    const row = container.querySelector('#ref-unit-of-work--u26');
+    expect(row?.tagName).toBe('TR');
+    expect(row?.textContent).toContain('u26-reporting');
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('anchors a defining heading and still links other identifiers in the document', () => {
+    const { container } = render(
+      <ArtifactMarkdown
+        content={stories.content}
+        artifactId="stories"
+        artifacts={[units, stories]}
+      />,
+    );
+
+    expect(container.querySelector('#ref-stories--us6-11')?.tagName).toBe('H2');
+    expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual(['U1']);
+  });
+
+  it('prefers a derived item over a document definition of the same identifier', () => {
+    render(
+      <ArtifactMarkdown
+        content="See US6.11."
+        artifacts={[stories]}
+        derivedItems={[{ id: 'story-node', slug: 'us6-11', label: 'Export a monthly report' }]}
+        preserveReferenceText
+      />,
+    );
+
+    expect(screen.getByRole('link', { name: 'US6.11' })).toHaveAttribute(
+      'href',
+      '#item-story-node',
+    );
+  });
+
+  it('links a copy of a definition to the document that defines it', () => {
+    const storyMap = {
+      id: 'story-map',
+      title: 'Story map',
+      content: '| Story | Unit |\n|---|---|\n| US6.11 | U26 |\n| US6.12 | U26 |',
+    };
+    const { container } = render(
+      <ArtifactMarkdown
+        content={storyMap.content}
+        artifactId="story-map"
+        artifacts={[units, stories, storyMap]}
+      />,
+    );
+
+    // The stories heading defines US6.11, so the story map's copy links there,
+    // but its row still carries its own anchor.
+    expect(screen.getByRole('link', { name: 'US6.11' })).toHaveAttribute(
+      'href',
+      '#artifact-stories/ref-stories--us6-11',
+    );
+    expect(container.querySelector('#ref-story-map--us6-11')?.tagName).toBe('TR');
+    // The story map is where US6.12 is defined, so it isn't a link to itself.
+    expect(screen.queryByRole('link', { name: 'US6.12' })).not.toBeInTheDocument();
+    expect(container.querySelector('#ref-story-map--us6-12')?.tagName).toBe('TR');
+  });
+});

@@ -15,6 +15,7 @@ import {
   PreviewReferenceText,
   type MarkdownArtifactLink,
   type MarkdownDerivedItemLink,
+  type OpenArtifact,
 } from '@/components/intent/ArtifactMarkdown';
 import type {
   Question,
@@ -30,7 +31,7 @@ import type {
 export interface QuestionReferences {
   artifacts: MarkdownArtifactLink[];
   derivedItems: MarkdownDerivedItemLink[];
-  onOpenArtifact: (artifactId: string) => void;
+  onOpenArtifact: OpenArtifact;
   onOpenItem: (itemId: string) => void;
 }
 
