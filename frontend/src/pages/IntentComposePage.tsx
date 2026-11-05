@@ -24,6 +24,7 @@ import {
   normalizeAidlcSettings,
   type AidlcSettingValue,
 } from '@/lib/aidlcSettings';
+import { TrackerAttachmentImport } from '@/components/intent/TrackerAttachmentImport';
 import { StageGridEditor } from '@/components/intent/StageGridEditor';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -105,6 +106,8 @@ function IntentComposePageContent() {
   const [attachmentRevision, setAttachmentRevision] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [trackerImportBusy, setTrackerImportBusy] = useState(false);
+  useEffect(() => setTrackerImportBusy(false), [intentId]);
   const [removingAttachmentId, setRemovingAttachmentId] = useState<string | null>(null);
   const [agentCapabilities, setAgentCapabilities] = useState<AgentCapabilities | null>(null);
   const [capabilitiesLoading, setCapabilitiesLoading] = useState(true);
@@ -654,7 +657,8 @@ function IntentComposePageContent() {
   ]);
 
   const handleStart = async () => {
-    if (!projectId || !intentId || !draftReady || uploadProgress !== null) return;
+    if (!projectId || !intentId || !draftReady || uploadProgress !== null || trackerImportBusy)
+      return;
     setStarting(true);
     setError(null);
     try {
@@ -785,9 +789,23 @@ function IntentComposePageContent() {
             />
           </div>
 
+          <div>
+            <Label htmlFor="draft-prompt">Prompt</Label>
+            <CollaborativeTextarea
+              id="draft-prompt"
+              yText={draft.promptText}
+              awareness={draft.awareness}
+              value={draft.prompt}
+              rows={10}
+              placeholder="Describe the intent in detail…"
+              className="mt-1.5 rounded-md border bg-background px-3 py-2 text-sm"
+              disabled={!draftReady}
+            />
+          </div>
+
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-3">
-              <Label className="text-sm font-medium">Reference attachments</Label>
+              <Label className="text-sm font-medium">Attachments</Label>
               <input
                 ref={attachmentInput}
                 type="file"
@@ -795,7 +813,7 @@ function IntentComposePageContent() {
                 data-testid="attachment-picker"
                 accept=".txt,.md,.csv,.html,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.svg"
                 multiple
-                disabled={!draftReady || starting || uploadProgress !== null}
+                disabled={!draftReady || starting || uploadProgress !== null || trackerImportBusy}
                 onChange={(event) => handleAttachmentPick(event.target.files)}
               />
               <Button
@@ -803,7 +821,11 @@ function IntentComposePageContent() {
                 variant="outline"
                 size="sm"
                 disabled={
-                  !draftReady || starting || uploadProgress !== null || attachments.length >= 50
+                  !draftReady ||
+                  starting ||
+                  uploadProgress !== null ||
+                  trackerImportBusy ||
+                  attachments.length >= 50
                 }
                 onClick={() => attachmentInput.current?.click()}
               >
@@ -827,6 +849,36 @@ function IntentComposePageContent() {
               </div>
             )}
             {attachmentError && <p className="text-xs text-destructive">{attachmentError}</p>}
+            {intent?.source && projectId && intentId && (
+              <TrackerAttachmentImport
+                key={intentId}
+                projectId={projectId}
+                intentId={intentId}
+                autoImport={Boolean(
+                  (location.state as { importTrackerAttachments?: boolean } | null)
+                    ?.importTrackerAttachments,
+                )}
+                disabled={starting || uploadProgress !== null}
+                onAutoImportStarted={() => {
+                  const state = { ...location.state };
+                  delete state.importTrackerAttachments;
+                  void navigate(`${location.pathname}${location.search}${location.hash}`, {
+                    replace: true,
+                    state,
+                  });
+                }}
+                onBusyChange={setTrackerImportBusy}
+                onImported={() => {
+                  void intentsService
+                    .attachments(projectId, intentId)
+                    .then((result) => {
+                      setAttachments(result.attachments);
+                      setAttachmentRevision(result.attachmentRevision);
+                    })
+                    .catch(() => {});
+                }}
+              />
+            )}
             {attachments.length > 0 && (
               <ul className="divide-y rounded-md border" data-testid="attachment-list">
                 {attachments.map((attachment) => (
@@ -835,7 +887,14 @@ function IntentComposePageContent() {
                     className="flex items-center gap-3 px-3 py-2 text-sm"
                   >
                     <Paperclip className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate">{attachment.filename}</span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {attachment.filename}
+                      {attachment.source && (
+                        <span className="ml-2 text-xs text-muted-foreground">
+                          From source issue
+                        </span>
+                      )}
+                    </span>
                     <span className="text-xs text-muted-foreground">
                       {formatBytes(attachment.size)}
                     </span>
@@ -848,6 +907,7 @@ function IntentComposePageContent() {
                         !draftReady ||
                         starting ||
                         uploadProgress !== null ||
+                        trackerImportBusy ||
                         removingAttachmentId === attachment.attachmentId
                       }
                       onClick={() => removeAttachment(attachment.attachmentId)}
@@ -859,20 +919,6 @@ function IntentComposePageContent() {
                 ))}
               </ul>
             )}
-          </div>
-
-          <div>
-            <Label htmlFor="draft-prompt">Prompt</Label>
-            <CollaborativeTextarea
-              id="draft-prompt"
-              yText={draft.promptText}
-              awareness={draft.awareness}
-              value={draft.prompt}
-              rows={10}
-              placeholder="Describe the intent in detail…"
-              className="mt-1.5 rounded-md border bg-background px-3 py-2 text-sm"
-              disabled={!draftReady}
-            />
           </div>
 
           <div className="space-y-2">
@@ -1136,6 +1182,7 @@ function IntentComposePageContent() {
                 starting ||
                 !draftReady ||
                 uploadProgress !== null ||
+                trackerImportBusy ||
                 !draft.prompt.trim() ||
                 !scope ||
                 !selectedCli ||

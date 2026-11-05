@@ -359,6 +359,46 @@ describe('Authorization', () => {
   });
 });
 
+describe('internal issue attachment import', () => {
+  it('resolves the project binding and delegates without exposing its credentials', async () => {
+    const { projectId, bindingId } = await seedProjectAndBinding();
+    lambdaMock.on(InvokeCommand).resolves(sourceControlResponse({ attachments: [] }));
+    const result = await handler({
+      action: 'issue-attachments',
+      projectId,
+      bindingId,
+      userId: 'user-1',
+      resourceId: '42',
+    });
+    expect(result).toEqual({ attachments: [] });
+    const payload = JSON.parse(
+      Buffer.from(lambdaMock.commandCalls(InvokeCommand).at(-1).args[0].input.Payload).toString(),
+    );
+    expect(payload).toMatchObject({
+      action: 'operate',
+      projectId,
+      provider: 'github',
+      repo: 'acme/widgets',
+      operation: 'issue-attachments',
+      args: { number: '42' },
+    });
+  });
+
+  it('refuses an internal request for a project the user cannot access', async () => {
+    const { projectId, bindingId } = await seedProjectAndBinding();
+    const before = lambdaMock.commandCalls(InvokeCommand).length;
+    const result = await handler({
+      action: 'issue-attachments',
+      projectId,
+      bindingId,
+      userId: 'other-user',
+      resourceId: '42',
+    });
+    expect(result).toMatchObject({ status: 'failed', reason: expect.stringContaining('Access') });
+    expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(before);
+  });
+});
+
 describe('GET /trackers (unified listing)', () => {
   it('returns the user’s github-issues row from git-connections', async () => {
     const res = await handler(baseEvent());
@@ -1640,6 +1680,48 @@ describe('Jira space delegation', () => {
         ([, init]) => init.headers.Authorization === 'Bearer jira-delegated',
       ),
     ).toBe(true);
+  });
+
+  it('imports attachments through the delegated connection for a member without Jira', async () => {
+    const ids = await seed();
+    ddbMock
+      .on(GetCommand, {
+        TableName: TRACKER_TABLE,
+        Key: { userId: ids.member, providerInstance: 'jira-cloud#cloud' },
+      })
+      .resolves({});
+    fetchMock.mockImplementation(async () =>
+      okResponse({ ...boundIssue, fields: { ...boundIssue.fields, attachment: [] } }),
+    );
+    const result = await handler({
+      action: 'issue-attachments',
+      projectId: ids.projectId,
+      bindingId: ids.bindingId,
+      userId: ids.member,
+      resourceId: 'PROJ-1',
+    });
+    expect(result).toEqual({ attachments: [] });
+    expect(
+      ddbMock.commandCalls(GetCommand).every((call) => call.args[0].input.Key.userId === 'user-1'),
+    ).toBe(true);
+    expect(
+      fetchMock.mock.calls.every(
+        ([, init]) => init.headers.Authorization === 'Bearer jira-delegated',
+      ),
+    ).toBe(true);
+  });
+
+  it('fails attachment import for a binding without delegation before calling Jira', async () => {
+    const ids = await seed({ legacy: true });
+    const result = await handler({
+      action: 'issue-attachments',
+      projectId: ids.projectId,
+      bindingId: ids.bindingId,
+      userId: ids.member,
+      resourceId: 'PROJ-1',
+    });
+    expect(result).toMatchObject({ status: 'failed' });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('denies a non-member before resolving credentials', async () => {

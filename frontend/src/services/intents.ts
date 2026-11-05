@@ -178,7 +178,23 @@ export interface IntentAttachment {
   s3VersionId: string;
   uploadedBy: string;
   uploadedAt: string;
+  source?: IntentSource & {
+    attachmentId: string;
+    attachmentUrl: string;
+    commentId: string | null;
+  };
 }
+
+export interface TrackerAttachmentCandidate {
+  id: string;
+  filename: string;
+  url: string;
+  skipReason?: string;
+}
+
+export type TrackerAttachmentImportResult =
+  | { status: 'imported'; attachment: IntentAttachment }
+  | { status: 'skipped' | 'failed'; reason: string };
 
 export interface IntentAttachmentUpload {
   attachmentId: string;
@@ -1232,6 +1248,15 @@ export const intentsService = {
   attachments: (projectId: string, intentId: string) =>
     api.get<{ attachments: IntentAttachment[]; attachmentRevision: number }>(
       `/projects/${projectId}/intents/${intentId}/attachments`,
+    ),
+  trackerAttachments: (projectId: string, intentId: string) =>
+    api.get<{ attachments?: TrackerAttachmentCandidate[]; reason?: string }>(
+      `/projects/${projectId}/intents/${intentId}/attachments/import`,
+    ),
+  importTrackerAttachment: (projectId: string, intentId: string, attachmentId: string) =>
+    api.post<TrackerAttachmentImportResult>(
+      `/projects/${projectId}/intents/${intentId}/attachments/import`,
+      { attachmentId },
     ),
   attachmentUploadUrls: (
     projectId: string,
