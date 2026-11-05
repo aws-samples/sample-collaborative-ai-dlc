@@ -3219,9 +3219,10 @@ was performed. NE-08 remains unstarted; NE-09 and NE-18 scope is unchanged.
 
 The operator deployed `d66caebd4339a0ace858b09e147c29e3c5140fab` successfully
 between **10:20:27Z and 10:32:53Z**. The original single-attempt log, plan and
-start/finish receipts remain unchanged. Independent read-only verification is
-complete, with **one API snapshot discrepancy still open**; main integration's
-exact deployed configuration acceptance is pending that bounded correction.
+start/finish receipts remain unchanged. Initial independent read-only verification
+found **one API snapshot discrepancy**, leaving exact deployed configuration
+acceptance pending. The correction and its final independent confirmation are
+recorded below.
 The local-stage results above remain the qualification record and were not rerun.
 
 Fresh evidence is under
@@ -3284,7 +3285,7 @@ and authorization inspections, not proof of a new public Start.
 
 All **407 intended REST methods** and their current integrations/authorization,
 the Cognito authorizer, and **five WebSocket routes with three integrations**
-match. However, `dev` still serves deployment snapshot **`meoh0y`**, whose
+match. At that point, `dev` served deployment snapshot **`meoh0y`**, whose
 410-method summary also contains retired **GET/OPTIONS
 `/api/codecommit/connect-info`** and **POST `/api/codecommit/repos`**. The snapshot
 was created before those methods were removed during the same apply. The current
@@ -3299,10 +3300,9 @@ rejects any other managed resource change, preserves a single attempt and its
 receipts, and passes **16 inert-port guard/logging scenarios**. Its `--check-only`
 path performs no credentials, cloud reads or Terraform operation. At the end of
 this verification stage, the corrective action had not been executed or
-authorized by that request. The subsequent attempt is recorded below. A refresh
-and independent confirmation of the new 407-method snapshot remain necessary
-for exact route-set acceptance; the original deployment handoff and saved plan
-must not be replayed.
+authorized by that request. The subsequent attempts and final confirmation of
+the new 407-method snapshot are recorded below. The original deployment handoff
+and saved plan must not be replayed.
 
 All **628 current frontend artifacts** match the candidate, actual S3 objects
 and responding CloudFront bytes, with **539 source/configuration inputs** linked
@@ -3359,17 +3359,17 @@ The stage's access logging is unchanged. Its real provider unknown mask is
 unknown. The new guard compares exact known settings and recursively checks
 unknown leaves. It rejects unknown logging fields, changed settings, additional
 resources, deferred apply-time reads, output changes and unreviewed refresh
-observations. A fresh, independently authenticated `solution-read` check still
-finds `dev` on **`meoh0y`**, with **407 correct current methods** and **410 published
-methods**, including the same three retired methods. Full current method,
+observations. The correction-stage, independently authenticated `solution-read`
+check found `dev` on **`meoh0y`**, with **407 correct current methods** and **410
+published methods**, including the same three retired methods. Full current method,
 authorizer and published integration/configuration hashes are pinned.
 
 Local-backend initialization/validation, the affected **two mocked Terraform
 runs**, and **25 handoff tests** pass. The handoff tests include the real failed
 plan shape, exact provider masks, positive API-only plan fixtures, source/config
 and saved-plan drift, authorization/integration changes, nonzero commands,
-delayed output exceeding 2 MiB, `--check-only` and repeat refusal. These are
-local/mock results: **no real corrected Terraform plan or apply has run**.
+delayed output exceeding 2 MiB, `--check-only` and repeat refusal. At this local
+checkpoint, **the real corrected Terraform plan and apply had not yet run**.
 
 Fresh evidence and the replacement handoff are under
 `.native-evidence/main-integration-2026-11-05-api-refresh-correction/`. Its
@@ -3379,10 +3379,52 @@ new API deployment plus the existing stage pointer update (**1 add / 1 change /
 1 destroy**). It preserves one attempt's plan/log/start/finish receipts, repeats
 full route/configuration checks before apply, verifies the resulting exact
 published snapshot, and still requires independent confirmation afterward.
-The failed attempt and all prior evidence remain sealed. Main integration's
-exact deployed API acceptance is pending this operator action and confirmation;
-NE-08 remains unstarted, Kiro stays deferred to NE-18, and prior image, package,
-frontend and live-boundary conclusions are unchanged.
+The failed attempt and all prior evidence remain sealed. Exact deployed API
+acceptance remained pending until the operator action and independent confirmation
+recorded next. Prior image, package, frontend and live-boundary conclusions are
+unchanged.
+
+### API snapshot refresh verified — 2026-11-05
+
+The operator completed the corrected handoff from
+`f04281802ddcf9304d457c4fbe17803fa7bf2f75` between **12:59:09Z and 13:04:47Z**.
+Both plan and apply exited zero. Independent local decoding of the saved plan
+and comparison with the completed log confirm exactly **1 added / 1 changed /
+1 destroyed**: replacement of the API deployment snapshot and update of the
+existing `dev` stage pointer. No Lambda, alias, package, runtime or frontend
+change was planned. The 12 recorded refresh observations have `no-op` planned
+actions; they are not additional mutations. Stage settings are unchanged.
+
+Fresh verification through the independently confirmed `solution-read` /
+`ReadOnly` role completed at **13:15:58Z**. API `olyuzk7xv3`, stage `dev`, now
+points to **`acqkcx`**, created at **13:04:34Z**, replacing `meoh0y`. The current
+resource inventory, published deployment summary and published OpenAPI export
+each contain **exactly 407 intended methods**. All 407 complete method and
+published-operation hashes match the reviewed pins, including authorization,
+API-key requirements, integrations and shared path configuration. Authorizers,
+export components and stage settings match; there is no canary traffic, and the
+stage was unchanged across the read window.
+
+Retired **GET/OPTIONS `/api/codecommit/connect-info`** and **POST
+`/api/codecommit/repos`** are absent from all three route sets. This closes the
+remaining discrepancy: **main-integration deployed artifact and configuration
+acceptance is complete**. The earlier verified 48 Lambda packages, runtime/IAM
+configuration and 628 frontend artifacts remain accepted evidence and were not
+downloaded or qualified again.
+
+Final evidence is under
+`.native-evidence/main-integration-2026-11-05-api-refresh-confirmed-f0428180/`.
+All **22 checked original receipts, plans, logs and handoff references** remain
+byte-identical. Verification made 18 read-only AWS CLI calls: 16 exited zero;
+two export reads encountered a local `/dev/fd` output restriction before a
+private workspace FIFO completed the export in memory. The failed read receipts
+are retained. No credentials or raw export were saved.
+
+No cloud mutation, public command, Lambda/runtime/model or browser invocation
+was performed by verification. Fresh live behavior remains unexercised. No
+operator action remains for this integration; **NE-08 is next and unstarted**,
+with Kiro still deferred to NE-18. Existing development executions require no
+preservation or cleanup gate.
 
 ## Integration and simplification checklist
 
