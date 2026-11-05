@@ -3215,6 +3215,107 @@ deployment and independent deployed-byte/configuration verification remain
 later stages. No push, deployment, cloud mutation or credentialed model call
 was performed. NE-08 remains unstarted; NE-09 and NE-18 scope is unchanged.
 
+### Main integration deployed verification — 2026-11-05
+
+The operator deployed `d66caebd4339a0ace858b09e147c29e3c5140fab` successfully
+between **10:20:27Z and 10:32:53Z**. The original single-attempt log, plan and
+start/finish receipts remain unchanged. Independent read-only verification is
+complete, with **one API snapshot discrepancy still open**; main integration's
+exact deployed configuration acceptance is pending that bounded correction.
+The local-stage results above remain the qualification record and were not rerun.
+
+Fresh evidence is under
+`.native-evidence/main-integration-2026-11-05-deployed-d66caebd/`, including the
+saved-plan review, downloaded packages, registry identity, configuration/IAM,
+frontend proof, discrepancy diagnosis and a guarded corrective handoff. Reads
+used the independently verified `solution-read` / `ReadOnly` role in account
+`746558295630`, `us-east-1`; its attached policy is AWS `ReadOnlyAccess` v191.
+Credential material, signed download URLs and secret configuration bodies were
+not retained.
+
+The saved plan and completed apply agree on **168 added, 65 changed and 162
+destroyed**. Of **153 replacements**, 150 are local package/build bookkeeping,
+one is the local Docker image, one is registry publication with
+`keep_remotely=true`, and **one is an AWS API Gateway deployment snapshot**.
+Those totals do not mean 162 AWS resources were destroyed. The 49 source-triggered
+Lambda targets resolve to **48 deployed package targets** and the expected absent
+SSO pre-token function under `auth_mode = "local"`; no extra changed package target
+was found.
+
+All **48 current Lambda archives**, plus the **two published versions** referenced
+by active aliases, match the sealed build's **64 archive entries**, including
+packaged dependency content. All **106 native source inputs** match the candidate.
+The five native authority aliases point without weights to **version 25**;
+the managed orchestrator's `live` alias points without weights to **version 116**.
+Rollout status, handlers and relevant function configuration match. This covers
+shared API/authentication, intents/projects/agents, both discussion outputs,
+workflow/source/package workers, managed services and WebSocket connection
+packages as well as all nine native functions.
+
+ECR tag `0176cd52b080ec91` resolves to registry index
+`sha256:fb10982fd44262ad5083d39031c569f03fd00d8d9bee719a62df15fa286225f1`.
+Its Linux ARM64 platform manifest is
+`sha256:9ee035d277ed0a7e16e7e3eccff59af9903fb3c741e4fdba4a91536af2d4de13`,
+and its configuration digest is
+`sha256:24533002af20dcb477db7f373b2265102476f18710ea683e1fed81d71b0a8435`.
+The platform/configuration and all **23 ordered rootfs layer identities** match
+the qualified build. This establishes the same **278 packaged production files**
+and installed CLI/dependency closure, including Node 24.19.0, Zod 4.6.7, MCP SDK
+1.32.2 and AWS SDK 3.1162.0. The local Docker ID above is a different identity
+from the registry index digest. No installed journey or container test was rerun.
+
+The shared runtime and `DEFAULT` endpoint are **READY on version 145**.
+All **33 image pins across 12 consumers** and **715 environment fields across
+48 functions** match the candidate and deployed runtime metadata. Managed
+control/tool `CORE_IMAGE` and `CORE_RUNTIME` fields identify the new artifact;
+Instances/amd64 and optional storage diagnostics remain disabled. No managed
+methodology release was published or promoted by verification.
+
+All **26 inspected inline policies**, **19 role configurations**, **61 Lambda
+invoke-permission statements**, **13 event rules/targets** and **six event-source
+mappings** match the intended deployment. The 11 native controller/package roles
+use the default `/` path and no optional organization boundary. The provisioner
+still restricts dynamic role creation to `/native-runs/native_*` with the required
+native runtime permissions boundary. The plain `disabled-clis` SSM parameter is
+`String`, version 1, with an empty list; native authority has exactly the intended
+`ssm:GetParameter` permission for that parameter. Main's CodeCommit configuration
+references and maintenance/managed-service wiring match. These are configuration
+and authorization inspections, not proof of a new public Start.
+
+All **407 intended REST methods** and their current integrations/authorization,
+the Cognito authorizer, and **five WebSocket routes with three integrations**
+match. However, `dev` still serves deployment snapshot **`meoh0y`**, whose
+410-method summary also contains retired **GET/OPTIONS
+`/api/codecommit/connect-info`** and **POST `/api/codecommit/repos`**. The snapshot
+was created before those methods were removed during the same apply. The current
+control plane correctly has 407 methods, including the new admin configuration
+and repository-list routes. Source inspection shows no handler for the retired
+GET/POST operations; no API or Lambda was invoked to test that observation.
+
+The prepared `api-stage-refresh/refresh-api-stage.py` handoff checks pinned source,
+configuration and current routing, then permits a fresh Terraform plan containing
+only an API deployment replacement and the existing stage pointer update. It
+rejects any other managed resource change, preserves a single attempt and its
+receipts, and passes **16 inert-port guard/logging scenarios**. Its `--check-only`
+path performs no credentials, cloud reads or Terraform operation. **This
+corrective action has not been executed or authorized by the verification
+request.** A separately authorized refresh and independent confirmation of the
+new 407-method snapshot remain necessary for exact route-set acceptance; the
+original deployment handoff and saved plan must not be replayed.
+
+All **628 current frontend artifacts** match the candidate, actual S3 objects
+and responding CloudFront bytes, with **539 source/configuration inputs** linked
+to the pinned build. The complete bucket inventory contains 2,510 objects;
+1,882 retained objects outside the current build are not a cleanup prerequisite.
+The distribution is enabled/Deployed and its invalidation Completed. CDN evidence
+covers the responding edges and recorded times, including the root response at
+FRA56-P16, not every edge or an existing browser cache.
+
+Verification made no cloud changes or public command, Lambda/runtime/model,
+human-gate, EFS or browser invocation. Existing development executions remain
+disposable and were not inventoried. Live product behavior remains unexercised;
+NE-08 is unstarted, NE-09 unchanged and Kiro deferred to NE-18.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
