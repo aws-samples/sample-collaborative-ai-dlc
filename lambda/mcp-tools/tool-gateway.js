@@ -1,39 +1,31 @@
 // AgentCore Gateway Lambda target for the built-in `aidlc` MCP tools.
 //
-// Every call is authorized independently and deny-by-default:
-//   1. the Gateway already authenticated the caller (SigV4, InvokeGateway);
-//   2. the control-plane grant is verified (signature, audience, expiry, kid);
-//   3. the runtime's session context must stay inside the grant, including the
-//      signed release-policy digest;
-//   4. execution, stage leg and intent→project ownership are re-read with
-//      consistent reads, and must still be ACTIVE (per-call revocation);
-//   5. the tool must be in the role's catalog for this stage/policy, and its
-//      arguments must match the tool's zod shape (unknown keys are dropped,
-//      exactly as on the local stdio server);
-//   6. scope is taken only from 2–4, never from tool arguments.
-// The existing graph-writer / process-bridge handlers then run unchanged, and
-// every decision — allow, deny, or handler failure — is audited with its scope.
+// The Gateway's REQUEST interceptor has already authorized the call: it
+// verified the control-plane grant, bound the runtime's session to it, checked
+// the role's tool catalog and re-read the execution, stage leg and intent
+// ownership as ACTIVE. It replaces every caller header with the trusted
+// context this target reads, and only the Gateway role may invoke it.
+// This target therefore:
+//   1. requires that context and validates it strictly (version, exact fields,
+//      types, size, policy digest, expiry) — anything else is denied;
+//   2. re-checks the role's tool catalog from the context (cheap, pure; defence
+//      in depth against a mis-wired target);
+//   3. parses arguments against the tool's zod shape (unknown keys are dropped,
+//      exactly as on the local stdio server) and pins a lane session to its unit;
+//   4. takes scope only from the context, never from tool arguments.
+// The existing graph-writer / process-bridge handlers then run unchanged; the
+// process store's transactional ownership guards stay authoritative for every
+// write. Every decision — allow, deny, or handler failure — is audited.
 import { z } from 'zod';
-import { buildToolHandlers, toolSchemas, toolsForRole } from '../shared/mcp/server.js';
-import { validateStartupContext } from '../shared/mcp/startup-context.js';
+import { buildToolHandlers, toolSchemas } from '../shared/mcp/server.js';
+import { decodeGatewayContext } from '../shared/mcp/gateway-context.js';
 import {
-  GRANT_HEADER,
-  SESSION_HEADER,
-  decodeGatewaySession,
-  scopeFromGrantAndSession,
-} from '../shared/mcp/gateway-session.js';
-
-export const TARGET_TOOL_SEPARATOR = '___';
-
-// What the agent is told. Identifiers stay in the audit record only.
-const DENIAL_TEXT = {
-  scope_not_active: 'Tool call denied: this stage is no longer active. Stop and end your turn.',
-  grant_expired: 'Tool call denied: this session has expired. Stop and end your turn.',
-  invalid_arguments: 'Tool call denied: the arguments do not match the tool schema.',
-  tool_not_allowed_for_role: 'Tool call denied: this tool is not available in this session.',
-  lane_outside_grant: 'Tool call denied: this session is limited to its own unit lane.',
-};
-const DEFAULT_DENIAL_TEXT = 'Tool call denied.';
+  AIDLC_TARGET,
+  gatewayAuditScope,
+  gatewayDenialText,
+  splitQualifiedToolName,
+  toolAllowedForContext,
+} from '../shared/mcp/gateway-authorization.js';
 
 export class ToolAccessDenied extends Error {
   constructor(reason, auditScope = {}) {
@@ -45,44 +37,9 @@ export class ToolAccessDenied extends Error {
 }
 
 export const toolNameFrom = (custom) => {
-  const qualified = custom?.bedrockAgentCoreToolName;
-  if (typeof qualified !== 'string') return null;
-  const index = qualified.indexOf(TARGET_TOOL_SEPARATOR);
-  return index === -1 ? qualified : qualified.slice(index + TARGET_TOOL_SEPARATOR.length);
+  const { target, tool } = splitQualifiedToolName(custom?.bedrockAgentCoreToolName);
+  return target === null || target === AIDLC_TARGET ? tool : null;
 };
-
-// Gateway forwards allow-listed request headers to Lambda targets in the client
-// context (verified live: an object of lowercase names; a JSON string is also
-// accepted). Header names are case-insensitive on the wire, so normalize here.
-export const propagatedHeadersFrom = (custom) => {
-  const raw = custom?.bedrockAgentCorePropagatedHeaders;
-  let headers = raw;
-  if (typeof raw === 'string') {
-    try {
-      headers = JSON.parse(raw);
-    } catch {
-      headers = null;
-    }
-  }
-  if (!headers || typeof headers !== 'object') return {};
-  return Object.fromEntries(
-    Object.entries(headers).map(([name, value]) => [
-      name.toLowerCase(),
-      Array.isArray(value) ? value[0] : value,
-    ]),
-  );
-};
-
-const scopeAudit = ({ grant, scope, role, mode }) => ({
-  grantId: grant?.grantId ?? null,
-  role: role ?? null,
-  mode: mode ?? grant?.mode ?? null,
-  projectId: scope?.projectId ?? grant?.projectId ?? null,
-  intentId: scope?.intentId ?? grant?.intentId ?? null,
-  executionId: scope?.executionId ?? grant?.executionId ?? null,
-  stageInstanceId: scope?.stageInstanceId ?? null,
-  unitSlug: scope?.unitSlug ?? grant?.unitSlug ?? null,
-});
 
 // The process bridge was written for a long-lived MCP child: it rehydrates the
 // stage's recorded authorizations in the background and records graph-read
@@ -111,7 +68,6 @@ const settleBridge = (bridge) => {
 };
 
 export const createToolGateway = ({
-  verifyGrant,
   createStore,
   openGraph,
   closeGraphSource,
@@ -122,57 +78,38 @@ export const createToolGateway = ({
   processTable,
   audit = () => {},
   bridgeOptions = {},
+  now = Date.now,
 }) => {
-  const authorize = async ({ custom, args, graphSource }) => {
+  const authorize = ({ custom, args }) => {
     const tool = toolNameFrom(custom);
     if (!tool) throw new ToolAccessDenied('missing_tool_name');
-    const headers = propagatedHeadersFrom(custom);
-    if (!headers[GRANT_HEADER]) throw new ToolAccessDenied('missing_grant');
-    if (!headers[SESSION_HEADER]) throw new ToolAccessDenied('missing_session');
-
-    let grant;
-    try {
-      grant = await verifyGrant(headers[GRANT_HEADER]);
-    } catch (error) {
-      throw new ToolAccessDenied(
-        error?.code === 'GATEWAY_GRANT_EXPIRED' ? 'grant_expired' : 'grant_invalid',
-      );
-    }
     let context;
     try {
-      context = scopeFromGrantAndSession(grant, decodeGatewaySession(headers[SESSION_HEADER]), {
+      // Gateway forwards allow-listed request headers to Lambda targets in the
+      // client context: an object of lowercase names (a JSON string is also
+      // accepted); names are matched case-insensitively.
+      context = decodeGatewayContext(custom?.bedrockAgentCorePropagatedHeaders, {
         processTable,
+        now,
       });
-    } catch {
-      throw new ToolAccessDenied('session_outside_grant', scopeAudit({ grant }));
+    } catch (error) {
+      throw new ToolAccessDenied(
+        error?.reason === 'context_expired'
+          ? 'grant_expired'
+          : (error?.reason ?? 'context_invalid'),
+      );
     }
     const { scope, role, mode } = context;
-    const auditScope = scopeAudit({ grant, scope, role, mode });
-    const allowed = toolsForRole(role, scope.stageId, scope.policy, {
-      checkpointOwner: scope.checkpointOwner,
-      canAsk: scope.canAsk,
-    });
-    if (!allowed.includes(tool))
+    const auditScope = gatewayAuditScope({ grant: context.grant, scope, role, mode });
+    if (!toolAllowedForContext(context, AIDLC_TARGET, tool)) {
       throw new ToolAccessDenied('tool_not_allowed_for_role', auditScope);
+    }
     const parsed = z.object(toolSchemas(z, scope.policy)[tool].shape).safeParse(args);
     if (!parsed.success) throw new ToolAccessDenied('invalid_arguments', auditScope);
     if (scope.unitSlug && parsed.data.unitSlug && parsed.data.unitSlug !== scope.unitSlug) {
       throw new ToolAccessDenied('lane_outside_grant', auditScope);
     }
-
     const store = mode === 'discussion' ? null : createStore();
-    try {
-      await validateStartupContext({
-        scope,
-        mode,
-        store,
-        openGraph: async () => graphSource(),
-        closeGraphSource: async () => {},
-        requireActive: true,
-      });
-    } catch {
-      throw new ToolAccessDenied('scope_not_active', auditScope);
-    }
     return { tool, scope, store, args: parsed.data, auditScope };
   };
 
@@ -217,7 +154,7 @@ export const createToolGateway = ({
     try {
       let authorized;
       try {
-        authorized = await authorize({ custom, args, graphSource });
+        authorized = authorize({ custom, args });
       } catch (error) {
         const denied = error instanceof ToolAccessDenied;
         const reason = denied ? error.reason : 'authorization_error';
@@ -229,7 +166,7 @@ export const createToolGateway = ({
           requestId,
         });
         return {
-          content: [{ type: 'text', text: DENIAL_TEXT[reason] ?? DEFAULT_DENIAL_TEXT }],
+          content: [{ type: 'text', text: gatewayDenialText(reason) }],
           isError: true,
         };
       }

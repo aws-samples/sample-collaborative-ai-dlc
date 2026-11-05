@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
   createGatewayProxyServer,
@@ -81,6 +82,37 @@ describe('gateway MCP proxy', () => {
     const result = await cli.callTool({ name: 'create_artifact', arguments: {} });
     expect(result.isError).toBe(true);
     expect(gateway.callTool).not.toHaveBeenCalled();
+  });
+
+  it('turns a Gateway interceptor denial into the local denial text', async () => {
+    const gateway = {
+      callTool: vi.fn(async () => {
+        throw new McpError(-32001, 'scope_not_active');
+      }),
+    };
+    const cli = await connect(gateway, 'author');
+    const result = await cli.callTool({ name: 'get_artifact', arguments: { id: 'a-1' } });
+    expect(result).toMatchObject({
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: 'Tool call denied: this stage is no longer active. Stop and end your turn.',
+        },
+      ],
+    });
+  });
+
+  it('keeps other Gateway protocol errors as tool errors', async () => {
+    const gateway = {
+      callTool: vi.fn(async () => {
+        throw new McpError(-32603, 'internal');
+      }),
+    };
+    const cli = await connect(gateway, 'author');
+    const result = await cli.callTool({ name: 'get_artifact', arguments: { id: 'a-1' } });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toMatch(/^Tool call denied/);
   });
 
   it('preserves tool errors and passes non-envelope results through', () => {

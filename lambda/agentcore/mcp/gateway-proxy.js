@@ -5,8 +5,8 @@
 //
 // It holds no data-plane permissions of its own: every call is SigV4-signed
 // for bedrock-agentcore:InvokeGateway and carries the control-plane grant plus
-// the runtime's session context. The Lambda behind the Gateway is the
-// authority for every call.
+// the runtime's session context. The Gateway's interceptor verifies both on
+// every request; the Lambda behind it acts on the context it injects.
 //
 // ENV (runtime-provided, never agent-provided):
 //   AIDLC_MCP_GATEWAY_URL   https://<gateway>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp
@@ -24,6 +24,7 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { registerTools } from './server.js';
 import { contextFromEnv } from './startup-context.js';
 import { GRANT_HEADER, SESSION_HEADER, encodeGatewaySession } from './gateway-session.js';
+import { GATEWAY_DENIAL_CODE, gatewayDenialText } from '../../shared/mcp/gateway-authorization.js';
 
 const SEPARATOR = '___';
 const TOOL_CALL_TIMEOUT_MS = 14 * 60 * 1000;
@@ -99,18 +100,42 @@ export const unwrapGatewayResult = (result) => {
   return result;
 };
 
+// The Gateway interceptor denies with a JSON-RPC error whose message is the
+// reason code; the SDK client raises it as `MCP error <code>: <message>`. Give
+// the agent the same tool-error text the local server would.
+const DENIAL_PREFIX = `MCP error ${GATEWAY_DENIAL_CODE}: `;
+const gatewayDenial = (error) =>
+  error?.code === GATEWAY_DENIAL_CODE
+    ? {
+        content: [
+          {
+            type: 'text',
+            text: gatewayDenialText(String(error.message ?? '').replace(DENIAL_PREFIX, '')),
+          },
+        ],
+        isError: true,
+      }
+    : null;
+
 export const gatewayForwardingHandlers = ({ client, target }) =>
   new Proxy(
     {},
     {
-      get: (_handlers, name) => async (args) =>
-        unwrapGatewayResult(
-          await client.callTool(
+      get: (_handlers, name) => async (args) => {
+        let result;
+        try {
+          result = await client.callTool(
             { name: `${target}${SEPARATOR}${String(name)}`, arguments: args ?? {} },
             undefined,
             { timeout: TOOL_CALL_TIMEOUT_MS, resetTimeoutOnProgress: true },
-          ),
-        ),
+          );
+        } catch (error) {
+          const denial = gatewayDenial(error);
+          if (denial) return denial;
+          throw error;
+        }
+        return unwrapGatewayResult(result);
+      },
     },
   );
 
