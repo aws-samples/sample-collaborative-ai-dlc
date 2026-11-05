@@ -16,7 +16,18 @@ describe('tracker attachment discovery', () => {
     const files = discover(`[Design](${url})`);
     expect(files[0]).toMatchObject({ url, filename: 'design.pdf' });
     expect(files[0].skipReason).toBeUndefined();
+    expect(discover(`[Design](${url.replace('acme/app', 'Acme/App')})`)[0].skipReason).toBe(
+      undefined,
+    );
   });
+
+  it.each([
+    'https://github.com/acme/private/files/123/design.pdf',
+    'https://github.com/other/app/assets/123/design.png',
+  ])('does not fetch a legacy upload from another repository: %s', (url) => {
+    expect(discover(`[Design](${url})`)[0].skipReason).toContain('External');
+  });
+
   it('deduplicates images, HTML, raw URLs, and comment references while retaining provenance', () => {
     const files = discover(`![Image](${asset})\n<img src="${asset}">`, [
       {

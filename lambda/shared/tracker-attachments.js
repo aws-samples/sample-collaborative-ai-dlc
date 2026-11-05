@@ -4,6 +4,17 @@ const fileExtension = /\.(?:pdf|docx|xlsx|txt|md|csv|html|png|jpe?g|webp|svg)$/i
 
 const attachmentId = (url) => createHash('sha256').update(url).digest('hex');
 
+// Legacy /owner/repo/files|assets/ URLs name their repository. Only the bound
+// repository's uploads are imported, so a reference cannot make the connected
+// credential fetch a file from another repository it can read.
+const isBoundGithubRepositoryUpload = (url, repository) => {
+  const [, owner, repo, kind] = url.pathname.split('/');
+  return (
+    ['assets', 'files'].includes(kind) &&
+    `${owner}/${repo}`.toLowerCase() === String(repository).toLowerCase()
+  );
+};
+
 // Only recognize provider uploads and explicit file/image references. Ordinary
 // links in a discussion (documentation, other issues, etc.) are not attachments.
 export const discoverLinkedAttachments = ({ provider, repository, issue, comments }) => {
@@ -39,7 +50,7 @@ export const discoverLinkedAttachments = ({ provider, repository, issue, comment
       const githubUpload =
         (url.hostname === 'github.com' &&
           (/^\/user-attachments\/(?:assets|files)\//.test(url.pathname) ||
-            /^\/[^/]+\/[^/]+\/(?:assets|files)\//.test(url.pathname))) ||
+            isBoundGithubRepositoryUpload(url, repository))) ||
         url.hostname === 'user-images.githubusercontent.com';
       const gitlabUpload =
         url.hostname === 'gitlab.com' && url.pathname.startsWith(`/${repository}/uploads/`);

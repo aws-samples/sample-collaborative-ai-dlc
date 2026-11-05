@@ -34,6 +34,26 @@ describe('Git issue attachment providers', () => {
     expect(fetchImpl.mock.calls[2][0]).toContain('page=2');
   });
 
+  it('does not send the repository credential for a file in another repository', async () => {
+    const foreign = 'https://github.com/acme/private/files/234/secret.pdf';
+    const fetchImpl = vi.fn(async (url) => {
+      if (url.endsWith('/issues/42'))
+        return json({ number: 42, body: `[Secret](${foreign})`, labels: [], user: {} });
+      if (url.includes('/comments?')) return json([]);
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    const ctx = { token: 'test-token', fetchImpl };
+    const { attachments } = await github.issueAttachments(ctx, 'acme/app', { number: 42 });
+    const result = await github.issueAttachments(ctx, 'acme/app', {
+      number: 42,
+      attachmentId: attachments[0].id,
+      maxBytes: 100,
+      uploadUrl: 'https://artifacts.s3.amazonaws.com/signed',
+    });
+    expect(result.status).toBe('skipped');
+    expect(fetchImpl.mock.calls.some(([url]) => url === foreign)).toBe(false);
+  });
+
   it.each(['issue', 'comment'])(
     'downloads a private image from the rendered %s using its exact asset ID',
     async (location) => {
