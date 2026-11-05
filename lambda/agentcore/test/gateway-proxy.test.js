@@ -1,11 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { McpError } from '@modelcontextprotocol/sdk/types.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  McpError,
+} from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import {
+  createGatewayPassthroughServer,
   createGatewayProxyServer,
   createSignedFetch,
+  isCustomerGatewayTool,
   unwrapGatewayResult,
 } from '../mcp/gateway-proxy.js';
 import { registerTools, toolsForRole } from '../mcp/server.js';
@@ -162,5 +169,106 @@ describe('gateway MCP proxy', () => {
     await expect(
       signedFetch('https://gw/mcp', { method: 'POST', body: new Uint8Array([1]) }),
     ).rejects.toThrow('Gateway proxy can only sign string request bodies');
+  });
+});
+
+describe('gateway MCP proxy — customer tool passthrough', () => {
+  const PAGES = {
+    first: {
+      tools: [
+        { name: 'aidlc___get_artifact', inputSchema: { type: 'object' } },
+        {
+          name: 'confluence___search',
+          description: 'Search pages',
+          inputSchema: { type: 'object', properties: { query: { type: 'string' } } },
+        },
+      ],
+      nextCursor: 'c-2',
+    },
+    'c-2': { tools: [{ name: 'jira___get_issue', inputSchema: { type: 'object' } }] },
+  };
+
+  // A real MCP server standing in for the Gateway, so the passthrough speaks
+  // the protocol end to end.
+  const connectThroughGateway = async ({ onCall } = {}) => {
+    const gatewayServer = new Server(
+      { name: 'gateway', version: '1' },
+      { capabilities: { tools: {} } },
+    );
+    const listed = [];
+    gatewayServer.setRequestHandler(ListToolsRequestSchema, async (request) => {
+      listed.push(request.params?.cursor ?? null);
+      return PAGES[request.params?.cursor ?? 'first'];
+    });
+    const calls = [];
+    gatewayServer.setRequestHandler(CallToolRequestSchema, async (request) => {
+      calls.push(request.params);
+      return onCall(request.params);
+    });
+    const [gatewaySide, proxySide] = InMemoryTransport.createLinkedPair();
+    await gatewayServer.connect(gatewaySide);
+    const gatewayClient = new Client({ name: 'aidlc-gateway-proxy', version: '1' });
+    await gatewayClient.connect(proxySide);
+
+    const passthrough = createGatewayPassthroughServer({ client: gatewayClient });
+    const [cliSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await passthrough.connect(serverSide);
+    const cli = new Client({ name: 'cli', version: '1' });
+    await cli.connect(cliSide);
+    return { cli, calls, listed };
+  };
+
+  it('lists only customer tools, qualified, page by page', async () => {
+    const { cli, listed } = await connectThroughGateway();
+    const first = await cli.listTools();
+    expect(first.tools.map((t) => t.name)).toEqual(['confluence___search']);
+    expect(first.tools[0]).toMatchObject({ description: 'Search pages' });
+    expect(first.nextCursor).toBe('c-2');
+    const second = await cli.listTools({ cursor: 'c-2' });
+    expect(second.tools.map((t) => t.name)).toEqual(['jira___get_issue']);
+    expect(second.nextCursor).toBeUndefined();
+    expect(listed).toEqual([null, 'c-2']);
+  });
+
+  it('forwards a call and its result unchanged, without the built-in unwrapping', async () => {
+    const envelopeLike = { content: [{ type: 'text', text: 'inner' }] };
+    const result = {
+      content: [{ type: 'text', text: JSON.stringify(envelopeLike) }],
+      structuredContent: { hits: 1 },
+    };
+    const { cli, calls } = await connectThroughGateway({ onCall: async () => result });
+    const got = await cli.callTool({ name: 'confluence___search', arguments: { query: 'x' } });
+    expect(calls).toEqual([{ name: 'confluence___search', arguments: { query: 'x' } }]);
+    expect(got.content).toEqual(result.content);
+    expect(got.structuredContent).toEqual({ hits: 1 });
+  });
+
+  it('refuses built-in and unqualified tools without calling the Gateway', async () => {
+    const { cli, calls } = await connectThroughGateway({ onCall: async () => ({ content: [] }) });
+    for (const name of ['aidlc___get_artifact', 'get_artifact']) {
+      await expect(cli.callTool({ name, arguments: {} })).rejects.toThrow(/not found/);
+    }
+    expect(calls).toEqual([]);
+    expect(isCustomerGatewayTool('confluence___search')).toBe(true);
+    expect(isCustomerGatewayTool('aidlc___get_artifact')).toBe(false);
+  });
+
+  it('turns an interceptor denial into a tool error the agent can read', async () => {
+    const { cli } = await connectThroughGateway({
+      // The interceptor's JSON-RPC error: code -32001, the bare reason code.
+      onCall: async () => {
+        throw Object.assign(new Error('tool_not_allowed_for_target'), { code: -32001 });
+      },
+    });
+    const result = await cli.callTool({ name: 'jira___get_issue', arguments: {} });
+    expect(result).toEqual({
+      isError: true,
+      content: [
+        {
+          type: 'text',
+          text: 'Tool call denied: this tool is not enabled for this space and stage.',
+        },
+      ],
+    });
   });
 });

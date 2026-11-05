@@ -25,6 +25,8 @@ export const IMPLEMENTED_RUNTIME_HANDLERS = Object.freeze(['agent.max-turns@v1']
 import { BEDROCK_BACKEND } from './backend-adapters.js';
 
 export const MCP_SERVER_NAME = 'aidlc';
+// The runtime-owned entry relaying the customer MCP targets behind the Gateway.
+export const GATEWAY_TOOLS_SERVER_NAME = 'aidlc-gateway-tools';
 
 // ── Claude Code (headless) ──
 // `claude -p --mcp-config <file> --permission-mode bypassPermissions

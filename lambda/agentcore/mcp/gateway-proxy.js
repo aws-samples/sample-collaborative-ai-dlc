@@ -8,23 +8,45 @@
 // the runtime's session context. The Gateway's interceptor verifies both on
 // every request; the Lambda behind it acts on the context it injects.
 //
+// In passthrough mode (AIDLC_MCP_GATEWAY_MODE=passthrough) the same proxy
+// serves the customer MCP targets behind the Gateway instead: it lists the
+// Gateway's tools (already filtered to this grant by the RESPONSE interceptor),
+// drops the built-in `aidlc___*` ones and forwards calls and results unchanged,
+// under their qualified `<target>___<tool>` names. The runtime never holds a
+// customer credential: the Gateway injects it.
+//
 // ENV (runtime-provided, never agent-provided):
 //   AIDLC_MCP_GATEWAY_URL   https://<gateway>.gateway.bedrock-agentcore.<region>.amazonaws.com/mcp
 //   AIDLC_MCP_GATEWAY_GRANT control-plane grant for this invocation
 //   AIDLC_MCP_GATEWAY_TARGET Gateway target name (default `aidlc`)
+//   AIDLC_MCP_GATEWAY_MODE  `passthrough` for the customer tools, else built-in
 //   plus the V2_* scope variables the local server reads.
 import { createHash, createHmac } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {
+  CallToolRequestSchema,
+  CallToolResultSchema,
+  ErrorCode,
+  ListToolsRequestSchema,
+  ListToolsResultSchema,
+  McpError,
+} from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { SignatureV4 } from '@smithy/signature-v4';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { registerTools } from './server.js';
 import { contextFromEnv } from './startup-context.js';
 import { GRANT_HEADER, SESSION_HEADER, encodeGatewaySession } from './gateway-session.js';
-import { GATEWAY_DENIAL_CODE, gatewayDenialText } from '../../shared/mcp/gateway-authorization.js';
+import {
+  AIDLC_TARGET,
+  GATEWAY_DENIAL_CODE,
+  gatewayDenialText,
+  splitQualifiedToolName,
+} from '../../shared/mcp/gateway-authorization.js';
 
 const SEPARATOR = '___';
 const TOOL_CALL_TIMEOUT_MS = 14 * 60 * 1000;
@@ -158,6 +180,51 @@ export const createGatewayProxyServer = ({ client, target, role, scope, env = pr
   return { server, registered };
 };
 
+export const GATEWAY_PASSTHROUGH_MODE = 'passthrough';
+
+// A Gateway tool of a customer target: qualified, and not the built-in target.
+export const isCustomerGatewayTool = (name) => {
+  const { target } = splitQualifiedToolName(name);
+  return Boolean(target) && target !== AIDLC_TARGET;
+};
+
+// The customer tools exactly as the Gateway lists them for this grant. Each
+// page is forwarded with its cursor, so the CLI pages through the Gateway.
+// Results are NOT unwrapped (unwrapGatewayResult is for the built-in Lambda
+// envelope): a customer server's content is returned as it sent it.
+export const createGatewayPassthroughServer = ({ client }) => {
+  const server = new Server(
+    { name: 'aidlc-gateway-tools', version: '1.0.0' },
+    { capabilities: { tools: {} } },
+  );
+  server.setRequestHandler(ListToolsRequestSchema, async (request) => {
+    const cursor = request.params?.cursor;
+    const page = await client.request(
+      { method: 'tools/list', params: cursor === undefined ? {} : { cursor } },
+      ListToolsResultSchema,
+    );
+    return { ...page, tools: page.tools.filter((tool) => isCustomerGatewayTool(tool.name)) };
+  });
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
+    if (!isCustomerGatewayTool(name)) {
+      throw new McpError(ErrorCode.InvalidParams, `Tool ${name} not found`);
+    }
+    try {
+      return await client.request(
+        { method: 'tools/call', params: { name, arguments: args ?? {} } },
+        CallToolResultSchema,
+        { timeout: TOOL_CALL_TIMEOUT_MS, resetTimeoutOnProgress: true },
+      );
+    } catch (error) {
+      const denial = gatewayDenial(error);
+      if (denial) return denial;
+      throw error;
+    }
+  });
+  return server;
+};
+
 export const startGatewayProxy = async ({ env = process.env } = {}) => {
   const gatewayUrl = env.AIDLC_MCP_GATEWAY_URL;
   const grant = env.AIDLC_MCP_GATEWAY_GRANT;
@@ -176,6 +243,13 @@ export const startGatewayProxy = async ({ env = process.env } = {}) => {
   });
   const client = new Client({ name: 'aidlc-gateway-proxy', version: '1.0.0' });
   await client.connect(transport);
+
+  if (env.AIDLC_MCP_GATEWAY_MODE === GATEWAY_PASSTHROUGH_MODE) {
+    const server = createGatewayPassthroughServer({ client });
+    await server.connect(new StdioServerTransport());
+    console.error('[agentcore-mcp] gateway customer-tool proxy connected');
+    return server;
+  }
 
   const { server, registered } = createGatewayProxyServer({ client, target, role, scope, env });
   await server.connect(new StdioServerTransport());
