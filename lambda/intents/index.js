@@ -136,6 +136,7 @@ import {
   prepareAgentInvocation,
 } from '../shared/agent-credential-service.js';
 import { credentialBindingDisplay } from '../shared/agent-auth-contracts.js';
+import { captureSandboxSettings, readSandboxSettings } from '../shared/sandbox-settings.js';
 import { SYSTEM_TENANT } from '../shared/tenant.js';
 import { fetchKnowledgeGraph } from './knowledge-graph.js';
 import { buildIntentAudit } from './audit.js';
@@ -3283,6 +3284,12 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
   if (sourceControlBlocked) return sourceControlBlocked;
   const mcpLaunch = await prepareMcpLaunch(g, meta);
   if (mcpLaunch.error) return response(mcpLaunch.statusCode, mcpLaunch.error);
+  const agentSandbox =
+    meta.status === 'DRAFT'
+      ? captureSandboxSettings(
+          await readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+        )
+      : meta.agentSandbox;
   // Flip <current> → CREATED (CAS on the observed status) so a double-start
   // can't launch two runs, then hand off to the orchestrator (init-ws + run the
   // plan). If the hand-off throws, roll back to the prior status — otherwise the
@@ -3314,6 +3321,7 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
         ? {
             agentCli: selectedAgentCli,
             credentialBinding: selectedCredentialBinding,
+            agentSandbox,
           }
         : {}),
       // Launch-time skip override (validated above; undefined = untouched).
@@ -3350,6 +3358,7 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
         ? {
             agentCli: meta.agentCli ?? null,
             credentialBinding: meta.credentialBinding ?? null,
+            agentSandbox: meta.agentSandbox ?? null,
           }
         : {}),
     });

@@ -1,7 +1,7 @@
 // One process owns one SandboxManager and its proxies. Its IPC channel is not
 // inherited by the sandboxed command; stdout/stderr remain the harness protocol.
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Writable } from 'node:stream';
@@ -78,6 +78,11 @@ export const runSandboxWorker = async (
   const cancel = () => child?.kill('SIGKILL');
   try {
     signal?.throwIfAborted();
+    // SRT protects .claude/agents and .claude/commands. If their parent is
+    // missing, its read-only placeholder also blocks Claude's session writes.
+    if (settings.filesystem?.disabled !== true && env?.CLAUDE_CONFIG_DIR) {
+      await mkdir(env.CLAUDE_CONFIG_DIR, { recursive: true });
+    }
     // Shells and native helpers run before bwrap enters its namespaces. Give
     // them only the trusted worker environment. Deliver the harness's argv and
     // environment through a read-only file consumed *inside* the sandbox.

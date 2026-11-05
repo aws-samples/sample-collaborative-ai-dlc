@@ -42,7 +42,7 @@ second="\${2:-}"
 if [[ "$first" == "logs" && "$second" == *"-gremlin-"* ]]; then
   printf 'Channel started at port 8182\\n'
 fi
-if [[ "$first" == "run" && "\${FAIL_SANDBOX_CASE:-}" == "1" && "$*" == *"sandbox-integration.mjs true capture" ]]; then
+if [[ "$first" == "run" && "\${FAIL_SANDBOX_CASE:-}" == "1" && "$*" == *"sandbox-integration.mjs true capture starter" ]]; then
   exit 1
 fi
 `,
@@ -93,14 +93,19 @@ test('E2E harness adds no proxy arguments without proxy variables', () => {
   assert.doesNotMatch(log, /\t--env\t(?:HTTP_PROXY|no_proxy)(?:\t|\n)/);
 });
 
-test('sandbox mode runs both cases through both helpers without model credentials or services', () => {
+test('sandbox mode covers starter and restrictive policies through both helpers without model credentials or services', () => {
   const log = runHarness(
     { KIRO_API_KEY: '', BEDROCK_API_KEY: '', AWS_BEARER_TOKEN_BEDROCK: '' },
     { args: ['--sandbox'] },
   );
-  for (const enabled of ['false', 'true']) {
+  for (const [enabled, policy] of [
+    ['false', 'starter'],
+    ['true', 'starter'],
+    ['true', 'restricted-unix'],
+    ['true', 'restrictive'],
+  ]) {
     for (const helper of ['capture', 'stream']) {
-      assert.ok(log.includes(`sandbox-integration.mjs\t${enabled}\t${helper}\n`));
+      assert.ok(log.includes(`sandbox-integration.mjs\t${enabled}\t${helper}\t${policy}\n`));
     }
   }
   assert.match(log, /--security-opt\tsystempaths=unconfined/);
@@ -110,6 +115,6 @@ test('sandbox mode runs both cases through both helpers without model credential
 
 test('sandbox mode returns failure if a test fails, and still runs the remaining cases', () => {
   const log = runHarness({ FAIL_SANDBOX_CASE: '1' }, { args: ['--sandbox'], expectedStatus: 1 });
-  assert.ok(log.includes('sandbox-integration.mjs\ttrue\tstream\n'));
+  assert.ok(log.includes('sandbox-integration.mjs\ttrue\tstream\trestrictive\n'));
   assert.match(log, /^ps\t-aq\t--filter\tlabel=aidlc\.e2e=/m);
 });

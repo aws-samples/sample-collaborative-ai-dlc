@@ -23,6 +23,9 @@ Day-to-day space access is _not_ managed here — it lives in each space's [Memb
 
 Everything the agent runtime needs to run:
 
+The **General** tab contains the settings below. **Sandboxing** provides the
+platform-wide SRT toggle and JSON policy editor; see [Agent sandboxing](agent-sandboxing.md).
+
 - **Platform Agent Credentials** — fallback **Bedrock Bearer Token** (used by Claude Code, OpenCode, and Codex) and **Kiro API Key** values. Platform admins manage these SecureString parameters; a personal or space credential takes precedence. See [Credential hierarchy](#credential-hierarchy) and [Prerequisites → Agent authentication](../getting-started/prerequisites.md#agent-authentication).
 - **Agent CLIs** — enable or disable each agent CLI (Kiro, Claude Code, OpenCode, Codex) for the whole platform. A disabled CLI is greyed out on the intent compose page and in **Space Settings → Agent**, and the API rejects selecting it (`agent_cli_disabled`) when an intent starts, when you compose a draft with AI, or when a draft discussion assist runs. At least one CLI must stay enabled. Intents that already started on a CLI keep using it after it is disabled. All CLIs are enabled by default. Operators can pre-seed the set for a new deployment with the `disabled_clis` Terraform variable. Terraform applies that value only on first creation; after that, this switch owns it. A default model (including the `codex_model` Terraform default) only pins which model a CLI uses; it does not enable the CLI.
 - **Default Models** — the platform-wide default model per CLI (Kiro, Claude Code, OpenCode, Codex), selected from a dropdown of models discovered from the runtime (or "No default — use CLI built-in"). Codex uses Bedrock's OpenAI models with exact `openai.*` IDs (e.g. `openai.gpt-5.5`) — the chosen model must be available in the deployment Region. Spaces can override these per-CLI in [Space Settings → Agent](projects.md#agent).

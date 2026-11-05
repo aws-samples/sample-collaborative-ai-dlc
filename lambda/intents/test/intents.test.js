@@ -3774,6 +3774,7 @@ describe('POST /start', () => {
       provider: 'kiro',
       source: 'platform',
     });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).agentSandbox.enabled).toBe(false);
     const calls = orchestratorInvokes();
     expect(calls).toHaveLength(1);
     const payload = JSON.parse(Buffer.from(calls[0].args[0].input.Payload).toString());
@@ -3784,6 +3785,33 @@ describe('POST /start', () => {
     const durableName = calls[0].args[0].input.DurableExecutionName;
     expect(durableName).toMatch(new RegExp(`^intent-${intent.id}-[0-9a-f]{16}$`));
     expect(durableName.length).toBeLessThanOrEqual(64);
+  });
+
+  it('captures the platform sandbox at first start and retains it across restart', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const settingsKey = keyOf('SETTINGS#SANDBOX', 'CURRENT');
+    const settings = {
+      network: { strictAllowlist: true, allowedDomains: ['example.com'], deniedDomains: [] },
+      filesystem: { disabled: true, allowWrite: [], denyRead: [], denyWrite: [] },
+    };
+    procStore.set(settingsKey, { enabled: true, applied: { version: 9, settings } });
+    const request = {
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro', agentSandbox: { enabled: false } }),
+      ...claims(sub),
+    };
+    expect((await handler(request)).statusCode).toBe(202);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    const pinned = { enabled: true, version: 9, settings };
+    expect(procStore.get(metaKey).agentSandbox).toEqual(pinned);
+    procStore.set(settingsKey, { enabled: false, applied: null });
+    procStore.set(metaKey, { ...procStore.get(metaKey), status: 'FAILED' });
+    expect((await handler(request)).statusCode).toBe(202);
+    expect(procStore.get(metaKey).agentSandbox).toEqual(pinned);
   });
 
   it('rolls back to DRAFT when the orchestrator invoke fails, so start can be retried', async () => {

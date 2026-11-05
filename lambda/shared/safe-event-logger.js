@@ -26,6 +26,8 @@ const SENSITIVE_VALUE_KEYS = new Set([
   'privatekey',
   'refreshtoken',
   'secret',
+  // The JSON editor can receive pasted credentials even when validation rejects them.
+  'sandbox',
   'token',
   'webhooksecret',
 ]);

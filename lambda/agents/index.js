@@ -66,6 +66,12 @@ import {
   resolveEffectiveCredentialBindingsViaBroker,
 } from '../shared/agent-credential-metadata.js';
 import { prepareAgentInvocation } from '../shared/agent-credential-service.js';
+import {
+  readSandboxSettings,
+  sandboxSettingsView,
+  writeSandboxSettings,
+} from '../shared/sandbox-settings.js';
+import { validateSandboxConfig } from '../shared/sandbox-config.js';
 import { createAuthenticationSettingsService } from './authentication-settings-service.js';
 import {
   authorizeLegacyProjectRead,
@@ -788,6 +794,7 @@ export const handler = async (event, context) => {
         // Return secrets as masked flags (never send the raw values to the browser)
         return response(200, {
           ...platformCredentialStatus,
+          bedrockRegion: process.env.BEDROCK_REGION || process.env.AWS_REGION || 'us-east-1',
           ...(process.env.V2_PROCESS_TABLE
             ? {
                 authentication: await authenticationView({
@@ -807,6 +814,13 @@ export const handler = async (event, context) => {
           customMcpServerNames,
           mcpSecretsSet,
           globalMcpServerSecretRefs,
+          ...(isPlatformAdmin(event) && process.env.V2_PROCESS_TABLE
+            ? {
+                sandbox: sandboxSettingsView(
+                  await readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
+                ),
+              }
+            : {}),
         });
       } catch (err) {
         logger.error('[settings] GET failed', err);
@@ -819,8 +833,62 @@ export const handler = async (event, context) => {
       const denied = requirePlatformAdmin(event);
       if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
       const prefix = process.env.AGENT_SETTINGS_SSM_PREFIX || '';
-      const input = JSON.parse(body || '{}');
+      let input;
+      try {
+        input = JSON.parse(body || '{}');
+      } catch {
+        return response(400, { error: 'Invalid JSON body' });
+      }
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        return response(400, { error: 'Invalid settings request' });
+      }
       const errors = [];
+
+      if (Object.hasOwn(input, 'sandbox')) {
+        // A sandbox operation is atomic and must not partially apply unrelated
+        // credentials/model updates if validation or the revision check fails.
+        if (Object.keys(input).length !== 1) {
+          return response(400, { error: 'Save sandbox settings separately from other settings' });
+        }
+        const request = input.sandbox;
+        if (
+          !request ||
+          !['draft', 'apply', 'toggle'].includes(request.action) ||
+          !Number.isSafeInteger(request.expectedRevision) ||
+          request.expectedRevision < 0 ||
+          Object.keys(request).some(
+            (key) => !['action', 'expectedRevision', 'config', 'enabled'].includes(key),
+          ) ||
+          (request.action === 'toggle'
+            ? request.config !== undefined || typeof request.enabled !== 'boolean'
+            : request.enabled !== undefined || typeof request.config !== 'string')
+        ) {
+          return response(400, { error: 'Invalid sandbox settings request' });
+        }
+        try {
+          const config =
+            request.action === 'toggle' ? undefined : validateSandboxConfig(request.config);
+          const sandbox = await writeSandboxSettings({
+            ddb,
+            tableName: process.env.V2_PROCESS_TABLE,
+            expectedRevision: request.expectedRevision,
+            action: request.action,
+            enabled: request.enabled,
+            config,
+            actor: credentialUserId,
+          });
+          return response(200, { saved: true, sandbox });
+        } catch (error) {
+          if (error.code === 'sandbox_invalid' || error.code === 'sandbox_conflict') {
+            return response(error.code === 'sandbox_conflict' ? 409 : 400, {
+              error: error.message,
+              code: error.code,
+              ...(error.issues ? { issues: error.issues } : {}),
+            });
+          }
+          throw error;
+        }
+      }
 
       if (input.authenticationChange) {
         const settings = authenticationSettings();

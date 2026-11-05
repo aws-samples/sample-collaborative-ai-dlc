@@ -7,26 +7,29 @@ import { join } from 'node:path';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { fileURLToPath } from 'node:url';
 import { childEnvironment } from '../cli/environment.js';
+import { DEFAULT_SANDBOX_CONFIG, captureSandboxSettings } from '../../shared/sandbox-settings.js';
+
+export { DEFAULT_SANDBOX_CONFIG };
 
 const context = new AsyncLocalStorage();
 const workerPath = fileURLToPath(new URL('./worker.js', import.meta.url));
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'sandbox' } });
 
-// Until platform-admin configuration is connected, ordinary launches use this
-// default. When enabled, these settings allow files, Unix sockets and all
-// proxied destinations. SRT still isolates processes and direct networking.
-export const DEFAULT_SANDBOX_CONFIG = Object.freeze({
-  enabled: false,
-  settings: {
-    network: {
-      allowedDomains: [],
-      deniedDomains: [],
-      strictAllowlist: false,
-      allowAllUnixSockets: true,
-    },
-    filesystem: { disabled: true, allowWrite: [], denyRead: [], denyWrite: [] },
-  },
-});
+// Read execution state, never a sandbox value supplied in an invocation payload.
+// Legacy started intents retain their original, unsandboxed behavior.
+export const resolveInvocationSandbox = async ({ payload, store, readSettings }) => {
+  const executionId = payload.executionId || payload.intentId;
+  if (executionId) {
+    const meta = await store.getExecution(executionId, { consistentRead: true });
+    if (!meta || (payload.projectId && payload.projectId !== meta.projectId)) {
+      throw new Error('Sandbox execution context does not match this invocation');
+    }
+    if (meta.status !== 'DRAFT') {
+      return structuredClone(meta.agentSandbox ?? DEFAULT_SANDBOX_CONFIG);
+    }
+  }
+  return captureSandboxSettings(await readSettings());
+};
 
 // Only trusted runtime code enters this context. Request payloads and child
 // environment variables cannot enable, replace or disable the sandbox.
@@ -34,6 +37,7 @@ export const withSandbox = (
   {
     enabled = DEFAULT_SANDBOX_CONFIG.enabled,
     settings = DEFAULT_SANDBOX_CONFIG.settings,
+    version = null,
     onEvent,
     observeFileWrites = false,
   },
@@ -41,7 +45,7 @@ export const withSandbox = (
 ) => {
   if (typeof enabled !== 'boolean') throw new TypeError('sandbox.enabled must be a boolean');
   return context.run(
-    { enabled, settings: structuredClone(settings), onEvent, observeFileWrites },
+    { enabled, settings: structuredClone(settings), version, onEvent, observeFileWrites },
     operation,
   );
 };
@@ -58,17 +62,35 @@ export const spawnSandbox = (
   const cleanup = () => rmSync(scratch, { recursive: true, force: true });
   let child;
   try {
-    child = spawnFn(process.execPath, [workerPath], {
-      ...options,
-      // The worker does not inherit platform/model credentials or loader hooks.
-      // The filtered harness environment travels over private IPC instead.
-      env: {
-        ...childEnvironment({}, process.env),
-        TMPDIR: scratch,
-        CLAUDE_CODE_TMPDIR: scratch,
+    // AgentCore mounts /proc/sys read-only. SRT's bwrap --disable-userns
+    // needs a writable sysctl in its own user namespace. Give the worker a
+    // private /proc first; host mounts and namespace limits stay unchanged.
+    // Keep the caller's uid, and kill the worker if its supervisor exits.
+    child = spawnFn(
+      '/usr/bin/unshare',
+      [
+        '--user',
+        '--map-current-user',
+        '--mount',
+        '--pid',
+        '--fork',
+        '--kill-child',
+        '--mount-proc',
+        process.execPath,
+        workerPath,
+      ],
+      {
+        ...options,
+        // The worker does not inherit platform/model credentials or loader hooks.
+        // The filtered harness environment travels over private IPC instead.
+        env: {
+          ...childEnvironment({}, process.env),
+          TMPDIR: scratch,
+          CLAUDE_CODE_TMPDIR: scratch,
+        },
+        stdio: [...options.stdio, 'ipc'],
       },
-      stdio: [...options.stdio, 'ipc'],
-    });
+    );
   } catch (error) {
     cleanup();
     throw error;
@@ -78,7 +100,7 @@ export const spawnSandbox = (
     if (!event || typeof event !== 'object') return;
     if (event.type === 'sandbox.starting') starting = true;
     if (event.type === 'sandbox.error') child.sandboxError = 'sandbox_start_failed';
-    const record = { ...event, invocationId };
+    const record = { ...event, invocationId, sandboxVersion: sandbox.version ?? null };
     if (event.type === 'sandbox.error') {
       logger.error('sandbox event', record);
     } else if (
