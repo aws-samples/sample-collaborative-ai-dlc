@@ -12,6 +12,7 @@ import {
   type WorkflowSourceProvider,
   type WorkflowSourceAuthType,
   type WorkflowSourceList,
+  type WorkflowPackageJob,
 } from '@/services/workflowSources';
 
 const PROVIDERS: WorkflowSourceProvider[] = ['github', 'gitlab', 'bitbucket'];
@@ -23,9 +24,19 @@ const errorMessage = (error: unknown, fallback: string) =>
 interface Props {
   projectId: string;
   canEdit: boolean;
+  defaultRelease?: string;
+  onSelectPackage?: (
+    source: WorkflowSource,
+    job: Extract<WorkflowPackageJob, { state: 'SUCCEEDED' }>,
+  ) => void;
 }
 
-export function WorkflowSourcesSection({ projectId, canEdit }: Props) {
+export function WorkflowSourcesSection({
+  projectId,
+  canEdit,
+  defaultRelease,
+  onSelectPackage,
+}: Props) {
   const id = useId();
   const currentProject = useRef(projectId);
   currentProject.current = projectId;
@@ -147,9 +158,16 @@ export function WorkflowSourcesSection({ projectId, canEdit }: Props) {
     }
   };
 
-  // A disabled API intentionally keeps this configuration out of the pilot UI.
+  // A disabled API does not offer source configuration.
   // Successful source configuration does not enable native execution.
-  if (disabled || settledProject !== projectId) return null;
+  if (disabled) {
+    return onSelectPackage ? (
+      <p role="status">Workflow source configuration is unavailable for this space.</p>
+    ) : null;
+  }
+  if (settledProject !== projectId) {
+    return onSelectPackage ? <p role="status">Loading workflow sources…</p> : null;
+  }
   const sources = loaded?.projectId === projectId ? loaded.sources : [];
   const packageImportsEnabled =
     loaded?.projectId === projectId && loaded.capabilities?.packageImportsEnabled === true;
@@ -230,6 +248,10 @@ export function WorkflowSourcesSection({ projectId, canEdit }: Props) {
                   projectId={projectId}
                   source={source}
                   suspended={formDisabled}
+                  defaultRelease={defaultRelease}
+                  onSelectPackage={
+                    onSelectPackage ? (job) => onSelectPackage(source, job) : undefined
+                  }
                 />
               )}
               {canEdit && removing?.sourceId === source.sourceId && (

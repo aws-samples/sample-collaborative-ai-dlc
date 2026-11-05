@@ -299,6 +299,7 @@ export function NativeIntentConfigurationDialog({
   onOpenChange,
 }: IntentConfigurationDialogProps & { intent: NativeIntent }) {
   const execution = intent.execution;
+  const repository = execution?.repository ?? intent.applicationSource;
   return (
     <ConfigurationDialog
       open={open}
@@ -306,7 +307,7 @@ export function NativeIntentConfigurationDialog({
       description={
         execution
           ? 'This execution uses the saved prompt and configuration pinned at Start.'
-          : 'Review the selected package and harness. Execution configuration is pinned at Start.'
+          : 'Review the selected package, harness and application repository. Execution configuration is pinned at Start.'
       }
     >
       <div className="divide-y">
@@ -358,16 +359,16 @@ export function NativeIntentConfigurationDialog({
             <Definition label="Package version" value={intent.package.version} />
           </dl>
         </section>
-        {execution?.repository.repository && (
+        {repository?.repository && (
           <section className="space-y-4 px-6 py-5" aria-label="Application repository">
             <h3 className="text-sm font-semibold">Application repository</h3>
             <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
-              <Definition label="Provider" value={execution.repository.provider} />
-              <Definition label="Repository" value={execution.repository.repository} />
-              {execution.repository.branch && (
+              <Definition label="Provider" value={repository.provider} />
+              <Definition label="Repository" value={repository.repository} />
+              {execution?.repository.branch && (
                 <Definition label="Branch" value={execution.repository.branch} />
               )}
-              {execution.repository.commit && (
+              {execution?.repository.commit && (
                 <Definition label="Commit" value={execution.repository.commit} code wide />
               )}
             </dl>

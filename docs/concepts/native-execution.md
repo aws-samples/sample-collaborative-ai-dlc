@@ -25,11 +25,16 @@ application repository. The methodology source and application repository serve
 different purposes: the package supplies the development process; the application
 repository supplies the code to work on.
 
-In the current creation flow, a project owner configures a workflow source in
-**Space settings → Agent**, imports a package, and makes it available for native
-draft creation. A member selects the package and harness, enters the request and
-prepares the workspace. Preparing a workspace does not start agent work. The
-saved request can be corrected before **Start**.
+The normal **New intent** entry offers **Platform** and **Native AI-DLC**.
+Platform remains the existing default; switching backend retains the title and
+prompt already entered. Native creation reuses workflow-source configuration
+and verified package import on that page. Owners and administrators can configure
+sources there, and members can import and select a package from an authorized
+source. A member selects one connected application repository and a harness,
+then creates a title-only or written draft. The shared Intent workspace supports
+prompt correction, workspace preparation and explicit **Start**. Preparation does
+not start agent work. The settings-page package link remains a convenience entry
+into the same form. These NE-08 changes are locally validated; deployment is pending.
 
 Kiro is temporarily unavailable for new native executions while AI-DLC input
 and authentication qualification is pending. Creation shows the disabled Kiro choice
@@ -53,8 +58,8 @@ configuration.
 
 The shared Intent workspace provides the current response and questions, activity,
 discussions, files, graph navigation and revision history. Native intents also
-appear in the project, dashboard and sidebar. Integrating source selection into
-the normal **New intent** entry remains part of the completion checklist.
+appear in the project, dashboard and sidebar. Native creation now begins in the
+normal **New intent** entry, with local NE-08 acceptance recorded below.
 
 ## Questions, decisions and collaboration
 
@@ -321,7 +326,7 @@ passing the first path does not remove them from the release scope.
 The shared native settings notice appears during draft creation and in the
 Intent configuration view. It describes this target and the current input limits
 without enabling unfinished input paths or claiming deployed qualification.
-The normal **New intent** backend/default decision remains part of NE-08.
+The normal **New intent** entry keeps Platform as the default and offers an explicit Native AI-DLC choice. It does not remember a backend or infer workflow consent.
 
 ### Current implementation
 
@@ -329,7 +334,7 @@ The normal **New intent** backend/default decision remains part of NE-08.
 | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Coding harnesses            | Claude Code, Codex and OpenCode remain selectable for development when enabled by the shared platform CLI policy. Kiro is temporarily unavailable for new native executions, with authoritative Start rejection and an explicit runtime guard. All four harnesses still require release qualification; Kiro's full input and authentication path remains NE-18 work. |
 | Methodology sources         | Import adapters cover GitHub.com, GitLab.com and Bitbucket Cloud with their supported source bindings. Installer and provenance constraints require separate qualification; importing from a provider is not a claim of full workflow support.                                                                                                                       |
-| Application source          | Exactly one connected GitHub, GitLab or Bitbucket repository. Source resolution captures the default branch and exact commit. CodeCommit, multiple repositories, submodule and LFS materialization are not supported by this path.                                                                                                                                   |
+| Application source          | One selected connected GitHub, GitLab or Bitbucket repository per native execution, including selection from a space with several repositories. Source resolution captures the default branch and exact commit. CodeCommit, simultaneous multiple-repository execution, submodule and LFS materialization remain unsupported.                                        |
 | Package and harness         | Selected for the native draft and pinned for execution. Repository and package instructions remain part of the workspace.                                                                                                                                                                                                                                            |
 | Models                      | Start captures the resolved project/platform model selection. An unset selection or automatic routing is not an immutable provider-model version.                                                                                                                                                                                                                    |
 | Credentials                 | The starting member's effective credential scope is captured. A responding member does not replace it. Rotation within that scope is allowed; revocation does not silently fall back to another scope.                                                                                                                                                               |
@@ -3426,6 +3431,62 @@ operator action remains for this integration; **NE-08 is next and unstarted**,
 with Kiro still deferred to NE-18. Existing development executions require no
 preservation or cleanup gate.
 
+## NE-08 normal intent creation — local acceptance, 2026-11-05
+
+This stage follows the independently confirmed main-integration checkpoint
+`6c511deb4cb60e097b73646181864b4741c79732`, including main
+`3f90d8cab8fcf0b245e08bbc1726867bd15d821c`. NE-09 has not started.
+Existing development executions remain disposable; no preservation, compatibility
+or cleanup gate was added.
+
+Normal **New intent** now owns backend selection and the written request.
+Platform retains the existing default and Compose flow. Native uses the same
+request fields and existing source configuration and package-import components,
+including member access and import recovery. Creation selects verified AI-DLC
+2.11.1 package metadata, a supported harness and one connected application
+repository. Previous native-creation URLs redirect to this entry; the shared
+workspace still selects its native adapter through the existing discovery helper.
+
+The optional `applicationSource: { provider, repository }` draft field is validated
+at the public boundary, retained in the immutable request fingerprint and returned
+only in protected detail. The normal form always supplies it. Omitting it retains
+the existing single-connected-repository API behavior. An explicit selection is
+resolved through the project's `HAS_REPO` edge and rechecked before configuration
+capture. A removed or changed repository cannot silently select another.
+
+Draft creation puts its original identity in the URL before POST. Pending or
+uncertain creation locks the backend, package, harness, repository and request.
+Retries retain the exact request; reload only reads its original identity. An
+authoritative pre-write rejection permits correction with the same ID. Navigation,
+project and account changes fence late callbacks. Prompt correction and Start
+retain their existing revision, authorization and idempotency contracts.
+
+Validation passed **11,590 backend tests (eight host skips)** and **2,282 frontend
+tests**, including nine new real-frontend/public-router cases and a production
+shell/router journey from creation through configuration review, prompt correction,
+preparation and explicit Start. External service ports are local fixtures; these
+results do not claim live model behavior. Frontend build/typecheck, eight native
+builds covering nine functions, dependency direction, SDK, architecture and
+22 native wiring checks pass. Production audits report five backend moderate
+findings and none in the frontend; dependencies were not changed.
+
+Only authority and credential entrypoint bytes differ from the deployed main
+baseline; the other seven match. All **278 runtime inputs** and their inventory
+match qualified source `513005a19163b1f5fdf4e9a64fe7a1926cb19e04` and tag
+`0176cd52b080ec91`. The accepted qualified local image remains
+`sha256:6b535e24e44adc580e45564dba174dd41eb077937665ebb65cebb078cbabd564`;
+its independently verified registry index remains
+`sha256:fb10982fd44262ad5083d39031c569f03fd00d8d9bee719a62df15fa286225f1`.
+The preceding 163 Linux and installed Claude/Codex/OpenCode results remain accepted
+and were not repeated. Kiro remains deferred to NE-18.
+
+Evidence and the fresh handoff are under
+`.native-evidence/ne08-2026-11-05-intent-creation/`. Controller packages and frontend
+need deployment. The unchanged runtime needs no new image qualification. Actual
+deployed bundles/aliases and frontend bytes require independent verification
+after the operator's deployment. A fresh live workflow and the complete release
+journey remain separate acceptance tiers.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -3564,12 +3625,21 @@ the current contract for newly created executions.
       retry is required. Kiro remains deferred to NE-18. Evidence is under
       `.native-evidence/ne07-2026-11-04-harness-question-adapters/` and
       `.native-evidence/ne07-2026-11-05-deployed-095041b7/`.
-- [ ] **NE-08 — Complete normal intent creation.** Integrate native into the normal
+- [x] **NE-08 — Complete normal intent creation.** Integrate native into the normal
       **New intent** entry, including the backend/default choice, verified package
       selection and application source. Reuse the shared creation and configuration
       components and remove obsolete pilot instructions. **Done when:** a member can
       create, correct and start a native request without discovering a separate
       settings-only path, and competing or uncertain requests keep one identity.
+      **Completed locally 2026-11-05:** normal creation shares title/prompt fields,
+      source configuration and package import, keeps Platform as the default,
+      and offers explicit Native AI-DLC selection. The application repository is
+      retained in the native request and rechecked through the project's repository
+      edges at Start. Shared-shell and public-router regressions cover creation,
+      configuration review, prompt correction, preparation and Start, including
+      conflicts, access denial and uncertain responses. Runtime inputs remain
+      identical to the qualified main-integration image. **Deployment and
+      independent deployed verification remain pending.**
 - [ ] **NE-09 — Integrate supported inputs, settings and tools.** Implement the selected
       attachment and tracker-import scope and source selection; capture the inputs and
       effective configuration at Start. Connect supported environment/tool settings

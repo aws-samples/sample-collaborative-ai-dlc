@@ -55,10 +55,14 @@ const REQUEST_FIELDS = [
   'bindingRevision',
 ];
 export const nativeDraftRequest = (value) => {
+  const fields =
+    record(value) && Object.hasOwn(value, 'applicationSource')
+      ? [...REQUEST_FIELDS, 'applicationSource']
+      : REQUEST_FIELDS;
   if (
     !record(value) ||
-    Object.keys(value).length !== REQUEST_FIELDS.length ||
-    !REQUEST_FIELDS.every((key) => Object.hasOwn(value, key)) ||
+    Object.keys(value).length !== fields.length ||
+    !fields.every((key) => Object.hasOwn(value, key)) ||
     !matches(value.intentId, UUID_V4) ||
     !matches(value.sourceId, /^[a-f0-9]{64}$/) ||
     !matches(value.packageJobId, UUID) ||
@@ -73,7 +77,27 @@ export const nativeDraftRequest = (value) => {
     value.prompt.includes('\0')
   )
     fail('INVALID');
-  return Object.fromEntries(REQUEST_FIELDS.map((key) => [key, value[key]]));
+  if (Object.hasOwn(value, 'applicationSource')) {
+    const source = value.applicationSource;
+    if (
+      !record(source) ||
+      Object.keys(source).length !== 2 ||
+      !Object.hasOwn(source, 'provider') ||
+      !Object.hasOwn(source, 'repository')
+    )
+      fail('INVALID');
+    try {
+      workflowSourceIdentity(source.provider, source.repository);
+    } catch {
+      fail('INVALID');
+    }
+  }
+  return Object.fromEntries(
+    fields.map((key) => [
+      key,
+      key === 'applicationSource' ? { ...value.applicationSource } : value[key],
+    ]),
+  );
 };
 const scope = (value) => {
   if (!matches(value?.projectId, ID) || !matches(value?.executionId, UUID_V4)) fail('INVALID');

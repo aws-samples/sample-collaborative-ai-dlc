@@ -234,6 +234,11 @@ export interface NativeGraph {
   };
 }
 
+export interface NativeApplicationSource {
+  provider: 'github' | 'gitlab' | 'bitbucket';
+  repository: string;
+}
+
 export interface NativeDraftRequest {
   intentId: string;
   title: string;
@@ -242,6 +247,7 @@ export interface NativeDraftRequest {
   sourceId: string;
   packageJobId: string;
   bindingRevision: string;
+  applicationSource?: NativeApplicationSource;
 }
 
 // The generic INVALID code also covers stored-row validation after a write.
@@ -313,6 +319,7 @@ export interface NativeIntent {
   // Absent on APIs predating prompt correction; those remain read-only.
   promptRevision?: number;
   harness: WorkflowPackageHarness;
+  applicationSource?: NativeApplicationSource;
   status: 'DRAFT' | 'PREPARING' | 'READY' | 'FAILED';
   package: {
     version: string;
@@ -329,7 +336,12 @@ export interface NativeIntent {
 
 export type NativeIntentSummary = Omit<
   NativeIntent,
-  'prompt' | 'promptRevision' | 'executionAvailable' | 'startUnavailableReason' | 'execution'
+  | 'prompt'
+  | 'promptRevision'
+  | 'applicationSource'
+  | 'executionAvailable'
+  | 'startUnavailableReason'
+  | 'execution'
 >;
 export interface NativeIntentPage {
   items: NativeIntentSummary[];
@@ -347,6 +359,25 @@ const validCursor = (value: unknown): value is string =>
 const path = (projectId: string) => `/projects/${encodeURIComponent(projectId)}/native-intents`;
 const record = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const applicationSource = (value: unknown): NativeApplicationSource => {
+  if (
+    !record(value) ||
+    Object.keys(value).length !== 2 ||
+    !['github', 'gitlab', 'bitbucket'].includes(String(value.provider)) ||
+    typeof value.repository !== 'string' ||
+    value.repository.length > 512 ||
+    (value.provider !== 'gitlab' && value.repository.split('/').length !== 2) ||
+    !/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+$/.test(value.repository) ||
+    value.repository.split('/').some((part) => part === '.' || part === '..')
+  ) {
+    throw new Error('The native application source could not be verified.');
+  }
+  return {
+    provider: value.provider as NativeApplicationSource['provider'],
+    repository: value.repository,
+  };
+};
 
 function summary(value: unknown, projectId: string, intentId: string): NativeIntentSummary {
   if (
@@ -413,6 +444,9 @@ function view(value: unknown, projectId: string, intentId: string): NativeIntent
   }
   return {
     ...item,
+    ...(value.applicationSource !== undefined
+      ? { applicationSource: applicationSource(value.applicationSource) }
+      : {}),
     prompt: value.prompt,
     ...(value.promptRevision !== undefined ? { promptRevision: Number(value.promptRevision) } : {}),
     ...(value.executionAvailable !== undefined

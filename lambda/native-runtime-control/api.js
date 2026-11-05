@@ -149,6 +149,9 @@ export const nativeIntentView = (row) => ({
   prompt: nativeDraftPrompt(row).text,
   promptRevision: nativeDraftPrompt(row).revision,
   harness: row.harness,
+  ...(row.request.applicationSource
+    ? { applicationSource: { ...row.request.applicationSource } }
+    : {}),
   status: row.status,
   package: {
     version: row.candidate.packagePin.version,
@@ -167,6 +170,7 @@ export const nativeIntentSummary = (row) => {
   const summary = nativeIntentView(row);
   delete summary.prompt;
   delete summary.promptRevision;
+  delete summary.applicationSource;
   return summary;
 };
 

@@ -29,12 +29,17 @@ export function NativePreparationLink({
     };
   }, [projectId]);
   if (availableProject !== projectId) return null;
-  const selection = new URLSearchParams({ sourceId, packageJobId, bindingRevision });
+  const selection = new URLSearchParams({
+    backend: 'native',
+    sourceId,
+    packageJobId,
+    bindingRevision,
+  });
   return (
     <div className="space-y-1">
       <Link
         className="text-sm text-primary underline underline-offset-4"
-        to={`/space/${encodeURIComponent(projectId)}/native-intent/new?${selection}`}
+        to={`/space/${encodeURIComponent(projectId)}/intent/new?${selection}`}
       >
         Create a native intent draft
       </Link>

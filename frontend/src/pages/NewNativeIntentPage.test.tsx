@@ -21,19 +21,37 @@ vi.mock('@/services/nativeIntents', async (importOriginal) => ({
     get: (...a: unknown[]) => get(...a),
   },
 }));
-vi.mock('@/services/workflowSources', () => ({
+const createPackageImport = vi.fn();
+const useProjectCache = vi.fn();
+vi.mock('@/hooks/useProjectsCache', () => ({
+  useProjectCache: (...a: unknown[]) => useProjectCache(...a),
+}));
+vi.mock('@/hooks/useAuthSession', () => ({
+  useAuthSession: () => ({ userId: 'member', isAuthenticated: true, isLoading: false }),
+}));
+vi.mock('@/services/aidlcReleases', () => ({
+  aidlcReleasesService: { sharedChannels: async () => ({ pinningEnabled: false }) },
+}));
+vi.mock('@/services/workflowSources', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/workflowSources')>()),
   workflowSourcesService: {
     list: (...a: unknown[]) => list(...a),
+    listWithCapabilities: async (...a: unknown[]) => ({
+      sources: await list(...a),
+      capabilities: { packageImportsEnabled: true },
+    }),
     getPackageImport: (...a: unknown[]) => getPackageImport(...a),
+    createPackageImport: (...a: unknown[]) => createPackageImport(...a),
   },
 }));
+import NewIntentPage from './NewIntentPage';
 import NewNativeIntentPage from './NewNativeIntentPage';
 
 const sourceId = 'a'.repeat(64);
 const jobId = '10000000-0000-4000-8000-000000000001';
 const revision = '20000000-0000-4000-8000-000000000002';
 const draftId = '30000000-0000-4000-8000-000000000003';
-const entry = `/space/project-1/native-intent/new?sourceId=${sourceId}&packageJobId=${jobId}&bindingRevision=${revision}`;
+const entry = `/space/project-1/intent/new?backend=native&sourceId=${sourceId}&packageJobId=${jobId}&bindingRevision=${revision}`;
 const rejection = () =>
   new ApiError(400, 'Invalid native preparation request', {
     code: 'NATIVE_PREPARATION_INVALID',
@@ -60,6 +78,7 @@ const renderPage = (url = entry) =>
       <Link to={`${entry}&draftId=${draftId}`}>Other draft</Link>
       <Routes>
         <Route path="/space/:projectId/native-intent/new" element={<NewNativeIntentPage />} />
+        <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
         <Route
           path="/space/:projectId/native-intent/:intentId"
           element={<p>Native workspace status</p>}
@@ -70,6 +89,18 @@ const renderPage = (url = entry) =>
 beforeEach(() => {
   vi.resetAllMocks();
   resetSessionExpiry();
+  sessionStorage.clear();
+  useProjectCache.mockImplementation((id) => ({
+    project: {
+      id,
+      name: 'Test space',
+      userRole: 'member',
+      agentCli: 'codex',
+      trackers: [],
+      repos: [{ provider: 'github', url: 'owner/app', role: 'primary' }],
+    },
+    loading: false,
+  }));
   canPrepare.mockResolvedValue(true);
   capabilities.mockResolvedValue({
     preparationEnabled: true,
@@ -77,11 +108,27 @@ beforeEach(() => {
     unavailableHarnesses: { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
   });
   list.mockResolvedValue([
-    { sourceId, revision, repository: 'awslabs/aidlc-workflows', status: 'active' },
+    {
+      sourceId,
+      revision,
+      repository: 'awslabs/aidlc-workflows',
+      provider: 'github',
+      status: 'active',
+      authType: 'public',
+      access: 'read',
+    },
   ]);
   getPackageImport.mockResolvedValue({
     state: 'SUCCEEDED',
-    package: { release: 'v2.9.0', harnesses: ['claude', 'codex', 'kiro', 'opencode'] },
+    jobId,
+    sourceId,
+    requestedRelease: 'v2.11.1',
+    package: {
+      version: '2.11.1',
+      release: 'v2.11.1',
+      commit: 'b'.repeat(40),
+      harnesses: ['claude', 'codex', 'kiro', 'opencode'],
+    },
   });
 });
 afterEach(() => vi.restoreAllMocks());
@@ -127,6 +174,7 @@ it.each([false, true])(
             }
           />
           <Route path="/space/:projectId/native-intent/new" element={<NewNativeIntentPage />} />
+          <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
           <Route
             path="/space/:projectId/native-intent/:intentId"
             element={<p>Native workspace status</p>}
@@ -243,18 +291,15 @@ it.each([
     await user.click(screen.getByRole('button', { name: 'Create native draft' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(error.message);
     expect(title).toBeEnabled();
-    expect(screen.getByRole('textbox', { name: 'What would you like to build?' })).toBeEnabled();
-    expect(screen.getByRole('combobox')).toBeEnabled();
+    expect(screen.getByRole('textbox', { name: 'Prompt' })).toBeEnabled();
+    expect(screen.getByRole('combobox', { name: 'Coding harness' })).toBeEnabled();
     expect(screen.getByTestId('location')).toHaveTextContent(entry);
     expect(screen.getByTestId('location').textContent).not.toContain('draftId');
     const original = structuredClone(create.mock.calls[0][1]);
     await user.clear(title);
     await user.type(title, 'Corrected title');
-    await user.type(
-      screen.getByRole('textbox', { name: 'What would you like to build?' }),
-      'A game',
-    );
-    await user.selectOptions(screen.getByRole('combobox'), 'claude');
+    await user.type(screen.getByRole('textbox', { name: 'Prompt' }), 'A game');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Coding harness' }), 'claude');
     await user.click(screen.getByRole('button', { name: 'Create native draft' }));
     await screen.findByText('Native workspace status');
     expect(create.mock.calls[1]).toEqual([
@@ -438,9 +483,124 @@ it.each(['disabled', 'source-changed', 'package-not-ready'])(
     if (scenario === 'package-not-ready') getPackageImport.mockResolvedValue({ state: 'RUNNING' });
     renderPage();
     await screen.findByRole('alert');
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Create native draft' })).not.toBeInTheDocument(),
-    );
+    await waitFor(() => {
+      const button = screen.queryByRole('button', { name: 'Create native draft' });
+      if (scenario === 'disabled') expect(button).not.toBeInTheDocument();
+      else expect(button).toBeDisabled();
+    });
     expect(create).not.toHaveBeenCalled();
   },
 );
+
+it('uses normal New intent, retains written work across backend choice and imports a package inline as a member', async () => {
+  create.mockImplementation((_project, request) => Promise.resolve({ id: request.intentId }));
+  createPackageImport.mockImplementation((_project, source, request) =>
+    Promise.resolve({
+      jobId: request.jobId,
+      sourceId: source,
+      requestedRelease: request.requestedRelease,
+      state: 'SUCCEEDED',
+      package: {
+        version: '2.11.1',
+        release: 'v2.11.1',
+        commit: 'b'.repeat(40),
+        harnesses: ['claude', 'codex', 'kiro', 'opencode'],
+      },
+    }),
+  );
+  const user = userEvent.setup();
+  const { container } = renderPage('/space/project-1/intent/new');
+  expect(screen.getByLabelText('Execution backend')).toHaveValue('platform');
+  await user.type(screen.getByLabelText('Title'), 'Shared request');
+  await user.type(screen.getByLabelText('Prompt'), 'Keep the written request.');
+  await user.selectOptions(screen.getByLabelText('Execution backend'), 'native');
+  expect(await screen.findByLabelText('Coding harness')).toHaveValue('codex');
+  expect(screen.getByLabelText('Title')).toHaveValue('Shared request');
+  expect(screen.getByLabelText('Prompt')).toHaveValue('Keep the written request.');
+  expect(await screen.findByLabelText('Release version')).toHaveValue('v2.11.1');
+  expect(screen.queryByText('Add a workflow source')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Create native draft' })).toBeDisabled();
+  expect(container.querySelector('form form')).toBeNull();
+  await user.click(screen.getByRole('button', { name: 'Import package' }));
+  expect(create).not.toHaveBeenCalled();
+  await user.click(await screen.findByRole('button', { name: 'Use this package' }));
+  expect(screen.getByRole('region', { name: 'Selected workflow package' })).toHaveTextContent(
+    'v2.11.1',
+  );
+  await user.click(screen.getByRole('button', { name: 'Create native draft' }));
+  await screen.findByText('Native workspace status');
+  expect(createPackageImport).toHaveBeenCalledTimes(1);
+  expect(create).toHaveBeenCalledTimes(1);
+  expect(create.mock.calls[0][1]).toMatchObject({
+    title: 'Shared request',
+    prompt: 'Keep the written request.',
+    packageJobId: createPackageImport.mock.calls[0][2].jobId,
+    applicationSource: { provider: 'github', repository: 'owner/app' },
+  });
+  expect(create.mock.calls[0][1]).not.toHaveProperty('constructionGateAutonomy');
+});
+
+it('requires one application choice and locks backend, package and repository after an uncertain create', async () => {
+  useProjectCache.mockReturnValue({
+    project: {
+      id: 'project-1',
+      userRole: 'member',
+      trackers: [],
+      repos: [
+        { provider: 'github', url: 'owner/first' },
+        { provider: 'gitlab', url: 'group/selected' },
+        { provider: 'codecommit', url: 'excluded' },
+      ],
+    },
+    loading: false,
+  });
+  create.mockRejectedValue(new Error('Response lost'));
+  const user = userEvent.setup();
+  renderPage();
+  await user.type(await screen.findByLabelText('Title'), 'Selected application');
+  const repository = screen.getByLabelText('Application repository');
+  expect(repository).toHaveValue('');
+  expect(screen.queryByRole('option', { name: /excluded/ })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Create native draft' })).toBeDisabled();
+  await user.selectOptions(repository, JSON.stringify(['gitlab', 'group/selected']));
+  await user.click(screen.getByRole('button', { name: 'Create native draft' }));
+  await screen.findByRole('alert');
+  expect(create.mock.calls[0][1].applicationSource).toEqual({
+    provider: 'gitlab',
+    repository: 'group/selected',
+  });
+  expect(repository).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Choose another package' })).toBeDisabled();
+  const backend = screen.getByLabelText('Execution backend');
+  expect(backend).toBeDisabled();
+  fireEvent.change(backend, { target: { value: 'platform' } });
+  expect(backend).toHaveValue('native');
+  expect(create).toHaveBeenCalledTimes(1);
+});
+
+it('does not advertise another imported methodology version as native support', async () => {
+  getPackageImport.mockResolvedValue({ state: 'SUCCEEDED', package: { version: '2.12.0' } });
+  renderPage();
+  expect(await screen.findByRole('alert')).toHaveTextContent('supports AI-DLC 2.11.1');
+  expect(screen.getByRole('button', { name: 'Create native draft' })).toBeDisabled();
+  expect(create).not.toHaveBeenCalled();
+});
+
+it('recovers only the original draft even without package query fields', async () => {
+  get.mockResolvedValue({ id: draftId });
+  renderPage(`/space/project-1/intent/new?draftId=${draftId}`);
+  await screen.findByText('Native workspace status');
+  expect(get).toHaveBeenCalledExactlyOnceWith('project-1', draftId);
+  expect(capabilities).not.toHaveBeenCalled();
+  expect(create).not.toHaveBeenCalled();
+});
+
+it('redirects the previous creation link to the normal entry without submitting', async () => {
+  renderPage(entry.replace('/intent/new?backend=native&', '/native-intent/new?'));
+  await screen.findByLabelText('Coding harness');
+  const url = new URL(screen.getByTestId('location').textContent!, 'https://example.test');
+  expect(url.pathname).toBe('/space/project-1/intent/new');
+  expect(url.searchParams.get('backend')).toBe('native');
+  expect(url.searchParams.get('packageJobId')).toBe(jobId);
+  expect(create).not.toHaveBeenCalled();
+});

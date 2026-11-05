@@ -24,6 +24,34 @@ const draft = {
   updatedAt: '2026-09-25T08:00:00Z',
 };
 beforeEach(() => vi.resetAllMocks());
+describe('selected native application source', () => {
+  it.each(['github', 'gitlab', 'bitbucket'])(
+    'retains %s selection in protected detail',
+    async (provider) => {
+      const applicationSource = { provider, repository: 'Owner/Application' };
+      get.mockResolvedValue({ ...draft, applicationSource });
+      expect(await nativeIntentsService.get('project-1', 'run-1')).toMatchObject({
+        applicationSource,
+      });
+    },
+  );
+  it.each([
+    null,
+    { provider: 'codecommit', repository: 'app' },
+    { provider: 'github', repository: 'group/nested/app' },
+    { provider: 'gitlab', repository: 'group/../app' },
+    { provider: 'gitlab', repository: 'https://example.test/group/app' },
+    { provider: 'github', repository: 'owner/app', credential: 'untrusted' },
+  ])(
+    'rejects malformed application metadata %j instead of silently dropping it',
+    async (applicationSource) => {
+      get.mockResolvedValue({ ...draft, applicationSource });
+      await expect(nativeIntentsService.get('project-1', 'run-1')).rejects.toThrow(
+        'application source could not be verified',
+      );
+    },
+  );
+});
 describe('native output and lifecycle history', () => {
   const output = { seq: 65, content: 'Public output' };
   const event = {

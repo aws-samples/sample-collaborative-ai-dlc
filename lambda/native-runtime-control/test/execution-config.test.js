@@ -36,9 +36,14 @@ const fixture = async ({
   harness = 'codex',
   provider = 'github',
   repository = 'JWThewes/flappy-bird',
+  applicationSource,
 } = {}) => {
   const preparation = setup();
-  const created = await preparation.store.create(createInput({ request: request({ harness }) }));
+  const created = await preparation.store.create(
+    createInput({
+      request: request({ harness, ...(applicationSource ? { applicationSource } : {}) }),
+    }),
+  );
   await preparation.store.prepare(IDENTITY);
   const { row: owned } = await preparation.store.claim({
     ...IDENTITY,
@@ -77,9 +82,18 @@ const fixture = async ({
       }
       chain.toList = vi.fn(async () => {
         await state.graphHook?.(id);
-        return structuredClone(
-          id === undefined ? (state.project ? [state.project] : []) : state.repos,
+        if (id === undefined) return structuredClone(state.project ? [state.project] : []);
+        expect(id).toBe(MEMBERSHIP.projectIdentity);
+        const selected = state.repos.filter((row) =>
+          chain.has.mock.calls.every(([key, value]) =>
+            key === 'provider'
+              ? row.providers.includes(value)
+              : key === 'url'
+                ? row.repositories.includes(value)
+                : true,
+          ),
         );
+        return structuredClone(selected);
       });
       return chain;
     }),
@@ -121,6 +135,47 @@ const fixture = async ({
 };
 
 describe('native first-turn configuration', () => {
+  it.each(['github', 'gitlab', 'bitbucket'])(
+    'uses the selected %s application in a project with multiple repositories',
+    async (provider) => {
+      const applicationSource = { provider, repository: 'Owner/Selected' };
+      const f = await fixture({
+        provider,
+        repository: applicationSource.repository,
+        applicationSource,
+      });
+      f.state.repos.unshift({ providers: ['github'], repositories: ['Other/Repository'] });
+      const configuration = await f.resolve();
+      expect(configuration.repository).toEqual({
+        provider,
+        repository: 'owner/selected',
+        branch: null,
+        bindingRevision: f.binding.revision,
+      });
+      expect(f.graph.V).toHaveBeenCalledWith(MEMBERSHIP.projectIdentity);
+    },
+  );
+
+  it.each(['removed', 'provider changed', 'changed during resolution'])(
+    'refuses a selected repository %s instead of falling back to another project repository',
+    async (change) => {
+      const applicationSource = { provider: 'github', repository: 'Owner/Selected' };
+      const f = await fixture({ repository: applicationSource.repository, applicationSource });
+      if (change === 'removed')
+        f.state.repos = [{ providers: ['github'], repositories: ['Other/App'] }];
+      if (change === 'provider changed') f.state.repos[0].providers = ['gitlab'];
+      if (change === 'changed during resolution') {
+        f.state.metadataHook = () => {
+          f.state.repos = [{ providers: ['github'], repositories: ['Other/App'] }];
+        };
+      }
+      await expect(f.resolve()).rejects.toMatchObject({
+        code: 'NATIVE_EXECUTION_CONFIG_SOURCE_CONTROL_CHANGED',
+      });
+      if (change !== 'changed during resolution') expect(f.resolveBindings).not.toHaveBeenCalled();
+    },
+  );
+
   it('pins only explicit protected metadata, using the starter and deployment execution image', async () => {
     const f = await fixture();
     const result = await f.resolve();

@@ -2,10 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router';
+import { resetSessionExpiry } from '@/services/sessionExpiry';
 
 // Radix Select relies on pointer-capture / scrollIntoView APIs jsdom doesn't
 // implement — polyfill just enough for the trigger/option interaction below.
 beforeEach(() => {
+  resetSessionExpiry();
   window.HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
   window.HTMLElement.prototype.setPointerCapture = vi.fn();
   window.HTMLElement.prototype.releasePointerCapture = vi.fn();
@@ -18,6 +20,9 @@ vi.mock('@/hooks/useProjectsCache', () => ({
 }));
 
 const create = vi.fn();
+vi.mock('@/services/aidlcReleases', () => ({
+  aidlcReleasesService: { sharedChannels: async () => ({ pinningEnabled: false }) },
+}));
 vi.mock('@/services/intents', () => ({
   intentsService: {
     create: (...a: unknown[]) => create(...a),

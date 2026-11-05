@@ -80,6 +80,24 @@ describe('native protected draft pins and idempotency', () => {
     expect(result.row).toEqual(f.read());
   });
 
+  it('retains the selected application source through concurrent creation and uncertain retries', async () => {
+    const f = setup();
+    const selection = { provider: 'gitlab', repository: 'group/app' };
+    const input = createInput({ request: request({ applicationSource: selection }) });
+    const [first, second] = await Promise.all([
+      f.store.create(input),
+      f.store.create(structuredClone(input)),
+    ]);
+    expect(first.row).toEqual(second.row);
+    expect(first.row.request.applicationSource).toEqual(selection);
+    selection.repository = 'group/other';
+    await expect(f.store.create(input)).rejects.toMatchObject({
+      code: 'NATIVE_PREPARATION_CONFLICT',
+    });
+    expect((await f.store.get(IDENTITY)).request.applicationSource.repository).toBe('group/app');
+    expect((await f.store.create({ ...input, request: first.row.request })).row).toEqual(first.row);
+  });
+
   it.each([
     ['title only', { title: 'Flappy bird', prompt: '' }],
     ['prompt only', { title: '', prompt: 'Build a small game.' }],
@@ -94,6 +112,10 @@ describe('native protected draft pins and idempotency', () => {
   it.each([
     ['prompt', { request: request({ prompt: 'Different work' }) }],
     ['harness', { request: request({ harness: 'claude' }) }],
+    [
+      'application source',
+      { request: request({ applicationSource: { provider: 'github', repository: 'owner/app' } }) },
+    ],
     ['member', { actorId: 'other-member' }],
     ['project lifecycle', { projectIdentity: 'recreated-project' }],
     [
@@ -126,6 +148,28 @@ describe('native protected draft pins and idempotency', () => {
     ['non-string prompt', { prompt: null }],
     ['unbounded title', { title: 'x'.repeat(257) }],
     ['unbounded prompt', { prompt: 'x'.repeat(65537) }],
+    ['null application source', { applicationSource: null }],
+    [
+      'unsupported application provider',
+      { applicationSource: { provider: 'codecommit', repository: 'owner/app' } },
+    ],
+    [
+      'application URL with user information',
+      {
+        applicationSource: {
+          provider: 'github',
+          repository: 'https://fixture@example.test/owner/app',
+        },
+      },
+    ],
+    [
+      'application extra field',
+      { applicationSource: { provider: 'github', repository: 'owner/app', branch: 'main' } },
+    ],
+    [
+      'application traversal',
+      { applicationSource: { provider: 'gitlab', repository: 'group/../app' } },
+    ],
   ])('rejects invalid request %s', (_label, changes) => {
     expect(() => nativeDraftRequest(request(changes))).toThrow(
       'Invalid native preparation request',

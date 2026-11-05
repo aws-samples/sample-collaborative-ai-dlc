@@ -278,28 +278,41 @@ const readProject = async (g, draft) => {
   };
 };
 const readRepository = async (g, draft) => {
-  const rows = await g
-    .V(draft.projectIdentity)
-    .out('HAS_REPO')
-    .hasLabel('Repository')
+  const selected = draft.request.applicationSource;
+  let repositories = g.V(draft.projectIdentity).out('HAS_REPO').hasLabel('Repository');
+  if (selected) {
+    // Select through this project's edge, never through a global repository
+    // lookup. The draft retains the member's choice across later project edits.
+    repositories = repositories.has('provider', selected.provider).has('url', selected.repository);
+  }
+  const rows = await repositories
     .limit(2)
     .project('repositories', 'providers')
     .by(__.values('url').fold())
     .by(__.values('provider').fold())
     .toList();
   if (!Array.isArray(rows)) fail('REPOSITORY_INVALID');
-  if (rows.length === 0) fail('REPOSITORY_REQUIRED');
+  if (rows.length === 0) fail(selected ? 'SOURCE_CONTROL_CHANGED' : 'REPOSITORY_REQUIRED');
   if (rows.length !== 1) fail('REPOSITORY_AMBIGUOUS');
-  const repositories = field(rows[0], 'repositories');
+  const identities = field(rows[0], 'repositories');
   const providers = field(rows[0], 'providers');
   if (
-    !Array.isArray(repositories) ||
-    repositories.length !== 1 ||
+    !Array.isArray(identities) ||
+    identities.length !== 1 ||
     !Array.isArray(providers) ||
     providers.length !== 1
   )
     fail('REPOSITORY_INVALID');
-  return nativeExecutionRepository(providers[0], repositories[0]);
+  const repository = nativeExecutionRepository(providers[0], identities[0]);
+  if (
+    selected &&
+    !isDeepStrictEqual(
+      repository,
+      nativeExecutionRepository(selected.provider, selected.repository),
+    )
+  )
+    fail('SOURCE_CONTROL_CHANGED');
+  return repository;
 };
 const readModels = async (ssm, env, name) => {
   const prefix = env.AGENT_SETTINGS_SSM_PREFIX;

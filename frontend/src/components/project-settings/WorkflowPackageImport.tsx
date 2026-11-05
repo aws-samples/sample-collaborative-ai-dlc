@@ -19,6 +19,8 @@ interface Props {
   projectId: string;
   source: WorkflowSource;
   suspended?: boolean;
+  defaultRelease?: string;
+  onSelectPackage?: (job: Extract<WorkflowPackageJob, { state: 'SUCCEEDED' }>) => void;
 }
 
 const statusOf = (error: unknown) =>
@@ -67,6 +69,8 @@ function PackageImportForm({
   source,
   userId,
   suspended = false,
+  defaultRelease = 'latest',
+  onSelectPackage,
 }: Props & { userId: string }) {
   const id = useId();
   const mounted = useRef(false);
@@ -81,10 +85,12 @@ function PackageImportForm({
   const activeRequest = useRef(request);
   const restore = useRef(request);
   const [mode, setMode] = useState<'latest' | 'version'>(
-    request && request.requestedRelease !== 'latest' ? 'version' : 'latest',
+    (request?.requestedRelease ?? defaultRelease) !== 'latest' ? 'version' : 'latest',
   );
   const [version, setVersion] = useState(
-    request && request.requestedRelease !== 'latest' ? request.requestedRelease : '',
+    (request?.requestedRelease ?? defaultRelease) !== 'latest'
+      ? (request?.requestedRelease ?? defaultRelease)
+      : '',
   );
   const [job, setJob] = useState<WorkflowPackageJob | null>(null);
   const [busy, setBusy] = useState(false);
@@ -315,14 +321,19 @@ function PackageImportForm({
               <p className="text-xs text-muted-foreground">
                 Download bytes verified. Signature not checked. Harness execution not qualified.
               </p>
-              {!suspended && (
-                <NativePreparationLink
-                  projectId={projectId}
-                  sourceId={source.sourceId}
-                  packageJobId={job.jobId}
-                  bindingRevision={source.revision}
-                />
-              )}
+              {!suspended &&
+                (onSelectPackage ? (
+                  <Button type="button" size="sm" onClick={() => onSelectPackage(job)}>
+                    Use this package
+                  </Button>
+                ) : (
+                  <NativePreparationLink
+                    projectId={projectId}
+                    sourceId={source.sourceId}
+                    packageJobId={job.jobId}
+                    bindingRevision={source.revision}
+                  />
+                ))}
             </div>
           )}
           <div className="flex flex-wrap gap-2">
