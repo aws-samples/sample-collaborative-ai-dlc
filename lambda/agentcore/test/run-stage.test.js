@@ -944,6 +944,46 @@ describe('runStage — failure paths (always records terminal state)', () => {
     ).toBe(true);
   });
 
+  it.each(['error', 'close'])(
+    'records FAILED and logs cli_error when the child emits %s without an exit code',
+    async (event) => {
+      const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+      const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+      try {
+        const deps = baseDeps({
+          spawnFn: () => {
+            const child = new EventEmitter();
+            child.stdin = { end() {} };
+            setImmediate(() =>
+              child.emit(
+                event,
+                event === 'error'
+                  ? Object.assign(new Error('spawn fixture ENOENT'), { code: 'ENOENT' })
+                  : null,
+              ),
+            );
+            return child;
+          },
+        });
+        const result = await runStage(baseArgs, deps);
+        expect(result).toMatchObject({ ok: false, reason: 'cli_error' });
+        expect(
+          deps.store.calls.some(
+            ([name, row]) => name === 'updateStageState' && row.state === 'FAILED',
+          ),
+        ).toBe(true);
+        expect(error).toHaveBeenCalledWith(
+          'cli_error',
+          expect.objectContaining({ code: event === 'error' ? 'ENOENT' : 'cli_no_exit_code' }),
+        );
+        expect(info).not.toHaveBeenCalledWith('cli exit', expect.anything());
+      } finally {
+        info.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
+
   it('fails fast on a not-implemented (agent-team) stage without spawning', async () => {
     const lib = library();
     lib.stagesById['requirements-analysis'].mode = 'agent-team';

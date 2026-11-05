@@ -63,6 +63,7 @@ export const runSandboxWorker = async (
     typeof command !== 'string' ||
     !Array.isArray(args) ||
     !args.every((arg) => typeof arg === 'string') ||
+    settings?.credentials !== undefined ||
     settings?.enableWeakerNestedSandbox ||
     settings?.allowNestedUserNamespaces
   ) {
@@ -176,6 +177,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   process.once('disconnect', () => controller.abort());
   process.once('SIGTERM', () => controller.abort());
   process.once('SIGINT', () => controller.abort());
+  process.on('message', (message) => {
+    if (message?.type === 'sandbox.cancel') controller.abort();
+  });
   process.once('message', async (request) => {
     const pendingEvents = new Set();
     const emit = (event) => {

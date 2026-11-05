@@ -133,13 +133,41 @@ const clampTail = (s, max) => (s.length > max ? s.slice(s.length - max) : s);
 // Session-owned process groups include tool/MCP descendants. Killing just the
 // CLI parent would let those children keep using credentials the session
 // already delivered.
-const terminateChild = (child, detached, killProcessGroup) => {
-  try {
-    if (detached && child.pid) killProcessGroup(-child.pid, 'SIGKILL');
-    else child.kill?.('SIGKILL');
-  } catch {
-    /* group has already exited */
-  }
+const terminateChild = async (child, detached, killProcessGroup, sandboxEnabled) => {
+  const kill = () => {
+    try {
+      if (detached && child.pid) killProcessGroup(-child.pid, 'SIGKILL');
+      else child.kill?.('SIGKILL');
+    } catch {
+      /* group has already exited */
+    }
+  };
+  if (!sandboxEnabled) return kill();
+  // Keep the worker alive to remove SRT's host-side mount points. IPC also
+  // reaches it through an unshare supervisor without killing that supervisor.
+  await new Promise((resolve) => {
+    let done = false;
+    const finished = () => {
+      done = true;
+      clearTimeout(timer);
+      child.removeListener('close', finished);
+      resolve();
+    };
+    const force = () => {
+      if (done) return;
+      kill();
+      finished();
+    };
+    const timer = setTimeout(force, 2000);
+    child.once('close', finished);
+    try {
+      child.send({ type: 'sandbox.cancel' }, (error) => {
+        if (error) force();
+      });
+    } catch {
+      force();
+    }
+  });
 };
 
 export const runChild = ({
@@ -231,22 +259,30 @@ export const runChild = ({
         stderrTail = clampTail(stderrTail + c.toString(), captureStderrTail);
       });
     }
-    const cancel = () => {
-      terminateChild(child, detached, killProcessGroup);
+    const cancel = async () => {
+      if (settled || stopping) return;
+      stopping = true;
+      if (timer) clearTimeout(timer);
+      await terminateChild(child, detached, killProcessGroup, sandboxEnabled);
       finish(null);
     };
     session?.signal.addEventListener('abort', cancel, { once: true });
     let settled = false;
+    let stopping = false;
     let timedOut = false;
     let timer = null;
-    const finish = (exitCode) => {
+    const finish = (exitCode, error) => {
       if (settled) return;
       settled = true;
       toolLogs?.flush();
       if (timer) clearTimeout(timer);
       session?.signal.removeEventListener('abort', cancel);
+      if (error) {
+        reject(error);
+        return;
+      }
       resolve({
-        exitCode,
+        exitCode: timedOut || session?.signal.aborted ? null : exitCode,
         stderrTail,
         ...(child.sandboxError ? { sandboxError: child.sandboxError } : {}),
         ...(timedOut ? { timedOut: true } : {}),
@@ -258,9 +294,9 @@ export const runChild = ({
       });
     };
     if (session?.signal.aborted) cancel();
-    child.on('error', () => {
+    child.on('error', (error) => {
       untrackProcessGroup();
-      finish(null);
+      finish(null, error);
     }); // spawn failure → runner maps to FAILED
     if (grouped) {
       // A CLI may exit after leaving background tools behind: reap the rest of
@@ -278,8 +314,9 @@ export const runChild = ({
       timer = setTimeout(() => {
         if (settled) return;
         timedOut = true;
-        if (grouped && child.pid) signalGroup(child, 'SIGKILL');
-        else terminateChild(child, detached, killProcessGroup);
+        if (sandboxEnabled) void cancel();
+        else if (grouped && child.pid) signalGroup(child, 'SIGKILL');
+        else void terminateChild(child, detached, killProcessGroup, false);
       }, timeoutMs);
       timer.unref?.();
     }
@@ -376,12 +413,16 @@ export const captureChild = ({
     });
     let stderr = '';
     if (captureStderr) child.stderr?.on('data', (c) => (stderr += c.toString()));
-    const cancel = () => {
-      terminateChild(child, detached, killProcessGroup);
+    const cancel = async () => {
+      if (settled || stopping) return;
+      stopping = true;
+      if (timer) clearTimeout(timer);
+      await terminateChild(child, detached, killProcessGroup, sandboxEnabled);
       finish(null);
     };
     session?.signal.addEventListener('abort', cancel, { once: true });
     let settled = false;
+    let stopping = false;
     let timedOut = false;
     let timer = null;
     const finish = (exitCode) => {
@@ -391,7 +432,7 @@ export const captureChild = ({
       session?.signal.removeEventListener('abort', cancel);
       if (timer) clearTimeout(timer);
       resolve({
-        exitCode,
+        exitCode: timedOut || session?.signal.aborted ? null : exitCode,
         stdout,
         stderr,
         timedOut,
@@ -405,16 +446,9 @@ export const captureChild = ({
     };
     if (timeoutMs > 0) {
       timer = setTimeout(() => {
+        if (settled) return;
         timedOut = true;
-        try {
-          terminateChild(child, detached, killProcessGroup);
-        } catch {
-          /* already gone */
-        }
-        // Resolve immediately — a SIGKILLed child's close event may never
-        // arrive through a mocked/edge-case stream teardown, and the caller
-        // must not hang on the very thing the timeout guards against.
-        finish(null);
+        void cancel();
       }, timeoutMs);
       // Never hold the event loop open for the watchdog alone.
       timer.unref?.();

@@ -4,6 +4,7 @@ import { PassThrough } from 'node:stream';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { describe, expect, it, vi } from 'vitest';
 import { captureChild, runChild } from '../cli/spawn.js';
+import { createCredentialSession } from '../credential-session.js';
 import { currentSandbox, DEFAULT_SANDBOX_CONFIG, withSandbox } from '../sandbox/launcher.js';
 
 const settings = {
@@ -213,6 +214,83 @@ describe('sandbox launch context', () => {
       );
       expect(spawnFn.mock.calls[0].slice(0, 2)).toEqual(['claude', ['--version']]);
       expect(spawnFn.mock.calls[0][2].stdio).not.toContain('ipc');
+    },
+  );
+
+  it.each(
+    [captureChild, runChild].flatMap((launch) =>
+      ['timeout', 'credential'].map((trigger) => ({ launch, trigger })),
+    ),
+  )('waits for sandbox cleanup on $trigger ($launch.name)', async ({ launch, trigger }) => {
+    vi.useFakeTimers();
+    const session = createCredentialSession();
+    const child = fakeWorker();
+    const killProcessGroup = vi.fn();
+    child.send = vi.fn((_request, callback) => callback?.());
+    let settled = false;
+    try {
+      const pending = session.run(() =>
+        withSandbox({ enabled: true, settings }, () =>
+          launch({
+            command: 'fixture',
+            args: [],
+            env: {},
+            timeoutMs: trigger === 'timeout' ? 10 : 0,
+            spawnFn: () => child,
+            killProcessGroup,
+          }),
+        ),
+      );
+      void pending.then(() => (settled = true));
+      if (trigger === 'credential') session.cancel();
+      else await vi.advanceTimersByTimeAsync(10);
+      expect(child.send).toHaveBeenCalledWith({ type: 'sandbox.cancel' }, expect.any(Function));
+      expect(settled).toBe(false);
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(killProcessGroup).not.toHaveBeenCalled();
+      child.emit('close', 1);
+      expect(await pending).toMatchObject({
+        exitCode: null,
+        ...(trigger === 'timeout' ? { timedOut: true } : { credentialError: 'credential_expired' }),
+      });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(killProcessGroup).not.toHaveBeenCalled();
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally {
+      child.emit('close', 1);
+      await session.release();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([captureChild, runChild])(
+    'forces termination if sandbox cleanup hangs ($name)',
+    async (launch) => {
+      vi.useFakeTimers();
+      const child = fakeWorker();
+      child.pid = 123456;
+      child.send = (_request, callback) => callback?.();
+      const killProcessGroup = vi.fn();
+      try {
+        const pending = withSandbox({ enabled: true, settings }, () =>
+          launch({
+            command: 'fixture',
+            args: [],
+            env: {},
+            timeoutMs: 10,
+            spawnFn: () => child,
+            killProcessGroup,
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(10);
+        expect(killProcessGroup).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(await pending).toMatchObject({ exitCode: null, timedOut: true });
+        expect(killProcessGroup).toHaveBeenCalledExactlyOnceWith(-123456, 'SIGKILL');
+      } finally {
+        child.emit('close', null);
+        vi.useRealTimers();
+      }
     },
   );
 

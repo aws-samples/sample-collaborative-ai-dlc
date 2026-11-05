@@ -3808,7 +3808,11 @@ const runStageAttempt = async (
     );
   }
 
-  const exitCode = result?.exitCode ?? 0;
+  const exitCode = result?.exitCode;
+  if (exitCode == null) {
+    logger.error('cli_error', { cli, stage: stageId, code: 'cli_no_exit_code' });
+    return fail(stageInstanceId, 'cli_error', 'The agent process ended without an exit code');
+  }
   logger[exitCode === 0 ? 'info' : 'error']('cli exit', {
     cli,
     stage: stageId,

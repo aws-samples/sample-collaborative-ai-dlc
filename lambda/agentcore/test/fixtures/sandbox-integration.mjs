@@ -3,12 +3,14 @@
 import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
 import { captureChild, runChild } from '../../cli/spawn.js';
+import { createCredentialSession } from '../../credential-session.js';
 import { DEFAULT_SANDBOX_CONFIG, withSandbox } from '../../sandbox/launcher.js';
 
 const script = fileURLToPath(import.meta.url);
@@ -229,9 +231,81 @@ const runCase = async (enabled, helper) => {
   }
 };
 
-if (process.argv[2] === '--workload') await workload(process.argv.slice(3));
+const runCancellationCase = async (helper, trigger) => {
+  const root = await mkdtemp(join(tmpdir(), 'srt-cancel-'));
+  const workspace = join(root, 'workspace');
+  const ready = join(workspace, 'ready');
+  const denied = join(workspace, '.blocked-config');
+  const session = createCredentialSession();
+  let pending;
+  try {
+    await mkdir(workspace);
+    pending = session.run(() =>
+      withSandbox(
+        {
+          enabled: true,
+          settings: {
+            network: { allowedDomains: [], deniedDomains: [], strictAllowlist: true },
+            filesystem: { allowWrite: [workspace], denyRead: [], denyWrite: [denied] },
+          },
+        },
+        () =>
+          (helper === 'capture' ? captureChild : runChild)({
+            command: process.execPath,
+            args: [script, '--cancel-workload', ready],
+            cwd: workspace,
+            env: {},
+            timeoutMs: 5000,
+            captureStderr: true,
+            captureStderrTail: 4096,
+          }),
+      ),
+    );
+    await Promise.race([
+      (async () => {
+        const deadline = Date.now() + 5000;
+        while (
+          !(await access(ready).then(
+            () => true,
+            () => false,
+          ))
+        ) {
+          if (Date.now() >= deadline) throw new Error('Cancellation workload did not become ready');
+          await delay(20);
+        }
+      })(),
+      pending.then((result) => {
+        throw new Error(`Cancellation workload ended before ready: ${JSON.stringify(result)}`);
+      }),
+    ]);
+    // Prove a host-side placeholder was created before exercising its cleanup.
+    await access(denied);
+    if (trigger === 'credential') session.cancel();
+    const result = await pending;
+    assert.equal(result.exitCode, null);
+    if (trigger === 'credential') assert.equal(result.credentialError, 'credential_expired');
+    else assert.equal(result.timedOut, true);
+    assert.deepEqual(await readdir(workspace), ['ready'], 'SRT mount-point files must be removed');
+    console.log(`SRT_TEST_RESULT=${JSON.stringify({ helper, trigger, mountPointsCleaned: true })}`);
+  } finally {
+    session.cancel();
+    await pending?.catch(() => {});
+    await session.release();
+    await rm(root, { recursive: true, force: true });
+  }
+};
+
+if (process.argv[2] === '--cancel-workload') {
+  await writeFile(process.argv[3], 'ready');
+  setInterval(() => {}, 1000);
+} else if (process.argv[2] === '--workload') await workload(process.argv.slice(3));
 else {
   assert.ok(['false', 'true'].includes(process.argv[2]), 'expected enabled=false or true');
   assert.ok(['capture', 'stream'].includes(process.argv[3]), 'expected capture or stream helper');
   await runCase(process.argv[2] === 'true', process.argv[3]);
+  if (process.argv[2] === 'true') {
+    for (const trigger of ['timeout', 'credential']) {
+      await runCancellationCase(process.argv[3], trigger);
+    }
+  }
 }

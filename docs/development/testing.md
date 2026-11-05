@@ -451,7 +451,9 @@ Both cases use the same workload and the real `runChild` and `captureChild` help
 | SRT denial event                         | None             | Destination and port logged                     |
 
 The tests also check stdin delivery, process exit, scratch cleanup and SRT's
-version (`0.0.81`) in the image. The local container uses `seccomp=unconfined` and
+version (`0.0.81`) in the image. Timeout and credential-cancellation cases verify
+that SRT removes its temporary filesystem mount points before returning.
+The local container uses `seccomp=unconfined` and
 `systempaths=unconfined` to permit namespaces; SRT's own weaker-isolation option
 remains disabled. These are local test-host options, not deployment settings.
 These tests do not qualify full agent conversations, Gateway tools or pause/resume.

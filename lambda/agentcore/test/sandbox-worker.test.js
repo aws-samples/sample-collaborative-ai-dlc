@@ -195,6 +195,28 @@ describe('SRT worker', () => {
     },
   );
 
+  it.each(['deny', 'mask'])(
+    'rejects unsupported credential %s rules before preparing or launching a command',
+    async (mode) => {
+      const manager = fixtureManager();
+      const spawnFn = vi.fn();
+      await expect(
+        runSandboxWorker(
+          {
+            ...request,
+            settings: {
+              ...settings,
+              credentials: { envVars: [{ name: 'KIRO_API_KEY', mode }] },
+            },
+          },
+          { manager, spawnFn },
+        ),
+      ).rejects.toThrow('Invalid sandbox launch configuration');
+      expect(manager.initialize).not.toHaveBeenCalled();
+      expect(spawnFn).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     { policy: settings, permissive: false },
     { policy: DEFAULT_SANDBOX_CONFIG.settings, permissive: true },
