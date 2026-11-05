@@ -19,12 +19,8 @@ let db, store, meta, remote, operation, timestamp, workflowPlan, prNumbers;
 const remoteProvider = {
   id: 'github',
   getDefaultBranch: async () => 'develop',
-  findPullRequest: async (_ctx, repo, { sourceBranch, state }) => {
-    const pr = remote.get(repo);
-    return pr?.sourceBranch === sourceBranch && (state === 'all' || pr.state === state) ? pr : null;
-  },
-  getPullRequestStatus: async (_ctx, repo, number) =>
-    remote.get(repo)?.number === number ? remote.get(repo) : null,
+  listPullRequests: async (_ctx, repo, { sourceBranch }) =>
+    remote.get(repo)?.sourceBranch === sourceBranch ? [remote.get(repo)] : [],
   getBranchHead: async (_ctx, _repo, branch) => (branch === 'develop' ? 'base1' : 'head1'),
 };
 const loadPlan = async () => ({ valid: true, plan: workflowPlan });
@@ -73,7 +69,7 @@ beforeEach(async () => {
         targetBranch: args.baseBranch,
         headSha: 'head1',
         state: 'open',
-        createdAt: new Date().toISOString(),
+        body: args.body,
       };
       remote.set(repo, pr);
       return { prUrl: pr.url, prNumber: pr.number };
@@ -531,18 +527,13 @@ describe('final delivery with real DynamoDB ownership', () => {
     'refuses to recreate a previously %s PR after a lost response',
     async (state) => {
       const original = operation.getMockImplementation();
-      operation.mockImplementation((call) =>
-        call.operation === 'create-pr' ? Promise.reject(new Error('timeout')) : original(call),
-      );
-      await publish();
-      remote.set('owner/api', {
-        number: 8,
-        url: 'https://example.test/pr/8',
-        sourceBranch: meta.branch,
-        targetBranch: 'develop',
-        headSha: 'head1',
-        state,
+      operation.mockImplementation(async (call) => {
+        const result = await original(call);
+        if (call.operation === 'create-pr') throw new Error('timeout after the provider accepted');
+        return result;
       });
+      await publish();
+      remote.get('owner/api').state = state; // a reviewer rejected or merged it
       const p = await preview();
       expect(p.delivery.repositories[0]).toMatchObject({ status: 'failed', retryable: false });
       expect(p.delivery.repositories[0].reason).toContain(state);
@@ -555,10 +546,7 @@ describe('final delivery with real DynamoDB ownership', () => {
     async (state) => {
       await publish();
       const previous = [...remote.values()].map((pr) => pr.url);
-      for (const pr of remote.values()) {
-        pr.state = state;
-        pr.createdAt = new Date(Date.now() - 3 * 3_600_000).toISOString();
-      }
+      for (const pr of remote.values()) pr.state = state;
       // Rewind or relaunch keeps the intent branch and mints a new run.
       meta = await store.updateExecution({
         executionId: meta.executionId,

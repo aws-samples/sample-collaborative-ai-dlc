@@ -8,6 +8,7 @@ import {
   unverifiedCompletion,
 } from './unit-completion.js';
 import { openIntentPrs } from './intent-pr.js';
+import { newDeliveryMarker, withDeliveryMarker } from './delivery-marker.js';
 import { canonicalJson } from './workflow-checkpoint.js';
 
 const done = (repo) => ['succeeded', 'no_change'].includes(repo.status);
@@ -51,7 +52,7 @@ export const deliveryView = (meta, delivery) => {
       : null,
     leaseUntil: delivery.leaseUntil,
     repositories: (delivery.repositories ?? []).map(
-      ({ repoId, provider, branch, baseBranch, status, reason, retryable, pr }) => ({
+      ({ repoId, provider, branch, baseBranch, status, reason, retryable, pr, prMatch }) => ({
         repoId,
         provider,
         branch,
@@ -59,7 +60,9 @@ export const deliveryView = (meta, delivery) => {
         status,
         reason,
         retryable,
-        pr,
+        // Only a published or reconciled PR, or one this run's marker proves.
+        // Rows from earlier heads may name an earlier run's pull request.
+        pr: status === 'succeeded' || prMatch ? pr : undefined,
       }),
     ),
     updatedAt: delivery.updatedAt,
@@ -163,12 +166,56 @@ const callFor = (operation, meta, repo, name, args) =>
     args,
   });
 
+// Which pull request on the shared intent branch is this run's. Every run of an
+// intent publishes from the same branch, so the provider also lists earlier
+// runs' pull requests and ones opened by hand. Ownership is decided over the
+// complete list, by exact identity only: the delivery marker this run wrote
+// into its create request (lambda/shared/delivery-marker.js). Timestamps and
+// list order are never evidence. "Request recorded" means the repository row
+// has createRequestedAt: this run may have created a pull request whose
+// response was lost. Rows from earlier heads have it without a marker.
+//
+// Candidate on the intent branch                | no request recorded   | request recorded
+// ----------------------------------------------|-----------------------|----------------------
+// open PR onto the captured target              | current PR (reused)   | current PR (reused)
+// open PR onto another target only             | refused (no retarget) | refused (no retarget)
+// one closed/merged PR with this row's marker   | -                     | this run's: refused
+// two or more closed/merged with this marker   | -                     | uncertain
+// closed/merged PR, another run's marker        | ignored               | ignored
+// closed/merged PR without a marker             | ignored               | uncertain
+// none of the above                             | publish (create)      | publish (create)
+//
+// "Uncertain" never adopts and never creates: an unmarked closed PR may be this
+// run's after its description was edited. A new run has no recorded request,
+// so it is never blocked by one.
+export const selectDeliveryPr = (pullRequests, { branch, baseBranch, marker, requested }) => {
+  const onBranch = (pullRequests ?? []).filter((pr) => pr.sourceBranch === branch);
+  const open = onBranch.filter((pr) => pr.state === 'open');
+  const current = open.find((pr) => pr.targetBranch === baseBranch);
+  if (current) return { kind: 'open', pr: current };
+  if (open.length) return { kind: 'retargeted' };
+  const terminal = onBranch.filter((pr) => pr.targetBranch === baseBranch);
+  const own = marker ? terminal.filter((pr) => pr.markers?.includes(marker)) : [];
+  if (own.length === 1) return { kind: 'own', pr: own[0] };
+  if (own.length > 1) return { kind: 'uncertain' };
+  if (requested && terminal.some((pr) => !pr.markers?.length)) return { kind: 'uncertain' };
+  return { kind: 'none' };
+};
+
+const UNCERTAIN_REASON =
+  "A closed or merged pull request from this branch has no matching delivery marker, so it could not be confirmed whether this run's earlier create request opened it. Check the branch's pull requests at the provider: reopen the pull request if it holds this run's work, or start a new run to publish a new one.";
+const BRANCH_CHANGED_REASON =
+  'The intent branch changed after the delivery attempt. Review the new commits before starting a new execution.';
+
 const inspect = async (meta, repo, operation) => {
   if (done(repo)) return repo; // Publication is complete; merge lifecycle is out of scope.
+  // A recorded pull request is re-derived on every inspection: rows written by
+  // earlier heads may name one that was never proven to be this run's.
+  const { pr: _recorded, prMatch: _match, ...unproven } = repo;
   try {
     if (!repo.branch)
       return {
-        ...repo,
+        ...unproven,
         status: 'failed',
         retryable: false,
         reason: 'The captured intent branch is missing. Review the execution before publishing.',
@@ -176,42 +223,45 @@ const inspect = async (meta, repo, operation) => {
     const snapshot = await callFor(operation, meta, repo, 'delivery-inspect', {
       branch: repo.branch,
       baseBranch: repo.baseBranch,
-      number: repo.pr?.prNumber,
-      // Only this run's own create request makes a closed or merged PR current.
-      createdAfter: repo.createRequestedAt ?? null,
     });
     const next = {
-      ...repo,
+      ...unproven,
       baseBranch: repo.baseBranch ?? snapshot.baseBranch,
       headSha: repo.headSha ?? snapshot.headSha,
     };
-    const pr = snapshot.pr;
-    if (pr) {
-      const identity = {
-        repoId: repo.repoId,
-        provider: repo.provider,
-        prUrl: pr.url,
-        prNumber: pr.number,
-        branch: pr.sourceBranch,
-        baseBranch: pr.targetBranch,
+    const selected = selectDeliveryPr(snapshot.pullRequests, {
+      branch: repo.branch,
+      baseBranch: next.baseBranch,
+      marker: repo.deliveryMarker ?? null,
+      requested: Boolean(repo.createRequestedAt),
+    });
+    if (selected.kind === 'retargeted')
+      return {
+        ...next,
+        status: 'failed',
+        retryable: false,
+        reason:
+          'The existing pull request has a different branch or target. Review it with the repository owner; retry will not retarget it.',
       };
-      if (
-        !pr.url ||
-        pr.number == null ||
-        pr.sourceBranch !== repo.branch ||
-        pr.targetBranch !== next.baseBranch
-      )
+    if (selected.kind === 'uncertain')
+      return { ...next, status: 'uncertain', retryable: false, reason: UNCERTAIN_REASON };
+    const { pr } = selected;
+    if (pr) {
+      const proven = {
+        ...next,
+        prMatch: selected.kind === 'own' ? 'marker' : 'open',
+        pr: {
+          repoId: repo.repoId,
+          provider: repo.provider,
+          prUrl: pr.url,
+          prNumber: pr.number,
+          branch: pr.sourceBranch,
+          baseBranch: pr.targetBranch,
+        },
+      };
+      if (selected.kind === 'own')
         return {
-          ...next,
-          status: 'failed',
-          retryable: false,
-          reason:
-            'The existing pull request has a different branch or target. Review it with the repository owner; retry will not retarget it.',
-        };
-      if (pr.state !== 'open')
-        return {
-          ...next,
-          pr: identity,
+          ...proven,
           status: 'failed',
           retryable: false,
           reason: `This run's pull request is ${pr.state === 'merged' ? 'merged' : 'closed'}. Review it in the provider; retry will not recreate closed work.`,
@@ -221,17 +271,9 @@ const inspect = async (meta, repo, operation) => {
         pr.headSha !== snapshot.headSha ||
         (repo.headSha && snapshot.headSha !== repo.headSha)
       )
-        return {
-          ...next,
-          pr: identity,
-          status: 'failed',
-          retryable: false,
-          reason:
-            'The intent branch changed after the delivery attempt. Review the new commits before starting a new execution.',
-        };
+        return { ...proven, status: 'failed', retryable: false, reason: BRANCH_CHANGED_REASON };
       return {
-        ...next,
-        pr: identity,
+        ...proven,
         status: 'succeeded',
         retryable: false,
         reason: 'Existing open pull request reconciled.',
@@ -245,13 +287,7 @@ const inspect = async (meta, repo, operation) => {
         reason: `The ${!snapshot.headSha ? 'intent' : 'base'} branch does not exist. Restore the captured branch before checking delivery again.`,
       };
     if (repo.headSha && snapshot.headSha !== repo.headSha)
-      return {
-        ...next,
-        status: 'failed',
-        retryable: false,
-        reason:
-          'The intent branch changed after the delivery attempt. Review the new commits before starting a new execution.',
-      };
+      return { ...next, status: 'failed', retryable: false, reason: BRANCH_CHANGED_REASON };
     return {
       ...next,
       status: 'pending',
@@ -259,7 +295,7 @@ const inspect = async (meta, repo, operation) => {
       reason: 'Ready to publish the captured intent branch. Existing integrated code is preserved.',
     };
   } catch (error) {
-    return { ...repo, status: 'failed', retryable: true, reason: safeError(error) };
+    return { ...unproven, status: 'failed', retryable: true, reason: safeError(error) };
   }
 };
 
@@ -431,12 +467,16 @@ export const publishFinalDelivery = async ({
           applicationUrl,
           comparePrBranches: async () => cmp,
           openPr: async ({ branch, baseBranch, title, body, attemptKey }) => {
-            // Record the create request and fence ownership and the unit plan
-            // atomically with it, immediately before the provider mutation. A
-            // later check accepts a closed or merged PR only after this marker.
+            // Record the create request and its delivery marker, and fence
+            // ownership and the unit plan atomically with them, immediately
+            // before the provider mutation. The pull request carries the same
+            // marker; a later check accepts a closed or merged PR as this run's
+            // only by that marker (selectDeliveryPr). Retries in this run reuse
+            // the persisted marker.
             const requested = {
               ...repo,
               createRequestedAt: repo.createRequestedAt ?? new Date().toISOString(),
+              deliveryMarker: repo.deliveryMarker ?? newDeliveryMarker(),
             };
             delivery.repositories[i] = requested;
             try {
@@ -460,7 +500,7 @@ export const publishFinalDelivery = async ({
                 branch,
                 baseBranch,
                 title,
-                body,
+                body: withDeliveryMarker(body, repo.deliveryMarker),
                 attemptKey,
                 expectedHeadSha: repo.headSha,
                 allowRetarget: false,

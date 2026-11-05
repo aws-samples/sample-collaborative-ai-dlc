@@ -737,27 +737,9 @@ const pullRequestProviderId = (pr) => pr?.node_id ?? pr?.id ?? null;
 const findPullRequest = async (
   ctx,
   repoId,
-  { sourceBranch, targetBranch = null, state = 'open', strict = false },
+  { sourceBranch, targetBranch = null, state = 'open' },
 ) => {
   const { owner, repo } = splitOwnerRepo(repoId);
-  if (strict) {
-    for (let page = 1; page <= 10; page++) {
-      const res = await ghFetch(
-        ctx,
-        `${API_BASE}/repos/${owner}/${repo}/pulls?head=${owner}:${encodeURIComponent(sourceBranch)}&state=${state}&per_page=100&page=${page}`,
-      );
-      if (!res.ok) throw new ProviderError(res.status, 'Pull-request lookup failed');
-      const rows = await res.json();
-      if (!Array.isArray(rows)) throw new ProviderError(502, 'Invalid pull-request lookup');
-      const match = rows.find(
-        (pr) =>
-          pr.head?.ref === sourceBranch && (targetBranch === null || pr.base?.ref === targetBranch),
-      );
-      if (match) return match;
-      if (rows.length < 100) return null;
-    }
-    throw new ProviderError(409, 'Pull-request lookup truncated');
-  }
   const headRes = await ghFetch(
     ctx,
     `${API_BASE}/repos/${owner}/${repo}/pulls?head=${owner}:${encodeURIComponent(
@@ -793,6 +775,35 @@ const findPullRequest = async (
     if (!Array.isArray(prs) || prs.length < 100) break;
   }
   return null;
+};
+
+// Every pull request from `sourceBranch` in any state, across all pages, for
+// final-delivery ownership checks. Strict: a failed, malformed or truncated
+// listing throws instead of reporting none.
+const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const prs = [];
+  for (let page = 1; page <= 10; page++) {
+    const res = await ghFetch(
+      ctx,
+      `${API_BASE}/repos/${owner}/${repo}/pulls?head=${owner}:${encodeURIComponent(sourceBranch)}&state=all&per_page=100&page=${page}`,
+    );
+    if (!res.ok) throw new ProviderError(res.status, 'Pull-request lookup failed');
+    const rows = await res.json();
+    if (!Array.isArray(rows)) throw new ProviderError(502, 'Invalid pull-request lookup');
+    for (const pr of rows.filter((row) => row.head?.ref === sourceBranch))
+      prs.push({
+        number: pr.number,
+        url: pr.html_url,
+        sourceBranch: pr.head.ref,
+        targetBranch: pr.base?.ref ?? null,
+        headSha: pr.head.sha ?? null,
+        state: pr.state === 'open' ? 'open' : pr.merged_at ? 'merged' : 'closed',
+        body: pr.body ?? '',
+      });
+    if (rows.length < 100) return prs;
+  }
+  throw new ProviderError(409, 'Pull-request lookup truncated');
 };
 
 // Create a PR. Enforces the unmerged-construction-task-branch guard. Returns
@@ -986,7 +997,6 @@ const getPullRequestStatus = async (ctx, repoId, prNumber) => {
     mergedAt: pr.merged_at ?? null,
     closedAt: pr.closed_at ?? null,
     updatedAt: pr.updated_at ?? null,
-    createdAt: pr.created_at ?? null,
   };
 };
 
@@ -1100,6 +1110,7 @@ export {
   cleanupConstructionTaskBranches,
   getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
@@ -1141,6 +1152,7 @@ export default {
   cleanupConstructionTaskBranches,
   getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,

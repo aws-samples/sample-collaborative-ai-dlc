@@ -115,3 +115,24 @@ it('explains historical unknown status and a read-only assessment of closed work
   expect(screen.queryByRole('button', { name: 'Retry delivery' })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Save delivery assessment' })).toBeInTheDocument();
 });
+it('shows an unconfirmed pull request as needing review without offering a retry', async () => {
+  const uncertain = {
+    ...repo,
+    status: 'uncertain',
+    retryable: false,
+    reason: 'Check the branch pull requests at the provider.',
+  };
+  vi.mocked(intentsService.previewDelivery).mockResolvedValue({
+    ...preview,
+    retryable: false,
+    canRecord: false,
+    delivery: { status: 'failed' as const, repositories: [uncertain] },
+  });
+  render(<DeliveryStatus {...props} delivery={{ status: 'failed', repositories: [uncertain] }} />);
+  const user = userEvent.setup();
+  expect(screen.getByText(/Pull request ownership unconfirmed/)).toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: /View pull request/ })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Check delivery' }));
+  await waitFor(() => expect(intentsService.previewDelivery).toHaveBeenCalled());
+  expect(screen.queryByRole('button', { name: 'Retry delivery' })).not.toBeInTheDocument();
+});

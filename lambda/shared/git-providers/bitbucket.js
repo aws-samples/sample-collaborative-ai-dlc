@@ -719,7 +719,7 @@ const cleanupConstructionTaskBranches = async (ctx, repoId, branch) => {
 const findPullRequest = async (
   ctx,
   repoId,
-  { sourceBranch, targetBranch = null, state = 'OPEN', strict = false },
+  { sourceBranch, targetBranch = null, state = 'OPEN' },
 ) => {
   const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
 
@@ -728,24 +728,50 @@ const findPullRequest = async (
   // field explicitly (BCLOUD-23659). Without `(draft=true OR draft=false)` a
   // draft unit-PR is silently missed at fan-in, so keep the clause on every
   // lookup regardless of state.
-  let query = `source.branch.name=${JSON.stringify(sourceBranch)} AND state="${stateFilter}" AND (draft=true OR draft=false)`;
+  let query = `source.branch.name="${sourceBranch}" AND state="${stateFilter}" AND (draft=true OR draft=false)`;
   if (targetBranch) {
-    query += ` AND destination.branch.name=${JSON.stringify(targetBranch)}`;
+    query += ` AND destination.branch.name="${targetBranch}"`;
   }
 
   const res = await bbFetch(
     ctx,
     `${API_BASE}/repositories/${workspace}/${repoSlug}/pullrequests?q=${encodeURIComponent(query)}&pagelen=100`,
   );
-  if (!res.ok) {
-    if (strict) throw new ProviderError(res.status, 'Pull-request lookup failed');
-    return null;
-  }
+  if (!res.ok) return null;
 
   const data = await res.json();
-  if (strict && (!Array.isArray(data.values) || data.next))
-    throw new ProviderError(409, 'Pull-request lookup incomplete');
   return Array.isArray(data.values) && data.values.length > 0 ? data.values[0] : null;
+};
+// Every pull request from `sourceBranch` in any state, across all pages, for
+// final-delivery ownership checks. Strict: a failed, malformed or truncated
+// listing throws instead of reporting none. The description is requested
+// explicitly so delivery markers are read from the listing itself.
+const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
+  const { workspace, repoSlug } = splitWorkspaceRepo(repoId);
+  const query = `source.branch.name=${JSON.stringify(sourceBranch)} AND (state="OPEN" OR state="MERGED" OR state="DECLINED" OR state="SUPERSEDED") AND (draft=true OR draft=false)`;
+  let url = `${API_BASE}/repositories/${workspace}/${repoSlug}/pullrequests?q=${encodeURIComponent(query)}&pagelen=50&fields=${encodeURIComponent('+values.description')}`;
+  const prs = [];
+  for (let page = 0; page < 20 && url; page++) {
+    const res = await bbFetch(ctx, url);
+    if (!res.ok) throw new ProviderError(res.status, 'Pull-request lookup failed');
+    const data = await res.json();
+    if (!Array.isArray(data.values)) throw new ProviderError(502, 'Invalid pull-request lookup');
+    for (const pr of data.values.filter((row) => row.source?.branch?.name === sourceBranch))
+      prs.push({
+        number: pr.id,
+        url: pr.links?.html?.href,
+        sourceBranch: pr.source.branch.name,
+        targetBranch: pr.destination?.branch?.name ?? null,
+        headSha: pr.source?.commit?.hash ?? null,
+        state: pr.state === 'OPEN' ? 'open' : pr.state === 'MERGED' ? 'merged' : 'closed',
+        body: pr.description ?? '',
+      });
+    if (data.next && !String(data.next).startsWith(`${API_BASE}/`))
+      throw new ProviderError(502, 'Invalid pull-request page link');
+    url = data.next ?? null;
+  }
+  if (url) throw new ProviderError(409, 'Pull-request lookup truncated');
+  return prs;
 };
 
 const createPullRequest = async (
@@ -931,7 +957,6 @@ const getPullRequestStatus = async (ctx, repoId, prId) => {
     mergedAt: pr.state === 'MERGED' ? pr.updated_on : null,
     closedAt: pr.state === 'DECLINED' ? pr.updated_on : null,
     updatedAt: pr.updated_on ?? null,
-    createdAt: pr.created_on ?? null,
     title: pr.title ?? '',
   };
 };
@@ -1076,6 +1101,7 @@ export {
   cleanupConstructionTaskBranches,
   getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
@@ -1111,6 +1137,7 @@ export default {
   cleanupConstructionTaskBranches,
   getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
