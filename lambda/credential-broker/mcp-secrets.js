@@ -17,11 +17,13 @@ import {
   gatewayScopeDenied,
   verifyBrokerGatewayGrant,
 } from './gateway-authority.js';
+import { gatewayOnlyMcp, hasDirectMcpServers } from '../shared/runtime-mcp-policy.js';
 
 export const MCP_SECRET_ERROR_CODES = new Set([
   'MCP_SECRET_REQUEST_INVALID',
   'MCP_SECRET_AUTHORITY_REQUIRED',
   'MCP_SECRETS_DISABLED',
+  'MCP_SECRETS_GATEWAY_ONLY',
   'MCP_SECRET_CONFIG_INVALID',
   'MCP_SECRET_SCOPE_MISMATCH',
   'MCP_SECRET_NOT_CONFIGURED',
@@ -172,9 +174,22 @@ export const authorizeMcpSecretRequest = async (
   if (Object.hasOwn(request, 'gatewayGrant') === Object.hasOwn(request, 'verificationGrant'))
     throw mcpSecretError('MCP_SECRET_AUTHORITY_REQUIRED');
   if (!engineDataEnabled(env)) throw mcpSecretError('MCP_SECRETS_DISABLED');
+  // runtime_mcp_credentials = gateway_only: no MCP secret is ever resolved for
+  // the runtime, under either authority. A config naming servers (or typed
+  // secrets) is refused before any read; the pinned config is checked again
+  // once the authority resolved it. An empty config resolves nothing.
+  const gatewayOnly = gatewayOnlyMcp(env);
+  if (
+    gatewayOnly &&
+    (hasDirectMcpServers(request.mcpServersByTier) ||
+      (isMcpRecord(request.unsavedSecrets) && Object.keys(request.unsavedSecrets).length > 0))
+  )
+    throw mcpSecretError('MCP_SECRETS_GATEWAY_ONLY');
   const authority = Object.hasOwn(request, 'gatewayGrant')
     ? await stageAuthority(request, { ddbClient, env, verifyGrant })
     : await verificationAuthority(request, { ssmClient, env, now });
+  if (gatewayOnly && hasDirectMcpServers(authority.config))
+    throw mcpSecretError('MCP_SECRETS_GATEWAY_ONLY');
   const { policy, survivingGlobal, survivingProject, projectId, overrides, verification } =
     authority;
   const base = env.AGENT_SETTINGS_SSM_PREFIX;
