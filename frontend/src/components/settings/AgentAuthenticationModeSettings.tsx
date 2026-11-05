@@ -10,6 +10,15 @@ import { AuthenticationImpactReview } from './AuthenticationImpactReview';
 import { agentAuthProviderUi } from './agent-auth/registry';
 import { summarizeConfiguration } from './agent-auth/summary';
 
+const CONNECTION_STATES: Record<string, string> = {
+  ready: 'Ready',
+  'reconnect-required': 'Needs reconnecting by an administrator',
+  revoked: 'No longer valid. An administrator needs to replace it',
+  missing: 'Not set up yet',
+};
+const connectionStateLabel = (state?: string) =>
+  state ? (CONNECTION_STATES[state] ?? state) : CONNECTION_STATES.missing;
+
 export function AgentAuthenticationModeSettings({
   authentication,
   scope,
@@ -55,12 +64,37 @@ export function AgentAuthenticationModeSettings({
       An administrator must reconnect this shared connection before agents can start.
     </p>
   );
-  // People only manage their own keys, which the card already explains; the
-  // shared connection matters to them only when it stops agents from starting.
-  if (scope === 'personal')
-    return reconnectNotice ? (
-      <div className="rounded-md bg-muted/40 p-3 text-xs">{reconnectNotice}</div>
-    ) : null;
+  // People cannot change the shared connection, but they can see which Bedrock
+  // access their agents use and whether it works. Keys mode only needs a word
+  // when no key is available at all.
+  if (scope === 'personal') {
+    if (policy.mode === 'keys')
+      return connection && connection.state !== 'ready' ? (
+        <p role="status" className="rounded-md bg-muted/40 p-3 text-xs">
+          No shared Bedrock key is set up. Add your own key below, or ask an administrator.
+        </p>
+      ) : null;
+    return (
+      <section
+        aria-label="Bedrock access for your agents"
+        className="space-y-1 rounded-md bg-muted/40 p-3 text-xs"
+      >
+        <p className="font-medium">Bedrock access: {labelFor(policy.mode)}</p>
+        <p>Your administrators manage this for everyone. You can't change it here.</p>
+        <p>Status: {connectionStateLabel(connection?.state)}</p>
+        {summary.length > 0 && (
+          <div className="break-all text-muted-foreground">
+            {summary.map((line) => (
+              <p key={line.label}>
+                {line.label}: {line.value}
+              </p>
+            ))}
+          </div>
+        )}
+        {reconnectNotice}
+      </section>
+    );
+  }
   const preview = (request: AgentAuthChangeRequest) =>
     perform(async () => setReview(await agentsService.previewAuthenticationChange(request)));
   // Failures propagate so the provider's Setup can show them and stay open.

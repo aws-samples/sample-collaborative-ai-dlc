@@ -182,9 +182,22 @@ describe('plain impact confirmation', () => {
     expect(panel).toHaveTextContent('This applies the next time an agent starts.');
     expect(panel).toHaveTextContent('Agents that are running now are not affected.');
     expect(panel).not.toHaveTextContent(JARGON);
-    expect(screen.queryByText('Show details')).not.toBeInTheDocument();
+    // The server's evidence note stays available, collapsed.
+    expect(screen.queryByText(/Older runtime sessions/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Confirm change' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Confirm this change' })).toHaveFocus();
+  });
+
+  it('keeps the server notes of a resumed review behind Show details', async () => {
+    renderReview({
+      ...nextStartOnly,
+      items: [],
+      limitations: [
+        'This reviewed change is pending. Apply it again to finish the interrupted write.',
+      ],
+    });
+    await userEvent.click(screen.getByText('Show details'));
+    expect(screen.getByText(/This reviewed change is pending/)).toBeInTheDocument();
   });
 
   it('notes work that keeps running without warning about it', () => {

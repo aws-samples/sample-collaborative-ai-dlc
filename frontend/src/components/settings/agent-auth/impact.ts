@@ -131,9 +131,13 @@ export const describeCandidate = (
   }
 };
 
-/** Server error codes a person can act on without knowing the review protocol. */
+/** Key-save error codes a person can act on without knowing the review protocol. */
 export const authChangeErrorMessage = (error: unknown, fallback: string) => {
   const code = error instanceof ApiError ? error.body?.code : undefined;
+  // The card hides the Bedrock key outside Keys mode, so this means the mode
+  // changed after the page loaded.
+  if (code === 'AGENT_AUTH_MODE_MISMATCH')
+    return "Your administrators now manage Bedrock access, so a Bedrock key can't be used. Reload the page to see the current setup.";
   if (code === 'AGENT_AUTH_REVIEW_STALE')
     return 'Something changed while saving, so nothing was saved. Please try again.';
   if (code === 'AGENT_AUTH_CHANGE_IN_PROGRESS')

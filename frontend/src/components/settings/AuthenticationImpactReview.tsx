@@ -135,12 +135,13 @@ export function AuthenticationImpactReview({
       ) : (
         <p>{continuing > 0 ? continuingMessage(continuing) : NOT_AFFECTED_MESSAGE}</p>
       )}
-      {startedWork.length > 0 && (
+      {/* The server's notes (evidence limits, an interrupted write) stay available. */}
+      {(startedWork.length > 0 || review.limitations.length > 0) && (
         <details className="text-xs" onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
           <summary className="cursor-pointer text-muted-foreground">Show details</summary>
           {detailsOpen && (
             <>
-              <AffectedWorkList items={startedWork} />
+              {startedWork.length > 0 && <AffectedWorkList items={startedWork} />}
               {review.limitations.map((limitation) => (
                 <p key={limitation} className="mt-2 text-muted-foreground">
                   {limitation}

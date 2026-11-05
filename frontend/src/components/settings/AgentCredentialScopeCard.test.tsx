@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, waitFor } from '@testing-library/react';
+import { ApiError } from '@/services/api';
 import userEvent from '@testing-library/user-event';
 import type { AgentAuthenticationView } from '@/services/agents';
 import type { AgentAuthProviderUi, AgentAuthSetupProps } from './agent-auth/contract';
@@ -279,8 +280,19 @@ describe('AgentCredentialScopeCard', () => {
       expect(
         screen.getByText(/inherit the platform Test gateway connection unless this space/),
       ).toBeInTheDocument();
-      expect(screen.getByLabelText(/Bedrock Bearer Token/)).toBeDisabled();
-      expect(screen.getByText(/Saved Bedrock keys are not used in this mode/)).toBeInTheDocument();
+      // The server rejects any Bedrock key write in this mode, so nothing offers one.
+      expect(screen.queryByLabelText(/Bedrock Bearer Token/)).not.toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'Agents in this space get Bedrock access through Test gateway, so a space Bedrock key is not used.',
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          'A Bedrock key is still saved here, but it is not used while Test gateway is active.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument();
       expect(screen.queryByText(/Enables Claude Code/)).not.toBeInTheDocument();
 
       const kiro = screen.getByLabelText(/Kiro API Key/);
@@ -292,6 +304,63 @@ describe('AgentCredentialScopeCard', () => {
           kiroApiKey: 'ksk_space',
         }),
       );
+    });
+
+    it('shows a person the shared access instead of a Bedrock key they cannot use', async () => {
+      getPersonalCredentials.mockResolvedValue({
+        bedrockBearerTokenSet: false,
+        kiroApiKeySet: false,
+        authentication: connectionView({
+          reviewRequired: false,
+          connection: {
+            ...connectionView().connection!,
+            configuration: { endpoint: 'https://gateway.example', region: 'eu-west-1' },
+          },
+        }),
+      });
+      const user = userEvent.setup();
+      render(<AgentCredentialScopeCard scope="personal" />);
+
+      const access = await screen.findByRole('region', { name: 'Bedrock access for your agents' });
+      expect(access).toHaveTextContent('Bedrock access: Test gateway');
+      expect(access).toHaveTextContent('Status: Ready');
+      expect(access).toHaveTextContent('Endpoint: https://gateway.example');
+      expect(access).toHaveTextContent('Region: eu-west-1');
+      expect(screen.queryByLabelText(/Bedrock Bearer Token/)).not.toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Your administrators provide Bedrock access through Test gateway, so you don't need a Bedrock key.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/still saved here/)).not.toBeInTheDocument();
+
+      await user.type(screen.getByLabelText(/Kiro API Key/), 'ksk_personal');
+      await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+      await waitFor(() =>
+        expect(updatePersonalCredentials).toHaveBeenCalledWith({ kiroApiKey: 'ksk_personal' }),
+      );
+    });
+
+    it('marks a stale personal Bedrock key as unused without offering to clear it', async () => {
+      getPersonalCredentials.mockResolvedValue({
+        bedrockBearerTokenSet: true,
+        kiroApiKeySet: false,
+        authentication: connectionView({
+          connection: { ...connectionView().connection!, state: 'reconnect-required' },
+        }),
+      });
+      render(<AgentCredentialScopeCard scope="personal" />);
+
+      expect(
+        await screen.findByText(
+          'A Bedrock key is still saved here, but it is not used while Test gateway is active.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Clear' })).not.toBeInTheDocument();
+      expect(
+        screen.getByText('Status: Needs reconnecting by an administrator'),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('status')).toHaveTextContent('administrator must reconnect');
     });
 
     it('does not let a saved key hide an unavailable override', async () => {
@@ -343,6 +412,26 @@ describe('AgentCredentialScopeCard', () => {
       await user.click(screen.getByRole('button', { name: 'Change space test link' }));
       expect(screen.getByText('Test setup for space space-1')).toBeInTheDocument();
     });
+  });
+
+  it('explains a Bedrock key refused because the mode changed after the page loaded', async () => {
+    updatePersonalCredentials.mockRejectedValueOnce(
+      new ApiError(409, 'Bedrock key overrides are unavailable in the active platform mode', {
+        error: 'Bedrock key overrides are unavailable in the active platform mode',
+        code: 'AGENT_AUTH_MODE_MISMATCH',
+      }),
+    );
+    const user = userEvent.setup();
+    render(<AgentCredentialScopeCard scope="personal" />);
+    await user.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'personal-token');
+    await user.click(screen.getByRole('button', { name: 'Save Credentials' }));
+
+    expect(
+      await screen.findByText(
+        "Your administrators now manage Bedrock access, so a Bedrock key can't be used. Reload the page to see the current setup.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/unavailable in the active platform mode/)).not.toBeInTheDocument();
   });
 
   it('falls back to the saved space key when the server omits hasOverride', async () => {

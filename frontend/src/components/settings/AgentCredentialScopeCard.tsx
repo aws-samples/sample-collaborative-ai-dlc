@@ -51,6 +51,16 @@ const COPY: Record<Scope, { title: string; description: string }> = {
   },
 };
 
+// Why a connection mode needs no Bedrock key at this scope.
+const BEDROCK_ACCESS_COPY: Record<Scope, (mode: string) => string> = {
+  personal: (mode) =>
+    `Your administrators provide Bedrock access through ${mode}, so you don't need a Bedrock key.`,
+  space: (mode) =>
+    `Agents in this space get Bedrock access through ${mode}, so a space Bedrock key is not used.`,
+  platform: (mode) =>
+    `Agents get Bedrock access through ${mode}, so a platform Bedrock key is not used.`,
+};
+
 const SOURCE: Record<Scope, 'platform' | 'space' | 'user'> = {
   platform: 'platform',
   space: 'space',
@@ -288,7 +298,7 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
       ? `Agents use the platform ${modeLabel} connection. Kiro keeps its separate API key.`
       : scope === 'space'
         ? `Agents inherit the platform ${modeLabel} connection unless this space has its own. Kiro keeps its separate API key.`
-        : `Administrators manage Bedrock access (${modeLabel}), so you don't need a Bedrock key. You can still add your own Kiro key.`;
+        : 'Your administrators provide Bedrock access. You can still add your own Kiro key for the agents you run.';
   const personalKeysLabel =
     configuredCount > 1
       ? 'Using your own keys'
@@ -384,28 +394,40 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
               onApplied={load}
             />
           )}
-          <SecretField
-            id={`${scope}-bedrock-bearer-token`}
-            label="Bedrock Bearer Token"
-            isSet={Boolean(settings?.bedrockBearerTokenSet)}
-            value={bearerToken}
-            onChange={(value) => {
-              setBearerToken(value);
-              setPendingReview(null);
-              setNote(null);
-            }}
-            emptyPlaceholder="Enter AWS_BEARER_TOKEN_BEDROCK value"
-            rotatePlaceholder="Enter a new token to rotate, or leave blank"
-            onClear={() => clearSecret('bedrockBearerToken')}
-            clearing={clearingSecret === 'bedrockBearerToken'}
-            disabled={saving || clearingSecret !== null || connectionMode}
-            helpText={
-              connectionMode
-                ? `Agents authenticate with ${modeLabel}. Saved Bedrock keys are not used in this mode.`
-                : `Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`
-            }
-            warningText={agentCredentialFormatWarning('bedrockBearerToken', bearerToken)}
-          />
+          {connectionMode ? (
+            // The server rejects every Bedrock key write in a connection mode,
+            // clearing included, so offer neither an input nor a Clear button.
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-foreground">Bedrock key</p>
+              <p className="text-[11px] text-muted-foreground">
+                {BEDROCK_ACCESS_COPY[scope](modeLabel ?? '')}
+              </p>
+              {settings?.bedrockBearerTokenSet && (
+                <p className="text-[11px] text-muted-foreground">
+                  A Bedrock key is still saved here, but it is not used while {modeLabel} is active.
+                </p>
+              )}
+            </div>
+          ) : (
+            <SecretField
+              id={`${scope}-bedrock-bearer-token`}
+              label="Bedrock Bearer Token"
+              isSet={Boolean(settings?.bedrockBearerTokenSet)}
+              value={bearerToken}
+              onChange={(value) => {
+                setBearerToken(value);
+                setPendingReview(null);
+                setNote(null);
+              }}
+              emptyPlaceholder="Enter AWS_BEARER_TOKEN_BEDROCK value"
+              rotatePlaceholder="Enter a new token to rotate, or leave blank"
+              onClear={() => clearSecret('bedrockBearerToken')}
+              clearing={clearingSecret === 'bedrockBearerToken'}
+              disabled={saving || clearingSecret !== null}
+              helpText={`Enables Claude Code, OpenCode and Codex.${fallbackText('bedrock') ?? ''}`}
+              warningText={agentCredentialFormatWarning('bedrockBearerToken', bearerToken)}
+            />
+          )}
           <SecretField
             id={`${scope}-kiro-api-key`}
             label="Kiro API Key"

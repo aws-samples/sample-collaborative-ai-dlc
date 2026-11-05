@@ -319,20 +319,48 @@ describe('AgentAuthenticationModeSettings', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows people nothing about the shared connection unless it stops agents from starting', () => {
-    const { container, unmount } = renderSettings({ scope: 'personal' });
-    expect(container).toBeEmptyDOMElement();
-    unmount();
+  it('shows people the shared Bedrock access their agents use, read-only', () => {
+    renderSettings({ scope: 'personal' });
+    const access = screen.getByRole('region', { name: 'Bedrock access for your agents' });
+    expect(access).toHaveTextContent('Bedrock access: Test gateway');
+    expect(access).toHaveTextContent('Status: Ready');
+    expect(access).toHaveTextContent('Gateway: https://platform.example');
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Platform mode/)).not.toBeInTheDocument();
+  });
 
+  it('tells people when the shared connection needs an administrator', () => {
     renderSettings({
       scope: 'personal',
       authentication: view({
         connection: { ...platformConnection, state: 'reconnect-required' },
       }),
     });
+    expect(screen.getByText('Status: Needs reconnecting by an administrator')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent(
       'An administrator must reconnect this shared connection before agents can start.',
     );
-    expect(screen.queryByText(/Platform mode|Kiro uses|Connection:/)).not.toBeInTheDocument();
+    expect(screen.getByText('Gateway: https://platform.example')).toBeInTheDocument();
+  });
+
+  it('keeps Keys mode short for people and only speaks up when no key is available', () => {
+    const keys = (state: string) =>
+      view({
+        policy: { mode: 'keys', revision: 3, defaultConnectionId: 'keys-platform-default' },
+        personalMechanisms: ['api-key'],
+        connection: { ...platformConnection, mode: 'keys', mechanism: 'api-key', state },
+      });
+    const { container, unmount } = renderSettings({
+      scope: 'personal',
+      authentication: keys('ready'),
+    });
+    expect(container).toBeEmptyDOMElement();
+    unmount();
+
+    renderSettings({ scope: 'personal', authentication: keys('missing') });
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'No shared Bedrock key is set up. Add your own key below, or ask an administrator.',
+    );
   });
 });
