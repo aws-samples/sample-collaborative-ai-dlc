@@ -315,4 +315,35 @@ describe.each(PROVIDERS)('%s final delivery PR ownership', (name) => {
     expect(t.host.prs).toHaveLength(1);
     expect(shownPrs(await t.view())).toEqual([null]);
   });
+
+  it.each(['closed', 'merged'])(
+    'refuses its own PR that was retargeted and then %s instead of creating another',
+    async (state) => {
+      const t = await setup(name);
+      t.host.loseResponses = 1;
+      await t.publish();
+      const [own] = t.host.prs;
+      own.target = 'main'; // a reviewer retargeted it, then closed or merged it
+      own.state = state;
+      const p = await t.retry();
+      expect(p.delivery.repositories[0]).toMatchObject({ status: 'failed', retryable: false });
+      expect(p.delivery.repositories[0].reason).toMatch(/retargeted to main/);
+      expect(t.host.prs).toHaveLength(1);
+      expect(await t.repository()).toMatchObject({ status: 'failed', retryable: false });
+      // Proven by this run's marker, so the view may link it as this run's.
+      expect(shownPrs(await t.view())).toEqual([Number(own.number)]);
+    },
+  );
+
+  it("publishes a new PR when only an earlier run's marked PR was retargeted", async () => {
+    const t = await setup(name);
+    await t.publish();
+    const [earlier] = t.host.prs;
+    earlier.target = 'main';
+    earlier.state = 'closed';
+    await t.relaunch('run2');
+    await t.publish();
+    expect(t.host.prs).toHaveLength(2);
+    expect(shownPrs(await t.view())).toEqual([2]);
+  });
 });

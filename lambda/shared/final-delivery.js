@@ -170,35 +170,45 @@ const callFor = (operation, meta, repo, name, args) =>
 // intent publishes from the same branch, so the provider also lists earlier
 // runs' pull requests and ones opened by hand. Ownership is decided over the
 // complete list, by exact identity only: the delivery marker this run wrote
-// into its create request (lambda/shared/delivery-marker.js). Timestamps and
-// list order are never evidence. "Request recorded" means the repository row
-// has createRequestedAt: this run may have created a pull request whose
-// response was lost. Rows from earlier heads have it without a marker.
+// into its create request (lambda/shared/delivery-marker.js). Timestamps, list
+// order and the target branch are never evidence: a reviewer can retarget this
+// run's pull request and it keeps its marker. "Request recorded" means the
+// repository row has createRequestedAt or a marker (both are written together):
+// this run may have created a pull request whose response was lost. Rows from
+// earlier heads have createRequestedAt without a marker.
 //
-// Candidate on the intent branch                | no request recorded   | request recorded
+// Candidate on the intent branch (any target   | no request recorded   | request recorded
+// unless stated)                                |                       |
 // ----------------------------------------------|-----------------------|----------------------
 // open PR onto the captured target              | current PR (reused)   | current PR (reused)
 // open PR onto another target only             | refused (no retarget) | refused (no retarget)
-// one closed/merged PR with this row's marker   | -                     | this run's: refused
+// one closed/merged PR with this row's marker,  | -                     | this run's: refused
+//   onto the captured target                    |                       |
+// one closed/merged PR with this row's marker,  | -                     | this run's, retargeted:
+//   onto another target                         |                       |   refused
 // two or more closed/merged with this marker   | -                     | uncertain
 // closed/merged PR, another run's marker        | ignored               | ignored
 // closed/merged PR without a marker             | ignored               | uncertain
 // none of the above                             | publish (create)      | publish (create)
 //
-// "Uncertain" never adopts and never creates: an unmarked closed PR may be this
-// run's after its description was edited. A new run has no recorded request,
-// so it is never blocked by one.
+// The rows apply top to bottom. "Uncertain" never adopts and never creates: an
+// unmarked closed PR may be this run's after its description was edited. A new
+// run has no recorded request, so it is never blocked by one.
 export const selectDeliveryPr = (pullRequests, { branch, baseBranch, marker, requested }) => {
   const onBranch = (pullRequests ?? []).filter((pr) => pr.sourceBranch === branch);
   const open = onBranch.filter((pr) => pr.state === 'open');
   const current = open.find((pr) => pr.targetBranch === baseBranch);
   if (current) return { kind: 'open', pr: current };
   if (open.length) return { kind: 'retargeted' };
-  const terminal = onBranch.filter((pr) => pr.targetBranch === baseBranch);
+  const terminal = onBranch.filter((pr) => pr.state !== 'open');
   const own = marker ? terminal.filter((pr) => pr.markers?.includes(marker)) : [];
-  if (own.length === 1) return { kind: 'own', pr: own[0] };
   if (own.length > 1) return { kind: 'uncertain' };
-  if (requested && terminal.some((pr) => !pr.markers?.length)) return { kind: 'uncertain' };
+  if (own.length === 1)
+    return own[0].targetBranch === baseBranch
+      ? { kind: 'own', pr: own[0] }
+      : { kind: 'retargeted', pr: own[0] };
+  if ((requested || Boolean(marker)) && terminal.some((pr) => !pr.markers?.length))
+    return { kind: 'uncertain' };
   return { kind: 'none' };
 };
 
@@ -235,7 +245,7 @@ const inspect = async (meta, repo, operation) => {
       marker: repo.deliveryMarker ?? null,
       requested: Boolean(repo.createRequestedAt),
     });
-    if (selected.kind === 'retargeted')
+    if (selected.kind === 'retargeted' && !selected.pr)
       return {
         ...next,
         status: 'failed',
@@ -249,7 +259,7 @@ const inspect = async (meta, repo, operation) => {
     if (pr) {
       const proven = {
         ...next,
-        prMatch: selected.kind === 'own' ? 'marker' : 'open',
+        prMatch: selected.kind === 'open' ? 'open' : 'marker',
         pr: {
           repoId: repo.repoId,
           provider: repo.provider,
@@ -265,6 +275,13 @@ const inspect = async (meta, repo, operation) => {
           status: 'failed',
           retryable: false,
           reason: `This run's pull request is ${pr.state === 'merged' ? 'merged' : 'closed'}. Review it in the provider; retry will not recreate closed work.`,
+        };
+      if (selected.kind === 'retargeted')
+        return {
+          ...proven,
+          status: 'failed',
+          retryable: false,
+          reason: `This run's pull request was retargeted to ${pr.targetBranch} and is ${pr.state === 'merged' ? 'merged' : 'closed'}. Review it in the provider; retry will not recreate or retarget it.`,
         };
       if (
         !snapshot.headSha ||

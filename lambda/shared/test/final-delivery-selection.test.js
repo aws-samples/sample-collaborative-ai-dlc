@@ -60,11 +60,16 @@ describe.each([false, true])('PR ownership decision (create request recorded=%s)
   it('publishes when the branch has no pull request', () => {
     expect(select([], { requested })).toEqual({ kind: 'none' });
   });
-  it('ignores PRs from other branches and closed PRs onto other targets', () => {
+  it("ignores PRs from other branches and another run's closed PRs onto other targets", () => {
     expect(
-      select([pr(1, 'open', { source: 'other' }), pr(2, 'closed', { target: 'main' })], {
-        requested,
-      }),
+      select(
+        [
+          pr(1, 'open', { source: 'other' }),
+          pr(2, 'closed', { source: 'other', markers: [ours] }),
+          pr(3, 'closed', { target: 'main', markers: [theirs] }),
+        ],
+        { requested },
+      ),
     ).toEqual({ kind: 'none' });
   });
 });
@@ -93,5 +98,67 @@ describe('PR ownership by this row marker', () => {
     expect(select([pr(1, 'closed')], { requested: true, marker: null })).toEqual({
       kind: 'uncertain',
     });
+  });
+});
+
+// A pull request this run created keeps its marker when a reviewer retargets
+// it, so the target never decides ownership; it only decides the outcome.
+describe('PR ownership across targets', () => {
+  it.each(['closed', 'merged'])(
+    'refuses its own %s PR after it was retargeted instead of publishing again',
+    (state) => {
+      const own = pr(4, state, { target: 'main', markers: [ours] });
+      for (const list of [
+        [own, pr(1, 'closed', { markers: [theirs] })],
+        [pr(1, 'closed', { markers: [theirs] }), own],
+      ])
+        expect(select(list, { requested: true })).toEqual({ kind: 'retargeted', pr: own });
+    },
+  );
+  it('ignores a marked PR on another target when this row has no marker or request', () => {
+    expect(
+      select([pr(1, 'closed', { target: 'main', markers: [theirs] })], { requested: false }),
+    ).toEqual({ kind: 'none' });
+  });
+  it('is uncertain when proven PRs exist on two different targets', () => {
+    expect(
+      select(
+        [
+          pr(1, 'closed', { target: 'main', markers: [ours] }),
+          pr(2, 'merged', { target: 'release', markers: [ours] }),
+        ],
+        { requested: true },
+      ),
+    ).toEqual({ kind: 'uncertain' });
+    expect(
+      select(
+        [
+          pr(1, 'closed', { markers: [ours] }),
+          pr(2, 'merged', { target: 'main', markers: [ours] }),
+        ],
+        { requested: true },
+      ),
+    ).toEqual({ kind: 'uncertain' });
+  });
+  it('still resolves a single proven PR on the captured target as its own', () => {
+    const own = pr(3, 'merged', { markers: [ours] });
+    expect(
+      select([pr(1, 'closed', { target: 'main', markers: [theirs] }), own], { requested: true }),
+    ).toEqual({ kind: 'own', pr: own });
+  });
+  it('treats an unmarked closed PR on another target as uncertain after a recorded request', () => {
+    const list = [pr(1, 'closed', { target: 'main' })];
+    expect(select(list, { requested: true })).toEqual({ kind: 'uncertain' });
+    expect(select(list, { requested: false })).toEqual({ kind: 'none' });
+  });
+  it('counts a row marker as a recorded request', () => {
+    expect(
+      selectDeliveryPr([pr(1, 'closed')], {
+        branch: 'intent',
+        baseBranch: 'develop',
+        marker: ours,
+        requested: false,
+      }),
+    ).toEqual({ kind: 'uncertain' });
   });
 });

@@ -274,24 +274,28 @@ stores `createRequestedAt` and a random `deliveryMarker` on the repository
 entry; the PR description carries the same marker, and retries in the run reuse
 it. CodeCommit additionally keeps its per-run idempotency token.
 
-| PR on the intent branch                | No create request recorded | Create request recorded  |
-| -------------------------------------- | -------------------------- | ------------------------ |
-| Open, onto the captured target         | Reused as the current PR   | Reused as the current PR |
-| Open, onto another target only         | Refused (no retarget)      | Refused (no retarget)    |
-| Closed or merged, this entry's marker  | Not applicable             | This run's: refused      |
-| Closed or merged, another run's marker | Ignored                    | Ignored                  |
-| Closed or merged, no marker            | Ignored                    | Uncertain                |
-| None of the above                      | Published                  | Published                |
+| PR on the intent branch (any target unless stated)     | No create request recorded | Create request recorded         |
+| ------------------------------------------------------ | -------------------------- | ------------------------------- |
+| Open, onto the captured target                         | Reused as the current PR   | Reused as the current PR        |
+| Open, onto another target only                         | Refused (no retarget)      | Refused (no retarget)           |
+| Closed or merged, this entry's marker, captured target | Not applicable             | This run's: refused             |
+| Closed or merged, this entry's marker, other target    | Not applicable             | This run's, retargeted: refused |
+| Closed or merged, this marker on two or more PRs       | Not applicable             | Uncertain                       |
+| Closed or merged, another run's marker                 | Ignored                    | Ignored                         |
+| Closed or merged, no marker                            | Ignored                    | Uncertain                       |
+| None of the above                                      | Published                  | Published                       |
 
-Two closed or merged PRs carrying the same marker are also uncertain. An
+Rows apply top to bottom. The target branch never decides ownership: a reviewer
+can retarget this run's PR and it keeps its marker, so a retargeted, closed or
+merged PR of this run is refused rather than published again. Only PRs from this
+repository count; a fork's branch with the same name is not a candidate. A
+GitLab merge request that is `locked` while it merges counts as open. An
 uncertain entry is not retryable and never blocks a new run: a new run has no
 recorded request. Entries written before markers existed (`createRequestedAt`
 without `deliveryMarker`) can prove no closed PR, so an unmarked one is
 uncertain. The delivery view links only a published or reconciled PR, or one
 proven by this run's marker. A changed source SHA, missing branch, retargeted PR
 or this run's closed work requires review instead of implicit replacement.
-External repository edits remain outside DynamoDB ownership; branch identity is
-rechecked immediately before creation. No provider merge-state polling is added.
 
 Deploy source-control first (strict lookup and branch preconditions), then the
 orchestrator and intents API with the delivery route, then the frontend. Install
