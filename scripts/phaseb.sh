@@ -17,7 +17,7 @@
 set -uo pipefail
 
 TF_DIR="$(cd "$(dirname "$0")/../terraform" && pwd)"
-cd "$TF_DIR"
+cd "$TF_DIR" || exit 1
 
 # ── shared config (stable across steps so the same session/intent is reused) ──
 PROJECT_ID="${PROJECT_ID:-p-test}"

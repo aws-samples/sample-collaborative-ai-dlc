@@ -39,6 +39,10 @@ The `prepare` script wires up the git hook automatically. The hook runs:
 Every optional check (frontend, terraform, SAST) is **silently skipped** when its tool or dependency tree isn't available — the hook never blocks a commit because something isn't installed. CI is the enforcement layer (see [`.github/workflows/`](.github/workflows/)) and includes:
 
 - `oxlint` + `oxfmt --check` (root + frontend)
+- `secretlint`, plus GitHub secret scanning push protection
+- Dependency review that fails PRs introducing high or critical vulnerabilities
+- ShellCheck warnings and errors on tracked shell scripts under `scripts/`
+- Terraform format, validation, mock-provider tests, and `tflint` with the repository's AWS rules
 - Frontend `tsc -b && vite build`
 - Unit tests on Node 22 + 24
 - [CodeQL default setup](https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/configuring-default-setup-for-code-scanning) for JS/TS SAST on every PR
@@ -68,6 +72,8 @@ The [internal testing guide](docs/development/testing.md) documents the determin
 
 See [PR review signals](docs/development/pr-quality.md) for the automated quality metrics, repository map and fork workflow behavior.
 
+Follow the [PR template](.github/pull_request_template.md), including when creating PRs through a CLI or API. Keep the summary, user experience, and testing notes brief; include a screenshot for UI changes. Use `Fixes #123` when the PR resolves an issue so GitHub closes it on merge.
+
 Contributions via pull requests are much appreciated. Before sending us a pull request, please ensure that:
 
 1. You are working against the latest source on the _main_ branch.
@@ -81,7 +87,7 @@ To send us a pull request, please:
 3. Ensure local tests pass (`npm run test`) and the linter is clean (`npm run lint`).
 4. Run the formatter (`npm run format`) so your changes match the repo style. CI runs `npm run format:check` and will fail on unformatted files. The pre-commit hook (see above) runs these automatically if installed.
 5. Commit to your fork using clear commit messages.
-6. Send us a pull request, answering any default questions in the pull request interface.
+6. Send us a pull request using the template linked above.
 7. Pay attention to any automated CI failures reported in the pull request, and stay involved in the conversation.
 
 GitHub provides additional document on [forking a repository](https://help.github.com/articles/fork-a-repo/) and

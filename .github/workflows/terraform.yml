@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - aidlc-v2
     paths:
       - 'terraform/**'
       - '.github/workflows/terraform.yml'
@@ -38,6 +37,16 @@ jobs:
       # present in the repo, so it can't affect this check.
       - name: Terraform fmt
         run: terraform fmt -check -recursive
+
+      - uses: terraform-linters/setup-tflint@ae78205cfffec9e8d93fd2b3115c7e9d3166d4b6 # v5.0.0
+        with:
+          tflint_version: v0.65.0
+
+      - name: Initialize TFLint plugins
+        run: tflint --init
+
+      - name: Run TFLint
+        run: tflint
 
       # `terraform validate` re-parses the real `backend "s3" {}` block (which has
       # no inline bucket), so it fails even with `-backend=false`. A throwaway

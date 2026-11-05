@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - aidlc-v2
   pull_request:
   workflow_dispatch:
 
@@ -35,8 +34,22 @@ jobs:
       - name: Run formatter check
         run: npm run format:check
 
+      - name: Check for secrets
+        run: npm run secretlint
+
       - name: Check AWS SDK version alignment
         run: npm run sdk:check
 
       - name: Check backend dependency rules
         run: npm run dep:check
+
+      - name: Check shell scripts
+        run: git ls-files -z -- 'scripts/*.sh' | xargs -0 -r shellcheck --severity=warning
+
+      - name: Check newly introduced vulnerable dependencies
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          fail-on-scopes: runtime, development, unknown
+          license-check: false
