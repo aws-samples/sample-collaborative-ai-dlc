@@ -86,5 +86,8 @@ jobs:
       - name: Managed environments IAM and configuration tests (mock providers)
         run: terraform test -filter=tests/managed-environments.tftest.hcl
 
+      - name: MCP Gateway interceptor and invocation isolation tests (mock providers)
+        run: terraform test -filter=tests/mcp-gateway.tftest.hcl
+
       - name: Lambda packaging on clean runners (mock AWS)
         run: terraform test -filter=tests/lambda-packaging.tftest.hcl -parallelism=2

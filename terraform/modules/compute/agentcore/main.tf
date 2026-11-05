@@ -139,7 +139,8 @@ module "dynamodb_kms_runtime_access" {
   role_names = merge({
     agentcore = aws_iam_role.agentcore.name
     }, local.mcp_gateway_enabled ? {
-    mcp_tools = aws_iam_role.mcp_tools[0].name
+    mcp_tools       = aws_iam_role.mcp_tools[0].name
+    mcp_interceptor = aws_iam_role.mcp_interceptor[0].name
   } : {})
 }
 

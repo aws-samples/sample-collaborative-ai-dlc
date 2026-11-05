@@ -2,20 +2,27 @@
 # Built-in MCP behind AgentCore Gateway (opt-in: enable_mcp_gateway)
 #
 # runtime CLI -> stdio proxy (SigV4, InvokeGateway) -> Gateway (AWS_IAM)
-#   -> mcp-tools Lambda (verifies the control-plane grant on every call)
+#   -> mcp-interceptor Lambda (REQUEST: verifies the control-plane grant,
+#      session and live scope, injects the trusted context; RESPONSE: filters
+#      tools/list with the same rule)
+#   -> mcp-tools Lambda (acts on the injected context)
 #   -> Neptune / process table / realtime channel
 #
 # The orchestrator and discussions Lambdas sign per-invocation grants with the
-# asymmetric key below; the tools Lambda only ever reads its public half.
+# asymmetric key below; only the interceptor reads its public half. The tools
+# Lambda trusts the injected context because only the Gateway role may invoke
+# it and the interceptor replaces those headers on every request it allows.
 # Disabled, nothing here exists and the runtime keeps its local MCP server.
 # ---------------------------------------------------------------------------
 
 locals {
   mcp_gateway_enabled = var.enable_mcp_gateway
   mcp_tools_dir       = "${path.module}/../../../../lambda/mcp-tools"
-  # The tools Lambda bundles its own directory plus lambda/shared/** (the MCP
-  # core lives in lambda/shared/mcp); the module only hashes source_path.
-  mcp_tools_sources_hash = sha256(join("", [
+  mcp_interceptor_dir = "${path.module}/../../../../lambda/mcp-interceptor"
+  # Both Lambdas bundle their own directory plus lambda/shared/** (the MCP core
+  # and the Gateway authorization live in lambda/shared/mcp); the module only
+  # hashes source_path.
+  mcp_shared_sources_hash = sha256(join("", [
     for f in sort(fileset("${path.module}/../../../../lambda/shared", "**/*.{js,mjs,cjs,json}")) :
     filesha256("${path.module}/../../../../lambda/shared/${f}")
   ]))
@@ -24,7 +31,11 @@ locals {
     "arn:${local.partition}:iam::${data.aws_caller_identity.current.account_id}:role${var.iam_role_path}${var.project_name}-discussions-${var.environment}",
   ]
   mcp_gateway_tools_json = file("${local.mcp_tools_dir}/gateway-tools.json")
-  mcp_gateway_headers    = ["x-aidlc-grant", "x-aidlc-session"]
+  # The only request headers the aidlc target receives: the context the
+  # interceptor injects (lambda/shared/mcp/gateway-context.js). The grant and
+  # session the runtime sends are consumed by the interceptor and never reach
+  # the target.
+  mcp_gateway_context_headers = ["x-aidlc-context", "x-aidlc-context-policy"]
 }
 
 resource "terraform_data" "mcp_gateway_requires_vpc" {
@@ -33,7 +44,7 @@ resource "terraform_data" "mcp_gateway_requires_vpc" {
   lifecycle {
     precondition {
       condition     = local.vpc_enabled
-      error_message = "enable_mcp_gateway requires network_mode = \"VPC\" so the tools Lambda can reach Neptune."
+      error_message = "enable_mcp_gateway requires network_mode = \"VPC\" so the tools and interceptor Lambdas can reach Neptune."
     }
   }
 }
@@ -102,7 +113,7 @@ resource "aws_security_group" "mcp_tools" {
   }
 
   egress {
-    description = "AWS APIs (KMS, DynamoDB, API Gateway management) over HTTPS"
+    description = "AWS APIs (DynamoDB, API Gateway management) over HTTPS"
     from_port   = 443
     to_port     = 443
     protocol    = "tcp"
@@ -138,8 +149,8 @@ resource "aws_iam_role_policy_attachment" "mcp_tools_vpc" {
 }
 
 # The data-plane permissions the built-in MCP needs. They live on this role,
-# behind per-call grant verification, instead of being usable directly by
-# whatever runs in the agent's VM. (Removing them from the runtime role is the
+# behind the interceptor's per-call grant verification, instead of being usable
+# directly by whatever runs in the agent's VM. (Removing them from the runtime role is the
 # follow-up once every runtime command goes through a grant-scoped path.)
 resource "aws_iam_role_policy" "mcp_tools" {
   count = local.mcp_gateway_enabled ? 1 : 0
@@ -149,12 +160,6 @@ resource "aws_iam_role_policy" "mcp_tools" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        Sid      = "VerifyGatewayGrants"
-        Effect   = "Allow"
-        Action   = ["kms:GetPublicKey"]
-        Resource = aws_kms_key.gateway_grant[0].arn
-      },
       {
         Sid    = "NeptuneGraph"
         Effect = "Allow"
@@ -212,7 +217,7 @@ module "mcp_tools_lambda" {
       ]
     }
   ]
-  hash_extra = local.mcp_tools_sources_hash
+  hash_extra = local.mcp_shared_sources_hash
 
   create_role = false
   lambda_role = aws_iam_role.mcp_tools[0].arn
@@ -228,7 +233,6 @@ module "mcp_tools_lambda" {
     NEPTUNE_ENDPOINT        = var.neptune_endpoint
     CONNECTIONS_TABLE       = var.connections_table_name
     WEBSOCKET_ENDPOINT      = var.websocket_endpoint
-    GATEWAY_GRANT_KEY_IDS   = aws_kms_key.gateway_grant[0].arn
   }
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
@@ -236,6 +240,148 @@ module "mcp_tools_lambda" {
   depends_on = [
     terraform_data.mcp_gateway_requires_vpc,
     aws_iam_role_policy_attachment.mcp_tools_vpc,
+  ]
+
+  tags = var.tags
+}
+
+# ---------------------------------------------------------------------------
+# Gateway REQUEST/RESPONSE interceptor: the single authorization point in
+# front of the aidlc target. Read-only: grant public key, the execution and
+# stage rows, and intent ownership in Neptune.
+# ---------------------------------------------------------------------------
+
+resource "aws_security_group" "mcp_interceptor" {
+  count = local.mcp_gateway_enabled ? 1 : 0
+
+  name_prefix = "${var.project_name}-mcp-interceptor-${var.environment}"
+  description = "MCP Gateway interceptor Lambda; egress only (Neptune in-VPC, AWS APIs)"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+  vpc_id = var.vpc_id
+
+  egress {
+    description = "Neptune (IAM auth) inside the VPC"
+    from_port   = 8182
+    to_port     = 8182
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  egress {
+    description = "AWS APIs (KMS, DynamoDB) over HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = var.tags
+}
+
+resource "aws_iam_role" "mcp_interceptor" {
+  count = local.mcp_gateway_enabled ? 1 : 0
+
+  name                 = "${var.project_name}-mcp-interceptor-${var.environment}"
+  path                 = var.iam_role_path
+  permissions_boundary = var.iam_permissions_boundary_arn == "" ? null : var.iam_permissions_boundary_arn
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "mcp_interceptor_vpc" {
+  count = local.mcp_gateway_enabled ? 1 : 0
+
+  role       = aws_iam_role.mcp_interceptor[0].name
+  policy_arn = "arn:${local.partition}:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+resource "aws_iam_role_policy" "mcp_interceptor" {
+  count = local.mcp_gateway_enabled ? 1 : 0
+
+  name = "mcp-interceptor"
+  role = aws_iam_role.mcp_interceptor[0].id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "VerifyGatewayGrants"
+        Effect   = "Allow"
+        Action   = ["kms:GetPublicKey"]
+        Resource = aws_kms_key.gateway_grant[0].arn
+      },
+      {
+        Sid    = "NeptuneIntentOwnership"
+        Effect = "Allow"
+        Action = ["neptune-db:ReadDataViaQuery", "neptune-db:connect"]
+        Resource = [
+          "arn:${local.partition}:neptune-db:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:${var.neptune_cluster_resource_id}/*",
+        ]
+      },
+      {
+        Sid      = "ProcessTableRead"
+        Effect   = "Allow"
+        Action   = ["dynamodb:GetItem"]
+        Resource = aws_dynamodb_table.v2_executions.arn
+      },
+    ]
+  })
+}
+
+module "mcp_interceptor_lambda" {
+  count = local.mcp_gateway_enabled ? 1 : 0
+
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "~> 8.0"
+
+  function_name = "${var.project_name}-mcp-interceptor-${var.environment}"
+  description   = "AgentCore Gateway interceptor authorizing the built-in aidlc MCP tools"
+  handler       = "index.handler"
+  runtime       = "nodejs24.x"
+  timeout       = 30
+  memory_size   = 512
+
+  source_path = [
+    {
+      path = local.mcp_interceptor_dir
+      commands = [
+        "cd ../.. && npm run build -w mcp-interceptor",
+        ":zip lambda/mcp-interceptor/.build",
+      ]
+    }
+  ]
+  hash_extra = local.mcp_shared_sources_hash
+
+  create_role = false
+  lambda_role = aws_iam_role.mcp_interceptor[0].arn
+
+  vpc_subnet_ids         = aws_subnet.agentcore[*].id
+  vpc_security_group_ids = [aws_security_group.mcp_interceptor[0].id]
+
+  environment_variables = {
+    AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
+    POWERTOOLS_SERVICE_NAME = var.powertools_service_name
+    POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
+    V2_PROCESS_TABLE        = aws_dynamodb_table.v2_executions.name
+    NEPTUNE_ENDPOINT        = var.neptune_endpoint
+    GATEWAY_GRANT_KEY_IDS   = aws_kms_key.gateway_grant[0].arn
+  }
+
+  cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
+
+  depends_on = [
+    terraform_data.mcp_gateway_requires_vpc,
+    aws_iam_role_policy_attachment.mcp_interceptor_vpc,
   ]
 
   tags = var.tags
@@ -271,9 +417,14 @@ resource "aws_iam_role_policy" "mcp_gateway" {
     Version = "2012-10-17"
     Statement = concat([
       {
-        Effect   = "Allow"
-        Action   = ["lambda:InvokeFunction"]
-        Resource = module.mcp_tools_lambda[0].lambda_function_arn
+        # The Gateway is the only principal granted invoke on these two
+        # functions; the tools Lambda trusts the context because of it.
+        Effect = "Allow"
+        Action = ["lambda:InvokeFunction"]
+        Resource = [
+          module.mcp_tools_lambda[0].lambda_function_arn,
+          module.mcp_interceptor_lambda[0].lambda_function_arn,
+        ]
       },
       {
         Effect   = "Allow"
@@ -296,6 +447,22 @@ resource "aws_bedrockagentcore_gateway" "mcp" {
   protocol_type   = "MCP"
   authorizer_type = "AWS_IAM"
   role_arn        = aws_iam_role.mcp_gateway[0].arn
+
+  # Mandatory whenever the Gateway exists: the aidlc target does not verify
+  # grants itself.
+  interceptor_configuration {
+    interception_points = ["REQUEST", "RESPONSE"]
+    interceptor {
+      lambda {
+        arn = module.mcp_interceptor_lambda[0].lambda_function_arn
+      }
+    }
+    input_configuration {
+      pass_request_headers = true
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.mcp_gateway]
 
   tags = var.tags
 }
@@ -342,7 +509,7 @@ resource "aws_bedrockagentcore_gateway_target" "aidlc" {
   }
 
   metadata_configuration {
-    allowed_request_headers = local.mcp_gateway_headers
+    allowed_request_headers = local.mcp_gateway_context_headers
   }
 
   depends_on = [aws_iam_role_policy.mcp_gateway]
