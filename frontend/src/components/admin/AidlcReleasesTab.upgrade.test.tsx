@@ -86,8 +86,12 @@ describe('AidlcReleasesTab closure upgrades', () => {
     });
     const user = userEvent.setup();
     render(<AidlcReleasesTab />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Manage version 2.9.0' }));
+    await userEvent.click(screen.getByText('Maintenance'));
 
-    expect(await screen.findByText('stale closure (importer i1)')).toBeInTheDocument();
+    expect(screen.getByTestId(`release-stale-${RELEASE_ID}`)).toHaveTextContent(
+      'importer revision 1',
+    );
     expect(screen.getByTestId(`release-stale-${RELEASE_ID}`)).toHaveTextContent(
       /existing intents keep their closure/i,
     );
@@ -109,6 +113,8 @@ describe('AidlcReleasesTab closure upgrades', () => {
   it('sends nothing when the admin cancels the confirmation', async () => {
     const user = userEvent.setup();
     render(<AidlcReleasesTab />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Manage version 2.9.0' }));
+    await userEvent.click(screen.getByText('Maintenance'));
     await user.click(await screen.findByRole('button', { name: 'Upgrade closure for 2.9.0' }));
     await user.click(await screen.findByRole('button', { name: 'Cancel' }));
     expect(upgradeClosure).not.toHaveBeenCalled();
@@ -120,8 +126,10 @@ describe('AidlcReleasesTab closure upgrades', () => {
       currentImporterRevision: 2,
     });
     render(<AidlcReleasesTab />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Manage version 2.9.0' }));
+    await userEvent.click(screen.getByText('Maintenance'));
 
-    expect(await screen.findByText('Registered releases')).toBeInTheDocument();
+    expect(await screen.findByText('Supported versions')).toBeInTheDocument();
     expect(screen.queryByText(/stale closure/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Upgrade closure/ })).not.toBeInTheDocument();
   });
@@ -129,6 +137,8 @@ describe('AidlcReleasesTab closure upgrades', () => {
   it('keeps the upgrade disabled and shows the publish command until the new closure is published', async () => {
     profiles.mockResolvedValue({ profiles: [profile({ published: false })] });
     render(<AidlcReleasesTab />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Manage version 2.9.0' }));
+    await userEvent.click(screen.getByText('Maintenance'));
 
     const button = await screen.findByRole('button', { name: 'Upgrade closure for 2.9.0' });
     expect(button).toBeDisabled();
@@ -145,6 +155,8 @@ describe('AidlcReleasesTab closure upgrades', () => {
     );
     const user = userEvent.setup();
     render(<AidlcReleasesTab />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Manage version 2.9.0' }));
+    await userEvent.click(screen.getByText('Maintenance'));
 
     await user.click(await screen.findByRole('button', { name: 'Upgrade closure for 2.9.0' }));
     await user.click(await screen.findByRole('button', { name: 'Upgrade closure' }));

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router';
+import { useParams, useNavigate, useSearchParams } from 'react-router';
 import {
   workflowsService,
   type Workflow,
@@ -32,16 +32,94 @@ import { StageEditModal } from './composer/StageEditModal';
 import { DEFAULT_PHASE_NODES } from './composer/defaultPhases';
 import { ScopeBuilder } from './composer/ScopeBuilder';
 import { displayPhasePathForPlacement, visibleWorkflowPhases } from './composer/phaseDisplay';
+import { mergeReleaseLibraryBlocks } from '@/components/blocks/stageReferenceOptions';
+import { loadWorkflowLibraryRelease } from './composer/workflowLibraryRelease';
+
+// The compiled view over a release's library when one is in force. A release
+// that cannot be read falls back to the live library rather than failing the
+// page: the composer still works, its check is just the unpinned one.
+const compiledOver = (workflowId: string, libraryRelease: string | null, allowFallback = true) =>
+  libraryRelease
+    ? (() => {
+        const request = workflowsService.compiled(
+          workflowId,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          libraryRelease,
+        );
+        return allowFallback ? request.catch(() => workflowsService.compiled(workflowId)) : request;
+      })()
+    : workflowsService.compiled(workflowId);
+
+async function loadComposerState(workflowId: string, requestedLibraryRelease: string | null) {
+  const [workflow, stages, scopes] = await Promise.all([
+    workflowsService.get(workflowId),
+    blocksService.list('stage'),
+    blocksService.list('scope'),
+  ]);
+  const release = await loadWorkflowLibraryRelease(workflow.readOnly, requestedLibraryRelease);
+  const compiled = await compiledOver(workflowId, release?.releaseId ?? null, !release?.explicit);
+  return { workflow, stages: stages.blocks, scopes: scopes.blocks, release, compiled };
+}
+
+function WorkflowReleaseStatus({
+  release,
+  compiled,
+  preview,
+  previewSettled,
+  activeScope,
+}: {
+  release: { releaseId: string; label: string; explicit: boolean } | null;
+  compiled: CompiledWorkflow | null;
+  preview: ExecutionPreview | null;
+  previewSettled: boolean;
+  activeScope: string | null;
+}) {
+  if (!release) return null;
+  const checked =
+    compiled?.libraryRelease === release.releaseId &&
+    previewSettled &&
+    (!activeScope || preview?.libraryRelease === release.releaseId);
+  if (checked)
+    return (
+      <span
+        className="text-xs text-muted-foreground"
+        data-testid="composer-library-release"
+        title={release.releaseId}
+      >
+        Checked against {release.label}
+        {release.explicit ? ' (selected version)' : ' (stable)'}, as new intents run it
+      </span>
+    );
+  if (!compiled || !previewSettled) return null;
+  return (
+    <span
+      className="text-xs text-amber-600 dark:text-amber-400"
+      data-testid="composer-library-release-unavailable"
+      title={release.releaseId}
+    >
+      {release.label}
+      {release.explicit
+        ? ' could not be checked. The selected version was not substituted.'
+        : " (stable) couldn't be read: checked against the library only, which new intents don't run"}
+    </span>
+  );
+}
 
 export default function WorkflowComposer() {
   const navigate = useNavigate();
   const { workflowId } = useParams<{ workflowId: string }>();
+  const [searchParams] = useSearchParams();
+  const requestedLibraryRelease = searchParams.get('libraryRelease') || null;
 
   const [workflow, setWorkflow] = useState<Workflow | null>(null);
   const [stageLib, setStageLib] = useState<Block[]>([]);
   const [scopeLib, setScopeLib] = useState<Block[]>([]);
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [preview, setPreview] = useState<ExecutionPreview | null>(null);
+  const [previewSettled, setPreviewSettled] = useState(false);
   const [workbenchMode, setWorkbenchMode] = useState<'compose' | 'scopes' | 'validate'>('compose');
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -51,50 +129,66 @@ export default function WorkflowComposer() {
   const [editingStageId, setEditingStageId] = useState<string | null>(null);
   const [editingPhasePath, setEditingPhasePath] = useState<string | null>(null);
   const [activeScope, setActiveScope] = useState<string | null>(null);
+  // With release pinning on, a new intent runs the stable release's library
+  // in place of the SYSTEM rows, so the plan check previews the live workflow
+  // over it (issue #607). Null for a SYSTEM workflow, whose pinned intents run
+  // the release's own copy, and whenever no stable release is in force.
+  const [libraryRelease, setLibraryRelease] = useState<{
+    releaseId: string;
+    label: string;
+    explicit: boolean;
+  } | null>(null);
 
   const readOnly = workflow?.readOnly ?? false;
 
-  // Initial load — sets loading=true once; never again after.
+  const loadGeneration = useRef(0);
+  // A route or release change owns a new load; stale responses cannot retarget it.
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     if (!workflowId) return;
     setLoading(true);
+    setError(null);
     try {
-      const [wf, stages, scopes, comp] = await Promise.all([
-        workflowsService.get(workflowId),
-        blocksService.list('stage'),
-        blocksService.list('scope'),
-        workflowsService.compiled(workflowId),
-      ]);
-      setWorkflow(wf);
-      setStageLib(stages.blocks);
-      setScopeLib(scopes.blocks);
-      setCompiled(comp);
+      const result = await loadComposerState(workflowId, requestedLibraryRelease);
+      if (generation !== loadGeneration.current) return;
+      const { release } = result;
+      setLibraryRelease(release);
+      setWorkflow(result.workflow);
+      setStageLib(mergeReleaseLibraryBlocks(result.stages, release?.stages ?? null));
+      setScopeLib(mergeReleaseLibraryBlocks(result.scopes, release?.scopes ?? null));
+      setCompiled(result.compiled);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load workflow');
+      if (generation === loadGeneration.current)
+        setError(e instanceof Error ? e.message : 'Failed to load workflow');
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
-  }, [workflowId]);
+  }, [workflowId, requestedLibraryRelease]);
 
   // Silent refresh — re-fetches workflow + compiled without touching loading.
   const refresh = useCallback(async () => {
+    const generation = loadGeneration.current;
     if (!workflowId) return;
     try {
       const [wf, comp, scopes] = await Promise.all([
         workflowsService.get(workflowId),
-        workflowsService.compiled(workflowId),
+        compiledOver(workflowId, libraryRelease?.releaseId ?? null, !libraryRelease?.explicit),
         blocksService.list('scope'),
       ]);
+      if (generation !== loadGeneration.current) return;
       setWorkflow(wf);
       setCompiled(comp);
-      setScopeLib(scopes.blocks);
+      if (!libraryRelease?.explicit) setScopeLib(scopes.blocks);
     } catch {
       // silent — the optimistic state is good enough for now
     }
-  }, [workflowId]);
+  }, [workflowId, libraryRelease]);
 
   useEffect(() => {
-    load();
+    void load();
+    return () => {
+      loadGeneration.current += 1;
+    };
   }, [load]);
 
   const flash = (msg: string) => {
@@ -558,21 +652,48 @@ export default function WorkflowComposer() {
   useEffect(() => {
     if (!workflowId || !activeScope) {
       setPreview(null);
+      setPreviewSettled(true);
       return;
     }
     let cancelled = false;
+    setPreviewSettled(false);
     workflowsService
-      .executionPreview(workflowId, activeScope)
+      .executionPreview(
+        workflowId,
+        activeScope,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        libraryRelease?.releaseId ?? null,
+      )
+      // Same fallback as the compiled view; the label below then says the
+      // release was not used. An explicit selection never changes versions.
+      .catch((previewError) => {
+        if (!libraryRelease || libraryRelease.explicit) throw previewError;
+        return workflowsService.executionPreview(workflowId, activeScope);
+      })
       .then((next) => {
         if (!cancelled) setPreview(next);
       })
       .catch(() => {
-        if (!cancelled) setPreview(null);
+        if (!cancelled) {
+          setPreview(null);
+          if (libraryRelease?.explicit) {
+            setError(
+              `${libraryRelease.label} could not be checked for this scope. The selected version was not substituted.`,
+            );
+          }
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewSettled(true);
       });
     return () => {
       cancelled = true;
     };
-  }, [activeScope, workflowId, workflow?.version]);
+  }, [activeScope, workflowId, workflow?.version, libraryRelease]);
 
   const stageMeta = useMemo(() => {
     const meta: Record<string, { number: string; name: string; phase: string }> = {};
@@ -778,6 +899,14 @@ export default function WorkflowComposer() {
             </TabsList>
           </Tabs>
 
+          <WorkflowReleaseStatus
+            release={libraryRelease}
+            compiled={compiled}
+            preview={preview}
+            previewSettled={previewSettled}
+            activeScope={activeScope}
+          />
+
           <div className="ml-auto flex flex-wrap items-center gap-2">
             <Popover open={paletteOpen} onOpenChange={setPaletteOpen}>
               <PopoverTrigger asChild>
@@ -867,6 +996,7 @@ export default function WorkflowComposer() {
 
         <StageEditModal
           stageId={editingStageId}
+          libraryReleaseId={libraryRelease?.explicit ? libraryRelease.releaseId : null}
           onClose={() => setEditingStageId(null)}
           onSaved={refresh}
         />

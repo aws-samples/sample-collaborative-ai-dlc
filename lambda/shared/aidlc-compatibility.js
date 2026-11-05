@@ -339,6 +339,29 @@ const INVOKE_FAMILY_FIDELITY = Object.freeze([
       note: "Upstream parks a stale attempt's working tree and can list, purge or byte-exactly restore it. This runtime has no parked-attempt store — lanes are branches the platform creates and merges — so the agent parks, deletes, restores and purges nothing, and never maps this onto git deletion.",
     }),
   ),
+  // AI-DLC 2.11.3 adds repository changes and a one-off plan review. Keep
+  // repository membership fixed and map the review onto a recorded human question.
+  Object.freeze({
+    pattern: /^intent add-checkout$/,
+    family: 'intent add-checkout',
+    handling: 'unsupported',
+    annexed: true,
+    note: 'The agent cannot add an arbitrary local checkout to the reviewed source manifest. Only the repositories already bound to this intent are in scope; ask a human to attach the repository before starting a new intent.',
+  }),
+  Object.freeze({
+    pattern: /^intent add-repo$/,
+    family: 'intent add-repo',
+    handling: 'unsupported',
+    annexed: true,
+    note: 'Repository membership is snapshotted when the intent is created and credentials are limited to that snapshot. The agent cannot clone or add another repository mid-run; ask a human to add it to the project and start a new intent.',
+  }),
+  Object.freeze({
+    pattern: /^plan first$/,
+    family: 'plan first',
+    handling: 'approximated',
+    annexed: true,
+    note: 'The lead uses request_plan_approval where configured, otherwise a recorded ask_question with the plan and test instructions. It waits for the human answer before coding; this does not change the configured plan-approval policy or reproduce the native one-off flag.',
+  }),
 ]);
 
 const sha256 = (value = '') => {
@@ -552,6 +575,16 @@ const quoteInvokeCommand = (source) =>
     (_match, prefix, command) => `${prefix}${JSON.stringify(command.trim())}`,
   );
 
+// AI-DLC 2.11.3 adds a colon followed by a space inside one plain-scalar
+// `outputs` description. YAML treats that as a nested mapping and rejects the
+// whole stage. Quote the known upstream value while preserving its string
+// content; this is an import normalization, not an execution capability.
+const quoteRequirementsAnalysisOutputs = (source) =>
+  source.replace(
+    /^(outputs:\s*)(requirements\.md,\s*requirements-analysis-questions\.md,\s*traceability\.json \(Step 10:.*\))$/m,
+    (_match, prefix, value) => `${prefix}${JSON.stringify(value.trim())}`,
+  );
+
 const normalizeAidlcFrontmatter = ({
   profileId,
   profile: explicitProfile = null,
@@ -570,27 +603,44 @@ const normalizeAidlcFrontmatter = ({
       },
     };
   }
-  if (
-    profile.frontmatterDialect !== 'invoke-template-v1' ||
-    !path.startsWith('core/sensors/') ||
-    !path.endsWith('.md')
-  ) {
-    return { content, normalizations: [], error: null };
-  }
-
   const split = splitFrontmatter(content);
   if (!split.hasFrontmatter) return { content, normalizations: [], error: null };
-  const normalizedSource = quoteInvokeCommand(split.source);
-  if (normalizedSource === split.source) return { content, normalizations: [], error: null };
-  return {
-    content: `---\n${normalizedSource}\n---\n${split.body}`,
-    normalizations: [
-      {
+  let normalizedSource = split.source;
+  const normalizations = [];
+  if (
+    profile.frontmatterDialect === 'invoke-template-v1' &&
+    path.startsWith('core/sensors/') &&
+    path.endsWith('.md')
+  ) {
+    const quoted = quoteInvokeCommand(normalizedSource);
+    if (quoted !== normalizedSource) {
+      normalizedSource = quoted;
+      normalizations.push({
         code: 'quote-invoke-command',
         path,
         detail: 'Quoted the 2.8+ {{INVOKE}} sensor command before YAML parsing',
-      },
-    ],
+      });
+    }
+  }
+  if (
+    (profile.id === 'v2.11.3' || profile.baseProfileId === 'v2.11.3') &&
+    path === 'core/aidlc-common/stages/inception/requirements-analysis.md'
+  ) {
+    const quoted = quoteRequirementsAnalysisOutputs(normalizedSource);
+    if (quoted !== normalizedSource) {
+      normalizedSource = quoted;
+      normalizations.push({
+        code: 'quote-stage-output-description',
+        path,
+        detail:
+          'Quoted the 2.11.3 requirements-analysis outputs description so its embedded colon remains part of the scalar',
+      });
+    }
+  }
+  if (normalizedSource === split.source) return { content, normalizations: [], error: null };
+  return {
+    content: `---\n${normalizedSource}\n---\n${split.body}`,
+    normalizations,
     error: null,
   };
 };

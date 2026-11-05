@@ -1001,12 +1001,8 @@ const changedApprovedInputs = ({ requiredInputs = [], heads = [], approvals = []
 // running against moved inputs without an explicit yes, and a garbled answer is
 // not a yes.
 const changeControlChoice = (gate) => {
-  const answer = gate?.answer ?? null;
-  const text =
-    typeof answer === 'string'
-      ? answer
-      : (answer?.perQuestion?.[0]?.answer ?? answer?.freeText ?? answer?.decision ?? '');
-  const normalized = String(text ?? '').toLowerCase();
+  // Resolve UI indices against this gate's stored options, just as checkpoints do.
+  const normalized = chosenLabel(gate).toLowerCase();
   if (normalized.includes('stop')) return 'stop';
   if (normalized.includes('reconfirm') || normalized.includes('continue')) return 'reconfirm';
   return null;
