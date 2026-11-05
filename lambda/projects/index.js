@@ -63,6 +63,11 @@ import {
 } from '../shared/repo-validation.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
+import {
+  RuntimeMcpPolicyError,
+  assertDirectMcpConfigAllowed,
+  assertMcpSecretWritesAllowed,
+} from '../shared/runtime-mcp-policy.js';
 import { deleteCredentialScope } from '../shared/agent-credentials.js';
 import {
   PROJECT_PR_STRATEGIES,
@@ -649,6 +654,18 @@ const MAX_CUSTOM_RULES = 20;
 // (CustomRulesSection.tsx MAX_FILE_SIZE) — keep the three in sync.
 const MAX_CUSTOM_RULE_BYTES = 100 * 1024;
 
+// runtime_mcp_credentials = gateway_only: direct custom MCP entries and their
+// secrets are refused at write time (reads and clears keep working).
+const gatewayOnlyRefusal = (response, check) => {
+  try {
+    check();
+    return null;
+  } catch (error) {
+    if (!(error instanceof RuntimeMcpPolicyError)) throw error;
+    return response(400, { error: error.message, code: error.code });
+  }
+};
+
 const handleProjectCustomMcpServers = async (
   g,
   response,
@@ -696,6 +713,8 @@ const handleProjectCustomMcpServers = async (
       if (secretsMap === null || typeof secretsMap !== 'object' || Array.isArray(secretsMap)) {
         return response(400, { error: 'mcpSecrets must be an object of { VAR: value }' });
       }
+      const refused = gatewayOnlyRefusal(response, () => assertMcpSecretWritesAllowed(secretsMap));
+      if (refused) return refused;
       try {
         const { errors } = await putMcpSecrets(ssm, { base, projectId, secrets: secretsMap });
         if (errors.length) return response(400, { error: errors.join('; ') });
@@ -753,6 +772,10 @@ const handleProjectCustomMcpServers = async (
         issues: validation.issues,
       });
     }
+    const refused = gatewayOnlyRefusal(response, () =>
+      assertDirectMcpConfigAllowed(JSON.parse(mcpServersJson || '{}')),
+    );
+    if (refused) return refused;
     // Save-time cross-tier collision check (authoritative server-side guard; the
     // client also does this for fast feedback). The child env is one flat
     // namespace, so a `${VAR}` name used by a SURVIVING global server (one the

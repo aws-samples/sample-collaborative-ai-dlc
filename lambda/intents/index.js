@@ -79,6 +79,12 @@ import { parseCliModels, mergeCliModels } from '../shared/cli-models.js';
 import { parseTierModels, mergeTierModels } from '../shared/tier-models.js';
 import { validateMcpServers, validateMcpServersJson } from '../shared/mcp-validator.js';
 import {
+  RUNTIME_MCP_GATEWAY_ONLY,
+  RUNTIME_MCP_GATEWAY_ONLY_MESSAGE,
+  gatewayOnlyMcp,
+  hasDirectMcpServers,
+} from '../shared/runtime-mcp-policy.js';
+import {
   loadWorkflowScopes,
   loadExecutionPlan,
   listMergedBlocks,
@@ -779,8 +785,13 @@ const prepareMcpLaunch = async (g, meta) => {
     global: {},
     project: meta.customMcpServers ?? {},
   };
+  // gateway_only: a snapshot with direct MCP servers can never be dispatched.
+  // It is re-read like an invalid one, so removing the servers and retrying
+  // repairs the intent; servers that are still configured refuse the launch.
+  const gatewayOnly = gatewayOnlyMcp();
   if (
     meta.status !== 'DRAFT' &&
+    !(gatewayOnly && hasDirectMcpServers(pinned)) &&
     ['global', 'project'].every((tier) => validateMcpServers(pinned[tier] ?? {}).valid)
   ) {
     return { update: {} };
@@ -826,6 +837,15 @@ const prepareMcpLaunch = async (g, meta) => {
       };
     }
     mcpServersByTier[tier] = JSON.parse(raw);
+  }
+  if (gatewayOnly && hasDirectMcpServers(mcpServersByTier)) {
+    return {
+      statusCode: 400,
+      error: {
+        code: RUNTIME_MCP_GATEWAY_ONLY,
+        error: `Cannot start the runtime: ${RUNTIME_MCP_GATEWAY_ONLY_MESSAGE}`,
+      },
+    };
   }
   // Keep explicit empty maps: null would reactivate legacy customMcpServers in
   // the orchestrator when the user removed every server to repair the intent.

@@ -3826,6 +3826,59 @@ describe('POST /start', () => {
     expect(meta.customMcpServers).toBeUndefined();
   });
 
+  describe('with runtime_mcp_credentials = gateway_only', () => {
+    beforeEach(() => vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only'));
+    afterEach(() => vi.stubEnv('RUNTIME_MCP_CREDENTIALS', ''));
+
+    it.each(['DRAFT', 'FAILED'])(
+      'refuses a %s launch whose servers are still configured, before any runtime starts',
+      async (status) => {
+        const sub = `u-${randomUUID()}`;
+        const projectId = await seedV2Project(sub);
+        await setProjectMcp(projectId, {
+          wiki: { type: 'http', url: 'https://wiki.example/mcp', headers: { A: '${WIKI_KEY}' } },
+        });
+        const intent = JSON.parse((await createIntent(sub, projectId)).body);
+        setStatus(intent.id, status);
+        const key = keyOf(`EXEC#${intent.id}`, 'META');
+        const before = { ...procStore.get(key) };
+
+        const res = await start(sub, projectId, intent.id);
+
+        expect(res.statusCode).toBe(400);
+        expect(JSON.parse(res.body)).toMatchObject({ code: 'runtime_mcp_gateway_only' });
+        expect(JSON.parse(res.body).error).toContain('mcp_gateway_custom_targets');
+        expect(procStore.get(key)).toEqual(before);
+        expect(orchestratorInvokes()).toHaveLength(0);
+        expect(agentcoreMock.calls()).toHaveLength(0);
+      },
+    );
+
+    it('re-reads a valid pinned snapshot and starts once the servers are removed', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      await setProjectMcp(projectId, { tool: { command: 'npx' } });
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      setStatus(intent.id, 'FAILED');
+      expect((await start(sub, projectId, intent.id)).statusCode).toBe(400);
+
+      await setProjectMcp(projectId, {});
+      expect((await start(sub, projectId, intent.id)).statusCode).toBe(202);
+      expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).mcpServersByTier).toEqual({
+        global: {},
+        project: {},
+      });
+      expect(orchestratorInvokes()).toHaveLength(1);
+    });
+
+    it('starts an intent without custom MCP servers unchanged', async () => {
+      const sub = `u-${randomUUID()}`;
+      const projectId = await seedV2Project(sub);
+      const intent = JSON.parse((await createIntent(sub, projectId)).body);
+      expect((await start(sub, projectId, intent.id)).statusCode).toBe(202);
+    });
+  });
+
   it('keeps a valid snapshot on retry even if settings have since changed', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
