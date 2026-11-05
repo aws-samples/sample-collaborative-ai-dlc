@@ -296,10 +296,13 @@ variable "mcp_gateway_custom_targets" {
     error_message = "mcp_gateway_custom_targets endpoints must be https:// URLs."
   }
   validation {
+    # The Identity API reference documents the provider ARN under the `acps`
+    # service name, IAM under `bedrock-agentcore`; both are accepted and the ARN
+    # is used as returned by Create*CredentialProvider.
     condition = alltrue([
       for t in values(var.mcp_gateway_custom_targets) :
-      (t.auth.type == "oauth" && can(regex("^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/oauth2credentialprovider/[^/]+$", t.auth.credential_provider_arn))) ||
-      (t.auth.type == "api_key" && can(regex("^arn:aws[a-z-]*:bedrock-agentcore:[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/apikeycredentialprovider/[^/]+$", t.auth.credential_provider_arn)))
+      (t.auth.type == "oauth" && can(regex("^arn:aws[a-z-]*:(bedrock-agentcore|acps):[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/oauth2credentialprovider/[^/]+$", t.auth.credential_provider_arn))) ||
+      (t.auth.type == "api_key" && can(regex("^arn:aws[a-z-]*:(bedrock-agentcore|acps):[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/apikeycredentialprovider/[^/]+$", t.auth.credential_provider_arn)))
     ])
     error_message = "mcp_gateway_custom_targets auth.type must be \"oauth\" or \"api_key\" with a matching AgentCore Identity credential provider ARN."
   }
