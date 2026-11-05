@@ -13,7 +13,7 @@ import type { AssistCommand } from '@/services/discussions';
 // (non-members stripped) — the combobox just makes them typeable.
 
 interface Props {
-  onSend: (content: string, mentions: string[]) => void;
+  onSend: (content: string, mentions: string[], assistInstructions?: string) => void;
   onAssist?: (command: AssistCommand, instructions?: string) => void;
   onTyping: (typing: boolean) => void;
   members: Member[];
@@ -122,20 +122,15 @@ export function DiscussionInput({ onSend, onAssist, onTyping, members, disabled 
       return;
     }
     const quorumAsk = onAssist ? quorumMention(trimmed) : null;
-    if (quorumAsk !== null && onAssist) {
-      onAssist('ask', quorumAsk);
-      onTyping(false);
-      setValue('');
-      setMentioned(new Map());
-      setMentionQuery(null);
-      requestAnimationFrame(autoGrow);
-      return;
-    }
     // Only count mentions whose @label text survived editing — matched on a
     // token boundary so a prefix label (john) isn't falsely counted from a
     // longer one (@johnny).
     const mentions = mentionedUserIds(trimmed, mentioned);
-    onSend(trimmed, mentions);
+    if (quorumAsk !== null) {
+      onSend(trimmed, mentions, quorumAsk);
+    } else {
+      onSend(trimmed, mentions);
+    }
     onTyping(false);
     setValue('');
     setMentioned(new Map());
