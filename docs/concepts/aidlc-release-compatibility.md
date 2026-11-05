@@ -63,7 +63,9 @@ loading the pinned catalog. A pinned run therefore resolves from its own
 immutable closure rather than from mutable system blocks or the newest upstream
 catalog.
 
-The `AIDLC_RELEASE_PINNING` deployment flag defaults to off. When off, new
+Standard deployments enable release selection by default after preparing the
+supported catalogs. An explicit `aidlc_release_pinning = "off"` (or the demo
+environment's `AIDLC_RELEASE_PINNING=off`) remains an opt-out. When off, new
 intents follow the existing platform-default path and do not receive an
 implicit release pin. The new-intent page only displays a version selector when
 the API confirms that pinning is enabled. If the flag changes while the page is
@@ -421,21 +423,37 @@ closure and plan checks still run, and no runtime execution check is bypassed.
 
 ### Enable pinning and promote a release
 
-A deployment of this build can run 2.8.2, 2.9.0, 2.11.0, 2.11.1 or an admin-promoted
-fork as follows. Every step is explicit; none happens on its own.
+The standard installer and deployment scripts publish and register all eight
+supported official versions, including 2.11.3. Preparation is idempotent, runs
+independently of `--skip-seed`, and fails deployment if a catalog cannot be
+prepared. It preserves existing approvals, visibility, notes, channel choices
+and registered closure revisions. It does not approve new versions.
 
-1. Turn release pinning on. In the Terraform variables for the deployment, set
-   `aidlc_release_pinning = "on"` and apply. The demo deployment workflow reads
-   it from the optional `AIDLC_RELEASE_PINNING` GitHub environment variable.
-2. Publish the release bytes with the seed-blocks `importRelease` mode, for an
-   allowlisted profile or for a custom fork pinned to an exact SHA.
-3. In the admin AI-DLC releases tab, register the published release. Check its
-   unhonoured values: a release with any cannot be promoted, and the list says
-   which behavior this build is missing.
-4. Set its support state to `selectable` (or `certified`), then make it
-   visible. Each step re-checks the release against this build.
-5. Optionally point a channel at it. `stable` makes it the default for new
-   intents; it requires `certified` unless the release is the platform baseline.
+After deployment:
+
+1. Deploy normally. Version selection is enabled by default. If the deployment
+   explicitly opted out, remove that override or set `aidlc_release_pinning =
+   "on"`; the demo workflow also accepts `AIDLC_RELEASE_PINNING=on`. Preparation
+   never changes an existing Stable choice. If none is selected, the configured
+   platform baseline continues to serve new intents.
+2. In the admin AI-DLC releases tab, select the version and choose **Approve for
+   use**. Compatibility is checked automatically. **Test version** is optional.
+3. Choose **Make stable** for the default, or **Use as preview** for an opt-in
+   channel. Existing intents keep their original version.
+
+For direct Terraform applies, run the same preparation step from the repository
+root after deploying the seed Lambda:
+
+```bash
+AWS_REGION="<deployed region>" \
+SEED_BLOCKS_FUNCTION="<seed_blocks_lambda_name output>" \
+  node scripts/prepare-aidlc-releases.mjs
+```
+
+Custom forks still use the explicit `importRelease` mode and admin registration.
+Older registered closure revisions remain available; **Maintenance → Import
+details and advanced state → Upgrade closure** adopts a newly published revision
+without changing existing intent pins.
 
 Existing intents keep the release they were created with. To stop offering a
 release, follow [Roll back a channel](#roll-back-a-channel).
@@ -731,8 +749,9 @@ knowledge namespace for each persona. Identity checks apply through supported
 tool calls; they are workflow controls, not an isolation boundary against a
 compromised AgentCore runtime identity, which remains trusted.
 
-Persona sessions apply to release-pinned intents only; release pinning itself
-defaults to `off`. There is no separate switch for them: to stop running
+Persona sessions apply to release-pinned intents only. Standard deployments
+enable release selection by default, but do not approve or select a new version
+automatically. There is no separate switch for persona sessions: to stop running
 persona sessions, do not pin intents to a release that declares these modes.
 
 `agent-team` remains explicitly unimplemented. Build-and-Test loop-back is a

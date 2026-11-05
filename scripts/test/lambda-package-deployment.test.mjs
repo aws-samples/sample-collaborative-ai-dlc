@@ -165,6 +165,11 @@ if [[ "$1" == */initialize-agent-auth-inventory.mjs ]]; then
   echo inventory >> "$EVENTS"
   exit 0
 fi
+if [[ "$1" == */prepare-aidlc-releases.mjs ]]; then
+  echo prepare-releases >> "$EVENTS"
+  [[ "\${FAIL_PHASE:-}" == release-preparation ]] && exit 42
+  exit 0
+fi
 exec '${process.execPath}' "$@"
 `,
   );
@@ -206,6 +211,7 @@ test('MAIN runs one saved plan/apply through the scripts and hands outputs to th
     'show',
     'apply',
     'inventory',
+    'prepare-releases',
     'seed',
     'frontend-ci',
     'frontend-build',
@@ -226,12 +232,15 @@ test('MAIN runs one saved plan/apply through the scripts and hands outputs to th
   );
 });
 
-test('plan/apply failures stop the two-command deployment before frontend publication', (t) => {
-  for (const phase of ['plan', 'apply']) {
+test('plan/apply/preparation failures stop deployment before frontend publication', (t) => {
+  for (const phase of ['plan', 'apply', 'release-preparation']) {
     const fixture = deploymentFixture(t);
     const result = deploy(fixture, { FAIL_PHASE: phase });
     assert.equal(result.status, 42, result.stderr);
-    assert.equal(events(fixture).at(-1), phase);
+    assert.equal(
+      events(fixture).at(-1),
+      phase === 'release-preparation' ? 'prepare-releases' : phase,
+    );
     assert.equal(existsSync(join(fixture.directory, 'frontend/.env')), false);
   }
 });

@@ -216,7 +216,7 @@ output "blocks_table_arn" {
 
 # Building Blocks
 output "seed_blocks_lambda_name" {
-  description = "Name of the one-shot baseline seed Lambda. Invoke via `aws lambda invoke` after deploy; see lambda/seed-blocks/index.js for the payload contract."
+  description = "Name of the seed and release-preparation Lambda. Deployment scripts prepare official releases automatically; direct Terraform users run scripts/prepare-aidlc-releases.mjs after apply."
   value       = module.lambda.seed_blocks_lambda_name
 }
 

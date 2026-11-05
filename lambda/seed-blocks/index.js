@@ -68,7 +68,7 @@
 //     --payload '{"importRelease":true,"custom":{"repository":"acme/aidlc-workflows-fork","sha":"<40-hex-sha>","baseProfile":"v2.9.0"},"dryRun":true}' \
 //     --cli-binary-format raw-in-base64-out /tmp/out.json
 //
-// Three modes:
+// Four modes:
 //   - Default (insert-only): a conditional write skips any block that already
 //     exists, so re-running only inserts blocks added since the last run. Safe,
 //     but it CANNOT update an existing baseline block.
@@ -83,6 +83,8 @@
 //     before touching DynamoDB. An official commit is resolved only from the
 //     compatibility profile allowlist and a fork only from an exact SHA, so this
 //     mode rejects {"ref":...} and cannot be combined with reseed.
+//   - prepareRelease: publishes and registers one allowlisted official profile. Records start hidden and structurally-valid/importable;
+//     this action never approves releases or changes channel pointers.
 
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { Logger } from '@aws-lambda-powertools/logger';
@@ -98,6 +100,7 @@ import { fetchCoreFiles } from '../shared/repo-fetch.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
 import { buildFromFiles } from '../shared/block-mappers.js';
 import { customProfile, profileFor } from '../shared/aidlc-compatibility-profiles.js';
+import { getRelease, registerRelease } from '../shared/release-registry.js';
 import {
   AIDLC_RELEASE_IMPORTER_REVISION,
   buildReleaseBundle,
@@ -391,10 +394,53 @@ const importRelease = async ({ event, dryRun, reseed }) => {
   return { ...summary, status: published.status };
 };
 
+// Deployment invokes this once per official profile. Importing stays separate
+// from approval, and an existing record keeps its current pin and admin state.
+const prepareRelease = async ({ event, dryRun }) => {
+  if (
+    event.reseed === true ||
+    event.importRelease === true ||
+    event.ref != null ||
+    event.custom != null
+  ) {
+    throw new Error(
+      'seed-blocks: prepareRelease cannot be combined with reseed, importRelease, ref or custom',
+    );
+  }
+  const published = await importRelease({ event, dryRun, reseed: false });
+  if (dryRun) return { ...published, mode: 'prepareRelease', registration: 'not-attempted' };
+  const existing = await getRelease({
+    ddb,
+    tableName: blocksTable(),
+    releaseId: published.releaseId,
+  });
+  if (existing) {
+    if (
+      existing.sourceSha !== published.sourceSha ||
+      existing.profileId !== published.profile ||
+      existing.importerRevision > published.importerRevision ||
+      (existing.importerRevision === published.importerRevision &&
+        existing.closureDigest !== published.closureDigest)
+    ) {
+      throw new Error('seed-blocks: registered release is inconsistent with the deployed importer');
+    }
+    return { ...published, mode: 'prepareRelease', registration: 'already-registered' };
+  }
+  const registration = await registerRelease({
+    ddb,
+    tableName: blocksTable(),
+    s3,
+    bucket: artifactsBucket(),
+    profileId: published.profile,
+  });
+  return { ...published, mode: 'prepareRelease', registration: registration.status };
+};
+
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
   const dryRun = event?.dryRun === true;
   const reseed = event?.reseed === true;
+  if (event?.prepareRelease === true) return prepareRelease({ event, dryRun });
   if (event?.importRelease === true) {
     return importRelease({ event, dryRun, reseed });
   }

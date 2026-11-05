@@ -704,13 +704,24 @@ describe('AidlcReleasesTab', () => {
     render(<AidlcReleasesTab />);
 
     await user.click(await screen.findByRole('button', { name: 'Clear stable channel' }));
-    // Clearing `stable` stops every new intent from resolving a release, so the
-    // request must not leave until the admin confirms.
+    // Clearing Stable returns new intents to the configured baseline, so the
+    // request must not leave until the admin confirms that default change.
     expect(clearChannel).not.toHaveBeenCalled();
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(
+      'New intents will return to the configured platform baseline',
+    );
     await user.click(await screen.findByRole('button', { name: 'Clear channel' }));
 
     await waitFor(() => expect(clearChannel).toHaveBeenCalledWith('stable', 7));
     expect(screen.queryByRole('button', { name: 'Clear stable channel' })).not.toBeInTheDocument();
+  });
+
+  it('shows the platform default when no Stable version has been chosen', async () => {
+    channels.mockResolvedValue({ ...emptyChannels, pinningEnabled: true });
+    render(<AidlcReleasesTab />);
+    const summary = await screen.findByLabelText('Current version channels');
+    expect(within(summary).getByText('Platform default')).toBeVisible();
+    expect(within(summary).getByText('Not set')).toBeVisible();
   });
 
   it('leaves the pointer untouched when the confirmation is cancelled', async () => {

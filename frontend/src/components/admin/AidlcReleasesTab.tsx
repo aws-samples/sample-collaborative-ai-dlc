@@ -407,10 +407,8 @@ export function AidlcReleasesTab() {
       setChannels((prev) => (prev ? { ...prev, [channel]: next } : prev));
     });
 
-  // Clearing a channel is not a display toggle: `stable` is the default pin for
-  // every NEW intent, so an unset pointer stops intent creation from resolving a
-  // release at all. It is one irreversible click behind an X icon, hence the
-  // confirmation.
+  // Clearing Stable changes which version new intents use: they return to the
+  // configured platform baseline. Existing pins remain unchanged.
   const clearChannelPointer = (channel: ReleaseChannelName) => {
     const pointer = channels?.[channel];
     if (!pointer) return;
@@ -947,7 +945,13 @@ export function AidlcReleasesTab() {
                       {releaseLabel(version)}
                     </button>
                   ) : (
-                    <span>{pointer ? 'Unavailable' : 'Not set'}</span>
+                    <span>
+                      {pointer
+                        ? 'Unavailable'
+                        : channel === 'stable'
+                          ? 'Platform default'
+                          : 'Not set'}
+                    </span>
                   )}
                 </div>
               );
@@ -1523,7 +1527,7 @@ export function AidlcReleasesTab() {
             <AlertDialogTitle>Clear the {pendingClearChannel} channel?</AlertDialogTitle>
             <AlertDialogDescription>
               {pendingClearChannel === 'stable'
-                ? 'The stable channel is the default pin for every new intent. With no pointer, new intents cannot resolve a release and intent creation will fail until it is set again.'
+                ? 'New intents will return to the configured platform baseline until another Stable version is chosen. Existing intents keep their version.'
                 : `New intents will no longer be able to follow the ${pendingClearChannel} channel until it is pointed at a release again.`}{' '}
               Already-pinned intents keep their release.
             </AlertDialogDescription>

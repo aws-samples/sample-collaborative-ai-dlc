@@ -19,6 +19,11 @@ import {
 import { fetchCoreFiles } from '../../shared/repo-fetch.js';
 import { AIDLC_RELEASE_IMPORTER_REVISION } from '../../shared/aidlc-release.js';
 
+const { registerReleaseMock, getReleaseMock } = vi.hoisted(() => ({
+  registerReleaseMock: vi.fn(),
+  getReleaseMock: vi.fn(),
+}));
+
 const BLOCKS_TABLE = 'blocks-test';
 const ARTIFACTS_BUCKET = 'artifacts-test';
 const REF = 'a'.repeat(40);
@@ -27,15 +32,19 @@ const REF = 'a'.repeat(40);
 vi.mock('../../shared/repo-fetch.js', () => ({
   fetchCoreFiles: vi.fn(async () => CORE_FILES),
 }));
+vi.mock('../../shared/release-registry.js', () => ({
+  registerRelease: registerReleaseMock,
+  getRelease: getReleaseMock,
+}));
 
 const RELEASE_PROFILE = 'current-stable';
-const releaseFiles = () =>
+const releaseFiles = (profileId = RELEASE_PROFILE) =>
   filesFromCompatibilityFixture({
-    profileId: RELEASE_PROFILE,
+    profileId,
     fixture: JSON.parse(
       readFileSync(
         new URL(
-          `../../shared/test/fixtures/aidlc-compatibility/${RELEASE_PROFILE}.json`,
+          `../../shared/test/fixtures/aidlc-compatibility/${profileId}.json`,
           import.meta.url,
         ),
         'utf8',
@@ -133,6 +142,11 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  getReleaseMock.mockReset().mockResolvedValue(null);
+  registerReleaseMock.mockReset().mockImplementation(async ({ profileId }) => ({
+    status: 'registered',
+    release: { profileId },
+  }));
   fetchCoreFiles.mockImplementation(async () => CORE_FILES);
   installFakes();
 });
@@ -427,6 +441,110 @@ describe('seed-blocks importRelease mode', () => {
     ).rejects.toThrow(/cannot be combined with reseed/);
     expect(s3Store.size).toBe(0);
     expect(ddbMock.calls()).toHaveLength(0);
+  });
+});
+
+describe('seed-blocks prepareRelease mode', () => {
+  const profiles = Object.values(AIDLC_COMPATIBILITY_PROFILES);
+  beforeEach(() => {
+    fetchCoreFiles.mockImplementation(async (ref) =>
+      releaseFiles(profiles.find((profile) => profile.upstreamRef === ref).id),
+    );
+  });
+
+  it('prepares all eight versions through the actual deployment caller contract', async () => {
+    const { prepareSupportedReleases } =
+      await import('../../../scripts/prepare-aidlc-releases.mjs');
+    const results = await prepareSupportedReleases({
+      invoke: async (event) => ({
+        StatusCode: 200,
+        Payload: Buffer.from(JSON.stringify(await handler(event))),
+      }),
+    });
+    expect(results).toHaveLength(8);
+    expect(registerReleaseMock.mock.calls.map(([input]) => input.profileId)).toEqual(
+      profiles.map((profile) => profile.id),
+    );
+    expect(results.every((result) => result.registration === 'registered')).toBe(true);
+    expect([...s3Store.keys()].some((key) => key.startsWith('aidlc-runtime/'))).toBe(false);
+    expect([...s3Store.keys()].some((key) => key.startsWith('aidlc-catalogs/'))).toBe(false);
+  });
+
+  it('dry-runs preparation without publishing or accessing registry state', async () => {
+    const result = await handler({ prepareRelease: true, profile: RELEASE_PROFILE, dryRun: true });
+    expect(result).toMatchObject({
+      mode: 'prepareRelease',
+      status: 'dry-run',
+      registration: 'not-attempted',
+    });
+    expect(getReleaseMock).not.toHaveBeenCalled();
+    expect(registerReleaseMock).not.toHaveBeenCalled();
+    expect(s3Store.size).toBe(0);
+  });
+
+  it('preserves an older registered closure, approval, visibility and notes', async () => {
+    const profile = profiles[0];
+    const existing = {
+      releaseId: profile.releaseId,
+      sourceSha: profile.upstreamRef,
+      profileId: profile.id,
+      importerRevision: 1,
+      closureDigest: 'old-closure',
+      supportState: 'certified',
+      visible: true,
+      notes: 'keep',
+      revision: 7,
+    };
+    getReleaseMock.mockResolvedValue(existing);
+    const result = await handler({ prepareRelease: true, profile: profile.id });
+    expect(result.registration).toBe('already-registered');
+    expect(registerReleaseMock).not.toHaveBeenCalled();
+    expect(existing).toMatchObject({
+      importerRevision: 1,
+      supportState: 'certified',
+      visible: true,
+      notes: 'keep',
+      revision: 7,
+    });
+    expect(ddbMock.calls()).toHaveLength(0);
+  });
+
+  it('does not swallow registration or upstream failures', async () => {
+    registerReleaseMock.mockRejectedValueOnce(new Error('registry unavailable'));
+    await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow(
+      'registry unavailable',
+    );
+    fetchCoreFiles.mockRejectedValueOnce(new Error('upstream unavailable'));
+    await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow(
+      'upstream unavailable',
+    );
+  });
+
+  it('rejects an inconsistent existing identity instead of claiming it is prepared', async () => {
+    getReleaseMock.mockResolvedValue({ sourceSha: 'wrong' });
+    await expect(handler({ prepareRelease: true, profile: RELEASE_PROFILE })).rejects.toThrow(
+      'inconsistent',
+    );
+    expect(registerReleaseMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects mixed modes, unknown profiles and revision mismatches before writes', async () => {
+    for (const extra of [
+      { reseed: true },
+      { importRelease: true },
+      { ref: 'main' },
+      { custom: { repository: 'a/b' } },
+    ]) {
+      await expect(
+        handler({ prepareRelease: true, profile: RELEASE_PROFILE, ...extra }),
+      ).rejects.toThrow('cannot be combined');
+    }
+    await expect(handler({ prepareRelease: true, profile: 'unknown' })).rejects.toThrow('unknown');
+    await expect(
+      handler({ prepareRelease: true, profile: RELEASE_PROFILE, importerRevision: 0 }),
+    ).rejects.toThrow('publishes importer revision');
+    expect(registerReleaseMock).not.toHaveBeenCalled();
+    expect(s3Store.size).toBe(0);
   });
 });
 

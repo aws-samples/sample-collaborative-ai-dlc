@@ -342,6 +342,13 @@ INVENTORY_TABLE="$(terraform output -raw v2_executions_table_name)"
 AWS_REGION="$INVENTORY_REGION" V2_PROCESS_TABLE="$INVENTORY_TABLE" \
     node "$SCRIPT_DIR/initialize-agent-auth-inventory.mjs"
 
+# Immutable release preparation is additive and independent of the mutable
+# SYSTEM reseed. Every supported version must be present before deployment is
+# reported successful; existing approvals, channels and pins stay untouched.
+echo "Preparing supported AI-DLC versions..."
+AWS_REGION="$INVENTORY_REGION" SEED_BLOCKS_FUNCTION="$(tf_output seed_blocks_lambda_name)" \
+    node "$SCRIPT_DIR/prepare-aidlc-releases.mjs"
+
 if [[ "${AIDLC_KEEP_PLAN:-0}" != "1" ]]; then
     rm -f "$PLAN_FILE"
 fi
