@@ -805,6 +805,8 @@ module "agentcore" {
   enable_mcp_gateway  = var.enable_mcp_gateway
   enable_engine_data  = var.enable_engine_data
 
+  mcp_gateway_custom_targets = var.mcp_gateway_custom_targets
+
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.
   vpc_id                  = module.networking.vpc_id
