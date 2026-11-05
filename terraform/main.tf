@@ -263,6 +263,29 @@ resource "terraform_data" "resiliency_preconditions" {
   }
 }
 
+# The strict custom MCP profile only holds when every path that could hand a
+# custom MCP secret or a direct MCP connection to the runtime is grant-checked:
+# custom tools through the Gateway, MCP secrets through engine-data's broker,
+# and no legacy runtime request shapes left at the broker.
+resource "terraform_data" "runtime_mcp_credentials_preconditions" {
+  count = var.runtime_mcp_credentials == "gateway_only" ? 1 : 0
+
+  lifecycle {
+    precondition {
+      condition     = var.enable_mcp_gateway
+      error_message = "runtime_mcp_credentials = \"gateway_only\" requires enable_mcp_gateway: customer MCP servers are then served only as Gateway targets."
+    }
+    precondition {
+      condition     = var.enable_engine_data
+      error_message = "runtime_mcp_credentials = \"gateway_only\" requires enable_engine_data: the credential broker is what refuses MCP secrets to the runtime."
+    }
+    precondition {
+      condition     = var.enforce_runtime_grants
+      error_message = "runtime_mcp_credentials = \"gateway_only\" requires enforce_runtime_grants: legacy runtime requests must no longer be served."
+    }
+  }
+}
+
 resource "terraform_data" "runtime_grant_preconditions" {
   count = var.enforce_runtime_grants ? 1 : 0
 
@@ -553,6 +576,7 @@ module "lambda" {
   enable_mcp_gateway                       = var.enable_mcp_gateway
   enable_engine_data                       = var.enable_engine_data
   enforce_runtime_grants                   = var.enforce_runtime_grants
+  runtime_mcp_credentials                  = var.runtime_mcp_credentials
   gateway_grant_key_arn                    = module.agentcore.gateway_grant_key_arn
   gateway_grant_retirement_table_name      = module.agentcore.gateway_grant_retirement_table_name
   gateway_grant_retirement_table_arn       = module.agentcore.gateway_grant_retirement_table_arn
@@ -682,6 +706,7 @@ module "api" {
   environment_registry_table_name          = module.dynamodb.environment_registry_table_name
   runtime_compatibility_version            = module.agentcore.runtime_compatibility_version
   enable_engine_data                       = var.enable_engine_data
+  runtime_mcp_credentials                  = var.runtime_mcp_credentials
   private_subnet_ids                       = module.networking.private_subnet_ids
   lambda_security_group_ids                = [module.lambda.lambda_security_group_id]
   neptune_endpoint                         = module.neptune.cluster_endpoint
@@ -796,6 +821,7 @@ module "agentcore" {
   enable_engine_data  = var.enable_engine_data
 
   mcp_gateway_custom_targets = var.mcp_gateway_custom_targets
+  runtime_mcp_credentials    = var.runtime_mcp_credentials
 
   # VPC networking so the runtime's ENIs reach Neptune (private). Subnets are
   # carved in this VPC in AgentCore-supported AZs; egress via the private NAT route.

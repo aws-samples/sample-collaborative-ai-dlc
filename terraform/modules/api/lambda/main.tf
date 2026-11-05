@@ -10,6 +10,12 @@ locals {
 
   powertools_service_name = var.powertools_service_name
 
+  # runtime_mcp_credentials = gateway_only (lambda/shared/runtime-mcp-policy.js),
+  # set only in the strict profile so default deployments are unchanged.
+  runtime_mcp_policy_env = var.runtime_mcp_credentials == "gateway_only" ? {
+    RUNTIME_MCP_CREDENTIALS = "gateway_only"
+  } : {}
+
   # Lambdas that bundle code from lambda/shared/** via esbuild are packaged by
   # the terraform-aws-modules/lambda module,
   # which only hashes each Lambda's OWN source_path directory. A change in a
@@ -1462,7 +1468,7 @@ module "credential_broker_lambda" {
     GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
     } : {}, var.enable_engine_data && var.enforce_runtime_grants ? {
     RUNTIME_GRANTS_ENFORCED = "true"
-  } : {})
+  } : {}, local.runtime_mcp_policy_env)
 
 }
 
@@ -1603,7 +1609,7 @@ module "projects_lambda" {
     AGENT_SETTINGS_SSM_PREFIX = "/${var.project_name}/${var.environment}"
     }, var.enable_mcp_gateway ? {
     GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
-  } : {})
+  } : {}, local.runtime_mcp_policy_env)
 }
 
 # Users Lambda
@@ -3268,7 +3274,7 @@ module "intents_lambda" {
     }, var.enable_engine_data ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {},
     var.enable_mcp_gateway ? {
       GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
-  } : {})
+  } : {}, local.runtime_mcp_policy_env)
 }
 
 # Intent pin lookup — the one read the workflows Lambda cannot do itself.
@@ -3593,7 +3599,7 @@ module "v2_orchestrator_lambda" {
     }, var.enable_mcp_gateway ? {
     GATEWAY_GRANT_KEY_ID           = var.gateway_grant_key_arn
     GATEWAY_GRANT_RETIREMENT_TABLE = var.gateway_grant_retirement_table_name
-  } : {})
+  } : {}, local.runtime_mcp_policy_env)
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 

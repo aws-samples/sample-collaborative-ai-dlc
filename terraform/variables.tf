@@ -394,6 +394,17 @@ variable "enforce_runtime_grants" {
   default     = false
 }
 
+variable "runtime_mcp_credentials" {
+  description = "Custom MCP credential profile. \"allow\" (default) keeps today's behaviour: space and platform custom MCP servers run from the agent runtime with their secrets resolved into it. \"gateway_only\" keeps every custom MCP credential and every direct custom MCP connection out of the runtime microVM: direct servers and their secrets are refused when saved, at launch, at dispatch, by the credential broker and by the runtime, and customer MCP servers are served only as mcp_gateway_custom_targets. Requires enable_mcp_gateway, enable_engine_data and enforce_runtime_grants. Git tokens and model credentials still reach the runtime."
+  type        = string
+  default     = "allow"
+
+  validation {
+    condition     = contains(["allow", "gateway_only"], var.runtime_mcp_credentials)
+    error_message = "runtime_mcp_credentials must be \"allow\" or \"gateway_only\"."
+  }
+}
+
 variable "mcp_gateway_custom_targets" {
   description = "Customer MCP servers (for example Confluence) served behind the AgentCore Gateway as remote MCP targets, keyed by an immutable target name. The Gateway injects each target's credential from an AgentCore Identity credential provider created out of band; the interceptor allows a call only from a stage session whose signed grant matches the target's allow rule (spaces, optional stages, optional tools). Requires enable_mcp_gateway. Field reference and validation: modules/compute/agentcore/variables.tf; how-to: docs/using-the-platform/customer-mcp-servers.md."
   type = map(object({
