@@ -124,6 +124,68 @@ describe('adfToMarkdown', () => {
     expect(adfToMarkdown(adf)).toBe('check > _Unsupported Jira block: emoji_');
   });
 
+  it('replaces media with the corresponding filename in place, preserving text and captions', () => {
+    const adf = doc(
+      para(text('Read '), { type: 'mediaInline', attrs: { id: 'brief-media' } }, text(' first.')),
+      {
+        type: 'mediaSingle',
+        content: [
+          { type: 'media', attrs: { id: 'results-media' } },
+          { type: 'caption', content: [text('Expected results')] },
+        ],
+      },
+      para(text('Then compare the search form:')),
+      { type: 'mediaSingle', content: [{ type: 'media', attrs: { id: 'search-media' } }] },
+    );
+    // Metadata order differs from document order.
+    const filenames = new Map([
+      ['search-media', 'search.png'],
+      ['brief-media', 'brief.pdf'],
+      ['results-media', 'results.png'],
+    ]);
+    expect(adfToMarkdown(adf, filenames)).toBe(
+      'Read brief.pdf first.\n\nresults.png\n\nExpected results\n\nThen compare the search form:\n\nsearch.png',
+    );
+  });
+
+  it('resolves media groups inside lists and repeated references to the same file', () => {
+    const adf = doc({
+      type: 'bulletList',
+      content: [
+        {
+          type: 'listItem',
+          content: [
+            para(text('References')),
+            {
+              type: 'mediaGroup',
+              content: [
+                { type: 'media', attrs: { id: 'first' } },
+                { type: 'media', attrs: { id: 'second' } },
+              ],
+            },
+            para({ type: 'mediaInline', attrs: { id: 'first' } }),
+          ],
+        },
+      ],
+    });
+    expect(
+      adfToMarkdown(
+        adf,
+        new Map([
+          ['first', 'first.pdf'],
+          ['second', 'second.png'],
+        ]),
+      ),
+    ).toBe('- References\n\n  first.pdf\n\n  second.png\n\n  first.pdf');
+  });
+
+  it('does not guess a filename from media alt text when its identity cannot be resolved', () => {
+    const adf = doc(para({ type: 'mediaInline', attrs: { id: 'unknown', alt: 'Some image' } }));
+    expect(adfToMarkdown(adf, new Map([['other', 'other.png']]))).toBe(
+      '> _Unsupported Jira block: mediaInline_',
+    );
+  });
+
   it('joins multiple blocks with a blank line', () => {
     const adf = doc(
       { type: 'heading', attrs: { level: 2 }, content: [text('Title')] },
