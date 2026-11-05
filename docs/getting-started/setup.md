@@ -96,25 +96,14 @@ This is a secret-based access restriction: the REST API endpoint remains public,
 Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
 A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
 
-#### Body-content exemptions for authoring routes
+#### Building-block bodies
 
-Four Common Rule Set rules inspect the request body: `GenericLFI_BODY`, `CrossSiteScripting_BODY`, `GenericRFI_BODY` and `EC2MetaDataSSRF_BODY`. Ordinary methodology content matches them: relative links such as `../templates/foo.md`, HTML comments and tags, and URLs in documentation. With `enable_waf = true`, saving such a building block, or loading a methodology through the API, fails with a 403 from CloudFront.
+Building-block bodies are methodology markdown and sensor scripts. They legitimately contain what two Common Rule Set rules treat as attacks in a request body: relative links such as `../templates/foo.md` (`GenericLFI_BODY`) and HTML comments and tags (`CrossSiteScripting_BODY`). So both ACLs count those two rules and add two rules after the Common Rule Set:
 
-To let those routes through while keeping the rules everywhere else, list their path prefixes:
+- `LabelBlockWrites` labels a block create (`POST /api/blocks/{type}`) or update (`PUT /api/blocks/{type}/{id}`). On the regional ACL the API Gateway stage prefix (`/<stage>/api/...`) is allowed too.
+- `BlockBodyContentOutsideBlockWrites` blocks any request that matched one of the two rules and isn't labelled.
 
-```hcl
-enable_waf                    = true
-waf_body_content_exempt_paths = ["/api/blocks/"]
-```
-
-When the list is not empty, both ACLs count the four rules instead of blocking them, and add two rules after the Common Rule Set:
-
-- `BodyContentPathTraversal` blocks a match on any path that contains `..` after URL decoding, so an exempt prefix can't be used to reach another route.
-- `BodyContentOutsideExemptPaths` blocks a match on any path outside the listed prefixes. On the regional ACL the API Gateway stage prefix (`/<stage>/api/...`) is allowed as well.
-
-Prefixes must be absolute paths ending in `/`, using only `A-Za-z0-9._~/-`, and must not contain `..`. Exempt only routes that need it; block writes already require the `platform-admin` group. The two rules add to the ACLs' monthly rule charge.
-
-With the list empty (the default), both ACLs are unchanged.
+The two rules still block in every other request body, and the other body rules (`GenericRFI_BODY`, `EC2MetaDataSSRF_BODY`) block everywhere. A block write still goes through every other managed rule, and needs the `platform-admin` group. The two rules add to the ACLs' monthly rule charge.
 
 ### Custom domain
 
