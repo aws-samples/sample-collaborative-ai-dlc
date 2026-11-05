@@ -90,6 +90,31 @@ describe('definitionsInArtifact', () => {
     expect(definitionsInArtifact(units).map((d) => d.id)).toEqual(['U1', 'U26', 'U8b']);
   });
 
+  it('reads GFM tables with or without outer pipes', () => {
+    const borderless = {
+      id: 'units',
+      title: 'Units',
+      content: [
+        'Unit ID | Name',
+        '--- | ---',
+        'U1 | Alpha',
+        'U2 | Beta',
+        '',
+        'Not part of the table: U9',
+      ].join('\n'),
+    };
+    expect(definitionsInArtifact(borderless).map((d) => d.id)).toEqual(['U1', 'U2']);
+  });
+
+  it('does not take a thematic break or a pipe-less line for a table', () => {
+    const prose = {
+      id: 'notes',
+      title: 'Notes',
+      content: ['U1 and U2', '---', '', 'A | B', 'not a delimiter'].join('\n'),
+    };
+    expect(definitionsInArtifact(prose)).toEqual([]);
+  });
+
   it('ignores ordinary technical tokens that nothing corroborates', () => {
     const services = {
       id: 'design',

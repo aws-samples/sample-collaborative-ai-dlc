@@ -87,6 +87,25 @@ function splitTableRow(line: string): string[] {
     .map((cell) => cell.trim());
 }
 
+const hasCellSeparator = (line: string) => /(?<!\\)\|/.test(line);
+
+// A GFM table starts where a header row is followed by a delimiter row with the same
+// number of cells. Outer pipes are optional, but a row needs at least one pipe.
+function startsTable(lines: string[], index: number): boolean {
+  const header = lines[index];
+  const delimiter = lines[index + 1] ?? '';
+  return (
+    hasCellSeparator(header) &&
+    hasCellSeparator(delimiter) &&
+    TABLE_SEPARATOR_RE.test(delimiter) &&
+    splitTableRow(header).length === splitTableRow(delimiter).length
+  );
+}
+
+// A table's body runs to the first blank line or the next heading or fence.
+const endsTableBody = (line: string) =>
+  line.trim() === '' || HEADING_RE.test(line) || FENCE_RE.test(line);
+
 // The identifiers in a table's identifier column, and the index of the line after it.
 function tableDefinitions(
   lines: string[],
@@ -95,7 +114,7 @@ function tableDefinitions(
   const { column, explicit } = referenceIdColumn(splitTableRow(lines[headerIndex]));
   const ids: string[] = [];
   let i = headerIndex + 2;
-  for (; i < lines.length && lines[i].trim().startsWith('|'); i += 1) {
+  for (; i < lines.length && !endsTableBody(lines[i]); i += 1) {
     const id = cellReferenceId(splitTableRow(lines[i])[column] ?? '');
     if (id) ids.push(id);
   }
@@ -142,7 +161,7 @@ export function definitionsInArtifact(
       define(leadingReferenceId(heading[1]), 'heading');
       continue;
     }
-    if (line.trim().startsWith('|') && TABLE_SEPARATOR_RE.test(lines[i + 1] ?? '')) {
+    if (startsTable(lines, i)) {
       const table = tableDefinitions(lines, i);
       for (const id of table.ids) define(id, 'table', table.explicit);
       i = table.next - 1;

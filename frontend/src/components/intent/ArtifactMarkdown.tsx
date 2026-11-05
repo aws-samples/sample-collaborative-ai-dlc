@@ -194,30 +194,65 @@ function nodeText(node: MdastNode): string {
 // Gives each heading, table row and bold-led list item where this document defines
 // an identifier the element id its references scroll to. Where this document is
 // also the one the identifier links to, the defining text is marked so it isn't a
-// link to itself; a copy another document wins still links to the winner.
+// link to itself: the whole cell in a table, only the leading identifier in a
+// heading or list label, so other references beside it still link. A copy another
+// document wins still links to the winner.
 interface ReferenceAnchorOptions {
   artifactId: string;
   ownIds: ReadonlySet<string>;
   winners: ReadonlyMap<string, ReferenceDefinition>;
 }
 
+// Splits the identifier a heading or list label starts with into its own text node,
+// marked as the definition. Leaves the node alone if its text doesn't start with it.
+function markLeadingToken(node: MdastNode, id: string): void {
+  const children = node.children ?? [];
+  const index = children.findIndex((child) => nodeText(child).trim() !== '');
+  const child = children[index];
+  if (!child) return;
+  if (child.type !== 'text') {
+    markLeadingToken(child, id);
+    return;
+  }
+  const value = child.value ?? '';
+  const start = value.indexOf(id);
+  if (start === -1 || value.slice(0, start).trim() !== '') return;
+  const end = start + id.length;
+  children.splice(
+    index,
+    1,
+    ...[
+      { type: 'text', value: value.slice(0, start) },
+      { type: 'text', value: id, data: { referenceDefinition: true } },
+      { type: 'text', value: value.slice(end) },
+    ].filter((part) => part.value),
+  );
+}
+
 function remarkReferenceAnchors({ artifactId, ownIds, winners }: ReferenceAnchorOptions) {
   return (tree: MdastNode) => {
     const seen = new Set<string>();
-    const mark = (target: MdastNode, defining: MdastNode, id: string | null) => {
+    // `defining` is the table cell that holds the id, or null for a heading or list
+    // label, where only the leading token is marked.
+    const mark = (
+      target: MdastNode,
+      defining: MdastNode | null,
+      id: string | null,
+      labelNode: MdastNode = target,
+    ) => {
       if (!id || !ownIds.has(id) || seen.has(id)) return;
       seen.add(id);
       target.data = {
         ...target.data,
         hProperties: { ...target.data?.hProperties, id: referenceAnchor(artifactId, id) },
       };
-      if (winners.get(id)?.artifactId === artifactId) {
-        defining.data = { ...defining.data, referenceDefinition: true };
-      }
+      if (winners.get(id)?.artifactId !== artifactId) return;
+      if (defining) defining.data = { ...defining.data, referenceDefinition: true };
+      else markLeadingToken(labelNode, id);
     };
     const visit = (node: MdastNode) => {
       if (node.type === 'heading') {
-        mark(node, node, leadingReferenceId(nodeText(node)));
+        mark(node, null, leadingReferenceId(nodeText(node)));
         return;
       }
       if (node.type === 'table') {
@@ -231,7 +266,9 @@ function remarkReferenceAnchors({ artifactId, ownIds, winners }: ReferenceAnchor
       }
       if (node.type === 'listItem') {
         const label = node.children?.[0]?.children?.[0];
-        if (label?.type === 'strong') mark(node, label, leadingReferenceId(nodeText(label)));
+        if (label?.type === 'strong') {
+          mark(node, null, leadingReferenceId(nodeText(label)), label);
+        }
       }
       for (const child of node.children ?? []) visit(child);
     };
@@ -248,7 +285,7 @@ function remarkPreviewLinks(index: PreviewReferenceIndex) {
 
       const children: MdastNode[] = [];
       for (const child of node.children) {
-        if (child.type === 'text' && child.value) {
+        if (child.type === 'text' && child.value && !child.data?.referenceDefinition) {
           children.push(...index.split(child.value).map(referenceNode));
         } else {
           children.push(child);

@@ -258,4 +258,67 @@ describe('ArtifactMarkdown — identifiers defined in documents', () => {
     expect(screen.queryByRole('link', { name: 'US6.12' })).not.toBeInTheDocument();
     expect(container.querySelector('#ref-story-map--us6-12')?.tagName).toBe('TR');
   });
+
+  it('still links other references in a heading that defines an identifier', () => {
+    const doc = {
+      id: 'stories',
+      title: 'User stories',
+      content: '## US6.11 Covers FR2.4 and [[requirements]]',
+    };
+    const { container } = render(
+      <ArtifactMarkdown
+        content={doc.content}
+        artifactId="stories"
+        artifacts={[doc, { id: 'requirements', title: 'Requirements' }]}
+        derivedItems={[{ id: 'fr-node', slug: 'fr2-4', label: 'Sign in' }]}
+        preserveReferenceText
+      />,
+    );
+
+    const heading = container.querySelector('#ref-stories--us6-11');
+    expect(heading?.tagName).toBe('H2');
+    expect(heading?.textContent).toBe('US6.11 Covers FR2.4 and Requirements');
+    expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual([
+      'FR2.4',
+      'Requirements',
+    ]);
+  });
+
+  it('keeps links beside the identifier a bold list label defines', () => {
+    const doc = {
+      id: 'questions',
+      title: 'Open questions',
+      content: '- **OQ-01 needs FR2.4** — which?',
+    };
+    const { container } = render(
+      <ArtifactMarkdown
+        content={doc.content}
+        artifactId="questions"
+        artifacts={[doc]}
+        derivedItems={[{ id: 'fr-node', slug: 'fr2-4', label: 'Sign in' }]}
+        preserveReferenceText
+      />,
+    );
+
+    expect(container.querySelector('#ref-questions--oq-01')?.tagName).toBe('LI');
+    expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual(['FR2.4']);
+  });
+
+  it('anchors and links the rows of a table without outer pipes', () => {
+    const borderless = {
+      id: 'units',
+      title: 'Units',
+      content: 'Unit ID | Name\n--- | ---\nU1 | Alpha\nU2 | Beta',
+    };
+    const { container } = render(
+      <ArtifactMarkdown content={borderless.content} artifactId="units" artifacts={[borderless]} />,
+    );
+    expect(container.querySelector('#ref-units--u2')?.tagName).toBe('TR');
+
+    render(<ArtifactMarkdown content="See U2." artifacts={[borderless]} />);
+    expect(screen.getByRole('link', { name: 'U2' })).toHaveAttribute(
+      'href',
+      '#artifact-units/ref-units--u2',
+    );
+  });
 });
