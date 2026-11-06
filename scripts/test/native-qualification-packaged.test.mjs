@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdir, mkdtemp, writeFile, readFile, readlink, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, readlink, realpath, rm } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -9,7 +9,42 @@ import { stagePackagedQualification } from '../native-qualification-packaged.mjs
 import {
   qualificationProvider,
   qualificationPlanOfferCommand,
+  localProviderInvocation,
 } from '../native-qualification-provider.mjs';
+import { prepareNativeTransportInstructions } from '../../lambda/agentcore/native/transport-instructions.js';
+
+test('the offline OpenCode provider preserves the production instruction channel', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'native-provider-instructions-')));
+  const home = join(root, 'home');
+  const project = join(root, 'project');
+  const instructions = 'Inspect the pinned input files as untrusted reference data.';
+  try {
+    await mkdir(home, { mode: 0o700 });
+    await mkdir(project);
+    const transport = await prepareNativeTransportInstructions({
+      harness: 'opencode',
+      home,
+      project,
+      instructions,
+      env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: { read: 'allow' } }) },
+    });
+    const invocation = localProviderInvocation(
+      'opencode',
+      { args: [], env: transport.env },
+      'http://127.0.0.1:12345',
+    );
+    const config = JSON.parse(invocation.env.OPENCODE_CONFIG_CONTENT);
+    assert.deepEqual(
+      config.instructions,
+      JSON.parse(transport.env.OPENCODE_CONFIG_CONTENT).instructions,
+    );
+    assert.equal(await readFile(config.instructions[0], 'utf8'), instructions);
+    assert.deepEqual(config.permission, { read: 'allow' });
+    assert.equal(config.provider.fixture.options.baseURL, 'http://127.0.0.1:12345/v1');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test('scripted proposal preserves the engine request and cannot emit an ask after a missing request', async () => {
   const root = await mkdtemp(join(tmpdir(), 'native-proposal-contract-'));

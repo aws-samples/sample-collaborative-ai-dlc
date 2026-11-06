@@ -429,10 +429,13 @@ export function localProviderInvocation(harness, input, url) {
     );
     env.FIXTURE_TOKEN = 'fixture-no-provider';
   } else if (harness === 'opencode') {
+    const config = JSON.parse(env.OPENCODE_CONFIG_CONTENT ?? '{}');
     Object.assign(env, {
       OPENCODE_DISABLE_MODELS_FETCH: 'true',
       OPENCODE_CONFIG_CONTENT: JSON.stringify({
+        ...config,
         provider: {
+          ...config.provider,
           fixture: {
             npm: '@ai-sdk/openai-compatible',
             options: { baseURL: `${url}/v1`, apiKey: 'fixture-no-provider' },

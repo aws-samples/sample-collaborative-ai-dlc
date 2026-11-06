@@ -75,7 +75,7 @@ test('default invocation selects Claude; explicit selection has no missing-input
     assert.throws(() => qualificationOptions(args));
 });
 
-test('Linux checks use the same offline container boundary and an explicit locked binding', () => {
+test('Linux checks use the same offline container boundary and an explicit locked binding', async () => {
   const args = linuxDockerArgs({
     image,
     assets: '/tmp/assets',
@@ -95,6 +95,13 @@ test('Linux checks use the same offline container boundary and an explicit locke
   assert.ok(args.includes('lambda/agentcore/test/native-command-runner.test.js'));
   assert.ok(args.includes('lambda/agentcore/test/native-executor.test.js'));
   assert.ok(args.includes('lambda/native-runtime-control/test/workspace-resume-journey.test.js'));
+  const inputTest = 'lambda/agentcore/test/native-input-materialization.test.js';
+  assert.ok(args.includes(inputTest));
+  const configuration = (await import('../../vitest.native-foundation.config.js')).default;
+  assert.ok(
+    configuration.test.include.includes(inputTest),
+    'The selected input test must actually run',
+  );
   assert.ok(args.includes('--maxWorkers=2'));
 });
 
