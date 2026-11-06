@@ -27,7 +27,11 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { S3Client } from '@aws-sdk/client-s3';
-import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda';
+import {
+  LambdaClient,
+  InvokeCommand,
+  SendDurableExecutionCallbackSuccessCommand,
+} from '@aws-sdk/client-lambda';
 import {
   BedrockAgentCoreClient,
   InvokeAgentRuntimeCommand,
@@ -95,7 +99,12 @@ import {
 } from './section.js';
 import { runQuorumEdit } from './quorum-edit.js';
 import { buildIntentAttribution } from './pr-attribution.js';
-import { bindGateCallback, ownsAnsweredGate, unparkGate } from './gate-callback.js';
+import {
+  bindGateCallback,
+  ownsAnsweredGate,
+  releaseUnusedGateCallback,
+  unparkGate,
+} from './gate-callback.js';
 import { OVERRIDE_REASON_MAX } from '../shared/gate-answer.js';
 import { intentSessionIdFor } from '../shared/runtime-session-ids.js';
 
@@ -288,6 +297,15 @@ const defaultDeps = () => ({
   issueGatewayGrant: gatewayGrantIssuer,
   stopSession: stopRuntimeSession,
   broadcast: broadcastToIntentChannel,
+  // Completes this execution's own callback for a gate answered before its
+  // wait began (gate-callback.js releaseUnusedGateCallback).
+  releaseCallback: (callbackId, result) =>
+    lambda.send(
+      new SendDurableExecutionCallbackSuccessCommand({
+        CallbackId: callbackId,
+        Result: Buffer.from(JSON.stringify(result ?? null)),
+      }),
+    ),
   openPr: ({ projectId, gitProvider, repoId, branch, baseBranch, title, body, attemptKey }) =>
     defaultSourceControlOperation({
       projectId,
@@ -404,6 +422,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     invokeRuntime: rawInvokeRuntime,
     stopSession,
     broadcast,
+    releaseCallback = null,
     openPr,
     comparePrBranches,
     unitPrProvider,
@@ -434,7 +453,9 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
     });
     // Version behavior in the existing first checkpoint. Old histories have no
     // marker and retain their operation sequence; repair creates a new history.
-    return loaded ? { ...loaded, completionPolicyVersion: 1 } : null;
+    // laneWaitPolicyVersion 1: lanes read their integration turn in durable
+    // steps (section.js waitForIntegrationTurn).
+    return loaded ? { ...loaded, completionPolicyVersion: 1, laneWaitPolicyVersion: 1 } : null;
   });
   if (!meta) return { ok: false, reason: 'execution_not_found' };
   const runtimeTarget = resolveRuntimeTarget(meta, RUNTIME_ARN());
@@ -1110,9 +1131,22 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
         // Retired while parked? Cancel/rewind supersedes the pending gate and
         // wakes this callback with a cancel sentinel. The cancel/rewind path owns
         // META from here — exit WITHOUT any further write (docs/v2-steering.md).
-        const gateAfter = await ctxArg.step(`gate-after-${humanTaskId}`, () =>
-          store.getHumanTask(executionId, humanTaskId, { consistentRead: true }),
-        );
+        // An early answer's unused callback is released in this same step, so
+        // the operation sequence of runs in progress is unchanged.
+        const gateAfter = await ctxArg.step(`gate-after-${humanTaskId}`, async () => {
+          const gate = await store.getHumanTask(executionId, humanTaskId, {
+            consistentRead: true,
+          });
+          if (answeredEarly) {
+            await releaseUnusedGateCallback(releaseCallback, {
+              gate,
+              callbackId,
+              humanTaskId,
+              logger,
+            });
+          }
+          return gate;
+        });
         if (gateAfter?.status === 'superseded') {
           logger.info('run retired while parked', { humanTaskId });
           return {
@@ -1185,6 +1219,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       invokeRuntime: invokeIntentRuntime,
       stopSession: stopIntentSession,
       broadcast,
+      releaseCallback,
       emitEvent,
       fail,
       executeStage,
@@ -1192,6 +1227,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       ids: { projectId, intentId, executionId },
       runId: null, // stamped below once minted
       completionPolicyVersion: meta.completionPolicyVersion ?? 0,
+      laneWaitPolicyVersion: meta.laneWaitPolicyVersion ?? 0,
       intentBranch: meta.branch,
       cloneBase: {
         repos: meta.repos ?? [],
