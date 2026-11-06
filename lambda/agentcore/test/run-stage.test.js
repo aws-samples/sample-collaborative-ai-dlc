@@ -5501,6 +5501,44 @@ describe('runStage — engine git hook (docs/v2-parallel.md WP2)', () => {
     expect(ev[1].summary).toContain('owner/repo@abc12345');
   });
 
+  it('warns on the timeline when a sparse commit modified tracked files outside the selection', async () => {
+    const sparseCheckout = { 'owner/repo': ['services/api'] };
+    const materialized = [];
+    const base = baseDeps();
+    const deps = baseDeps({
+      ...sourcePresent,
+      spawnFn: okSpawn,
+      materializeStage: async (args) => {
+        materialized.push(args);
+        return base.materializeStage(args);
+      },
+      commitAndPushAll: async () => ({
+        ok: true,
+        committed: true,
+        results: [
+          {
+            repo: 'owner/repo',
+            committed: true,
+            sha: 'abc1234567890',
+            pushed: true,
+            outsideSelection: ['docs/usage.md'],
+          },
+        ],
+      }),
+    });
+    const res = await runStage({ ...gitArgs, sparseCheckout }, deps);
+    // The commit stands: the warning never fails the stage.
+    expect(res).toMatchObject({ ok: true, state: 'SUCCEEDED' });
+    expect(materialized[0].sparseCheckout).toEqual(sparseCheckout);
+    const warning = deps.store.calls.find(
+      (c) => c[0] === 'appendEvent' && c[1].type === 'v2.git.sparse_outside_selection',
+    );
+    expect(warning?.[1].summary).toContain('owner/repo: docs/usage.md');
+    expect(
+      deps.store.calls.some((c) => c[0] === 'appendEvent' && c[1].type === 'v2.git.pushed'),
+    ).toBe(true);
+  });
+
   it('no event when nothing was committed and pushes were clean (quiet feed)', async () => {
     const deps = baseDeps({
       ...sourcePresent,

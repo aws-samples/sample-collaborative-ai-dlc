@@ -3495,6 +3495,7 @@ const runStageAttempt = async (
       cli,
       customRules: customRuleDocs,
       attachments: attachmentRefs,
+      sparseCheckout,
       // AGENT.maxTurns is a release-catalog field; an unpinned run keeps
       // running without a cap, as it always has.
       maxTurns: methodologyRelease ? (agentBlock?.maxTurns ?? null) : null,
@@ -3833,8 +3834,47 @@ const runStageAttempt = async (
   // whether the stage's code predates its approval, so EVERY commit of the attempt
   // must publish it — a repair commit that stayed silent left the lineage check
   // judging the stage on its pre-approval commit.
+  // A sparse checkout leaves tracked files outside the selection off disk. A
+  // commit that modifies one may have replaced it with content written from
+  // scratch, so name those paths on the timeline and live. The commit stands:
+  // the change is also visible in the delivery diff for human review.
+  const warnOutsideSparseSelection = async (result, label) => {
+    const affected = (result.results ?? []).filter((r) => r.outsideSelection?.length);
+    if (affected.length === 0) return;
+    const scope = label ? `${stageLabel} (${label})` : stageLabel;
+    const paths = affected
+      .map((r) => {
+        const shown = r.outsideSelection.slice(0, 10).join(', ');
+        const more =
+          r.outsideSelection.length > 10 ? ` +${r.outsideSelection.length - 10} more` : '';
+        return `${r.repo}: ${shown}${more}`;
+      })
+      .join('; ');
+    const summary = `${scope} changed tracked files outside the sparse checkout selection; verify they were not overwritten: ${paths}`;
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.git.sparse_outside_selection',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary,
+      })
+      .catch(() => {});
+    await publish({
+      action: 'agent.note',
+      noteType: 'v2.git.sparse_outside_selection',
+      stageInstanceId,
+      unitSlug,
+      sectionIndex,
+      summary,
+    });
+  };
+
   const publishGitEvidence = async (result, { label = null } = {}) => {
     if (!result || (!result.committed && result.ok)) return;
+    await warnOutsideSparseSelection(result, label);
     const failedRepos = (result.results ?? [])
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
       // Carry the git stderr into the event — the 2026-07 incident's ENOSPC

@@ -104,11 +104,19 @@ intent to change it. API clients can supply the same option on intent creation:
 }
 ```
 
-Omitted repositories and empty lists retain full checkout. Use directory paths,
-not glob patterns or absolute paths. Git cone mode also includes root-level files
-and files directly inside the selected directories' ancestors. Files outside the
-selection remain in Git history; their absence is not committed as a deletion.
+Omitted repositories and empty lists retain full checkout. Use repository-relative
+directory paths such as `services/api` (a trailing `/` is accepted), not glob
+patterns, absolute paths, or `./` prefixes. Git cone mode also includes root-level
+files and files directly inside the selected directories' ancestors. Files outside
+the selection remain in Git history; their absence is not committed as a deletion.
 This is a storage optimization, not a restriction on what an agent can access.
+
+Each stage prompt lists the selected directories and tells the agent to read a
+missing file's committed version before creating or editing it. If a stage
+commit still modifies a tracked file outside the selection, the commit is kept
+and the activity feed shows a warning naming the files. Check them in the pull
+request: an agent that wrote such a file from scratch replaces its committed
+content.
 
 The checkout configures the selection **before** materializing the working tree.
 Git history is still downloaded in full: selected files, `.git`, and agent state

@@ -6,7 +6,11 @@ import { spawnSync } from 'node:child_process';
 import { checkoutRepo, checkoutRepos, ensureWorkspaceSource } from '../workspace.js';
 import { beginConflictMerge, commitAll, concludeConflictMerge } from '../git-engine.js';
 import { HOOKS_DISABLED_ARGS } from '../git-runner.js';
-import { validateSparseCheckout } from '../../shared/sparse-checkout.js';
+import {
+  isInSparseCone,
+  validateSparseCheckout,
+  validateSparseDirectories,
+} from '../../shared/sparse-checkout.js';
 
 const git = (cwd, ...args) => {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -126,6 +130,41 @@ describe('sparse checkout', () => {
     expect(git(target, 'show', 'HEAD:assets/large.txt')).toBe('assets/large.txt');
     expect(git(target, 'status', '--porcelain')).toBe('');
     expect(await exists(path.join(target, 'assets'))).toBe(false);
+    expect(committed.outsideSelection).toBeUndefined();
+  });
+
+  it('reports a tracked file outside the cone that the agent recreated from scratch', async () => {
+    const result = await checkoutRepo({ ...inputs(), sparseDirectories: ['services/api'] });
+    expect(result.branchOk).toBe(true);
+    expect(await exists(path.join(target, 'assets'))).toBe(false);
+    // The agent does not see assets/large.txt and writes it fresh.
+    await mkdir(path.join(target, 'assets'));
+    await writeFile(path.join(target, 'assets/large.txt'), 'rewritten');
+    await writeFile(path.join(target, 'services/api/index.js'), 'updated');
+    const committed = await commitAll({
+      dir: target,
+      message: 'overwrite outside the cone',
+      attempts: 1,
+      log: () => {},
+    });
+    // The commit stands (the caller warns); the replaced path is named.
+    expect(committed.committed).toBe(true);
+    expect(committed.outsideSelection).toEqual(['assets/large.txt']);
+    expect(git(target, 'show', 'HEAD:assets/large.txt')).toBe('rewritten');
+  });
+
+  it('reports nothing outside the cone for a full checkout', async () => {
+    const result = await checkoutRepo(inputs());
+    expect(result.branchOk).toBe(true);
+    await writeFile(path.join(target, 'assets/large.txt'), 'edited');
+    const committed = await commitAll({
+      dir: target,
+      message: 'full checkout edit',
+      attempts: 1,
+      log: () => {},
+    });
+    expect(committed.committed).toBe(true);
+    expect(committed.outsideSelection).toBeUndefined();
   });
 
   it('concludes and pushes resolved merge conflicts outside the lane cone', async () => {
@@ -230,11 +269,34 @@ describe('sparse checkout', () => {
     'a//b',
     ' services/api',
     'services/api ',
+    './services/api',
+    '/',
   ])('rejects unsafe selection %s before touching disk', async (directory) => {
     const result = await checkoutRepo({ ...inputs(), sparseDirectories: [directory] });
     expect(result.cloned).toBe(false);
     expect(calls).toEqual([]);
     expect(await exists(target)).toBe(false);
+  });
+
+  it('normalizes trailing slashes and names the rejected entry', () => {
+    expect(validateSparseDirectories(['services/api/', 'services/api', 'docs//']).value).toEqual([
+      'services/api',
+      'docs',
+    ]);
+    const rejected = validateSparseDirectories(['./services/api']);
+    expect(rejected.error).toContain('"./services/api"');
+    expect(rejected.error).toContain('without a leading ./');
+  });
+
+  it('matches Git cone membership', () => {
+    const dirs = ['services/api'];
+    expect(isInSparseCone('README.md', dirs)).toBe(true);
+    expect(isInSparseCone('services/config.json', dirs)).toBe(true);
+    expect(isInSparseCone('services/api/index.js', dirs)).toBe(true);
+    expect(isInSparseCone('services/api/deep/x.js', dirs)).toBe(true);
+    expect(isInSparseCone('services/web/index.js', dirs)).toBe(false);
+    expect(isInSparseCone('services/apix/index.js', dirs)).toBe(false);
+    expect(isInSparseCone('assets/large.txt', dirs)).toBe(false);
   });
 
   it('validates map shape and repository membership', () => {

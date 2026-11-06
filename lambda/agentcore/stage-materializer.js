@@ -297,6 +297,31 @@ export const renderIntentBlock = ({ title, prompt, scope } = {}) => {
   ].join('\n');
 };
 
+// The intent's sparse selection ({ repoUrl: directories[] }, validated at
+// create). Without it an agent sees missing paths and may recreate a tracked
+// file from scratch, which the engine commit then records as a replacement.
+export const renderSparseCheckout = (sparseCheckout) => {
+  const entries = Object.entries(sparseCheckout ?? {}).filter(([, dirs]) => dirs?.length);
+  if (entries.length === 0) return '';
+  return [
+    '## Partial checkout (sparse)',
+    '',
+    'Only part of the repository is on disk. Each repository below materializes',
+    'its selected directories, its root files, and the files directly inside the',
+    'parent directories of a selection (paths relative to that repository):',
+    '',
+    ...entries.map(([repo, dirs]) => `- ${repo}: ${dirs.join(', ')}`),
+    '',
+    'Every other tracked file still exists in the repository; its absence from',
+    'disk is not a deletion. Before creating or editing a file outside the',
+    'selection, check whether it already exists by reading the committed version',
+    'with `git show HEAD:<path>` from inside that repository. This read-only',
+    'command is the only exception to the engine-owned git rule. Writing a path',
+    'that already exists replaces the committed file entirely, so start from its',
+    'committed content. Do not try to change the selection.',
+  ].join('\n');
+};
+
 // Render the unit-scope block for a `forEach: unit-of-work` lane run
 // (docs/v2-parallel.md WP4). PURE. `unit` = { slug, dependsOn, kind } from the
 // promoted UNITPLAN — the engine's scheduling truth, never agent-supplied.
@@ -425,6 +450,7 @@ export const buildStagePrompt = ({
   conductor = '',
   compiledContext = '',
   attachments = [],
+  sparseCheckout = null,
 }) => {
   const sections = [
     `# Stage: ${stage.stageId ?? 'unknown'} (phase: ${stage.phase ?? 'unphased'})`,
@@ -455,6 +481,8 @@ export const buildStagePrompt = ({
   // worded once-per-workflow) so the agent reads its lane boundary first.
   const unitScope = renderUnitScope(unit);
   if (unitScope) sections.push('', unitScope);
+  const sparseScope = renderSparseCheckout(sparseCheckout);
+  if (sparseScope) sections.push('', sparseScope);
   const workspaceDetectionContract = renderWorkspaceDetectionContract(stage.stageId, stage.policy);
   if (workspaceDetectionContract) sections.push('', workspaceDetectionContract);
   const scopePolicy = renderScopePolicy(stage.policy);
@@ -1214,6 +1242,7 @@ export const materializeStage = async ({
   customRules = [],
   attachments = [],
   maxTurns = null,
+  sparseCheckout = null,
 }) => {
   const aidlcDir = path.join(workspaceDir, '.aidlc');
   await mkdir(aidlcDir, { recursive: true });
@@ -1243,6 +1272,7 @@ export const materializeStage = async ({
     conductor,
     compiledContext,
     attachments,
+    sparseCheckout,
   });
   return { prompt, ...cliContext, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

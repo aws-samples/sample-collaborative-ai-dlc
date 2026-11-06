@@ -1302,10 +1302,13 @@ describe('POST /projects/{id}/intents', () => {
     const res = await createIntent(sub, projectId, {
       title: 'Scoped work',
       prompt: 'Update API',
-      sparseCheckout: { 'owner/repo': ['services/api'] },
+      // A trailing slash names the same directory and is stored normalized.
+      sparseCheckout: { 'owner/repo': ['services/api/', 'packages/shared'] },
     });
     expect(res.statusCode).toBe(201);
-    expect(JSON.parse(res.body).sparseCheckout).toEqual({ 'owner/repo': ['services/api'] });
+    expect(JSON.parse(res.body).sparseCheckout).toEqual({
+      'owner/repo': ['services/api', 'packages/shared'],
+    });
   });
 
   it.each([
@@ -1314,6 +1317,7 @@ describe('POST /projects/{id}/intents', () => {
     { 'owner/repo': 'src' },
     { 'owner/repo': [' services/api'] },
     { 'owner/repo': ['services/api '] },
+    { 'owner/repo': ['./services/api'] },
   ])('rejects an invalid sparse checkout selection', async (sparseCheckout) => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
