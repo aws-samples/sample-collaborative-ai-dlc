@@ -67,6 +67,23 @@ variable "skip_final_snapshot" {
   default     = false
 }
 
+variable "neptune_streams_enabled" {
+  description = "Enable Neptune Streams, a change log of graph writes that other systems can read (for example reporting or replication). Static cluster parameters: changing this takes effect only after the Neptune instance is rebooted."
+  type        = bool
+  default     = false
+}
+
+variable "neptune_streams_expiry_days" {
+  description = "Days Neptune keeps stream records when neptune_streams_enabled is true (1-90). Takes effect after a reboot."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.neptune_streams_expiry_days >= 1 && var.neptune_streams_expiry_days <= 90 && floor(var.neptune_streams_expiry_days) == var.neptune_streams_expiry_days
+    error_message = "neptune_streams_expiry_days must be a whole number of days between 1 and 90."
+  }
+}
+
 variable "lambda_vpc_scope" {
   description = "Lambda VPC placement scope: required keeps only private-resource Lambdas in the VPC; public-egress adds selected public-service Lambdas; all places every Lambda in the VPC"
   type        = string

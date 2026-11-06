@@ -38,6 +38,25 @@ resource "aws_neptune_cluster_parameter_group" "main" {
     value = "1"
   }
 
+  # Neptune Streams: a change log of graph writes. Static parameters, so they
+  # take effect only after the instance reboots. neptune_streams is always set
+  # because the provider never resets a parameter removed from this block, so
+  # disabling must send "0".
+  parameter {
+    name         = "neptune_streams"
+    value        = var.streams_enabled ? "1" : "0"
+    apply_method = "pending-reboot"
+  }
+
+  dynamic "parameter" {
+    for_each = var.streams_enabled ? [var.streams_expiry_days] : []
+    content {
+      name         = "neptune_streams_expiry_days"
+      value        = tostring(parameter.value)
+      apply_method = "pending-reboot"
+    }
+  }
+
   tags = var.tags
 }
 
