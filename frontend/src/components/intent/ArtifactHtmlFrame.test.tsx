@@ -24,7 +24,7 @@ const MUTATING_PAGE =
 // keeps its document in attributes this parse never reads, so its subtree is
 // markup no sanitizer has seen.
 const THREAT_SELECTOR =
-  'a, area, base, link, iframe, frame, frameset, object, embed, portal, fencedframe, meta[http-equiv="refresh" i], meta[http-equiv="x-dns-prefetch-control" i], template[shadowrootmode], template[shadowroot]';
+  'a, area, base, link, iframe, frame, frameset, object, embed, portal, fencedframe, set, animate, animateMotion, animateTransform, animateColor, discard, meta[http-equiv="refresh" i], meta[http-equiv="x-dns-prefetch-control" i], template[shadowrootmode], template[shadowroot]';
 
 const findThreat = (root: Document | DocumentFragment): Element | null => {
   const direct = root.querySelector(THREAT_SELECTOR);
@@ -58,7 +58,9 @@ describe('ArtifactHtmlFrame', () => {
     expect(container.querySelector('iframe')).toBeNull();
     unmount();
 
-    const { unmount: unmount2 } = render(<ArtifactContent content={PAGE} />);
+    const { unmount: unmount2 } = render(
+      <ArtifactContent artifactType="wireframes" content={PAGE} />,
+    );
     const frame = screen.getByTitle('HTML artifact');
     expect(frame.tagName).toBe('IFRAME');
     expect(frame.getAttribute('sandbox')).toBe('');
@@ -70,9 +72,17 @@ describe('ArtifactHtmlFrame', () => {
     expect(srcdoc).not.toMatch(/script-src/);
     unmount2();
 
-    const markdown = render(<ArtifactContent content={'# Requirements'} />);
+    const markdown = render(
+      <ArtifactContent artifactType="wireframes" content={'# Requirements'} />,
+    );
     expect(screen.getByRole('heading', { name: 'Requirements' })).toBeInTheDocument();
     expect(markdown.container.querySelector('iframe')).toBeNull();
+
+    // The renderer follows the artifact type, not the content alone: HTML under a
+    // non-visual type stays Markdown (the visual case is rendered above).
+    const nonVisual = render(<ArtifactContent artifactType="requirements" content={PAGE} />);
+    expect(nonVisual.container.querySelector('iframe')).toBeNull();
+    nonVisual.unmount();
   });
 
   // guards: security artifact HTML preview navigation and network isolation
@@ -140,6 +150,22 @@ describe('ArtifactHtmlFrame', () => {
       '<!doctype html><html><body><svg><a><animate attributeName="xlink:href" values="https://evil.invalid/y"/><text y="20">copy</text></a></svg></body></html>',
       'renders',
       'copy',
+    ],
+    // the animation elements themselves are gone, not only their targets
+    [
+      '<!doctype html><html><body><svg><g><set attributeName="href" to="https://evil.invalid/s"/><text y="20">kept-set</text></g></svg></body></html>',
+      'renders',
+      'kept-set',
+    ],
+    [
+      '<!doctype html><html><body><svg><animateMotion dur="1s" path="M0 0"/><animatetransform attributeName="transform"/><ANIMATECOLOR/><discard/><text y="20">kept-anim</text></svg></body></html>',
+      'renders',
+      'kept-anim',
+    ],
+    [
+      '<!doctype html><html><body><template shadowrootmode="open"><svg><animate attributeName="href" values="https://evil.invalid/t"/></svg></template><h2>kept-tpl</h2></body></html>',
+      'renders',
+      'kept-tpl',
     ],
     // rel=dns-prefetch resolves a host from outside CSP
     [

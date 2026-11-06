@@ -11,7 +11,7 @@ import { ArtifactEditControls, ArtifactStaleBadge } from '@/components/intent/Ar
 import { ArtifactContentEditor } from '@/components/intent/ArtifactContentEditor';
 import { ArtifactHistoryDrawer } from '@/components/intent/ArtifactHistoryDrawer';
 import { ArtifactContent } from '@/components/intent/ArtifactContent';
-import { isHtmlDocument } from '@/components/intent/ArtifactHtmlFrame';
+import { rendersAsHtml } from '@/components/intent/ArtifactHtmlFrame';
 import type { GraphNeighbor } from '@/hooks/useIntentGraph';
 import type { IntentArtifact } from '@/services/intents';
 import { ChevronDown } from 'lucide-react';
@@ -43,7 +43,7 @@ export function ArtifactViewer({
   const [editing, setEditing] = useState(false);
 
   const content = artifact.content ?? '';
-  const html = isHtmlDocument(content);
+  const html = rendersAsHtml(artifact.artifactType, content);
   const collapsible = !html && content.length > COLLAPSE_CHARS;
   const shown = collapsible && !expanded ? `${content.slice(0, COLLAPSE_CHARS)}…` : content;
 
@@ -115,7 +115,11 @@ export function ArtifactViewer({
           <>
             {content && (
               <div className="prose prose-sm dark:prose-invert mt-2 max-w-none">
-                <ArtifactContent content={shown} title={artifact.title} />
+                <ArtifactContent
+                  artifactType={artifact.artifactType}
+                  content={shown}
+                  title={artifact.title}
+                />
               </div>
             )}
             {collapsible && (

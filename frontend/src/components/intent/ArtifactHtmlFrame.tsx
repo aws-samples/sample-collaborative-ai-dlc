@@ -3,13 +3,28 @@ import { Button } from '@/components/ui/button';
 import { Code, Eye } from 'lucide-react';
 
 // Renders HTML in a bounded sandbox without scripts or same-origin access.
-// Keep HTML_DOCUMENT_RE in sync with lambda/shared/html-artifact.js.
+// Keep HTML_DOCUMENT_RE and HTML_ARTIFACT_TYPES in sync with
+// lambda/shared/html-artifact.js; the frontend is a separate package and cannot
+// import it.
 
 const HTML_DOCUMENT_RE =
   /^\s*(?:<!--(?:>|->|[\s\S]*?--!?>)\s*)*(?:<!doctype\s+html[\s>]|<html[\s>])/i;
 
+export const HTML_ARTIFACT_TYPES: readonly string[] = Object.freeze([
+  'wireframes',
+  'user-flow',
+  'mockups',
+]);
+
 export const isHtmlDocument = (content: string | null | undefined): boolean =>
   typeof content === 'string' && HTML_DOCUMENT_RE.test(content);
+
+// A non-visual type (e.g. `requirements`) stored as HTML before the backend
+// guards must not pick the page renderer.
+export const rendersAsHtml = (
+  artifactType: string | null | undefined,
+  content: string | null | undefined,
+): boolean => isHtmlDocument(content) && HTML_ARTIFACT_TYPES.some((type) => type === artifactType);
 
 // Blocks every network fetch from the page: only inline CSS and data: URIs load.
 export const ARTIFACT_HTML_CSP =
@@ -25,7 +40,7 @@ const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
 // for an SVG <a> so its drawing children still render), and <area>, <base> and
 // <link> are dropped outright. <link> is not navigation but rel=dns-prefetch
 // resolves a host outside CSP, and so does a meta x-dns-prefetch-control that
-// turns it on.
+// turns it on. SMIL changes attributes without scripts, so its elements go too.
 //
 // A nested browsing context or plugin (<iframe>, <frame>, <frameset>, <object>,
 // <embed>, <portal>, <fencedframe>) carries its document in attributes this parse
@@ -56,6 +71,12 @@ const stripFrameNavigation = (root: Document | DocumentFragment) => {
       'area, base, link, iframe, frame, frameset, object, embed, portal, fencedframe',
     )
     .forEach((element) => element.remove());
+  // The camelCase spellings are not a typo: in foreign content the parser
+  // corrects `animatemotion` to `animateMotion`, and a type selector then has to
+  // name that spelling exactly.
+  root
+    .querySelectorAll('set, animate, animateMotion, animateTransform, animateColor, discard')
+    .forEach((element) => element.remove());
   root.querySelectorAll('meta[http-equiv]').forEach((meta) => {
     const httpEquiv = meta.getAttribute('http-equiv')?.trim().toLowerCase();
     if (httpEquiv === 'refresh' || httpEquiv === 'x-dns-prefetch-control') meta.remove();
@@ -72,7 +93,7 @@ const stripFrameNavigation = (root: Document | DocumentFragment) => {
 // since a sanitizer that left one would have left a navigable one, and a nested
 // browsing context, whose document the sanitizer never parses.
 const FRAME_NAVIGATION_SELECTOR =
-  'a, area, base, link, iframe, frame, frameset, object, embed, portal, fencedframe, meta[http-equiv="refresh" i], meta[http-equiv="x-dns-prefetch-control" i], template[shadowrootmode]';
+  'a, area, base, link, iframe, frame, frameset, object, embed, portal, fencedframe, set, animate, animateMotion, animateTransform, animateColor, discard, meta[http-equiv="refresh" i], meta[http-equiv="x-dns-prefetch-control" i], template[shadowrootmode]';
 
 const carriesFrameNavigation = (root: Document | DocumentFragment): boolean =>
   root.querySelector(FRAME_NAVIGATION_SELECTOR) !== null ||

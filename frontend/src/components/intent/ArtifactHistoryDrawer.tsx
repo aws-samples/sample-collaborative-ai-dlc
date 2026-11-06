@@ -175,7 +175,11 @@ function ArtifactHistoryDrawerContent({
               )}
               {content ? (
                 <div className="prose prose-sm dark:prose-invert max-w-none">
-                  <ArtifactContent content={content} title={artifact.title || artifact.id} />
+                  <ArtifactContent
+                    artifactType={selectedSummary?.artifactType ?? artifact.artifactType}
+                    content={content}
+                    title={artifact.title || artifact.id}
+                  />
                 </div>
               ) : (
                 !loading && <p className="text-sm text-muted-foreground">No content recorded.</p>

@@ -772,6 +772,7 @@ function ArtifactPreviewContent({
         artifact.content && (
           <div className={cn('prose prose-sm dark:prose-invert max-w-none', contentClassName)}>
             <ArtifactContent
+              artifactType={artifact.artifactType}
               content={artifact.content}
               artifactId={artifact.id}
               title={title}
