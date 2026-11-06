@@ -14,7 +14,7 @@ import {
   executionCredentialBinding,
   prepareAgentInvocation,
 } from '../shared/agent-credential-service.js';
-import { executionMetaKey } from '../shared/v2-process-keys.js';
+import { executionMetaKey, humanTaskKey } from '../shared/v2-process-keys.js';
 import { ddb, ssm, query, cardinality, TextP, __, locksTable } from './clients.js';
 import {
   MESSAGE_ID_RE,
@@ -53,6 +53,7 @@ import {
   findDiscussionByAnchor,
   anchorExistsInScope,
   fetchAnchorTitle,
+  ensureQuestionFromGate,
   createDiscussionVertex,
   fetchDiscussionInScope,
   fetchMessageInDiscussion,
@@ -173,6 +174,21 @@ export const listDiscussions = async (event, res) => {
   return res(200, discussions);
 };
 
+// The gate row behind a question anchor, read from the process table (the
+// handler already reads its META row). Null when the table is unwired or the
+// row is gone; the caller decides whether that is a 404.
+const fetchGateRow = async (executionId, humanTaskId) => {
+  if (!processTable()) return null;
+  const { Item } = await ddb.send(
+    new GetCommand({
+      TableName: processTable(),
+      Key: humanTaskKey(executionId, humanTaskId),
+      ConsistentRead: true,
+    }),
+  );
+  return Item ?? null;
+};
+
 export const getOrCreateDiscussion = async (event, res) => {
   const scope = resolveScope(event.pathParameters);
   const caller = getCaller(event);
@@ -206,9 +222,12 @@ export const getOrCreateDiscussion = async (event, res) => {
   );
   if (existing) return res(200, existing);
 
-  // Validate the anchor lives in this scope before creating anything.
+  // Validate the anchor lives in this scope before creating anything. A missing
+  // Question vertex is the one repairable anchor: a checkpoint parks its gate
+  // without a mirror, so the graph can be rebuilt from the gate row below.
   const anchorOk = await query((g) => anchorExistsInScope(g, scope, entityType, entityId));
-  if (!anchorOk)
+  const repairableGate = entityType === 'question' && scope.kind === 'intent';
+  if (!anchorOk && !repairableGate)
     return res(404, { error: `${entityType} "${entityId}" not found in ${scope.kind}` });
 
   const guardKey = `create:${scope.rootId}:${entityType}:${entityId}`;
@@ -245,6 +264,22 @@ export const getOrCreateDiscussion = async (event, res) => {
           .send(new DeleteCommand({ TableName: locksTable(), Key: { lockId: guardKey } }))
           .catch(() => {});
         return res(200, recheck);
+      }
+
+      if (!anchorOk) {
+        // Repair on demand: the gate row is authoritative and the Question
+        // vertex is a rebuildable projection. Read the row once, consistently,
+        // and mirror it under this intent. Nothing here writes the HUMAN# row,
+        // appends an execution event or resumes a parked callback — opening
+        // Discuss never answers or unblocks the gate.
+        const gate = await fetchGateRow(scope.rootId, entityId);
+        if (gate?.kind !== 'question') {
+          await ddb
+            .send(new DeleteCommand({ TableName: locksTable(), Key: { lockId: guardKey } }))
+            .catch(() => {});
+          return res(404, { error: `${entityType} "${entityId}" not found in ${scope.kind}` });
+        }
+        await query((g) => ensureQuestionFromGate(g, scope.rootId, gate));
       }
 
       const id = `disc-${randomUUID()}`;
