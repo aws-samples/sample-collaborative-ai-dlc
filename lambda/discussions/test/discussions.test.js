@@ -129,6 +129,7 @@ const installDdbFake = () => {
 
 let handler;
 let close;
+let __setGatewayGrantIssuer;
 let conn;
 let g;
 
@@ -136,6 +137,7 @@ beforeAll(async () => {
   vi.stubEnv('GREMLIN_PARTITION', PARTITION);
   vi.stubEnv('AWS_PROFILE', undefined);
   ({ handler, close } = await import('../index.js'));
+  ({ __setGatewayGrantIssuer } = await import('../handlers.js'));
 
   const url = `ws://${process.env.NEPTUNE_ENDPOINT}:${process.env.GREMLIN_PORT}/gremlin`;
   conn = new gremlin.driver.DriverRemoteConnection(url);
@@ -1726,6 +1728,7 @@ describe('intent-scoped discussions', () => {
       },
     });
     expect(typeof payload.agentCredentialGrant).toBe('string');
+    expect(payload).not.toHaveProperty('gatewayGrant');
     expect(JSON.stringify(payload)).not.toContain(forbiddenCredentialValue);
 
     const again = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
@@ -1735,6 +1738,41 @@ describe('intent-scoped discussions', () => {
     expect(again.statusCode).toBe(202);
     expect(json(again).message.id).toBe(body.message.id);
     expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
+  });
+
+  it('attaches a short-lived discussion gateway grant only when the Gateway is enabled', async () => {
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },
+    });
+    credentialMetadataHandler = () => ({
+      ok: true,
+      bindings: { kiro: { provider: 'kiro', source: 'user', userId: MEMBER_SUB } },
+    });
+    const { projectId, intentId } = await seedIntent();
+    const created = json(
+      await call('POST', intentPath('/discussions'), {
+        pathParameters: { projectId, intentId },
+        body: { entityType: 'intent' },
+      }),
+    );
+    const issuer = vi.fn(async () => 'gateway-grant-token');
+    __setGatewayGrantIssuer(issuer);
+    try {
+      const res = await call('POST', intentPath('/discussions/{discussionId}/assist'), {
+        pathParameters: { projectId, intentId, discussionId: created.id },
+        body: { requestId: 'assist-request-gateway', command: 'summarize', agentCli: 'kiro' },
+      });
+      expect(res.statusCode).toBe(202);
+    } finally {
+      __setGatewayGrantIssuer(null);
+    }
+    expect(issuer).toHaveBeenCalledWith(
+      { mode: 'discussion', projectId, intentId, executionId: intentId },
+      { ttlSeconds: 300 },
+    );
+    const calls = agentcoreMock.commandCalls(InvokeAgentRuntimeCommand);
+    const payload = JSON.parse(Buffer.from(calls.at(-1).args[0].input.payload).toString('utf8'));
+    expect(payload.gatewayGrant).toBe('gateway-grant-token');
   });
 
   it('authorizes a started intent assist with the pinned binding, not the caller binding', async () => {

@@ -51,6 +51,7 @@ const deploymentFixture = (t) => {
     'scripts/deploy-frontend.sh',
     'scripts/generate-env.sh',
     'scripts/inspect-terraform-plan.mjs',
+    'scripts/check-active-executions.mjs',
     'scripts/with-public-ecr-auth.mjs',
     'scripts/docker-proxy-build-args.mjs',
     'lambda/agentcore/Dockerfile',

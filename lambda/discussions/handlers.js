@@ -70,6 +70,13 @@ import {
   invokeDiscussionAssist,
 } from './services.js';
 import { resolveScope } from './scope.js';
+import { gatewayGrantIssuerFromEnv } from '../shared/gateway-grant-issuer.js';
+import { DISCUSSION_GRANT_TTL_SECONDS } from '../shared/gateway-grant.js';
+
+let issueGatewayGrant = gatewayGrantIssuerFromEnv();
+export const __setGatewayGrantIssuer = (issuer) => {
+  issueGatewayGrant = issuer;
+};
 
 const logger = new Logger({ persistentKeys: { component: 'discussions' } });
 
@@ -710,6 +717,17 @@ export const assistDiscussion = async (event, res) => {
         },
         { ssm },
       );
+      const gatewayGrant = issueGatewayGrant
+        ? await issueGatewayGrant(
+            {
+              mode: 'discussion',
+              projectId: auth.projectId,
+              intentId: scope.rootId,
+              executionId: scope.rootId,
+            },
+            { ttlSeconds: DISCUSSION_GRANT_TTL_SECONDS },
+          )
+        : null;
       const out = await invokeDiscussionAssist({
         intentId: scope.rootId,
         payload: {
@@ -729,6 +747,7 @@ export const assistDiscussion = async (event, res) => {
             ? { requestedCli: effectiveRequestedCli, credentialBinding }
             : {}),
           ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
+          ...(gatewayGrant ? { gatewayGrant } : {}),
         },
       });
       if (out?.ok === false) {
