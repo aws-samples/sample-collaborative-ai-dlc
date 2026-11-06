@@ -34,7 +34,8 @@ source. A member selects one connected application repository and a harness,
 then creates a title-only or written draft. The shared Intent workspace supports
 prompt correction, workspace preparation and explicit **Start**. Preparation does
 not start agent work. The settings-page package link remains a convenience entry
-into the same form. These NE-08 changes are locally validated; deployment is pending.
+into the same form. These NE-08 changes are locally validated and independently
+verified as deployed; a fresh live creation journey remains unrun.
 
 Kiro is temporarily unavailable for new native executions while AI-DLC input
 and authentication qualification is pending. Creation shows the disabled Kiro choice
@@ -59,7 +60,7 @@ configuration.
 The shared Intent workspace provides the current response and questions, activity,
 discussions, files, graph navigation and revision history. Native intents also
 appear in the project, dashboard and sidebar. Native creation now begins in the
-normal **New intent** entry, with local NE-08 acceptance recorded below.
+normal **New intent** entry, with local and deployed NE-08 acceptance recorded below.
 
 ## Questions, decisions and collaboration
 
@@ -3481,11 +3482,79 @@ The preceding 163 Linux and installed Claude/Codex/OpenCode results remain accep
 and were not repeated. Kiro remains deferred to NE-18.
 
 Evidence and the fresh handoff are under
-`.native-evidence/ne08-2026-11-05-intent-creation/`. Controller packages and frontend
-need deployment. The unchanged runtime needs no new image qualification. Actual
-deployed bundles/aliases and frontend bytes require independent verification
-after the operator's deployment. A fresh live workflow and the complete release
-journey remain separate acceptance tiers.
+`.native-evidence/ne08-2026-11-05-intent-creation/`. At this local checkpoint,
+controller packages and frontend needed deployment, followed by independent
+verification of deployed bundles/aliases and frontend bytes. The unchanged runtime
+needed no new image qualification. The subsequent deployed acceptance is recorded
+below. A fresh live workflow and the complete release journey remain separate
+acceptance tiers.
+
+## NE-08 deployed artifact acceptance — 2026-11-06
+
+The operator's original deployment of
+`b1143d22be8a3c983e75f444bddd805e3ab32074` ran on 2026-11-05 from
+`14:24:59.959Z` to `14:36:00.023Z`. Its saved plan, complete log and final receipt
+agree: exit `0`, phase `finished`, status `COMMANDS_FINISHED`. The original
+`verificationStatus: PENDING` correctly required independent verification and
+remains preserved in that immutable receipt.
+
+The output returned on 2026-11-06 came from the repeat-attempt guard. After the local
+preflight, the handoff detects the existing `deployment/` directory and exits `1`
+before credentials, log capture or deployment commands. Its generic pending
+preflight message and repeat refusal do not mean the original deployment failed.
+The original attempt was not retried, its saved plan was not applied again, and
+all four original file hashes and the local evidence manifest remain unchanged.
+
+Read-only verification used `solution-read` in account `746558295630`,
+`us-east-1`, after independently confirming the `ReadOnly` role, its sole managed
+`ReadOnlyAccess` policy and absence of inline policies. Evidence is under
+`.native-evidence/ne08-2026-11-06-deployed-b1143d22/`.
+
+The locally decoded saved plan and logged apply both report **87 added, 33 changed
+and 87 destroyed**. All 87 replacements are local build/package records:
+26 `local_file`, 26 `null_resource` and 35 `terraform_data`. There are **no AWS
+resource replacements**. The AWS updates comprise 27 Lambda functions and six
+aliases. Besides all nine native functions, this includes 18 packages whose
+contents still match the accepted main integration. API stage/routing, Lambda
+environment values, IAM, runtime and registry resources have no planned changes.
+Computed Lambda logging blocks resolve to the same Text/default-group settings.
+
+All **27 deployed packages**, both referenced published versions and all six
+effective alias resolutions pass. Every archive entry matches its expected
+content; the downloaded archives also match the retained original deployment
+archives byte for byte. All **106 native source inputs** match the candidate.
+Only native authority and credential entrypoints differ from the accepted
+baseline; the other seven native entrypoints and all 18 extra packages match.
+Authority aliases `commands`, `execution`, `preparation`, `projection` and
+`results` all resolve to verified **version 26**, with no weighted routing.
+The unchanged v2 package is republished as **version 117**, selected by `live`.
+
+Tag `0176cd52b080ec91` independently resolves to the accepted registry index
+`sha256:fb10982fd44262ad5083d39031c569f03fd00d8d9bee719a62df15fa286225f1`
+and Linux ARM64 platform
+`sha256:9ee035d277ed0a7e16e7e3eccff59af9903fb3c741e4fdba4a91536af2d4de13`.
+Configuration and all 23 layer descriptors/rootfs links match the preserved
+qualification. All **33 current image pins across 12 consumers** match; native
+admission/configuration and the shared runtime/`DEFAULT` endpoint agree on READY
+**version 145**. No image pull, rebuild or qualification rerun was needed.
+API `olyuzk7xv3/dev` still selects accepted snapshot `acqkcx`; the native creation
+route, five native event mappings and wakeup schedule also match.
+
+All **629 candidate frontend artifacts** match actual S3 and responding CloudFront
+content hashes, including `index.html`, baked configuration, native creation code,
+92 entry references and static import/preload references from 409 chunks.
+The completed three-page inventory contains 2,655 objects; 2,026 retained objects
+are outside the current build. The deployment invalidation is complete. CDN proof
+covers the responding `DUS51-P7` and `FRA56-P16` points of presence at the recorded
+times, not every edge or existing browser cache.
+
+**NE-08 deployed artifact acceptance passes; no operator action remains for this
+scope.** This verification makes no fresh live workflow, public-command,
+model, human-gate or generated-application claim. Earlier local and installed
+qualification remains accepted within its recorded scopes; OpenCode still excludes
+dependency rebuild and reconciliation-question coverage. Historical executions
+and queues were not investigated. Kiro remains deferred to NE-18, and NE-09 is
+unstarted.
 
 ## Integration and simplification checklist
 
@@ -3638,8 +3707,11 @@ the current contract for newly created executions.
       edges at Start. Shared-shell and public-router regressions cover creation,
       configuration review, prompt correction, preparation and Start, including
       conflicts, access denial and uncertain responses. Runtime inputs remain
-      identical to the qualified main-integration image. **Deployment and
-      independent deployed verification remain pending.**
+      identical to the qualified main-integration image. **Deployed artifact
+      acceptance completed 2026-11-06:** the original successful command receipt,
+      27 deployed packages, effective aliases, unchanged runtime, current
+      configuration and all 629 S3/CloudFront artifacts are independently verified
+      above. A fresh live creation/Start journey remains unrun.
 - [ ] **NE-09 — Integrate supported inputs, settings and tools.** Implement the selected
       attachment and tracker-import scope and source selection; capture the inputs and
       effective configuration at Start. Connect supported environment/tool settings
