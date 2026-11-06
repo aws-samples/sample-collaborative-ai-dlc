@@ -3602,8 +3602,9 @@ responses. Separate worker/provisioner and warm execution/cancellation cases
 exercise the removed gates without a project list. Local fixture ports do not
 establish live runtime or model behavior.
 
-The native/shared/controller host suite passes **6,145 tests with eight host
-skips**; the full frontend suite passes **2,283 tests**. Frontend build/typecheck,
+At the initial local checkpoint, the native/shared/controller host suite passed
+**6,145 tests with eight host skips**; the full frontend suite passed **2,283 tests**.
+Frontend build/typecheck,
 eight controller builds covering nine functions, 22 native wiring checks,
 dependency/SDK/architecture checks, lint, formatting and secret scanning pass.
 Isolated local-backend Terraform validation passes. Mocked Terraform cases cover
@@ -3612,8 +3613,8 @@ retained, alongside the existing package-repair checks. The full backend suite
 could not start because Docker Desktop requires organization sign-in (HTTP 407).
 The host suite explicitly excludes its one unconditional DynamoDB integration
 case while that prerequisite is unavailable. Four other DynamoDB cases and three
-Linux-only process cases skip through their existing guards. This is a recorded
-validation gap.
+Linux-only process cases skip through their existing guards. This was the recorded
+validation gap at that checkpoint; the final local validation below resolves it.
 
 All **278 production runtime inputs** and their inventory match qualified source
 `513005a19163b1f5fdf4e9a64fe7a1926cb19e04`, tag `0176cd52b080ec91`, and the
@@ -3622,8 +3623,9 @@ dependency bytes are unchanged, so packaged Linux and installed-CLI qualificatio
 were not repeated. AI-DLC remains pinned to verified **2.11.1**, Kiro remains
 deferred to NE-18, and NE-09 has not started.
 
-Fresh evidence and the guarded deployment-only handoff are under
-`.native-evidence/ne08-2026-11-06-remove-project-pilot/`. Deployment is pending.
+The initial evidence and handoff are preserved under
+`.native-evidence/ne08-2026-11-06-remove-project-pilot/`. That handoff was not
+attempted and is superseded by the final-validation handoff below. Deployment is pending.
 The handoff pins the reviewed commit, current configuration, bundle/frontend
 manifests and accepted runtime qualification. Its local `--check-only` precedes
 credentials and cloud tools. The saved-plan guard permits the nine native
@@ -3632,6 +3634,57 @@ unrelated changes or drift stop the attempt. The wrapper retains a single
 attempt's plan, complete FIFO-captured log and start/finish receipts and refuses
 repeated attempts. Independent deployed verification must follow; a successful
 operator receipt alone does not prove the repaired cross-space user journey.
+
+## NE-08 uniform space availability — final local validation, 2026-11-06
+
+Parent review accepted the production implementation at
+`9a11774c5b801eae52207a2076b788ec99ea5ab4` without a material production-code finding.
+This continuation changes only the optional local DynamoDB test boundary and this
+canonical document. The earlier HTTP 407 Docker receipt and limited validation
+checkpoint remain accurate historical evidence.
+
+With scoped local Docker access, the complete root backend suite ran on Node
+**24.21.0** against Testcontainers' real local DynamoDB and Gremlin endpoints:
+**11,616 tests passed and eight skipped**, across **400 passing files and one
+skipped file**. The remaining skips are three Linux-only command-process cases
+on the macOS host and five script-sensor cases requiring Bun, which is absent
+from the test PATH. No DynamoDB cases were excluded from this run. The real
+stop-condition regression passed, including cancellation races, lost
+acknowledgements and late observers.
+
+`stop-evidence.test.js` now follows the existing optional integration convention:
+without `DYNAMODB_LOCAL_ENDPOINT`, that one integration case skips explicitly.
+When supplied, its URL must use HTTP and a literal loopback host before the
+AWS client is constructed. Missing, nonlocal, wrong-protocol and malformed
+endpoint probes all recorded **zero DynamoDB requests**. The earlier
+dummy-credential AWS rejection remains recorded; it was not a successful table
+creation or evidence of safe optional-test behavior.
+
+The two formerly excluded release cases both passed, with **zero skips**:
+SSO-plan privacy and command-specific destroy-variable normalization. These use
+only built-in `terraform_data` resources and temporary local state. A confined
+Terraform port verified every invocation before allowing the real binary;
+no AWS provider or project deployment backend was loaded. The earlier **502
+reported release passes**, including the empty-file reporter pass, remain a
+separate accepted result. This targeted completion is not represented as a new
+unfiltered `npm run test:release` invocation.
+
+Real AWS credentials and configuration were absent from these checks. No
+deployed-stack plan/apply/refresh, deployment, image push or live native workflow
+was run. The accepted nine bundles, 629 frontend artifacts and 278 runtime
+production inputs remain unchanged. Frontend builds/tests, runtime builds,
+installed-CLI qualification and production audits were therefore not repeated.
+AI-DLC remains pinned to verified **2.11.1**, and Kiro remains deferred to NE-18.
+
+Final local receipts and the replacement deployment-only handoff are under
+`.native-evidence/ne08-2026-11-06-remove-project-pilot-final-validation/`.
+The new guard requires the completed backend and offline release checks and pins
+the final commit, the bounded test/document changes, unchanged production bytes
+and current ignored configuration. It retains the reviewed FIFO logging,
+single-attempt receipts, nine-native-function/five-alias/33-local-helper plan
+scope and `--check-only` before credentials or mutation. Deployment and subsequent
+independent verification remain pending; no fresh live cross-space creation or
+Start journey is claimed. NE-09 remains unstarted.
 
 ## Integration and simplification checklist
 
@@ -3791,7 +3844,8 @@ the current contract for newly created executions.
       above. **Follow-up 2026-11-06:** creation in another space exposed the remaining
       project pilot gate. Its configuration and enforcement are removed locally;
       deployment and independent verification of uniform space availability remain
-      pending, with the Docker-dependent backend validation gap recorded above.
+      pending. Final local validation above completes the full backend suite and
+      the two formerly excluded offline Terraform fixtures.
       The preceding deployed-byte acceptance remains valid within its scope.
       A fresh live creation/Start journey remains unrun.
 - [ ] **NE-09 — Integrate supported inputs, settings and tools.** Implement the selected

@@ -122,89 +122,96 @@ it('a cancelled worker cannot attach stop evidence after a new cancellation owne
   expect(nativeExecutionView(finished).stopStatus.state).toBe('confirmed');
 });
 
-it('uses real DynamoDB conditions for cancellation, lost acknowledgements and late observers', async () => {
-  const f = await ready();
-  const tableName = `native-stop-${randomUUID()}`;
-  const raw = new DynamoDBClient({
-    endpoint: process.env.DYNAMODB_LOCAL_ENDPOINT,
-    region: 'us-east-1',
-    credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
-  });
-  const ddb = DynamoDBDocumentClient.from(raw, {
-    marshallOptions: { removeUndefinedValues: true },
-  });
-  await raw.send(
-    new CreateTableCommand({
-      TableName: tableName,
-      BillingMode: 'PAY_PER_REQUEST',
-      KeySchema: [
-        { AttributeName: 'pk', KeyType: 'HASH' },
-        { AttributeName: 'sk', KeyType: 'RANGE' },
-      ],
-      AttributeDefinitions: [
-        { AttributeName: 'pk', AttributeType: 'S' },
-        { AttributeName: 'sk', AttributeType: 'S' },
-      ],
-    }),
-  );
-  try {
-    await ddb.send(new PutCommand({ TableName: tableName, Item: f.owned }));
-    let loseAcknowledgement = false;
-    let cancelBeforeCommit = false;
-    const store = createNativeExecutionStore({
-      ddb: {
-        async send(command) {
-          if (cancelBeforeCommit && command instanceof TransactWriteCommand) {
-            cancelBeforeCommit = false;
-            await store.cancel(f.bindingIdentity);
-          }
-          const result = await ddb.send(command);
-          if (loseAcknowledgement && command instanceof TransactWriteCommand) {
-            loseAcknowledgement = false;
-            throw new Error('committed response lost');
-          }
-          return result;
+it.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
+  'uses real DynamoDB conditions for cancellation, lost acknowledgements and late observers',
+  async () => {
+    // This optional integration test must never fall back to an AWS endpoint.
+    const endpoint = new URL(process.env.DYNAMODB_LOCAL_ENDPOINT);
+    expect(endpoint.protocol).toBe('http:');
+    expect(['localhost', '127.0.0.1', '[::1]']).toContain(endpoint.hostname);
+    const f = await ready();
+    const tableName = `native-stop-${randomUUID()}`;
+    const raw = new DynamoDBClient({
+      endpoint: endpoint.href,
+      region: 'us-east-1',
+      credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+    });
+    const ddb = DynamoDBDocumentClient.from(raw, {
+      marshallOptions: { removeUndefinedValues: true },
+    });
+    await raw.send(
+      new CreateTableCommand({
+        TableName: tableName,
+        BillingMode: 'PAY_PER_REQUEST',
+        KeySchema: [
+          { AttributeName: 'pk', KeyType: 'HASH' },
+          { AttributeName: 'sk', KeyType: 'RANGE' },
+        ],
+        AttributeDefinitions: [
+          { AttributeName: 'pk', AttributeType: 'S' },
+          { AttributeName: 'sk', AttributeType: 'S' },
+        ],
+      }),
+    );
+    try {
+      await ddb.send(new PutCommand({ TableName: tableName, Item: f.owned }));
+      let loseAcknowledgement = false;
+      let cancelBeforeCommit = false;
+      const store = createNativeExecutionStore({
+        ddb: {
+          async send(command) {
+            if (cancelBeforeCommit && command instanceof TransactWriteCommand) {
+              cancelBeforeCommit = false;
+              await store.cancel(f.bindingIdentity);
+            }
+            const result = await ddb.send(command);
+            if (loseAcknowledgement && command instanceof TransactWriteCommand) {
+              loseAcknowledgement = false;
+              throw new Error('committed response lost');
+            }
+            return result;
+          },
         },
-      },
-      tableName,
-      preparationStore: f.preparationStore,
-      now: f.now,
-    });
-    cancelBeforeCommit = true;
-    await expect(
-      store.recoveryRequired({
-        row: f.owned,
-        reason: 'DELIVERY_UNCERTAIN',
-        stoppedSessionId: f.owned.runtimeSessionId,
-      }),
-    ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CONFLICT' });
-    const cancelled = await store.get(f.identity);
-    expect(cancelled.stopConfirmation).toBeUndefined();
-    expect(cancelled.status).toBe('CANCEL_REQUESTED');
-    const duplicates = await Promise.all([
-      store.cancel(f.bindingIdentity),
-      store.cancel(f.bindingIdentity),
-    ]);
-    expect(duplicates).toEqual([cancelled, cancelled]);
-    const { row } = await store.claim(f.bindingIdentity);
-    loseAcknowledgement = true;
-    const stopped = await store.advance({
-      row,
-      patch: { status: 'CANCELLED' },
-      stoppedSessionId: row.runtimeSessionId,
-    });
-    expect(await store.get(f.identity)).toEqual(stopped);
-    expect(nativeExecutionView(stopped).stopStatus.state).toBe('confirmed');
-    await expect(
-      store.advance({
-        row: f.owned,
-        patch: { status: 'FAILED' },
-        stoppedSessionId: f.owned.runtimeSessionId,
-      }),
-    ).rejects.toThrow();
-    expect(await store.get(f.identity)).toEqual(stopped);
-  } finally {
-    await raw.send(new DeleteTableCommand({ TableName: tableName }));
-    raw.destroy();
-  }
-});
+        tableName,
+        preparationStore: f.preparationStore,
+        now: f.now,
+      });
+      cancelBeforeCommit = true;
+      await expect(
+        store.recoveryRequired({
+          row: f.owned,
+          reason: 'DELIVERY_UNCERTAIN',
+          stoppedSessionId: f.owned.runtimeSessionId,
+        }),
+      ).rejects.toMatchObject({ code: 'NATIVE_EXECUTION_CONFLICT' });
+      const cancelled = await store.get(f.identity);
+      expect(cancelled.stopConfirmation).toBeUndefined();
+      expect(cancelled.status).toBe('CANCEL_REQUESTED');
+      const duplicates = await Promise.all([
+        store.cancel(f.bindingIdentity),
+        store.cancel(f.bindingIdentity),
+      ]);
+      expect(duplicates).toEqual([cancelled, cancelled]);
+      const { row } = await store.claim(f.bindingIdentity);
+      loseAcknowledgement = true;
+      const stopped = await store.advance({
+        row,
+        patch: { status: 'CANCELLED' },
+        stoppedSessionId: row.runtimeSessionId,
+      });
+      expect(await store.get(f.identity)).toEqual(stopped);
+      expect(nativeExecutionView(stopped).stopStatus.state).toBe('confirmed');
+      await expect(
+        store.advance({
+          row: f.owned,
+          patch: { status: 'FAILED' },
+          stoppedSessionId: f.owned.runtimeSessionId,
+        }),
+      ).rejects.toThrow();
+      expect(await store.get(f.identity)).toEqual(stopped);
+    } finally {
+      await raw.send(new DeleteTableCommand({ TableName: tableName }));
+      raw.destroy();
+    }
+  },
+);
