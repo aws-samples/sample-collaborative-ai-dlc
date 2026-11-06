@@ -86,6 +86,7 @@ import { normalizeComposedGrid, pruneSkipsForGrid } from '../shared/composed-gri
 import { matchScopeByKeywords } from '../shared/compose-match.js';
 import { makePriceResolver, costForMetrics, modelFamily } from '../shared/model-pricing.js';
 import { aggregateMetrics, rollupAggregates } from '../shared/metric-classification.js';
+import { qualifyAgentAuthRuntime } from '../shared/agent-auth-runtime-capabilities.js';
 import { broadcastToIntentChannel } from '../shared/ws-fanout.js';
 import {
   applyArtifactEdit,
@@ -3290,6 +3291,13 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
           await readSandboxSettings({ ddb, tableName: process.env.V2_PROCESS_TABLE }),
         )
       : meta.agentSandbox;
+  if (agentSandbox?.enabled) {
+    try {
+      await qualifyAgentAuthRuntime(meta.environment, { requireSandbox: true });
+    } catch (error) {
+      return response(409, { error: error.message, code: error.code });
+    }
+  }
   // Flip <current> → CREATED (CAS on the observed status) so a double-start
   // can't launch two runs, then hand off to the orchestrator (init-ws + run the
   // plan). If the hand-off throws, roll back to the prior status — otherwise the

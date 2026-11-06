@@ -88,5 +88,6 @@ export const capabilities = async (_payload, deps = {}) => {
     agentAuthModes: [...agentAuthModes],
     agentAuthVerification: [...agentAuthVerification],
     invocationAccounting: true,
+    sandboxEnforcement: true,
   };
 };

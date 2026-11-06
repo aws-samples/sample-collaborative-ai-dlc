@@ -67,11 +67,13 @@ import {
 } from '../shared/agent-credential-metadata.js';
 import { prepareAgentInvocation } from '../shared/agent-credential-service.js';
 import {
+  resolveInvocationSandbox,
   readSandboxSettings,
   sandboxSettingsView,
   writeSandboxSettings,
 } from '../shared/sandbox-settings.js';
 import { validateSandboxConfig } from '../shared/sandbox-config.js';
+import { assertSandboxRuntime } from '../shared/agent-auth-runtime-capabilities.js';
 import { createAuthenticationSettingsService } from './authentication-settings-service.js';
 import {
   authorizeLegacyProjectRead,
@@ -151,8 +153,12 @@ const probeRuntimeCapabilities = async ({
   credentialBindings,
   projectId,
 }) => {
+  const sandbox = await resolveInvocationSandbox({ payload: { projectId } });
   let runtimeCapabilities;
-  if (Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)) {
+  if (
+    sandbox.enabled ||
+    Object.values(credentialBindings ?? {}).some((binding) => binding?.version === 2)
+  ) {
     const probe = await agentcore.send(
       new InvokeAgentRuntimeCommand({
         ...runtimeTarget,
@@ -171,7 +177,12 @@ const probeRuntimeCapabilities = async ({
       credentialBindings,
       runtimeCapabilities,
     },
-    { ssm },
+    {
+      ssm,
+      readSandbox: async () => sandbox,
+      // This request already owns and probes the exact session it will use.
+      qualifyRuntime: async () => runtimeCapabilities,
+    },
   );
   const res = await agentcore.send(
     new InvokeAgentRuntimeCommand({
@@ -219,6 +230,22 @@ export const verifyMcpServers = async ({
         context: { projectId: projectId ?? null },
       },
       async (runtimeSessionId) => {
+        const sandbox = await readSandboxSettings({
+          ddb,
+          tableName: process.env.V2_PROCESS_TABLE,
+        });
+        if (sandbox.enabled) {
+          const probe = await agentcore.send(
+            new InvokeAgentRuntimeCommand({
+              ...runtimeSdkInput(runtimeTarget),
+              runtimeSessionId,
+              contentType: 'application/json',
+              accept: 'application/json',
+              payload: Buffer.from(JSON.stringify({ command: 'capabilities' })),
+            }),
+          );
+          assertSandboxRuntime(JSON.parse(await probe.response.transformToString()));
+        }
         const res = await agentcore.send(
           new InvokeAgentRuntimeCommand({
             ...runtimeSdkInput(runtimeTarget),

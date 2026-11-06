@@ -7,29 +7,14 @@ import { join } from 'node:path';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { fileURLToPath } from 'node:url';
 import { childEnvironment } from '../cli/environment.js';
-import { DEFAULT_SANDBOX_CONFIG, captureSandboxSettings } from '../../shared/sandbox-settings.js';
+import { DEFAULT_SANDBOX_CONFIG } from '../../shared/sandbox-settings.js';
 
 export { DEFAULT_SANDBOX_CONFIG };
+export { resolveInvocationSandbox } from '../../shared/sandbox-settings.js';
 
 const context = new AsyncLocalStorage();
 const workerPath = fileURLToPath(new URL('./worker.js', import.meta.url));
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'sandbox' } });
-
-// Read execution state, never a sandbox value supplied in an invocation payload.
-// Legacy started intents retain their original, unsandboxed behavior.
-export const resolveInvocationSandbox = async ({ payload, store, readSettings }) => {
-  const executionId = payload.executionId || payload.intentId;
-  if (executionId) {
-    const meta = await store.getExecution(executionId, { consistentRead: true });
-    if (!meta || (payload.projectId && payload.projectId !== meta.projectId)) {
-      throw new Error('Sandbox execution context does not match this invocation');
-    }
-    if (meta.status !== 'DRAFT') {
-      return structuredClone(meta.agentSandbox ?? DEFAULT_SANDBOX_CONFIG);
-    }
-  }
-  return captureSandboxSettings(await readSettings());
-};
 
 // Only trusted runtime code enters this context. Request payloads and child
 // environment variables cannot enable, replace or disable the sandbox.

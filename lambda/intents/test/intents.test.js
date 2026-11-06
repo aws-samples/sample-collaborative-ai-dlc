@@ -3788,9 +3788,19 @@ describe('POST /start', () => {
   });
 
   it('captures the platform sandbox at first start and retains it across restart', async () => {
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: {
+        transformToString: async () => JSON.stringify({ ok: true, sandboxEnforcement: true }),
+      },
+    });
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);
     const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
+    procStore.get(metaKey).environment = {
+      runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+      runtimeEndpoint: 'revision_r_1',
+    };
     const settingsKey = keyOf('SETTINGS#SANDBOX', 'CURRENT');
     const settings = {
       network: { strictAllowlist: true, allowedDomains: ['example.com'], deniedDomains: [] },
@@ -3805,13 +3815,48 @@ describe('POST /start', () => {
       ...claims(sub),
     };
     expect((await handler(request)).statusCode).toBe(202);
-    const metaKey = keyOf(`EXEC#${intent.id}`, 'META');
     const pinned = { enabled: true, version: 9, settings };
     expect(procStore.get(metaKey).agentSandbox).toEqual(pinned);
     procStore.set(settingsKey, { enabled: false, applied: null });
     procStore.set(metaKey, { ...procStore.get(metaKey), status: 'FAILED' });
     expect((await handler(request)).statusCode).toBe(202);
     expect(procStore.get(metaKey).agentSandbox).toEqual(pinned);
+  });
+
+  it('rejects an enabled-policy start on an older published runtime before changing the intent', async () => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const intent = JSON.parse((await createIntent(sub, projectId)).body);
+    procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).environment = {
+      runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+      runtimeEndpoint: 'revision_r_1',
+    };
+    procStore.set(keyOf('SETTINGS#SANDBOX', 'CURRENT'), {
+      enabled: true,
+      applied: { version: 1, settings: {} },
+    });
+    agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({ ok: true, agentAuthProtocol: 2, agentAuthModes: ['keys'] }),
+      },
+    });
+    const result = await handler({
+      httpMethod: 'POST',
+      path: `/projects/${projectId}/intents/${intent.id}/start`,
+      pathParameters: { projectId, intentId: intent.id },
+      body: JSON.stringify({ agentCli: 'kiro' }),
+      ...claims(sub),
+    });
+    expect(result.statusCode).toBe(409);
+    expect(JSON.parse(result.body)).toMatchObject({ code: 'AGENT_SANDBOX_RUNTIME_UNSUPPORTED' });
+    expect(procStore.get(keyOf(`EXEC#${intent.id}`, 'META')).status).toBe('DRAFT');
+    expect(orchestratorInvokes()).toHaveLength(0);
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)).toHaveLength(1);
+    expect(agentcoreMock.commandCalls(InvokeAgentRuntimeCommand)[0].args[0].input).toMatchObject({
+      agentRuntimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
+      qualifier: 'revision_r_1',
+    });
   });
 
   it('rolls back to DRAFT when the orchestrator invoke fails, so start can be retried', async () => {

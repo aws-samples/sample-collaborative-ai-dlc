@@ -206,10 +206,13 @@ Linux images need SRT, bubblewrap, socat, util-linux and the namespace support v
 by the image integration tests. The launcher uses `unshare` to give the SRT worker
 a private `/proc`, allowing its namespace protection to work with AgentCore's
 read-only `/proc/sys` without changing the host mounts.
-Rebuild and deploy the runtime images and the Agents and
-Intents APIs before enabling this setting. Older images do not implement the
-configuration dispatch. Managed/custom environment revisions need rebuilding too;
-an old image must not be treated as supporting this feature just because it runs Linux.
+Rebuild and deploy the runtime images and backend before enabling this setting.
+With sandboxing enabled, intent starts
+and standalone operations require the runtime's `sandboxEnforcement` capability.
+An older image is rejected with `AGENT_SANDBOX_RUNTIME_UNSUPPORTED`; rebuild,
+verify and publish an updated environment. Managed/custom revisions record this
+capability during verification. Existing intents keep their captured policy,
+including those started with sandboxing disabled.
 
 Existing logs report the selected policy version and enabled state per invocation.
 Confirmed proxy denials include the host, port and reason. Harness tool failures

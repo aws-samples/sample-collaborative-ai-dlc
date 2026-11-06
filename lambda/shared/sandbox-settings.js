@@ -1,6 +1,11 @@
 // Platform policy and its immutable applied versions live in the existing
 // process table. There are no project overrides or secrets in these records.
-import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { createProcessStore } from './v2-process-store.js';
+
+const client = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const processStore = createProcessStore({ ddb: client });
 
 export const DEFAULT_SANDBOX_CONFIG = Object.freeze({
   enabled: false,
@@ -58,6 +63,27 @@ export const captureSandboxSettings = (record) => {
     version: record.applied?.version ?? null,
     settings: record.applied?.settings ?? DEFAULT_SANDBOX_CONFIG.settings,
   });
+};
+
+// Dispatch and the runtime must select the same policy. Existing executions
+// retain their captured policy; drafts and standalone operations use the current one.
+export const resolveInvocationSandbox = async ({
+  payload,
+  store = processStore,
+  readSettings = () =>
+    readSandboxSettings({ ddb: client, tableName: process.env.V2_PROCESS_TABLE }),
+}) => {
+  const executionId = payload.executionId || payload.intentId;
+  if (executionId) {
+    const meta = await store.getExecution(executionId, { consistentRead: true });
+    if (!meta || (payload.projectId && payload.projectId !== meta.projectId)) {
+      throw new Error('Sandbox execution context does not match this invocation');
+    }
+    if (meta.status !== 'DRAFT') {
+      return structuredClone(meta.agentSandbox ?? DEFAULT_SANDBOX_CONFIG);
+    }
+  }
+  return captureSandboxSettings(await readSettings());
 };
 
 // The API validates config before this write. All operations compare the same
