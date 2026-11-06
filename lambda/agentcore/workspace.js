@@ -65,6 +65,12 @@ export const trustGitDirectory = async ({ targetDir, runner: injectedRunner = ru
 
 export const SHALLOW_CLONE_ARGS = Object.freeze(['clone', '--depth', '1', '--no-single-branch']);
 
+// Git reports a full filesystem or quota (ENOSPC / EDQUOT) through the OS
+// error text in its own messages, e.g. "fatal: write error: No space left on
+// device" or "error: unable to write file ...: Disk quota exceeded".
+const STORAGE_EXHAUSTED = /no space left on device|disk quota exceeded/i;
+export const isStorageExhausted = (result) => STORAGE_EXHAUSTED.test(result?.stderr ?? '');
+
 // Clone one repo and check out (creating if needed) the working branch off the
 // base branch. `runner`/`ensureDir`
 // injectable for tests. The origin remote is left TOKEN-FREE in both outcomes.
@@ -208,20 +214,24 @@ export const checkoutRepo = async ({
         requiredAccess: 'read',
       },
       async ({ env }) => {
-        // Shallow: the tip of every branch, no history. Lanes fork and merge
-        // through origin/<branch> refs, so every branch is fetched
-        // (--no-single-branch); the engine deepens on demand where it needs
-        // history (git-engine.js deepenUntil). A large repository's history
-        // can be most of its size (one repository: 1.5 GB of .git, 302 MB shallow).
-        const shallow = await runner('git', [...SHALLOW_CLONE_ARGS, cleanUrl, targetDir], {
+        // A full clone keeps the tags and ancestry that build and version
+        // tooling may need. stderr is captured to recognise a full workspace.
+        const full = await runner('git', ['clone', cleanUrl, targetDir], {
           env,
+          captureOutput: true,
         });
-        if (shallow.code === 0) return shallow;
-        // A server without shallow support: retry as a full clone into a
-        // clean directory. A real access failure fails again, quickly.
+        if (full.code === 0 || !isStorageExhausted(full)) return full;
+        // The history did not fit in the workspace (one repository: 1.5 GB of
+        // .git, 302 MB shallow). Retry with the tip of every branch only:
+        // lanes fork and merge through origin/<branch> refs, so every branch
+        // is fetched (--no-single-branch), and the engine deepens on demand
+        // where it needs history (git-engine.js deepenUntil).
+        logger.warn('full clone exhausted workspace storage; retrying shallow', {
+          provider: gitProvider,
+        });
         await removeDir(targetDir).catch(() => {});
         await ensureDir(targetDir);
-        return runner('git', ['clone', cleanUrl, targetDir], { env });
+        return runner('git', [...SHALLOW_CLONE_ARGS, cleanUrl, targetDir], { env });
       },
     );
   } catch (error) {
@@ -232,6 +242,9 @@ export const checkoutRepo = async ({
     logger.error('clone failed', {
       provider: gitProvider,
       reason: clone.error || 'clone_failed',
+      // The full clone's stderr is captured rather than streamed; keep its
+      // last line (the remote URL is credential-free; askpass supplies the secret).
+      detail: clone.stderr?.trim().split('\n').at(-1),
     });
     // Empty remote repositories clone successfully. Any clone failure is a
     // real authentication/authorization/repository error; remove partial git
