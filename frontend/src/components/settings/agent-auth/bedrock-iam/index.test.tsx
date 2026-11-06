@@ -390,16 +390,35 @@ describe('IAM credential scope card', () => {
     });
     const personal = render(<AgentCredentialScopeCard scope="personal" />);
     const access = await screen.findByRole('region', { name: 'Platform default Bedrock access' });
+    // The header badge scopes its status to the default, like the panel.
+    expect(screen.getByText('Platform default ready')).toBeInTheDocument();
+    expect(screen.queryByText('Using platform connection')).not.toBeInTheDocument();
     expect(access).toHaveTextContent(`Role: ${platformRole.roleArn}`);
     expect(access).toHaveTextContent('A space can use its own access instead.');
     expect(access).not.toHaveTextContent(config.roleArn);
     expect(screen.queryByText(/their agents use|for everyone/)).not.toBeInTheDocument();
     personal.unmount();
 
-    // The space's own page shows the role its runs use.
-    render(<AgentCredentialScopeCard scope="space" projectId="p" />);
+    // The space's own page shows the role its runs use, with its own badge.
+    const space = render(<AgentCredentialScopeCard scope="space" projectId="p" />);
     expect(await screen.findByText(`Role: ${config.roleArn}`)).toBeInTheDocument();
     expect(screen.getByText(/Space IAM role override/)).toBeInTheDocument();
+    expect(screen.getByText('IAM configured')).toBeInTheDocument();
+    space.unmount();
+
+    // A default that needs reconnecting is reported as the default, not as every agent's access.
+    getPersonal.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      authentication: {
+        ...platformView,
+        canManageConnections: false,
+        connection: { ...platformView.connection, state: 'reconnect-required' },
+      },
+    });
+    render(<AgentCredentialScopeCard scope="personal" />);
+    expect(await screen.findByText('Platform default needs attention')).toBeInTheDocument();
+    expect(screen.queryByText('IAM needs attention')).not.toBeInTheDocument();
   });
 
   it('keeps the platform mode select and IAM setup on the admin card', async () => {

@@ -324,8 +324,19 @@ export function AgentCredentialScopeCard({ scope, projectId }: Props) {
         (connectionMode ? (
           <ConfigStatusBadge
             ok={connectionReady}
-            okLabel={inheritsConnection ? 'Using platform connection' : `${modeLabel} configured`}
-            notOkLabel={`${modeLabel} needs attention`}
+            // The personal view only knows the platform default; a space may use its own.
+            okLabel={
+              scope === 'personal'
+                ? 'Platform default ready'
+                : inheritsConnection
+                  ? 'Using platform connection'
+                  : `${modeLabel} configured`
+            }
+            notOkLabel={
+              scope === 'personal'
+                ? 'Platform default needs attention'
+                : `${modeLabel} needs attention`
+            }
             notOkTone="warning"
           />
         ) : scope === 'personal' ? (
