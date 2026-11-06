@@ -10,6 +10,7 @@ export const scopeStageAttempt = (store, ownership) => {
     'updateExecution',
     'createHumanTask',
     'supersedeHumanTask',
+    'setCommitDescription',
   ]) {
     scoped[method] = (input) => store[method]({ ...input, ownership });
   }

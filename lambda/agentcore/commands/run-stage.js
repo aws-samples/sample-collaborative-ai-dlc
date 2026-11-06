@@ -94,6 +94,11 @@ import {
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
+import {
+  consumeCommitDescription,
+  createEngineCommitMessages,
+  readCommitDescription,
+} from '../commit-message.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
 import { CHECKPOINTS, answerFreeText, chosenLabel } from '../mcp/process-bridge.js';
@@ -1849,6 +1854,7 @@ const runStageAttempt = async (
     processUptimeMs = () => process.uptime() * 1000,
   } = deps;
   let store = processStore;
+  const engineCommitMessage = createEngineCommitMessages({ store: processStore, executionId });
 
   const now = () => clock();
   const stageStartedAtMs = nowMs();
@@ -2663,6 +2669,8 @@ const runStageAttempt = async (
     // it write only its OWN contribution — never forge a support's evidence.
     // Absent on an unpinned/2.3.3 run, whose MCP config stays byte-identical.
     ...(stage.policy && stage.agentRef ? { agentRef: stage.agentRef } : {}),
+    // The stage's owner describes its changes for the engine's commit message.
+    describeChanges: true,
   };
 
   let codexHome = null;
@@ -3938,6 +3946,12 @@ const runStageAttempt = async (
       // event as a repair turn; the engine commit below then captures whatever
       // the personas added.
       await warnIfDiskLow('before the lead-draft commit');
+      // The lead described its changes, which this commit holds; the final
+      // commit uses the description instead when this tree is clean.
+      const leadDescription =
+        repos.length > 0
+          ? await readCommitDescription({ store: processStore, executionId, stageInstanceId })
+          : null;
       leadDraftGit = await commitAndPushAll({
         repos,
         workspaceDir,
@@ -3949,14 +3963,26 @@ const runStageAttempt = async (
         projectId,
         executionId,
         author: gitAuthor,
-        message: unitSlug
-          ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (lead draft)`
-          : `aidlc(${stageId}): ${executionId} (lead draft)`,
+        message: await engineCommitMessage({
+          stageId,
+          phase: stage.phase,
+          unitSlug,
+          label: 'lead draft',
+          description: leadDescription,
+        }),
       }).catch((error) => ({
         ok: false,
         committed: false,
         results: [{ repo: '-', reason: 'engine_crashed', detail: error?.message }],
       }));
+      if (leadDraftGit?.committed) {
+        await consumeCommitDescription({
+          store: processStore,
+          executionId,
+          stageInstanceId,
+          description: leadDescription,
+        });
+      }
       const leadDraftRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, leadDraftGit);
       if (leadDraftRefs.length > 0) retainedCodeCommitRefs = leadDraftRefs;
       await publishGitEvidence(leadDraftGit, { label: 'lead draft' });
@@ -4280,6 +4306,11 @@ const runStageAttempt = async (
         .catch(() => {});
     }
   }
+  // No repository, no commit to describe.
+  const commitDescription =
+    repos.length > 0
+      ? await readCommitDescription({ store: processStore, executionId, stageInstanceId })
+      : null;
   const gitResult = await commitAndPushAll({
     repos,
     workspaceDir,
@@ -4293,10 +4324,21 @@ const runStageAttempt = async (
     author: gitAuthor,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.
-    message: unitSlug
-      ? `aidlc(${stageId}): ${unitSlug} — ${executionId}`
-      : `aidlc(${stageId}): ${executionId}`,
+    message: await engineCommitMessage({
+      stageId,
+      phase: stage.phase,
+      unitSlug,
+      description: commitDescription,
+    }),
   });
+  if (gitResult?.committed) {
+    await consumeCommitDescription({
+      store: processStore,
+      executionId,
+      stageInstanceId,
+      description: commitDescription,
+    });
+  }
   // Every commit of this attempt: carried from a parked leg, this leg's, and the
   // repair turns' (added by runRepairTurn below).
   let stageCodeCommitRefs = mergeCodeCommitRefs(
@@ -4655,9 +4697,7 @@ const runStageAttempt = async (
           projectId,
           executionId,
           author: gitAuthor,
-          message: unitSlug
-            ? `aidlc(${stageId}): ${unitSlug} — ${executionId} (${label})`
-            : `aidlc(${stageId}): ${executionId} (${label})`,
+          message: await engineCommitMessage({ stageId, phase: stage.phase, unitSlug, label }),
         }).catch((error) => ({
           ok: false,
           committed: false,

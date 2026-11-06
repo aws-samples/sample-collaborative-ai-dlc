@@ -382,9 +382,9 @@ describe('WP8 fixture 1 — 3-unit DAG: a, b ∥ → c sees merged a+b code (rea
     const merges = await git(['log', '--merges', '--format=%s', 'aidlc/i1'], dir);
     const mergeSubjects = merges.stdout.trim().split('\n').toSorted();
     expect(mergeSubjects).toEqual([
-      'aidlc(merge): a — i1',
-      'aidlc(merge): b — i1',
-      'aidlc(merge): c — i1',
+      'chore(aidlc): merge a lane',
+      'chore(aidlc): merge b lane',
+      'chore(aidlc): merge c lane',
     ]);
 
     // ── Lane derive hook: one graph-projection dispatch per unit lane, scoped
@@ -525,8 +525,8 @@ describe('WP8 fixture 2 — forced merge conflict → halt-and-ask SKIP (real gi
     expect(await readFile(path.join(dir, 'shared.txt'), 'utf8')).toBe('b version\n');
     const merges = await git(['log', '--merges', '--format=%s', 'aidlc/i1'], dir);
     expect(merges.stdout.trim().split('\n').toSorted()).toEqual([
-      'aidlc(merge): a — i1',
-      'aidlc(merge): b — i1',
+      'chore(aidlc): merge a lane',
+      'chore(aidlc): merge b lane',
     ]);
     const lsC = await git(['ls-remote', remote, 'aidlc/i1--s1-unit-c'], root);
     expect(lsC.stdout.trim()).not.toBe('');
@@ -617,10 +617,10 @@ describe('WP6 fixture 3 — conflict RESOLVED by the resolution stage (real git)
     expect(await readFile(path.join(dir, 'shared.txt'), 'utf8')).toBe('b version + c version\n');
     const merges = await git(['log', '--merges', '--format=%s', 'aidlc/i1'], dir);
     expect(merges.stdout.trim().split('\n').toSorted()).toEqual([
-      'aidlc(conflict-resolution): c — i1',
-      'aidlc(merge): a — i1',
-      'aidlc(merge): b — i1',
-      'aidlc(merge): c — i1',
+      'chore(aidlc): merge a lane',
+      'chore(aidlc): merge b lane',
+      'chore(aidlc): merge c lane',
+      'chore(aidlc): resolve c lane conflicts',
     ]);
     expect(world.statusWrites.filter((s) => s === 'SUCCEEDED')).toHaveLength(1);
   });
