@@ -344,7 +344,38 @@ const getIssue = async (ctx, repoId, issueNumber, { includeRenderedBody = false 
   };
 };
 
-const listIssueComments = async (ctx, repoId, issueNumber) => {
+const listCompleteIssueComments = async (ctx, repoId, issueNumber, includeRenderedBody = false) => {
+  if (!/^[1-9]\d*$/.test(String(issueNumber))) throw new ProviderError(400, 'Invalid issue number');
+  const { owner, repo } = splitOwnerRepo(repoId);
+  const comments = [];
+  for (let page = 1; page <= 50; page += 1) {
+    const response = await ghFetch(
+      ctx,
+      `${API_BASE}/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100&page=${page}`,
+      {
+        signal: AbortSignal.timeout(10_000),
+        ...(includeRenderedBody ? { headers: { Accept: 'application/vnd.github.full+json' } } : {}),
+      },
+    );
+    if (!response.ok)
+      throw new ProviderError(response.status, 'Could not read the complete discussion');
+    const data = await response.json();
+    if (!Array.isArray(data)) throw new ProviderError(502, 'Invalid issue discussion');
+    comments.push(
+      ...data.map((comment) => ({
+        ...mapIssueDiscussionComment(comment),
+        ...(includeRenderedBody ? { bodyHtml: comment.body_html || '' } : {}),
+      })),
+    );
+    if (Buffer.byteLength(JSON.stringify(comments)) > 5 * 1024 * 1024)
+      throw new ProviderError(413, 'Issue discussion is too large');
+    if (!response.headers.get('link')?.includes('rel="next"')) return comments;
+  }
+  throw new ProviderError(413, 'Issue discussion has too many pages');
+};
+
+const listIssueComments = async (ctx, repoId, issueNumber, { complete = false } = {}) => {
+  if (complete) return listCompleteIssueComments(ctx, repoId, issueNumber);
   const { owner, repo } = splitOwnerRepo(repoId);
   const res = await ghFetch(
     ctx,
@@ -397,29 +428,7 @@ const issueAttachments = async (ctx, repoId, args) => {
   }
   const includeRenderedBody = Boolean(args.attachmentId);
   const issue = await getIssue(ctx, repoId, args.number, { includeRenderedBody });
-  const { owner, repo } = splitOwnerRepo(repoId);
-  const comments = [];
-  let page = 1;
-  for (;;) {
-    const response = await ghFetch(
-      ctx,
-      `${API_BASE}/repos/${owner}/${repo}/issues/${args.number}/comments?per_page=100&page=${page}`,
-      {
-        signal: AbortSignal.timeout(10_000),
-        ...(includeRenderedBody ? { headers: { Accept: 'application/vnd.github.full+json' } } : {}),
-      },
-    );
-    if (!response.ok)
-      throw new ProviderError(response.status, 'Could not read issue attachments in comments');
-    comments.push(
-      ...(await response.json()).map((comment) => ({
-        ...mapIssueDiscussionComment(comment),
-        ...(includeRenderedBody ? { bodyHtml: comment.body_html || '' } : {}),
-      })),
-    );
-    if (!response.headers.get('link')?.includes('rel="next"')) break;
-    page += 1;
-  }
+  const comments = await listCompleteIssueComments(ctx, repoId, args.number, includeRenderedBody);
   const attachments = discoverLinkedAttachments({
     provider: id,
     repository: repoId,

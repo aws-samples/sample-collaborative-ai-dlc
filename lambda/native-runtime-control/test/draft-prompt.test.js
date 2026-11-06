@@ -39,7 +39,7 @@ const route = (action, body) => {
     httpMethod: 'POST',
     resource: `${base.resource}/${action}`,
     path: `${base.path}/${action}`,
-    body: JSON.stringify(body),
+    body: JSON.stringify(action === 'start' ? { inputRevision: 0, ...body } : body),
   };
 };
 async function fixture({ ready = false } = {}) {

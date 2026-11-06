@@ -427,7 +427,33 @@ const getIssue = async (ctx, repoId, issueNumber) => {
   return mapIssue(data);
 };
 
-const listIssueComments = async (ctx, repoId, issueNumber) => {
+const listCompleteIssueComments = async (ctx, repoId, issueNumber) => {
+  if (!/^[1-9]\d*$/.test(String(issueNumber))) throw new ProviderError(400, 'Invalid issue number');
+  const project = encodeProject(repoId);
+  const comments = [];
+  for (let page = 1; page <= 50; page += 1) {
+    const response = await glFetch(
+      ctx,
+      `${API_BASE}/projects/${project}/issues/${issueNumber}/notes?per_page=100&sort=asc&page=${page}`,
+      { signal: AbortSignal.timeout(10_000) },
+    );
+    if (!response.ok)
+      throw new ProviderError(response.status, 'Could not read the complete discussion');
+    const data = await response.json();
+    if (!Array.isArray(data)) throw new ProviderError(502, 'Invalid issue discussion');
+    comments.push(...data.filter((comment) => !comment.system).map(mapIssueDiscussionComment));
+    if (Buffer.byteLength(JSON.stringify(comments)) > 5 * 1024 * 1024)
+      throw new ProviderError(413, 'Issue discussion is too large');
+    const next = response.headers.get('x-next-page');
+    if (!next) return comments;
+    if (next !== String(page + 1))
+      throw new ProviderError(502, 'Invalid issue discussion pagination');
+  }
+  throw new ProviderError(413, 'Issue discussion has too many pages');
+};
+
+const listIssueComments = async (ctx, repoId, issueNumber, { complete = false } = {}) => {
+  if (complete) return listCompleteIssueComments(ctx, repoId, issueNumber);
   const project = encodeProject(repoId);
   const res = await glFetch(
     ctx,
@@ -449,21 +475,7 @@ const issueAttachments = async (ctx, repoId, args) => {
   }
   const issue = await getIssue(ctx, repoId, args.number);
   const project = encodeProject(repoId);
-  const comments = [];
-  let page = '1';
-  while (page) {
-    const response = await glFetch(
-      ctx,
-      `${API_BASE}/projects/${project}/issues/${args.number}/notes?per_page=100&sort=asc&page=${page}`,
-      { signal: AbortSignal.timeout(10_000) },
-    );
-    if (!response.ok)
-      throw new ProviderError(response.status, 'Could not read issue attachments in comments');
-    comments.push(
-      ...(await response.json()).filter((note) => !note.system).map(mapIssueDiscussionComment),
-    );
-    page = response.headers.get('x-next-page') || '';
-  }
+  const comments = await listCompleteIssueComments(ctx, repoId, args.number);
   const attachments = discoverLinkedAttachments({
     provider: id,
     repository: repoId,

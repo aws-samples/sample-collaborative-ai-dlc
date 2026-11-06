@@ -110,7 +110,11 @@ const fixture = async ({ state = 'recovery', workflowResumeState = 'created' } =
     return new Response(result.body, { status: result.statusCode, headers: result.headers });
   });
   vi.stubGlobal('fetch', transport);
-  const startRequest = Object.freeze({ requestId: randomUUID(), promptRevision: 0 });
+  const startRequest = Object.freeze({
+    requestId: randomUUID(),
+    promptRevision: 0,
+    inputRevision: 0,
+  });
   const start = (request = startRequest) =>
     nativeIntentsService.start(
       f.identity.projectId,
@@ -311,7 +315,7 @@ it('keeps one Start and its original pins across competing members, and rejects 
   const accepted = f.row();
   f.configuration.model = 'changed-setting';
   f.verify.mockResolvedValue({ sub: 'second-member' });
-  await f.start({ requestId: randomUUID(), promptRevision: 0 });
+  await f.start({ requestId: randomUUID(), promptRevision: 0, inputRevision: 0 });
   expect(f.row()).toEqual(accepted);
   expect(f.configure).toHaveBeenCalledOnce();
   expect(writes(f)).toHaveLength(1);

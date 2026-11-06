@@ -53,6 +53,7 @@ resource "aws_api_gateway_deployment" "main" {
     module.cors_native_intent,
     module.cors_native_intent_prepare,
     module.cors_native_intent_prompt,
+    module.cors_native_intent_inputs,
     aws_api_gateway_integration.sprints_get,
     aws_api_gateway_integration.sprint_get,
     aws_api_gateway_integration.entity_collection_get,
@@ -366,7 +367,8 @@ resource "aws_api_gateway_deployment" "main" {
           aws_api_gateway_resource.native_intents[*].path_part,
           aws_api_gateway_resource.native_intent[*].path_part,
           aws_api_gateway_resource.native_intent_prepare[*].path_part,
-          aws_api_gateway_resource.native_intent_prompt[*].path_part
+          aws_api_gateway_resource.native_intent_prompt[*].path_part,
+          aws_api_gateway_resource.native_intent_inputs[*].path_part
         )
         cors = filesha256("${path.module}/cors/main.tf")
       },

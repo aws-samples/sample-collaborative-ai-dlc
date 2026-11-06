@@ -85,6 +85,7 @@ const memoryS3 = ({ bucket, accountId }) => {
 
 const fixture = () => {
   const f = executionFixture();
+  Object.assign(f.configuration.repository, SOURCE);
   const authorityCalls = [];
   const originalSend = f.ddb.send.bind(f.ddb);
   f.ddb.send = async (command) => {
@@ -223,8 +224,8 @@ describe('native execution API with real protected storage', () => {
         repository: {
           provider: 'github',
           repository: 'JWThewes/flappy-bird',
-          branch: null,
-          commit: null,
+          branch: SOURCE.branch,
+          commit: SOURCE.commit,
         },
         publicationId: null,
         publicationSequence: null,

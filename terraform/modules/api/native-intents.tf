@@ -39,6 +39,12 @@ resource "aws_api_gateway_resource" "native_intent_prompt" {
   parent_id   = aws_api_gateway_resource.native_intent[0].id
   path_part   = "prompt"
 }
+resource "aws_api_gateway_resource" "native_intent_inputs" {
+  count       = var.native_preparation_enabled ? 1 : 0
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  parent_id   = aws_api_gateway_resource.native_intent[0].id
+  path_part   = "inputs"
+}
 
 resource "aws_api_gateway_resource" "native_execution_action" {
   for_each    = var.native_preparation_enabled && var.native_execution_enabled ? toset(["start", "cancel", "recover", "publication", "files", "graph", "interaction", "response", "outputs", "results"]) : toset([])
@@ -123,6 +129,10 @@ locals {
       method = "POST", resource_id = aws_api_gateway_resource.native_intent_prompt[0].id,
       path   = "api/projects/*/native-intents/*/prompt", item = true
     }
+    inputs = {
+      method = "POST", resource_id = aws_api_gateway_resource.native_intent_inputs[0].id,
+      path   = "api/projects/*/native-intents/*/inputs", item = true
+    }
   } : {}, local.native_execution_routes)
 }
 
@@ -150,7 +160,7 @@ resource "aws_api_gateway_integration" "native_intents" {
   # The existing deployment already depends on this integration collection.
   # Include execution preflight completion transitively to prevent a deployment
   # snapshot from racing the new OPTIONS integrations/responses.
-  depends_on = [module.cors_native_execution_action, module.cors_native_execution_file, module.cors_native_intent_prompt]
+  depends_on = [module.cors_native_execution_action, module.cors_native_execution_file, module.cors_native_intent_prompt, module.cors_native_intent_inputs]
 }
 resource "aws_lambda_permission" "native_intents_gateway" {
   for_each      = local.native_intent_routes
@@ -183,6 +193,12 @@ module "cors_native_intent_prompt" {
   count       = var.native_preparation_enabled ? 1 : 0
   rest_api_id = aws_api_gateway_rest_api.main.id
   resource_id = aws_api_gateway_resource.native_intent_prompt[0].id
+}
+module "cors_native_intent_inputs" {
+  source      = "./cors"
+  count       = var.native_preparation_enabled ? 1 : 0
+  rest_api_id = aws_api_gateway_rest_api.main.id
+  resource_id = aws_api_gateway_resource.native_intent_inputs[0].id
 }
 module "cors_native_execution_action" {
   source      = "./cors"

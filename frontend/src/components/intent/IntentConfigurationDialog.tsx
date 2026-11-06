@@ -374,6 +374,30 @@ export function NativeIntentConfigurationDialog({
             </dl>
           </section>
         )}
+        {intent.inputs && (
+          <section className="space-y-2 px-6 py-5" aria-label="Input configuration">
+            <h3 className="text-sm font-semibold">
+              {execution ? 'Captured inputs' : 'Selected inputs'}
+            </h3>
+            <p className="text-sm">
+              Input revision {intent.inputRevision}; prompt revision {intent.promptRevision}
+            </p>
+            <ul className="space-y-2 text-sm">
+              {intent.inputs.attachments.map((file) => (
+                <li key={file.attachmentId}>
+                  {file.filename} ({file.size} bytes)
+                  {file.source && <span> — {file.source.title}</span>}
+                  {file.sha256 && (
+                    <code className="block break-all text-xs">SHA-256 {file.sha256}</code>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {Boolean(intent.inputs.pendingUploads.length || intent.inputs.imports.length) && (
+              <p className="text-sm">Pending inputs must be confirmed or removed before Start.</p>
+            )}
+          </section>
+        )}
       </div>
     </ConfigurationDialog>
   );

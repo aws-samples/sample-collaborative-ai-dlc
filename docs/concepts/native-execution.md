@@ -313,7 +313,7 @@ to NE-18 and must pass before this restriction is removed for release.
 | OpenCode           | AWS Bedrock with the resolved model selection captured at Start.                                                                                                                                                                                                  |
 | Kiro               | Kiro's managed provider with the captured supported model selector. Its actual workflow and EFS resume journey must be qualified before release.                                                                                                                  |
 | Application source | GitHub.com, GitLab.com and Bitbucket Cloud; one connected repository per execution, with its exact source commit captured.                                                                                                                                        |
-| Inputs             | Written requests, attachments and tracker imports. Attachments and tracker imports are release requirements implemented under NE-09; current native requests accept the written prompt and repository/package content.                                            |
+| Inputs             | Written requests, supported uploaded files and imported tracker issue text, complete discussions and selected attachments. NE-09 captures immutable input versions at Start; deployed acceptance is separate from local qualification.                            |
 | Settings and tools | Existing model selection and credential-scope resolution, plus repository/package instructions and tools in the dedicated native runtime. Platform-managed environments, custom MCP server selections and uploaded custom rules are outside this initial release. |
 | Advanced features  | Graph enrichment, optional debug archives, artifact edit/apply, Quorum edits, parallel units, per-unit delivery, multiple repositories and cross-engine migration are outside this release.                                                                       |
 
@@ -339,17 +339,73 @@ The normal **New intent** entry keeps Platform as the default and offers an expl
 
 ### Current implementation
 
-| Area                        | Current behavior and limit                                                                                                                                                                                                                                                                                                                                           |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Coding harnesses            | Claude Code, Codex and OpenCode remain selectable for development when enabled by the shared platform CLI policy. Kiro is temporarily unavailable for new native executions, with authoritative Start rejection and an explicit runtime guard. All four harnesses still require release qualification; Kiro's full input and authentication path remains NE-18 work. |
-| Methodology sources         | Import adapters cover GitHub.com, GitLab.com and Bitbucket Cloud with their supported source bindings. Installer and provenance constraints require separate qualification; importing from a provider is not a claim of full workflow support.                                                                                                                       |
-| Application source          | One selected connected GitHub, GitLab or Bitbucket repository per native execution, including selection from a space with several repositories. Source resolution captures the default branch and exact commit. CodeCommit, simultaneous multiple-repository execution, submodule and LFS materialization remain unsupported.                                        |
-| Package and harness         | Selected for the native draft and pinned for execution. Repository and package instructions remain part of the workspace.                                                                                                                                                                                                                                            |
-| Models                      | Start captures the resolved project/platform model selection. An unset selection or automatic routing is not an immutable provider-model version.                                                                                                                                                                                                                    |
-| Credentials                 | The starting member's effective credential scope is captured. A responding member does not replace it. Rotation within that scope is allowed; revocation does not silently fall back to another scope.                                                                                                                                                               |
-| Environments and tools      | Native uses its dedicated runtime. Platform-managed environments, custom MCP server selections and uploaded custom rules do not currently apply. Repository/package configuration can still supply instructions and tools.                                                                                                                                           |
-| Platform execution controls | Agent-tier assignments, v2 stage scheduling, platform sensors, parallelism, rewind/recompose and per-unit PR strategies do not control native methodology execution.                                                                                                                                                                                                 |
-| Optional features           | Native graph enrichment and debug archive capture are off. Platform preferences do not enable them for native runs.                                                                                                                                                                                                                                                  |
+| Area                        | Current behavior and limit                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Coding harnesses            | Claude Code, Codex and OpenCode remain selectable for development when enabled by the shared platform CLI policy. Kiro is temporarily unavailable for new native executions, with authoritative Start rejection and an explicit runtime guard. All four harnesses still require release qualification; Kiro's full input and authentication path remains NE-18 work.                                                            |
+| Methodology sources         | Import adapters cover GitHub.com, GitLab.com and Bitbucket Cloud with their supported source bindings. Installer and provenance constraints require separate qualification; importing from a provider is not a claim of full workflow support.                                                                                                                                                                                  |
+| Application source          | One selected connected GitHub, GitLab or Bitbucket repository per native execution, including selection from a space with several repositories. Authoritative Start resolves and captures the default branch, exact commit, binding revision and credential identity; the worker never resolves the branch again. CodeCommit, simultaneous multiple-repository execution, submodule and LFS materialization remain unsupported. |
+| Package and harness         | Selected for the native draft and pinned for execution. Repository and package instructions remain part of the workspace.                                                                                                                                                                                                                                                                                                       |
+| Models                      | Start captures the resolved project/platform model selection. An unset selection or automatic routing is not an immutable provider-model version.                                                                                                                                                                                                                                                                               |
+| Credentials                 | The starting member's effective credential scope is captured. A responding member does not replace it. Rotation within that scope is allowed; revocation does not silently fall back to another scope.                                                                                                                                                                                                                          |
+| Environments and tools      | Native uses its dedicated runtime. Platform-managed environments, custom MCP server selections and uploaded custom rules do not currently apply. Repository/package configuration can still supply instructions and tools.                                                                                                                                                                                                      |
+| Platform execution controls | Agent-tier assignments, v2 stage scheduling, platform sensors, parallelism, rewind/recompose and per-unit PR strategies do not control native methodology execution.                                                                                                                                                                                                                                                            |
+| Optional features           | Native graph enrichment and debug archive capture are off. Platform preferences do not enable them for native runs.                                                                                                                                                                                                                                                                                                             |
+
+### Native input admission and consumption
+
+After native draft creation, **Inputs and application source** uses the same
+repository selector as creation, the shared file picker and upload transport,
+and the existing tracker issue and attachment pickers. GitHub Issues, GitLab
+Issues and Jira Cloud issue text and complete discussions become reference
+Markdown. Their files remain individually selectable. Uploaded and imported
+files share the platform's filename, extension/MIME, 50-file, 5 MiB per-file and
+25 MiB aggregate limits. Supported types are PDF, DOCX, XLSX, text, Markdown,
+CSV, HTML, PNG, JPEG, WebP and SVG. Unsupported files produce explicit per-file
+results; native retains failed or skipped selections until retry or explicit
+exclusion. A missing comment page fails the issue-text import rather than
+silently truncating it. Upload expiry does not remove a selected native input.
+
+The authenticated native `POST /inputs` command accepts a strict operation and
+expected input revision. Membership, project identity and the existing tracker
+or source-control binding owners govern reads and transfers. The native adapter
+uses the shared attachment promotion/import owners; managed intents retain their
+existing store and routes. Short-lived upload destinations exist only in the
+upload response. Imported provider URLs, tokens, secret references and storage
+keys are absent from public input metadata and model instructions.
+
+Start requires both the saved prompt revision and input revision. Its atomic
+DynamoDB acceptance fences competing draft edits and records the exact package
+and materialization, prompt hash, source commit and binding/connection identity,
+effective model and credential scope, plus every attachment's immutable S3
+version, byte count, content digest and tracker provenance. No pending upload or
+selected unresolved import may be silently omitted. An equivalent retry returns
+the original accepted execution; conflicting revisions cannot replace it. A lost
+response needs status reconciliation or an explicit retry, never automatic replay.
+Later tracker edits, replacement object versions, repository branches, defaults
+or another member's answer cannot retarget that accepted work.
+
+The private credential facade rechecks the original starter's tracker access
+and captured credential identity through the tracker owner before each dispatch,
+as well as its existing project, methodology, source and model boundaries.
+Rotation within the captured connection is allowed; replacement or revocation
+fails closed without alternate credentials. Its new invocation permission names
+only the tracker function. The runtime receives a read-only grant for this
+execution's committed input prefix and verifies bucket ownership, exact object
+versions, sizes and SHA-256 digests before exposing files under
+`.aidlc/references/`. Every turn verifies retained reference files and rebuilds
+changed local copies from the admitted versions. Symlinks, hard links, traversal,
+invalid manifests and oversized/incomplete streams cannot redirect or substitute
+these input writes. Reference metadata explicitly treats the files as untrusted
+data, not authority to run actions or skip methodology gates. PDF/DOCX/XLSX text
+extraction uses the image's installed MarkItDown; OCR and complete visual-layout
+interpretation are not promised. Supplied HTML and SVG must not be executed or
+rendered.
+
+The managed-environment, custom MCP-selection and uploaded-rule exclusions are
+unchanged. Native keeps repository/package instructions and its dedicated tools.
+Main's optional AgentCore MCP Gateway remains disabled by default and does not
+route native turns through managed execution. NE-09 does not add Git delivery,
+tracker writes, workflow completion or NE-10's general result-file policy.
 
 The Intent configuration view shows captured settings rather than current defaults.
 Unsupported settings need to remain visible as limitations wherever users choose
@@ -3985,9 +4041,10 @@ the current contract for newly created executions.
       27 deployed packages, effective aliases, unchanged runtime, current
       configuration and all 629 S3/CloudFront artifacts are independently verified
       above. **Follow-up 2026-11-06:** creation in another space exposed the remaining
-      project pilot gate. Its configuration and enforcement are removed locally;
-      deployment and independent verification of uniform space availability remain
-      pending. Final local validation above completes the full backend suite and
+      project pilot gate. Its configuration and enforcement were removed and
+      deployment independently accepted on 2026-11-06 at `99986a34`; all nine
+      native functions omit the pilot setting and use normal membership. The
+      accepted deployed-byte report above records that bounded verification. Final local validation above completes the full backend suite and
       the two formerly excluded offline Terraform fixtures.
       The preceding deployed-byte acceptance remains valid within its scope.
       A fresh live creation/Start journey remains unrun.

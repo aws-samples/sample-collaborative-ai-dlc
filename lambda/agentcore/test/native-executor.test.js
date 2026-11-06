@@ -1,3 +1,4 @@
+import { nativeInputSnapshot } from '../../shared/native-inputs.js';
 import * as fs from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -57,6 +58,7 @@ const payload = () => ({
       branch: 'main',
       commit: 'a'.repeat(40),
     },
+    inputs: nativeInputSnapshot({ projectId, executionId, request: {} }, 'native-inputs'),
     packageVersion: '2.11.1',
   },
 });

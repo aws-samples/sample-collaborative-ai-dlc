@@ -1,3 +1,4 @@
+import { createAttachmentIntake } from '../shared/intent-attachment-intake.js';
 import { reconcileYjsDeletion } from '../shared/yjs-revocation.js';
 import gremlin from 'gremlin';
 import { PartitionStrategy } from 'gremlin/lib/process/traversal-strategy.js';
@@ -15,14 +16,7 @@ import {
   StopDurableExecutionCommand,
 } from '@aws-sdk/client-lambda';
 import { SSMClient, GetParameterCommand } from '@aws-sdk/client-ssm';
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  HeadObjectCommand,
-  CopyObjectCommand,
-  DeleteObjectCommand,
-} from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { Logger } from '@aws-lambda-powertools/logger';
@@ -155,7 +149,6 @@ import {
   ATTACHMENT_UPLOAD_TTL_SECONDS,
   activePendingAttachments,
   attachmentCapacityError,
-  attachmentCommittedKey,
   attachmentStagingKey,
   createAttachmentCleanupService,
   pendingAttachmentDeletions,
@@ -223,133 +216,17 @@ const attachmentCleanup = createAttachmentCleanupService({
   store,
   bucket: ARTIFACTS_BUCKET(),
 });
-const attachmentEventKey = /^intent-attachments\/staging\/([^/]+)\/([^.]+)(\.[a-z0-9]+)$/i;
-const ATTACHMENT_PROMOTION_CAS_ATTEMPTS = 4;
-
 const issueInvocationAgentCredentialGrant = async (request) =>
   (await prepareAgentInvocation({ ...request, legacyExecution: true }, { ssm }))
     .agentCredentialGrant;
 
-// Finalizes a browser upload after S3 emits Object Created: verify it against
-// its DynamoDB reservation, copy the exact object version from staging to the
-// committed prefix, then atomically attach it to the intent. Revision conflicts
-// roll back the losing copy and retry with fresh intent metadata.
-const ingestAttachmentUpload = async (event) => {
-  const key = event.detail.object.key;
-  const match = attachmentEventKey.exec(key);
-  if (!match) return;
-  const [, intentId, attachmentId] = match;
-  const eventVersionId = event.detail.object['version-id'];
-  let source;
-
-  for (let attempt = 0; attempt < ATTACHMENT_PROMOTION_CAS_ATTEMPTS; attempt += 1) {
-    const meta = await store.getExecution(intentId, { consistentRead: true });
-    if (!meta || !isPlatformExecution(meta)) return;
-    if (meta.status !== 'DRAFT') {
-      throw new Error(`Attachment upload arrived after intent ${intentId} left DRAFT`);
-    }
-    // Delayed S3 events must still be able to consume their reservation. Expiry
-    // limits allocation and Start, not the backend's durable upload record.
-    const pending = Array.isArray(meta.pendingAttachmentUploads)
-      ? meta.pendingAttachmentUploads
-      : [];
-    const allocation = pending.find(
-      (attachment) => attachment.attachmentId === attachmentId && attachment.s3Key === key,
-    );
-    if (!allocation) return;
-    const descriptor = validateAttachmentDescriptor(allocation);
-    if (!descriptor.value) return;
-    if (!source) {
-      const head = await s3.send(
-        new HeadObjectCommand({
-          Bucket: ARTIFACTS_BUCKET(),
-          Key: key,
-          ...(eventVersionId ? { VersionId: eventVersionId } : {}),
-        }),
-      );
-      if (
-        head.ContentType?.toLowerCase().split(';')[0] !== allocation.mimeType ||
-        head.ContentLength !== allocation.size ||
-        !head.VersionId
-      ) {
-        throw new Error(`Attachment upload did not match reservation: ${key}`);
-      }
-      source = { versionId: head.VersionId };
-    }
-
-    const current = Array.isArray(meta.attachments) ? meta.attachments : [];
-    if (current.some((attachment) => attachment.attachmentId === attachmentId)) {
-      await s3
-        .send(
-          new DeleteObjectCommand({
-            Bucket: ARTIFACTS_BUCKET(),
-            Key: key,
-            VersionId: source.versionId,
-          }),
-        )
-        .catch((error) => logger.error('Attachment staging cleanup failed', error, { key }));
-      return;
-    }
-
-    const committedKey = attachmentCommittedKey(intentId, attachmentId, descriptor.value.extension);
-    const copy = await s3.send(
-      new CopyObjectCommand({
-        Bucket: ARTIFACTS_BUCKET(),
-        Key: committedKey,
-        CopySource: `${ARTIFACTS_BUCKET()}/${key}?versionId=${encodeURIComponent(source.versionId)}`,
-      }),
-    );
-    if (!copy.VersionId) throw new Error(`Attachment promotion was not versioned: ${key}`);
-    const committed = {
-      attachmentId,
-      filename: allocation.filename,
-      mimeType: allocation.mimeType,
-      size: allocation.size,
-      s3Key: committedKey,
-      s3VersionId: copy.VersionId,
-      uploadedBy: allocation.uploadedBy ?? null,
-      uploadedAt: new Date().toISOString(),
-      ...(allocation.source ? { source: allocation.source } : {}),
-    };
-    try {
-      await store.updateExecution({
-        executionId: intentId,
-        fromStatus: 'DRAFT',
-        ifAttachmentRevision: Number(meta.attachmentRevision ?? 0),
-        attachments: [...current, committed],
-        pendingAttachmentUploads: pending.filter(
-          (attachment) => attachment.attachmentId !== attachmentId,
-        ),
-      });
-    } catch (error) {
-      if (error?.name !== 'ConditionalCheckFailedException') throw error;
-      await s3.send(
-        new DeleteObjectCommand({
-          Bucket: ARTIFACTS_BUCKET(),
-          Key: committedKey,
-          VersionId: copy.VersionId,
-        }),
-      );
-      if (attempt + 1 === ATTACHMENT_PROMOTION_CAS_ATTEMPTS) throw error;
-      continue;
-    }
-    await broadcastToIntentChannel(intentId, {
-      action: 'intent.attachments',
-      intentId,
-      projectId: meta.projectId,
-    }).catch(() => {});
-    await s3
-      .send(
-        new DeleteObjectCommand({
-          Bucket: ARTIFACTS_BUCKET(),
-          Key: key,
-          VersionId: source.versionId,
-        }),
-      )
-      .catch((error) => logger.error('Attachment staging cleanup failed', error, { key }));
-    return;
-  }
-};
+const ingestAttachmentUpload = createAttachmentIntake({
+  store,
+  s3,
+  bucket: ARTIFACTS_BUCKET(),
+  accepts: isPlatformExecution,
+  notify: broadcastToIntentChannel,
+});
 const composeReportPrefix = (intentId) => `compose-reports/${intentId}/`;
 const signTrackerUpload = createTrackerUploadSigner();
 const trackerAttachmentImporter = createTrackerAttachmentImporter({

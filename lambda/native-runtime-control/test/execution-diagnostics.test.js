@@ -787,6 +787,7 @@ describe('real loopback SDK and streamed body diagnostics', () => {
 describe('supervisor decision diagnostics preserve protected behavior', () => {
   const fixture = async () => {
     const f = executionFixture();
+    Object.assign(f.configuration.repository, { commit: 'e'.repeat(40), branch: 'develop' });
     await f.start();
     const s = sinks();
     const ports = {

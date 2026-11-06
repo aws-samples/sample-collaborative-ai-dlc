@@ -14,6 +14,7 @@ import {
   nativeRecoveryReason,
 } from './execution-store.js';
 import { nativeDraftPrompt, promptFailure } from './draft-prompt.js';
+import { nativeDraftInputs, inputFailure } from '../shared/native-inputs.js';
 import { nativeInteractionView } from '../shared/native-interaction.js';
 import { nativeAnswerText } from '../shared/native-pending-input.js';
 import { createNativeRevisionApi } from './revision-api.js';
@@ -247,10 +248,15 @@ export const createNativeExecutionApi = ({
         execution: view,
       };
     },
-    async start(draft, actorId, requestId, recheck, promptRevision) {
+    async start(draft, actorId, requestId, recheck, promptRevision, inputRevision = 0) {
       // An existing start retains its original starter and configuration.
       let row = await read(draft, recheck);
       const expectedRevision = promptRevision ?? 0;
+      if (
+        (row ? row.configuration.inputs.revision : nativeDraftInputs(draft).revision) !==
+        inputRevision
+      )
+        throw inputFailure('CONFLICT');
       if (
         (row ? (row.preparation.promptRevision ?? 0) : nativeDraftPrompt(draft).revision) !==
         expectedRevision
@@ -291,6 +297,7 @@ export const createNativeExecutionApi = ({
           actorId,
           requestId,
           configuration,
+          inputRevision,
           ...(promptRevision !== undefined ? { promptRevision } : {}),
         });
         row = result.row ?? result;

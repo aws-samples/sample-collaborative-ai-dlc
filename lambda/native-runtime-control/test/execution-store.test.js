@@ -1,3 +1,4 @@
+import { nativeInputSnapshot } from '../../shared/native-inputs.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { GetCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
@@ -29,6 +30,7 @@ const CONFIGURATION = {
   recoveryMode: 'efs-workspace-v1',
   harness: 'codex',
   model: null,
+  inputs: nativeInputSnapshot({ ...IDENTITY, request: request() }, 'native-inputs'),
   promptSha256: digest(request().prompt),
   packageId: candidate().packagePin.packageId,
   materializationId: candidate().materializationId,
@@ -40,7 +42,9 @@ const CONFIGURATION = {
   repository: {
     provider: 'github',
     repository: 'JWThewes/flappy-bird',
-    branch: null,
+    branch: 'main',
+    commit: 'e'.repeat(40),
+    credentialIdentity: 'd'.repeat(64),
     bindingRevision: request().bindingRevision,
   },
   credentialBinding: { provider: 'bedrock', source: 'platform' },
@@ -543,7 +547,7 @@ describe('strict schema, scope and persisted data bounds', () => {
       { repository: { ...CONFIGURATION.repository, repository: '../repo' } },
     ],
     ['repository provider', { repository: { ...CONFIGURATION.repository, provider: 'other' } }],
-    ['floating commit field', { repository: { ...CONFIGURATION.repository, commit: COMMIT } }],
+    ['floating commit', { repository: { ...CONFIGURATION.repository, commit: 'main' } }],
     [
       'branch shell syntax',
       { repository: { ...CONFIGURATION.repository, branch: 'main; steal secret' } },
@@ -689,8 +693,6 @@ describe('serial control-plane ownership and same-attempt dispatch', () => {
     for (const patch of [
       { status: 'DISPATCHING' },
       { status: 'DISPATCHING', sourceCommit: COMMIT },
-      { status: 'DISPATCHING', target },
-      { status: 'DISPATCHING', target, sourceCommit: COMMIT },
       { sourceBranch: null },
       { sourceBranch: '../main' },
       { sourceCommit: 'main' },
@@ -831,12 +833,14 @@ describe('serial control-plane ownership and same-attempt dispatch', () => {
     const row = await f.running();
     for (const changed of [
       { ...row, target: { ...targetFor(row), runtimeVersion: '3' } },
-      { ...row, sourceCommit: '1'.repeat(40) },
       { ...row, leaseToken: OTHER },
     ])
       await expect(f.store.advance({ row: changed, patch: {} })).rejects.toMatchObject(
         rejection('LEASE_LOST'),
       );
+    await expect(
+      f.store.advance({ row: { ...row, sourceCommit: '1'.repeat(40) }, patch: {} }),
+    ).rejects.toMatchObject(rejection('INVALID'));
     expect(f.read()).toEqual(row);
   });
 
@@ -892,12 +896,12 @@ describe('serial control-plane ownership and same-attempt dispatch', () => {
     const f = setup();
     const configuration = {
       ...CONFIGURATION,
-      repository: { ...CONFIGURATION.repository, branch: 'feature/pipes' },
+      repository: { ...CONFIGURATION.repository, branch: 'feature/pipes', commit: 'e'.repeat(64) },
     };
     await f.start({ configuration });
     const { row } = await f.store.claim(bindingIdentity);
     await expect(f.store.advance({ row, patch: { sourceBranch: 'main' } })).rejects.toMatchObject(
-      rejection('INVALID'),
+      rejection('CONFLICT'),
     );
     const pinned = await f.store.advance({
       row,

@@ -339,7 +339,7 @@ it.each(['project', '40000000-0000-4000-8000-000000000005'])(
     await user.click(screen.getByRole('button', { name: 'Prepare workspace' }));
     await user.click(await screen.findByRole('button', { name: 'Start agent' }));
     expect(service.prepare).toHaveBeenCalledWith(projectId, current!.id);
-    expect(service.start).toHaveBeenCalledWith(projectId, current!.id, expect.any(String), 1);
+    expect(service.start).toHaveBeenCalledWith(projectId, current!.id, expect.any(String), 1, 0);
     expect(service.savePrompt.mock.calls[0][2]).toMatchObject({
       expectedRevision: 0,
       prompt: 'Corrected in the shared workspace',
@@ -370,7 +370,7 @@ it('saves a missing task prompt and starts its saved revision in the shared Inte
   });
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Save prompt' })));
   await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Start agent' })));
-  expect(service.start).toHaveBeenCalledWith('project', 'one', expect.any(String), 1);
+  expect(service.start).toHaveBeenCalledWith('project', 'one', expect.any(String), 1, 0);
   expect(screen.queryByRole('button', { name: 'Edit prompt' })).not.toBeInTheDocument();
   expect(screen.getByText('Task from the shared workspace')).toBeInTheDocument();
 });

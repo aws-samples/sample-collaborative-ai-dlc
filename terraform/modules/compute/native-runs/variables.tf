@@ -22,6 +22,10 @@ variable "execution_enabled" {
 }
 variable "native_packages_bucket_name" { type = string }
 variable "native_packages_bucket_arn" { type = string }
+variable "artifacts_bucket_name" { type = string }
+variable "artifacts_bucket_arn" { type = string }
+variable "source_control_function_arn" { type = string }
+variable "trackers_function_arn" { type = string }
 variable "source_control_bindings_table_name" { type = string }
 variable "source_control_bindings_table_arn" { type = string }
 variable "git_connections_table_name" { type = string }

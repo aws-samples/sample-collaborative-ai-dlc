@@ -89,6 +89,11 @@ module "native_runs" {
   cognito_client_id                   = module.auth.user_pool_client_id
   native_packages_bucket_name         = module.s3.native_packages_bucket_name
   native_packages_bucket_arn          = module.s3.native_packages_bucket_arn
+  artifacts_bucket_name               = module.s3.artifacts_bucket_name
+  artifacts_bucket_arn                = module.s3.artifacts_bucket_arn
+  # Static identities avoid pulling unrelated ZIP timestamps into admission wiring.
+  source_control_function_arn         = "arn:${data.aws_partition.current.partition}:lambda:${var.aws_region}:${split(":", module.agentcore.ecr_repository_arn)[4]}:function:${var.project_name}-source-control-${var.environment}"
+  trackers_function_arn               = "arn:${data.aws_partition.current.partition}:lambda:${var.aws_region}:${split(":", module.agentcore.ecr_repository_arn)[4]}:function:${var.project_name}-trackers-${var.environment}"
   source_control_bindings_table_name  = module.git.source_control_bindings_table_name
   source_control_bindings_table_arn   = module.git.source_control_bindings_table_arn
   git_connections_table_name          = module.git.git_connections_table_name

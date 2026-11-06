@@ -1,3 +1,5 @@
+import { materializeAttachments } from '../attachments.js';
+import { nativeExecutionInputs, nativeInputStorageId } from '../../shared/native-inputs.js';
 import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -114,6 +116,28 @@ export const createNativeExecutionPorts = ({
       fail('native_execution_recovery_unconfirmed');
   };
   return {
+    async prepareInputs({ payload, project, signal }) {
+      checkIdentity(env, payload);
+      checkAbort(signal);
+      const inputs = nativeExecutionInputs(payload.configuration.inputs);
+      if (
+        inputs.storageId !== nativeInputStorageId(payload) ||
+        inputs.bucket !== env.NATIVE_INPUT_BUCKET
+      )
+        fail('native_execution_preparation_invalid');
+      await assertActive({ identity: payload, writerGeneration: payload.writerGeneration, signal });
+      const result = await materializeAttachments({
+        workspaceDir: project,
+        attachments: inputs.attachments,
+        bucket: inputs.bucket,
+        client: s3,
+        strict: true,
+        expectedBucketOwner: env.NATIVE_RUNTIME_ACCOUNT_ID,
+      });
+      checkAbort(signal);
+      await assertActive({ identity: payload, writerGeneration: payload.writerGeneration, signal });
+      return result;
+    },
     assertActive,
     assertRecoveryAdmission,
     async prepareContinuation({ payload, signal }) {

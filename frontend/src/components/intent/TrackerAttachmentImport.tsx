@@ -1,14 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  intentsService,
-  type TrackerAttachmentCandidate,
-  type TrackerAttachmentImportResult,
-} from '@/services/intents';
+import { intentsService, type TrackerAttachmentCandidate } from '@/services/intents';
 import { Button } from '@/components/ui/button';
 import { Loader2 } from 'lucide-react';
 
-type Result = TrackerAttachmentCandidate &
-  (TrackerAttachmentImportResult | { status: 'pending' | 'importing' });
+type Candidate = Pick<TrackerAttachmentCandidate, 'id' | 'filename' | 'skipReason'>;
+type TrackerAttachmentImportResult =
+  | { status: 'imported'; attachment: unknown }
+  | { status: 'failed' | 'skipped'; reason: string };
+export interface TrackerAttachmentImportService {
+  recordSkippedSelections?: boolean;
+  trackerAttachments: (
+    projectId: string,
+    intentId: string,
+  ) => Promise<{ attachments?: Candidate[]; reason?: string }>;
+  importTrackerAttachment: (
+    projectId: string,
+    intentId: string,
+    id: string,
+  ) => Promise<TrackerAttachmentImportResult>;
+}
+type Result = Candidate & (TrackerAttachmentImportResult | { status: 'pending' | 'importing' });
 
 export function TrackerAttachmentImport({
   projectId,
@@ -18,6 +29,7 @@ export function TrackerAttachmentImport({
   onAutoImportStarted,
   onBusyChange,
   onImported,
+  service = intentsService,
 }: {
   projectId: string;
   intentId: string;
@@ -26,6 +38,7 @@ export function TrackerAttachmentImport({
   onAutoImportStarted: () => void;
   onBusyChange: (busy: boolean) => void;
   onImported: () => void;
+  service?: TrackerAttachmentImportService;
 }) {
   const [results, setResults] = useState<Result[]>([]);
   const [busy, setBusy] = useState(false);
@@ -49,7 +62,7 @@ export function TrackerAttachmentImport({
       setMessage(null);
       setResults([]);
       try {
-        const discovery = await intentsService.trackerAttachments(projectId, intentId);
+        const discovery = await service.trackerAttachments(projectId, intentId);
         if (!mounted.current) return;
         if (!discovery.attachments) {
           setMessage(discovery.reason || 'Could not discover issue attachments.');
@@ -71,9 +84,10 @@ export function TrackerAttachmentImport({
           );
           let result: TrackerAttachmentImportResult;
           try {
-            result = file.skipReason
-              ? { status: 'skipped', reason: file.skipReason }
-              : await intentsService.importTrackerAttachment(projectId, intentId, file.id);
+            result =
+              file.skipReason && !service.recordSkippedSelections
+                ? { status: 'skipped', reason: file.skipReason }
+                : await service.importTrackerAttachment(projectId, intentId, file.id);
           } catch (error) {
             result = {
               status: 'failed',
@@ -102,7 +116,7 @@ export function TrackerAttachmentImport({
         }
       }
     },
-    [projectId, intentId, onBusyChange, onImported],
+    [projectId, intentId, onBusyChange, onImported, service],
   );
 
   useEffect(() => {

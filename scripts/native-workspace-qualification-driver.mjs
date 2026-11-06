@@ -3,7 +3,15 @@
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import {
+  nativeDraftInputs,
+  nativeInputSnapshot,
+  nativeInputStorageId,
+} from '../lambda/shared/native-inputs.js';
+import { attachmentCommittedKey } from '../lambda/shared/intent-attachments.js';
+import { attachmentReferences } from '../lambda/agentcore/attachments.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createNativeExecutor } from '../lambda/agentcore/native/executor.js';
 import { createNativeExecutionPorts } from '../lambda/agentcore/native/execution-prepare.js';
@@ -35,7 +43,6 @@ export async function workspaceQualificationDriver({
     recoveryMode: NATIVE_WORKSPACE_RECOVERY,
   });
   f.prepared.candidate.packagePin.version = pkg.version;
-  await f.start();
   const homeRoot = `${root}-homes`;
   const memory = memoryNativeObjects({
     bucket: f.configuration.publicationBucket,
@@ -46,6 +53,80 @@ export async function workspaceQualificationDriver({
     bucket: f.configuration.publicationBucket,
     accountId: f.configuration.accountId,
   };
+  const content = [
+    { filename: 'uploaded.txt', mimeType: 'text/plain', text: 'NE09 uploaded input witness.' },
+    {
+      filename: 'tracker-issue.md',
+      mimeType: 'text/markdown',
+      text: '# NE09 tracker discussion witness.',
+    },
+    {
+      filename: 'tracker-file.csv',
+      mimeType: 'text/csv',
+      text: 'kind,value\nNE09,tracker attachment witness',
+    },
+  ];
+  const attachments = [];
+  for (const [index, file] of content.entries()) {
+    const attachmentId = randomUUID();
+    const bytes = Buffer.from(file.text);
+    const key = attachmentCommittedKey(
+      nativeInputStorageId(f.identity),
+      attachmentId,
+      '.' + file.filename.split('.').at(-1),
+    );
+    const stored = await storage.s3.send(
+      new PutObjectCommand({
+        Bucket: storage.bucket,
+        Key: key,
+        Body: bytes,
+        ExpectedBucketOwner: storage.accountId,
+      }),
+    );
+    attachments.push({
+      attachmentId,
+      filename: file.filename,
+      mimeType: file.mimeType,
+      size: bytes.length,
+      s3Key: key,
+      s3VersionId: stored.VersionId,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+      ...(index
+        ? {
+            source: {
+              provider: 'jira-cloud',
+              bindingId: 'fixture-tracker',
+              resourceId: 'FIXTURE-1',
+              title: 'Offline input fixture',
+              bindingFingerprint: 'a'.repeat(64),
+              attachmentId: index === 1 ? 'issue-text' : '123',
+            },
+          }
+        : {}),
+    });
+  }
+  f.prepared.inputDraft = { ...nativeDraftInputs(f.prepared), revision: 1, attachments };
+  f.prepared.version += 1;
+  // Keep the fixture transport's RUNTIME row coherent with its prepared read.
+  for (const [key, row] of f.rows)
+    if (row.sk === 'RUNTIME') f.rows.set(key, structuredClone(f.prepared));
+  f.configuration.inputs = nativeInputSnapshot(f.prepared, storage.bucket);
+  await f.start();
+  const inputReads = attachmentReferences(attachments).map((file, index) => ({
+    path: join(project, file.path),
+    expected: content[index].text.split('\n').at(-1),
+  }));
+  // A later object version must not replace the admitted content, including on
+  // fresh CLI sessions. The production materializer receives only pinned versions.
+  for (const file of attachments)
+    await storage.s3.send(
+      new PutObjectCommand({
+        Bucket: storage.bucket,
+        Key: file.s3Key,
+        ExpectedBucketOwner: storage.accountId,
+        Body: Buffer.from('Later unselected object version.'),
+      }),
+    );
   const publications = createNativePublications(storage);
   const interactions = createNativeInteractions(storage);
   const fence = createNativeExecutionFence(storage);
@@ -60,6 +141,7 @@ export async function workspaceQualificationDriver({
     NATIVE_EXECUTION_EPOCH: '1',
     NATIVE_EXECUTION_IMAGE_DIGEST: f.configuration.image.digest,
     NATIVE_PUBLICATION_BUCKET: storage.bucket,
+    NATIVE_INPUT_BUCKET: storage.bucket,
     NATIVE_RUNTIME_ACCOUNT_ID: storage.accountId,
   };
   let setups = 0,
@@ -234,6 +316,7 @@ export async function workspaceQualificationDriver({
     first = false;
   };
   return {
+    inputReads,
     interaction: () => api.interaction(f.prepared, recheck),
     async turn(prompt, { interrupt = false, selection } = {}) {
       const before = f.row().publication?.sequence ?? 0;
@@ -293,6 +376,15 @@ export async function workspaceQualificationDriver({
         cliTurns,
         sessions: sessions.size,
         setups,
+        inputs: {
+          files: attachments.length,
+          uploaded: 1,
+          trackerText: 1,
+          trackerFiles: 1,
+          version: f.row().configuration.inputs.revision,
+          latestVersionsIgnored: true,
+          contentSha256: f.row().configuration.inputs.contentSha256,
+        },
       };
     },
     async close() {
@@ -303,6 +395,7 @@ export async function workspaceQualificationDriver({
         });
       await runtime.settle();
       await fs.rm(homeRoot, { recursive: true, force: true });
+      await fs.chmod(join(project, '.aidlc/references'), 0o755).catch(() => {});
     },
   };
 }

@@ -1,4 +1,6 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { AttachmentFilePicker } from '@/components/intent/AttachmentFilePicker';
+import { attachmentType, uploadAttachmentFile } from '@/services/attachmentUploads';
+import { useState, useEffect, useMemo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { useIntent } from '@/contexts/IntentContext';
@@ -64,22 +66,6 @@ type ScopeSummary = {
   outOfScopeStages: number;
 };
 
-const ATTACHMENT_TYPES: Record<string, string> = {
-  txt: 'text/plain',
-  md: 'text/markdown',
-  csv: 'text/csv',
-  html: 'text/html',
-  pdf: 'application/pdf',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  webp: 'image/webp',
-  svg: 'image/svg+xml',
-};
-const attachmentType = (file: File) =>
-  ATTACHMENT_TYPES[file.name.split('.').pop()?.toLowerCase() ?? ''];
 const formatBytes = (bytes: number) =>
   `${(bytes / 1024 / 1024).toFixed(bytes >= 1024 * 1024 ? 1 : 2)} MB`;
 const ATTACHMENT_INGEST_POLL_MS = 500;
@@ -116,7 +102,6 @@ function IntentComposePageContent() {
   const [capabilitiesLoading, setCapabilitiesLoading] = useState(true);
   const [capabilitiesError, setCapabilitiesError] = useState<string | null>(null);
   const [selectedCli, setSelectedCli] = useState<AgentCli | null>(null);
-  const attachmentInput = useRef<HTMLInputElement>(null);
   const releaseSelectionFallback = (location.state as { releaseSelectionFallback?: boolean } | null)
     ?.releaseSelectionFallback;
 
@@ -200,23 +185,7 @@ function IntentComposePageContent() {
   }, [projectId, intentId, intent]);
 
   const uploadFile = (upload: { url: string; fields: Record<string, string> }, file: File) =>
-    new Promise<void>((resolve, reject) => {
-      const request = new XMLHttpRequest();
-      request.open('POST', upload.url);
-      request.upload.onprogress = (event) => {
-        if (event.lengthComputable)
-          setUploadProgress(Math.round((event.loaded / event.total) * 100));
-      };
-      request.onerror = () => reject(new Error(`Failed to upload ${file.name}`));
-      request.onload = () =>
-        request.status >= 200 && request.status < 300
-          ? resolve()
-          : reject(new Error(`Failed to upload ${file.name}`));
-      const form = new FormData();
-      for (const [name, value] of Object.entries(upload.fields)) form.append(name, value);
-      form.append('file', file);
-      request.send(form);
-    });
+    uploadAttachmentFile(upload, file, setUploadProgress);
 
   const handleAttachmentPick = async (files: FileList | null) => {
     if (!projectId || !intentId || !draftReady || !files?.length) return;
@@ -274,7 +243,6 @@ function IntentComposePageContent() {
       setUploadProgress(null);
       setAttachmentError(e instanceof Error ? e.message : 'Failed to upload attachments');
     } finally {
-      if (attachmentInput.current) attachmentInput.current.value = '';
     }
   };
 
@@ -807,39 +775,16 @@ function IntentComposePageContent() {
           </div>
 
           <div className="space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <Label className="text-sm font-medium">Attachments</Label>
-              <input
-                ref={attachmentInput}
-                type="file"
-                className="hidden"
-                data-testid="attachment-picker"
-                accept=".txt,.md,.csv,.html,.pdf,.docx,.xlsx,.png,.jpg,.jpeg,.webp,.svg"
-                multiple
-                disabled={!draftReady || starting || uploadProgress !== null || trackerImportBusy}
-                onChange={(event) => handleAttachmentPick(event.target.files)}
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={
-                  !draftReady ||
-                  starting ||
-                  uploadProgress !== null ||
-                  trackerImportBusy ||
-                  attachments.length >= 50
-                }
-                onClick={() => attachmentInput.current?.click()}
-              >
-                <Paperclip className="mr-1.5 h-3.5 w-3.5" />
-                Attach files
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              PDF, DOCX, XLSX, text, Markdown, CSV, HTML, or images (PNG, JPEG, WebP, SVG). Up to 50
-              files, 5 MB each, 25 MB total.
-            </p>
+            <AttachmentFilePicker
+              disabled={
+                !draftReady ||
+                starting ||
+                uploadProgress !== null ||
+                trackerImportBusy ||
+                attachments.length >= 50
+              }
+              onFiles={handleAttachmentPick}
+            />
             {uploadProgress !== null && (
               <div
                 className="h-1.5 overflow-hidden rounded bg-muted"

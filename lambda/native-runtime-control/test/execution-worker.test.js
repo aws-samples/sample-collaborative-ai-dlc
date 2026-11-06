@@ -11,6 +11,7 @@ import { TABLE } from './fixtures.js';
 const COMMIT = 'e'.repeat(40);
 const make = async () => {
   const f = executionFixture();
+  Object.assign(f.configuration.repository, { commit: COMMIT, branch: 'develop' });
   await f.start();
   let fenced = false;
   const publication = {
@@ -130,7 +131,7 @@ describe('connected native supervisor', () => {
     expect(f.row().status).toBe('CANCEL_REQUESTED');
     expect(f.row().stopConfirmation).toBeUndefined();
   });
-  it('upgrades, pins commit before dispatch, starts once, verifies files then commits and projects', async () => {
+  it('uses the admitted commit, upgrades, starts once, verifies files then commits and projects', async () => {
     const f = await make();
     await f.dispatch();
     expect(f.row().status).toBe('RUNNING');

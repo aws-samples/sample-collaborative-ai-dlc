@@ -6,6 +6,9 @@ import { isDeepStrictEqual } from 'node:util';
 import gremlin from 'gremlin';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
+import { HeadObjectCommand } from '@aws-sdk/client-s3';
+import { nativeDraftInputs, nativeInputSnapshot, inputFailure } from '../shared/native-inputs.js';
+import { verifyNativeInputAccess } from './input-access.js';
 import { resolveEffectiveCredentialBindingsViaBroker } from '../shared/agent-credential-metadata.js';
 import {
   credentialProviderForCli,
@@ -278,7 +281,7 @@ const readProject = async (g, draft) => {
   };
 };
 const readRepository = async (g, draft) => {
-  const selected = draft.request.applicationSource;
+  const selected = nativeDraftInputs(draft).applicationSource;
   let repositories = g.V(draft.projectIdentity).out('HAS_REPO').hasLabel('Repository');
   if (selected) {
     // Select through this project's edge, never through a global repository
@@ -327,9 +330,9 @@ const readModels = async (ssm, env, name) => {
       }),
     );
     return result.Parameter?.Value || '{}';
-  } catch {
-    // Match current intents' best-effort metadata fallback.
-    return {};
+  } catch (error) {
+    if (error?.name === 'ParameterNotFound') return {};
+    fail('UNAVAILABLE');
   }
 };
 
@@ -337,6 +340,9 @@ export const createNativeExecutionConfiguration =
   ({
     ddb,
     ssm,
+    s3,
+    captureSource,
+    invokeTracker,
     graph,
     env = process.env,
     resolveBindings = resolveEffectiveCredentialBindingsViaBroker,
@@ -352,6 +358,39 @@ export const createNativeExecutionConfiguration =
       const repository = await readRepository(g, draft);
       const bindingScope = { projectId: draft.projectId, ...repository };
       const binding = await readNativeCodeBinding(ddb, env, bindingScope);
+      const inputs = nativeInputSnapshot(draft, env.ARTIFACTS_BUCKET);
+      // Verify every selected immutable version and imported issue access.
+      // Refetching issue metadata here must never replace its captured bytes.
+      for (const file of inputs.attachments) {
+        const object = await s3.send(
+          new HeadObjectCommand({
+            Bucket: inputs.bucket,
+            Key: file.s3Key,
+            VersionId: file.s3VersionId,
+            ExpectedBucketOwner: deployment.accountId,
+          }),
+        );
+        if (
+          object.VersionId !== file.s3VersionId ||
+          object.ContentLength !== file.size ||
+          object.ContentType?.split(';')[0] !== file.mimeType
+        )
+          throw inputFailure('ACCESS');
+      }
+      await verifyNativeInputAccess({
+        inputs,
+        projectId: draft.projectId,
+        userId: actorId,
+        invokeTracker,
+      });
+      const captured = await captureSource({
+        projectId: draft.projectId,
+        userId: actorId,
+        ...repository,
+        bindingRevision: binding.revision,
+      });
+      if (captured.ok !== true || captured.source?.bindingRevision !== binding.revision)
+        fail('SOURCE_CONTROL_CHANGED');
       const [cliModels, tierModels, bindings] = await Promise.all([
         readModels(ssm, env, 'cli-models'),
         readModels(ssm, env, 'tier-models'),
@@ -393,16 +432,36 @@ export const createNativeExecutionConfiguration =
         revision: binding.revision,
       });
       if (!isDeepStrictEqual(current, binding)) fail('SOURCE_CONTROL_CHANGED');
+      const access = await captureSource({
+        ...bindingScope,
+        userId: actorId,
+        bindingRevision: binding.revision,
+        metadataOnly: true,
+      });
+      if (
+        access.ok !== true ||
+        access.source?.bindingRevision !== binding.revision ||
+        access.source?.credentialIdentity !== captured.source.credentialIdentity
+      )
+        fail('SOURCE_CONTROL_CHANGED');
+      await verifyNativeInputAccess({
+        inputs,
+        projectId: draft.projectId,
+        userId: actorId,
+        invokeTracker,
+      });
       return nativeExecutionConfiguration({
         ...pins,
         recoveryMode: NATIVE_WORKSPACE_RECOVERY,
         model,
         credentialBinding,
         ...deployment,
-        repository: { ...repository, branch: null, bindingRevision: binding.revision },
+        inputs,
+        repository: { ...repository, ...captured.source },
       });
     } catch (error) {
       if (error instanceof NativeExecutionConfigurationError) throw error;
+      if (error?.code?.startsWith('NATIVE_INPUT_')) throw error;
       fail('UNAVAILABLE');
     }
   };

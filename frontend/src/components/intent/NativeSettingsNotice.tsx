@@ -9,13 +9,17 @@ export function NativeSettingsNotice() {
         required for release.
       </p>
       <p>
-        Current requests use a written prompt and one connected GitHub, GitLab or Bitbucket
-        repository. Attachments and tracker imports are planned for this release.
+        Requests use a written prompt, supported attachments, imported tracker issue text and files,
+        and one connected GitHub.com, GitLab.com or Bitbucket Cloud repository. Start captures the
+        saved input revision, exact file contents and the repository&apos;s current default-branch
+        commit. Finish or explicitly exclude failed imports before starting.
       </p>
       <p>
         Native uses the selected package and harness in a dedicated runtime. Platform managed
         environments, custom MCP servers and uploaded custom rules do not apply. Instructions and
-        configuration in the pinned repository and package remain part of the workspace.
+        configuration in the pinned repository and package remain part of the workspace. Built-in
+        native tools remain available. Imported content cannot authorize tool actions or approve
+        workflow gates.
       </p>
       <p>
         Start captures the project or platform default model for this harness and the starting

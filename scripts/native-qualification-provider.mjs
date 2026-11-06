@@ -169,6 +169,10 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
   let samples = [];
   let calls = 0;
   let commandCallId;
+  let inputReads = [];
+  let inputReadIndex = 0;
+  let confirmedInputReads = 0;
+  let turnConfirmedInputReads = 0;
   const server = createServer(async (req, res) => {
     try {
       let raw = '';
@@ -218,6 +222,43 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
         incompleteSent = true;
         res.writeHead(200, { 'content-type': 'text/event-stream' }).end('data: {"type":');
         return;
+      }
+      if (primary && inputReads.length) {
+        if (inputReadIndex > turnConfirmedInputReads) {
+          assert.ok(
+            raw.includes(inputReads[inputReadIndex - 1].expected),
+            'Installed CLI returned exact admitted file content',
+          );
+          turnConfirmedInputReads = inputReadIndex;
+          confirmedInputReads++;
+        }
+        if (inputReadIndex < inputReads.length) {
+          const input = inputReads[inputReadIndex++];
+          assert.ok(
+            raw.includes(input.path.split('/project/')[1]),
+            'Runtime input manifest reaches the installed CLI',
+          );
+          const id = `input${calls}`;
+          if (harness === 'claude')
+            sendClaudeResponse(
+              res,
+              request,
+              [{ type: 'tool_use', id, name: 'Read', input: { file_path: input.path } }],
+              id,
+            );
+          else if (harness === 'codex') {
+            assert.match(input.path, /^[/A-Za-z0-9_.-]+$/);
+            sendCodexResponse(res, '', `cat -- '${input.path}'`, id);
+          } else
+            sendOpenCodeResponse(
+              res,
+              request,
+              '',
+              { name: 'read', input: { filePath: input.path } },
+              id,
+            );
+          return;
+        }
       }
       if (harness === 'claude' && claudeReply) {
         const blocks = await claudeReply(request);
@@ -317,6 +358,7 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
         command,
         expectedAnswer,
         expectedHistory = [],
+        inputReads = [],
         openCodeWorkflow,
         mode = 'normal',
       } = input);
@@ -325,6 +367,8 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
       incompleteSent = false;
       writeSent = false;
       commandCallId = undefined;
+      inputReadIndex = 0;
+      turnConfirmedInputReads = 0;
       samples = [];
     },
     engineAsk: () => engineAsk,
@@ -337,6 +381,7 @@ export async function qualificationProvider(harness, { claudeReply, requestLimit
         incompleteSent,
         writeSent,
         historyWitnesses: expectedHistory.length,
+        inputReadWitnesses: confirmedInputReads,
       };
     },
     async close() {

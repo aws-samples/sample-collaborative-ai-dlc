@@ -137,7 +137,10 @@ export async function qualifyClaudeWorkspaceProtocol({ composed = false } = {}) 
       childFinished = new Promise((resolve) => {
         finishChild = resolve;
       });
-      provider.begin({ turn: sessions.size + 1 });
+      provider.begin({
+        turn: sessions.size + 1,
+        ...(driver && !sessions.size ? { inputReads: driver.inputReads } : {}),
+      });
       if (driver) {
         session = await driver.turn(prompt, options);
         if (session) sessions.add(session);
@@ -376,6 +379,7 @@ export async function qualifyClaudeWorkspaceProtocol({ composed = false } = {}) 
     assert.equal((await read('approved')).workflow_continues, true);
     assert.match((await read('approved')).reason, /Committed approve/);
     if (driver) native = await driver.finish();
+    if (driver) assert.equal(provider.result().inputReadWitnesses, driver.inputReads.length);
     console.log(
       JSON.stringify({
         probe: composed ? 'native-upstream-workspace-resume' : 'upstream-workspace-resume',
@@ -392,6 +396,7 @@ export async function qualifyClaudeWorkspaceProtocol({ composed = false } = {}) 
         privateSnapshots: 0,
         storage: 'local-disposable-directory',
         requests: provider.result().totalRequests,
+        inputReadWitnesses: provider.result().inputReadWitnesses,
         ...(native ? { native } : {}),
       }),
     );
@@ -430,6 +435,7 @@ export async function qualifyWorkspaceTransport(harness) {
     const step = async (prompt, command, name, writePath) => {
       provider.begin({
         turn: ++turn,
+        ...(turn === 1 ? { inputReads: driver.inputReads } : {}),
         command:
           name && harness !== 'opencode' ? `${command} > .native-control/${name}.json` : command,
         openCodeWorkflow:
@@ -537,6 +543,7 @@ export async function qualifyWorkspaceTransport(harness) {
         await fs.readFile(join(project, 'nested/fixture.txt'), 'utf8'),
         'fixture cwd witness',
       );
+    assert.equal(provider.result().inputReadWitnesses, driver.inputReads.length);
     console.log(
       JSON.stringify({
         probe: 'native-upstream-workspace-resume',
@@ -550,6 +557,7 @@ export async function qualifyWorkspaceTransport(harness) {
         ...(await driver.finish({ expectedSessions: 2 })),
         storage: 'local-disposable-directory',
         requests: provider.result().totalRequests,
+        inputReadWitnesses: provider.result().inputReadWitnesses,
       }),
     );
   } finally {

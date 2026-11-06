@@ -36,7 +36,6 @@ describe('selected native application source', () => {
     },
   );
   it.each([
-    null,
     { provider: 'codecommit', repository: 'app' },
     { provider: 'github', repository: 'group/nested/app' },
     { provider: 'gitlab', repository: 'group/../app' },
@@ -122,6 +121,7 @@ describe('saved native prompt boundary', () => {
     expect(post).toHaveBeenNthCalledWith(2, '/projects/project-1/native-intents/run-1/start', {
       requestId: request.requestId,
       promptRevision: 1,
+      inputRevision: 0,
     });
   });
   it.each([
@@ -540,7 +540,10 @@ describe('native execution and committed publication boundary', () => {
     await nativeIntentsService.start('project-1', 'run-1', requestId);
     await nativeIntentsService.cancel('project-1', 'run-1');
     expect(post.mock.calls).toEqual([
-      ['/projects/project-1/native-intents/run-1/start', { requestId, promptRevision: 0 }],
+      [
+        '/projects/project-1/native-intents/run-1/start',
+        { requestId, promptRevision: 0, inputRevision: 0 },
+      ],
       ['/projects/project-1/native-intents/run-1/cancel', {}],
     ]);
     await expect(nativeIntentsService.start('project-1', 'run-1', 'not-a-uuid')).rejects.toThrow();

@@ -9,11 +9,14 @@ import { nativeRevisionQuery } from './revision-query.js';
 import { nativeResultRequest, nativeResultQuery } from './result-store.js';
 import { nativeUnavailableHarnesses } from './execution-api.js';
 import { nativeReplyRequest } from './execution-store.js';
+import { nativeInputView } from '../shared/native-inputs.js';
+import { nativeInputRequest } from './input-api.js';
 
 const COLLECTION = '/api/projects/{projectId}/native-intents';
 const ITEM = `${COLLECTION}/{intentId}`;
 const PREPARE = `${ITEM}/prepare`;
 const PROMPT = `${ITEM}/prompt`;
+const INPUTS = `${ITEM}/inputs`;
 const START = `${ITEM}/start`;
 const CANCEL = `${ITEM}/cancel`;
 const RECOVER = `${ITEM}/recover`;
@@ -25,6 +28,18 @@ const RESPONSE = `${ITEM}/response`;
 const OUTPUTS = `${ITEM}/outputs`;
 const RESULTS = `${ITEM}/results`;
 const ERRORS = {
+  NATIVE_INPUT_INVALID: [400, 'Invalid attachment or source selection'],
+  NATIVE_INPUT_LIMIT: [400, 'Use supported files up to 5 MB each, 25 MB total and 50 files'],
+  NATIVE_INPUT_PENDING: [409, 'Finish or explicitly remove pending inputs before Start'],
+  NATIVE_INPUT_CONFLICT: [
+    409,
+    'The native inputs changed or Start was accepted. Refresh before continuing',
+  ],
+  NATIVE_INPUT_ACCESS: [
+    403,
+    'The imported issue or attachment is unavailable. Check source access',
+  ],
+  NATIVE_INPUT_UNAVAILABLE: [503, 'The input change could not be confirmed. Refresh the draft'],
   NATIVE_RESULT_INVALID: [400, 'Invalid native result request'],
   NATIVE_RESULT_CONFLICT: [409, 'The result request names different immutable bytes'],
   NATIVE_RESULT_UNAVAILABLE: [
@@ -149,9 +164,7 @@ export const nativeIntentView = (row) => ({
   prompt: nativeDraftPrompt(row).text,
   promptRevision: nativeDraftPrompt(row).revision,
   harness: row.harness,
-  ...(row.request.applicationSource
-    ? { applicationSource: { ...row.request.applicationSource } }
-    : {}),
+  ...nativeInputView(row),
   status: row.status,
   package: {
     version: row.candidate.packagePin.version,
@@ -171,6 +184,8 @@ export const nativeIntentSummary = (row) => {
   delete summary.prompt;
   delete summary.promptRevision;
   delete summary.applicationSource;
+  delete summary.inputs;
+  delete summary.inputRevision;
   return summary;
 };
 
@@ -192,10 +207,12 @@ const fields = (value, names) =>
   names.every((key) => Object.hasOwn(value, key));
 const startRequest = (value) => {
   if (
-    !fields(value, ['requestId', 'promptRevision']) ||
+    !fields(value, ['requestId', 'promptRevision', 'inputRevision']) ||
     !matches(value.requestId, UUID_V4) ||
     !Number.isSafeInteger(value.promptRevision) ||
-    value.promptRevision < 0
+    value.promptRevision < 0 ||
+    !Number.isSafeInteger(value.inputRevision) ||
+    value.inputRevision < 0
   )
     fail('INVALID');
   return value;
@@ -304,6 +321,7 @@ export const createNativeRuntimeApi = ({
   enqueue,
   image,
   execution,
+  inputs,
 } = {}) => {
   const authorize = async (projectId, actorId) => {
     const membership = async () => {
@@ -465,6 +483,22 @@ export const createNativeRuntimeApi = ({
     },
     [PREPARE]: { POST: { body: emptyBody, handle: prepare } },
     [PROMPT]: { POST: { body: promptBody, handle: savePrompt } },
+    [INPUTS]: {
+      POST: {
+        body: (event) => jsonBody(event, nativeInputRequest),
+        handle: async (context) => {
+          if (!inputs)
+            return reply(
+              context.response,
+              503,
+              'NATIVE_INPUT_UNAVAILABLE',
+              'Native inputs are unavailable',
+            );
+          const { row, ...result } = await inputs.handle(context);
+          return context.response(200, { ...(await details(row, context.recheck)), ...result });
+        },
+      },
+    },
     [START]: {
       POST: {
         body: (event) => jsonBody(event, startRequest),
@@ -476,6 +510,7 @@ export const createNativeRuntimeApi = ({
               context.input.requestId,
               context.recheck,
               context.input.promptRevision,
+              context.input.inputRevision,
             ),
           ),
       },

@@ -41,7 +41,7 @@ module "authority" {
   runtime                = "nodejs24.x"
   architectures          = ["arm64"]
   memory_size            = 512
-  timeout                = 30
+  timeout                = 90
   publish                = true
   create_role            = false
   lambda_role            = aws_iam_role.authority.arn
@@ -56,6 +56,9 @@ module "authority" {
     NATIVE_EXECUTION_QUEUE_URL         = aws_sqs_queue.execution[0].url
     NATIVE_RESULT_FUNCTION             = module.results.lambda_function_arn
     SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name
+    SOURCE_CONTROL_FUNCTION            = var.source_control_function_arn
+    TRACKERS_FUNCTION                  = var.trackers_function_arn
+    ARTIFACTS_BUCKET                   = var.artifacts_bucket_name
     AGENT_SETTINGS_SSM_PREFIX          = local.agent_settings_prefix
     AGENT_CREDENTIAL_METADATA_FUNCTION = var.agent_credential_metadata_function_arn
     COGNITO_USER_POOL_ID               = var.cognito_user_pool_id

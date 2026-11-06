@@ -175,7 +175,13 @@ class NativeExecutionWiring(unittest.TestCase):
         self.assertEqual(actions(api), {
             "dynamodb:GetItem", "dynamodb:Query", "ssm:GetParameter",
             "lambda:InvokeFunction", "s3:GetObjectVersion", "sqs:SendMessage",
+            "s3:GetObject", "s3:PutObject", "s3:DeleteObjectVersion",
         })
+        # Input writes belong only to project/execution-scoped attachment prefixes.
+        for sid, prefix in [("StageNativeIntentInputs", "staging"), ("PromoteNativeIntentInputs", "committed")]:
+            statement = api.split(f'Sid      = "{sid}"', 1)[1].split("},", 1)[0]
+            self.assertIn(f'${{var.artifacts_bucket_arn}}/intent-attachments/{prefix}/native-*/*', statement)
+            self.assertNotIn("publications.arn", statement)
         # Output history queries are restricted to the protected native table.
         self.assertRegex(api, r'Sid\s*=\s*"ReadNativeOutputHistory"[^}]*Action\s*=\s*\["dynamodb:Query"\][^}]*Resource\s*=\s*aws_dynamodb_table\.bindings\.arn')
         self.assertNotIn("dynamodb:Scan", actions(api))
@@ -311,9 +317,13 @@ class NativeExecutionWiring(unittest.TestCase):
     def test_facade_has_separate_role_read_only_authority_and_rotation_dependencies(self):
         facade = block(EXECUTION, 'resource "aws_iam_role_policy" "execution_credentials"')
         self.assertFalse({
-            "lambda:InvokeFunction", "neptune-db:WriteDataViaQuery",
+            "neptune-db:WriteDataViaQuery",
             "s3:PutObject", "s3:GetObjectVersion",
         } & actions(facade))
+        tracker = facade.split('Sid      = "CheckCapturedTrackerAccess"', 1)[1].split("},", 1)[0]
+        self.assertEqual(actions(tracker), {"lambda:InvokeFunction"})
+        self.assertIn("Resource = var.trackers_function_arn", tracker)
+        self.assertEqual(facade.count('"lambda:InvokeFunction"'), 1)
         self.assertNotIn("credential_grant_secret", EXECUTION)
         self.assertNotIn("v2_executions_table", facade)
         authority = facade.split('Sid      = "ReadNativeExecutionAuthority"', 1)[1].split("},", 1)[0]

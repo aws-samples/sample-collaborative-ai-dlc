@@ -1,3 +1,4 @@
+import { nativeInputSnapshot } from '../../shared/native-inputs.js';
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -51,6 +52,7 @@ export const executionFixture = ({
   const configuration = {
     harness,
     model,
+    inputs: nativeInputSnapshot(prepared, 'native-inputs'),
     ...(recoveryMode ? { recoveryMode } : {}),
     promptSha256: hash(prepared.request.prompt),
     packageId: prepared.candidate.packagePin.packageId,
@@ -63,7 +65,9 @@ export const executionFixture = ({
     repository: {
       provider: 'github',
       repository: 'JWThewes/flappy-bird',
-      branch: null,
+      branch: 'main',
+      commit: 'c'.repeat(40),
+      credentialIdentity: 'd'.repeat(64),
       bindingRevision: request().bindingRevision,
     },
     credentialBinding: { provider: 'bedrock', source: 'platform' },
@@ -158,7 +162,13 @@ export const executionFixture = ({
     now: () => time,
   });
   const start = () =>
-    store.start({ ...IDENTITY, actorId: ACTOR, requestId: 'first-request', configuration });
+    store.start({
+      ...IDENTITY,
+      actorId: ACTOR,
+      requestId: 'first-request',
+      inputRevision: configuration.inputs.revision,
+      configuration,
+    });
   const target = (row) => {
     const endpoint = `exec_${hash(row.attemptId).slice(0, 32)}`;
     return {

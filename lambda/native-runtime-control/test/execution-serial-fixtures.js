@@ -18,6 +18,7 @@ export const SERIAL_SOURCE = { branch: 'develop', commit: 'e'.repeat(40) };
 // transport is local; no canned manifests, interaction hashes or receipt IDs.
 export const serialFixture = (fixtureOptions) => {
   const f = executionFixture(fixtureOptions);
+  Object.assign(f.configuration.repository, SERIAL_SOURCE);
   const projection = createNativeProjectionStore({
     ddb: f.ddb,
     tableName: TABLE,

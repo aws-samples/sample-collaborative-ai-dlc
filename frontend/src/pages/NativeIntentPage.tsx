@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { MoreHorizontal, Settings2 } from 'lucide-react';
 import { IntentWorkspaceHeader } from '@/components/intent/IntentWorkspaceHeader';
@@ -25,6 +25,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { NativeIntentContent } from '@/components/intent/NativeIntentContent';
 import { NativePromptEditor } from '@/components/intent/NativePromptEditor';
+import { NativeIntentInputs } from '@/components/intent/NativeIntentInputs';
 import { currentSessionEpoch } from '@/services/sessionExpiry';
 import { nativeStartUnavailableMessages } from '@/services/nativeIntents';
 import { useNativeListingVersion } from '@/hooks/useNativeIntents';
@@ -64,6 +65,7 @@ export function NativeWorkspaceView({
   onViewActivity?: () => void;
 }) {
   const [configurationOpen, setConfigurationOpen] = useState(false);
+  const [inputsBusy, setInputsBusy] = useState(false);
   const [resumeEpisode, setResumeEpisode] = useState<string | null>(null);
   const {
     projectId,
@@ -76,6 +78,9 @@ export function NativeWorkspaceView({
     refresh,
     publicationFailure,
   } = adapter;
+  useEffect(() => {
+    setInputsBusy(false);
+  }, [intent?.id]);
   return (
     <div className="space-y-6">
       <IntentWorkspaceHeader
@@ -199,6 +204,10 @@ export function NativeWorkspaceView({
                     adapter.promptDraft !== null ||
                     adapter.savingPrompt ||
                     adapter.startConflict ||
+                    inputsBusy ||
+                    Boolean(
+                      intent.inputs?.pendingUploads.length || intent.inputs?.imports.length,
+                    ) ||
                     acting !== null
                   }
                 >
@@ -225,6 +234,14 @@ export function NativeWorkspaceView({
             </div>
           </section>
           <NativePromptEditor adapter={adapter} />
+          <NativeIntentInputs
+            key={`${projectId}:${intent.id}`}
+            intent={intent}
+            disabled={acting !== null || inputsBusy}
+            onBusyChange={setInputsBusy}
+            onRefresh={refresh}
+            onAccessFailure={publicationFailure}
+          />
           <NativeIntentContent
             intent={intent}
             onAccessFailure={publicationFailure}

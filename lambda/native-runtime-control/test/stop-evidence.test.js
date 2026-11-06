@@ -15,7 +15,7 @@ const ready = async () => {
     patch: {
       status: 'DISPATCHING',
       target: f.target(row),
-      sourceCommit: 'a'.repeat(40),
+      sourceCommit: f.configuration.repository.commit,
       sourceBranch: 'main',
     },
   });

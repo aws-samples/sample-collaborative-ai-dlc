@@ -8,6 +8,7 @@ import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { STSClient } from '@aws-sdk/client-sts';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { buildResponse } from '../shared/response.js';
+import { captureNativeSource } from './native-source.js';
 import { getProvider } from '../shared/git-providers.js';
 import {
   ACTIVE,
@@ -336,7 +337,9 @@ const callProvider = async (provider, operation, ctx, repo, args = {}) => {
     case 'get-issue':
       return provider.getIssue(ctx, repo, args.number);
     case 'list-issue-comments':
-      return provider.listIssueComments(ctx, repo, args.number);
+      return args.complete === true
+        ? provider.listIssueComments(ctx, repo, args.number, { complete: true })
+        : provider.listIssueComments(ctx, repo, args.number);
     case 'issue-attachments':
       return provider.issueAttachments(ctx, repo, args);
     case 'add-issue-comment':
@@ -427,6 +430,27 @@ const reviewNumberFromPath = (path) =>
 
 export const handler = async (event, context) => {
   if (context) logger.addContext(context);
+  if (['native-source-snapshot', 'native-source-access'].includes(event?.action)) {
+    let conn;
+    try {
+      conn = await getConnection();
+      const g = traversal().withRemote(conn);
+      const source = await captureNativeSource({
+        input: event,
+        metadataOnly: event.action === 'native-source-access',
+        ddb,
+        ssm,
+        secrets,
+        membership: (userId) => fetchMembershipRole(g, event.projectId, userId),
+        repositories: () => fetchProjectRepositories(g, event.projectId),
+      });
+      return { ok: true, source };
+    } catch {
+      return { ok: false, code: 'NATIVE_SOURCE_UNAVAILABLE' };
+    } finally {
+      await conn?.close().catch(() => {});
+    }
+  }
   // Internal Lambda-only API. IAM is the authentication boundary.
   if (event?.action === 'validate-project' || event?.action === 'operate') {
     let conn;

@@ -29,8 +29,20 @@ import {
   setup,
 } from './fixtures.js';
 import { resetSessionExpiry } from '../../../frontend/src/services/sessionExpiry.ts';
+import { createNativeInputApi } from '../input-api.js';
+import { inputFixture } from './input-fixtures.js';
+import { materializeAttachments, attachmentPromptManifest } from '../../agentcore/attachments.js';
+import { mkdtemp, readFile, rm, chmod } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { captureNativeSource } from '../../source-control/native-source.js';
+import { resolveNativeSourceCommit } from '../../shared/native-application-source.js';
 
-const session = vi.hoisted(() => ({ resolveSession: vi.fn() }));
+const session = vi.hoisted(() => ({ resolveSession: vi.fn(), sourceCredential: vi.fn() }));
+vi.mock('../../shared/source-control-credentials.js', () => ({
+  resolveBindingCredential: session.sourceCredential,
+}));
 vi.mock('../../../frontend/src/services/auth.ts', () => ({
   authService: { resolveSession: session.resolveSession },
 }));
@@ -41,6 +53,9 @@ let client;
 beforeAll(async () => {
   vi.stubEnv('VITE_API_BASE_URL', `${ORIGIN}/api`);
   vi.stubEnv('NATIVE_AUTHORITY_FUNCTION', AUTHORITY);
+  vi.stubEnv('SOURCE_CONTROL_BINDINGS_TABLE', 'application-bindings');
+  vi.stubEnv('GIT_PROVIDER_CONNECTIONS_TABLE', 'git-connections');
+  vi.stubEnv('JIRA_OAUTH_SECRET_NAME', 'fixture-jira-oauth');
   ({ nativeIntentsService: client } =
     await import('../../../frontend/src/services/nativeIntents.ts'));
 });
@@ -66,8 +81,19 @@ const draftRequest = (overrides = {}) =>
     ...overrides,
   });
 
-function fixture() {
+function fixture({ sourceProvider = 'gitlab', trackerProvider = 'gitlab-issues' } = {}) {
   const f = setup();
+  session.sourceCredential.mockResolvedValue({ token: 'fixture-source-token' });
+  const selectedSource = { ...applicationSource, provider: sourceProvider };
+  const sourceConnection = {
+    userId: ACTOR,
+    provider: sourceProvider,
+    providerInstance: `${sourceProvider}#public`,
+    status: 'active',
+    generation: 'original',
+    parameterName: '/fixture/source/token/member',
+  };
+  const inputPorts = inputFixture(trackerProvider);
   // These entries represent ordinary Project/HAS_MEMBER/HAS_REPO records, not
   // deployment configuration. A new project can appear after the router exists.
   const projects = new Map();
@@ -79,10 +105,10 @@ function fixture() {
     };
     const codeBinding = prepareBinding({
       projectId,
-      provider: applicationSource.provider,
-      repo: applicationSource.repository,
-      authType: 'gitlab-oauth',
-      credentialRef: `oauth#gitlab#${ACTOR}`,
+      provider: selectedSource.provider,
+      repo: selectedSource.repository,
+      authType: `${sourceProvider}-oauth`,
+      credentialRef: `oauth#${sourceProvider}#${ACTOR}`,
       connectionUserId: ACTOR,
       capabilities: { repositoryWrite: true },
     });
@@ -126,6 +152,8 @@ function fixture() {
       expect(command.input.ConsistentRead).toBe(true);
       return { Item: structuredClone(projects.get(command.input.Key.projectId)?.codeBinding) };
     }
+    if (command instanceof GetCommand && command.input.TableName === 'git-connections')
+      return { Item: structuredClone(sourceConnection) };
     return storageSend(command);
   });
   const graph = {
@@ -164,6 +192,22 @@ function fixture() {
       ssm: { send: vi.fn(async () => ({ Parameter: { Value: '{}' } })) },
       graph,
       resolveBindings,
+      s3: inputPorts.s3,
+      invokeTracker: inputPorts.invokeTracker,
+      captureSource: async (input) => ({
+        ok: true,
+        source: await captureNativeSource({
+          input,
+          metadataOnly: input.metadataOnly === true,
+          ddb: f.ddb,
+          ssm: {},
+          secrets: {},
+          membership: async (actorId) => (await membership(input.projectId, actorId))?.role,
+          repositories: async () => [{ provider: sourceProvider, repo: selectedSource.repository }],
+          resolveCommit: (args) =>
+            resolveNativeSourceCommit({ ...args, fetchImpl: inputPorts.fetchImpl }),
+        }),
+      }),
       env: {
         AWS_REGION: 'us-east-1',
         NATIVE_RUNTIME_ACCOUNT_ID: '123456789012',
@@ -171,6 +215,7 @@ function fixture() {
         NATIVE_EXECUTION_IMAGE_DIGEST: IMAGE.digest,
         NATIVE_EXECUTION_PUBLICATION_BUCKET: 'native-publications',
         NATIVE_PACKAGES_BUCKET: 'native-packages',
+        ARTIFACTS_BUCKET: 'native-inputs',
         SOURCE_CONTROL_BINDINGS_TABLE: 'application-bindings',
         AGENT_SETTINGS_SSM_PREFIX: '/aidlc/dev',
         AGENT_CREDENTIAL_METADATA_FUNCTION: 'credential-metadata',
@@ -197,6 +242,13 @@ function fixture() {
     enabled: true,
     store: f.store,
     execution,
+    inputs: createNativeInputApi({
+      store: f.store,
+      executionStore,
+      bucket: 'native-inputs',
+      accountId: '123456789012',
+      ...inputPorts,
+    }),
     image: IMAGE,
     getMembershipSnapshot: membership,
     listNativeIntents: (input) => listing.list(input),
@@ -225,9 +277,9 @@ function fixture() {
   const connection = { loseNextResponse: false };
   const transport = vi.fn(async (url, options) => {
     const target = new URL(url);
-    expect(target.origin).toBe(ORIGIN);
+    if (target.origin !== ORIGIN) return inputPorts.fetchImpl(url, options);
     const route =
-      /^\/api\/projects\/([^/]+)\/native-intents(?:\/([^/]+)(?:\/(prepare|prompt|start))?)?$/.exec(
+      /^\/api\/projects\/([^/]+)\/native-intents(?:\/([^/]+)(?:\/(prepare|prompt|start|inputs))?)?$/.exec(
         target.pathname,
       );
     expect(route).not.toBeNull();
@@ -271,8 +323,315 @@ function fixture() {
     transport,
     connection,
     ready,
+    inputPorts,
+    sourceConnection,
   };
 }
+
+it('delivers uploaded immutable content from the frontend serializer through admission to the actual materializer', async () => {
+  const f = fixture();
+  const draft = await client.create(
+    PROJECT,
+    draftRequest({ prompt: 'Use the selected reference.' }),
+  );
+  const bytes = Buffer.from('Approved input content.\n');
+  const attachmentId = randomUUID();
+  const uploaded = await client.inputs(PROJECT, draft.id, 0, {
+    operation: 'upload',
+    attachmentId,
+    filename: 'reference.md',
+    mimeType: 'text/markdown',
+    size: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+  });
+  expect(uploaded.intent.inputs.pendingUploads).toHaveLength(1);
+  const key = new URL(uploaded.upload.url).pathname.slice(1);
+  f.inputPorts.put(key, bytes, 'text/markdown');
+  const completed = await client.inputs(PROJECT, draft.id, 1, {
+    operation: 'complete',
+    attachmentId,
+  });
+  expect(completed.intent.inputRevision).toBe(2);
+  expect(completed.intent.inputs.pendingUploads).toEqual([]);
+  await f.ready();
+  await expect(client.start(PROJECT, draft.id, randomUUID(), 0, 1)).rejects.toMatchObject({
+    status: 409,
+    body: { code: 'NATIVE_INPUT_CONFLICT' },
+  });
+  const requestId = randomUUID();
+  f.connection.loseNextResponse = true;
+  await expect(client.start(PROJECT, draft.id, requestId, 0, 2)).rejects.toThrow('Response lost');
+  const row = await f.executionStore.get(IDENTITY);
+  const pinned = structuredClone(row.configuration);
+  expect(row.sourceCommit).toBe('c'.repeat(40));
+  expect(pinned.inputs.attachments[0].sha256).toBe(
+    createHash('sha256').update(bytes).digest('hex'),
+  );
+  f.inputPorts.put(key, Buffer.from('A later staging upload.'), 'text/markdown');
+  f.projects.get(PROJECT).codeBinding.revision = randomUUID();
+  const retry = await client.start(PROJECT, draft.id, requestId, 0, 2);
+  expect((await f.executionStore.get(IDENTITY)).requestId).toBe(requestId);
+  expect((await f.executionStore.get(IDENTITY)).configuration).toEqual(pinned);
+  expect(f.configure).toHaveBeenCalledTimes(1);
+  await expect(
+    client.inputs(PROJECT, draft.id, 2, { operation: 'remove', attachmentId }),
+  ).rejects.toMatchObject({ status: 409 });
+  const workspace = await mkdtemp(join(tmpdir(), 'native-input-contract-'));
+  try {
+    const materialized = await materializeAttachments({
+      workspaceDir: workspace,
+      attachments: pinned.inputs.attachments,
+      bucket: pinned.inputs.bucket,
+      client: f.inputPorts.s3,
+      strict: true,
+    });
+    expect(await readFile(join(workspace, materialized.attachments[0].path))).toEqual(bytes);
+    expect(attachmentPromptManifest(materialized.attachments)).toContain('untrusted input');
+    expect(JSON.stringify(retry)).not.toMatch(/s3VersionId|s3Key|fixture-source-token/);
+  } finally {
+    await chmod(join(workspace, '.aidlc/references'), 0o755).catch(() => {});
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+it('imports tracker text and provider attachments through the shared owners and pins their actual content', async () => {
+  const f = fixture();
+  const draft = await client.create(PROJECT, draftRequest({ prompt: 'Use the tracker inputs.' }));
+  let result = await client.inputs(PROJECT, draft.id, 0, {
+    operation: 'tracker',
+    bindingId: 'tracker-one',
+    resourceId: '7',
+  });
+  expect(result.intent.inputs.attachments).toHaveLength(1);
+  expect(result.intent.inputs.source).toMatchObject({ provider: 'gitlab-issues', resourceId: '7' });
+  result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+    operation: 'discover',
+  });
+  expect(result.discovery.attachments).toHaveLength(1);
+  expect(result.discovery.attachments[0]).not.toHaveProperty('url');
+  const attachmentId = result.discovery.attachments[0].id;
+  result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+    operation: 'import',
+    attachmentId,
+  });
+  expect(result.importResult.status).toBe('imported');
+  expect(result.intent.inputs.attachments).toHaveLength(2);
+  const revision = result.intent.inputRevision;
+  const duplicate = await client.inputs(PROJECT, draft.id, revision, {
+    operation: 'import',
+    attachmentId,
+  });
+  expect(duplicate.intent.inputRevision).toBe(revision);
+  f.inputPorts.state.text = 'Tracker text changed after import.';
+  f.inputPorts.state.attachment = Buffer.from('Tracker attachment replaced.');
+  await f.ready();
+  await client.start(PROJECT, draft.id, randomUUID(), 0, revision);
+  const row = await f.executionStore.get(IDENTITY);
+  const configuration = executionRuntimeConfiguration(f.read(IDENTITY), row);
+  const workspace = await mkdtemp(join(tmpdir(), 'native-tracker-contract-'));
+  try {
+    const materialized = await materializeAttachments({
+      workspaceDir: workspace,
+      attachments: configuration.inputs.attachments,
+      bucket: configuration.inputs.bucket,
+      client: f.inputPorts.s3,
+      strict: true,
+    });
+    const contents = await Promise.all(
+      materialized.attachments.map((file) => readFile(join(workspace, file.path), 'utf8')),
+    );
+    expect(contents[0]).toContain('Original tracker specification.');
+    expect(contents[0]).toContain('Preserve explicit human gates.');
+    expect(contents[1]).toBe('Original required attachment.\n');
+    expect(JSON.stringify(configuration)).not.toContain('attachmentUrl');
+    expect(JSON.stringify(configuration)).not.toContain('fixture-source-token');
+  } finally {
+    await chmod(join(workspace, '.aidlc/references'), 0o755).catch(() => {});
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+it.each(
+  ['github', 'gitlab', 'bitbucket'].flatMap((sourceProvider) =>
+    ['github-issues', 'gitlab-issues', 'jira-cloud'].map((trackerProvider) => ({
+      sourceProvider,
+      trackerProvider,
+    })),
+  ),
+)(
+  'admits $sourceProvider source with $trackerProvider text and file bytes through their real provider owners',
+  async (options) => {
+    const f = fixture(options);
+    const draft = await client.create(
+      PROJECT,
+      draftRequest({
+        prompt: 'Use the selected inputs.',
+        applicationSource: { ...applicationSource, provider: options.sourceProvider },
+      }),
+    );
+    let result = await client.inputs(PROJECT, draft.id, 0, {
+      operation: 'tracker',
+      bindingId: 'tracker-one',
+      resourceId: '7',
+    });
+    result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+      operation: 'discover',
+    });
+    const attachmentId = result.discovery.attachments[0].id;
+    if (options.trackerProvider === 'jira-cloud') expect(attachmentId).toBe('123');
+    result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+      operation: 'import',
+      attachmentId,
+    });
+    expect(result.importResult.status).toBe('imported');
+    expect(result.intent.inputs.attachments).toHaveLength(2);
+    await f.ready();
+    const started = await client.start(
+      PROJECT,
+      draft.id,
+      randomUUID(),
+      0,
+      result.intent.inputRevision,
+    );
+    expect(started.execution.repository).toMatchObject({
+      provider: options.sourceProvider,
+      commit: 'c'.repeat(40),
+    });
+    const admitted = await f.executionStore.get(IDENTITY);
+    expect(admitted.configuration.inputs.source.provider).toBe(options.trackerProvider);
+    expect(
+      admitted.configuration.inputs.attachments.every((file) => /^[a-f0-9]{64}$/.test(file.sha256)),
+    ).toBe(true);
+    expect(JSON.stringify(started)).not.toMatch(
+      /fixture-source-token|s3VersionId|credentialIdentity|bindingFingerprint/,
+    );
+  },
+);
+
+it('fences late import completion after explicit exclusion', async () => {
+  const f = fixture();
+  const draft = await client.create(PROJECT, draftRequest({ prompt: 'Read inputs.' }));
+  let result = await client.inputs(PROJECT, draft.id, 0, {
+    operation: 'tracker',
+    bindingId: 'tracker-one',
+    resourceId: '7',
+  });
+  result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+    operation: 'discover',
+  });
+  const id = result.discovery.attachments[0].id;
+  // The shared provider transfer is held before it can reserve/promote bytes.
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  // The existing finite provider port exposes a read hook; no live network.
+  f.inputPorts.state.beforeDownload = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  const pending = client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+    operation: 'import',
+    attachmentId: id,
+  });
+  const rejected = expect(pending).rejects.toMatchObject({ status: 409 });
+  await entered.promise;
+  const current = await client.get(PROJECT, draft.id);
+  await client.inputs(PROJECT, draft.id, current.inputRevision, {
+    operation: 'exclude-import',
+    attachmentId: id,
+  });
+  release.resolve();
+  await rejected;
+  expect((await client.get(PROJECT, draft.id)).inputs.attachments).toHaveLength(1);
+});
+
+it('keeps a failed selected tracker file unresolved until retry or explicit exclusion', async () => {
+  const f = fixture();
+  const draft = await client.create(
+    PROJECT,
+    draftRequest({ prompt: 'Use tracker text and selected files.' }),
+  );
+  let result = await client.inputs(PROJECT, draft.id, 0, {
+    operation: 'tracker',
+    bindingId: 'tracker-one',
+    resourceId: '7',
+  });
+  result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+    operation: 'discover',
+  });
+  const attachmentId = result.discovery.attachments[0].id;
+  f.inputPorts.state.failDownload = true;
+  result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+    operation: 'import',
+    attachmentId,
+  });
+  expect(result.importResult.status).toBe('failed');
+  expect(result.intent.inputs.imports).toMatchObject([{ id: attachmentId, status: 'failed' }]);
+  await f.ready();
+  await expect(
+    client.start(PROJECT, draft.id, randomUUID(), 0, result.intent.inputRevision),
+  ).rejects.toMatchObject({ status: 409, body: { code: 'NATIVE_INPUT_PENDING' } });
+  f.inputPorts.state.failDownload = false;
+  result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+    operation: 'import',
+    attachmentId,
+  });
+  expect(result.importResult.status).toBe('imported');
+  expect(result.intent.inputs.imports).toEqual([]);
+  f.inputPorts.state.access = false;
+  await expect(
+    client.start(PROJECT, draft.id, randomUUID(), 0, result.intent.inputRevision),
+  ).rejects.toMatchObject({ status: 403, body: { code: 'NATIVE_INPUT_ACCESS' } });
+  expect(await f.executionStore.get(IDENTITY)).toBeNull();
+});
+
+it.each([
+  { filename: '../escape.md' },
+  { filename: 'unsupported.exe' },
+  { size: 5 * 1024 * 1024 + 1 },
+  { mimeType: 'text/html' },
+  { s3Key: 'another-project/private' },
+])('rejects malformed, oversized and substituted upload metadata %j', async (patch) => {
+  const f = fixture();
+  const draft = await client.create(PROJECT, draftRequest({ prompt: 'Read my input.' }));
+  await expect(
+    client.inputs(PROJECT, draft.id, 0, {
+      operation: 'upload',
+      attachmentId: randomUUID(),
+      filename: 'input.md',
+      mimeType: 'text/markdown',
+      size: 2,
+      sha256: 'a'.repeat(64),
+      ...patch,
+    }),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(f.inputPorts.calls).toEqual([]);
+  expect(f.read(IDENTITY).inputDraft).toBeUndefined();
+});
+
+it('rejects byte substitution and input edits that race another revision', async () => {
+  const f = fixture();
+  const draft = await client.create(PROJECT, draftRequest({ prompt: 'Read immutable inputs.' }));
+  const attachmentId = randomUUID();
+  const result = await client.inputs(PROJECT, draft.id, 0, {
+    operation: 'upload',
+    attachmentId,
+    filename: 'input.txt',
+    mimeType: 'text/plain',
+    size: 2,
+    sha256: createHash('sha256').update('ok').digest('hex'),
+  });
+  f.inputPorts.put(new URL(result.upload.url).pathname.slice(1), Buffer.from('no'), 'text/plain');
+  await expect(
+    client.inputs(PROJECT, draft.id, 1, { operation: 'complete', attachmentId }),
+  ).rejects.toMatchObject({ status: 400 });
+  await expect(
+    client.inputs(PROJECT, draft.id, 0, { operation: 'remove', attachmentId }),
+  ).rejects.toMatchObject({ status: 409 });
+  await expect(
+    client.inputs(OTHER, draft.id, 1, { operation: 'complete', attachmentId }),
+  ).rejects.toMatchObject({ status: 404 });
+  expect(f.read(IDENTITY).inputDraft.attachments).toEqual([]);
+});
 
 it('creates, corrects, prepares and starts a frontend title-only request through the authenticated public router', async () => {
   const f = fixture();
@@ -550,3 +909,69 @@ it.each(['member denied', 'package changed', 'source revision changed'])(
     expect(f.enqueue).not.toHaveBeenCalled();
   },
 );
+
+it.each(['source identity', 'tracker identity'])(
+  'refuses %s replacement during the slow Start settings read',
+  async (kind) => {
+    const f = fixture();
+    const draft = await client.create(
+      PROJECT,
+      draftRequest({ prompt: 'Use the admitted inputs.' }),
+    );
+    const imported = await client.inputs(PROJECT, draft.id, 0, {
+      operation: 'tracker',
+      bindingId: 'tracker-one',
+      resourceId: '7',
+    });
+    await f.ready();
+    f.resolveBindings.mockImplementationOnce(async () => {
+      if (kind === 'source identity') f.sourceConnection.generation = 'replacement';
+      else f.inputPorts.state.credentialIdentity = { generation: 'replacement' };
+      return { bedrock: { provider: 'bedrock', source: 'user', userId: ACTOR } };
+    });
+    await expect(
+      client.start(PROJECT, draft.id, randomUUID(), 0, imported.intent.inputRevision),
+    ).rejects.toMatchObject({ status: kind === 'source identity' ? 409 : 403 });
+    expect(await f.executionStore.get(IDENTITY)).toBeNull();
+  },
+);
+
+it('retains an expired selected upload when another tracker attachment is imported', async () => {
+  const f = fixture();
+  const draft = await client.create(PROJECT, draftRequest({ prompt: 'Use all selected inputs.' }));
+  let result = await client.inputs(PROJECT, draft.id, 0, {
+    operation: 'tracker',
+    bindingId: 'tracker-one',
+    resourceId: '7',
+  });
+  result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+    operation: 'discover',
+  });
+  const selected = result.discovery.attachments[0].id;
+  const attachmentId = randomUUID();
+  result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+    operation: 'upload',
+    attachmentId,
+    filename: 'unfinished.txt',
+    mimeType: 'text/plain',
+    size: 2,
+    sha256: createHash('sha256').update('ok').digest('hex'),
+  });
+  // Expiry changes capacity accounting in the shared managed importer. It must
+  // not erase the native member's required selection when that importer runs.
+  const row = f.read(IDENTITY);
+  row.inputDraft.pendingAttachmentUploads[0].expiresAt = '2020-01-01T00:00:00Z';
+  // Use the fixture's actual key, preserving all other protected rows.
+  for (const [key, value] of f.rows)
+    if (value.pk === row.pk && value.sk === 'RUNTIME') f.rows.set(key, structuredClone(row));
+  result = await client.inputs(PROJECT, draft.id, result.intent.inputRevision, {
+    operation: 'import',
+    attachmentId: selected,
+  });
+  expect(result.importResult.status).toBe('imported');
+  expect(result.intent.inputs.pendingUploads).toMatchObject([{ attachmentId }]);
+  await f.ready();
+  await expect(
+    client.start(PROJECT, draft.id, randomUUID(), 0, result.intent.inputRevision),
+  ).rejects.toMatchObject({ status: 409, body: { code: 'NATIVE_INPUT_PENDING' } });
+});

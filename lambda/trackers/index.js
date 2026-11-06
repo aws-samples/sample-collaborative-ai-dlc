@@ -43,6 +43,11 @@ import { jiraBindingContext, prepareJiraDelegation, writeJiraBinding } from './j
 import { invalidateTrackerBindingsByDelegator } from '../shared/tracker-binding-delegation.js';
 import { createDeliverySynchronizer } from './delivery-sync.js';
 import {
+  captureTrackerInput,
+  trackerBindingFingerprint,
+  nativeTrackerCredentialIdentity,
+} from './native-input.js';
+import {
   buildAuthorizeUrl,
   exchangeCode,
   listAccessibleResources,
@@ -548,7 +553,9 @@ export const handler = async (event, context) => {
   // Internal Lambda-only entry point: intents supplies its stored source and
   // authenticated user. Recheck membership and resolve the binding here;
   // credentials and provider download URLs never reach the browser.
-  if (event?.action === 'issue-attachments') {
+  if (
+    ['issue-attachments', 'native-issue-snapshot', 'native-issue-check'].includes(event?.action)
+  ) {
     let conn;
     try {
       conn = await getConnection();
@@ -559,8 +566,57 @@ export const handler = async (event, context) => {
       const binding = await fetchBinding(g, event.projectId, event.bindingId);
       if (!binding)
         return { status: 'failed', reason: 'The source tracker binding is no longer available.' };
+      const nativeRead = event.action !== 'issue-attachments' || Boolean(event.bindingFingerprint);
+      const credentialIdentity = async (value) =>
+        nativeRead
+          ? nativeTrackerCredentialIdentity({
+              binding: value,
+              context: bindingContext(g, event.projectId, value),
+              readSourceAccess: async (source) => {
+                const invocation = await lambda.send(
+                  new InvokeCommand({
+                    FunctionName: process.env.SOURCE_CONTROL_FUNCTION,
+                    InvocationType: 'RequestResponse',
+                    Payload: Buffer.from(
+                      JSON.stringify({
+                        action: 'native-source-access',
+                        projectId: event.projectId,
+                        userId: event.userId,
+                        ...source,
+                      }),
+                    ),
+                  }),
+                );
+                if (invocation.FunctionError) throw new Error('Source access unavailable');
+                return JSON.parse(Buffer.from(invocation.Payload).toString('utf8'));
+              },
+            })
+          : null;
+      const credential = await credentialIdentity(binding);
+      const recheck = async (fingerprint) => {
+        if (!(await fetchMembershipRole(g, event.projectId, event.userId)))
+          throw new Error('Membership changed');
+        const current = await fetchBinding(g, event.projectId, event.bindingId);
+        if (
+          !current ||
+          trackerBindingFingerprint(current, await credentialIdentity(current)) !== fingerprint
+        )
+          throw new Error('Tracker binding changed');
+      };
       const provider = getProvider(binding.provider, binding.instance);
-      return await provider.issueAttachments(
+      if (event.action !== 'issue-attachments')
+        return await captureTrackerInput({
+          event,
+          binding,
+          provider,
+          context: bindingContext(g, event.projectId, binding),
+          recheck,
+          credentialIdentity: credential,
+        });
+      const fingerprint = trackerBindingFingerprint(binding, credential);
+      if (event.bindingFingerprint && event.bindingFingerprint !== fingerprint)
+        throw new Error('Tracker binding changed');
+      const result = await provider.issueAttachments(
         bindingContext(g, event.projectId, binding),
         binding.externalProjectKey,
         event.resourceId,
@@ -570,6 +626,8 @@ export const handler = async (event, context) => {
           maxBytes: event.maxBytes,
         },
       );
+      await recheck(fingerprint);
+      return result;
     } catch {
       return {
         status: 'failed',

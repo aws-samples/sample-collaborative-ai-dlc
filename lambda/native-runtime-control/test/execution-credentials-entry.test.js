@@ -94,6 +94,7 @@ describe('separate native credentials Lambda entry', () => {
       secrets: f.secrets,
       env: f.env,
       getMembershipSnapshot: expect.any(Function),
+      invokeTracker: expect.any(Function),
     });
     expect(f.openConnection).toHaveBeenCalledOnce();
     expect(f.membershipSnapshot.mock.calls.map((args) => args.slice(1))).toEqual([

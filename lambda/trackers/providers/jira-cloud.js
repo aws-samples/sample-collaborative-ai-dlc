@@ -951,10 +951,44 @@ const getIssue = async (connection, projectKey, resourceId) => {
   return mapIssueToTrackerIssue(data, ctx.siteHost, mediaFilenames);
 };
 
-const getIssueDiscussion = async (connection, projectKey, resourceId) => {
+const getIssueDiscussion = async (
+  connection,
+  projectKey,
+  resourceId,
+  { complete = false } = {},
+) => {
   if (!resourceId) throw new ProviderError(400, 'Missing resourceId');
   const ctx = await buildContext(connection);
   await requireIssueScope(ctx, projectKey, resourceId);
+  if (complete) {
+    const comments = [];
+    for (let startAt = 0; startAt < 5000; startAt += 100) {
+      const response = await jiraFetch(
+        ctx,
+        `/rest/api/3/issue/${encodeURIComponent(resourceId)}/comment?maxResults=100&startAt=${startAt}`,
+      );
+      if (!response.ok)
+        throw new ProviderError(response.status, 'Could not read the complete discussion');
+      const page = await response.json();
+      if (
+        !Array.isArray(page.comments) ||
+        !Number.isSafeInteger(page.total) ||
+        page.startAt !== startAt
+      )
+        throw new ProviderError(502, 'Invalid issue discussion pagination');
+      const media = await resolveMediaFilenames(
+        ctx,
+        resourceId,
+        page.comments.map((comment) => comment.body),
+      );
+      comments.push(...page.comments.map((comment) => mapCommentToTrackerComment(comment, media)));
+      if (Buffer.byteLength(JSON.stringify(comments)) > 5 * 1024 * 1024)
+        throw new ProviderError(413, 'Issue discussion is too large');
+      if (startAt + page.comments.length >= page.total) return comments;
+      if (page.comments.length !== 100) throw new ProviderError(502, 'Incomplete issue discussion');
+    }
+    throw new ProviderError(413, 'Issue discussion has too many pages');
+  }
   const r = await jiraFetch(
     ctx,
     `/rest/api/3/issue/${encodeURIComponent(resourceId)}/comment?maxResults=100`,

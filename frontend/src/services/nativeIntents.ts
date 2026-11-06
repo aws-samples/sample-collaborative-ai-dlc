@@ -238,6 +238,120 @@ export interface NativeApplicationSource {
   provider: 'github' | 'gitlab' | 'bitbucket';
   repository: string;
 }
+export interface NativeInputFile {
+  attachmentId: string;
+  filename: string;
+  mimeType: string;
+  size: number;
+  sha256?: string;
+  source?: {
+    provider: string;
+    bindingId: string;
+    resourceId: string;
+    attachmentId: string;
+    title: string;
+  };
+}
+export interface NativeInputs {
+  attachments: NativeInputFile[];
+  pendingUploads: NativeInputFile[];
+  imports: { id: string; status: 'pending' | 'failed' | 'skipped'; reason?: string }[];
+  source: { provider: string; bindingId: string; resourceId: string; title: string } | null;
+}
+export type NativeInputOperation =
+  | { operation: 'source'; applicationSource: NativeApplicationSource | null }
+  | { operation: 'tracker'; bindingId: string; resourceId: string }
+  | { operation: 'discover' | 'clear-tracker' }
+  | { operation: 'import' | 'exclude-import' | 'complete' | 'remove'; attachmentId: string }
+  | {
+      operation: 'upload';
+      attachmentId: string;
+      filename: string;
+      mimeType: string;
+      size: number;
+      sha256: string;
+    };
+export interface NativeInputResult {
+  intent: NativeIntent;
+  upload?: { attachmentId: string; url: string; mimeType: string };
+  discovery?: {
+    attachments?: { id: string; filename: string; skipReason?: string }[];
+    reason?: string;
+  };
+  importResult?:
+    | { status: 'imported'; attachment: NativeInputFile }
+    | { status: 'failed' | 'skipped'; reason: string };
+}
+const inputFile = (value: unknown): NativeInputFile => {
+  if (
+    !record(value) ||
+    !uuid(value.attachmentId) ||
+    typeof value.filename !== 'string' ||
+    typeof value.mimeType !== 'string' ||
+    !Number.isSafeInteger(value.size) ||
+    Number(value.size) < 1 ||
+    Number(value.size) > 5 * 1024 * 1024 ||
+    (value.sha256 !== undefined &&
+      (typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256)))
+  )
+    throw new Error('The native input identity could not be verified.');
+  return {
+    attachmentId: value.attachmentId,
+    filename: value.filename,
+    mimeType: value.mimeType,
+    size: Number(value.size),
+    ...(typeof value.sha256 === 'string' ? { sha256: value.sha256 } : {}),
+    ...(record(value.source)
+      ? {
+          source: {
+            provider: String(value.source.provider),
+            bindingId: String(value.source.bindingId),
+            resourceId: String(value.source.resourceId),
+            attachmentId: String(value.source.attachmentId),
+            title: String(value.source.title),
+          },
+        }
+      : {}),
+  };
+};
+const inputView = (value: unknown): NativeInputs => {
+  if (
+    !record(value) ||
+    !Array.isArray(value.attachments) ||
+    !Array.isArray(value.pendingUploads) ||
+    !Array.isArray(value.imports) ||
+    value.attachments.length + value.pendingUploads.length > 50 ||
+    value.imports.length > 50 ||
+    (value.source !== null && !record(value.source))
+  )
+    throw new Error('The native inputs could not be verified.');
+  return {
+    attachments: value.attachments.map(inputFile),
+    pendingUploads: value.pendingUploads.map(inputFile),
+    imports: value.imports.map((item) => {
+      if (
+        !record(item) ||
+        typeof item.id !== 'string' ||
+        !['pending', 'failed', 'skipped'].includes(String(item.status)) ||
+        (item.reason !== undefined && typeof item.reason !== 'string')
+      )
+        throw new Error('The native import status could not be verified.');
+      return {
+        id: item.id,
+        status: item.status as 'pending' | 'failed' | 'skipped',
+        ...(item.reason ? { reason: String(item.reason) } : {}),
+      };
+    }),
+    source: value.source
+      ? {
+          provider: String(value.source.provider),
+          bindingId: String(value.source.bindingId),
+          resourceId: String(value.source.resourceId),
+          title: String(value.source.title),
+        }
+      : null,
+  };
+};
 
 export interface NativeDraftRequest {
   intentId: string;
@@ -318,8 +432,10 @@ export interface NativeIntent {
   prompt: string;
   // Absent on APIs predating prompt correction; those remain read-only.
   promptRevision?: number;
+  inputRevision?: number;
+  inputs?: NativeInputs;
   harness: WorkflowPackageHarness;
-  applicationSource?: NativeApplicationSource;
+  applicationSource?: NativeApplicationSource | null;
   status: 'DRAFT' | 'PREPARING' | 'READY' | 'FAILED';
   package: {
     version: string;
@@ -338,6 +454,8 @@ export type NativeIntentSummary = Omit<
   NativeIntent,
   | 'prompt'
   | 'promptRevision'
+  | 'inputRevision'
+  | 'inputs'
   | 'applicationSource'
   | 'executionAvailable'
   | 'startUnavailableReason'
@@ -444,8 +562,14 @@ function view(value: unknown, projectId: string, intentId: string): NativeIntent
   }
   return {
     ...item,
-    ...(value.applicationSource !== undefined
+    ...(value.applicationSource !== undefined && value.applicationSource !== null
       ? { applicationSource: applicationSource(value.applicationSource) }
+      : value.applicationSource === null
+        ? { applicationSource: null }
+        : {}),
+    ...(value.inputs !== undefined ? { inputs: inputView(value.inputs) } : {}),
+    ...(Number.isSafeInteger(value.inputRevision) && Number(value.inputRevision) >= 0
+      ? { inputRevision: Number(value.inputRevision) }
       : {}),
     prompt: value.prompt,
     ...(value.promptRevision !== undefined ? { promptRevision: Number(value.promptRevision) } : {}),
@@ -931,6 +1055,77 @@ const itemPath = (projectId: string, intentId: string) =>
   `${path(projectId)}/${encodeURIComponent(intentId)}`;
 
 export const nativeIntentsService = {
+  async inputs(
+    projectId: string,
+    intentId: string,
+    expectedRevision: number,
+    operation: NativeInputOperation,
+  ): Promise<NativeInputResult> {
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)
+      throw new Error('Refresh the native input revision before editing.');
+    const value = await api.post<unknown>(`${itemPath(projectId, intentId)}/inputs`, {
+      ...operation,
+      expectedRevision,
+    });
+    const intent = view(value, projectId, intentId);
+    if (!record(value) || intent.inputRevision === undefined || !intent.inputs)
+      throw new Error('The native input update could not be verified. Refresh the draft.');
+    const result: NativeInputResult = { intent };
+    if (value.upload !== undefined) {
+      if (
+        !record(value.upload) ||
+        !uuid(value.upload.attachmentId) ||
+        typeof value.upload.url !== 'string' ||
+        !/^https:\/\/[^/]+\.amazonaws\.com(?:\.cn)?\//.test(value.upload.url) ||
+        typeof value.upload.mimeType !== 'string'
+      )
+        throw new Error('The native upload destination could not be verified.');
+      result.upload = {
+        attachmentId: value.upload.attachmentId,
+        url: value.upload.url,
+        mimeType: value.upload.mimeType,
+      };
+    }
+    if (record(value.discovery)) {
+      result.discovery = {
+        ...(Array.isArray(value.discovery.attachments)
+          ? {
+              attachments: value.discovery.attachments.map((file) => {
+                if (
+                  !record(file) ||
+                  typeof file.id !== 'string' ||
+                  typeof file.filename !== 'string'
+                )
+                  throw new Error('The source attachment list could not be verified.');
+                return {
+                  id: file.id,
+                  filename: file.filename,
+                  ...(typeof file.skipReason === 'string' ? { skipReason: file.skipReason } : {}),
+                };
+              }),
+            }
+          : {}),
+        ...(typeof value.discovery.reason === 'string' ? { reason: value.discovery.reason } : {}),
+      };
+    }
+    if (record(value.importResult)) {
+      if (value.importResult.status === 'imported')
+        result.importResult = {
+          status: 'imported',
+          attachment: inputFile(value.importResult.attachment),
+        };
+      else if (
+        ['failed', 'skipped'].includes(String(value.importResult.status)) &&
+        typeof value.importResult.reason === 'string'
+      )
+        result.importResult = {
+          status: value.importResult.status as 'failed' | 'skipped',
+          reason: value.importResult.reason,
+        };
+      else throw new Error('The import result could not be verified.');
+    }
+    return result;
+  },
   async outputs(
     projectId: string,
     intentId: string,
@@ -1039,14 +1234,22 @@ export const nativeIntentsService = {
     intentId: string,
     requestId: string,
     promptRevision = 0,
+    inputRevision = 0,
   ): Promise<NativeIntent> {
-    if (!uuid(requestId) || !Number.isSafeInteger(promptRevision) || promptRevision < 0) {
+    if (
+      !uuid(requestId) ||
+      !Number.isSafeInteger(promptRevision) ||
+      promptRevision < 0 ||
+      !Number.isSafeInteger(inputRevision) ||
+      inputRevision < 0
+    ) {
       throw new Error('The native start request identity is invalid.');
     }
     return view(
       await api.post(`${itemPath(projectId, intentId)}/start`, {
         requestId,
         promptRevision,
+        inputRevision,
       }),
       projectId,
       intentId,

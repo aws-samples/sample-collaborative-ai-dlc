@@ -49,7 +49,9 @@ const needsPolling = (intent: NativeIntent) =>
       intent.execution.status === 'AWAITING_USER' ||
       intent.execution.projectionStatus === 'pending'));
 const accessFailure = (error: unknown): error is ApiError =>
-  error instanceof ApiError && [401, 403, 404].includes(error.status);
+  error instanceof ApiError &&
+  [401, 403, 404].includes(error.status) &&
+  error.body?.code !== 'NATIVE_INPUT_ACCESS';
 export const recoveryMessages: Record<NativeRecovery['reason'], string> = {
   SESSION_LOST:
     'The AI-DLC session was lost. Confirm a fresh session on the surviving workspace to continue.',
@@ -80,6 +82,15 @@ export const canRecover = (intent: NativeIntent) =>
 // Fixed public responses from lambda/native-runtime-control/api.js. Never
 // render arbitrary ApiError.message/body text, even for a recognized code.
 const nativeActionErrors: Record<string, readonly [number, string]> = {
+  NATIVE_INPUT_CONFLICT: [
+    409,
+    'The native inputs changed or Start was accepted. Refresh before continuing',
+  ],
+  NATIVE_INPUT_PENDING: [409, 'Finish or explicitly remove pending inputs before Start'],
+  NATIVE_INPUT_ACCESS: [
+    403,
+    'The imported issue or attachment is unavailable. Check source access',
+  ],
   agent_cli_disabled: [400, 'The selected agent CLI is disabled by the platform administrator'],
   NATIVE_PROMPT_INVALID: [400, 'Enter a nonblank prompt of at most 64 KiB without null characters'],
   NATIVE_PROMPT_CONFLICT: [
@@ -173,6 +184,7 @@ function acceptDetail(
 ): LoadedIntent {
   if (previous?.accessRevision === accessRevision) {
     if ((previous.value.promptRevision ?? 0) > (next.promptRevision ?? 0)) return previous;
+    if ((previous.value.inputRevision ?? 0) > (next.inputRevision ?? 0)) return previous;
     const previousRevision = previous.value.execution?.revision;
     const nextRevision = next.execution?.revision;
     if (previous.value.execution && !next.execution) return previous;
@@ -211,7 +223,11 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
   const [preparing, setPreparing] = useState(false);
   const [acting, setActing] = useState<'start' | 'cancel' | 'recover' | null>(null);
   const actionInFlight = useRef<'start' | 'cancel' | 'recover' | null>(null);
-  const startRequest = useRef<{ requestId: string; promptRevision: number } | null>(null);
+  const startRequest = useRef<{
+    requestId: string;
+    promptRevision: number;
+    inputRevision: number;
+  } | null>(null);
   const [startPending, setStartPending] = useState(false);
   const [startConflict, setStartConflict] = useState(false);
   const [promptDraft, setPromptDraft] = useState<{ text: string; expectedRevision: number } | null>(
@@ -432,10 +448,17 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
         startRequest.current ??= {
           requestId: crypto.randomUUID(),
           promptRevision: intent.promptRevision ?? 0,
+          inputRevision: intent.inputRevision ?? 0,
         };
         setStartPending(true);
-        const { requestId, promptRevision } = startRequest.current;
-        next = await nativeIntentsService.start(projectId, intentId, requestId, promptRevision);
+        const { requestId, promptRevision, inputRevision } = startRequest.current;
+        next = await nativeIntentsService.start(
+          projectId,
+          intentId,
+          requestId,
+          promptRevision,
+          inputRevision,
+        );
       } else {
         next = await nativeIntentsService.cancel(projectId, intentId);
       }
@@ -447,7 +470,9 @@ export function useNativeIntentAdapter(projectId: string, intentId: string) {
         current(requestGeneration, requestAccessRevision) &&
         err instanceof ApiError &&
         err.status === 409 &&
-        ['NATIVE_PROMPT_CONFLICT', 'NATIVE_EXECUTION_CONFLICT'].includes(String(err.body?.code))
+        ['NATIVE_PROMPT_CONFLICT', 'NATIVE_INPUT_CONFLICT', 'NATIVE_EXECUTION_CONFLICT'].includes(
+          String(err.body?.code),
+        )
       ) {
         startRequest.current = null;
         setStartPending(false);

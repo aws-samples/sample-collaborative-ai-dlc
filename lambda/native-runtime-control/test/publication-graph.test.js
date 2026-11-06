@@ -24,6 +24,7 @@ const identity = (row) => ({
 // validation and protected execution store rather than hand-written DTOs.
 const setup = async () => {
   const f = executionFixture();
+  Object.assign(f.configuration.repository, source);
   const commands = [];
   const originalSend = f.ddb.send.bind(f.ddb);
   f.ddb.send = async (command) => {

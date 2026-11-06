@@ -1,3 +1,5 @@
+import { nativeDraftInputs, nativeInputSnapshot } from '../../shared/native-inputs.js';
+import { sourceCredentialIdentity } from '../../shared/source-credential-identity.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
@@ -52,10 +54,12 @@ const fixture = async () => {
     ...nativePreparedConfigurationPins(draft),
     recoveryMode: 'efs-workspace-v1',
     model: 'openai.test',
+    inputs: nativeInputSnapshot(draft, 'native-inputs'),
     repository: {
       provider: 'github',
       repository: 'jwthewes/flappy-bird',
-      branch: null,
+      ...SOURCE,
+      credentialIdentity: 'd'.repeat(64),
       bindingRevision: binding.revision,
     },
     credentialBinding: { provider: 'bedrock', source: 'user', userId: ACTOR },
@@ -93,6 +97,8 @@ const fixture = async () => {
     configuration,
     preparation,
     status: 'UPGRADING',
+    sourceBranch: SOURCE.branch,
+    sourceCommit: SOURCE.commit,
     cancelRequested: false,
     target: {
       runtimeArn: draft.runtimeArn,
@@ -120,6 +126,7 @@ const fixture = async () => {
       generation: OTHER,
     },
   };
+  configuration.repository.credentialIdentity = sourceCredentialIdentity(binding, state.connection);
   const executionStore = {
     get: vi.fn(async (scope) => {
       expect(scope).toEqual(row.scope);
@@ -223,6 +230,45 @@ afterEach(() => {
 });
 
 describe('controller-only native credential facade', () => {
+  it.each(['unchanged', 'revoked', 'changed during resolution'])(
+    'rechecks admitted tracker access as the original starter: %s',
+    async (state) => {
+      const f = await continuation();
+      const source = {
+        provider: 'jira-cloud',
+        bindingId: 'tracker',
+        resourceId: 'PROJ-1',
+        title: 'Input',
+        bindingFingerprint: 'a'.repeat(64),
+      };
+      f.state.draft.inputDraft = { ...nativeDraftInputs(f.state.draft), source, revision: 1 };
+      f.state.draft.version += 1;
+      f.state.row.preparation.version = f.state.draft.version;
+      f.state.row.preparation.inputRevision = 1;
+      f.state.row.configuration.inputs = nativeInputSnapshot(f.state.draft, 'native-inputs');
+      const invokeTracker = vi.fn(async () => ({
+        ok: state !== 'revoked',
+        bindingFingerprint: source.bindingFingerprint,
+      }));
+      if (state === 'changed during resolution')
+        spies.git.mockImplementation(async () => {
+          invokeTracker.mockResolvedValue({ ok: false });
+          return { username: 'fixture', token: GIT };
+        });
+      const result = await f.invoke(f.request, { invokeTracker });
+      expect(result.ok).toBe(state === 'unchanged');
+      expect(invokeTracker).toHaveBeenCalledWith({
+        action: 'native-issue-check',
+        projectId: PROJECT,
+        userId: ACTOR,
+        bindingId: 'tracker',
+        resourceId: 'PROJ-1',
+        bindingFingerprint: source.bindingFingerprint,
+      });
+      if (state !== 'unchanged') expect(JSON.stringify(result)).not.toMatch(/unit-test-/);
+      if (state === 'revoked') expect(spies.git).not.toHaveBeenCalled();
+    },
+  );
   it('resolves credentials for the pinned saved prompt while retaining the immutable creation request', async () => {
     const f = await fixture();
     const original = structuredClone(f.state.draft.request);
@@ -474,12 +520,7 @@ describe('controller-only native credential facade', () => {
       binding: f.state.binding,
       requiredAccess: 'read',
     });
-    expect(spies.source).toHaveBeenCalledWith({
-      provider: 'github',
-      repository: 'jwthewes/flappy-bird',
-      branch: null,
-      token: GIT,
-    });
+    expect(spies.source).not.toHaveBeenCalled();
     expect(f.ssm.send.mock.calls.map(([command]) => command.input.Name)).toEqual([
       '/aidlc/dev/users/member-one/agent-credentials/bedrock-bearer-token',
       '/aidlc/dev/users/member-one/agent-credentials/bedrock-bearer-token',
@@ -552,6 +593,8 @@ describe('controller-only native credential facade', () => {
       'DISPATCHING without source pins',
       (f) => {
         f.state.row.status = 'DISPATCHING';
+        delete f.state.row.sourceBranch;
+        delete f.state.row.sourceCommit;
       },
     ],
     [
@@ -717,11 +760,11 @@ describe('controller-only native credential facade', () => {
     expect(spies.git).not.toHaveBeenCalled();
   });
 
-  it('rechecks cancellation after slow branch resolution before returning any credential', async () => {
+  it('rechecks cancellation after slow credential resolution before returning any credential', async () => {
     const f = await fixture();
-    spies.source.mockImplementation(async () => {
+    spies.git.mockImplementation(async () => {
       f.state.row.cancelRequested = true;
-      return SOURCE;
+      return { username: 'x-access-token', token: GIT };
     });
     expect((await f.invoke()).ok).toBe(false);
   });
@@ -832,6 +875,10 @@ describe('controller-only native credential facade', () => {
 
   it('returns controller-pinned source values without re-resolving a moving branch', async () => {
     const f = await fixture();
+    Object.assign(f.state.row.configuration.repository, {
+      branch: 'release/old',
+      commit: 'd'.repeat(64),
+    });
     f.state.row.sourceBranch = 'release/old';
     f.state.row.sourceCommit = 'd'.repeat(64);
     f.state.row.status = 'DISPATCHING';
@@ -846,6 +893,8 @@ describe('controller-only native credential facade', () => {
     { sourceBranch: 'develop', sourceCommit: 'not-a-sha' },
   ])('denies partial or invalid source pins', async (pins) => {
     const f = await fixture();
+    delete f.state.row.sourceBranch;
+    delete f.state.row.sourceCommit;
     Object.assign(f.state.row, pins);
     expect((await f.invoke()).ok).toBe(false);
     expect(spies.source).not.toHaveBeenCalled();

@@ -19,6 +19,8 @@ import { nativeWorkspaceRecovery } from '../../shared/native-recovery-mode.js';
 import { nativeRuntimeCommand } from '../../shared/native-runtime-command.js';
 import { createNativeTurnOutput } from './turn-output.js';
 import { resolveKiroPromptEvidence } from './kiro-prompt.js';
+import { nativeExecutionInputs } from '../../shared/native-inputs.js';
+import { attachmentPromptManifest, attachmentReferences } from '../attachments.js';
 import { kiroAssistantHash } from './kiro-acp-turn.js';
 import { runNativeCommand } from './command-runner.js';
 import { recordNativeBoundary } from '../../shared/native-lifecycle.js';
@@ -416,12 +418,19 @@ const canonicalConfig = (configuration) => {
   )
     fail('native_execution_configuration_invalid');
   const { harness, model, prompt, packageVersion, repository } = configuration;
+  let inputs;
+  try {
+    inputs = nativeExecutionInputs(configuration.inputs);
+  } catch {
+    fail('native_execution_configuration_invalid');
+  }
   return {
     harness,
     recoveryMode: configuration.recoveryMode,
     model,
     prompt,
     packageVersion,
+    inputs,
     repository: Object.fromEntries(
       ['provider', 'repository', 'branch', 'commit'].map((key) => [key, repository[key]]),
     ),
@@ -565,6 +574,7 @@ export const createNativeExecutor = ({
   env = process.env,
   prepare,
   prepareContinuation,
+  prepareInputs,
   publish,
   publishInteraction,
   assertActive,
@@ -710,6 +720,17 @@ export const createNativeExecutor = ({
     )
       fail(model ? 'native_execution_command_failed' : 'native_execution_initialization_failed');
     return result;
+  };
+  const ensureTurnInputs = async (turn) => {
+    const { payload, owner, signal, activity: activityTurn } = turn;
+    const configuration = payload.configuration;
+    if (configuration.inputs.attachments.length) {
+      if (typeof prepareInputs !== 'function') fail('native_execution_preparation_invalid');
+      activityTurn.lifecycle({ title: 'Verifying reference inputs' });
+      await prepareInputs({ payload, project, signal });
+      checkCancelled(turn);
+      await checkDirectories(owner);
+    }
   };
   // Preparation owns package/harness installation and returns this turn's execution inputs.
   const prepareNativeTurn = async (turn) => {
@@ -908,6 +929,7 @@ export const createNativeExecutor = ({
       timing(turn, 'initializationVerificationCompleted');
     }
     timing(turn, 'installationCompleted');
+    await ensureTurnInputs(turn);
     return { pkg, forbiddenBytes, auth, baseEnv };
   };
 
@@ -957,7 +979,12 @@ export const createNativeExecutor = ({
       harness: configuration.harness,
       project,
       home: owner.home,
-      instructions: nativeTransportInstructions(configuration),
+      instructions: [
+        nativeTransportInstructions(configuration),
+        attachmentPromptManifest(attachmentReferences(configuration.inputs.attachments)),
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
       env: modelEnv,
     });
     const prompt =

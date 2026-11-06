@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { GetCommand, PutCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { nativeExecutionKey } from './execution-store.js';
 import { nativeDraftPrompt, nativePromptRequest, promptFailure } from './draft-prompt.js';
+import { nativeDraftInputs, inputFailure } from '../shared/native-inputs.js';
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { describeNativePackagePin } from '../shared/native-package-pin.js';
 import { describeNativePackageArchiveReceipt } from '../shared/native-package-archive.js';
@@ -292,6 +293,7 @@ export const createNativeRuntimeStore = ({
       )
         fail('INVALID');
       nativeDraftPrompt(row);
+      nativeDraftInputs(row);
       const bindingKey = nativeRuntimeBindingKey(identity);
       const request = nativeDraftRequest(row.request);
       if (
@@ -584,6 +586,61 @@ export const createNativeRuntimeStore = ({
   return Object.freeze({
     get,
     savePrompt,
+    async saveInputs({ projectId, executionId, expectedRevision, inputs }) {
+      const identity = scope({ projectId, executionId });
+      const before = await get(identity);
+      if (!before) fail('NOT_FOUND');
+      if (nativeDraftInputs(before).revision !== expectedRevision) throw inputFailure('CONFLICT');
+      const next = {
+        ...before,
+        version: before.version + 1,
+        updatedAt: clock(),
+        inputDraft: { ...inputs, revision: expectedRevision + 1 },
+      };
+      await validate(next, identity);
+      try {
+        await ddb.send(
+          new TransactWriteCommand({
+            TransactItems: [
+              {
+                ConditionCheck: {
+                  TableName: tableName,
+                  Key: nativeExecutionKey(identity),
+                  ConditionExpression: 'attribute_not_exists(pk) AND attribute_not_exists(sk)',
+                },
+              },
+              {
+                Put: {
+                  TableName: tableName,
+                  Item: next,
+                  ConditionExpression: '#v = :v AND #b = :b AND #r = :r',
+                  ExpressionAttributeNames: {
+                    '#v': 'version',
+                    '#b': 'bindingId',
+                    '#r': 'requestFingerprint',
+                  },
+                  ExpressionAttributeValues: {
+                    ':v': before.version,
+                    ':b': before.bindingId,
+                    ':r': before.requestFingerprint,
+                  },
+                },
+              },
+            ],
+          }),
+        );
+        return next;
+      } catch (error) {
+        const current = await get(identity);
+        if (current && same(current, next)) return current;
+        if (
+          error?.name === 'TransactionCanceledException' &&
+          error.CancellationReasons?.some((reason) => reason.Code === 'ConditionalCheckFailed')
+        )
+          throw inputFailure('CONFLICT');
+        throw inputFailure('UNAVAILABLE');
+      }
+    },
     async create({
       projectId,
       actorId,

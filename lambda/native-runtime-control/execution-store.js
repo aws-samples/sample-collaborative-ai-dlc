@@ -11,6 +11,11 @@ import {
 } from '../shared/native-runtime-binding.js';
 import { canonicalJson } from '../shared/workflow-checkpoint.js';
 import { nativeDraftPrompt } from './draft-prompt.js';
+import {
+  nativeDraftInputs,
+  nativeInputSnapshot,
+  nativeExecutionInputs,
+} from '../shared/native-inputs.js';
 import { nativeExecutionHistory } from './execution-history.js';
 import { answerHistoryKey, answerObservation, nativeAnswerHistory } from './answer-history.js';
 import {
@@ -24,7 +29,7 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,255}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
-const MAX_ROW_BYTES = 32 * 1024;
+const MAX_ROW_BYTES = 192 * 1024;
 const MAX_TIME = 8640000000000000;
 const STATES = [
   'REQUESTED',
@@ -184,7 +189,9 @@ export const nativeExecutionConfiguration = (value) => {
     'packageBucket',
     'accountId',
     'recoveryMode',
+    'inputs',
   ]);
+  nativeExecutionInputs(value.inputs);
   check(
     nativeWorkspaceRecovery(value) &&
       ['claude', 'codex', 'kiro', 'opencode'].includes(value.harness) &&
@@ -202,7 +209,14 @@ export const nativeExecutionConfiguration = (value) => {
       matches(value.source.bindingRevision, REVISION) &&
       matches(value.source.packageJobId, REVISION),
   );
-  shape(value.repository, ['provider', 'repository', 'branch', 'bindingRevision']);
+  shape(value.repository, [
+    'provider',
+    'repository',
+    'branch',
+    'bindingRevision',
+    'commit',
+    'credentialIdentity',
+  ]);
   check(
     ['github', 'gitlab', 'bitbucket'].includes(value.repository.provider) &&
       text(value.repository.repository, 512) &&
@@ -211,6 +225,9 @@ export const nativeExecutionConfiguration = (value) => {
         .split('/')
         .every((part) => matches(part, /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/) && !part.endsWith('.')) &&
       branch(value.repository.branch) &&
+      value.repository.branch !== null &&
+      matches(value.repository.commit, COMMIT) &&
+      matches(value.repository.credentialIdentity, SHA256) &&
       matches(value.repository.bindingRevision, REVISION),
   );
   shape(value.credentialBinding, ['provider', 'source'], ['userId']);
@@ -240,8 +257,10 @@ const PREPARATION_FIELDS = [
   'runtimeEndpoint',
 ];
 const preparation = (value, row) => {
-  shape(value, PREPARATION_FIELDS, ['promptRevision']);
+  shape(value, PREPARATION_FIELDS, ['promptRevision', 'inputRevision']);
   check(value.promptRevision === undefined || integer(value.promptRevision));
+  check(value.inputRevision === undefined || integer(value.inputRevision));
+  check((value.inputRevision ?? 0) === row.configuration.inputs.revision);
   const names = nativeRuntimeResourceNames({ ...row.scope, bindingId: row.bindingId });
   const runtime =
     typeof value.runtimeArn === 'string'
@@ -633,7 +652,10 @@ const validate = (row, expectedScope) => {
         row.status !== 'CANCELLED',
     );
   }
-  if (Object.hasOwn(row, 'sourceCommit')) check(matches(row.sourceCommit, COMMIT));
+  if (Object.hasOwn(row, 'sourceCommit'))
+    check(
+      matches(row.sourceCommit, COMMIT) && row.sourceCommit === row.configuration.repository.commit,
+    );
   if (Object.hasOwn(row, 'sourceBranch')) {
     check(
       row.sourceBranch !== null &&
@@ -1069,11 +1091,12 @@ export const createNativeExecutionStore = ({
       shape(
         input,
         ['projectId', 'executionId', 'actorId', 'requestId', 'configuration'],
-        ['promptRevision'],
+        ['promptRevision', 'inputRevision'],
       );
       const currentScope = scope({ projectId: input.projectId, executionId: input.executionId });
       check(matches(input.actorId, ID) && matches(input.requestId, ID));
       const configuration = nativeExecutionConfiguration(input.configuration);
+      check(configuration.inputs.revision === (input.inputRevision ?? 0));
       const current = await get(currentScope);
       if (current) {
         if ((current.preparation.promptRevision ?? 0) !== (input.promptRevision ?? 0))
@@ -1095,6 +1118,11 @@ export const createNativeExecutionStore = ({
       if (prepared.status !== 'READY') fail('NOT_READY');
       const prompt = nativeDraftPrompt(prepared);
       if (prompt.revision !== (input.promptRevision ?? 0)) fail('CONFLICT');
+      if (
+        nativeDraftInputs(prepared).revision !== (input.inputRevision ?? 0) ||
+        !same(nativeInputSnapshot(prepared, configuration.inputs.bucket), configuration.inputs)
+      )
+        fail('CONFLICT');
       check(
         prepared.projectId === currentScope.projectId &&
           prepared.executionId === currentScope.executionId &&
@@ -1119,6 +1147,7 @@ export const createNativeExecutionStore = ({
         ]),
       );
       if (prompt.revision > 0) pins.promptRevision = prompt.revision;
+      if (configuration.inputs.revision > 0) pins.inputRevision = configuration.inputs.revision;
       const time = clock();
       const row = validate(
         {
@@ -1133,6 +1162,8 @@ export const createNativeExecutionStore = ({
           startedBy: input.actorId,
           requestId: input.requestId,
           configuration,
+          sourceCommit: configuration.repository.commit,
+          sourceBranch: configuration.repository.branch,
           configurationSha256: sha(canonicalJson(configuration)),
           preparation: pins,
           status: 'REQUESTED',

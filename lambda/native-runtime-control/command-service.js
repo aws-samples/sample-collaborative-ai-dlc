@@ -11,6 +11,8 @@ import { fetchWorkflowSourceMembership } from '../shared/workflow-source-members
 import { createWorkflowSourceService } from '../shared/workflow-source-service.js';
 import { createNativePackageJobs } from '../shared/native-package-jobs.js';
 import { createNativeRuntimeApi, nativePreparationInternalError } from './api.js';
+import { createNativeInputApi } from './input-api.js';
+import { invokeNativeInputOwner } from './input-access.js';
 import { createNativeRuntimeStore, fail } from './store.js';
 import { createNativeIntentListing } from './listing.js';
 import { createNativeExecutionStore } from './execution-store.js';
@@ -91,6 +93,9 @@ export const createNativeRuntimeLambda =
           fileSystemId: env.NATIVE_RUNTIME_FILE_SYSTEM_ID,
         },
       }));
+    const invokeInputOwner = (functionName, payload) =>
+      invokeNativeInputOwner(lambda, functionName, payload);
+    const invokeTracker = (payload) => invokeInputOwner(env.TRACKERS_FUNCTION, payload);
     const executions = () => {
       if (executionApi) return executionApi;
       const executionStore = createNativeExecutionStore({
@@ -112,7 +117,19 @@ export const createNativeRuntimeLambda =
         store: executionStore,
         projectionStatus: (row) =>
           nativeProjectionStatus(ddb, env.NATIVE_RUNTIME_BINDINGS_TABLE, row),
-        configure: createNativeExecutionConfiguration({ ddb, ssm, graph: () => graph, env }),
+        configure: createNativeExecutionConfiguration({
+          ddb,
+          ssm,
+          s3,
+          graph: () => graph,
+          env,
+          invokeTracker,
+          captureSource: ({ metadataOnly = false, ...input }) =>
+            invokeInputOwner(env.SOURCE_CONTROL_FUNCTION, {
+              action: metadataOnly ? 'native-source-access' : 'native-source-snapshot',
+              ...input,
+            }),
+        }),
         publications,
         revisions: createNativeArtifactRevisions({
           ddb,
@@ -215,6 +232,21 @@ export const createNativeRuntimeLambda =
         },
         image: { uri: env.NATIVE_RUNTIME_IMAGE_URI, digest: env.NATIVE_RUNTIME_IMAGE_DIGEST },
         execution,
+        inputs: {
+          handle: (context) =>
+            createNativeInputApi({
+              store: store(),
+              executionStore: createNativeExecutionStore({
+                ddb,
+                tableName: env.NATIVE_RUNTIME_BINDINGS_TABLE,
+                preparationStore: store(),
+              }),
+              s3,
+              bucket: env.ARTIFACTS_BUCKET,
+              accountId: env.NATIVE_RUNTIME_ACCOUNT_ID,
+              invokeTracker,
+            }).handle(context),
+        },
         enqueue: async ({ projectId, executionId }) => {
           if (!env.NATIVE_RUNTIME_QUEUE_URL) fail('UNAVAILABLE');
           const sent = await sqs.send(

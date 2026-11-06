@@ -64,7 +64,9 @@ describe('native execution REST boundary', () => {
       ...(read
         ? {}
         : {
-            body: JSON.stringify(action === 'start' ? { requestId: OTHER, promptRevision: 0 } : {}),
+            body: JSON.stringify(
+              action === 'start' ? { requestId: OTHER, promptRevision: 0, inputRevision: 0 } : {},
+            ),
           }),
       ...overrides,
     };
@@ -166,6 +168,7 @@ describe('native execution REST boundary', () => {
           ACTOR,
           OTHER,
           expect.any(Function),
+          0,
           0,
         );
       f.membership.mockResolvedValue(null);
@@ -445,6 +448,9 @@ describe('native draft creation and shared status', () => {
       title: request().title,
       prompt: request().prompt,
       promptRevision: 0,
+      inputRevision: 0,
+      applicationSource: null,
+      inputs: { attachments: [], pendingUploads: [], imports: [], source: null },
       harness: 'codex',
       status: 'DRAFT',
       package: {

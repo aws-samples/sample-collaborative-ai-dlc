@@ -1,3 +1,4 @@
+import { nativeInputSnapshot } from '../../shared/native-inputs.js';
 import { describe, expect, it, vi } from 'vitest';
 import { GetCommand } from '@aws-sdk/lib-dynamodb';
 import { GetParameterCommand } from '@aws-sdk/client-ssm';
@@ -28,6 +29,7 @@ const environment = () => ({
   NATIVE_EXECUTION_IMAGE_DIGEST: IMAGE.digest,
   NATIVE_EXECUTION_PUBLICATION_BUCKET: 'native-publications-dev',
   NATIVE_PACKAGES_BUCKET: 'native-packages-dev',
+  ARTIFACTS_BUCKET: 'native-inputs',
   SOURCE_CONTROL_BINDINGS_TABLE: 'application-source-bindings-dev',
   AGENT_SETTINGS_SSM_PREFIX: '/aidlc/dev',
   AGENT_CREDENTIAL_METADATA_FUNCTION: 'credential-metadata-dev',
@@ -130,6 +132,15 @@ const fixture = async ({
       graph,
       env: state.env,
       resolveBindings,
+      captureSource: async (input) => ({
+        ok: true,
+        source: {
+          branch: 'main',
+          commit: 'c'.repeat(40),
+          credentialIdentity: 'd'.repeat(64),
+          bindingRevision: input.bindingRevision,
+        },
+      }),
     })({ draft: state.draft, actorId: ACTOR, ...input });
   return { ...state, state, ddb, ssm, graph, resolveBindings, resolve };
 };
@@ -149,7 +160,9 @@ describe('native first-turn configuration', () => {
       expect(configuration.repository).toEqual({
         provider,
         repository: 'owner/selected',
-        branch: null,
+        branch: 'main',
+        commit: 'c'.repeat(40),
+        credentialIdentity: 'd'.repeat(64),
         bindingRevision: f.binding.revision,
       });
       expect(f.graph.V).toHaveBeenCalledWith(MEMBERSHIP.projectIdentity);
@@ -183,6 +196,7 @@ describe('native first-turn configuration', () => {
       harness: 'codex',
       recoveryMode: 'efs-workspace-v1',
       model: null,
+      inputs: nativeInputSnapshot(f.draft, 'native-inputs'),
       promptSha256: nativePromptSha256(f.draft.request.prompt),
       packageId: f.draft.candidate.packagePin.packageId,
       materializationId: f.draft.candidate.materializationId,
@@ -194,7 +208,9 @@ describe('native first-turn configuration', () => {
       repository: {
         provider: 'github',
         repository: 'jwthewes/flappy-bird',
-        branch: null,
+        branch: 'main',
+        commit: 'c'.repeat(40),
+        credentialIdentity: 'd'.repeat(64),
         bindingRevision: f.binding.revision,
       },
       credentialBinding: { provider: 'bedrock', source: 'user', userId: ACTOR },
@@ -272,7 +288,9 @@ describe('native first-turn configuration', () => {
       expect((await f.resolve()).repository).toEqual({
         provider,
         repository: repository.toLowerCase(),
-        branch: null,
+        branch: 'main',
+        commit: 'c'.repeat(40),
+        credentialIdentity: 'd'.repeat(64),
         bindingRevision: f.state.binding.revision,
       });
     },
@@ -339,12 +357,14 @@ describe('native first-turn configuration', () => {
     expect((await f.resolve()).model).toBe(expected);
   });
 
-  it('falls back on unavailable/malformed metadata but never reads credential SSM paths', async () => {
+  it('fails closed on unavailable model metadata without reading credential SSM paths', async () => {
     const f = await fixture();
     f.state.modelHook = () => {
       throw new Error('private transport information');
     };
-    expect((await f.resolve()).model).toBeNull();
+    await expect(f.resolve()).rejects.toMatchObject({
+      code: 'NATIVE_EXECUTION_CONFIG_UNAVAILABLE',
+    });
     expect(f.ssm.send.mock.calls.map(([command]) => command.input.Name).toSorted()).toEqual([
       '/aidlc/dev/cli-models',
       '/aidlc/dev/tier-models',

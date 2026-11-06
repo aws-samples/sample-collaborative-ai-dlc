@@ -1,5 +1,6 @@
 // Current engine-to-runtime envelopes. Public member requests never carry
 // these ownership, configuration or credential fields.
+import { nativeExecutionInputs, nativeInputStorageId } from './native-inputs.js';
 const IDENTITY = [
   'projectId',
   'executionId',
@@ -40,7 +41,15 @@ const invalid = () => {
   });
 };
 const turnConfiguration = (value) =>
-  fields(value, ['harness', 'recoveryMode', 'model', 'prompt', 'packageVersion', 'repository']) &&
+  fields(value, [
+    'harness',
+    'recoveryMode',
+    'model',
+    'prompt',
+    'packageVersion',
+    'repository',
+    'inputs',
+  ]) &&
   value.recoveryMode === 'efs-workspace-v1' &&
   fields(value.repository, ['provider', 'repository', 'branch', 'commit']);
 
@@ -65,6 +74,12 @@ export const nativeRuntimeCommand = (value, command = value?.command) => {
       !record(value.credentials)
     )
       invalid();
+    try {
+      const inputs = nativeExecutionInputs(value.configuration.inputs);
+      if (inputs.storageId !== nativeInputStorageId(value)) invalid();
+    } catch {
+      invalid();
+    }
   }
   if (command === 'native-start' && (value.sequence !== 1 || value.writerGeneration !== 1))
     invalid();

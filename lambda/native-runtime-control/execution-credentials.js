@@ -6,6 +6,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { readCredentialBindingValue } from '../shared/agent-credentials.js';
 import { resolveBindingCredential } from '../shared/source-control-credentials.js';
 import { assertCurrentGitConnection, getGitConnection } from '../shared/git-connection-store.js';
+import { sourceCredentialIdentity } from '../shared/source-credential-identity.js';
+import { nativeDraftInputs, nativeInputSnapshot } from '../shared/native-inputs.js';
+import { verifyNativeInputAccess } from './input-access.js';
 import {
   nativeExecutionConfiguration,
   nativeTurnSequence,
@@ -21,11 +24,7 @@ import {
 import { ID, UUID_V4, matches } from './store.js';
 import { nativeDraftPrompt } from './draft-prompt.js';
 import { createNativeRuntimeImagePolicy } from './runtime-images.js';
-import {
-  isNativeSourceBranch,
-  isNativeSourceCommit,
-  resolveNativeSourceCommit,
-} from './execution-source.js';
+import { isNativeSourceBranch, isNativeSourceCommit } from './execution-source.js';
 
 const CODES = Object.freeze({
   INVALID: 'NATIVE_EXECUTION_CREDENTIALS_INVALID',
@@ -79,6 +78,9 @@ const preparedSnapshot = (draft) => ({
   requestFingerprint: draft.requestFingerprint,
   ...(nativeDraftPrompt(draft).revision > 0
     ? { promptRevision: nativeDraftPrompt(draft).revision }
+    : {}),
+  ...(nativeDraftInputs(draft).revision > 0
+    ? { inputRevision: nativeDraftInputs(draft).revision }
     : {}),
   image: { uri: draft.imageUri, digest: draft.imageDigest },
   executionRoleArn: draft.executionRoleArn,
@@ -187,6 +189,13 @@ const authorizePreparation = (draft, execution) => {
   )
     fail('CHANGED');
   const pins = nativePreparedConfigurationPins(draft);
+  if (
+    !same(
+      nativeInputSnapshot(draft, execution.configuration.inputs.bucket),
+      execution.configuration.inputs,
+    )
+  )
+    fail('CHANGED');
   for (const [key, value] of Object.entries(pins)) {
     if (!same(value, execution.configuration[key])) fail('CHANGED');
   }
@@ -228,6 +237,7 @@ export const createNativeExecutionCredentials =
     env = process.env,
     getMembershipSnapshot,
     imagePolicy,
+    invokeTracker,
   }) =>
   async (payload) => {
     try {
@@ -293,6 +303,19 @@ export const createNativeExecutionCredentials =
         ? structuredClone(await getGitConnection(ddb, binding.connectionUserId, binding.provider))
         : null;
       if (oauth && !connection) fail('SOURCE_CHANGED');
+      if (
+        sourceCredentialIdentity(binding, connection) !==
+        execution.configuration.repository.credentialIdentity
+      )
+        fail('SOURCE_CHANGED');
+      const checkInputs = () =>
+        verifyNativeInputAccess({
+          inputs: execution.configuration.inputs,
+          projectId: scope.projectId,
+          userId: execution.startedBy,
+          invokeTracker,
+        });
+      await checkInputs();
 
       const modelRequest = {
         base: env.AGENT_SETTINGS_SSM_PREFIX,
@@ -307,24 +330,15 @@ export const createNativeExecutionCredentials =
         binding,
         requiredAccess: 'read',
       });
-      let source;
-      if (execution.sourceCommit !== undefined || execution.sourceBranch !== undefined) {
-        if (
-          !isNativeSourceCommit(execution.sourceCommit) ||
-          !isNativeSourceBranch(execution.sourceBranch) ||
-          (execution.configuration.repository.branch !== null &&
-            execution.configuration.repository.branch !== execution.sourceBranch)
-        )
-          fail('CHANGED');
-        source = { branch: execution.sourceBranch, commit: execution.sourceCommit };
-      } else {
-        source = await resolveNativeSourceCommit({
-          provider: binding.provider,
-          repository: execution.configuration.repository.repository,
-          branch: execution.configuration.repository.branch,
-          token: git?.token,
-        });
-      }
+      if (
+        !isNativeSourceCommit(execution.sourceCommit) ||
+        !isNativeSourceBranch(execution.sourceBranch) ||
+        (execution.configuration.repository.branch !== null &&
+          execution.configuration.repository.branch !== execution.sourceBranch) ||
+        execution.sourceCommit !== execution.configuration.repository.commit
+      )
+        fail('CHANGED');
+      const source = { branch: execution.sourceBranch, commit: execution.sourceCommit };
       // Fetch the SAME pinned model source again after the slow provider path.
       // Rotation within that source is accepted; disappearance never falls back.
       const modelValue = await readCredentialBindingValue(ssm, modelRequest);
@@ -368,6 +382,7 @@ export const createNativeExecutionCredentials =
       }
       const currentBinding = await readNativeCodeBinding(ddb, env, bindingScope);
       if (!same(currentBinding, binding)) fail('SOURCE_CHANGED');
+      await checkInputs();
       const currentPreparation = structuredClone(await preparationStore.get(scope));
       authorizePreparation(currentPreparation, execution);
       if (!same(currentPreparation, prepared)) fail('CHANGED');

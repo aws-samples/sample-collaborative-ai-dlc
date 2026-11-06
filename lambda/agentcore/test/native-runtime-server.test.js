@@ -1,3 +1,4 @@
+import { nativeInputSnapshot } from '../../shared/native-inputs.js';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -157,7 +158,7 @@ describe('native-only HTTP on real loopback sockets', () => {
       import { registerHooks } from 'node:module';
       registerHooks({ resolve(specifier, context, next) {
         if (!specifier.startsWith('node:') &&
-          !['/runtime-server.js', '/workspace-check.js', '/efs-workspace.js', '/resource-telemetry.js', '/flight-recorder.js', '/native-runtime-command.js'].some(name => specifier.endsWith(name)))
+          !['/runtime-server.js', '/workspace-check.js', '/efs-workspace.js', '/resource-telemetry.js', '/flight-recorder.js', '/native-runtime-command.js', '/native-inputs.js', '/attachment-policy.js', '/workflow-source-identity.js', '/workflow-checkpoint.js'].some(name => specifier.endsWith(name)))
           throw new Error('execution import attempted');
         return next(specifier, context);
       }});
@@ -289,6 +290,7 @@ const startPayload = () => ({
     harness: 'codex',
     model: 'configured-model',
     prompt: 'Fix the pipe visualization',
+    inputs: nativeInputSnapshot({ ...executionIdentity, request: {} }, 'native-inputs'),
     packageVersion: '2.9.0',
     repository: {
       provider: 'github',
@@ -625,7 +627,9 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
         createExecutor: async () => executor,
         checkWorkspace: vi.fn(),
       });
-      const ack = await request(port, '/invocations', { ...startPayload(), ...scope });
+      const body = { ...startPayload(), ...scope };
+      body.configuration.inputs = nativeInputSnapshot({ ...scope, request: {} }, 'native-inputs');
+      const ack = await request(port, '/invocations', body);
       expect(ack).toMatchObject({ status: 200, body: { accepted: true, ...scope } });
       expect(ack.body).not.toHaveProperty('receipt');
       await executor.settle();
@@ -704,8 +708,7 @@ describe('native execution HTTP lifecycle on real loopback sockets', () => {
       });
       if (outcome === 'WAITING_FOR_INPUT') {
         const continuation = {
-          ...startPayload(),
-          ...scope,
+          ...body,
           command: 'native-continue',
           sequence: 2,
           requestId: '50000000-0000-4000-8000-000000000001',

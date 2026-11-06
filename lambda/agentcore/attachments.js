@@ -1,7 +1,9 @@
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import { chmod, mkdir, readdir, rename, rm, lstat, open, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { readAttachmentBytes } from '../shared/attachment-bytes.js';
 
 const s3 = new S3Client({});
 export const ATTACHMENTS_DIR = '.aidlc/references';
@@ -28,6 +30,8 @@ export const materializeAttachments = async ({
   attachments = [],
   bucket = process.env.ARTIFACTS_BUCKET,
   client = s3,
+  strict = false,
+  expectedBucketOwner,
 }) => {
   attachments = Array.isArray(attachments) ? attachments : [];
   if (!attachments.length) {
@@ -35,20 +39,67 @@ export const materializeAttachments = async ({
   }
   const dir = path.join(workspaceDir, ATTACHMENTS_DIR);
   const parentDir = path.dirname(dir);
+  // Repository/model files cannot redirect input writes outside this workspace.
+  const safeDirectory = async (directory, missing = false) => {
+    try {
+      const entry = await lstat(directory);
+      if (!entry.isDirectory() || entry.isSymbolicLink())
+        throw new Error('Attachment directory is not a real directory');
+    } catch (error) {
+      if (!missing || error.code !== 'ENOENT') throw error;
+    }
+  };
+  await safeDirectory(workspaceDir);
+  await safeDirectory(parentDir, true);
+  await safeDirectory(dir, true);
+  if (
+    attachments.some(
+      (file) =>
+        !/^[A-Za-z0-9_-]{1,128}$/.test(file.attachmentId ?? '') ||
+        (strict && (!/^[a-f0-9]{64}$/.test(file.sha256 ?? '') || !Number.isInteger(file.size))),
+    )
+  )
+    throw new Error('Attachment identity or digest is invalid');
+  const verifiedLocal = async (filename, attachment) => {
+    const handle = await open(
+      filename,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    try {
+      const entry = await handle.stat();
+      if (!entry.isFile() || entry.nlink !== 1 || entry.size !== attachment.size) return false;
+      const bytes = await handle.readFile();
+      return createHash('sha256').update(bytes).digest('hex') === attachment.sha256;
+    } finally {
+      await handle.close();
+    }
+  };
   try {
     // The manifest is a local recovery marker, not an authority or integrity boundary.
     const manifest = attachmentReferences(attachments);
     const manifestPath = path.join(dir, 'manifest.json');
-    const existing = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const manifestHandle = await open(
+      manifestPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    let existing;
+    try {
+      const entry = await manifestHandle.stat();
+      if (!entry.isFile() || entry.nlink !== 1 || entry.size > 128 * 1024)
+        throw new Error('Attachment manifest is invalid');
+      existing = JSON.parse(await manifestHandle.readFile('utf8'));
+    } finally {
+      await manifestHandle.close();
+    }
     const names = await readdir(dir);
     const expectedNames = new Set([
       'manifest.json',
       ...manifest.map((item) => path.basename(item.path)),
     ]);
     const [dirStat, manifestStat, ...fileStats] = await Promise.all([
-      stat(dir),
-      stat(manifestPath),
-      ...manifest.map((item) => stat(path.join(workspaceDir, item.path))),
+      lstat(dir),
+      lstat(manifestPath),
+      ...manifest.map((item) => lstat(path.join(workspaceDir, item.path))),
     ]);
     const complete =
       JSON.stringify(existing.attachments) === JSON.stringify(manifest) &&
@@ -58,7 +109,18 @@ export const materializeAttachments = async ({
       manifestStat.isFile() &&
       fileStats.every((entry) => entry.isFile()) &&
       [dirStat, manifestStat, ...fileStats].every((entry) => (entry.mode & 0o222) === 0);
-    if (complete) return { dir, manifestPath, attachments: manifest };
+    if (
+      complete &&
+      (!strict ||
+        (
+          await Promise.all(
+            manifest.map((item, index) =>
+              verifiedLocal(path.join(workspaceDir, item.path), attachments[index]),
+            ),
+          )
+        ).every(Boolean))
+    )
+      return { dir, manifestPath, attachments: manifest };
   } catch {
     // Missing, partial, or stale materialization is rebuilt below.
   }
@@ -79,10 +141,15 @@ export const materializeAttachments = async ({
           Bucket: bucket,
           Key: attachment.s3Key,
           VersionId: attachment.s3VersionId,
+          ...(expectedBucketOwner ? { ExpectedBucketOwner: expectedBucketOwner } : {}),
         }),
       );
-      const body = response.Body ? await response.Body.transformToByteArray() : new Uint8Array();
-      await writeFile(filePath, body);
+      const body = strict
+        ? (await readAttachmentBytes(response.Body, attachment)).bytes
+        : response.Body
+          ? await response.Body.transformToByteArray()
+          : new Uint8Array();
+      await writeFile(filePath, body, { flag: 'wx' });
       await chmod(filePath, 0o444);
     }
     const tempManifestPath = path.join(tempDir, 'manifest.json');
@@ -92,6 +159,8 @@ export const materializeAttachments = async ({
       'utf8',
     );
     await chmod(tempManifestPath, 0o444);
+    await safeDirectory(parentDir);
+    await safeDirectory(dir, true);
     await chmod(dir, 0o755).catch(() => {});
     await rm(dir, { recursive: true, force: true });
     await rename(tempDir, dir);

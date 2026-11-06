@@ -1,3 +1,4 @@
+import { nativeInputSnapshot } from '../native-inputs.js';
 import { describe, expect, it } from 'vitest';
 import { nativeRuntimeCommand } from '../native-runtime-command.js';
 
@@ -20,6 +21,7 @@ const turn = {
     model: null,
     prompt: 'Opaque request fixture',
     packageVersion: '2.11.1',
+    inputs: nativeInputSnapshot({ ...identity, request: {} }, 'native-inputs'),
     repository: {
       provider: 'github',
       repository: 'owner/repository',

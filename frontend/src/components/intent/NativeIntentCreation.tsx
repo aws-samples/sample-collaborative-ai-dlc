@@ -1,3 +1,8 @@
+import {
+  NativeApplicationSourcePicker,
+  nativeApplicationRepositories,
+  nativeRepositoryKey,
+} from './NativeApplicationSourcePicker';
 import { useEffect, useEffectEvent, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router';
 import { ApiError } from '@/services/api';
@@ -81,10 +86,8 @@ export function NativeIntentCreation({
   const [locked, setLocked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recoveryVersion, setRecoveryVersion] = useState(0);
-  const repos = (project.repos ?? []).filter((repo) =>
-    ['github', 'gitlab', 'bitbucket'].includes(repo.provider),
-  );
-  const repoKey = (repo: (typeof repos)[number]) => JSON.stringify([repo.provider, repo.url]);
+  const repos = nativeApplicationRepositories(project.repos);
+  const repoKey = nativeRepositoryKey;
   const [selectedRepo, setSelectedRepo] = useState(() =>
     repos.length === 1 ? repoKey(repos[0]) : '',
   );
@@ -299,28 +302,12 @@ export function NativeIntentCreation({
                 onPromptChange={onPromptChange}
                 disabled={locked}
               />
-              <div className="space-y-2">
-                <Label htmlFor="native-application-source">Application repository</Label>
-                <select
-                  id="native-application-source"
-                  className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-                  value={repository ? selectedRepo : ''}
-                  disabled={locked}
-                  onChange={(event) => setSelectedRepo(event.target.value)}
-                >
-                  <option value="">Select a connected repository</option>
-                  {repos.map((repo) => (
-                    <option key={repoKey(repo)} value={repoKey(repo)}>
-                      {repo.url} ({repo.provider})
-                    </option>
-                  ))}
-                </select>
-                <p className="text-xs text-muted-foreground">
-                  {repos.length
-                    ? 'One repository is used for this execution. Its default branch and exact commit are captured at Start.'
-                    : 'An owner or administrator must connect a GitHub, GitLab or Bitbucket repository to this space.'}
-                </p>
-              </div>
+              <NativeApplicationSourcePicker
+                repos={project.repos}
+                value={repository ? selectedRepo : ''}
+                disabled={locked}
+                onChange={setSelectedRepo}
+              />
               <div className="space-y-2">
                 <Label htmlFor="native-intent-harness">Coding harness</Label>
                 <select

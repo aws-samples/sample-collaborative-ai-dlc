@@ -1,3 +1,4 @@
+import { nativeInputSnapshot } from '../../shared/native-inputs.js';
 import * as fs from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
@@ -155,6 +156,7 @@ const fixture = async () => {
       harness: 'codex',
       model: 'configured-model',
       prompt: 'Fix the pipe visualization',
+      inputs: nativeInputSnapshot({ ...identity, request: {} }, 'native-inputs'),
       packageVersion: '2.9.0',
       repository: { provider: 'github', repository: 'owner/flappy-bird', branch: 'main', commit },
     },

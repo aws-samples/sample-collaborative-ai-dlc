@@ -8,6 +8,8 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
+import { LambdaClient } from '@aws-sdk/client-lambda';
+import { invokeNativeInputOwner } from './input-access.js';
 import { fetchWorkflowSourceMembership } from '../shared/workflow-source-membership.js';
 import { createNativeRuntimeStore } from './store.js';
 import { createNativeExecutionStore } from './execution-store.js';
@@ -43,6 +45,7 @@ export const createNativeExecutionCredentialsLambda =
     ddb,
     ssm,
     secrets,
+    lambda,
     env = process.env,
     openConnection = openNeptune,
     membershipSnapshot = fetchWorkflowSourceMembership,
@@ -89,6 +92,8 @@ export const createNativeExecutionCredentialsLambda =
         secrets: secrets ?? new SecretsManagerClient({}),
         env,
         getMembershipSnapshot,
+        invokeTracker: (input) =>
+          invokeNativeInputOwner(lambda ?? new LambdaClient({}), env.TRACKERS_FUNCTION, input),
       })(payload);
     } catch {
       result = unavailable();

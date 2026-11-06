@@ -20,6 +20,10 @@ mock_provider "aws" {
 }
 
 variables {
+  artifacts_bucket_name                  = "test-artifacts"
+  artifacts_bucket_arn                   = "arn:aws:s3:::test-artifacts"
+  source_control_function_arn            = "arn:aws:lambda:us-east-1:123456789012:function:test-source-control"
+  trackers_function_arn                  = "arn:aws:lambda:us-east-1:123456789012:function:test-trackers"
   native_repair_table_name               = "test-native-repair"
   native_repair_table_arn                = "arn:aws:dynamodb:us-east-1:123456789012:table/test-native-repair"
   project_name                           = "test"
@@ -316,6 +320,20 @@ run "admission_open_for_all_spaces_with_configured_alarms" {
   assert {
     condition     = aws_cloudwatch_metric_alarm.wakeup_errors.alarm_actions == toset(var.native_operations.alarm_actions) && aws_cloudwatch_metric_alarm.repair_work_errors.alarm_actions == toset(var.native_operations.alarm_actions) && aws_cloudwatch_metric_alarm.preparation_dead_letters.alarm_actions == toset(var.native_operations.alarm_actions) && aws_cloudwatch_metric_alarm.repair_scan_stalled.period == 900 && strcontains(aws_cloudwatch_metric_alarm.wakeup_errors.alarm_description, "test-operations-reference")
     error_message = "Configured native routes, owner reference and diagnostic window must reach the alarms."
+  }
+  assert {
+    condition = alltrue([
+      for statement in local.execution_runtime_boundary_statements :
+      statement.Sid != "ReadNativeInputVersions" || (statement.Action == ["s3:GetObjectVersion"] && statement.Resource == "${var.artifacts_bucket_arn}/intent-attachments/committed/native-*/*")
+    ]) && length([for statement in local.execution_runtime_boundary_statements : statement if statement.Sid == "ReadNativeInputVersions"]) == 1
+    error_message = "Native input reads must use versioned, native-scoped committed objects and the configured artifact owner."
+  }
+  assert {
+    condition = alltrue([
+      for statement in jsondecode(aws_iam_role_policy.execution_credentials[0].policy).Statement :
+      statement.Sid != "CheckCapturedTrackerAccess" || (statement.Action == ["lambda:InvokeFunction"] && statement.Resource == var.trackers_function_arn)
+    ])
+    error_message = "Credential renewal may verify captured tracker access through only its existing owner."
   }
   assert {
     condition     = jsondecode(aws_iam_role_policy.wakeup_checkpoint.policy).Statement[0].Resource == var.native_repair_table_arn && jsondecode(aws_iam_role_policy.wakeup_checkpoint.policy).Statement[0].Condition["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"][0] == "runtime"

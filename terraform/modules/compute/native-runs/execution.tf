@@ -12,6 +12,24 @@ locals {
   }
   execution_api_statements = [
     {
+      Sid      = "ResolveNativeInputSources"
+      Effect   = "Allow"
+      Action   = ["lambda:InvokeFunction"]
+      Resource = [var.source_control_function_arn, var.trackers_function_arn]
+    },
+    {
+      Sid      = "StageNativeIntentInputs"
+      Effect   = "Allow"
+      Action   = ["s3:PutObject", "s3:GetObject", "s3:GetObjectVersion", "s3:DeleteObjectVersion"]
+      Resource = "${var.artifacts_bucket_arn}/intent-attachments/staging/native-*/*"
+    },
+    {
+      Sid      = "PromoteNativeIntentInputs"
+      Effect   = "Allow"
+      Action   = ["s3:PutObject", "s3:GetObjectVersion", "s3:DeleteObjectVersion"]
+      Resource = "${var.artifacts_bucket_arn}/intent-attachments/committed/native-*/*"
+    },
+    {
       Sid      = "BuildNativeResult"
       Effect   = "Allow"
       Action   = ["lambda:InvokeFunction"]
@@ -73,6 +91,12 @@ locals {
   # nativeExecutionPolicy narrows bytes and the read-only cancellation fence to
   # exact attempt pins. Runtime writes cannot match the separate control prefix.
   execution_runtime_boundary_statements = [
+    {
+      Sid      = "ReadNativeInputVersions"
+      Effect   = "Allow"
+      Action   = ["s3:GetObjectVersion"]
+      Resource = "${var.artifacts_bucket_arn}/intent-attachments/committed/native-*/*"
+    },
     {
       Sid      = "ReadPinnedNativePackageVersions"
       Effect   = "Allow"
@@ -302,6 +326,12 @@ resource "aws_iam_role_policy" "execution_credentials" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid      = "CheckCapturedTrackerAccess"
+        Effect   = "Allow"
+        Action   = ["lambda:InvokeFunction"]
+        Resource = var.trackers_function_arn
+      },
+      {
         Sid      = "ReadNativeExecutionAuthority"
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem"]
@@ -382,6 +412,7 @@ module "execution_credentials" {
   create_package         = false
   local_existing_package = module.packages["execution-credentials"].local_filename
   environment_variables = merge(local.execution_environment, {
+    TRACKERS_FUNCTION                  = var.trackers_function_arn
     NATIVE_RUNTIME_BINDINGS_TABLE      = aws_dynamodb_table.bindings.name
     NATIVE_RUNTIME_ACCOUNT_ID          = local.account_id
     NATIVE_RUNTIME_FILE_SYSTEM_ID      = aws_efs_file_system.runs.id

@@ -49,6 +49,7 @@ export const executionRuntimeConfiguration = (draft, row) => ({
   model: row.configuration.model,
   prompt: nativeDraftPrompt(draft).text,
   packageVersion: draft.candidate.packagePin.version,
+  inputs: structuredClone(row.configuration.inputs),
   repository: {
     provider: row.configuration.repository.provider,
     repository: row.configuration.repository.repository,
@@ -82,6 +83,12 @@ export const nativeExecutionPolicy = ({ draft, execution, deployment }) => {
       ...base.permissionsPolicy,
       Statement: [
         ...base.permissionsPolicy.Statement,
+        {
+          Sid: 'ReadPinnedIntentInputs',
+          Effect: 'Allow',
+          Action: 's3:GetObjectVersion',
+          Resource: `${prefix}${config.inputs.bucket}/intent-attachments/committed/${config.inputs.storageId}/*`,
+        },
         {
           Sid: 'ReadPinnedWorkflowBytes',
           Effect: 'Allow',
@@ -180,6 +187,7 @@ export const createExecutionRuntimeUpgrade = ({ iam, control, efs, deployment, a
       NATIVE_RUNTIME_ACCOUNT_ID: config.accountId,
       NATIVE_PACKAGE_BUCKET: config.packageBucket,
       NATIVE_PUBLICATION_BUCKET: config.publicationBucket,
+      NATIVE_INPUT_BUCKET: config.inputs.bucket,
     };
     const expected = {
       agentRuntimeArtifact: { containerConfiguration: { containerUri: config.image.uri } },

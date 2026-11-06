@@ -364,6 +364,58 @@ describe('Authorization', () => {
 });
 
 describe('internal issue attachment import', () => {
+  it.each(['github-issues', 'gitlab-issues'])(
+    'captures %s input under its current source credential identity',
+    async (provider) => {
+      const { projectId, bindingId } = await seedProjectAndBinding({ provider });
+      let identity = 'a'.repeat(64);
+      lambdaMock.on(InvokeCommand).callsFake(async (input) => {
+        const request = JSON.parse(Buffer.from(input.Payload).toString());
+        if (request.action === 'native-source-access')
+          return {
+            Payload: Buffer.from(
+              JSON.stringify({
+                ok: true,
+                source: { bindingRevision: 'original', credentialIdentity: identity },
+              }),
+            ),
+          };
+        if (request.operation === 'get-issue')
+          return sourceControlResponse({
+            resourceId: '42',
+            title: 'Requirement',
+            body: 'Captured input',
+          });
+        expect(request.operation).toBe('list-issue-comments');
+        expect(request.args.complete).toBe(true);
+        return sourceControlResponse([{ id: 'note', body: 'Complete discussion' }]);
+      });
+      const request = {
+        action: 'native-issue-snapshot',
+        projectId,
+        bindingId,
+        userId: 'user-1',
+        resourceId: '42',
+      };
+      const captured = await handler(request);
+      expect(captured).toMatchObject({
+        ok: true,
+        text: expect.stringContaining('Complete discussion'),
+      });
+      expect(JSON.stringify(captured)).not.toMatch(/parameterName|accessToken|credentialIdentity/);
+      identity = 'b'.repeat(64);
+      const denied = await handler({
+        ...request,
+        action: 'native-issue-check',
+        bindingFingerprint: captured.source.bindingFingerprint,
+      });
+      expect(denied.status).toBe('failed');
+      const calls = lambdaMock.commandCalls(InvokeCommand).length;
+      expect((await handler({ ...request, userId: 'outsider' })).status).toBe('failed');
+      expect(lambdaMock.commandCalls(InvokeCommand)).toHaveLength(calls);
+      expect((await handler({ ...request, projectId: randomUUID() })).status).toBe('failed');
+    },
+  );
   it('resolves the project binding and delegates without exposing its credentials', async () => {
     const { projectId, bindingId } = await seedProjectAndBinding();
     lambdaMock.on(InvokeCommand).resolves(sourceControlResponse({ attachments: [] }));

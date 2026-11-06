@@ -1,18 +1,13 @@
 // Workflow sources are deliberately separate from application repo
 // bindings: replacing code repositories must not delete these rows, and native
 // workers must not receive access to this table or its credential references.
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { GetCommand, PutCommand, QueryCommand } from '@aws-sdk/lib-dynamodb';
 import { appCredentialRef, oauthCredentialRef } from './source-control-bindings.js';
 import { isGitConnectionCreatedAt, isGitConnectionIdentity } from './git-connection-identity.js';
 
-export class WorkflowSourceError extends Error {
-  constructor(code, message) {
-    super(message);
-    this.name = 'WorkflowSourceError';
-    this.code = code;
-  }
-}
+import { WorkflowSourceError, workflowSourceIdentity } from './workflow-source-identity.js';
+export { WorkflowSourceError, workflowSourceIdentity } from './workflow-source-identity.js';
 
 const invalid = (message) => {
   throw new WorkflowSourceError('WORKFLOW_SOURCE_INVALID', message);
@@ -44,27 +39,6 @@ const hasPublicCredentialFields = (value) =>
       name,
     ),
   );
-
-export const workflowSourceIdentity = (provider, repository) => {
-  if (!['github', 'gitlab', 'bitbucket'].includes(provider)) {
-    invalid('Unsupported workflow source provider');
-  }
-  if (!boundedString(repository, 512)) invalid('Invalid workflow source repository');
-  const parts = repository.split('/');
-  if (
-    parts.length < 2 ||
-    (provider !== 'gitlab' && parts.length !== 2) ||
-    parts.some((part) => !/^[A-Za-z0-9_.-]+$/.test(part) || part === '.' || part === '..')
-  ) {
-    invalid('Use a repository identity without a URL or credentials');
-  }
-  const canonical = repository.toLowerCase();
-  return Object.freeze({
-    provider,
-    repository: canonical,
-    sourceId: createHash('sha256').update(`${provider}\n${canonical}`).digest('hex'),
-  });
-};
 
 const keyFor = (projectId, sourceId) => {
   if (!boundedString(projectId)) invalid('Invalid project identity');

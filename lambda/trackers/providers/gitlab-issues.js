@@ -13,8 +13,11 @@ const listIssues = (ctx, repository, options = {}) =>
 const getIssue = (ctx, repository, resourceId) =>
   invoke(ctx, repository, 'get-issue', { number: resourceId });
 
-const getIssueDiscussion = (ctx, repository, resourceId) =>
-  invoke(ctx, repository, 'list-issue-comments', { number: resourceId });
+const getIssueDiscussion = (ctx, repository, resourceId, options = {}) =>
+  invoke(ctx, repository, 'list-issue-comments', {
+    number: resourceId,
+    ...(options.complete ? { complete: true } : {}),
+  });
 
 const addIssueComment = (ctx, repository, resourceId, body) =>
   invoke(ctx, repository, 'add-issue-comment', { number: resourceId, body });

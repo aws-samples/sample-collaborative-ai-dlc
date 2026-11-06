@@ -109,7 +109,7 @@ it('saves and revises a title-only draft before Start, then shows the pinned pro
   await click('Start agent');
   await screen.findByText('Start requested');
   expect(service.savePrompt.mock.calls.map((call) => call[2].expectedRevision)).toEqual([0, 1]);
-  expect(service.start).toHaveBeenCalledWith('project-1', 'run-1', expect.any(String), 2);
+  expect(service.start).toHaveBeenCalledWith('project-1', 'run-1', expect.any(String), 2, 0);
   expect(screen.getByText('Second prompt')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Edit prompt' })).not.toBeInTheDocument();
 });
