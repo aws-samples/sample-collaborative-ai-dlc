@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { resolveConflict, buildConflictPrompt } from '../commands/resolve-conflict.js';
@@ -20,6 +20,7 @@ const commitOnRemote = async (remote, branch, file, content) => {
   await git(['clone', remote, dir], root);
   const co = await git(['checkout', branch], dir);
   if (co.exitCode !== 0) await git(['checkout', '-b', branch], dir);
+  await mkdir(path.dirname(path.join(dir, file)), { recursive: true });
   await writeFile(path.join(dir, file), content);
   await git(['add', '-A'], dir);
   await git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', `add ${file}`], dir);
@@ -293,6 +294,47 @@ describe('resolveConflict', () => {
     const ls = await git(['ls-remote', remote, 'aidlc/i1--s1-unit-u'], root);
     const local = await git(['rev-parse', 'aidlc/i1--s1-unit-u'], ws);
     expect(ls.stdout.trim().split(/\s/)[0]).toBe(local.stdout.trim());
+  });
+
+  // The lane checkout is sparse (src only); docs/guide.md is tracked but hidden.
+  const sparseConflictWorld = async () => {
+    const world = await conflictWorld();
+    await commitOnRemote(world.remote, 'aidlc/i1--s1-unit-u', 'docs/guide.md', 'guide\n');
+    await git(['pull', '-q', '--ff-only', world.remote, 'aidlc/i1--s1-unit-u'], world.ws);
+    await git(['sparse-checkout', 'set', '--cone', '--', 'src'], world.ws);
+    const unitHead = (await git(['rev-parse', 'HEAD'], world.ws)).stdout.trim();
+    return { ...world, unitHead };
+  };
+  const remoteUnitHead = async (remote) =>
+    (await git(['rev-parse', 'refs/heads/aidlc/i1--s1-unit-u'], remote)).stdout.trim();
+
+  it('concludes a sparse lane conflict using the pre-agent baseline', async () => {
+    const { remote, ws } = await sparseConflictWorld();
+    const store = spyStore();
+    const spawnFn = fakeCliSpawn(async (cwd) => {
+      await writeFile(path.join(cwd, 'shared.txt'), 'intent version + unit version\n');
+    });
+    const res = await resolveConflict(basePayload(ws), baseDeps(remote, store, spawnFn));
+    expect(res.ok).toBe(true);
+    const shown = await git(['show', 'refs/heads/aidlc/i1--s1-unit-u:docs/guide.md'], remote);
+    expect(shown.stdout).toBe('guide\n');
+  });
+
+  it('REFUSES a sparse lane resolution that overwrote a hidden tracked file', async () => {
+    const { remote, ws, unitHead } = await sparseConflictWorld();
+    const store = spyStore();
+    const spawnFn = fakeCliSpawn(async (cwd) => {
+      await writeFile(path.join(cwd, 'shared.txt'), 'intent version + unit version\n');
+      await mkdir(path.join(cwd, 'docs'), { recursive: true });
+      await writeFile(path.join(cwd, 'docs/guide.md'), 'rewritten by the agent\n');
+    });
+    const res = await resolveConflict(basePayload(ws), baseDeps(remote, store, spawnFn));
+    expect(res).toMatchObject({ ok: false, reason: 'sparse_outside_selection' });
+    expect(res.detail).toContain('docs/guide.md');
+    expect(await remoteUnitHead(remote)).toBe(unitHead);
+    const unresolved = store.events.find((e) => e.type === 'v2.conflict.unresolved');
+    expect(unresolved.summary).toContain('docs/guide.md');
+    expect((await git(['rev-parse', '--verify', 'MERGE_HEAD'], ws)).exitCode).not.toBe(0);
   });
 
   it('a crashing CLI aborts the in-progress merge and fails cli_nonzero_exit', async () => {

@@ -109,14 +109,23 @@ directory paths such as `services/api` (a trailing `/` is accepted), not glob
 patterns, absolute paths, or `./` prefixes. Git cone mode also includes root-level
 files and files directly inside the selected directories' ancestors. Files outside
 the selection remain in Git history; their absence is not committed as a deletion.
-This is a storage optimization, not a restriction on what an agent can access.
+Agents can read them, and can add new files anywhere, but cannot change existing
+files outside the selection.
 
-Each stage prompt lists the selected directories and tells the agent to read a
-missing file's committed version before creating or editing it. If a stage
-commit still modifies a tracked file outside the selection, the commit is kept
-and the activity feed shows a warning naming the files. Check them in the pull
-request: an agent that wrote such a file from scratch replaces its committed
-content.
+Each stage prompt lists the selected directories. Agents read files outside the
+selection with `git show HEAD:<path>` and must not modify, delete, or recreate
+them, because an agent never saw their content. If a stage or conflict resolution
+changes such a file anyway, the engine refuses to commit it: nothing is committed
+or pushed for that repository, the stage (or conflict resolution) fails, and the
+activity feed names the files. A refused stage leaves its changes in the
+workspace, as long as session storage survives. When the failed stage is
+retried, the new attempt's prompt lists the refused files and asks the agent to
+restore them first. A stage resumed after answering a question gets only your
+answer, so it fails again until it is retried. A refused conflict resolution
+is aborted, as other failed resolutions are, and the agent's resolution is
+discarded. If changing those files is part of the work, create a new intent whose
+selection includes their directories. In a multi-repository intent, other
+repositories that passed the check are still committed and pushed.
 
 The checkout configures the selection **before** materializing the working tree.
 Git history is still downloaded in full: selected files, `.git`, and agent state
