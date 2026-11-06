@@ -283,12 +283,36 @@ describe('typed inventory and outcomes the UI does not know', () => {
     });
   const panel = (name: RegExp | string) => screen.getByRole('region', { name });
   const WARNING = 'Some work that already started may be affected';
+  const SUMMARY = 'Some existing work or setup may be affected';
+  const SETUP = 'Some shared setup may need attention';
+  // The region is named by its visible heading, so both must say the same thing.
+  const expectHeading = (name: string) => {
+    expect(screen.getByRole('heading', { name })).toBeInTheDocument();
+    for (const other of [WARNING, SUMMARY, SETUP, 'Confirm this change'].filter((h) => h !== name))
+      expect(screen.queryByRole('heading', { name: other })).not.toBeInTheDocument();
+    return panel(name);
+  };
+
+  it('keeps the started-work heading when setup warnings come with affected work', () => {
+    const { unmount } = renderReview(
+      reviewWith(environment('unknown'), item('loses-access', { id: 'e7' })),
+    );
+    expect(expectHeading(WARNING)).toHaveTextContent(
+      '1 agent task will lose access the next time it needs this key.',
+    );
+    unmount();
+    // Work that only keeps running is a note, so the warning is still about setup.
+    renderReview(reviewWith(head('repair', 'reconnect-required'), item('continues', { id: 'e8' })));
+    expect(expectHeading(SETUP)).toHaveTextContent(
+      '1 agent task that already started keeps working.',
+    );
+  });
 
   it('warns about a future outcome and never calls it unaffected', () => {
     const value = reviewWith(item('future-outcome'));
     expect(reviewHasNoImpact(value)).toBe(false);
     renderReview(value);
-    expect(panel(WARNING)).toHaveTextContent(
+    expect(expectHeading(WARNING)).toHaveTextContent(
       'We could not tell how this change affects 1 agent task. Continue only if you are sure this is safe.',
     );
     expect(screen.queryByText(/not affected/)).not.toBeInTheDocument();
@@ -298,13 +322,15 @@ describe('typed inventory and outcomes the UI does not know', () => {
     const value = { ...nextStartOnly, items: [], counts: { 'future-outcome': 2, 'next-start': 3 } };
     expect(reviewHasNoImpact(value)).toBe(false);
     renderReview(value);
-    expect(panel(WARNING)).toHaveTextContent('We could not tell how this change affects 2 items.');
+    expect(expectHeading(SUMMARY)).toHaveTextContent(
+      'We could not tell how this change affects 2 items.',
+    );
     expect(screen.queryByText(/not affected|agent task/)).not.toBeInTheDocument();
   });
 
   it('keeps known outcomes of a resumed review without naming them agent tasks', () => {
     renderReview({ ...nextStartOnly, items: [], counts: { continues: 1, unknown: 1 } });
-    const warning = panel(WARNING);
+    const warning = expectHeading(SUMMARY);
     expect(warning).toHaveTextContent('We could not check whether 1 item will be affected.');
     expect(warning).toHaveTextContent('1 item that already started keeps working.');
     expect(warning).not.toHaveTextContent(/agent task/);
@@ -324,7 +350,7 @@ describe('typed inventory and outcomes the UI does not know', () => {
     const value = reviewWith(head('repair', 'reconnect-required'));
     expect(reviewHasNoImpact(value)).toBe(false);
     renderReview(value);
-    const warning = panel(WARNING);
+    const warning = expectHeading(SETUP);
     expect(warning).toHaveTextContent(
       '1 shared connection needs reconnecting by an administrator. Agents that use it cannot start until then.',
     );
@@ -336,7 +362,7 @@ describe('typed inventory and outcomes the UI does not know', () => {
     expect(reviewHasNoImpact(value)).toBe(false);
     expect(reviewHasNoImpact(reviewWith(environment('continues')))).toBe(true);
     renderReview(value);
-    const warning = panel(WARNING);
+    const warning = expectHeading(SETUP);
     expect(warning).toHaveTextContent(
       '1 published runtime environment has not confirmed support for this change. An administrator should publish and verify a compatible environment.',
     );
@@ -390,7 +416,7 @@ describe('typed inventory and outcomes the UI does not know', () => {
     render(<AgentCredentialScopeCard scope="platform" />);
     await userEvent.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'replacement-key');
     await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
-    expect(await screen.findByRole('region', { name: WARNING })).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: SETUP })).toBeInTheDocument();
     expect(agentsService.updateSettings).not.toHaveBeenCalled();
   });
 });

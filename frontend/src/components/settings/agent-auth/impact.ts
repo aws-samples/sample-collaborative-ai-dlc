@@ -111,15 +111,32 @@ export const summarizeImpact = (review: AgentAuthImpactReview) => {
   }
   const warnings: Message[] = [];
   const notes: Message[] = [];
+  const warned = new Set<Kind>();
   for (const { kind, outcome, count } of groups.values()) {
-    if (outcome !== CONTINUES) warnings.push(warningFor(kind, outcome, count));
-    else if (kind === 'work' || kind === 'summary')
+    if (outcome !== CONTINUES) {
+      warnings.push(warningFor(kind, outcome, count));
+      warned.add(kind);
+    } else if (kind === 'work' || kind === 'summary')
       notes.push({
         key: `${kind}:${outcome}`,
         text: `${counted(kind, count)} that already started ${plural(count, 'keeps', 'keep')} working.`,
       });
   }
-  return { warnings, notes, needsConfirmation: warnings.length > 0 || notes.length > 0 };
+  // Name only what the warnings are about: started work, records of unknown kind,
+  // or shared setup (connections, published environments) alone.
+  const heading = warned.has('work')
+    ? 'Some work that already started may be affected'
+    : warned.has('summary')
+      ? 'Some existing work or setup may be affected'
+      : warned.size > 0
+        ? 'Some shared setup may need attention'
+        : null;
+  return {
+    warnings,
+    notes,
+    heading,
+    needsConfirmation: warnings.length > 0 || notes.length > 0,
+  };
 };
 
 /** True when nothing that already started is affected, so a key save needs no confirmation. */

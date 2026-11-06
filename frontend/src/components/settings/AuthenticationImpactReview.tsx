@@ -82,9 +82,9 @@ export function AuthenticationImpactReview({
 
   const change = describeCandidate(review.candidate, modes);
   // The same reading decides whether a key save asks at all (reviewHasNoImpact).
-  const { warnings, notes } = summarizeImpact(review);
+  const { warnings, notes, heading } = summarizeImpact(review);
   const startedWork = review.items.filter((item) => item.outcome !== 'next-start');
-  const warn = warnings.length > 0;
+  const warn = heading !== null;
 
   return (
     <section
@@ -101,7 +101,7 @@ export function AuthenticationImpactReview({
         className="flex items-center gap-2 font-medium focus:outline-none"
       >
         {warn && <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" aria-hidden="true" />}
-        {warn ? 'Some work that already started may be affected' : 'Confirm this change'}
+        {heading ?? 'Confirm this change'}
       </h4>
       <div className="space-y-1">
         {change.lines.map((line) => (
