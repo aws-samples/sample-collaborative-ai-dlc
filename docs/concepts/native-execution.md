@@ -35,9 +35,11 @@ then creates a title-only or written draft. The shared Intent workspace supports
 prompt correction, workspace preparation and explicit **Start**. Preparation does
 not start agent work. The settings-page package link remains a convenience entry
 into the same form. The NE-08 entry point is independently verified as deployed.
-Uniform availability across spaces is locally repaired and pending deployment,
-as recorded in the 2026-11-06 follow-up below. A fresh live creation journey
-remains unrun.
+Uniform availability across spaces was independently verified as deployed on
+2026-11-06. NE-09 attachment, tracker, source and effective-setting integration is
+complete locally and in the installed runtime image; its deployment remains
+pending. The dated acceptance records below distinguish these scopes. A fresh
+live creation journey remains unrun.
 
 The release implementation uses platform-wide native admission controls and
 normal project membership. Existing and newly created spaces require no native
@@ -58,8 +60,9 @@ blocks new Start requests. An execution already admitted keeps its pinned
 configuration and Start identity when that policy changes or becomes unavailable.
 The dedicated native image and the additional Kiro restriction still apply.
 
-Start captures the request revision, package, application source commit, harness,
-model selection, credential scope and execution image. Later project settings
+Start captures the prompt and input revisions, immutable attachment versions,
+tracker provenance, package, application source commit, harness, model selection,
+credential scope and execution image. Later project settings
 changes do not silently change that execution. Credential rotation within the
 captured scope is supported; changing the source of credentials requires a new
 configuration.
@@ -67,8 +70,8 @@ configuration.
 The shared Intent workspace provides the current response and questions, activity,
 discussions, files, graph navigation and revision history. Native intents also
 appear in the project, dashboard and sidebar. Native creation now begins in the
-normal **New intent** entry. The local, deployed-artifact and pending follow-up
-scopes for NE-08 are recorded below.
+normal **New intent** entry. The local, installed-image and deployed-artifact
+scopes are recorded below.
 
 ## Questions, decisions and collaboration
 
@@ -3885,6 +3888,202 @@ their finite scopes and were not rerun. No additional deployment command is
 needed for this acceptance. AI-DLC remains verified **2.11.1**, Kiro remains
 deferred to NE-18, and NE-09 is unstarted.
 
+## NE-09 inputs, settings and tools — local and installed acceptance, 2026-11-06
+
+**NE-09 is implemented and locally qualified. Deployment and independent
+deployed/live acceptance remain pending.** A member can create a native draft
+through the normal entry, select its application repository, upload supported
+files and import tracker issue text, complete discussions and selected files.
+The shared Intent configuration exposes import failures and exclusions and
+shows captured configuration after Start. The input admission contract above
+describes the immutable revisions, credential scope and runtime consumption.
+No project enrollment, additional harness/provider scope, managed environment,
+custom MCP selection or uploaded-rule setting was added.
+
+### Main integration and implementation identity
+
+The normal merge `ced8e51be23492f64de56f7e857357cded64cd29` has parents
+`1bd20d16ac1bae954e8fd78aa08fa47b88d9cf77` (accepted NE-08 checkpoint) and
+`ac302ff448a2685106e56cc7244f851683a5ceba` (recorded main). It includes all six
+new main commits, including tracker attachments, shared MCP ownership, managed
+discussion/credential fixes and strengthened CI. No rebase, squash, partial
+cherry-pick or remote merge was used. A final read-only fetch at **12:46:51 UTC**
+still observed that same main tip.
+
+`bda220e2` repairs integration wiring and the Gateway test fixture while
+preserving the native runtime observation guard. Production implementation
+`2ce9a8be86401e6743c10414db52a8e5f4f29743` contains NE-09. `46112ac9` includes
+the new materialization regression in the installed Linux test selector.
+`4fd7230c804c955c3b7139197ba1465af804f4a8` fixes the offline OpenCode qualifier
+to preserve its actual production instruction configuration. The final
+documentation commit is pinned by the handoff's `candidate.json` and the stage's
+`completion.json`; production runtime bytes remain those of `2ce9a8be`.
+
+Main's attachment owners are reused through
+`lambda/shared/intent-attachments.js`,
+`lambda/shared/intent-tracker-attachment-import.js` and
+`lambda/shared/intent-attachment-intake.js`. The managed intents modules retain
+their entry points through these shared owners. Native's small store/API adapter
+uses the same attachment policies, provider normalization, credential checks,
+promotion and per-item outcomes. The frontend shares the file picker, upload
+service and tracker attachment component. Source resolution stays in
+`lambda/source-control/native-source.js`; tracker reads and access checks stay
+in `lambda/trackers/native-input.js`. The existing AgentCore attachment owner
+materializes the admitted versions for the actual native executor.
+
+The native authority captures input identity and versions, request revisions,
+package/materialization, resolved application commit, binding and connection
+identity, effective model/provider and the starting member's credential scope.
+Public serializers, authoritative store transactions, private dispatch checks
+and runtime byte verification enforce that same snapshot. Later edits or
+another member's answer cannot substitute current input, source or credentials.
+An unresolved selected import blocks Start until retry or explicit exclusion.
+Main's opt-in Gateway remains **off**; native retains its dedicated tools.
+
+### Validation and installed qualification
+
+Fresh evidence is under
+`.native-evidence/ne09-2026-11-06-inputs-settings-tools/`.
+Every invocation retains its command, stdout/stderr, exit status and timing.
+The final validation set includes:
+
+- **11,897 backend tests passed, eight host skips**, across 417 files.
+  The skips comprise three Linux-only and five Bun-only cases. Root Testcontainers
+  used explicit local endpoints with AWS configuration/credentials absent;
+  the endpoint guard still rejects fallback to AWS.
+- **2,363 frontend tests passed**, plus the original-root TypeScript/Vite build.
+  Its **629 files** are pinned for deployment. The composed public input suite
+  adds **41 frontend serializer/public JWT router cases**, including all nine
+  supported application/tracker provider combinations, and a real local
+  DynamoDB concurrency case: **42 passed** together.
+- Caller-level coverage includes uploaded and imported bytes/provenance,
+  partial failures, missing/revoked access and scope replacement, cross-project
+  denial, malformed/oversized/traversal inputs, unsupported files, competing
+  edits, duplicate/conflicting/lost Start responses and unchanged admitted
+  input/configuration/source after subsequent edits.
+- All **41 Lambda workspace build scripts** passed. Lint, formatting,
+  secretlint, SDK alignment, native architecture and wiring, dependency
+  boundaries, ShellCheck, docs build and production dependency audits passed
+  their configured thresholds. The backend audit retains five moderate
+  transitive advisories; the frontend production audit reports none.
+- The unfiltered release suite passed **512 tests** in the clean committed
+  CI snapshot. The later qualification-tooling changes passed **17 focused
+  cases**; those counts overlap. The dependency checker passed at the original
+  dependency root: 1,009 modules, 4,769 edges, 19 warnings and no errors.
+- Terraform formatting, isolated local-backend initialization/validation and
+  TFLint **0.65.0** passed. CI's exact Terraform **1.15.0** subsequently passed
+  validation and all **33 mock runs** in one invocation. Host Terraform
+  **1.17.0** also validated; its actual provider schemas underpin the handoff
+  plan fixtures. No real project plan, refresh or apply was run.
+
+Initial development failures remain in evidence. They include stale controller
+and frontend fixtures, a Testcontainers startup timeout, the dependency check
+against a symlinked CI dependency tree, the Gateway mock's nested-null behavior
+and packaging-helper assumptions. The fixes were followed by the passing checks
+above. The Gateway fixture exercises an explicitly incompatible observed-runtime
+artifact with an expected failure; the production guard is unchanged, and the
+separate release fixtures cover its valid/invalid observation contracts.
+
+The production Linux ARM64 Dockerfile built committed source `2ce9a8be` with
+`ENABLE_NATIVE_INTERACTION_PROBE=true`. Fresh verified AI-DLC **2.11.1** fixtures,
+Linux bindings and the 32-package OpenCode cache were prepared through
+`scripts/native-qualification-package.mjs`. Qualification used
+`--installed-only --packaged-image --cli claude,codex,opencode`, fresh private
+CLI state and actual `/opt` production/dependency auditing. No candidate
+production modules were mounted over the image.
+
+| Installed harness | Version | Offline provider requests | Actual admitted input reads | Verdict |
+| ----------------- | ------- | ------------------------- | --------------------------- | ------- |
+| Claude Code       | 2.1.296 | 39                        | 3                           | Pass    |
+| Codex             | 0.162.1 | 27                        | 3                           | Pass    |
+| OpenCode          | 1.19.0  | 24                        | 3                           | Pass    |
+
+Each harness read an uploaded text file, imported issue Markdown and a tracker
+CSV from the admitted versions; later object versions were ignored. The journeys
+also cover explicit human gates, fresh-session workspace continuation and
+failure/incomplete/cancellation behavior. The first OpenCode run failed because
+the offline adapter replaced its instruction configuration. The corrected
+adapter and real OpenCode row pass; the prior passing Claude/Codex rows remain
+separate retained evidence. The Linux selector correction adds seven actual
+installed materialization tests to the previous 163: **170 passed across five
+files**. Six retained source-audit receipts identify the same **301 `/opt`
+production files** and separate candidate controller adapter. All 17 production
+dependencies resolve, five critical production imports load, and installed
+MarkItDown **0.1.8** extracts the finite PDF/DOCX/XLSX input fixtures.
+
+These are actual installed CLI executions against finite offline provider
+responses and local disposable filesystems. They are not live models, AWS EFS,
+browser journeys, deployed IAM proof, generated-application quality, workflow
+completion or Git/tracker delivery. Kiro was not qualified and remains NE-18.
+
+### Exact image identity and deployment-only boundary
+
+The qualification's immutable local image ID is
+`sha256:a6ff70060e15d3942e8722e952cfe7ad0eaeafac02cf01c07d7b80c52fef20f7`.
+This Docker store reports an **OCI index** as that local ID. The captured OCI
+blobs establish the actual qualified ARM64 platform and configuration:
+
+- Platform manifest:
+  `sha256:32dba380a6855fe56b9ca617c0cb268e48d34cc6edfc3e3e4cec1e31466ce907`.
+- Image configuration:
+  `sha256:44e894f36fc13a1a3fcec932bcc0479f99adbaca64083421b479bbe17db9f8ff`.
+- Terraform runtime source SHA-1:
+  `5f94c35930d0e905ce4cfc95c888abbabc97bf4a`; source tag **`defb9ff1846f009e`**.
+
+The first evidence helper sorted path components instead of Terraform's path
+strings, producing a provisional tag `8607736f5edcdcc2`. Its original record is
+preserved. The corrected manifest uses the actual Terraform expression and the
+same 301 verified source files. A further production-context build uses the
+exact `default` builder and produces index
+`sha256:04f584d57f3e5581e15c0019eeca33f7f3614e6c3307689fc2b5476f34ddc047`.
+Its **platform manifest, configuration and all 23 runtime layers equal the
+qualified image**; only index/provenance identity differs. The guarded operator
+process selects the `default` Docker context after verifying that its socket
+resolves to the already qualified Desktop daemon. Global Docker configuration
+remains unchanged. The handoff checks platform/configuration identity explicitly
+and never equates a local OCI index with an image configuration or a future ECR
+digest. No registry push or new registry digest is claimed here.
+
+All **50 actual installed Lambda package recipes** were prepared and built
+locally. Their source/hash/command/archive manifests identify **47 changed
+archive filenames serving 48 functions**. The deployment scope also includes
+12 image-setting consumers, five native authority aliases and the managed
+durable alias, four input/import IAM policies, the shared runtime, 17 new API
+resources/methods/integrations/CORS/permission resources, and API deployment/stage
+publication. The 159 known package helpers include 150 associated with changed
+archives. These are source-derived deployment surfaces, not a claim that an AWS
+plan with those counts has been executed. Gateway resources remain absent.
+
+The fresh handoff is
+`.native-evidence/ne09-2026-11-06-inputs-settings-tools/handoff/deploy-ne09.sh`.
+Its `--check-only` path validates the committed branch/head, source/configuration,
+prepared packages, built frontend, qualified image/fixtures and evidence before
+credentials, Docker or Terraform. The operator path is pinned to `solution`,
+account `746558295630`, `us-east-1`, and one immutable attempt directory.
+It first prepares only the image owner, verifies the published ARM64
+platform/configuration and pulled runtime bytes, then requires a **full untargeted
+plan** for all managed and native changes. It applies only the reviewed saved
+plan, reuses the captured frontend build, publishes assets before the entry point
+and retains older assets. It performs no seed, legacy cleanup or execution replay.
+
+The handoff's **153 plan/command/workflow cases** and **six FIFO cases** pass through
+inert ports and actual provider/schema forms. They cover fresh package metadata
+in refreshed `prior_state`, refusal to replace a pending unknown read with stale
+data, omitted managed changes, image/configuration substitution, source drift,
+access/account mismatch, saved-plan tampering, partial failure and repeat
+attempts. FIFO success, failure and logger-failure receipts hash the fully drained
+log. Earlier failing helper/fixture attempts remain recorded. The production
+operator path was never invoked.
+
+The final `completion.json`, `integrity-manifest.json` and handoff candidate pin
+the exact documentation HEAD, source, configuration and completed local proof.
+The prior NE-08 seal and nine original successful/failed attempt files remain
+unchanged; unrelated worktrees are preserved. The next authorized operator action,
+after review of that candidate, is the guarded deployment command. Independent
+deployed package/alias/IAM/route/runtime/frontend verification and any live
+acceptance remain separate. No accessible local qualification is handed back to
+the operator.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -4023,7 +4222,7 @@ the current contract for newly created executions.
       retry is required. Kiro remains deferred to NE-18. Evidence is under
       `.native-evidence/ne07-2026-11-04-harness-question-adapters/` and
       `.native-evidence/ne07-2026-11-05-deployed-095041b7/`.
-- [ ] **NE-08 — Complete normal intent creation.** Integrate native into the normal
+- [x] **NE-08 — Complete normal intent creation.** Integrate native into the normal
       **New intent** entry, including the backend/default choice, verified package
       selection and application source. Reuse the shared creation and configuration
       components and remove obsolete pilot instructions. **Done when:** a member can
@@ -4048,7 +4247,7 @@ the current contract for newly created executions.
       the two formerly excluded offline Terraform fixtures.
       The preceding deployed-byte acceptance remains valid within its scope.
       A fresh live creation/Start journey remains unrun.
-- [ ] **NE-09 — Integrate supported inputs, settings and tools.** Implement the selected
+- [x] **NE-09 — Integrate supported inputs, settings and tools.** Implement the selected
       attachment and tracker-import scope and source selection; capture the inputs and
       effective configuration at Start. Connect supported environment/tool settings
       through their existing owners, and explain intentionally unsupported settings
@@ -4057,7 +4256,16 @@ the current contract for newly created executions.
       and access checks follow the existing platform boundaries. **Selected scope:**
       attachments and tracker imports are required; platform-managed environments,
       custom MCP server selections and uploaded custom rules are excluded from the
-      initial release.
+      initial release. **Completed locally and in the installed image 2026-11-06:**
+      main's attachment/import owners are shared by native draft configuration,
+      authoritative Start and runtime input consumption. Input/source/configuration
+      identities are captured and fenced against later edits, credential replacement
+      and uncertain/repeated Start. The full backend/frontend checks, composed
+      input contracts, 170 installed Linux tests and three finite installed CLI
+      rows pass as recorded above. The final source/configuration/image/artifact
+      candidate has a tested deployment-only handoff. **Deployment and independent
+      deployed/live acceptance remain pending**; NE-10, NE-11, NE-12 and NE-18
+      are not advanced by this input integration.
 - [ ] **NE-10 — Align public file handling and usable results.** Resolve the mismatch
       for credential-shaped files such as `.env` and `.npmrc`, retaining safe templates
       without exposing secrets. Use one explicit public-file policy across capture,
