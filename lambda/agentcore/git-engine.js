@@ -30,6 +30,7 @@ import { buildCloneUrl } from '../shared/git-providers.js';
 import { NO_HOOKS_PATH, runGitCommand } from './git-runner.js';
 import { repoTargetDir } from './repo-paths.js';
 import { repoCheckoutPath } from '../shared/repo-validation.js';
+import { isInSparseCone } from '../shared/sparse-checkout.js';
 import {
   knownChangedFileProvenance,
   mapKnownChangedFiles,
@@ -266,6 +267,33 @@ export const parsePorcelainZ = (stdout = '') => {
   return files;
 };
 
+// Tracked files outside a sparse cone are absent from disk. An agent that
+// writes one creates it from scratch, and the commit replaces the committed
+// file. Report staged modifications of such paths so the caller can warn;
+// best-effort, never blocks the commit. Reads the cone from the checkout itself.
+const stagedChangesOutsideSparseCone = async ({ dir, git }) => {
+  const enabled = await git(['config', '--bool', 'core.sparseCheckout'], { cwd: dir });
+  if (enabled.exitCode !== 0 || enabled.stdout.trim() !== 'true') return [];
+  const list = await git(['sparse-checkout', 'list'], { cwd: dir });
+  const directories =
+    list.exitCode === 0
+      ? list.stdout
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean)
+      : [];
+  if (directories.length === 0) return [];
+  const changed = await git(
+    ['diff', '--cached', '--name-only', '-z', '--no-renames', '--diff-filter=MT'],
+    { cwd: dir },
+  );
+  if (changed.exitCode !== 0) return [];
+  return changed.stdout
+    .split('\0')
+    .filter(Boolean)
+    .filter((file) => !isInSparseCone(file, directories));
+};
+
 export const commitAll = async ({
   dir,
   message,
@@ -298,6 +326,7 @@ export const commitAll = async ({
         provenance,
       };
     }
+    const outsideSelection = await stagedChangesOutsideSparseCone({ dir, git });
     const status = await git(['status', '--porcelain'], { cwd: dir });
     if (status.exitCode === 0 && status.stdout.trim() === '') {
       return {
@@ -329,6 +358,7 @@ export const commitAll = async ({
       return {
         committed: true,
         sha: head.stdout.trim() || null,
+        ...(outsideSelection.length ? { outsideSelection } : {}),
         files: null,
         provenance: mergeChangedFileProvenance([
           { provenance },
@@ -345,6 +375,7 @@ export const commitAll = async ({
     return {
       committed: true,
       sha: head.stdout.trim() || null,
+      ...(outsideSelection.length ? { outsideSelection } : {}),
       files: committedFiles.length ? committedFiles : (provenance.files ?? null),
       provenance:
         provenance.state === 'known' && committedFiles.length
