@@ -1638,6 +1638,45 @@ describe('intent-scoped discussions', () => {
     expect(json(msgs).messages.map((m) => m.content)).toContain('hello intent');
   });
 
+  it("labels notification events with the intent's own project, not the URL's", async () => {
+    const { EventBridgeClient, PutEventsCommand } = await import('@aws-sdk/client-eventbridge');
+    const ebMock = mockClient(EventBridgeClient);
+    ebMock.on(PutEventsCommand).resolves({ FailedEntryCount: 0 });
+    vi.stubEnv('NOTIFICATION_EVENT_BUS', 'bus-test');
+    try {
+      const { projectId, intentId } = await seedIntent();
+      // A different project id in the path: authorisation follows the intent.
+      const path = { projectId: randomUUID(), intentId };
+      const created = json(
+        await call('POST', intentPath('/discussions'), {
+          pathParameters: path,
+          body: { entityType: 'intent' },
+        }),
+      );
+      const posted = await call('POST', intentPath('/discussions/{discussionId}/messages'), {
+        pathParameters: { ...path, discussionId: created.id },
+        body: { id: 'dm-attrib-aaaaaaaa', content: 'hello' },
+      });
+      expect(posted.statusCode).toBe(201);
+      const resolved = await call('PUT', intentPath('/discussions/{discussionId}'), {
+        pathParameters: { ...path, discussionId: created.id },
+        body: { status: 'resolved', resolutionSummary: 'done' },
+      });
+      expect(resolved.statusCode).toBe(200);
+
+      const events = ebMock
+        .commandCalls(PutEventsCommand)
+        .map((c) => c.args[0].input.Entries[0])
+        .map((e) => ({ type: e.DetailType, projectId: JSON.parse(e.Detail).projectId }));
+      expect(events).toEqual([
+        { type: 'discussion.message', projectId },
+        { type: 'discussion.resolved', projectId },
+      ]);
+    } finally {
+      ebMock.restore();
+    }
+  });
+
   it('starts Quorum assist on an intent thread and invokes AgentCore with the discussion session', async () => {
     agentcoreMock.on(InvokeAgentRuntimeCommand).resolves({
       response: { transformToString: async () => JSON.stringify({ ok: true, accepted: true }) },

@@ -68,6 +68,19 @@ import { assertPrStrategySupported } from '../shared/pr-strategy.js';
 import { repoProvider as sharedRepoProvider } from '../shared/repo-provider.js';
 import { parseChoice } from '../shared/gate-answer.js';
 import { laneSessionIdFor } from '../shared/runtime-session-ids.js';
+import { notifyGatePending } from '../shared/notification-events.js';
+
+// Notification events: the `stage` of an engine gate with no stage of its own,
+// from its name prefix.
+const ENGINE_GATE_LABELS = {
+  halt: 'Lane failure',
+  skeleton: 'Walking skeleton review',
+  ladder: 'Autonomy choice',
+  batch: 'Batch review',
+  validation: 'Stage review',
+};
+export const engineGateLabel = (name) =>
+  ENGINE_GATE_LABELS[String(name ?? '').split('-')[0]] ?? 'Review';
 
 // The capability-registry handler ids (aidlc-capabilities.js RUNTIME_HANDLERS)
 // this module implements. Checked against the registry by a test, so a
@@ -211,6 +224,8 @@ export const awaitEngineGate = async (
     // That outcome in one sentence for the reviewer. The gate prompt carries the
     // same text, which nothing renders.
     loopBackNote = null,
+    // Notification events only: the gate's `stage`. Defaults to engineGateLabel(name).
+    stageLabel = null,
   },
 ) => {
   const { store, broadcast, ids, runId } = toolkit;
@@ -309,6 +324,17 @@ export const awaitEngineGate = async (
     } catch {
       /* live fan-out is best-effort */
     }
+    // Notification event: a human is needed. Inside this step, so the step
+    // sequence is unchanged and a replay doesn't publish again. Never throws;
+    // does nothing without a bus.
+    await notifyGatePending(store, {
+      projectId,
+      intentId,
+      executionId,
+      humanTaskId,
+      stage: stageLabel ?? engineGateLabel(name),
+      gate: { kind, prompt },
+    });
     return true;
   });
   if (opened === false) return { superseded: true };
