@@ -408,6 +408,35 @@ That requires repository/cache permissions, lifecycle and cost decisions, and
 verification of the pinned image digests for each architecture. This deployment
 does not provision a mirror or fall back to anonymous Docker Hub pulls.
 
+### Pre-built container images
+
+By default Terraform builds the AgentCore and Yjs images during apply. To build
+them elsewhere (for example in CI, so they can be scanned before they deploy),
+push them to the deployment's ECR repositories and set their tags:
+
+```hcl
+# terraform/environments/dev.tfvars
+agentcore_image_tag = "1.2.3"
+yjs_image_tag       = "1.2.3"
+```
+
+| Image     | Repository                   | Build context        | Dockerfile                     | Platform                                                       |
+| --------- | ---------------------------- | -------------------- | ------------------------------ | -------------------------------------------------------------- |
+| AgentCore | `<project>-agentcore-<env>`  | `lambda/`            | `lambda/agentcore/Dockerfile`  | `linux/arm64`, plus `linux/amd64` as `<tag>-amd64` (see below) |
+| Yjs       | `<project>-yjs-server-<env>` | `lambda/yjs-server/` | `lambda/yjs-server/Dockerfile` | `linux/amd64`                                                  |
+
+- With `enable_instances_compute = true`, also push the AgentCore amd64 image
+  as `<tag>-amd64`.
+- Each tag is resolved to its digest, and both images deploy by digest, so
+  moving a tag later does not change a running deployment. Treat the tags as
+  write-once: published environment revisions pin the AgentCore digest, and the
+  AgentCore repository has no lifecycle policy (see issue #427).
+- Plan fails if a tag is missing from its repository, so push the images
+  before planning. Terraform creates the repositories, so a new environment
+  needs one apply with the defaults (or a targeted apply of the two
+  `aws_ecr_repository` resources) before switching to pre-built images.
+- Leaving either variable unset (`null`) keeps the build during apply.
+
 ### Bootstrap the first platform administrator
 
 The **Admin** page (user management, agent settings and default models, provider OAuth/App configuration, migrations) and workflow/building-block authoring require the **`platform-admin`** role. For local Cognito users, bootstrap the first administrator via the CLI (users must sign out and back in to pick up the group); afterwards, additional local admins can be granted or revoked in the UI under **Admin → Users**:

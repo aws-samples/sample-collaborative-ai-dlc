@@ -194,6 +194,12 @@ variable "tags" {
   default     = {}
 }
 
+variable "image_tag" {
+  description = "Tag of a pre-built image in the AgentCore ECR repository (plus <tag>-amd64 when build_amd64_image is true). When set, the image is not built here."
+  type        = string
+  default     = null
+}
+
 variable "build_amd64_image" {
   description = "Also build an amd64 variant of the core image (required for x86_64 managed environments on the Instances compute type)"
   type        = bool

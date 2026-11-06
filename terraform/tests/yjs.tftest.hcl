@@ -254,3 +254,51 @@ run "reject_automatic_mode_transition" {
   variables { scaling = { cluster_enabled = true, mode_transition = true, autoscaling = { min_capacity = 2, max_capacity = 4 } } }
   expect_failures = [var.scaling]
 }
+
+run "builds_image_by_default" {
+  command = plan
+  module { source = "./modules/realtime/yjs-server" }
+  override_module {
+    target  = module.yjs_docker_build
+    outputs = { image_uri = "example.test/yjs:test" }
+  }
+  assert {
+    condition     = length(module.yjs_docker_build) == 1 && length(data.aws_ecr_image.yjs_server) == 0
+    error_message = "Without image_tag the image must be built here, not looked up."
+  }
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.yjs_server.container_definitions)[0].image == "example.test/yjs:test"
+    error_message = "Without image_tag the task must run the image built here."
+  }
+}
+
+run "deploys_prebuilt_image_by_digest" {
+  # The ECR lookup depends on the planned repository, so it is only read on (mock) apply.
+  command = apply
+  module { source = "./modules/realtime/yjs-server" }
+  override_resource {
+    target = aws_ecr_repository.yjs_server
+    values = { repository_url = "123456789012.dkr.ecr.us-east-1.amazonaws.com/test-yjs-server-prod" }
+  }
+  override_data {
+    target = data.aws_ecr_image.yjs_server[0]
+    values = { image_digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+  }
+  variables { image_tag = "1.2.3" }
+  assert {
+    condition     = length(module.yjs_docker_build) == 0
+    error_message = "A pre-built image_tag must skip the Docker build."
+  }
+  assert {
+    condition     = data.aws_ecr_image.yjs_server[0].image_tag == "1.2.3"
+    error_message = "The pre-built image must be looked up by the supplied tag."
+  }
+  assert {
+    condition     = jsondecode(aws_ecs_task_definition.yjs_server.container_definitions)[0].image == "123456789012.dkr.ecr.us-east-1.amazonaws.com/test-yjs-server-prod@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    error_message = "A pre-built image must deploy by digest so a moved tag cannot change the revision."
+  }
+  assert {
+    condition     = output.yjs_image_tag == "1.2.3"
+    error_message = "The image tag output must report the supplied tag."
+  }
+}
