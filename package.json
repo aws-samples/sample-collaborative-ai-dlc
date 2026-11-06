@@ -19,6 +19,8 @@
     "lambda/gitlab",
     "lambda/bitbucket",
     "lambda/codecommit",
+    "lambda/mcp-interceptor",
+    "lambda/mcp-tools",
     "lambda/migrate-tracker-fields",
     "lambda/native-package-worker",
     "lambda/native-runtime-control",

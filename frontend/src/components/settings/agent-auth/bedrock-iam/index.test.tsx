@@ -7,12 +7,15 @@ import type {
   AgentConnectionView,
 } from '@/services/agents';
 
-const { preview, apply, providerAction, getProjectCredentials } = vi.hoisted(() => ({
-  preview: vi.fn(),
-  apply: vi.fn(),
-  providerAction: vi.fn(),
-  getProjectCredentials: vi.fn(),
-}));
+const { preview, apply, providerAction, getProjectCredentials, getSettings, getPersonal } =
+  vi.hoisted(() => ({
+    preview: vi.fn(),
+    apply: vi.fn(),
+    providerAction: vi.fn(),
+    getProjectCredentials: vi.fn(),
+    getSettings: vi.fn(),
+    getPersonal: vi.fn(),
+  }));
 
 vi.mock('@/services/agents', () => ({
   agentsService: {
@@ -20,6 +23,8 @@ vi.mock('@/services/agents', () => ({
     applyAuthenticationChange: (...args: unknown[]) => apply(...args),
     authenticationProviderAction: (...args: unknown[]) => providerAction(...args),
     getProjectCredentials: (...args: unknown[]) => getProjectCredentials(...args),
+    getSettings: (...args: unknown[]) => getSettings(...args),
+    getPersonalCredentials: (...args: unknown[]) => getPersonal(...args),
   },
 }));
 
@@ -84,7 +89,7 @@ const verifyAndSubmit = async (user: ReturnType<typeof userEvent.setup>) => {
   await screen.findByRole('status');
   await user.click(screen.getByRole('button', { name: 'Review connection change' }));
 };
-const impactReview = () => screen.findByRole('region', { name: 'Authentication change impact' });
+const impactReview = () => screen.findByRole('region', { name: 'Confirm this change' });
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -156,7 +161,9 @@ describe('reviewed IAM controls', () => {
     await verifyAndSubmit(user);
 
     const review = await impactReview();
-    expect(within(review).getByText('Proposed space IAM role')).toBeInTheDocument();
+    expect(
+      within(review).getByText('Agents in this space will use this IAM role.'),
+    ).toBeInTheDocument();
     expect(within(review).getByText(`Role: ${config.roleArn}`)).toBeInTheDocument();
     expect(within(review).getByText('Region: eu-west-1')).toBeInTheDocument();
     expect(providerAction).toHaveBeenCalledWith('iam', 'verify', { config, projectId: 'p' });
@@ -168,7 +175,7 @@ describe('reviewed IAM controls', () => {
     });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(apply).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Apply reviewed change' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm change' }));
     await waitFor(() => expect(apply).toHaveBeenCalledWith('review'));
     expect(onApplied).toHaveBeenCalledOnce();
   });
@@ -217,7 +224,9 @@ describe('reviewed IAM controls', () => {
       configuration: platformRole,
     });
     const review = await impactReview();
-    expect(within(review).getByText('Proposed platform IAM role')).toBeInTheDocument();
+    expect(
+      within(review).getByText('Agents will use this IAM role, unless a space has its own.'),
+    ).toBeInTheDocument();
     expect(within(review).getByText(`Role: ${platformRole.roleArn}`)).toBeInTheDocument();
     expect(screen.queryByText(/external-fixture/)).not.toBeInTheDocument();
   });
@@ -254,7 +263,7 @@ describe('reviewed IAM controls', () => {
       connectionId: null,
     });
     expect(
-      await screen.findByText('Use the platform connection for new work in this space.'),
+      await screen.findByText('Agents in this space will use the platform connection again.'),
     ).toBeInTheDocument();
     result.unmount();
     render(
@@ -303,8 +312,10 @@ describe('IAM credential scope card', () => {
     expect(await screen.findByText('Using platform connection')).toBeInTheDocument();
     expect(screen.queryByText('No credentials')).not.toBeInTheDocument();
     expect(screen.getByText(`Role: ${platformRole.roleArn}`)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Bedrock Bearer Token/)).toBeDisabled();
-    expect(screen.getByText(/Saved Bedrock keys are not used/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Bedrock Bearer Token/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/get Bedrock access through IAM, so a space Bedrock key/),
+    ).toBeInTheDocument();
   });
 
   it('does not let a saved key hide an unavailable IAM connection', async () => {
@@ -329,5 +340,111 @@ describe('IAM credential scope card', () => {
     render(<AgentCredentialScopeCard scope="space" projectId="space-1" />);
     expect(await screen.findByText('IAM needs attention')).toBeInTheDocument();
     expect(screen.queryByText('1 provider configured')).not.toBeInTheDocument();
+  });
+
+  const platformView = {
+    ...authentication,
+    hasOverride: false,
+    connection: {
+      ...spaceConnection,
+      id: 'platform-role',
+      source: 'platform' as const,
+      projectId: undefined,
+      configuration: platformRole,
+    },
+  };
+
+  it('shows a person which IAM role and region their agents use, and no Bedrock key input', async () => {
+    getPersonal.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      authentication: { ...platformView, canManageConnections: false },
+    });
+    render(<AgentCredentialScopeCard scope="personal" />);
+    const access = await screen.findByRole('region', { name: 'Platform default Bedrock access' });
+    expect(access).toHaveTextContent('Platform default Bedrock access: IAM');
+    expect(access).toHaveTextContent('Status: Ready');
+    expect(access).toHaveTextContent(`Role: ${platformRole.roleArn}`);
+    expect(access).toHaveTextContent('Region: eu-west-1');
+    expect(screen.queryByLabelText(/Bedrock Bearer Token/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Kiro API Key/)).toBeEnabled();
+    expect(screen.queryByRole('button', { name: /IAM/ })).not.toBeInTheDocument();
+  });
+
+  // The server's personal view carries no space context: it returns the platform default
+  // even when a space has its own role (lambda/agents/test/authentication-settings-providers
+  // .test.js, "overrides a space in the active mode"), while a run in that space binds the
+  // space role (lambda/shared/test/agent-auth-default-selection.test.js). The page must not
+  // present the default as every agent's role.
+  it('labels the personal view as the platform default for a person in a space with its own role', async () => {
+    getPersonal.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      authentication: { ...platformView, canManageConnections: false },
+    });
+    getProjectCredentials.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+      authentication: { ...authentication, hasOverride: true, canManageConnections: false },
+    });
+    const personal = render(<AgentCredentialScopeCard scope="personal" />);
+    const access = await screen.findByRole('region', { name: 'Platform default Bedrock access' });
+    // The header badge scopes its status to the default, like the panel.
+    expect(screen.getByText('Platform default ready')).toBeInTheDocument();
+    expect(screen.queryByText('Using platform connection')).not.toBeInTheDocument();
+    expect(access).toHaveTextContent(`Role: ${platformRole.roleArn}`);
+    expect(access).toHaveTextContent('A space can use its own access instead.');
+    expect(access).not.toHaveTextContent(config.roleArn);
+    expect(screen.queryByText(/their agents use|for everyone/)).not.toBeInTheDocument();
+    personal.unmount();
+
+    // The space's own page shows the role its runs use, with its own badge.
+    const space = render(<AgentCredentialScopeCard scope="space" projectId="p" />);
+    expect(await screen.findByText(`Role: ${config.roleArn}`)).toBeInTheDocument();
+    expect(screen.getByText(/Space IAM role override/)).toBeInTheDocument();
+    expect(screen.getByText('IAM configured')).toBeInTheDocument();
+    space.unmount();
+
+    // A default that needs reconnecting is reported as the default, not as every agent's access.
+    getPersonal.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      authentication: {
+        ...platformView,
+        canManageConnections: false,
+        connection: { ...platformView.connection, state: 'reconnect-required' },
+      },
+    });
+    render(<AgentCredentialScopeCard scope="personal" />);
+    expect(await screen.findByText('Platform default needs attention')).toBeInTheDocument();
+    expect(screen.queryByText('IAM needs attention')).not.toBeInTheDocument();
+  });
+
+  it('keeps the platform mode select and IAM setup on the admin card', async () => {
+    getSettings.mockResolvedValue({
+      bedrockBearerTokenSet: true,
+      kiroApiKeySet: false,
+      authentication: platformView,
+    });
+    render(<AgentCredentialScopeCard scope="platform" />);
+    expect(await screen.findByLabelText('Agent authentication mode')).toHaveValue('iam');
+    expect(screen.getByRole('button', { name: 'Change IAM connection' })).toBeEnabled();
+    expect(screen.getByText(`Role: ${platformRole.roleArn}`)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Bedrock Bearer Token/)).not.toBeInTheDocument();
+    expect(screen.getByText(/still saved here, but it is not used while IAM/)).toBeInTheDocument();
+  });
+
+  it('keeps the space IAM role controls for platform administrators', async () => {
+    getProjectCredentials.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+      authentication: { ...authentication, hasOverride: true },
+    });
+    render(<AgentCredentialScopeCard scope="space" projectId="p" />);
+    expect(await screen.findByRole('button', { name: 'Change space IAM role' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Use platform connection' })).toBeEnabled();
+    expect(screen.getByText(`Role: ${config.roleArn}`)).toBeInTheDocument();
   });
 });

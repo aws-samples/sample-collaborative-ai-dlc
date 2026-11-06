@@ -9,6 +9,7 @@ import {
   displayCursorOf,
   makeMessageId,
   newerOf,
+  quorumMention,
   sortMessages,
 } from '../lib/discussion';
 import { generateColor } from '../utils/colors';
@@ -30,6 +31,8 @@ export interface PendingMessage {
   id: string;
   content: string;
   status: 'sending' | 'failed';
+  mentions: string[];
+  assistInstructions?: string;
 }
 
 interface UseDiscussionArgs {
@@ -46,6 +49,9 @@ interface UseDiscussionArgs {
 const SEED_PAGE_SIZE = 100;
 const makeAssistRequestId = (now: number = Date.now()): string =>
   `assist-${now}-${Math.random().toString(36).slice(2, 10)}`;
+
+// The persisted question is also the recovery key for its assist request.
+const askRequestId = (messageId: string): string => `assist-${messageId}`;
 
 const toPlain = (m: DiscussionMessage): DiscussionMessage => ({ ...m });
 
@@ -132,9 +138,11 @@ export function useDiscussion({
 
   // ── Single render path: mirror Y.Map('messages') → sorted state ──
   useEffect(() => {
+    // A direct thread switch has no closed/null intermediate state. Retire
+    // the previous thread's retries before recovering asks from this document.
+    setPending([]);
     if (!docId) {
       setMessages([]);
-      setPending([]);
       setSeeded(false);
       setHasMoreOlder(false);
       changeCursorRef.current = null;
@@ -144,13 +152,39 @@ export function useDiscussion({
       const all = sortMessages([...messagesMap.values()]);
       setMessages(all);
       changeCursorRef.current = changeCursorOf(all);
-      // A message that arrived through ANY channel clears its pending bubble.
-      setPending((prev) => prev.filter((p) => !messagesMap.has(p.id)));
+      // A saved question still needs an accepted assist. Reconstruct unanswered
+      // asks from history so closing the tab cannot silently abandon them.
+      const requests = new Set(all.filter((m) => m.authorType === 'agent').map((m) => m.requestId));
+      setPending((prev) => {
+        const next = prev.filter((p) => {
+          if (messagesMap.get(p.id)?.redacted) return false;
+          return p.assistInstructions !== undefined
+            ? !requests.has(askRequestId(p.id))
+            : !messagesMap.has(p.id);
+        });
+        if (scope && scope.kind !== 'sprint') {
+          for (const m of all) {
+            if (m.authorType !== 'user' || m.authorId !== user.id || m.redacted) continue;
+            const instructions = quorumMention(m.content);
+            if (instructions === null || requests.has(askRequestId(m.id))) continue;
+            if (!next.some((p) => p.id === m.id)) {
+              next.push({
+                id: m.id,
+                content: m.content,
+                mentions: m.mentions,
+                status: 'failed',
+                assistInstructions: instructions,
+              });
+            }
+          }
+        }
+        return next;
+      });
     };
     messagesMap.observeDeep(update);
     update();
     return () => messagesMap.unobserveDeep(update);
-  }, [docId, messagesMap]);
+  }, [docId, messagesMap, scope?.kind, user.id]);
 
   // Idempotent upsert with (updatedAt, id) precedence, batched per transact.
   const upsertMessages = useCallback(
@@ -268,23 +302,59 @@ export function useDiscussion({
     return () => unsubs.forEach((unsub) => unsub());
   }, [docId, discussionId, messagesMap, upsertMessages]);
 
-  // ── Send ──
-  const sendMessage = useCallback(
-    async (content: string, mentions: string[] = []) => {
+  const requestAssist = useCallback(
+    async (
+      command: AssistCommand,
+      instructions = '',
+      opts: { requestId?: string; selectedMessageIds?: string[] } = {},
+    ) => {
+      if (!current() || !discussionId || !scope || scope.kind === 'sprint') return false;
+      const requestId = opts.requestId || makeAssistRequestId();
+      try {
+        const { message } = await discussionsService.assist(scope, discussionId, {
+          requestId,
+          command,
+          instructions,
+          selectedMessageIds: opts.selectedMessageIds || [],
+          ...(agentCli ? { agentCli } : {}),
+        });
+        if (!current()) return false;
+        upsertMessages([message]);
+        return true;
+      } catch (err) {
+        reportFailure(err);
+        console.error('Discussion assist failed:', err);
+        return false;
+      }
+    },
+    [agentCli, discussionId, scope, upsertMessages, current, reportFailure],
+  );
+
+  const submitMessage = useCallback(
+    async (message: PendingMessage) => {
       if (!current() || !discussionId || !scope) return;
-      const trimmed = content.trim();
-      if (!trimmed) return;
-      const id = makeMessageId();
-      setPending((prev) => [...prev, { id, content: trimmed, status: 'sending' }]);
+      const { id, content, mentions, assistInstructions } = message;
       try {
         const persisted = await discussionsService.postMessage(scope, discussionId, {
           id,
-          content: trimmed,
+          content,
           mentions,
         });
         if (!current()) return;
-        // Fast path: the WS broadcast also delivers this — idempotent by id.
         upsertMessages([persisted]);
+        // A lost response can be retried with the same message AND assist IDs.
+        if (assistInstructions !== undefined) {
+          const accepted = await requestAssist('ask', assistInstructions, {
+            requestId: askRequestId(id),
+          });
+          if (!current()) return;
+          if (!accepted) {
+            setPending((prev) =>
+              prev.map((p) => (p.id === id ? { ...p, status: 'failed' as const } : p)),
+            );
+            return;
+          }
+        }
         setPending((prev) => prev.filter((p) => p.id !== id));
       } catch (err) {
         if (!current()) return;
@@ -295,59 +365,39 @@ export function useDiscussion({
         );
       }
     },
-    [discussionId, scope, upsertMessages, current, reportFailure],
+    [discussionId, scope, upsertMessages, requestAssist, current, reportFailure],
   );
 
-  // Failed bubbles retry with the SAME id — idempotent on the server.
+  // ── Send ──
+  const sendMessage = useCallback(
+    async (content: string, mentions: string[] = []) => {
+      if (!current() || !discussionId || !scope) return;
+      const trimmed = content.trim();
+      if (!trimmed) return;
+      const message: PendingMessage = {
+        id: makeMessageId(),
+        content: trimmed,
+        mentions: [...mentions],
+        status: 'sending',
+        assistInstructions:
+          scope.kind !== 'sprint' ? (quorumMention(trimmed) ?? undefined) : undefined,
+      };
+      setPending((prev) => [...prev, message]);
+      await submitMessage(message);
+    },
+    [discussionId, scope, submitMessage, current],
+  );
+
+  // Retry the original payload, including mentions, for server idempotency.
   const retryMessage = useCallback(
     async (id: string) => {
-      if (!current() || !discussionId || !scope) return;
-      const failed = pending.find((p) => p.id === id);
+      if (!current()) return;
+      const failed = pending.find((p) => p.id === id && p.status === 'failed');
       if (!failed) return;
       setPending((prev) => prev.map((p) => (p.id === id ? { ...p, status: 'sending' } : p)));
-      try {
-        const persisted = await discussionsService.postMessage(scope, discussionId, {
-          id,
-          content: failed.content,
-        });
-        if (!current()) return;
-        upsertMessages([persisted]);
-        setPending((prev) => prev.filter((p) => p.id !== id));
-      } catch (err) {
-        if (!current()) return;
-        reportFailure(err);
-        console.error('Retry failed:', err);
-        setPending((prev) =>
-          prev.map((p) => (p.id === id ? { ...p, status: 'failed' as const } : p)),
-        );
-      }
+      await submitMessage(failed);
     },
-    [discussionId, pending, scope, upsertMessages, current, reportFailure],
-  );
-
-  const requestAssist = useCallback(
-    async (
-      command: AssistCommand,
-      instructions = '',
-      opts: { requestId?: string; selectedMessageIds?: string[] } = {},
-    ) => {
-      if (!current() || !discussionId || !scope || scope.kind === 'sprint') return;
-      const requestId = opts.requestId || makeAssistRequestId();
-      try {
-        const { message } = await discussionsService.assist(scope, discussionId, {
-          requestId,
-          command,
-          instructions,
-          selectedMessageIds: opts.selectedMessageIds || [],
-          ...(agentCli ? { agentCli } : {}),
-        });
-        upsertMessages([message]);
-      } catch (err) {
-        reportFailure(err);
-        console.error('Discussion assist failed:', err);
-      }
-    },
-    [agentCli, discussionId, scope, upsertMessages, current, reportFailure],
+    [pending, submitMessage, current],
   );
 
   // ── Typing awareness ──

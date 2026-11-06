@@ -52,8 +52,10 @@
     "react-router": "^8.3.0",
     "react-syntax-highlighter": "^16.1.1",
     "remark-gfm": "^4.0.1",
+    "remark-parse": "11.0.0",
     "tailwind-merge": "^3.6.0",
     "tailwindcss-animate": "^1.0.7",
+    "unified": "11.0.5",
     "y-codemirror.next": "^0.3.5",
     "y-protocols": "^1.0.7",
     "yjs": "^13.6.31"

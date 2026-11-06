@@ -161,8 +161,12 @@ export interface IntentContextValue {
   /** Preview tab: the derived item currently displayed (mutually exclusive with artifact). */
   previewItemId: string | null;
   previewSeq: number;
-  /** Open a document artifact in the right panel's Preview tab. */
-  openArtifactPreview: (artifactId: string) => void;
+  /** Preview tab: the element to scroll to in the artifact (an identifier's definition). */
+  previewAnchor: string | null;
+  /** Open a document artifact in the right panel's Preview tab, optionally at an anchor. */
+  openArtifactPreview: (artifactId: string, anchor?: string) => void;
+  /** The preview scrolled to the anchor (or gave up): don't scroll to it again. */
+  clearPreviewAnchor: () => void;
   /** Open a derived item (Story/Requirement/…) in the right panel's Preview tab. */
   openItemPreview: (itemId: string) => void;
 
@@ -377,7 +381,9 @@ function NativeIntentAdapterProvider({
     },
     previewArtifactId: null,
     previewItemId: null,
+    previewAnchor: null,
     previewSeq: 0,
+    clearPreviewAnchor: () => {},
     openArtifactPreview: () => {},
     openItemPreview: () => {},
     reload: nativeWorkspace.refresh,
@@ -430,6 +436,7 @@ function PlatformIntentAdapterProvider({
   const [previewArtifactId, setPreviewArtifactId] = useState<string | null>(null);
   const [previewItemId, setPreviewItemId] = useState<string | null>(null);
   const [previewSeq, setPreviewSeq] = useState(0);
+  const [previewAnchor, setPreviewAnchor] = useState<string | null>(null);
   const previewSeqRef = useRef(0);
 
   // Guards late async resolutions (compiled fetch) against route changes.
@@ -907,9 +914,10 @@ function PlatformIntentAdapterProvider({
   );
 
   const openArtifactPreview = useCallback(
-    (artifactId: string) => {
+    (artifactId: string, anchor?: string) => {
       previewSeqRef.current += 1;
       setPreviewArtifactId(artifactId);
+      setPreviewAnchor(anchor ?? null);
       // Artifact and item previews are mutually exclusive.
       setPreviewItemId(null);
       setPreviewSeq(previewSeqRef.current);
@@ -917,6 +925,8 @@ function PlatformIntentAdapterProvider({
     },
     [onAgentFocus],
   );
+
+  const clearPreviewAnchor = useCallback(() => setPreviewAnchor(null), []);
 
   const openItemPreview = useCallback(
     (itemId: string) => {
@@ -1150,7 +1160,9 @@ function PlatformIntentAdapterProvider({
         previewArtifactId,
         previewItemId,
         previewSeq,
+        previewAnchor,
         openArtifactPreview,
+        clearPreviewAnchor,
         openItemPreview,
         reload: load,
         answerGate,

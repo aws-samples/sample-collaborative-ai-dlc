@@ -145,28 +145,33 @@ export function DiscussionThread({
 
       {renderGroups(unread)}
 
-      {pending.map((p) => (
-        <div key={p.id} className="flex gap-2 px-3 py-1.5 opacity-70">
-          <div className="h-6 w-6 shrink-0" />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm whitespace-pre-wrap break-words">{p.content}</div>
-            {p.status === 'sending' ? (
-              <span className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
-                <Loader2 className="h-2.5 w-2.5 animate-spin" /> sending…
-              </span>
-            ) : (
-              <button
-                type="button"
-                className="text-[10px] text-destructive inline-flex items-center gap-1 hover:underline"
-                onClick={() => onRetry(p.id)}
-              >
-                <AlertCircle className="h-2.5 w-2.5" /> failed — retry
-                <RotateCcw className="h-2.5 w-2.5" />
-              </button>
-            )}
+      {pending.map((p) => {
+        const saved = messages.some((m) => m.id === p.id);
+        return (
+          <div key={p.id} className="flex gap-2 px-3 py-1.5 opacity-70">
+            <div className="h-6 w-6 shrink-0" />
+            <div className="min-w-0 flex-1">
+              {!saved && <div className="text-sm whitespace-pre-wrap break-words">{p.content}</div>}
+              {p.status === 'sending' ? (
+                <span className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
+                  <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                  {saved ? 'asking Quorum…' : 'sending…'}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="text-[10px] text-destructive inline-flex items-center gap-1 hover:underline"
+                  onClick={() => onRetry(p.id)}
+                >
+                  <AlertCircle className="h-2.5 w-2.5" />
+                  {saved ? 'Quorum request not confirmed — retry' : 'failed — retry'}
+                  <RotateCcw className="h-2.5 w-2.5" />
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {typingUsers.length > 0 && (
         <p className="px-3 pt-1 text-[10px] text-muted-foreground italic">

@@ -2565,7 +2565,7 @@ module "discussions_lambda" {
   vpc_subnet_ids         = var.private_subnet_ids
   vpc_security_group_ids = [aws_security_group.lambda.id]
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID                   = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
@@ -2642,7 +2642,7 @@ module "discussion_result" {
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"
-  }
+  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
 }
 
 # Cognito Users Lambda (lists users from Cognito)
@@ -3100,7 +3100,7 @@ resource "aws_iam_role_policy" "intents" {
         # review operations without resolving credentials in this Lambda.
         Effect   = "Allow"
         Action   = ["lambda:InvokeFunction"]
-        Resource = [local.source_control_function_arn]
+        Resource = [local.source_control_function_arn, module.trackers_lambda.lambda_function_arn]
       },
       {
         # Watchdog repair: verify stale local rows against the durable execution
@@ -3282,6 +3282,7 @@ module "intents_lambda" {
     # Qualified name (function:alias) — durable functions reject $LATEST invokes.
     V2_ORCHESTRATOR_FUNCTION          = "${module.v2_orchestrator_lambda.lambda_function_name}:${module.v2_orchestrator_alias.lambda_alias_name}"
     SOURCE_CONTROL_FUNCTION           = module.source_control_lambda.lambda_function_name
+    TRACKERS_FUNCTION                 = module.trackers_lambda.lambda_function_name
     DURABLE_EXECUTION_TIMEOUT_SECONDS = "31622400"
   }
 }
@@ -3585,7 +3586,7 @@ module "v2_orchestrator_lambda" {
   vpc_subnet_ids         = local.all_lambdas_in_vpc ? var.private_subnet_ids : null
   vpc_security_group_ids = local.all_lambdas_in_vpc ? [aws_security_group.lambda.id] : null
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID                   = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME             = local.powertools_service_name
     POWERTOOLS_LOG_LEVEL                = var.powertools_log_level
@@ -3606,7 +3607,7 @@ module "v2_orchestrator_lambda" {
     WEBSOCKET_ENDPOINT                   = var.websocket_api_endpoint_https
     DURABLE_EXECUTION_TIMEOUT_SECONDS    = "31622400"
     DURABLE_GATE_DEADLINE_MARGIN_SECONDS = "300"
-  }
+  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 
@@ -3646,4 +3647,28 @@ resource "aws_lambda_permission" "yjs_cleanup" {
   function_name = module.intents_lambda.lambda_function_name
   principal     = "events.amazonaws.com"
   source_arn    = aws_cloudwatch_event_rule.yjs_cleanup.arn
+}
+
+# MCP Gateway grant issuance (only when the Gateway is enabled). The two
+# Lambdas that start MCP-launching runtime commands sign the grant; nothing
+# else in the platform can.
+resource "aws_iam_role_policy" "gateway_grant_signers" {
+  for_each = var.enable_mcp_gateway ? {
+    v2_orchestrator = aws_iam_role.v2_orchestrator.id
+    discussions     = aws_iam_role.discussions.id
+  } : {}
+
+  name = "sign-gateway-grants"
+  role = each.value
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["kms:Sign"]
+      Resource = var.gateway_grant_key_arn
+      Condition = {
+        StringEquals = { "kms:SigningAlgorithm" = "ECDSA_SHA_256" }
+      }
+    }]
+  })
 }

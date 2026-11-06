@@ -77,6 +77,13 @@ import {
 } from './services.js';
 import { parseNativeArtifactRevisionId } from '../shared/native-artifact-revision.js';
 import { resolveScope } from './scope.js';
+import { gatewayGrantIssuerFromEnv } from '../shared/gateway-grant-issuer.js';
+import { DISCUSSION_GRANT_TTL_SECONDS } from '../shared/gateway-grant.js';
+
+let issueGatewayGrant = gatewayGrantIssuerFromEnv();
+export const __setGatewayGrantIssuer = (issuer) => {
+  issueGatewayGrant = issuer;
+};
 
 const logger = new Logger({ persistentKeys: { component: 'discussions' } });
 
@@ -832,6 +839,18 @@ export const assistDiscussion = async (event, res) => {
             : null;
         nativeContext = { executionId: scope.executionId, artifact, runModel };
       }
+      const gatewayGrant =
+        !native && issueGatewayGrant
+          ? await issueGatewayGrant(
+              {
+                mode: 'discussion',
+                projectId: auth.projectId,
+                intentId: scope.rootId,
+                executionId: scope.rootId,
+              },
+              { ttlSeconds: DISCUSSION_GRANT_TTL_SECONDS },
+            )
+          : null;
       const invoke = native ? invokeNativeDiscussionAssist : invokeDiscussionAssist;
       const out = await invoke({
         intentId: scope.rootId,
@@ -855,6 +874,7 @@ export const assistDiscussion = async (event, res) => {
             : {}),
           ...(agentCredentialGrant ? { agentCredentialGrant } : {}),
           ...(nativeContext ? { nativeContext } : {}),
+          ...(gatewayGrant ? { gatewayGrant } : {}),
         },
       });
       if (out?.ok === false) {

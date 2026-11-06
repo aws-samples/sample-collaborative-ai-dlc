@@ -44,6 +44,8 @@ The APIs return configured state and the effective source, never secret values. 
 
 Starting an intent pins the selected CLI and credential binding for the run's lifetime. Rotating the value at that same scope takes effect on the next invocation; clearing or invalidating it fails the run instead of falling through to another scope.
 
+Before a key is saved or cleared, the server checks which work already uses it. If nothing that has already started is affected, the change is saved straight away and the card says what it now means. Otherwise the card asks you to confirm and names, in plain words, the work that would lose access, needs reconnecting, or could not be checked, with **Show details** for the specifics. The server rejects the save if work or configuration changed after that check; save again to repeat it.
+
 There is no intent-level credential store in this feature. An intent binds to one of the three managed scopes above but never owns a separate API key. Dedicated per-intent secrets would require a separate lifecycle and authorization design.
 
 ## Environments

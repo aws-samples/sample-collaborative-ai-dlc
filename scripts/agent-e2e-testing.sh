@@ -221,8 +221,8 @@ start_services() {
     --network-alias gremlin \
     tinkerpop/gremlin-server:3.7.3 >/dev/null
 
-  local ready=0 attempt
-  for attempt in $(seq 1 60); do
+  local ready=0 _attempt
+  for _attempt in $(seq 1 60); do
     if docker logs "$GREMLIN_CONTAINER" 2>&1 | grep -q 'Channel started at port 8182'; then
       ready=1
       break
@@ -234,7 +234,7 @@ start_services() {
   local -a args=()
   while IFS= read -r arg; do args+=("$arg"); done < <(container_args)
   ready=0
-  for attempt in $(seq 1 30); do
+  for _attempt in $(seq 1 30); do
     if docker run --rm "${args[@]}" --entrypoint node "$IMAGE" \
       /opt/agentcore/test/local-e2e-harness.mjs bootstrap >/dev/null 2>&1; then
       ready=1

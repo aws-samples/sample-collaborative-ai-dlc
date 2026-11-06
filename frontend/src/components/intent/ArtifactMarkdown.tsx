@@ -11,10 +11,21 @@ import {
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { PluggableList } from 'unified';
+import {
+  buildReferenceDefinitions,
+  definitionSites,
+  nodeText,
+  referenceAnchor,
+  type MdastNode,
+  type ReferenceDefinition,
+} from '@/components/intent/artifactReferences';
 
 export interface MarkdownArtifactLink {
   id: string;
   title: string | null;
+  /** When given, identifiers this document defines link to their place in it. */
+  content?: string | null;
+  createdAt?: string | null;
 }
 
 export interface MarkdownDerivedItemLink {
@@ -22,14 +33,6 @@ export interface MarkdownDerivedItemLink {
   slug?: string | null;
   label: string;
 }
-
-type MdastNode = {
-  type: string;
-  value?: string;
-  children?: MdastNode[];
-  url?: string;
-  title?: string;
-};
 
 const WIKI_LINK_RE = /\[\[([^\]\r\n]+)\]\]/g;
 
@@ -65,6 +68,44 @@ export function buildPreviewReferenceIndex(
       [item.slug, item.id].filter(Boolean).map((key) => [referenceKey(key!), item] as const),
     ),
   );
+  // Identifiers documents define (U26, US6.11, CR-10), where no derived item has them.
+  const definitions = [...buildReferenceDefinitions(artifacts).values()].filter(
+    (definition) => !itemsByKey.has(referenceKey(definition.id)),
+  );
+  const definitionsById = new Map(definitions.map((definition) => [definition.id, definition]));
+  const definedPattern =
+    definitions.length > 0
+      ? new RegExp(
+          `(?<![A-Za-z0-9_-])(${definitions
+            .map((definition) => definition.id)
+            .toSorted((a, b) => b.length - a.length)
+            .map(escapeRegex)
+            .join('|')})(?![A-Za-z0-9_-]|\\.[A-Za-z0-9])`,
+          'g',
+        )
+      : null;
+
+  const splitDefined = (value: string): PreviewReferenceSegment[] => {
+    if (!definedPattern) return [{ text: value }];
+    const segments: PreviewReferenceSegment[] = [];
+    let lastIndex = 0;
+    for (const match of value.matchAll(definedPattern)) {
+      const start = match.index ?? 0;
+      const definition = definitionsById.get(match[1]);
+      if (!definition) continue;
+      if (start > lastIndex) segments.push({ text: value.slice(lastIndex, start) });
+      segments.push({
+        href: `#artifact-${encodeURIComponent(definition.artifactId)}/${encodeURIComponent(definition.anchor)}`,
+        text: match[0],
+        title: definition.artifactTitle,
+      });
+      lastIndex = start + match[0].length;
+    }
+    if (lastIndex === 0) return [{ text: value }];
+    if (lastIndex < value.length) segments.push({ text: value.slice(lastIndex) });
+    return segments;
+  };
+
   const derivedPattern =
     itemsByKey.size > 0
       ? new RegExp(
@@ -77,13 +118,13 @@ export function buildPreviewReferenceIndex(
       : null;
 
   const splitDerivedItems = (value: string): PreviewReferenceSegment[] => {
-    if (!derivedPattern) return [{ text: value }];
+    if (!derivedPattern) return splitDefined(value);
 
     const segments: PreviewReferenceSegment[] = [];
     let lastIndex = 0;
     for (const match of value.matchAll(derivedPattern)) {
       const start = match.index ?? 0;
-      if (start > lastIndex) segments.push({ text: value.slice(lastIndex, start) });
+      if (start > lastIndex) segments.push(...splitDefined(value.slice(lastIndex, start)));
 
       const item = itemsByKey.get(referenceKey(match[1]));
       if (item) {
@@ -96,8 +137,8 @@ export function buildPreviewReferenceIndex(
       lastIndex = start + match[0].length;
     }
 
-    if (lastIndex === 0) return [{ text: value }];
-    if (lastIndex < value.length) segments.push({ text: value.slice(lastIndex) });
+    if (lastIndex === 0) return splitDefined(value);
+    if (lastIndex < value.length) segments.push(...splitDefined(value.slice(lastIndex)));
     return segments;
   };
 
@@ -135,15 +176,69 @@ function referenceNode({ text, href, title }: PreviewReferenceSegment): MdastNod
     : { type: 'text', value: text };
 }
 
+// Gives each heading, table row and bold-led list item where this document defines
+// an identifier the element id its references scroll to. The sites come from the
+// same walk the definition index uses, over the tree being rendered, so every
+// indexed definition has its anchor. Where this document is also the one the
+// identifier links to, the defining text is marked so it isn't a link to itself:
+// the whole cell in a table, only the leading identifier in a heading or list
+// label, so other references beside it still link. A copy another document wins
+// still links to the winner.
+interface ReferenceAnchorOptions {
+  artifactId: string;
+  winners: ReadonlyMap<string, ReferenceDefinition>;
+}
+
+// Splits the identifier a heading or list label starts with into its own text node,
+// marked as the definition. Leaves the node alone if its text doesn't start with it.
+function markLeadingToken(node: MdastNode, id: string): void {
+  const children = node.children ?? [];
+  const index = children.findIndex((child) => nodeText(child).trim() !== '');
+  const child = children[index];
+  if (!child) return;
+  if (child.type !== 'text') {
+    markLeadingToken(child, id);
+    return;
+  }
+  const value = child.value ?? '';
+  const start = value.indexOf(id);
+  if (start === -1 || value.slice(0, start).trim() !== '') return;
+  const end = start + id.length;
+  children.splice(
+    index,
+    1,
+    ...[
+      { type: 'text', value: value.slice(0, start) },
+      { type: 'text', value: id, data: { referenceDefinition: true } },
+      { type: 'text', value: value.slice(end) },
+    ].filter((part) => part.value),
+  );
+}
+
+function remarkReferenceAnchors({ artifactId, winners }: ReferenceAnchorOptions) {
+  return (tree: MdastNode) => {
+    for (const { id, target, cell, label } of definitionSites(tree)) {
+      target.data = {
+        ...target.data,
+        hProperties: { ...target.data?.hProperties, id: referenceAnchor(artifactId, id) },
+      };
+      if (winners.get(id)?.artifactId !== artifactId) continue;
+      if (cell) cell.data = { ...cell.data, referenceDefinition: true };
+      else markLeadingToken(label, id);
+    }
+  };
+}
+
 function remarkPreviewLinks(index: PreviewReferenceIndex) {
   return (tree: MdastNode) => {
     const visit = (node: MdastNode) => {
       if (node.type === 'code' || node.type === 'inlineCode' || node.type === 'link') return;
+      if (node.data?.referenceDefinition) return;
       if (!node.children) return;
 
       const children: MdastNode[] = [];
       for (const child of node.children) {
-        if (child.type === 'text' && child.value) {
+        if (child.type === 'text' && child.value && !child.data?.referenceDefinition) {
           children.push(...index.split(child.value).map(referenceNode));
         } else {
           children.push(child);
@@ -190,11 +285,22 @@ const markdownComponents: Components = {
   },
 };
 
-type MarkdownLinkProps = ComponentPropsWithoutRef<'a'> & { node?: MdastNode };
+// react-markdown passes the hast element; the link only drops it.
+type MarkdownLinkProps = ComponentPropsWithoutRef<'a'> & { node?: unknown };
 
-function previewTarget(href?: string): { kind: 'artifact' | 'item'; id: string } | null {
+/** Opens an artifact's preview, scrolled to `anchor` when the link names a place in it. */
+export type OpenArtifact = (artifactId: string, anchor?: string) => void;
+
+function previewTarget(
+  href?: string,
+): { kind: 'artifact' | 'item'; id: string; anchor?: string } | null {
   if (href?.startsWith('#artifact-')) {
-    return { kind: 'artifact', id: decodeURIComponent(href.slice('#artifact-'.length)) };
+    const [id, anchor] = href.slice('#artifact-'.length).split('/');
+    return {
+      kind: 'artifact',
+      id: decodeURIComponent(id),
+      ...(anchor ? { anchor: decodeURIComponent(anchor) } : {}),
+    };
   }
   if (href?.startsWith('#item-')) {
     return { kind: 'item', id: decodeURIComponent(href.slice('#item-'.length)) };
@@ -205,12 +311,13 @@ function previewTarget(href?: string): { kind: 'artifact' | 'item'; id: string }
 // Opens a preview link's target, returning whether a handler took it.
 function openPreviewTarget(
   href: string | undefined,
-  onOpenArtifact?: (artifactId: string) => void,
+  onOpenArtifact?: OpenArtifact,
   onOpenItem?: (itemId: string) => void,
 ): boolean {
   const target = previewTarget(href);
   if (target?.kind === 'artifact' && onOpenArtifact) {
-    onOpenArtifact(target.id);
+    if (target.anchor) onOpenArtifact(target.id, target.anchor);
+    else onOpenArtifact(target.id);
     return true;
   }
   if (target?.kind === 'item' && onOpenItem) {
@@ -221,7 +328,7 @@ function openPreviewTarget(
 }
 
 function makePreviewLinkComponent(
-  onOpenArtifact?: (artifactId: string) => void,
+  onOpenArtifact?: OpenArtifact,
   onOpenItem?: (itemId: string) => void,
   stopPropagation = false,
 ): NonNullable<Components['a']> {
@@ -245,7 +352,7 @@ function makePreviewLinkComponent(
 interface PreviewLinkProps {
   artifacts?: MarkdownArtifactLink[];
   derivedItems?: MarkdownDerivedItemLink[];
-  onOpenArtifact?: (artifactId: string) => void;
+  onOpenArtifact?: OpenArtifact;
   onOpenItem?: (itemId: string) => void;
   /** Keep the referencing text as the link text, with the target's title on hover. */
   preserveReferenceText?: boolean;
@@ -264,10 +371,23 @@ export function ArtifactMarkdown({
   onOpenItem,
   preserveReferenceText = false,
   stopLinkPropagation = false,
-}: PreviewLinkProps & { content: string }) {
+  artifactId,
+}: PreviewLinkProps & {
+  content: string;
+  /** The artifact being rendered: its identifier definitions get scroll targets. */
+  artifactId?: string;
+}) {
   const remarkPlugins = useMemo<PluggableList>(
     () => [
       remarkGfm,
+      ...(artifactId
+        ? [
+            [
+              remarkReferenceAnchors,
+              { artifactId, winners: buildReferenceDefinitions(artifacts) },
+            ] as [typeof remarkReferenceAnchors, ReferenceAnchorOptions],
+          ]
+        : []),
       [
         remarkPreviewLinks,
         buildPreviewReferenceIndex(artifacts, derivedItems, {
@@ -275,7 +395,7 @@ export function ArtifactMarkdown({
         }),
       ] as [typeof remarkPreviewLinks, PreviewReferenceIndex],
     ],
-    [artifacts, derivedItems, preserveReferenceText],
+    [artifacts, derivedItems, preserveReferenceText, artifactId],
   );
   const components = useMemo(
     () => ({

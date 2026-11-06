@@ -87,6 +87,10 @@ The credentialed agent E2E and deployed-stack procedures in the testing guide ma
 
 Record what ran, what passed or failed, and what could not be checked. Distinguish a missing prerequisite or pre-existing failure from a regression introduced by the change. Do not claim a test passed without running it or seeing its result.
 
+## Creating pull requests
+
+Follow the [PR template](.github/pull_request_template.md).
+
 ## Creating issues
 
 Set the native GitHub issue type (`Bug`, `Feature`, or `Task`) and apply existing labels. Use `gh label list --limit 100` for current names/descriptions and `gh issue create --label` to supply labels when creating issues through the CLI.

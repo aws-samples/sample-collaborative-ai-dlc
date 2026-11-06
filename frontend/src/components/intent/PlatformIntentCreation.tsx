@@ -77,6 +77,13 @@ export function PlatformIntentCreation({
     issue: TrackerIssue;
   } | null>(null);
   const [importing, setImporting] = useState(false);
+  const importRequest = useRef(0);
+  useEffect(
+    () => () => {
+      importRequest.current += 1;
+    },
+    [projectId],
+  );
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -210,26 +217,33 @@ export function PlatformIntentCreation({
   const handleSelectIssue = useCallback(
     async (issue: TrackerIssue, binding: TrackerBinding) => {
       if (!projectId) return;
+      const request = ++importRequest.current;
       setSource({ binding, issue });
       setTitle(issue.title);
       setImporting(true);
       setError(null);
       try {
-        let comments: Awaited<ReturnType<typeof trackersService.listComments>> = [];
-        try {
-          comments = await trackersService.listComments(projectId, binding.id, issue.resourceId);
-        } catch {
-          // Comments are a best-effort enrichment — fall back to the body alone.
+        const [fullIssue, comments] = await Promise.all([
+          binding.provider === 'jira-cloud'
+            ? trackersService.getIssue(projectId, binding.id, issue.resourceId).catch(() => issue)
+            : Promise.resolve(issue),
+          trackersService.listComments(projectId, binding.id, issue.resourceId).catch(() => []),
+        ]);
+        if (active.current && request === importRequest.current) {
+          setPrompt(buildSprintDescription(fullIssue, comments));
         }
-        if (active.current) setPrompt(buildSprintDescription(issue, comments));
       } finally {
-        if (active.current) setImporting(false);
+        if (active.current && request === importRequest.current) setImporting(false);
       }
     },
     [projectId, setTitle, setPrompt],
   );
 
-  const clearSource = () => setSource(null);
+  const clearSource = () => {
+    importRequest.current += 1;
+    setImporting(false);
+    setSource(null);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -294,7 +308,13 @@ export function PlatformIntentCreation({
       }
       if (!active.current) return;
       navigate(`/space/${projectId}/intent/${intent.id}/compose`, {
-        state: releaseSelectionFallback ? { releaseSelectionFallback: true } : null,
+        state:
+          source || releaseSelectionFallback
+            ? {
+                ...(source ? { importTrackerAttachments: true } : {}),
+                ...(releaseSelectionFallback ? { releaseSelectionFallback: true } : {}),
+              }
+            : null,
       });
     } catch (err) {
       if (active.current) setError(err instanceof Error ? err.message : 'Failed to create intent');

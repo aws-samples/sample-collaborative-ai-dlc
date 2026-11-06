@@ -84,6 +84,8 @@ const { accountCredentialInvocation } = isolatedRuntime
   ? {}
   : await import('./invocation-accounting.js');
 
+const { runWithGatewayGrant } = isolatedRuntime ? {} : await import('./mcp/gateway-context.js');
+
 const logger = isolatedRuntime ? null : new Logger({ persistentKeys: { component: 'agentcore' } });
 
 // Track whether a stage is currently running so /ping can report HealthyBusy.
@@ -138,10 +140,13 @@ export const dispatchInvocation = async ({
         : {};
     const handlerPayload = { ...payload };
     delete handlerPayload.agentCredentialGrant;
+    delete handlerPayload.gatewayGrant;
     credentialSession = context.credentialSession ?? null;
-    const result = credentialSession
-      ? await credentialSession.run(() => handler(handlerPayload, context))
-      : await handler(handlerPayload, context);
+    const runHandler = () =>
+      credentialSession
+        ? credentialSession.run(() => handler(handlerPayload, context))
+        : handler(handlerPayload, context);
+    const result = await runWithGatewayGrant(payload.gatewayGrant ?? null, runHandler);
     // Command-level failures are part of the application protocol. Keep them on
     // HTTP 200 so Bedrock AgentCore returns the JSON body to the orchestrator
     // instead of turning the response into an SDK transport exception. Log them
