@@ -287,7 +287,9 @@ export const commitAll = async ({
       before.exitCode === 0
         ? knownChangedFileProvenance(parsePorcelainZ(before.stdout))
         : unknownChangedFileProvenance('git_status_failed', before.stderr?.trim());
-    const add = await git(['add', '-A'], { cwd: dir });
+    // Agents can create files outside a sparse selection. Stage those too,
+    // while Git's skip-worktree entries preserve excluded tracked files.
+    const add = await git(['add', '-A', '--sparse'], { cwd: dir });
     if (add.exitCode !== 0) {
       return {
         committed: false,
@@ -1250,7 +1252,9 @@ export const concludeConflictMerge = async ({
       : committer;
   if (inProgress) {
     await ensureRuntimeExcludes({ dir });
-    const add = await git(['add', '-A'], { cwd: dir });
+    // Merges materialize conflicted paths even outside the sparse selection.
+    // Their resolutions must enter the index before checking for unmerged paths.
+    const add = await git(['add', '-A', '--sparse'], { cwd: dir });
     if (add.exitCode !== 0) {
       await abort();
       return { concluded: false, reason: 'add_failed', detail: add.stderr.trim() };

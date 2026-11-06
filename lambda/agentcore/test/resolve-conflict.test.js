@@ -128,7 +128,8 @@ describe('resolveConflict', () => {
   it('restores and trusts the lane checkout before the first fetch', async () => {
     const ws = path.join(root, 'restored-lane-ws');
     const calls = [];
-    const res = await resolveConflict(basePayload(ws), {
+    const sparseCheckout = { 'o/r': ['services/api'] };
+    const res = await resolveConflict(basePayload(ws, { sparseCheckout }), {
       ensureWorkspaceSource: async (options) => {
         calls.push('restore');
         expect(options).toMatchObject({
@@ -138,6 +139,7 @@ describe('resolveConflict', () => {
           projectId: 'p1',
           executionId: 'e1',
           workspaceDir: ws,
+          sparseCheckout,
         });
         return { restored: false, repos: [], failed: [] };
       },

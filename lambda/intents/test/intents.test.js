@@ -1308,20 +1308,23 @@ describe('POST /projects/{id}/intents', () => {
     expect(JSON.parse(res.body).sparseCheckout).toEqual({ 'owner/repo': ['services/api'] });
   });
 
-  it.each([{ 'other/repo': ['src'] }, { 'owner/repo': ['../escape'] }, { 'owner/repo': 'src' }])(
-    'rejects an invalid sparse checkout selection',
-    async (sparseCheckout) => {
-      const sub = `u-${randomUUID()}`;
-      const projectId = await seedV2Project(sub);
-      const res = await createIntent(sub, projectId, {
-        title: 'Scoped work',
-        prompt: 'Update API',
-        sparseCheckout,
-      });
-      expect(res.statusCode).toBe(400);
-      expect(JSON.parse(res.body).error).toContain('sparseCheckout');
-    },
-  );
+  it.each([
+    { 'other/repo': ['src'] },
+    { 'owner/repo': ['../escape'] },
+    { 'owner/repo': 'src' },
+    { 'owner/repo': [' services/api'] },
+    { 'owner/repo': ['services/api '] },
+  ])('rejects an invalid sparse checkout selection', async (sparseCheckout) => {
+    const sub = `u-${randomUUID()}`;
+    const projectId = await seedV2Project(sub);
+    const res = await createIntent(sub, projectId, {
+      title: 'Scoped work',
+      prompt: 'Update API',
+      sparseCheckout,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toContain('sparseCheckout');
+  });
 
   it('honors a caller-supplied per-repo baseBranches map', async () => {
     const sub = `u-${randomUUID()}`;
