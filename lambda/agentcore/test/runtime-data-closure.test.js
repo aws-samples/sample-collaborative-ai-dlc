@@ -19,7 +19,12 @@ import { S3Client } from '@aws-sdk/client-s3';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { ApiGatewayManagementApiClient } from '@aws-sdk/client-apigatewaymanagementapi';
 import { runWithGatewayGrant } from '../mcp/gateway-context.js';
-import { broadcastToIntent, invokeSourceControlOperation } from '../clients.js';
+import {
+  broadcastToIntent,
+  invokeSourceControlOperation,
+  openGraph as openDirectGraph,
+} from '../clients.js';
+import { startMcpServer } from '../mcp/index.js';
 import { customRulePinsFor, graphAccessFor, processStoreFor } from '../http-server.js';
 import { initWs } from '../commands/init-ws.js';
 import { runStage, verifyReviewTargets } from '../commands/run-stage.js';
@@ -29,7 +34,7 @@ import { initLane } from '../commands/lane.js';
 import { verifyMcp } from '../commands/verify-mcp.js';
 import { resolveStageMcpSecrets } from '../mcp-secret-broker.js';
 import { fetchCustomRules } from '../custom-rules.js';
-import { renderRulesDoc } from '../stage-materializer.js';
+import { materializeMcpConfig, mcpServerLaunch, renderRulesDoc } from '../stage-materializer.js';
 import { createReleaseScriptClosureReader } from '../release-script-closure.js';
 import { issueGatewayGrant, verifyGatewayGrant } from '../../shared/gateway-grant.js';
 import { stageInstanceId as planStageInstanceId } from '../../shared/v2-execution-plan.js';
@@ -168,6 +173,35 @@ describe('runtime data closure in remote mode', () => {
     expect(deps.engineData).toBe(true);
     await expect(deps.openGraph()).rejects.toMatchObject({ code: 'ENGINE_DATA_GRAPH_DIRECT' });
     expect(directCallCount()).toBe(0);
+  });
+
+  // Under enforced runtime grants the runtime role holds none of the
+  // permissions these would use, so each must refuse before any request.
+  it('refuses every direct path the container still links', async () => {
+    await expect(openDirectGraph()).rejects.toMatchObject({ code: 'ENGINE_DATA_GRAPH_DIRECT' });
+    await expect(startMcpServer({ env: REMOTE_ENV })).rejects.toMatchObject({
+      code: 'MCP_LOCAL_SERVER_DISABLED',
+    });
+    // Without the runtime bridge the CLI would spawn the local server itself.
+    await expect(
+      materializeMcpConfig({
+        workspaceDir: workspace,
+        mcpEntry: '/srv/mcp/index.js',
+        scope: { ...IDS, stageId: 's', stageInstanceId: 'si-1' },
+        env: REMOTE_ENV,
+      }),
+    ).rejects.toMatchObject({ code: 'MCP_LOCAL_SERVER_DISABLED' });
+    expect(() =>
+      mcpServerLaunch({
+        mcpEntry: '/srv/mcp/index.js',
+        trustedEnv: {},
+        env: { ENGINE_DATA_FUNCTION: 'engine-data' },
+        grant: GRANT,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'MCP_LOCAL_SERVER_DISABLED' }));
+    expect(directGraph).not.toHaveBeenCalled();
+    expect(directCallCount()).toBe(0);
+    expect(invocations).toEqual([]);
   });
 
   it('init-ws seeds through engine-data and resolves the base branch through the alias', async () => {

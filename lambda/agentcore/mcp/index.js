@@ -31,6 +31,13 @@ import { createProcessStore } from '../../shared/v2-process-store.js';
 import { contextFromEnv, validateStartupContext } from './startup-context.js';
 
 export const startMcpServer = async ({ env = process.env, store: injectedStore } = {}) => {
+  // This server reads and writes with the runtime role. A remote-path runtime
+  // serves the built-in tools through the Gateway proxy instead.
+  if (env.ENGINE_DATA_FUNCTION || env.AIDLC_MCP_GATEWAY_URL) {
+    throw Object.assign(new Error('The local MCP server is disabled on the remote data path'), {
+      code: 'MCP_LOCAL_SERVER_DISABLED',
+    });
+  }
   const { scope, role, mode } = contextFromEnv(env);
   const store =
     mode === 'discussion'
