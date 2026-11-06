@@ -3625,7 +3625,8 @@ deferred to NE-18, and NE-09 has not started.
 
 The initial evidence and handoff are preserved under
 `.native-evidence/ne08-2026-11-06-remove-project-pilot/`. That handoff was not
-attempted and is superseded by the final-validation handoff below. Deployment is pending.
+attempted and is superseded by the final-validation handoff below. Deployment was
+pending at that checkpoint.
 The handoff pins the reviewed commit, current configuration, bundle/frontend
 manifests and accepted runtime qualification. Its local `--check-only` precedes
 credentials and cloud tools. The saved-plan guard permits the nine native
@@ -3683,8 +3684,9 @@ the final commit, the bounded test/document changes, unchanged production bytes
 and current ignored configuration. It retains the reviewed FIFO logging,
 single-attempt receipts, nine-native-function/five-alias/33-local-helper plan
 scope and `--check-only` before credentials or mutation. Deployment and subsequent
-independent verification remain pending; no fresh live cross-space creation or
-Start journey is claimed. NE-09 remains unstarted.
+independent verification were pending at this checkpoint; the later operator
+attempts and deployed verification are recorded below. No fresh live cross-space
+creation or Start journey is claimed. NE-09 remains unstarted.
 
 ## NE-08 uniform space availability — plan-review correction, 2026-11-06
 
@@ -3693,8 +3695,8 @@ The operator attempted the final-validation handoff at
 at `2026-11-06T09:34:19.392Z` with “Known native package filename required: api”.
 **No apply occurred.** Its original plan, log, start/finish receipts and sealed
 handoff remain preserved. The preceding local validation and deployed baseline
-acceptance retain their recorded scopes; the project-pilot removal is still
-undeployed.
+acceptance retain their recorded scopes; the project-pilot removal remained
+undeployed at that checkpoint.
 
 Local decoding of that exact Terraform 1.17 plan identified a guard assumption
 error. All eight native package filenames and recipes are known, but the completed
@@ -3747,10 +3749,85 @@ remain unchanged. Their accepted suites and installed qualification are not
 repeated. The current ignored development configuration retains its intentionally
 updated hash. Local `--check-only` precedes credentials or an attempt directory;
 the normal path remains exclusively an operator action after parent review.
-**A new guarded plan/apply and independent deployed verification remain pending.**
+**At this correction checkpoint, a new guarded plan/apply and independent deployed
+verification remained pending.**
 No new live workflow, runtime/model call or cross-space acceptance is claimed.
 AI-DLC remains verified **2.11.1**, Kiro remains deferred to NE-18, and NE-09 is
 unstarted.
+
+## NE-08 uniform space availability — deployed verification, 2026-11-06
+
+After parent review, the operator completed the corrected deployment for
+`99986a346b7b259dd0a0efd7ddec6edcd23ee573` at `2026-11-06T10:41:29.901Z`.
+Independent checks used the verified `solution-read` role in account
+`746558295630`, `us-east-1`, with only managed ReadOnlyAccess and no inline
+policies. The successful attempt's five original files and the earlier failed
+attempt remain unchanged. The original completion receipt retains its historical
+`verificationStatus=PENDING`; this new record supplies the independent result.
+
+The **actual successful saved plan**, decoded locally with `terraform show`,
+matches its pinned scope and recorded review. Its 189 resource-change records
+contain 133 managed no-ops, nine metadata reads, **14 AWS updates** and **33 local
+helper replacements**: 17 `terraform_data`, eight `local_file` and eight
+`null_resource` instances. The AWS updates are the nine native functions and five
+authority aliases. There are no AWS replacements, runtime changes or unrelated
+managed mutations. All **127 native managed resources** are present. This is the
+real applied module-targeted plan, distinct from the earlier conditional offline
+projection. Terraform still reports `complete=false` for whole-stack planning;
+this acceptance does not establish whole-stack completeness.
+
+All **nine current native environments** omit
+`NATIVE_PREPARATION_PROJECT_IDS`. Every remaining environment field matches both
+the applied plan and the accepted deployed baseline. Global native admission,
+authorization and credential references, execution bindings and other configured
+function settings remain intact. Actual downloaded archives match all candidate
+entry inventories and bytes linked to **106 source inputs**. Authority, execution,
+cancellation and provisioner are the four changed logical bundle owners;
+execution and cancellation share an output. The other five owners retain their
+accepted bundle bytes. All nine functions are active with successful updates.
+The five authority aliases resolve without weighted routing to **version 27**;
+that published archive and all five effective alias environments also match and
+omit the pilot field.
+
+All **629 current frontend artifacts** match the accepted build in S3 and through
+static CloudFront responses, including the root entrypoint, chunk references and
+native request/access handling. The obsolete project-disabled UI handling is
+absent. The complete three-page bucket listing contains 2,682 objects; 2,053
+retained objects outside the current build were neither fetched nor removed.
+The deployment invalidation is complete. HTTP byte proof covers the responding
+`DUS51-P7` edge at the recorded times, not every edge or existing browser cache.
+
+Fresh registry reads resolve tag `0176cd52b080ec91` to the accepted index digest
+`sha256:fb10982fd44262ad5083d39031c569f03fd00d8d9bee719a62df15fa286225f1`
+and ARM64 platform digest
+`sha256:9ee035d277ed0a7e16e7e3eccff59af9903fb3c741e4fdba4a91536af2d4de13`.
+All **278 runtime inputs** remain identical to qualified source `513005a1`.
+All **33 current image pins across 12 configuration consumers** match, and the
+shared runtime and `DEFAULT` remain **READY at version 145**, with unchanged
+environment, network, protocol and lifecycle configuration. No image pull,
+rebuild or installed qualification was needed.
+
+The 16 native API methods and integrations, five enabled worker mappings and
+repair schedule match their accepted targets. API `olyuzk7xv3/dev` still uses
+snapshot `acqkcx`, with no alternate canary deployment. One initial local metadata
+check stopped because API Gateway omits its documented default `INTERNET`
+connection type; the corrected verifier checks that default explicitly and the
+bounded route recheck passes. This was a verifier representation issue, not a
+deployment retry.
+
+Evidence is under
+`.native-evidence/ne08-2026-11-06-project-pilot-deployed-99986a34/`. The current
+ignored development configuration retains hash
+`cf0e2b3329581ee98aa966b69caf21bce35d3efd82e5833108dcf74aaea29376`.
+The user's equal-availability decision is deployed and independently accepted
+for these configuration and artifact scopes. Existing and newly created spaces
+use ordinary authenticated membership without operator enrollment. **Fresh live
+cross-space creation, preparation and Start remain unexercised**; no protected
+workflow, Lambda/runtime/model invocation, human-gate answer or queue operation
+was part of this verification. Prior local test and installed-image results keep
+their finite scopes and were not rerun. No additional deployment command is
+needed for this acceptance. AI-DLC remains verified **2.11.1**, Kiro remains
+deferred to NE-18, and NE-09 is unstarted.
 
 ## Integration and simplification checklist
 
