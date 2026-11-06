@@ -246,7 +246,8 @@ describe('orchestrator durable handler', () => {
     deps.issueGatewayGrant = vi.fn(async (scope) => `gw:${scope.mode}:${scope.stageId}`);
     await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
 
-    const initWs = invokes.find((p) => p.command === 'init-ws');
+    const initWs = invokes.find((p) => p.command === 'init-ws-start');
+    expect(initWs).toBeDefined();
     expect(initWs).not.toHaveProperty('gatewayGrant');
     expect(stageStarts().map((s) => s.gatewayGrant)).toEqual(['gw:stage:a', 'gw:stage:b']);
     expect(deps.issueGatewayGrant).toHaveBeenCalledWith({
