@@ -2589,7 +2589,7 @@ module "discussions_lambda" {
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"
-  }
+  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
 }
 
 # Only the platform runtime may submit Quorum observations; no API route.
@@ -2642,7 +2642,7 @@ module "discussion_result" {
     # Takeover-safety invariant: must match `timeout` above; the
     # lambda asserts message-guard pending window (120 s) > this at init.
     LAMBDA_TIMEOUT_SECONDS = "30"
-  }, var.enable_mcp_gateway ? { GATEWAY_GRANT_KEY_ID = var.gateway_grant_key_arn } : {})
+  }
 }
 
 # Cognito Users Lambda (lists users from Cognito)

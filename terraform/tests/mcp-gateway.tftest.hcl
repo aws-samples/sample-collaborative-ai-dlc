@@ -23,13 +23,68 @@ mock_provider "aws" {
   mock_resource "aws_security_group" { defaults = { id = "sg-0123456789abcdef0" } }
   mock_resource "aws_subnet" { defaults = { id = "subnet-0123456789abcdef0" } }
   mock_resource "aws_bedrockagentcore_gateway" {
-    defaults = { gateway_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:gateway/test-mcp-test-abc" }
+    defaults = { gateway_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:gateway/test-mcp-test-abc", gateway_url = "https://test.gateway.bedrock-agentcore.eu-central-1.amazonaws.com/mcp" }
   }
   mock_data "aws_ecr_image" {
     defaults = { image_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
   }
 }
-mock_provider "awscc" {}
+# Native's observed-runtime contract also applies to the shared image. The
+# mock engine cannot preserve a null computed nested code artifact (a typed null
+# crashes Terraform 1.17). Supply an explicitly incompatible artifact and require
+# its rejection below. The production observation expressions, including valid
+# container observations, are exercised by terraform-agentcore-runtime-version.
+mock_provider "awscc" {
+  mock_resource "awscc_bedrockagentcore_runtime" {
+    defaults = {
+      agent_runtime_id  = "test-runtime-ABC"
+      agent_runtime_arn = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:runtime/test-runtime-ABC"
+    }
+  }
+}
+override_data {
+  target = data.awscc_bedrockagentcore_runtime.stage_executor_observed
+  values = {
+    status                = "READY"
+    agent_runtime_version = "2"
+    agent_runtime_id      = "test-runtime-ABC"
+    agent_runtime_arn     = "arn:aws:bedrock-agentcore:eu-central-1:123456789012:runtime/test-runtime-ABC"
+    agent_runtime_name    = "test_agentcore_test"
+    role_arn              = "arn:aws:iam::123456789012:role/test"
+    agent_runtime_artifact = {
+      container_configuration = { container_uri = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/test@sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+      code_configuration = {
+        code        = { s3 = { bucket = "incompatible-code-artifact", prefix = "", version_id = "" } }
+        entry_point = ["index.py"]
+        runtime     = "PYTHON_3_13"
+      }
+    }
+    environment_variables = {
+      AWS_SDK_UA_APP_ID                = "Collaborative_AI-DLC-test"
+      DISCUSSION_RESULT_FUNCTION       = "arn:aws:lambda:eu-central-1:123456789012:function:test-discussion-result-test"
+      V2_WORKSPACE_DIR                 = "/mnt/workspace"
+      V2_PROCESS_TABLE                 = "test-v2-executions-test"
+      BLOCKS_TABLE                     = "blocks"
+      ARTIFACTS_BUCKET                 = "artifacts"
+      NEPTUNE_ENDPOINT                 = "neptune.example"
+      CONNECTIONS_TABLE                = ""
+      WEBSOCKET_ENDPOINT               = ""
+      AIDLC_REPO_REF                   = "main"
+      BEDROCK_MODEL                    = "model"
+      AWS_REGION                       = "eu-central-1"
+      CREDENTIAL_BROKER_FUNCTION       = "test-credential-broker-test"
+      SOURCE_CONTROL_FUNCTION          = "test-source-control-test"
+      MCP_SECRETS_SSM_PREFIX           = "/test/test"
+      RUNTIME_COMPATIBILITY_VERSION    = "1"
+      NATIVE_INTERACTION_PROBE_ENABLED = "false"
+      POWERTOOLS_SERVICE_NAME          = "test"
+      POWERTOOLS_LOG_LEVEL             = "INFO"
+      BEDROCK_REGION                   = "eu-central-1"
+      AIDLC_MCP_GATEWAY_URL            = "https://test.gateway.bedrock-agentcore.eu-central-1.amazonaws.com/mcp"
+      AIDLC_MCP_GATEWAY_TARGET         = "aidlc"
+    }
+  }
+}
 mock_provider "docker" {}
 
 variables {
@@ -56,7 +111,7 @@ variables {
 }
 
 override_module {
-  target  = module.agentcore_docker_build
+  target  = module.agentcore_image_build
   outputs = { image_uri = "123456789012.dkr.ecr.eu-central-1.amazonaws.com/agentcore:test" }
 }
 override_module {
@@ -70,6 +125,9 @@ override_module {
 
 run "interceptor_guards_the_gateway" {
   command = apply
+  expect_failures = [
+    data.awscc_bedrockagentcore_runtime.stage_executor_observed,
+  ]
   module {
     source = "./modules/compute/agentcore"
   }
