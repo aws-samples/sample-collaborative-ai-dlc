@@ -390,6 +390,11 @@ The key builders and record constructors in
 `lambda/shared/v2-process-keys.js` are the implementation source of truth. The
 read/write behavior is centralized in `lambda/shared/v2-process-store.js`.
 
+When the optional [reporting lake](../using-the-platform/reporting.md) is
+enabled, every change to this table is also streamed to S3, and Athena views
+read these record shapes. A change to a record shape should update the matching
+view in `terraform/modules/reporting/views/`.
+
 ## DynamoDB blocks and workflows model
 
 Building blocks and workflows share one composite-key DynamoDB table. Blocks

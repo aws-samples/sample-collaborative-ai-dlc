@@ -96,6 +96,16 @@ This is a secret-based access restriction: the REST API endpoint remains public,
 Test them with representative traffic before production and review [AWS WAF pricing](https://aws.amazon.com/waf/pricing/).
 A commented IP allow-list rule example is included in `terraform/modules/security/waf/main.tf`.
 
+### Reporting lake
+
+An optional change log of intent execution in S3, queryable through Athena views, is disabled by default. To create it, set:
+
+```hcl
+reporting_enabled = true
+```
+
+Then run the one-off backfill. See [Reporting lake](../using-the-platform/reporting.md) for the backfill, the settings, and the views.
+
 ### Custom domain
 
 Entirely optional. Without it the application is served on the CloudFront-assigned `*.cloudfront.net` domain, which needs no certificate and no DNS.

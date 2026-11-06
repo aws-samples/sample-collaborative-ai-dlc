@@ -1,0 +1,20 @@
+{
+  "META": "meta",
+  "CHECKPOINT": "checkpoint",
+  "STAGE": "stage",
+  "EVENT": "event",
+  "HUMAN": "human",
+  "RECEIPT": "receipt",
+  "SENSOR": "sensor",
+  "STEER": "steer",
+  "METRIC": "metric",
+  "READ": "read",
+  "UNITPLAN": "unitplan",
+  "UNIT": "unit",
+  "UNITPR": "unitpr",
+  "FEEDBACK": "feedback",
+  "FEEDBACKCOMMENT": "feedbackcomment",
+  "QEDIT": "qedit",
+  "COMPOSE": "compose",
+  "TRACKERSYNC": "trackersync"
+}
