@@ -1,10 +1,16 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readFile, rm, access } from 'node:fs/promises';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtemp, mkdir, writeFile, readFile, rm, access, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { checkoutRepo, checkoutRepos, ensureWorkspaceSource } from '../workspace.js';
-import { beginConflictMerge, commitAll, concludeConflictMerge } from '../git-engine.js';
+import {
+  beginConflictMerge,
+  commitAll,
+  commitAndPushAll,
+  concludeConflictMerge,
+  runGit,
+} from '../git-engine.js';
 import { HOOKS_DISABLED_ARGS } from '../git-runner.js';
 import {
   isInSparseCone,
@@ -133,47 +139,198 @@ describe('sparse checkout', () => {
     expect(committed.outsideSelection).toBeUndefined();
   });
 
-  it('reports a tracked file outside the cone that the agent recreated from scratch', async () => {
+  // Refusal contract: nothing is committed, HEAD stays put, and the agent's
+  // work stays on disk and staged as evidence.
+  const expectRefused = (committed, headBefore, reason = 'sparse_outside_selection') => {
+    expect(committed).toMatchObject({ committed: false, reason, dirty: true });
+    expect(git(target, 'rev-parse', 'HEAD')).toBe(headBefore);
+  };
+  const sparseWorkspace = async () => {
     const result = await checkoutRepo({ ...inputs(), sparseDirectories: ['services/api'] });
     expect(result.branchOk).toBe(true);
     expect(await exists(path.join(target, 'assets'))).toBe(false);
-    // The agent does not see assets/large.txt and writes it fresh.
+    return git(target, 'rev-parse', 'HEAD');
+  };
+  const commit = (options = {}) =>
+    commitAll({ dir: target, message: 'stage', attempts: 1, log: () => {}, ...options });
+
+  it('refuses to commit a hidden tracked file the agent recreated from scratch', async () => {
+    const head = await sparseWorkspace();
     await mkdir(path.join(target, 'assets'));
     await writeFile(path.join(target, 'assets/large.txt'), 'rewritten');
     await writeFile(path.join(target, 'services/api/index.js'), 'updated');
-    const committed = await commitAll({
-      dir: target,
-      message: 'overwrite outside the cone',
-      attempts: 1,
-      log: () => {},
-    });
-    // The commit stands (the caller warns); the replaced path is named.
-    expect(committed.committed).toBe(true);
+    const sleep = vi.fn(async () => {});
+    const committed = await commit({ attempts: 3, sleep });
+    expectRefused(committed, head);
     expect(committed.outsideSelection).toEqual(['assets/large.txt']);
-    expect(git(target, 'show', 'HEAD:assets/large.txt')).toBe('rewritten');
+    expect(committed.detail).toContain('assets/large.txt');
+    // Deterministic: no retry backoff.
+    expect(sleep).not.toHaveBeenCalled();
+    // Evidence preserved: on disk and staged, the commit still holds the original.
+    expect(await readFile(path.join(target, 'assets/large.txt'), 'utf8')).toBe('rewritten');
+    expect(git(target, 'show', ':assets/large.txt')).toBe('rewritten');
+    expect(git(target, 'show', ':services/api/index.js')).toBe('updated');
+    expect(git(target, 'show', 'HEAD:assets/large.txt')).toBe('assets/large.txt');
   });
 
-  it('reports nothing outside the cone for a full checkout', async () => {
+  it('refuses a staged deletion of a hidden tracked file (git bypass)', async () => {
+    const head = await sparseWorkspace();
+    git(target, 'rm', '--cached', '--sparse', '-q', 'assets/large.txt');
+    const committed = await commit();
+    expectRefused(committed, head);
+    expect(committed.outsideSelection).toEqual(['assets/large.txt']);
+    expect(git(target, 'ls-files', 'assets/large.txt')).toBe('');
+  });
+
+  it('refuses replacing a hidden tracked file with a symlink (type change)', async () => {
+    const head = await sparseWorkspace();
+    await mkdir(path.join(target, 'assets'));
+    await symlink('../README.md', path.join(target, 'assets/large.txt'));
+    const committed = await commit();
+    expectRefused(committed, head);
+    expect(committed.outsideSelection).toEqual(['assets/large.txt']);
+  });
+
+  it('refuses a previously refused change again on the next attempt', async () => {
+    const head = await sparseWorkspace();
+    await mkdir(path.join(target, 'assets'));
+    await writeFile(path.join(target, 'assets/large.txt'), 'rewritten');
+    expectRefused(await commit(), head);
+    expectRefused(await commit(), head);
+    // Restoring the committed content (the recovery the prompt asks for) unblocks it.
+    await writeFile(
+      path.join(target, 'assets/large.txt'),
+      git(target, 'show', 'HEAD:assets/large.txt'),
+    );
+    await writeFile(path.join(target, 'services/api/index.js'), 'updated');
+    const recovered = await commit();
+    expect(recovered.committed).toBe(true);
+    expect(git(target, 'show', 'HEAD:assets/large.txt')).toBe('assets/large.txt');
+    expect(git(target, 'show', 'HEAD:services/api/index.js')).toBe('updated');
+  });
+
+  it('commits root and ancestor-directory files that cone mode materializes', async () => {
+    await sparseWorkspace();
+    await writeFile(path.join(target, 'README.md'), 'root edit');
+    await writeFile(path.join(target, 'services/config.json'), 'ancestor edit');
+    const committed = await commit();
+    expect(committed.committed).toBe(true);
+    expect(git(target, 'show', 'HEAD:services/config.json')).toBe('ancestor edit');
+  });
+
+  it.each([
+    ['core.sparseCheckout is unreadable', 'config --bool core.sparseCheckout', { exitCode: 128 }],
+    [
+      'cone mode is off',
+      'config --bool core.sparseCheckoutCone',
+      { exitCode: 0, stdout: 'false\n' },
+    ],
+    ['the selection list fails', 'sparse-checkout list', { exitCode: 128 }],
+    [
+      'the selection list is malformed',
+      'sparse-checkout list',
+      { exitCode: 0, stdout: '"a\\tb"\n' },
+    ],
+    ['the selection list is empty', 'sparse-checkout list', { exitCode: 0, stdout: '' }],
+    ['HEAD cannot be resolved', 'rev-parse --verify -q HEAD^{commit}', { exitCode: 128 }],
+    ['the staged diff fails', 'diff-index --cached -z --no-renames HEAD', { exitCode: 128 }],
+    [
+      'the staged diff is malformed',
+      'diff-index --cached -z --no-renames HEAD',
+      { exitCode: 0, stdout: 'not raw output\0' },
+    ],
+  ])('refuses to commit when %s', async (_label, command, response) => {
+    const head = await sparseWorkspace();
+    await writeFile(path.join(target, 'services/api/index.js'), 'updated');
+    const failing = (args, options) =>
+      args.join(' ') === command
+        ? { stdout: '', stderr: 'simulated', ...response }
+        : runGit(args, options);
+    const committed = await commit({ git: failing });
+    expectRefused(committed, head, 'sparse_check_failed');
+    expect(committed.detail).toContain('could not verify the sparse checkout selection');
+  });
+
+  it('leaves full checkouts unaffected, including edits anywhere', async () => {
     const result = await checkoutRepo(inputs());
     expect(result.branchOk).toBe(true);
     await writeFile(path.join(target, 'assets/large.txt'), 'edited');
-    const committed = await commitAll({
-      dir: target,
-      message: 'full checkout edit',
-      attempts: 1,
-      log: () => {},
-    });
+    const committed = await commit();
     expect(committed.committed).toBe(true);
-    expect(committed.outsideSelection).toBeUndefined();
+    expect(git(target, 'show', 'HEAD:assets/large.txt')).toBe('edited');
   });
 
-  it('concludes and pushes resolved merge conflicts outside the lane cone', async () => {
+  it('pushes nothing for a refused repository and still delivers the other one', async () => {
+    const remote = path.join(root, 'remote.git');
+    git(root, 'clone', '--bare', source, remote);
+    const other = path.join(root, 'other.git');
+    git(root, 'clone', '--bare', source, other);
+    source = remote;
+    const options = {
+      ...inputs(),
+      workspaceDir: target,
+      repos: ['owner/repo', 'owner/other'],
+      sparseCheckout: { 'owner/repo': ['services/api'] },
+    };
+    const realRunner = runner;
+    const rows = await checkoutRepos({
+      ...options,
+      runner: async (command, args, opts) => {
+        const commandArgs = args.slice(HOOKS_DISABLED_ARGS.length);
+        if (commandArgs[0] === 'clone' && commandArgs.at(-1).endsWith('owner/other')) {
+          const actual = [...args];
+          actual[actual.length - 2] = other;
+          const result = spawnSync(command, actual, { cwd: opts?.cwd, encoding: 'utf8' });
+          return { code: result.status };
+        }
+        return realRunner(command, args, opts);
+      },
+    });
+    expect(rows.every((row) => row.branchOk)).toBe(true);
+    const sparseDir = path.join(target, 'owner/repo');
+    const fullDir = path.join(target, 'owner/other');
+    await mkdir(path.join(sparseDir, 'assets'));
+    await writeFile(path.join(sparseDir, 'assets/large.txt'), 'rewritten');
+    await writeFile(path.join(fullDir, 'assets/large.txt'), 'full checkout edit');
+    const result = await commitAndPushAll({
+      repos: ['owner/repo', 'owner/other'],
+      workspaceDir: target,
+      branch: 'aidlc/test',
+      gitProvider: 'github',
+      message: 'stage',
+      urlsFor: (url) =>
+        url === 'owner/repo' ? { auth: remote, clean: remote } : { auth: other, clean: other },
+      log: () => {},
+    });
+    expect(result.ok).toBe(false);
+    const [refused, delivered] = result.results;
+    expect(refused).toMatchObject({
+      repo: 'owner/repo',
+      committed: false,
+      pushed: false,
+      reason: 'sparse_outside_selection',
+      dirty: true,
+      outsideSelection: ['assets/large.txt'],
+    });
+    expect(delivered).toMatchObject({ repo: 'owner/other', committed: true, pushed: true });
+    // No intent branch reached the refused remote; the other one was pushed.
+    expect(
+      spawnSync('git', ['rev-parse', '--verify', 'refs/heads/aidlc/test'], { cwd: remote }).status,
+    ).not.toBe(0);
+    expect(git(other, 'show', 'aidlc/test:assets/large.txt')).toBe('full checkout edit');
+  });
+
+  // A unit lane (sparse: services/api) whose reverse merge of the intent
+  // branch conflicts in services/web/index.js (outside the cone) and brings an
+  // incoming, non-conflicting change to the hidden assets/large.txt.
+  const conflictedLane = async () => {
     const unitBranch = 'aidlc/test--unit';
     git(source, 'checkout', '-b', unitBranch);
     await writeFile(path.join(source, 'services/web/index.js'), 'unit version\n');
     git(source, 'commit', '-am', 'unit change');
     git(source, 'checkout', '-b', 'aidlc/test', 'main');
     await writeFile(path.join(source, 'services/web/index.js'), 'intent version\n');
+    await writeFile(path.join(source, 'assets/large.txt'), 'incoming intent change');
     git(source, 'commit', '-am', 'intent change');
     const remote = path.join(root, 'remote.git');
     git(root, 'clone', '--bare', source, remote);
@@ -197,18 +354,76 @@ describe('sparse checkout', () => {
     };
     const begin = await beginConflictMerge(options);
     expect(begin).toMatchObject({ conflicted: true, conflicts: ['services/web/index.js'] });
+    expect(begin.baseline).toBeTruthy();
     expect(await readFile(path.join(target, 'services/web/index.js'), 'utf8')).toContain('<<<<<<<');
+    const unitHead = git(remote, 'rev-parse', unitBranch);
+    return { remote, unitBranch, options, begin, unitHead };
+  };
+
+  it('concludes and pushes resolved merge conflicts outside the lane cone', async () => {
+    const { remote, unitBranch, options, begin } = await conflictedLane();
     await writeFile(path.join(target, 'services/web/index.js'), 'intent + unit resolution\n');
-    const concluded = await concludeConflictMerge({ ...options, conflicts: begin.conflicts });
+    const concluded = await concludeConflictMerge({
+      ...options,
+      conflicts: begin.conflicts,
+      baseline: begin.baseline,
+    });
     expect(concluded).toMatchObject({ concluded: true, pushed: true });
     expect(git(remote, 'show', `${unitBranch}:services/web/index.js`)).toBe(
       'intent + unit resolution',
     );
+    // The incoming change to a hidden file is merged intact.
+    expect(git(remote, 'show', `${unitBranch}:assets/large.txt`)).toBe('incoming intent change');
     expect(git(remote, 'rev-parse', unitBranch)).toBe(concluded.sha);
     expect(git(target, 'log', '-1', '--format=%P').split(' ')).toHaveLength(2);
-    expect(git(target, 'show', 'HEAD:assets/large.txt')).toBe('assets/large.txt');
     expect(git(target, 'diff', '--name-only', '--diff-filter=U')).toBe('');
     expect(git(target, 'status', '--porcelain')).toBe('');
+  });
+
+  it('refuses a merge whose agent also overwrote an unrelated hidden file', async () => {
+    const { remote, unitBranch, options, begin, unitHead } = await conflictedLane();
+    await writeFile(path.join(target, 'services/web/index.js'), 'intent + unit resolution\n');
+    // services/web/index.js is the only materialized conflict; the hidden
+    // assets file was never shown to the agent.
+    await mkdir(path.join(target, 'assets'));
+    await writeFile(path.join(target, 'assets/large.txt'), 'agent rewrite');
+    const concluded = await concludeConflictMerge({
+      ...options,
+      conflicts: begin.conflicts,
+      baseline: begin.baseline,
+    });
+    expect(concluded).toMatchObject({
+      concluded: false,
+      reason: 'sparse_outside_selection',
+      outsideSelection: ['assets/large.txt'],
+    });
+    // Aborted before committing: nothing reached the remote, no merge in progress.
+    expect(git(remote, 'rev-parse', unitBranch)).toBe(unitHead);
+    expect(
+      spawnSync('git', ['rev-parse', '--verify', 'MERGE_HEAD'], { cwd: target }).status,
+    ).not.toBe(0);
+  });
+
+  it('refuses a merge whose agent staged an unrelated hidden change (git bypass)', async () => {
+    const { remote, unitBranch, options, begin, unitHead } = await conflictedLane();
+    await writeFile(path.join(target, 'services/web/index.js'), 'intent + unit resolution\n');
+    git(target, 'rm', '--cached', '--sparse', '-q', 'assets/large.txt');
+    const concluded = await concludeConflictMerge({
+      ...options,
+      conflicts: begin.conflicts,
+      baseline: begin.baseline,
+    });
+    expect(concluded).toMatchObject({ concluded: false, reason: 'sparse_outside_selection' });
+    expect(concluded.outsideSelection).toEqual(['assets/large.txt']);
+    expect(git(remote, 'rev-parse', unitBranch)).toBe(unitHead);
+  });
+
+  it('refuses to conclude a sparse merge without the pre-agent baseline', async () => {
+    const { remote, unitBranch, options, begin, unitHead } = await conflictedLane();
+    await writeFile(path.join(target, 'services/web/index.js'), 'intent + unit resolution\n');
+    const concluded = await concludeConflictMerge({ ...options, conflicts: begin.conflicts });
+    expect(concluded).toMatchObject({ concluded: false, reason: 'sparse_check_failed' });
+    expect(git(remote, 'rev-parse', unitBranch)).toBe(unitHead);
   });
 
   it('supports a sparse checkout without a requested branch', async () => {

@@ -30,7 +30,7 @@ import { buildCloneUrl } from '../shared/git-providers.js';
 import { NO_HOOKS_PATH, runGitCommand } from './git-runner.js';
 import { repoTargetDir } from './repo-paths.js';
 import { repoCheckoutPath } from '../shared/repo-validation.js';
-import { isInSparseCone } from '../shared/sparse-checkout.js';
+import { isInSparseCone, validateSparseDirectories } from '../shared/sparse-checkout.js';
 import {
   knownChangedFileProvenance,
   mapKnownChangedFiles,
@@ -235,6 +235,10 @@ const resolveCommitterFor = async ({
 //   { committed: false, reason: 'clean' } — nothing to commit (normal for
 //                                           stages that only write graph artifacts)
 //   { committed: false, reason: 'add_failed' | 'commit_failed', detail, dirty }
+//   { committed: false, reason: 'sparse_outside_selection' | 'sparse_check_failed',
+//     detail, outsideSelection?, dirty: true }
+//                                         — refused before committing (see
+//                                           checkSparseSelection); not retried
 //
 // Durability hardening (the 2026-07 "no changes" incident: an ENOSPC'd mount
 // made both engine commits fail, the stages still succeeded, and the intent
@@ -267,31 +271,130 @@ export const parsePorcelainZ = (stdout = '') => {
   return files;
 };
 
-// Tracked files outside a sparse cone are absent from disk. An agent that
-// writes one creates it from scratch, and the commit replaces the committed
-// file. Report staged modifications of such paths so the caller can warn;
-// best-effort, never blocks the commit. Reads the cone from the checkout itself.
-const stagedChangesOutsideSparseCone = async ({ dir, git }) => {
-  const enabled = await git(['config', '--bool', 'core.sparseCheckout'], { cwd: dir });
-  if (enabled.exitCode !== 0 || enabled.stdout.trim() !== 'true') return [];
+// Sparse checkouts leave tracked files outside the selection off disk. An
+// agent that recreates, deletes or retypes one would commit a replacement of
+// content it never saw, so the engine refuses such commits (the user's chosen
+// policy). Genuinely new files outside the selection are allowed.
+//
+// The check compares the INDEX with HEAD (callers stage first), so it does not
+// depend on skip-worktree bits, which Git clears when a hidden file reappears
+// on disk. `baseline` lists index entries that were already staged before the
+// agent ran (a merge's incoming changes); those must stay exactly as recorded.
+// `allowed` lists paths the engine itself materialized for the agent (merge
+// conflicts). Returns { state, paths, detail }:
+//   full         — not a sparse checkout (core.sparseCheckout unset or false)
+//   ok           — sparse, nothing outside the selection changed
+//   violations   — `paths` outside the selection were changed
+//   unverifiable — any Git query failed or returned something unexpected;
+//                  callers must treat this as unsafe, never as "no changes".
+const SPARSE_CHANGE_STATUSES = new Set(['M', 'D', 'T', 'U']);
+export const SPARSE_REJECTIONS = new Set(['sparse_outside_selection', 'sparse_check_failed']);
+
+// `git diff-index -z` raw output: ":<srcmode> <dstmode> <srcsha> <dstsha> <status>\0<path>\0".
+// Returns null for anything that does not parse.
+const parseDiffIndexZ = (stdout) => {
+  const fields = String(stdout ?? '').split('\0');
+  if (fields.at(-1) === '') fields.pop();
+  if (fields.length % 2 !== 0) return null;
+  const entries = [];
+  for (let index = 0; index < fields.length; index += 2) {
+    const meta = /^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) ([A-Z])\d*$/.exec(fields[index]);
+    const file = fields[index + 1];
+    if (!meta || !file) return null;
+    entries.push({ path: file, signature: `${meta[5]} ${meta[2]} ${meta[4]}` });
+  }
+  return entries;
+};
+
+const readStagedEntries = async ({ dir, git }) => {
+  const diff = await git(['diff-index', '--cached', '-z', '--no-renames', 'HEAD'], { cwd: dir });
+  if (diff.exitCode !== 0) return null;
+  const entries = parseDiffIndexZ(diff.stdout);
+  if (!entries) return null;
+  // An unmerged path can appear more than once; keep every signature.
+  const byPath = {};
+  for (const { path: file, signature } of entries) {
+    byPath[file] = byPath[file] ? `${byPath[file]}|${signature}` : signature;
+  }
+  return byPath;
+};
+
+// The pre-agent baseline of a conflicted merge: every staged entry (incoming
+// changes and unmerged paths). null when it cannot be read.
+export const captureStagedBaseline = ({ dir, git = runGit }) => readStagedEntries({ dir, git });
+
+export const checkSparseSelection = async ({ dir, git = runGit, baseline, allowed = [] }) => {
+  const unverifiable = (detail) => ({ state: 'unverifiable', paths: [], detail });
+  const flag = await git(['config', '--bool', 'core.sparseCheckout'], { cwd: dir });
+  const flagValue = (flag.stdout ?? '').trim();
+  if ((flag.exitCode === 1 && flagValue === '') || (flag.exitCode === 0 && flagValue === 'false')) {
+    return { state: 'full', paths: [] };
+  }
+  if (flag.exitCode !== 0 || flagValue !== 'true') {
+    return unverifiable(`core.sparseCheckout unreadable (exit ${flag.exitCode})`);
+  }
+  const cone = await git(['config', '--bool', 'core.sparseCheckoutCone'], { cwd: dir });
+  if (cone.exitCode !== 0 || (cone.stdout ?? '').trim() !== 'true') {
+    return unverifiable('sparse checkout is not in cone mode');
+  }
   const list = await git(['sparse-checkout', 'list'], { cwd: dir });
-  const directories =
-    list.exitCode === 0
-      ? list.stdout
-          .split('\n')
-          .map((line) => line.trim())
-          .filter(Boolean)
-      : [];
-  if (directories.length === 0) return [];
-  const changed = await git(
-    ['diff', '--cached', '--name-only', '-z', '--no-renames', '--diff-filter=MT'],
-    { cwd: dir },
+  if (list.exitCode !== 0) return unverifiable('git sparse-checkout list failed');
+  const listed = validateSparseDirectories(
+    String(list.stdout ?? '')
+      .split('\n')
+      .filter((line) => line !== ''),
   );
-  if (changed.exitCode !== 0) return [];
-  return changed.stdout
-    .split('\0')
-    .filter(Boolean)
-    .filter((file) => !isInSparseCone(file, directories));
+  if (listed.error || listed.value.length === 0) {
+    return unverifiable('sparse checkout selection is empty or not a directory list');
+  }
+  const directories = listed.value;
+  const head = await git(['rev-parse', '--verify', '-q', 'HEAD^{commit}'], { cwd: dir });
+  // An unborn branch tracks nothing yet, so nothing can be overwritten.
+  if (head.exitCode === 1 && (head.stdout ?? '').trim() === '') return { state: 'ok', paths: [] };
+  if (head.exitCode !== 0) return unverifiable('HEAD could not be resolved');
+  if (!baseline || typeof baseline !== 'object') {
+    return unverifiable('no trusted baseline of staged changes');
+  }
+  const current = await readStagedEntries({ dir, git });
+  if (!current) return unverifiable('staged changes could not be read');
+  const permitted = new Set(allowed);
+  const guarded = (file) => !permitted.has(file) && !isInSparseCone(file, directories);
+  const paths = new Set();
+  for (const [file, signature] of Object.entries(current)) {
+    if (!guarded(file)) continue;
+    if (Object.hasOwn(baseline, file)) {
+      if (baseline[file] !== signature) paths.add(file);
+    } else if (signature.split('|').some((entry) => SPARSE_CHANGE_STATUSES.has(entry[0]))) {
+      paths.add(file);
+    }
+  }
+  for (const file of Object.keys(baseline)) {
+    if (guarded(file) && !Object.hasOwn(current, file)) paths.add(file);
+  }
+  return paths.size
+    ? { state: 'violations', paths: [...paths].toSorted() }
+    : { state: 'ok', paths: [] };
+};
+
+// Turns a blocking check result into commitAll / concludeConflictMerge's
+// failure shape, or null when the commit may proceed.
+const sparseRejection = (check) => {
+  if (check.state === 'violations') {
+    const shown = check.paths.slice(0, 20).join(', ');
+    const more = check.paths.length > 20 ? ` (+${check.paths.length - 20} more)` : '';
+    return {
+      reason: 'sparse_outside_selection',
+      detail: `tracked files outside the sparse checkout selection were changed: ${shown}${more}`,
+      outsideSelection: check.paths,
+    };
+  }
+  if (check.state === 'unverifiable') {
+    return {
+      reason: 'sparse_check_failed',
+      detail: `could not verify the sparse checkout selection: ${check.detail}`,
+    };
+  }
+  return null;
 };
 
 export const commitAll = async ({
@@ -326,7 +429,10 @@ export const commitAll = async ({
         provenance,
       };
     }
-    const outsideSelection = await stagedChangesOutsideSparseCone({ dir, git });
+    // Refuse BEFORE committing: nothing unsafe may enter history or be pushed.
+    // The staged index and working tree stay as they are, as evidence.
+    const rejected = sparseRejection(await checkSparseSelection({ dir, git, baseline: {} }));
+    if (rejected) return { committed: false, ...rejected, provenance };
     const status = await git(['status', '--porcelain'], { cwd: dir });
     if (status.exitCode === 0 && status.stdout.trim() === '') {
       return {
@@ -358,7 +464,6 @@ export const commitAll = async ({
       return {
         committed: true,
         sha: head.stdout.trim() || null,
-        ...(outsideSelection.length ? { outsideSelection } : {}),
         files: null,
         provenance: mergeChangedFileProvenance([
           { provenance },
@@ -375,7 +480,6 @@ export const commitAll = async ({
     return {
       committed: true,
       sha: head.stdout.trim() || null,
-      ...(outsideSelection.length ? { outsideSelection } : {}),
       files: committedFiles.length ? committedFiles : (provenance.files ?? null),
       provenance:
         provenance.state === 'known' && committedFiles.length
@@ -395,6 +499,10 @@ export const commitAll = async ({
   for (let attempt = 1; attempt <= attempts; attempt++) {
     last = await attemptOnce();
     if (last.committed || last.reason === 'clean') return last;
+    // A refusal is deterministic: retrying or reclaiming space cannot change it.
+    if (SPARSE_REJECTIONS.has(last.reason)) {
+      return { committed: false, ...last, dirty: true };
+    }
     log(
       `commit attempt ${attempt}/${attempts} failed for ${dir}: ${last.reason}${
         last.detail ? ` — ${last.detail}` : ''
@@ -1212,7 +1320,10 @@ export const beginConflictMerge = async ({
     await git(['merge', '--abort'], { cwd: dir });
     return { conflicted: false, error: 'merge_failed', detail: merge.stderr.trim().slice(-500) };
   }
-  return { conflicted: true, conflicts };
+  // Snapshot the staged merge state before the agent edits anything; conclude
+  // checks sparse checkouts against it (null = unreadable, conclude refuses).
+  const baseline = await captureStagedBaseline({ dir, git });
+  return { conflicted: true, conflicts, baseline };
 };
 
 // Conflict-marker scan — the deterministic verification gate after the agent
@@ -1241,11 +1352,18 @@ export const findRemainingConflictMarkers = async ({ dir, files, readFileImpl })
 //   { concluded: true, sha, pushed }
 //   { concluded: false, reason: 'markers_remain', remaining } — aborted
 //   { concluded: false, reason, detail }                      — aborted
+//   { concluded: false, reason: 'sparse_outside_selection' | 'sparse_check_failed',
+//     detail, outsideSelection? }                             — aborted
+// `conflicts` and `baseline` must come from beginConflictMerge (captured
+// BEFORE the agent ran): in a sparse checkout only those conflicted paths may
+// change outside the selection, and the merge's other staged entries must stay
+// exactly as Git staged them.
 export const concludeConflictMerge = async ({
   dir,
   repo,
   unitBranch,
   conflicts = [],
+  baseline = null,
   author = null,
   committer,
   gitProvider,
@@ -1300,6 +1418,13 @@ export const concludeConflictMerge = async ({
         reason: 'markers_remain',
         remaining: unmerged.stdout.trim().split('\n'),
       };
+    }
+    const rejected = sparseRejection(
+      await checkSparseSelection({ dir, git, baseline, allowed: conflicts }),
+    );
+    if (rejected) {
+      await abort();
+      return { concluded: false, ...rejected };
     }
     // `git commit` with no -m completes the merge using MERGE_MSG (the message
     // beginConflictMerge supplied via -m).
@@ -1395,7 +1520,11 @@ export const commitAndPushAll = async ({
         mapKnownChangedFiles(provenance, (file) =>
           toWorkspaceRelative([file], { url, multi }).at(0),
         );
-      if (commit.reason === 'add_failed' || commit.reason === 'commit_failed') {
+      if (
+        commit.reason === 'add_failed' ||
+        commit.reason === 'commit_failed' ||
+        SPARSE_REJECTIONS.has(commit.reason)
+      ) {
         const provenance = toWorkspaceProvenance(commit.provenance);
         const files = provenance.state === 'known' ? provenance.files : null;
         results.push({ repo: url, ...commit, provenance, files, pushed: false });

@@ -831,8 +831,19 @@ describe('renderSparseCheckout + the prompt partial-checkout block', () => {
     expect(block).toContain('## Partial checkout (sparse)');
     expect(block).toContain('- owner/repo: services/api, packages/shared');
     expect(block).toContain('git show HEAD:<path>');
+    expect(block).toContain('the engine refuses to commit such a');
+    expect(block).not.toContain('previous attempt');
     expect(renderSparseCheckout(null)).toBe('');
     expect(renderSparseCheckout({ 'owner/repo': [] })).toBe('');
+  });
+
+  it('names changes a previous attempt left that the engine refused', () => {
+    const block = renderSparseCheckout({ 'owner/repo': ['services/api'] }, [
+      { repo: 'owner/repo', paths: ['docs/usage.md'] },
+    ]);
+    expect(block).toContain('engine refused to commit them');
+    expect(block).toContain('- owner/repo: docs/usage.md');
+    expect(block).toContain('git show HEAD:<path> > <path>');
   });
 
   it('buildStagePrompt includes the block only for a sparse intent', () => {
