@@ -700,6 +700,37 @@ describe('orchestrator on the real durable runner (replay semantics)', () => {
     expect(world.invokes.map((p) => p.command)).toEqual(['init-ws-start', 'init-ws-start']);
   });
 
+  it('stops the intent session once when the init callback expires with the job still running', async () => {
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    const stops = [];
+    world.deps.stopSession = async (sessionId) => {
+      stops.push({ sessionId, statusWritesBefore: [...world.statusWrites] });
+      return { stopped: true };
+    };
+    // The container accepts the job but never completes the callback; the
+    // service then fails it (callback or heartbeat timeout).
+    world.deps.invokeRuntime = async (payload, sessionId) => {
+      world.invokes.push({ ...payload, sessionId });
+      if (!payload.callbackId) return { ok: false, reason: 'missing_callback_id' };
+      return { ok: true, accepted: true, callbackId: payload.callbackId };
+    };
+    const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));
+    const runner = trackedRunner({ handlerFunction: handler });
+    const completion = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    const op = await runner.getOperation('init-ws-cb').waitForData(WaitingOperationStatus.STARTED);
+    await op.sendCallbackFailure({ ErrorType: 'TimeoutError', ErrorMessage: 'Callback timed out' });
+    const execution = await completion;
+    expect(execution.getResult()).toMatchObject({ ok: false, reason: 'init_ws_failed' });
+    const dispatch = world.invokes.find((p) => p.command === 'init-ws-start' && p.callbackId);
+    expect(stops).toEqual([{ sessionId: dispatch.sessionId, statusWritesBefore: [] }]);
+    expect(world.statusWrites.filter((s) => s === 'FAILED')).toHaveLength(1);
+    const names = execution.getOperations().map((o) => o.getOperationData()?.Name);
+    expect(names.indexOf('init-ws-stop')).toBeGreaterThan(names.indexOf('init-ws-dispatch'));
+    expect(world.invokes.some((p) => p.command === 'run-stage-start')).toBe(false);
+  });
+
   it('does not fail a replacement attempt when an old worker returns retired', async () => {
     const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
     const handler = withDurableExecution((event, ctx) => __durableHandler(event, ctx, world.deps));

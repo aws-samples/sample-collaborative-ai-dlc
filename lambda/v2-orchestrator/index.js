@@ -648,6 +648,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
       mode: claim.initWsMode ?? null,
       sessionId,
       orchestratorRunId: runId,
+      stopIntentSession,
       initPayload: {
         projectId,
         intentId,
@@ -2675,7 +2676,7 @@ const isUnknownCommandError = (err) =>
 const initWorkspace = async (
   ctx,
   invokeRuntime,
-  { mode, sessionId, orchestratorRunId, initPayload },
+  { mode, sessionId, orchestratorRunId, initPayload, stopIntentSession },
 ) => {
   const runSynchronously = () =>
     ctx.step('init-ws', () => invokeRuntime({ command: 'init-ws', ...initPayload }, sessionId));
@@ -2730,6 +2731,10 @@ const initWorkspace = async (
       return { ok: false, reason: 'init_ws_bad_callback_result', detail: err.message };
     }
     // Callback timeout / heartbeat expiry (dead container) / explicit failure.
+    // The container job has no deadline of its own, so a clone that outlived
+    // the callback would keep the session busy and its activeJobs reservation
+    // would refuse a retry. Stop the session before the run is marked FAILED.
+    await ctx.step('init-ws-stop', () => stopIntentSession(sessionId));
     return {
       ok: false,
       reason: 'init_ws_callback_failed',

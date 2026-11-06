@@ -1176,13 +1176,34 @@ describe('orchestrator durable handler', () => {
       expect(stageStarts()).toHaveLength(0);
     });
 
-    it('fails initialization when the init job dies (callback heartbeat expiry)', async () => {
+    // The init job may still be cloning when its callback expires: the session
+    // must be stopped, inside a durable step, before the run is marked FAILED,
+    // or the job keeps writing the workspace and refuses the retry's dispatch.
+    it.each([
+      ['heartbeat expiry (dead container)', 'Callback heartbeat timed out'],
+      ['the overall callback timeout (clone still running)', 'Callback timed out'],
+    ])('stops the intent session when the init callback fails on %s', async (_label, message) => {
       const base = ctx.createCallback;
       ctx.createCallback = vi.fn(async (name, options) =>
         name === 'init-ws-cb'
-          ? [Promise.reject(new Error('Callback heartbeat timed out')), `cb-${name}`]
+          ? [Promise.reject(new Error(message)), `cb-${name}`]
           : base(name, options),
       );
+      const steps = [];
+      let activeStep = null;
+      ctx.step = async (name, fn) => {
+        steps.push(name);
+        activeStep = name;
+        try {
+          return await fn();
+        } finally {
+          activeStep = null;
+        }
+      };
+      deps.stopSession = vi.fn(async () => {
+        expect(activeStep).toBe('init-ws-stop');
+        return { stopped: true };
+      });
       deps.invokeRuntime = vi.fn(async (payload) => {
         if (isInitProbe(payload)) return INIT_PROBE_ACK;
         invokes.push(payload);
@@ -1194,9 +1215,41 @@ describe('orchestrator durable handler', () => {
         deps,
       );
       expect(res).toMatchObject({ ok: false, reason: 'init_ws_failed' });
-      const failCall = deps.store.updateExecution.mock.calls.find((c) => c[0].status === 'FAILED');
+      const failIndex = deps.store.updateExecution.mock.calls.findIndex(
+        (c) => c[0].status === 'FAILED',
+      );
+      const failCall = deps.store.updateExecution.mock.calls[failIndex];
       expect(failCall[0].failureReason).toBe('init_ws_failed: init_ws_callback_failed');
+      expect(deps.stopSession).toHaveBeenCalledTimes(1);
+      expect(deps.stopSession).toHaveBeenCalledWith(
+        expect.stringContaining('aidlc-intent-i1'),
+        MANAGED_RUNTIME_TARGET,
+      );
+      // The session the init job was dispatched to is the one stopped.
+      const dispatchSession = deps.invokeRuntime.mock.calls.find(
+        ([payload]) => payload.command === 'init-ws-start' && payload.callbackId,
+      )[1];
+      expect(deps.stopSession.mock.calls[0][0]).toBe(dispatchSession);
+      expect(deps.stopSession.mock.invocationCallOrder[0]).toBeLessThan(
+        deps.store.updateExecution.mock.invocationCallOrder[failIndex],
+      );
+      expect(steps.indexOf('init-ws-stop')).toBeGreaterThan(steps.indexOf('init-ws-dispatch'));
       expect(stageStarts()).toHaveLength(0);
+    });
+
+    it('does not stop the session when the init dispatch is refused', async () => {
+      deps.invokeRuntime = vi.fn(async (payload) => {
+        if (isInitProbe(payload)) return INIT_PROBE_ACK;
+        invokes.push(payload);
+        return { ok: false, reason: 'init_job_already_running', detail: 'i1:init-ws' };
+      });
+      const res = await __durableHandler(
+        { action: 'start', intentId: 'i1', executionId: 'i1' },
+        ctx,
+        deps,
+      );
+      expect(res).toMatchObject({ ok: false, reason: 'init_ws_failed' });
+      expect(deps.stopSession).not.toHaveBeenCalled();
     });
 
     it('fails initialization on a malformed init callback body', async () => {
