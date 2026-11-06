@@ -62,7 +62,7 @@ export function deriveLaneWaits(
           : `${stage.stageId} is waiting on question ${ownedGate.humanTaskId}.`,
       };
     } else if (stage.laneResuming) {
-      // The answer reached the run; the stage stays parked only until its
+      // The answer is reaching the run; the stage stays parked only until its
       // runtime resumes, which can include a cold start.
       result[key] = {
         kind: 'resuming',

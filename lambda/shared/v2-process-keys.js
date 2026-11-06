@@ -259,16 +259,38 @@ const humanTaskMatchesOwner = ({
     Number(task.sectionIndex) === Number(sectionIndex)
   );
 };
-// A lane question whose answer was delivered to the run (the answer route
-// completed its durable callback and stamped callbackConsumedAt) leaves the
-// stage WAITING_FOR_HUMAN until the runtime resumes it, which can take a cold
-// start. Within this window that lane is resuming, not orphaned.
+// A lane question whose answer is reaching the run leaves the stage
+// WAITING_FOR_HUMAN until the runtime resumes it, which can take a cold start.
+// Within this window that lane is resuming, not orphaned.
+//
+// The answer commits before its durable callback is sent, and
+// callbackConsumedAt is written only after the send (best-effort), so the
+// window starts when the answer commits: answeredAt, or callbackConsumedAt
+// when it's later. A missing or failed consumption marker therefore never
+// makes a lane look orphaned while its resume may still be in flight. An
+// answer whose delivery is recorded as failed (META resumeRequired names the
+// gate) isn't resuming: the Resume action owns it.
 const LANE_RESUME_GRACE_MS = 10 * 60 * 1000;
-const isLaneResumeInFlight = ({ stage, gates = [], executionStatus, now = Date.now() }) => {
+const laneResumeStartedAt = (gate) => {
+  const times = [gate.answeredAt, gate.callbackConsumedAt]
+    .map((value) => Date.parse(value ?? ''))
+    .filter(Number.isFinite);
+  return times.length > 0 ? Math.max(...times) : null;
+};
+const isLaneResumeInFlight = ({
+  stage,
+  gates = [],
+  executionStatus,
+  resumeRequired = null,
+  now = Date.now(),
+}) => {
   if (!['RUNNING', 'WAITING'].includes(executionStatus)) return false;
   if (stage?.state !== 'WAITING_FOR_HUMAN' || !stage.unitSlug) return false;
   return gates.some((gate) => {
-    if (!isHumanTaskAnswerStatus(gate?.status) || !gate.callbackConsumedAt) return false;
+    if (!isHumanTaskAnswerStatus(gate?.status)) return false;
+    if (resumeRequired?.humanTaskId && resumeRequired.humanTaskId === gate.humanTaskId) {
+      return false;
+    }
     if (stage.pendingHumanTaskId && gate.humanTaskId !== stage.pendingHumanTaskId) return false;
     if (
       !humanTaskMatchesOwner({
@@ -280,8 +302,8 @@ const isLaneResumeInFlight = ({ stage, gates = [], executionStatus, now = Date.n
     ) {
       return false;
     }
-    const deliveredAt = Date.parse(gate.callbackConsumedAt);
-    return Number.isFinite(deliveredAt) && now - deliveredAt < LANE_RESUME_GRACE_MS;
+    const startedAt = laneResumeStartedAt(gate);
+    return startedAt !== null && now - startedAt < LANE_RESUME_GRACE_MS;
   });
 };
 // Human steering (course-correction) messages. Immutable once written; a

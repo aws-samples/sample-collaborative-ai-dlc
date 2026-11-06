@@ -4409,7 +4409,7 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
   if (auth.role !== 'owner' && auth.role !== 'admin') {
     return response(403, { error: 'Only project owners and admins can repair intents' });
   }
-  const meta = await store.getExecution(intentId);
+  const meta = await store.getExecution(intentId, { consistentRead: true });
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
   }
@@ -4417,13 +4417,17 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
     return response(409, { error: `Intent is ${meta.status}; no active run can be repaired` });
   }
 
-  const records = await store.getExecutionRecords(intentId, { includeOutputs: false });
+  // Consistent: an answer committed just before this read must be seen.
+  const records = await store.getExecutionRecords(intentId, {
+    includeOutputs: false,
+    consistentRead: true,
+  });
   const pendingByStage = new Map(
     (records.humanTasks ?? [])
       .filter((gate) => gate.status === 'pending' && gate.stageInstanceId)
       .map((gate) => [gate.stageInstanceId, gate]),
   );
-  // A lane whose answer has just woken the run is still WAITING_FOR_HUMAN until
+  // A lane whose answer is reaching the run is still WAITING_FOR_HUMAN until
   // its runtime resumes. Repair would stop that run and discard the answer, so
   // refuse while any lane is mid-resume and the run is alive.
   const resumeBlocked = await laneResumeBlocksRepair(meta, records);
@@ -4596,6 +4600,15 @@ const handleRepairIntent = async ({ event, projectId, intentId, auth, g, respons
     );
     priorDurableExecutionArn = listed.DurableExecutions?.[0]?.DurableExecutionArn ?? null;
   }
+  // The provider calls above leave time for a lane gate to be answered after
+  // the first read. Check again, consistently, immediately before stopping the
+  // run, so that answer isn't discarded.
+  const latest = await store.getExecutionRecords(intentId, {
+    includeOutputs: false,
+    consistentRead: true,
+  });
+  const resumeBlockedLate = await laneResumeBlocksRepair(latest.meta ?? meta, latest);
+  if (resumeBlockedLate) return response(409, resumeBlockedLate);
 
   await store.updateExecution({
     executionId: intentId,
@@ -5532,6 +5545,7 @@ const handleGetIntent = async ({ projectId, intentId, g, response }) => {
         stage,
         gates: records.humanTasks ?? [],
         executionStatus: records.meta.status,
+        resumeRequired: records.meta.resumeRequired ?? null,
       }),
     })),
     // Activity feed: lifecycle events (workspace init, failures, completion)
@@ -6801,8 +6815,8 @@ const lookupDurableExecutionStatus = async (meta) => {
 
 const DURABLE_TERMINAL_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'TIMED_OUT', 'STOPPED']);
 // The 409 body when repair must wait for a lane that is resuming after its
-// answer, or null. A durable status that can't be read counts as live; the
-// grace window in isLaneResumeInFlight bounds how long that holds.
+// answer, or null. Fails closed: a durable status that can't be read counts as
+// live, and the grace window in isLaneResumeInFlight bounds how long that holds.
 const laneResumeBlocksRepair = async (meta, records) => {
   const pendingStages = new Set(
     (records.humanTasks ?? [])
@@ -6816,6 +6830,7 @@ const laneResumeBlocksRepair = async (meta, records) => {
         stage,
         gates: records.humanTasks ?? [],
         executionStatus: meta.status,
+        resumeRequired: meta.resumeRequired ?? null,
       }),
   );
   if (resuming.length === 0) return null;
