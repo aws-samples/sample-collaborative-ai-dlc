@@ -162,10 +162,12 @@ describe('AgentAuthenticationModeSettings', () => {
       mode: 'test-connection',
       configuration: { endpoint: 'https://next.example' },
     });
-    expect(await screen.findByText('Proposed platform test link')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Agents will use this test link, unless a space has its own.'),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Test setup' })).not.toBeInTheDocument();
     expect(apply).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: 'Apply reviewed change' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm change' }));
     await waitFor(() => expect(apply).toHaveBeenCalledWith('review-1'));
     expect(onApplied).toHaveBeenCalledOnce();
   });
@@ -198,7 +200,7 @@ describe('AgentAuthenticationModeSettings', () => {
       mode: 'keys',
       defaultConnectionId: 'keys-platform-default',
     });
-    expect(await screen.findByText('Proposed mode: Keys')).toBeInTheDocument();
+    expect(await screen.findByText('Agents will switch to Keys.')).toBeInTheDocument();
     expect(apply).not.toHaveBeenCalled();
   });
 
@@ -273,7 +275,9 @@ describe('AgentAuthenticationModeSettings', () => {
       projectId: 'p1',
       configuration: { endpoint: 'https://next.example' },
     });
-    expect(await screen.findByText('Proposed space test link')).toBeInTheDocument();
+    expect(
+      await screen.findByText('Agents in this space will use this test link.'),
+    ).toBeInTheDocument();
   });
 
   it('restores platform inheritance for a space override', async () => {
@@ -297,7 +301,7 @@ describe('AgentAuthenticationModeSettings', () => {
       connectionId: null,
     });
     expect(
-      await screen.findByText('Use the platform connection for new work in this space.'),
+      await screen.findByText('Agents in this space will use the platform connection again.'),
     ).toBeInTheDocument();
   });
 
@@ -315,20 +319,49 @@ describe('AgentAuthenticationModeSettings', () => {
     ).toBeInTheDocument();
   });
 
-  it('derives personal copy from the personal mechanisms and the mode label', () => {
-    const { unmount } = renderSettings({ scope: 'personal' });
-    expect(
-      screen.getByText(/Personal overrides are unavailable while the platform uses Test gateway/),
-    ).toBeInTheDocument();
-    unmount();
+  it('shows people the platform default Bedrock access, read-only, and that a space may differ', () => {
+    renderSettings({ scope: 'personal' });
+    const access = screen.getByRole('region', { name: 'Platform default Bedrock access' });
+    expect(access).toHaveTextContent('Platform default Bedrock access: Test gateway');
+    expect(access).toHaveTextContent('A space can use its own access instead.');
+    expect(access).toHaveTextContent('Status: Ready');
+    expect(access).toHaveTextContent('Gateway: https://platform.example');
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Platform mode/)).not.toBeInTheDocument();
+  });
 
+  it('tells people when the shared connection needs an administrator', () => {
     renderSettings({
       scope: 'personal',
       authentication: view({
-        policy: { mode: 'keys', revision: 3, defaultConnectionId: 'keys-platform-default' },
-        personalMechanisms: ['api-key'],
+        connection: { ...platformConnection, state: 'reconnect-required' },
       }),
     });
-    expect(screen.getByText(/Personal overrides use API keys\./)).toBeInTheDocument();
+    expect(screen.getByText('Status: Needs reconnecting by an administrator')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'An administrator must reconnect the platform default before agents that use it can start.',
+    );
+    expect(screen.getByText('Gateway: https://platform.example')).toBeInTheDocument();
+  });
+
+  it('keeps Keys mode short for people and only speaks up when no key is available', () => {
+    const keys = (state: string) =>
+      view({
+        policy: { mode: 'keys', revision: 3, defaultConnectionId: 'keys-platform-default' },
+        personalMechanisms: ['api-key'],
+        connection: { ...platformConnection, mode: 'keys', mechanism: 'api-key', state },
+      });
+    const { container, unmount } = renderSettings({
+      scope: 'personal',
+      authentication: keys('ready'),
+    });
+    expect(container).toBeEmptyDOMElement();
+    unmount();
+
+    renderSettings({ scope: 'personal', authentication: keys('missing') });
+    expect(screen.getByRole('status')).toHaveTextContent(
+      "There is no platform Bedrock key. Agents use a space's key where one is set; otherwise add your own key below or ask an administrator.",
+    );
   });
 });
