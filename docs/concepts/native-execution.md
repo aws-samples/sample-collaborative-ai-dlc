@@ -3686,6 +3686,72 @@ scope and `--check-only` before credentials or mutation. Deployment and subseque
 independent verification remain pending; no fresh live cross-space creation or
 Start journey is claimed. NE-09 remains unstarted.
 
+## NE-08 uniform space availability — plan-review correction, 2026-11-06
+
+The operator attempted the final-validation handoff at
+`69ee16ae068241d28059c0337cf90496a5f0e501`. It stopped during saved-plan review
+at `2026-11-06T09:34:19.392Z` with “Known native package filename required: api”.
+**No apply occurred.** Its original plan, log, start/finish receipts and sealed
+handoff remain preserved. The preceding local validation and deployed baseline
+acceptance retain their recorded scopes; the project-pilot removal is still
+undeployed.
+
+Local decoding of that exact Terraform 1.17 plan identified a guard assumption
+error. All eight native package filenames and recipes are known, but the completed
+preparation data sources appear only in refreshed `prior_state`, outside
+`resource_changes` and `planned_values`. The original guard required an entry in
+`resource_changes`. The correction corroborates the preparation query and result
+with the new managed recipe and independently reproduced package identity.
+Preparation against **436 checked inputs** reproduces all eight filenames and
+recipes without rebuilding controller bundles or runtime images. Pending unknown
+preparation cannot fall back to state; unknown filenames remain refused.
+
+The entire saved plan contains **2,175 resource-change records**: 2,118 managed
+no-ops, nine metadata reads, 14 AWS updates and 34 local helper replacements.
+The AWS updates are exactly nine native functions and five authority aliases;
+there are **no AWS replacements**, resource drift or output changes. The nine
+known environments lose only `NATIVE_PREPARATION_PROJECT_IDS`. Deferred checksums,
+three default logging blocks and the new authority version follow their checked
+package, log-group and alias dependencies.
+
+One of the 34 local replacements is outside this deployment: Discussions and its
+result handler share the same accepted ZIP bytes but retain different timestamp
+triggers for that file. Its current modification time matches only one trigger.
+Both Lambda resources are no-ops. Changing one file timestamp cannot satisfy both
+owners. The corrected guard therefore **still rejects the original plan**.
+The fresh handoff asks the existing deployment wrapper to plan the complete
+`module.native_runs[0]` and its dependencies. It admits only the nine native
+updates, five alias updates and **33 native helper replacements**, and requires
+all **127 existing native managed resources** to appear. It does not change the
+Discussions cache, Terraform state or application configuration.
+
+Terraform reports `complete=false` for this explicit module target. Confined
+built-in/local-backend fixtures verify that behavior, including retention of
+dependencies and unused resources inside the selected module. An inert test of
+the actual existing plan wrapper verifies forwarding of the exact target.
+**93 real-plan contract regressions, 73 preflight cases, 22 FIFO/receipt cases
+and eight actual-wrapper/validator cases pass.** The positive plan projection
+removes only the unrelated helper and changes the completeness flag; every other
+actual plan field and unknown mask remains intact. This is conditional offline
+proof, not a newly generated real-stack plan. Adversarial cases reject missing or
+foreign packages, source/credential/configuration drift, alias routing changes,
+unrelated mutations and saved-plan modification. Cached ZIPs, when present, must
+match the accepted bundle entries. Saved-plan hashes are checked around decoding,
+after review and again before apply.
+
+The fresh evidence and deployment-only handoff are under
+`.native-evidence/ne08-2026-11-06-project-pilot-plan-correction/`. The final
+candidate differs from the completed local-validation commit only in this
+canonical record; production, bundle, frontend, dependency and runtime bytes
+remain unchanged. Their accepted suites and installed qualification are not
+repeated. The current ignored development configuration retains its intentionally
+updated hash. Local `--check-only` precedes credentials or an attempt directory;
+the normal path remains exclusively an operator action after parent review.
+**A new guarded plan/apply and independent deployed verification remain pending.**
+No new live workflow, runtime/model call or cross-space acceptance is claimed.
+AI-DLC remains verified **2.11.1**, Kiro remains deferred to NE-18, and NE-09 is
+unstarted.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
