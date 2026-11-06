@@ -124,7 +124,8 @@ export const createGatewayInterceptor = ({ authorizer, audit = () => {} }) => {
 
   return async (event, lambdaContext) => {
     const mcp = isPlainObject(event?.mcp) ? event.mcp : {};
-    const phase = Object.hasOwn(mcp, 'gatewayResponse') ? 'RESPONSE' : 'REQUEST';
+    // The Gateway sends `gatewayResponse: null` on the REQUEST phase.
+    const phase = isPlainObject(mcp.gatewayResponse) ? 'RESPONSE' : 'REQUEST';
     const request = isPlainObject(mcp.gatewayRequest) ? mcp.gatewayRequest : {};
     const body = parseBody(request.body);
     const method = isPlainObject(body) && typeof body.method === 'string' ? body.method : null;
