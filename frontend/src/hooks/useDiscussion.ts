@@ -94,9 +94,11 @@ export function useDiscussion({
 
   // ── Single render path: mirror Y.Map('messages') → sorted state ──
   useEffect(() => {
+    // A direct thread switch has no closed/null intermediate state. Retire
+    // the previous thread's retries before recovering asks from this document.
+    setPending([]);
     if (!docId) {
       setMessages([]);
-      setPending([]);
       setSeeded(false);
       setHasMoreOlder(false);
       changeCursorRef.current = null;

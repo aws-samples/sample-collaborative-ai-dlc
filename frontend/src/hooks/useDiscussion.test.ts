@@ -40,23 +40,26 @@ const persisted: DiscussionMessage = {
 };
 
 const renderDiscussion = () =>
-  renderHook(() =>
-    useDiscussion({
-      scope,
-      discussionId: 'd1',
-      open: true,
-      user: { id: 'u1', name: 'Alice' },
-    }),
+  renderHook(
+    ({ discussionId }) =>
+      useDiscussion({
+        scope,
+        discussionId,
+        open: true,
+        user: { id: 'u1', name: 'Alice' },
+      }),
+    { initialProps: { discussionId: 'd1' } },
   );
 
 beforeEach(() => {
   vi.resetAllMocks();
   collaboration.doc = new Y.Doc();
-  vi.mocked(discussionsService.assist).mockImplementation(async (_scope, _id, input) => ({
+  vi.mocked(discussionsService.assist).mockImplementation(async (_scope, discussionId, input) => ({
     requestId: input.requestId,
     message: {
       ...persisted,
       id: 'reply-1',
+      discussionId,
       requestId: input.requestId,
       content: 'The risks are…',
       authorType: 'agent',
@@ -70,6 +73,79 @@ afterEach(() => {
 });
 
 describe('useDiscussion Quorum questions', () => {
+  it('isolates recovered asks when switching directly between open discussions', async () => {
+    const firstDoc = collaboration.doc!;
+    firstDoc.getMap<DiscussionMessage>('messages').set(persisted.id, persisted);
+    const { result, rerender } = renderDiscussion();
+    expect(result.current.pending[0].id).toBe(persisted.id);
+
+    const secondQuestion: DiscussionMessage = {
+      ...persisted,
+      id: 'dm-second-question',
+      discussionId: 'd2',
+      content: '@quorum explain the design',
+    };
+    collaboration.doc = new Y.Doc();
+    collaboration.doc.getMap<DiscussionMessage>('messages').set(secondQuestion.id, secondQuestion);
+    rerender({ discussionId: 'd2' });
+
+    expect(result.current.pending).toEqual([
+      expect.objectContaining({ id: secondQuestion.id, content: secondQuestion.content }),
+    ]);
+    await act(async () => {
+      await result.current.retryMessage(persisted.id);
+    });
+    expect(discussionsService.postMessage).not.toHaveBeenCalled();
+    expect(discussionsService.assist).not.toHaveBeenCalled();
+
+    vi.mocked(discussionsService.postMessage).mockResolvedValue(secondQuestion);
+    await act(async () => {
+      await result.current.retryMessage(secondQuestion.id);
+    });
+    expect(discussionsService.postMessage).toHaveBeenCalledWith(
+      scope,
+      'd2',
+      expect.objectContaining({ id: secondQuestion.id, content: secondQuestion.content }),
+    );
+    expect(discussionsService.assist).toHaveBeenCalledWith(
+      scope,
+      'd2',
+      expect.objectContaining({ instructions: 'explain the design' }),
+    );
+    firstDoc.destroy();
+  });
+
+  it('does not restore a retired discussion ask when its in-flight send fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let fail!: (error: Error) => void;
+    vi.mocked(discussionsService.postMessage).mockReturnValue(
+      new Promise((_resolve, reject) => {
+        fail = reject;
+      }),
+    );
+    const firstDoc = collaboration.doc!;
+    const { result, rerender } = renderDiscussion();
+    let sending!: Promise<void>;
+    act(() => {
+      sending = result.current.sendMessage(question);
+    });
+    const firstMessageId = result.current.pending[0].id;
+
+    collaboration.doc = new Y.Doc();
+    rerender({ discussionId: 'd2' });
+    expect(result.current.pending).toEqual([]);
+
+    await act(async () => {
+      fail(new Error('offline'));
+      await sending;
+      await result.current.retryMessage(firstMessageId);
+    });
+    expect(result.current.pending).toEqual([]);
+    expect(discussionsService.postMessage).toHaveBeenCalledTimes(1);
+    expect(discussionsService.assist).not.toHaveBeenCalled();
+    firstDoc.destroy();
+  });
+
   it('waits for persistence before requesting Quorum and retains both messages', async () => {
     let save!: (message: DiscussionMessage) => void;
     vi.mocked(discussionsService.postMessage).mockReturnValue(
