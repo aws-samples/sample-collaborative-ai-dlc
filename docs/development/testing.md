@@ -392,14 +392,15 @@ unset AIDLC_OIDC_CALLBACK AIDLC_TEST_REGION TEST_IDP_POOL
 
 ## AgentCore tests
 
-AgentCore has two separate test layers:
+AgentCore has three test layers:
 
 1. The deterministic AgentCore test project, which uses local test containers
    and does not call a model.
-2. The credentialed local E2E, which runs the real Claude, Kiro, OpenCode, and
+2. The offline Codex image regression below, which exercises native session restoration.
+3. The credentialed local E2E, which runs the real Claude, Kiro, OpenCode, and
    Codex CLIs against real models.
 
-Neither test requires a deployed AI-DLC stack.
+None requires a deployed AI-DLC stack.
 
 ### Deterministic AgentCore tests
 
@@ -422,6 +423,23 @@ npm run format:check
 npm run secretlint
 npx vitest run --project=agentcore
 ```
+
+### Codex session restoration in the image
+
+Use an AgentCore image built from the branch being tested. From the repository root:
+
+```bash
+AGENTCORE_IMAGE=aidlc-agentcore:local
+docker run --rm --platform linux/arm64 --network none \
+  --mount "type=bind,source=$PWD/lambda/agentcore/test/fixtures/codex-resume-integration.mjs,target=/opt/agentcore/test/fixtures/codex-resume-integration.mjs,readonly" \
+  --entrypoint node "$AGENTCORE_IMAGE" \
+  --test /opt/agentcore/test/fixtures/codex-resume-integration.mjs
+```
+
+The test uses real Codex and Collab's rollout persistence helpers to resume a legacy
+conversation twice in new invocation homes, while its old shared SQLite index remains.
+Only rollouts may reach durable storage. No credentials or successful model call are
+needed; this checks session restoration, not the full question/answer workflow.
 
 ### Local multi-CLI E2E
 
