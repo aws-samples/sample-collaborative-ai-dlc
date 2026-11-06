@@ -1,6 +1,5 @@
 variable "project_name" { type = string }
 variable "environment" { type = string }
-variable "project_ids" { type = list(string) }
 variable "vpc_id" { type = string }
 variable "runtime_subnet_ids" { type = list(string) }
 variable "api_subnet_ids" { type = list(string) }
@@ -17,7 +16,7 @@ variable "image_digest" { type = string }
 variable "tags" { type = map(string) }
 
 variable "execution_enabled" {
-  description = "Opt in to the connected native execution pilot; preparation remains separately available"
+  description = "Admit new native executions; preparation remains separately available"
   type        = bool
   default     = false
 }

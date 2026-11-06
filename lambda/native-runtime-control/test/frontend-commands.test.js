@@ -51,7 +51,6 @@ const fixture = async ({ state = 'recovery', workflowResumeState = 'created' } =
   const membership = vi.fn(async () => ({ ...MEMBERSHIP }));
   const router = createNativeRuntimeApi({
     enabled: true,
-    allowedProjectIds: [f.identity.projectId],
     store: f.preparationStore,
     getMembershipSnapshot: membership,
     execution,

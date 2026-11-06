@@ -409,9 +409,9 @@ describe('DiscussionProvider current member identity', () => {
     expect(getOrCreate).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])(
-    'closes a native thread on project access denial (disabled: %s)',
-    async (disabled) => {
+  it.each([401, 403, 404])(
+    'closes a native thread on project access denial: %s',
+    async (status) => {
       getOrCreate.mockResolvedValue({ id: 'private-thread', entityId: 'old-revision' });
       render(
         <DiscussionProvider backend="native">
@@ -424,13 +424,7 @@ describe('DiscussionProvider current member identity', () => {
       await waitFor(() => expect(screen.getByTestId('thread')).toHaveTextContent('private-thread'));
       const denied = vi
         .spyOn(nativeIntentsService, 'list')
-        .mockRejectedValueOnce(
-          new ApiError(
-            403,
-            'Forbidden',
-            disabled ? { code: 'NATIVE_PREPARATION_PROJECT_DISABLED' } : {},
-          ),
-        );
+        .mockRejectedValueOnce(new ApiError(status, 'Forbidden'));
       await act(async () => {
         await refreshNativeIntents('project-1', 'refresh', true);
       });

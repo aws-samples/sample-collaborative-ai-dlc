@@ -29,7 +29,6 @@ const makeApi = (options = {}) => {
   const enqueue = vi.fn(async () => {});
   const api = createNativeRuntimeApi({
     enabled: true,
-    allowedProjectIds: [PROJECT],
     store: f.store,
     workflowSources: sources,
     jobs,
@@ -230,15 +229,32 @@ describe('native API authentication and gates', () => {
     noWork(f);
   });
 
-  it.each([[], ['other-project'], null, [PROJECT, null]])(
-    'fails closed for allowlist %j',
-    async (allowedProjectIds) => {
-      const f = makeApi({ allowedProjectIds });
-      expect((await f.api(event())).statusCode).toBe(403);
+  it.each(['', '../other', 'project/child', 'project\n', 'x'.repeat(257), null, 42])(
+    'rejects malformed project identity %j before authorization',
+    async (projectId) => {
+      const f = makeApi();
+      expect((await f.api(event('create', { pathParameters: { projectId } }))).statusCode).toBe(
+        400,
+      );
       expect(f.membership).not.toHaveBeenCalled();
       noWork(f);
     },
   );
+
+  it('does not substitute platform administration for project membership', async () => {
+    const f = makeApi();
+    f.membership.mockResolvedValue(null);
+    const response = await f.api(
+      event('create', {
+        requestContext: {
+          authorizer: { claims: { sub: ACTOR, 'cognito:groups': 'platform-admin' } },
+        },
+      }),
+    );
+    expect(response.statusCode).toBe(403);
+    expect(f.membership).toHaveBeenCalledWith(PROJECT, ACTOR);
+    noWork(f);
+  });
 
   it.each([null, { ...MEMBERSHIP, role: 'guest' }, { role: 'member' }])(
     'rejects invalid membership %j',

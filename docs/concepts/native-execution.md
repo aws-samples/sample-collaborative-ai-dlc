@@ -34,8 +34,15 @@ source. A member selects one connected application repository and a harness,
 then creates a title-only or written draft. The shared Intent workspace supports
 prompt correction, workspace preparation and explicit **Start**. Preparation does
 not start agent work. The settings-page package link remains a convenience entry
-into the same form. These NE-08 changes are locally validated and independently
-verified as deployed; a fresh live creation journey remains unrun.
+into the same form. The NE-08 entry point is independently verified as deployed.
+Uniform availability across spaces is locally repaired and pending deployment,
+as recorded in the 2026-11-06 follow-up below. A fresh live creation journey
+remains unrun.
+
+The release implementation uses platform-wide native admission controls and
+normal project membership. Existing and newly created spaces require no native
+project enrollment. Repository access, verified packages, supported harnesses,
+credential authorization and explicit Start remain required.
 
 Kiro is temporarily unavailable for new native executions while AI-DLC input
 and authentication qualification is pending. Creation shows the disabled Kiro choice
@@ -60,7 +67,8 @@ configuration.
 The shared Intent workspace provides the current response and questions, activity,
 discussions, files, graph navigation and revision history. Native intents also
 appear in the project, dashboard and sidebar. Native creation now begins in the
-normal **New intent** entry, with local and deployed NE-08 acceptance recorded below.
+normal **New intent** entry. The local, deployed-artifact and pending follow-up
+scopes for NE-08 are recorded below.
 
 ## Questions, decisions and collaboration
 
@@ -3556,6 +3564,75 @@ dependency rebuild and reconciliation-question coverage. Historical executions
 and queues were not investigated. Kiro remains deferred to NE-18, and NE-09 is
 unstarted.
 
+## NE-08 uniform space availability — local repair, 2026-11-06
+
+After the deployed-byte acceptance above, normal **New intent → Native** in
+another space returned “Native preparation is not enabled for this project”.
+The current development configuration still selected the original pilot project
+through `native_preparation_project_ids`. The preceding package and frontend
+verification remains valid for its recorded scope; it did not exercise creation
+in another space.
+
+The user's resolved release decision on 2026-11-06 was: “Yeah let's remove any
+configuration for that. We're now preparing native execution for release so there
+should be no difference”. This bounded repair removes the Terraform variable,
+module argument, Lambda environment setting `NATIVE_PREPARATION_PROJECT_IDS`,
+controller injection/helper, API and worker project gates, and obsolete
+disabled-project UI handling. There is no replacement rollout setting.
+The current ignored `terraform/environments/dev.tfvars` loses only that obsolete
+field and its pilot-only comment, with Terraform alignment of the two retained
+native flags. Safe before/after hashes record the intentional change; historical
+configuration hashes and sealed deployment evidence are not rewritten.
+
+The public router still authenticates the caller, validates project and execution
+IDs, checks normal membership and rechecks it around protected reads and writes.
+Platform administration does not grant project membership. Package, application
+repository, execution and credential bindings remain project scoped. The
+preparation queue now validates its project ID and execution UUID explicitly,
+independently of deployment configuration. Existing global service, admission,
+drain and shared disabled-CLI controls remain; so do normal preparation
+prerequisites, pinned settings, explicit Start and EFS/IAM isolation.
+
+The composed frontend-service → authenticated public router → authority/store
+regressions exercise listing, draft creation, correction, preparation and explicit
+Start across three project identities, including a new project added after router
+construction. They retain denied-membership cases, cross-project binding and
+credential rejection, membership races, duplicate identities and uncertain
+responses. Separate worker/provisioner and warm execution/cancellation cases
+exercise the removed gates without a project list. Local fixture ports do not
+establish live runtime or model behavior.
+
+The native/shared/controller host suite passes **6,145 tests with eight host
+skips**; the full frontend suite passes **2,283 tests**. Frontend build/typecheck,
+eight controller builds covering nine functions, 22 native wiring checks,
+dependency/SDK/architecture checks, lint, formatting and secret scanning pass.
+Isolated local-backend Terraform validation passes. Mocked Terraform cases cover
+both open admission without a project list and closed admission with services
+retained, alongside the existing package-repair checks. The full backend suite
+could not start because Docker Desktop requires organization sign-in (HTTP 407).
+The host suite explicitly excludes its one unconditional DynamoDB integration
+case while that prerequisite is unavailable. Four other DynamoDB cases and three
+Linux-only process cases skip through their existing guards. This is a recorded
+validation gap.
+
+All **278 production runtime inputs** and their inventory match qualified source
+`513005a19163b1f5fdf4e9a64fe7a1926cb19e04`, tag `0176cd52b080ec91`, and the
+previously accepted immutable local image and registry digests above. Runtime and
+dependency bytes are unchanged, so packaged Linux and installed-CLI qualification
+were not repeated. AI-DLC remains pinned to verified **2.11.1**, Kiro remains
+deferred to NE-18, and NE-09 has not started.
+
+Fresh evidence and the guarded deployment-only handoff are under
+`.native-evidence/ne08-2026-11-06-remove-project-pilot/`. Deployment is pending.
+The handoff pins the reviewed commit, current configuration, bundle/frontend
+manifests and accepted runtime qualification. Its local `--check-only` precedes
+credentials and cloud tools. The saved-plan guard permits the nine native
+environment removals, native package work and five authority alias updates;
+unrelated changes or drift stop the attempt. The wrapper retains a single
+attempt's plan, complete FIFO-captured log and start/finish receipts and refuses
+repeated attempts. Independent deployed verification must follow; a successful
+operator receipt alone does not prove the repaired cross-space user journey.
+
 ## Integration and simplification checklist
 
 This is the single work list for completing the serial native feature. Each item
@@ -3694,7 +3771,7 @@ the current contract for newly created executions.
       retry is required. Kiro remains deferred to NE-18. Evidence is under
       `.native-evidence/ne07-2026-11-04-harness-question-adapters/` and
       `.native-evidence/ne07-2026-11-05-deployed-095041b7/`.
-- [x] **NE-08 — Complete normal intent creation.** Integrate native into the normal
+- [ ] **NE-08 — Complete normal intent creation.** Integrate native into the normal
       **New intent** entry, including the backend/default choice, verified package
       selection and application source. Reuse the shared creation and configuration
       components and remove obsolete pilot instructions. **Done when:** a member can
@@ -3711,7 +3788,12 @@ the current contract for newly created executions.
       acceptance completed 2026-11-06:** the original successful command receipt,
       27 deployed packages, effective aliases, unchanged runtime, current
       configuration and all 629 S3/CloudFront artifacts are independently verified
-      above. A fresh live creation/Start journey remains unrun.
+      above. **Follow-up 2026-11-06:** creation in another space exposed the remaining
+      project pilot gate. Its configuration and enforcement are removed locally;
+      deployment and independent verification of uniform space availability remain
+      pending, with the Docker-dependent backend validation gap recorded above.
+      The preceding deployed-byte acceptance remains valid within its scope.
+      A fresh live creation/Start journey remains unrun.
 - [ ] **NE-09 — Integrate supported inputs, settings and tools.** Implement the selected
       attachment and tracker-import scope and source selection; capture the inputs and
       effective configuration at Start. Connect supported environment/tool settings

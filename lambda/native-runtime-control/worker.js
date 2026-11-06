@@ -6,6 +6,7 @@ import {
 import { preparationObservationPort } from './authority-client.js';
 import { controlError, validateDeployment } from './policies.js';
 import { nativeRuntimeBindingKey } from '../shared/native-runtime-binding.js';
+import { ID, UUID_V4, matches } from './store.js';
 
 const array = (value) => {
   try {
@@ -181,7 +182,6 @@ export const createNativeRuntimeWorker =
   }) =>
   async (event, context = {}) => {
     const failures = [];
-    const allowed = array(env.NATIVE_PREPARATION_PROJECT_IDS);
     for (const record of event.Records ?? []) {
       try {
         if (
@@ -195,10 +195,8 @@ export const createNativeRuntimeWorker =
         if (
           !pointer ||
           Object.keys(pointer).toSorted().join(',') !== 'executionId,projectId' ||
-          !allowed.includes(pointer.projectId) ||
-          typeof pointer.executionId !== 'string' ||
-          !pointer.executionId ||
-          Buffer.byteLength(pointer.executionId) > 512
+          !matches(pointer.projectId, ID) ||
+          !matches(pointer.executionId, UUID_V4)
         )
           throw new Error();
         const result = await reconcile(pointer, {

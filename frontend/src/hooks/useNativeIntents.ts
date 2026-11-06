@@ -71,8 +71,8 @@ export const nativeAccessDenied = (error: unknown): error is ApiError =>
   error instanceof ApiError && [401, 403, 404].includes(error.status);
 export const nativeListingDisabled = (error: unknown): boolean =>
   error instanceof ApiError &&
-  ((error.status === 503 && error.body?.code === 'NATIVE_PREPARATION_DISABLED') ||
-    (error.status === 403 && error.body?.code === 'NATIVE_PREPARATION_PROJECT_DISABLED'));
+  error.status === 503 &&
+  error.body?.code === 'NATIVE_PREPARATION_DISABLED';
 
 export function clearNativeIntents(projectId?: string, denied = false): void {
   if (projectId === undefined) entries.clear();
@@ -329,9 +329,7 @@ export async function refreshNativeIntents(
           loaded: true,
           disabled: true,
           hasKnownNativeIntents: owner.state.hasKnownNativeIntents,
-          // The project-disabled 403 revokes loaded detail even though the
-          // collection keeps its disabled presentation instead of an error.
-          accessRevision: nativeAccessDenied(error) ? ++accessRevision : previous.accessRevision,
+          accessRevision: previous.accessRevision,
         };
         owner.fetchedAt = Date.now();
         owner.cursors.clear();

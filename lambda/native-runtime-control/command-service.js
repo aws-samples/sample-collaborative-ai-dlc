@@ -32,14 +32,6 @@ const defaultS3 = new S3Client({});
 const defaultSsm = new SSMClient({});
 const defaultLambda = new LambdaClient({});
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
-const allowedProjects = (value) => {
-  try {
-    const parsed = JSON.parse(value ?? '[]');
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-};
 const openNeptune = async () => {
   const credentials = await fromNodeProviderChain()();
   credentials.region = process.env.AWS_REGION ?? 'us-east-1';
@@ -204,7 +196,6 @@ export const createNativeRuntimeLambda =
         enabled: env.NATIVE_PREPARATION_ENABLED === 'true',
         admissionEnabled:
           (env.NATIVE_PREPARATION_ADMISSION_ENABLED ?? env.NATIVE_PREPARATION_ENABLED) === 'true',
-        allowedProjectIds: allowedProjects(env.NATIVE_PREPARATION_PROJECT_IDS),
         getMembershipSnapshot,
         listNativeIntents: (input) => {
           listing ??= createNativeIntentListing({

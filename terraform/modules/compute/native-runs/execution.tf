@@ -385,7 +385,6 @@ module "execution_credentials" {
     NATIVE_RUNTIME_BINDINGS_TABLE      = aws_dynamodb_table.bindings.name
     NATIVE_RUNTIME_ACCOUNT_ID          = local.account_id
     NATIVE_RUNTIME_FILE_SYSTEM_ID      = aws_efs_file_system.runs.id
-    NATIVE_PREPARATION_PROJECT_IDS     = jsonencode(var.project_ids)
     AWS_PARTITION                      = local.partition
     NEPTUNE_ENDPOINT                   = var.neptune_endpoint
     SOURCE_CONTROL_BINDINGS_TABLE      = var.source_control_bindings_table_name

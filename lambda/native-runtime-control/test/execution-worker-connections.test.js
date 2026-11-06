@@ -9,7 +9,7 @@ const worker = fileURLToPath(new URL('../execution-worker.js', import.meta.url))
 
 describe('native worker warm invocation connections', () => {
   it.each(['execution', 'cancellation'])(
-    '%s polls reuse transport connections and keep each queued identity',
+    '%s polls reuse connections across projects without enrollment and reject malformed pointers',
     async (mode) => {
       const { stdout } = await run(process.execPath, [probe, worker, mode], {
         timeout: 20_000,
@@ -19,6 +19,8 @@ describe('native worker warm invocation connections', () => {
       expect(result).toMatchObject({
         mode,
         invocations: 64,
+        projects: 64,
+        malformedPointersIgnored: 8,
         requests: 64,
         failedInvocations: 0,
         identitiesMatch: true,

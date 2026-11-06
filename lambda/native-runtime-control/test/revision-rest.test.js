@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { createNativeRuntimeApi } from '../api.js';
-import { MEMBERSHIP, PROJECT, createInput, event, setup } from './fixtures.js';
+import { MEMBERSHIP, createInput, event, setup } from './fixtures.js';
 
 const target = { publicationId: 'a'.repeat(64), publicationSequence: '1' };
 const fileId = `nf-${'b'.repeat(64)}`;
@@ -35,7 +35,6 @@ const fixture = async () => {
   });
   const api = createNativeRuntimeApi({
     enabled: true,
-    allowedProjectIds: [PROJECT],
     store: f.store,
     getMembershipSnapshot: membership,
     execution: { history: read, revision: read, revisionFile: read, revisionInteraction: read },

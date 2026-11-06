@@ -24,7 +24,6 @@ variables {
   native_repair_table_arn                = "arn:aws:dynamodb:us-east-1:123456789012:table/test-native-repair"
   project_name                           = "test"
   environment                            = "dev"
-  project_ids                            = ["project-one"]
   vpc_id                                 = "vpc-0123456789abcdef0"
   runtime_subnet_ids                     = ["subnet-0123456789abcdef0"]
   api_subnet_ids                         = ["subnet-0123456789abcdef0"]
@@ -69,7 +68,10 @@ run "admission_closed_retains_services_and_owners" {
   # fully known. Packaging and Lambda modules are overridden below; no AWS calls.
   command = apply
   module { source = "./modules/compute/native-runs" }
-  variables { execution_enabled = false }
+  variables {
+    execution_enabled             = false
+    preparation_admission_enabled = false
+  }
   override_module {
     target  = module.packages["api"]
     outputs = { local_filename = "/tmp/native-test.zip" }
@@ -151,6 +153,10 @@ run "admission_closed_retains_services_and_owners" {
     error_message = "Admission and existing-run service availability must be independent."
   }
   assert {
+    condition     = local.base_environment.NATIVE_PREPARATION_ENABLED == "true" && local.base_environment.NATIVE_PREPARATION_ADMISSION_ENABLED == "false"
+    error_message = "Closing preparation admission must retain services for existing work."
+  }
+  assert {
     condition     = aws_dynamodb_table.bindings.stream_enabled && aws_dynamodb_table.bindings.stream_view_type == "NEW_AND_OLD_IMAGES"
     error_message = "Committed native state must feed durable wakeups."
   }
@@ -178,15 +184,16 @@ run "admission_closed_retains_services_and_owners" {
 
 }
 
-run "configured_native_alarm_routes" {
+run "admission_open_for_all_spaces_with_configured_alarms" {
   # Apply only to the mock provider so generated ARN-dependent policy JSON is
   # fully known. Packaging and Lambda modules are overridden below; no AWS calls.
   command = apply
   module { source = "./modules/compute/native-runs" }
   variables {
-    iam_role_path                = "/organization/collab/"
-    iam_permissions_boundary_arn = "arn:aws:iam::123456789012:policy/organization-boundary"
-    execution_enabled            = false
+    iam_role_path                 = "/organization/collab/"
+    iam_permissions_boundary_arn  = "arn:aws:iam::123456789012:policy/organization-boundary"
+    execution_enabled             = true
+    preparation_admission_enabled = true
     native_operations = {
       alarm_actions           = ["arn:aws:sns:us-east-1:123456789012:existing-operations"]
       incident_owner          = "test-operations-reference"
@@ -262,6 +269,14 @@ run "configured_native_alarm_routes" {
     outputs = { lambda_function_arn = "arn:aws:lambda:us-east-1:123456789012:function:test-execution_credentials[0]", lambda_function_name = "test-execution_credentials[0]", lambda_function_version = "1", lambda_function_invoke_arn = "arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/arn:aws:lambda:us-east-1:123456789012:function:test-execution_credentials[0]/invocations" }
   }
   assert {
+    condition     = local.base_environment.NATIVE_PREPARATION_ENABLED == "true" && local.execution_environment.NATIVE_EXECUTION_ENABLED == "true" && local.base_environment.NATIVE_PREPARATION_ADMISSION_ENABLED == "true" && local.execution_environment.NATIVE_EXECUTION_ADMISSION_ENABLED == "true"
+    error_message = "Global admission must open without any per-project configuration."
+  }
+  assert {
+    condition     = !contains(keys(local.base_environment), "NATIVE_PREPARATION_PROJECT_IDS") && !contains(keys(local.execution_environment), "NATIVE_PREPARATION_PROJECT_IDS")
+    error_message = "Native controller environments must not impose project enrollment."
+  }
+  assert {
     condition     = alltrue([for role in [aws_iam_role.api, aws_iam_role.worker, aws_iam_role.authority, aws_iam_role.execution_worker[0], aws_iam_role.execution_credentials[0], aws_iam_role.projection, aws_iam_role.results, aws_iam_role.wakeup] : role.path == var.iam_role_path && role.permissions_boundary == var.iam_permissions_boundary_arn])
     error_message = "Organization settings must apply to every native controller role."
   }
@@ -280,10 +295,6 @@ run "configured_native_alarm_routes" {
   assert {
     condition     = toset(keys(aws_lambda_alias.authority)) == toset(["commands", "execution", "preparation", "projection", "results"])
     error_message = "Authority must expose exactly the five IAM-isolated caller aliases."
-  }
-  assert {
-    condition     = local.execution_environment.NATIVE_EXECUTION_ENABLED == "true" && local.execution_environment.NATIVE_EXECUTION_ADMISSION_ENABLED == "false"
-    error_message = "Admission and existing-run service availability must be independent."
   }
   assert {
     condition     = aws_dynamodb_table.bindings.stream_enabled && aws_dynamodb_table.bindings.stream_view_type == "NEW_AND_OLD_IMAGES"

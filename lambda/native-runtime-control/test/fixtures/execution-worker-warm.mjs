@@ -37,7 +37,6 @@ Object.assign(process.env, {
   AWS_MAX_ATTEMPTS: '1',
   AWS_CONFIG_FILE: '/dev/null',
   AWS_SHARED_CREDENTIALS_FILE: '/dev/null',
-  NATIVE_PREPARATION_PROJECT_IDS: '["warm-client-probe"]',
   NATIVE_RUNTIME_ACCOUNT_ID: '123456789012',
   NATIVE_RUNTIME_FILE_SYSTEM_ID: 'fs-1234567890abcdef0',
   NATIVE_RUNTIME_IMAGE_URI: `123456789012.dkr.ecr.us-east-1.amazonaws.com/agentcore@sha256:${'a'.repeat(64)}`,
@@ -61,12 +60,27 @@ try {
   let failedInvocations = 0;
   for (let index = 1; index <= 64; index++) {
     const identity = {
-      projectId: 'warm-client-probe',
+      projectId: `warm-client-probe-${index}`,
       executionId: `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
     };
     expected.push(identity);
     const result = await handler(
       { Records: [{ messageId: `message-${index}`, body: JSON.stringify(identity) }] },
+      { getRemainingTimeInMillis: () => 120_000 },
+    );
+    failedInvocations += result.batchItemFailures.length;
+  }
+  const malformed = [
+    ...['', null, 42, '../other', 'project\n', 'x'.repeat(257)].map((projectId) => ({
+      ...expected[0],
+      projectId,
+    })),
+    { ...expected[0], executionId: 'invalid' },
+    { ...expected[0], runtimeArn: 'injected' },
+  ];
+  for (const identity of malformed) {
+    const result = await handler(
+      { Records: [{ messageId: 'malformed', body: JSON.stringify(identity) }] },
       { getRemainingTimeInMillis: () => 120_000 },
     );
     failedInvocations += result.batchItemFailures.length;
@@ -83,6 +97,8 @@ try {
     JSON.stringify({
       mode,
       invocations: expected.length,
+      projects: new Set(expected.map((identity) => identity.projectId)).size,
+      malformedPointersIgnored: malformed.length,
       requests: requests.length,
       failedInvocations,
       identitiesMatch,

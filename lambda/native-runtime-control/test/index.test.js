@@ -19,7 +19,6 @@ import {
 
 const environment = {
   NATIVE_PREPARATION_ENABLED: 'true',
-  NATIVE_PREPARATION_PROJECT_IDS: JSON.stringify([PROJECT]),
   NATIVE_RUNTIME_BINDINGS_TABLE: TABLE,
   NATIVE_RUNTIME_ACCOUNT_ID: DEPLOYMENT.accountId,
   AWS_REGION: DEPLOYMENT.region,
@@ -62,18 +61,11 @@ const fixture = (overrides = {}) => {
 };
 
 describe('native REST host and SQS boundary', () => {
-  it.each([
-    { NATIVE_PREPARATION_ENABLED: 'false' },
-    { NATIVE_PREPARATION_PROJECT_IDS: PROJECT },
-    { NATIVE_PREPARATION_PROJECT_IDS: '{}' },
-    { NATIVE_PREPARATION_PROJECT_IDS: undefined },
-  ])(
-    'does no graph/storage/queue work for disabled or malformed configuration %j',
+  it.each([{ NATIVE_PREPARATION_ENABLED: 'false' }, { NATIVE_PREPARATION_ENABLED: undefined }])(
+    'does no graph/storage/queue work when native services are disabled: %j',
     async (changed) => {
       const f = fixture({ env: { ...environment, ...changed } });
-      expect((await f.handler(event())).statusCode).toBe(
-        changed.NATIVE_PREPARATION_ENABLED ? 503 : 403,
-      );
+      expect((await f.handler(event())).statusCode).toBe(503);
       expect(f.openConnection).not.toHaveBeenCalled();
       expect(f.ddb.send).not.toHaveBeenCalled();
       expect(f.sourceFactory).not.toHaveBeenCalled();
@@ -94,6 +86,26 @@ describe('native REST host and SQS boundary', () => {
     expect(f.connection.close).toHaveBeenCalledTimes(1);
     expect(f.sourceFactory).not.toHaveBeenCalled();
     expect(f.jobsFactory).not.toHaveBeenCalled();
+    expect(f.ddb.send).not.toHaveBeenCalled();
+    expect(f.sqs.send).not.toHaveBeenCalled();
+  });
+
+  it('uses normal membership for a new project after Lambda construction', async () => {
+    const f = fixture();
+    const projectId = 'new-project-created-after-deployment';
+    const request = event('capabilities', {
+      path: `/api/projects/${projectId}/native-intents`,
+      pathParameters: { projectId },
+    });
+    f.membershipSnapshot.mockResolvedValue(null);
+    expect((await f.handler(request)).statusCode).toBe(403);
+    f.membershipSnapshot.mockResolvedValue({
+      role: 'member',
+      membershipId: 'new-edge',
+      projectIdentity: 'new-project-vertex',
+    });
+    expect((await f.handler(request)).statusCode).toBe(200);
+    expect(f.membershipSnapshot).toHaveBeenLastCalledWith(expect.anything(), projectId, ACTOR);
     expect(f.ddb.send).not.toHaveBeenCalled();
     expect(f.sqs.send).not.toHaveBeenCalled();
   });

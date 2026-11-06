@@ -393,7 +393,7 @@ it.each(['denial', 'listing', 'expiry', 'reset'] as const)(
       await act(async () => {
         if (boundary === 'listing') {
           api.list.mockRejectedValueOnce(
-            new ApiError(403, 'Disabled', { code: 'NATIVE_PREPARATION_PROJECT_DISABLED' }),
+            new ApiError(403, 'Access denied', { code: 'NATIVE_PREPARATION_FORBIDDEN' }),
           );
           await refreshNativeIntents('project-1', 'refresh', true);
         } else if (boundary === 'expiry') notifySessionExpired();
@@ -609,8 +609,8 @@ it.each(['listing', 'expiry', 'reset'] as const)(
     await act(async () => {
       if (boundary === 'listing') {
         api.list.mockRejectedValueOnce(
-          new ApiError(403, 'Project preparation disabled', {
-            code: 'NATIVE_PREPARATION_PROJECT_DISABLED',
+          new ApiError(403, 'Native intent access denied', {
+            code: 'NATIVE_PREPARATION_FORBIDDEN',
           }),
         );
         await refreshNativeIntents('project-1', 'refresh', true);

@@ -296,7 +296,6 @@ const outputCursor = (event, field = 'afterSeq') => {
 export const createNativeRuntimeApi = ({
   enabled = false,
   admissionEnabled = enabled,
-  allowedProjectIds = [],
   store,
   workflowSources,
   jobs,
@@ -605,17 +604,6 @@ export const createNativeRuntimeApi = ({
     try {
       const params = pathParameters(event);
       const { projectId, intentId } = params;
-      if (
-        !Array.isArray(allowedProjectIds) ||
-        !allowedProjectIds.every((id) => matches(id, ID)) ||
-        !allowedProjectIds.includes(projectId)
-      )
-        return reply(
-          response,
-          403,
-          'NATIVE_PREPARATION_PROJECT_DISABLED',
-          'Native preparation is not enabled for this project',
-        );
       const route = methods[event.httpMethod];
       const query = route.query
         ? route.query(event)

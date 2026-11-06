@@ -87,7 +87,7 @@ it('hides READY details on background listing denial and rejects a pre-denial de
   expectProtectedContentCleared();
 });
 it.each(['DRAFT', 'READY'] as const)(
-  'discards loaded %s detail after the disabled-project 403 and fences an older detail response',
+  'discards loaded %s detail after membership denial and fences an older detail response',
   async (status) => {
     get.mockResolvedValue({ ...draft, status });
     renderPage();
@@ -99,8 +99,8 @@ it.each(['DRAFT', 'READY'] as const)(
     await clickButton('Refresh status');
     const previousRevision = getNativeListing('project-1').accessRevision ?? 0;
     list.mockRejectedValueOnce(
-      new ApiError(403, 'Project preparation disabled', {
-        code: 'NATIVE_PREPARATION_PROJECT_DISABLED',
+      new ApiError(403, 'Native intent access denied', {
+        code: 'NATIVE_PREPARATION_FORBIDDEN',
       }),
     );
     await act(async () => {
@@ -108,9 +108,9 @@ it.each(['DRAFT', 'READY'] as const)(
     });
     expect(getNativeListing('project-1')).toMatchObject({
       items: [],
-      disabled: true,
-      denied: false,
-      error: null,
+      disabled: false,
+      denied: true,
+      error: expect.any(String),
     });
     expect(getNativeListing('project-1').accessRevision).toBeGreaterThan(previousRevision);
     expectProtectedContentCleared();

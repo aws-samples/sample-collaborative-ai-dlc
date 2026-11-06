@@ -6,7 +6,10 @@ const QUEUE_URL =
   'https://sqs.us-east-1.amazonaws.com/746558295630/collaborative-ai-dlc-native-runs-dev-provisioning';
 const QUEUE_ARN =
   'arn:aws:sqs:us-east-1:746558295630:collaborative-ai-dlc-native-runs-dev-provisioning';
-const POINTER = { projectId: 'project-c', executionId: 'run-c' };
+const POINTER = {
+  projectId: 'project-c',
+  executionId: '10000000-0000-4000-8000-000000000003',
+};
 const RETRY = { batchItemFailures: [{ itemIdentifier: 'original-delivery' }] };
 const SCOPE_HASH = createHash('sha256')
   .update(JSON.stringify([POINTER.projectId, POINTER.executionId]))
@@ -15,7 +18,6 @@ const SCOPE_HASH = createHash('sha256')
 function fixture(result = { status: 'waiting', phase: 'runtime' }) {
   const env = {
     NATIVE_PREPARATION_ENABLED: 'true',
-    NATIVE_PREPARATION_PROJECT_IDS: JSON.stringify([POINTER.projectId]),
     NATIVE_RUNTIME_QUEUE_URL: QUEUE_URL,
     NATIVE_RUNTIME_ACCOUNT_ID: '746558295630',
     AWS_REGION: 'us-east-1',

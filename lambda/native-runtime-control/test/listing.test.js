@@ -40,7 +40,6 @@ const fixture = () => {
   const jobs = { get: vi.fn() };
   const api = createNativeRuntimeApi({
     enabled: true,
-    allowedProjectIds: [PROJECT, OTHER],
     store: f.store,
     getMembershipSnapshot: membership,
     listNativeIntents: (input) => listing.list(input),

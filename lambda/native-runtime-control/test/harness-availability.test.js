@@ -37,7 +37,6 @@ const fixture = (harness = 'kiro') => {
   });
   const commands = createNativeRuntimeApi({
     enabled: true,
-    allowedProjectIds: [f.identity.projectId],
     store: f.preparationStore,
     getMembershipSnapshot: membership,
     execution,

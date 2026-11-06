@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { createNativeRuntimeApi } from '../api.js';
-import { MEMBERSHIP, PROJECT, createInput, event, setup } from './fixtures.js';
+import { MEMBERSHIP, createInput, event, setup } from './fixtures.js';
 
 const input = {
   requestId: '10000000-0000-4000-8000-000000000001',
@@ -30,7 +30,6 @@ const fixture = async () => {
   const read = vi.fn(async () => ({ status: 'ready', download: { downloadUrl: 'private' } }));
   const api = createNativeRuntimeApi({
     enabled: true,
-    allowedProjectIds: [PROJECT],
     store: f.store,
     getMembershipSnapshot: membership,
     execution: { requestResult: read, result: read },

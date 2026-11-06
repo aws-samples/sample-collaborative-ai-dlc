@@ -113,7 +113,7 @@ export function DiscussionProvider({
   const epoch = useSyncExternalStore(onSessionChanged, currentSessionEpoch);
   useNativeListingVersion();
   const listing = backend === 'native' && projectId ? getNativeListing(projectId) : null;
-  const accessDenied = listing?.denied || (listing?.disabled && !!listing.accessRevision);
+  const accessDenied = listing?.denied;
   // The provider and its thread share one lifetime. Replacing identity/access
   // detaches drafts, pending mutations, member roles and every old callback.
   return (

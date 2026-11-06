@@ -39,7 +39,6 @@ locals {
     NATIVE_PREPARATION_ENABLED           = "true"
     NATIVE_PREPARATION_ADMISSION_ENABLED = tostring(var.preparation_admission_enabled)
     NATIVE_AUTHORITY_FUNCTION            = "arn:${local.partition}:lambda:${local.region}:${local.account_id}:function:${local.name}-authority"
-    NATIVE_PREPARATION_PROJECT_IDS       = jsonencode(var.project_ids)
     NATIVE_RUNTIME_BINDINGS_TABLE        = aws_dynamodb_table.bindings.name
     NATIVE_RUNTIME_ACCOUNT_ID            = local.account_id
     AWS_PARTITION                        = local.partition
@@ -59,8 +58,8 @@ locals {
 resource "terraform_data" "configuration" {
   lifecycle {
     precondition {
-      condition     = length(var.runtime_subnet_ids) > 0 && (!var.preparation_admission_enabled || (var.environment == "dev" && length(var.project_ids) > 0))
-      error_message = "Native preparation is a dev pilot and requires explicit project IDs and VPC subnets."
+      condition     = length(var.runtime_subnet_ids) > 0 && (!var.preparation_admission_enabled || var.environment == "dev")
+      error_message = "Native preparation requires runtime VPC subnets and dev for new admission."
     }
   }
 }

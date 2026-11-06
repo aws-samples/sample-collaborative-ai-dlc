@@ -129,17 +129,16 @@ class NativeExecutionWiring(unittest.TestCase):
             with self.subTest(module=header):
                 self.assertNotRegex(block(source, header), r'\brecursive_loop\s*=\s*"Allow"')
 
-    def test_root_opt_in_requires_same_dev_preparation_and_package_pilot(self):
+    def test_root_admission_requires_native_services_and_package_prerequisites(self):
         switch = block(ROOT, 'variable "enable_native_execution"')
         self.assertRegex(switch, r"default\s*=\s*false")
         guard = block(ROOT, 'resource "terraform_data" "native_execution_configuration"')
         for required in [
             'var.environment == "dev"', "var.enable_native_preparation",
             "var.enable_native_workflow_sources", "var.enable_native_package_jobs",
-            "length(var.native_preparation_project_ids) > 0",
+            "var.native_services_enabled",
         ]:
             self.assertIn(required, guard)
-        self.assertRegex(ROOT, r"project_ids\s*=\s*var.native_preparation_project_ids")
         self.assertRegex(ROOT, r"image_digest\s*=\s*module.agentcore.image_digest")
 
     def test_publications_survive_execution_disable_and_have_no_expiration(self):

@@ -49,7 +49,6 @@ const fixture = async (options = {}) => {
   };
   const api = createNativeRuntimeApi({
     enabled: true,
-    allowedProjectIds: [PROJECT],
     store: f.store,
     getMembershipSnapshot: membership,
     execution,

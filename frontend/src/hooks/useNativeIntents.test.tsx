@@ -375,7 +375,7 @@ describe('shared native discovery cache', () => {
     [503, 'DISABLED'],
     [403, 'PROJECT_DISABLED'],
     [403, 'NATIVE_PREPARATION_DISABLED'],
-    [503, 'NATIVE_PREPARATION_PROJECT_DISABLED'],
+    [503, 'NATIVE_PREPARATION_FORBIDDEN'],
   ])('does not hide an unexpected disabled code/status pair %s/%s', async (status, code) => {
     list.mockRejectedValueOnce(new ApiError(Number(status), 'unavailable', { code }));
     await refreshNativeIntents('p1');
@@ -491,33 +491,24 @@ describe('shared native discovery cache', () => {
     expect(getNativeListing('p1')).toMatchObject({ items: [], disabled: true, error: null });
     expect(nativeProjectDeleteReason(getNativeListing('p1'))).toBeNull();
   });
-  it.each([
-    [503, 'NATIVE_PREPARATION_DISABLED'],
-    [403, 'NATIVE_PREPARATION_PROJECT_DISABLED'],
-  ] as const)(
-    'preserves disabled listing/deletion behavior and the expected access revision for %s',
-    async (status, code) => {
-      list.mockRejectedValueOnce(new ApiError(status, 'off', { code }));
-      await refreshNativeIntents('p1');
-      const state = getNativeListing('p1');
-      expect(state).toMatchObject({
-        items: [],
-        loaded: true,
-        disabled: true,
-        denied: false,
-        error: null,
-      });
-      expect(nativeProjectDeleteReason(state)).toBeNull();
-      if (status === 403) expect(state.accessRevision).toBeGreaterThan(0);
-      else expect(state.accessRevision ?? 0).toBe(0);
-    },
-  );
+  it('preserves disabled listing/deletion behavior for the global service control', async () => {
+    list.mockRejectedValueOnce(new ApiError(503, 'off', { code: 'NATIVE_PREPARATION_DISABLED' }));
+    await refreshNativeIntents('p1');
+    const state = getNativeListing('p1');
+    expect(state).toMatchObject({
+      items: [],
+      loaded: true,
+      disabled: true,
+      denied: false,
+      error: null,
+    });
+    expect(nativeProjectDeleteReason(state)).toBeNull();
+    expect(state.accessRevision ?? 0).toBe(0);
+  });
   it('still blocks deletion for known native work after configuration is disabled', async () => {
     list
       .mockResolvedValueOnce(page('exists'))
-      .mockRejectedValueOnce(
-        new ApiError(403, 'off', { code: 'NATIVE_PREPARATION_PROJECT_DISABLED' }),
-      );
+      .mockRejectedValueOnce(new ApiError(503, 'off', { code: 'NATIVE_PREPARATION_DISABLED' }));
     await refreshNativeIntents('p1');
     await refreshNativeIntents('p1', 'refresh', true);
     expect(getNativeListing('p1').items).toEqual([]);

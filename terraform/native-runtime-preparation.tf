@@ -30,18 +30,11 @@ resource "terraform_data" "native_execution_configuration" {
     precondition {
       condition = (
         var.environment == "dev" && var.native_services_enabled && var.enable_native_preparation &&
-        var.enable_native_workflow_sources && var.enable_native_package_jobs &&
-        length(var.native_preparation_project_ids) > 0
+        var.enable_native_workflow_sources && var.enable_native_package_jobs
       )
-      error_message = "Native execution requires dev, native preparation/workflow sources/package jobs, and the explicit preparation project allowlist."
+      error_message = "Native execution requires dev, native services, preparation, workflow sources, and package jobs."
     }
   }
-}
-
-variable "native_preparation_project_ids" {
-  description = "Explicit project IDs allowed to prepare native runs in the dev pilot"
-  type        = list(string)
-  default     = []
 }
 
 variable "native_preparation_existing_https_rule_id" {
@@ -73,7 +66,6 @@ module "native_runs" {
 
   project_name                        = var.project_name
   environment                         = var.environment
-  project_ids                         = var.native_preparation_project_ids
   vpc_id                              = module.networking.vpc_id
   runtime_subnet_ids                  = module.agentcore.runtime_subnet_ids
   api_subnet_ids                      = module.networking.private_subnet_ids

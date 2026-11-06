@@ -3,11 +3,13 @@ import { createNativeRuntimeProvisioner } from '../provisioner.js';
 import { createNativeRuntimeWorker, nativeDiagnosticDdb } from '../worker.js';
 import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { fileSystemPolicy } from '../policies.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   DEPLOYMENT,
   IDENTITY,
   IMAGE,
+  OTHER,
+  candidate,
   createInput,
   setup,
   resources,
@@ -37,12 +39,20 @@ const fixture = async ({
   rowImage = IMAGE,
   logger = { info: vi.fn() },
   leaseMs = 120000,
+  projectId = IDENTITY.projectId,
 } = {}) => {
+  const identity = { ...IDENTITY, projectId };
   let time = 1000;
   const f = setup({ leaseMs, now: () => time });
-  await f.store.create(createInput({ image: rowImage }));
-  await f.store.prepare(IDENTITY);
-  const allocated = resources(f.read());
+  await f.store.create(
+    createInput({
+      projectId,
+      candidate: candidate({ projectId }),
+      image: rowImage,
+    }),
+  );
+  await f.store.prepare(identity);
+  const allocated = resources(f.read(identity));
   const state = { ap: null, role: null, policy: null, runtime: null, endpoint: null };
   const hooks = {};
   const operation = (name, fn) =>
@@ -194,6 +204,8 @@ const fixture = async ({
   });
   return {
     ...f,
+    identity,
+    read: () => f.read(identity),
     state,
     storageHooks: f.hooks,
     hooks,
@@ -457,7 +469,6 @@ describe('bounded AgentCore role propagation', () => {
       reconcile: f.reconcile,
       env: {
         NATIVE_PREPARATION_ENABLED: 'true',
-        NATIVE_PREPARATION_PROJECT_IDS: JSON.stringify([IDENTITY.projectId]),
       },
     });
     const event = {
@@ -1136,13 +1147,30 @@ describe('bounded native provisioning diagnostics', () => {
 describe('native SQS pointer boundary', () => {
   const env = {
     NATIVE_PREPARATION_ENABLED: 'true',
-    NATIVE_PREPARATION_PROJECT_IDS: JSON.stringify([IDENTITY.projectId]),
   };
   const record = (body = IDENTITY) => ({
     messageId: 'one',
     eventSource: 'aws:sqs',
     body: JSON.stringify(body),
   });
+  it.each([IDENTITY.projectId, OTHER, randomUUID()])(
+    'prepares project %s through the actual worker and provisioner without project configuration',
+    async (projectId) => {
+      const f = await fixture({ projectId });
+      const handler = createNativeRuntimeWorker({ reconcile: f.reconcile, env });
+      expect(await handler({ Records: [record(f.identity)] })).toEqual({ batchItemFailures: [] });
+      const prepared = f.read();
+      expect(prepared).toMatchObject({ projectId, status: 'READY' });
+      const expected = resources(prepared);
+      expect(prepared.rootDirectory).toBe(expected.rootDirectory);
+      expect(f.services.efs.createAccessPoint).toHaveBeenCalledTimes(1);
+      expect(f.services.iam.createRole).toHaveBeenCalledTimes(1);
+      expect(f.services.runtime.invokeAgentRuntime).toHaveBeenCalledTimes(1);
+      expect(
+        JSON.parse(f.services.runtime.invokeAgentRuntime.mock.calls[0][0].payload.toString()),
+      ).toMatchObject({ command: 'native-workspace-check', projectId });
+    },
+  );
   it('passes only the protected-row pointer and retries pending reconciliation', async () => {
     const reconcile = vi.fn(async () => ({ status: 'pending' }));
     const handler = createNativeRuntimeWorker({ reconcile, env });
@@ -1155,13 +1183,31 @@ describe('native SQS pointer boundary', () => {
     { ...IDENTITY, runtimeArn: 'caller-controlled' },
     { ...IDENTITY, imageUri: IMAGE.uri },
     { ...IDENTITY, bindingId: 'caller-controlled' },
-    { ...IDENTITY, projectId: 'another-project' },
-  ])('rejects configuration or another project in queue body', async (body) => {
+    ...['', null, 42, '../other', 'project\n', 'x'.repeat(257)].map((projectId) => ({
+      ...IDENTITY,
+      projectId,
+    })),
+    ...['', null, 'run-c', '10000000-0000-4000-8000-000000000001\n'].map((executionId) => ({
+      ...IDENTITY,
+      executionId,
+    })),
+  ])('rejects injected configuration or malformed queue identity: %j', async (body) => {
     const reconcile = vi.fn();
     const handler = createNativeRuntimeWorker({ reconcile, env });
     expect(await handler({ Records: [record(body)] })).toEqual({
       batchItemFailures: [{ itemIdentifier: 'one' }],
     });
     expect(reconcile).not.toHaveBeenCalled();
+  });
+
+  it('reads only the requested project scope and acknowledges missing work without provisioning', async () => {
+    const f = await fixture();
+    const handler = createNativeRuntimeWorker({ reconcile: f.reconcile, env });
+    const identity = { ...IDENTITY, projectId: 'another-project' };
+    expect(await handler({ Records: [record(identity)] })).toEqual({ batchItemFailures: [] });
+    expect(f.read().status).toBe('PREPARING');
+    expect(f.services.efs.createAccessPoint).not.toHaveBeenCalled();
+    expect(f.services.iam.createRole).not.toHaveBeenCalled();
+    expect(f.services.runtime.invokeAgentRuntime).not.toHaveBeenCalled();
   });
 });

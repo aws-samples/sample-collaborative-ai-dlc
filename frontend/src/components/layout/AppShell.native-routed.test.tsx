@@ -215,125 +215,138 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
 
-it('creates from normal New intent, reviews its application source, corrects and starts through the native shell adapter', async () => {
-  const sourceId = 'a'.repeat(64);
-  const packageJobId = '10000000-0000-4000-8000-000000000001';
-  const bindingRevision = '20000000-0000-4000-8000-000000000002';
-  const source = { provider: 'github', repository: 'owner/application' };
-  const query = new URLSearchParams({ backend: 'native', sourceId, packageJobId, bindingRevision });
-  service.projectList.mockResolvedValue([
-    {
-      id: 'project',
-      name: 'Shared space',
-      kind: 'v2',
-      userRole: 'member',
-      agentCli: 'codex',
-      gitProvider: 'github',
-      gitRepo: source.repository,
-      trackers: [],
-      repos: [{ provider: source.provider, url: source.repository, role: 'primary' }],
-    },
-  ]);
-  invalidateProjects();
-  service.capabilities.mockResolvedValue({
-    preparationEnabled: true,
-    executionEnabled: true,
-    unavailableHarnesses: { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
-  });
-  service.workflowList.mockResolvedValue([
-    {
+it.each(['project', '40000000-0000-4000-8000-000000000005'])(
+  'creates from normal New intent in %s, reviews its application source, corrects and starts through the native shell adapter',
+  async (projectId) => {
+    const sourceId = 'a'.repeat(64);
+    const packageJobId = '10000000-0000-4000-8000-000000000001';
+    const bindingRevision = '20000000-0000-4000-8000-000000000002';
+    const source = { provider: 'github', repository: 'owner/application' };
+    const query = new URLSearchParams({
+      backend: 'native',
       sourceId,
-      revision: bindingRevision,
-      status: 'active',
-      repository: 'awslabs/aidlc-workflows',
-    },
-  ]);
-  service.workflowPackage.mockResolvedValue({
-    jobId: packageJobId,
-    sourceId,
-    requestedRelease: 'v2.11.1',
-    state: 'SUCCEEDED',
-    package: { version: '2.11.1', release: 'v2.11.1', commit: 'b'.repeat(40) },
-  });
-  let current: NativeIntent;
-  service.create.mockImplementation(async (_project, request) => {
-    current = {
-      ...detail(request.intentId),
-      title: request.title,
-      prompt: request.prompt,
-      promptRevision: 0,
-      applicationSource: request.applicationSource,
-      status: 'DRAFT',
-      execution: null,
-      package: {
-        version: '2.11.1',
-        source: { provider: 'github', repository: 'awslabs/aidlc-workflows', release: 'v2.11.1' },
+      packageJobId,
+      bindingRevision,
+    });
+    service.projectList.mockResolvedValue([
+      {
+        id: projectId,
+        name: 'Shared space',
+        kind: 'v2',
+        userRole: 'member',
+        agentCli: 'codex',
+        gitProvider: 'github',
+        gitRepo: source.repository,
+        trackers: [],
+        repos: [{ provider: source.provider, url: source.repository, role: 'primary' }],
       },
-    };
-    return current;
-  });
-  service.get.mockImplementation(async () => current);
-  service.savePrompt.mockImplementation(async (_project, _intent, request) => {
-    current = { ...current, prompt: request.prompt, promptRevision: request.expectedRevision + 1 };
-    return current;
-  });
-  // The service port represents completed preparation; no provisioning occurs.
-  service.prepare.mockImplementation(async () => {
-    current = { ...current, status: 'READY' };
-    return current;
-  });
-  service.start.mockImplementation(async () => {
-    current = { ...current, execution: { ...detail().execution!, status: 'REQUESTED' } };
-    return current;
-  });
-  const user = userEvent.setup();
-  render(
-    <ThemeProvider>
-      <AuthProvider>
-        <MemoryRouter initialEntries={[`/space/project/intent/new?${query}`]}>
-          <Routes>
-            <Route
-              element={
-                <ProtectedRoute>
-                  <AppShell />
-                </ProtectedRoute>
-              }
-            >
-              <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
-              <Route path="/space/:projectId/native-intent/:intentId" element={<IntentView />} />
-              <Route path="/space/:projectId/intent/:intentId" element={<IntentView />} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
-      </AuthProvider>
-    </ThemeProvider>,
-  );
-  await user.type(await screen.findByLabelText('Title'), 'Request from New intent');
-  await user.click(screen.getByRole('button', { name: 'Create native draft' }));
-  await screen.findByRole('button', { name: 'Add prompt' });
-  expect(service.create).toHaveBeenCalledTimes(1);
-  expect(service.platformGet).not.toHaveBeenCalled();
-  expect(service.start).not.toHaveBeenCalled();
-  await user.click(screen.getByRole('button', { name: 'Intent actions' }));
-  await user.click(screen.getByRole('menuitem', { name: 'Intent configuration' }));
-  const configuration = screen.getByRole('dialog', { name: 'Intent configuration' });
-  expect(within(configuration).getByText(source.repository)).toBeVisible();
-  await user.keyboard('{Escape}');
-  await user.click(screen.getByRole('button', { name: 'Add prompt' }));
-  fireEvent.change(screen.getByLabelText('What would you like to build?'), {
-    target: { value: 'Corrected in the shared workspace' },
-  });
-  await user.click(screen.getByRole('button', { name: 'Save prompt' }));
-  await user.click(screen.getByRole('button', { name: 'Prepare workspace' }));
-  await user.click(await screen.findByRole('button', { name: 'Start agent' }));
-  expect(service.prepare).toHaveBeenCalledWith('project', current!.id);
-  expect(service.start).toHaveBeenCalledWith('project', current!.id, expect.any(String), 1);
-  expect(service.savePrompt.mock.calls[0][2]).toMatchObject({
-    expectedRevision: 0,
-    prompt: 'Corrected in the shared workspace',
-  });
-  expect(service.platformGet).not.toHaveBeenCalled();
-});
+    ]);
+    invalidateProjects();
+    service.capabilities.mockResolvedValue({
+      preparationEnabled: true,
+      executionEnabled: true,
+      unavailableHarnesses: { kiro: 'NATIVE_EXECUTION_KIRO_UNAVAILABLE' },
+    });
+    service.workflowList.mockResolvedValue([
+      {
+        sourceId,
+        revision: bindingRevision,
+        status: 'active',
+        repository: 'awslabs/aidlc-workflows',
+      },
+    ]);
+    service.workflowPackage.mockResolvedValue({
+      jobId: packageJobId,
+      sourceId,
+      requestedRelease: 'v2.11.1',
+      state: 'SUCCEEDED',
+      package: { version: '2.11.1', release: 'v2.11.1', commit: 'b'.repeat(40) },
+    });
+    let current: NativeIntent;
+    service.create.mockImplementation(async (_project, request) => {
+      current = {
+        ...detail(request.intentId),
+        projectId,
+        title: request.title,
+        prompt: request.prompt,
+        promptRevision: 0,
+        applicationSource: request.applicationSource,
+        status: 'DRAFT',
+        execution: null,
+        package: {
+          version: '2.11.1',
+          source: { provider: 'github', repository: 'awslabs/aidlc-workflows', release: 'v2.11.1' },
+        },
+      };
+      return current;
+    });
+    service.get.mockImplementation(async () => current);
+    service.savePrompt.mockImplementation(async (_project, _intent, request) => {
+      current = {
+        ...current,
+        prompt: request.prompt,
+        promptRevision: request.expectedRevision + 1,
+      };
+      return current;
+    });
+    // The service port represents completed preparation; no provisioning occurs.
+    service.prepare.mockImplementation(async () => {
+      current = { ...current, status: 'READY' };
+      return current;
+    });
+    service.start.mockImplementation(async () => {
+      current = { ...current, execution: { ...detail().execution!, status: 'REQUESTED' } };
+      return current;
+    });
+    const user = userEvent.setup();
+    render(
+      <ThemeProvider>
+        <AuthProvider>
+          <MemoryRouter initialEntries={[`/space/${projectId}/intent/new?${query}`]}>
+            <Routes>
+              <Route
+                element={
+                  <ProtectedRoute>
+                    <AppShell />
+                  </ProtectedRoute>
+                }
+              >
+                <Route path="/space/:projectId/intent/new" element={<NewIntentPage />} />
+                <Route path="/space/:projectId/native-intent/:intentId" element={<IntentView />} />
+                <Route path="/space/:projectId/intent/:intentId" element={<IntentView />} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </AuthProvider>
+      </ThemeProvider>,
+    );
+    await user.type(await screen.findByLabelText('Title'), 'Request from New intent');
+    await user.click(screen.getByRole('button', { name: 'Create native draft' }));
+    await screen.findByRole('button', { name: 'Add prompt' });
+    expect(service.create).toHaveBeenCalledTimes(1);
+    expect(service.platformGet).not.toHaveBeenCalled();
+    expect(service.start).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Intent actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Intent configuration' }));
+    const configuration = screen.getByRole('dialog', { name: 'Intent configuration' });
+    expect(within(configuration).getByText(source.repository)).toBeVisible();
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: 'Add prompt' }));
+    fireEvent.change(screen.getByLabelText('What would you like to build?'), {
+      target: { value: 'Corrected in the shared workspace' },
+    });
+    await user.click(screen.getByRole('button', { name: 'Save prompt' }));
+    await user.click(screen.getByRole('button', { name: 'Prepare workspace' }));
+    await user.click(await screen.findByRole('button', { name: 'Start agent' }));
+    expect(service.prepare).toHaveBeenCalledWith(projectId, current!.id);
+    expect(service.start).toHaveBeenCalledWith(projectId, current!.id, expect.any(String), 1);
+    expect(service.savePrompt.mock.calls[0][2]).toMatchObject({
+      expectedRevision: 0,
+      prompt: 'Corrected in the shared workspace',
+    });
+    expect(service.platformGet).not.toHaveBeenCalled();
+  },
+);
 
 it('saves a missing task prompt and starts its saved revision in the shared Intent workspace', async () => {
   const draft = { ...detail(), prompt: '', promptRevision: 0, execution: null };

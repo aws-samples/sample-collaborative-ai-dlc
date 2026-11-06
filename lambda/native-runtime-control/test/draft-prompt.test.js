@@ -12,7 +12,6 @@ import {
   IDENTITY,
   IMAGE,
   MEMBERSHIP,
-  PROJECT,
   TABLE,
   binding,
   createInput,
@@ -72,7 +71,6 @@ async function fixture({ ready = false } = {}) {
   const membership = vi.fn(async () => MEMBERSHIP);
   const api = createNativeRuntimeApi({
     enabled: true,
-    allowedProjectIds: [PROJECT],
     store: f.store,
     execution,
     image: IMAGE,

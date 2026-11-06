@@ -749,8 +749,6 @@ export const createNativeExecutionWorker =
           !matches(identity.executionId, UUID_V4)
         )
           continue;
-        const projects = JSON.parse(env.NATIVE_PREPARATION_PROJECT_IDS ?? '[]');
-        if (!Array.isArray(projects) || !projects.includes(identity.projectId)) continue;
         const diagnostics = createNativeExecutionDiagnostics({ logger, scope: identity });
         const deployment = nativeDeploymentFromEnv(env);
         const authorityOptions = { lambda, functionName: env.NATIVE_AUTHORITY_FUNCTION };
