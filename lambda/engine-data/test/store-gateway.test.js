@@ -83,8 +83,8 @@ const newStore = () => {
   });
 };
 
-const gatewayWith = (audit = []) =>
-  createStoreGateway({ verifyGrant, createStore: newStore, audit: (r) => audit.push(r) });
+const gatewayWith = (audit = [], env = {}) =>
+  createStoreGateway({ verifyGrant, createStore: newStore, audit: (r) => audit.push(r), env });
 
 // The JSON round trip the Lambda transport applies to events and responses.
 const wire = (handler) => async (event) =>
@@ -867,5 +867,129 @@ describe('stage grants act only as their own stage', () => {
       { executionId: 'e-1', stageInstanceId: OTHER, state: 'FAILED' },
     ]);
     expect(response).toMatchObject({ ok: true });
+  });
+});
+
+describe('runtime_mcp_credentials = gateway_only', () => {
+  // An intent started under `allow` keeps inline MCP credentials in META.
+  const SENTINEL = 'sentinel-inline-mcp-credential';
+  const server = {
+    type: 'remote',
+    url: 'https://mcp.example.com',
+    headers: { Authorization: `Bearer ${SENTINEL}` },
+    environment: { TOKEN: SENTINEL },
+  };
+  const MCP_FIELDS = {
+    mcpServersByTier: { global: { shared: server }, project: { team: server } },
+    customMcpServers: { legacy: server },
+  };
+  const GATEWAY_ONLY = { RUNTIME_MCP_CREDENTIALS: 'gateway_only' };
+  const PINNED = { ...META, workflowId: 'aidlc-v2', workflowVersion: 3 };
+  const OWN = planStageInstanceId('aidlc-v2@3', 'requirements-analysis');
+  const DISCUSSION = { mode: 'discussion', projectId: 'p-1', intentId: 'e-1', executionId: 'e-1' };
+  const STAGE_GRANT = {
+    mode: 'stage',
+    projectId: 'p-1',
+    intentId: 'i-1',
+    executionId: 'e-1',
+    stageId: 'requirements-analysis',
+    stageCallbackId: 'cb-1',
+    orchestratorRunId: 'run-1',
+  };
+
+  const seedStoredCredentials = (meta) => {
+    const stored = { ...meta, ...MCP_FIELDS };
+    const rows = items({ META: stored, [`STAGE#${OWN}`]: { ...STAGE, sk: `STAGE#${OWN}` } });
+    seed(rows);
+    // The execution-wide queries getExecutionRecords issues; prefix queries
+    // (events, receipts, …) have no rows here.
+    const partition = Object.values(rows);
+    ddb.on(QueryCommand).callsFake(({ KeyConditionExpression, ExpressionAttributeValues }) => {
+      const { ':lo': lo, ':hi': hi } = ExpressionAttributeValues;
+      if (KeyConditionExpression === 'pk = :pk') return { Items: partition };
+      if (lo) return { Items: partition.filter((row) => row.sk < lo) };
+      if (hi) return { Items: partition.filter((row) => row.sk >= hi) };
+      return { Items: [] };
+    });
+    ddb.on(UpdateCommand).callsFake(({ Key }) => ({ Attributes: rows[Key.sk] ?? {} }));
+    return stored;
+  };
+  const call = async (scope, method, args, env = GATEWAY_ONLY) =>
+    wire(gatewayWith([], env))({ op: `store.${method}`, args, grant: await grantFor(scope) });
+
+  it.each(ENGINE_DATA_STORE_METHODS)(
+    '%s never returns the stored credentials to an execution grant',
+    async (method) => {
+      if (method === 'createExecution') seed(items({ META: undefined }));
+      else seedStoredCredentials(META);
+      const response = await call(EXECUTION, method, CALLS[method]);
+      expect(response.error?.name, method).not.toBe('EngineDataAccessDenied');
+      expect(JSON.stringify(response)).not.toContain(SENTINEL);
+    },
+  );
+
+  it('projects META for the discussion assist and leaves the record intact', async () => {
+    const stored = seedStoredCredentials({ ...META, intentId: 'e-1' });
+    const execution = await call(DISCUSSION, 'getExecution', ['e-1', { consistentRead: true }]);
+    const records = await call(DISCUSSION, 'getExecutionRecords', [
+      'e-1',
+      { includeOutputs: false },
+    ]);
+    expect(execution).toMatchObject({
+      ok: true,
+      result: { executionId: 'e-1', status: 'RUNNING' },
+    });
+    expect(records).toMatchObject({ ok: true, result: { meta: { executionId: 'e-1' } } });
+    expect(records.result.stages).toHaveLength(2);
+    for (const response of [execution, records]) {
+      expect(JSON.stringify(response)).not.toContain(SENTINEL);
+    }
+    expect(execution.result).not.toHaveProperty('mcpServersByTier');
+    expect(execution.result).not.toHaveProperty('customMcpServers');
+    expect(stored).toMatchObject(MCP_FIELDS);
+    expect(ddb.commandCalls(UpdateCommand)).toHaveLength(0);
+    expect(ddb.commandCalls(PutCommand)).toHaveLength(0);
+  });
+
+  it('projects META for a stage grant', async () => {
+    seedStoredCredentials(PINNED);
+    for (const [method, args] of [
+      ['getExecution', ['e-1', { consistentRead: true }]],
+      ['getExecutionRecords', ['e-1']],
+      [
+        'updateExecution',
+        [
+          {
+            executionId: 'e-1',
+            status: 'RUNNING',
+            ownership: {
+              orchestratorRunId: 'run-1',
+              stageCallbackId: 'cb-1',
+              stageInstanceId: OWN,
+            },
+          },
+        ],
+      ],
+    ]) {
+      const response = await call(STAGE_GRANT, method, args);
+      expect(response, method).toMatchObject({ ok: true });
+      expect(JSON.stringify(response), method).not.toContain(SENTINEL);
+    }
+  });
+
+  it('returns META unchanged under allow', async () => {
+    const stored = seedStoredCredentials({ ...META, intentId: 'e-1' });
+    for (const env of [{}, { RUNTIME_MCP_CREDENTIALS: 'allow' }]) {
+      const execution = await call(DISCUSSION, 'getExecution', ['e-1'], env);
+      const records = await call(DISCUSSION, 'getExecutionRecords', ['e-1'], env);
+      expect(execution.result).toEqual(stored);
+      expect(records.result.meta).toEqual(stored);
+    }
+  });
+
+  it('refuses to start with an unknown profile', () => {
+    expect(() => gatewayWith([], { RUNTIME_MCP_CREDENTIALS: 'deny' })).toThrow(
+      /RUNTIME_MCP_CREDENTIALS must be one of/,
+    );
   });
 });

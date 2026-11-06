@@ -9,6 +9,7 @@ import {
   ScanCommand,
   BatchWriteCommand,
   GetCommand,
+  TransactWriteCommand,
 } from '@aws-sdk/lib-dynamodb';
 import { LambdaClient } from '@aws-sdk/client-lambda';
 import { BedrockAgentCoreClient } from '@aws-sdk/client-bedrock-agentcore';
@@ -1213,6 +1214,51 @@ describe('DELETE /projects/:id', () => {
     );
     expect(await g.V().hasLabel('TeamKnowledge').hasNext()).toBe(true);
     expect(await g.V().hasLabel('LearningRule').hasNext()).toBe(true);
+  });
+
+  it('retires each intent’s grants fenced on the run it read, and keeps an intent whose run changed', async () => {
+    vi.stubEnv('GATEWAY_GRANT_RETIREMENT_TABLE', 'retired-grants');
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const intentId = await seedIntent(id, { status: 'WAITING' });
+    projectExecs.get(id)[0].orchestratorRunId = 'run-listed';
+    const checks = [];
+    // A relaunch replaced the run id after the delete listed the intent.
+    ddbMock.on(TransactWriteCommand).callsFake(async (input) => {
+      const [{ ConditionCheck: check }, { Update: update }] = input.TransactItems;
+      checks.push({ check, update });
+      throw Object.assign(new Error('cancelled'), {
+        name: 'TransactionCanceledException',
+        CancellationReasons: [{ Code: 'ConditionalCheckFailed' }, { Code: 'None' }],
+      });
+    });
+    const log = vi.spyOn((await import('@aws-lambda-powertools/logger')).Logger.prototype, 'error');
+    log.mockImplementation(() => {});
+    try {
+      const res = await handler({
+        httpMethod: 'DELETE',
+        pathParameters: { projectId: id },
+        ...claims(sub),
+      });
+      expect(res.statusCode).toBe(500);
+      expect(JSON.parse(res.body).intents).toEqual([intentId]);
+    } finally {
+      log.mockRestore();
+    }
+    expect(checks).toHaveLength(1);
+    expect(checks[0].check).toMatchObject({
+      TableName: 'v2-proc-test',
+      Key: { pk: `EXEC#${intentId}`, sk: 'META' },
+      ConditionExpression: 'orchestratorRunId = :retiringRun',
+      ExpressionAttributeValues: { ':retiringRun': 'run-listed' },
+    });
+    expect(checks[0].update).toMatchObject({
+      TableName: 'retired-grants',
+      Key: { pk: `EXEC#${intentId}` },
+    });
+    // Nothing of the intent or the project was removed.
+    expect(await g.V().has('Intent', 'id', intentId).hasNext()).toBe(true);
+    expect(await g.V().has('Project', 'id', id).hasNext()).toBe(true);
   });
 
   it('force-retires a RUNNING intent instead of refusing the project delete', async () => {
@@ -2724,6 +2770,71 @@ describe('GET/PUT /projects/:id/custom-mcp-servers/secrets', () => {
     await addMember(id, memberSub, 'member');
     const res = await handler({ ...projectSecretsEvent('GET', id), ...claims(memberSub) });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('runtime_mcp_credentials = gateway_only — space MCP settings', () => {
+  const SENTINEL = 'sentinel-space-mcp-secret-91c2';
+  // Back to the default profile; the file-level env stubs stay in place.
+  afterEach(() => vi.stubEnv('RUNTIME_MCP_CREDENTIALS', ''));
+
+  it.each([
+    ['a remote server', { wiki: { type: 'http', url: 'https://wiki.example/mcp' } }],
+    ['a stdio server', { tool: { command: 'npx', env: { K: '${API_KEY}' } } }],
+  ])('refuses %s and keeps the stored config', async (_label, config) => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+    const res = await handler({
+      ...customMcpEvent('PUT', id, {
+        body: JSON.stringify({ customMcpServers: JSON.stringify(config) }),
+      }),
+      ...claims(sub),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toMatchObject({
+      code: 'runtime_mcp_gateway_only',
+      error: expect.stringContaining('Gateway target'),
+    });
+    const read = await handler({ ...customMcpEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(read.body)).toEqual({ customMcpServers: '{}' });
+  });
+
+  it('still reads and clears a config saved before the profile was enabled', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    const legacy = JSON.stringify({ tool: { command: 'npx' } });
+    await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: legacy }) }),
+      ...claims(sub),
+    });
+    vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+    const read = await handler({ ...customMcpEvent('GET', id), ...claims(sub) });
+    expect(JSON.parse(read.body)).toEqual({ customMcpServers: legacy });
+    const cleared = await handler({
+      ...customMcpEvent('PUT', id, { body: JSON.stringify({ customMcpServers: '{}' }) }),
+      ...claims(sub),
+    });
+    expect(cleared.statusCode).toBe(200);
+  });
+
+  it('refuses setting a space MCP secret but allows clearing one', async () => {
+    const sub = `u-${randomUUID()}`;
+    const { id } = await createProject(sub);
+    vi.stubEnv('RUNTIME_MCP_CREDENTIALS', 'gateway_only');
+    const set = await handler({
+      ...projectSecretsEvent('PUT', id, {
+        body: JSON.stringify({ mcpSecrets: { API_KEY: SENTINEL } }),
+      }),
+      ...claims(sub),
+    });
+    expect(set.statusCode).toBe(400);
+    expect([...ssmParams.values()]).not.toContain(SENTINEL);
+    const cleared = await handler({
+      ...projectSecretsEvent('PUT', id, { body: JSON.stringify({ mcpSecrets: { API_KEY: '' } }) }),
+      ...claims(sub),
+    });
+    expect(cleared.statusCode).toBe(200);
   });
 });
 

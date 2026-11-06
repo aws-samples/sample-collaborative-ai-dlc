@@ -252,7 +252,8 @@ module "mcp_tools_lambda" {
 # ---------------------------------------------------------------------------
 # Gateway REQUEST/RESPONSE interceptor: the single authorization point in
 # front of the aidlc target. Read-only: grant public key, the execution and
-# stage rows, and intent ownership in Neptune.
+# stage rows, intent ownership in Neptune and (grant-retirement.tf) the grant
+# retirement records.
 # ---------------------------------------------------------------------------
 
 resource "aws_security_group" "mcp_interceptor" {
@@ -372,14 +373,19 @@ module "mcp_interceptor_lambda" {
   vpc_subnet_ids         = aws_subnet.agentcore[*].id
   vpc_security_group_ids = [aws_security_group.mcp_interceptor[0].id]
 
-  environment_variables = {
+  environment_variables = merge({
     AWS_SDK_UA_APP_ID       = var.aws_sdk_ua_app_id
     POWERTOOLS_SERVICE_NAME = var.powertools_service_name
     POWERTOOLS_LOG_LEVEL    = var.powertools_log_level
     V2_PROCESS_TABLE        = aws_dynamodb_table.v2_executions.name
     NEPTUNE_ENDPOINT        = var.neptune_endpoint
     GATEWAY_GRANT_KEY_IDS   = aws_kms_key.gateway_grant[0].arn
-  }
+
+    GATEWAY_GRANT_RETIREMENT_TABLE = aws_dynamodb_table.gateway_grant_retirements[0].name
+    # Customer target allow rules (mcp-gateway-targets.tf); absent without any.
+    }, length(local.mcp_gateway_custom_targets) > 0 ? {
+    MCP_GATEWAY_CUSTOM_TARGETS = local.mcp_gateway_custom_targets_registry
+  } : {})
 
   cloudwatch_logs_retention_in_days = var.environment == "prod" ? 30 : 7
 

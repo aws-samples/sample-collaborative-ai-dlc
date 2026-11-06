@@ -383,7 +383,60 @@ variable "enable_mcp_gateway" {
 }
 
 variable "enable_engine_data" {
-  description = "Route the AgentCore engine's data access (process state, knowledge graph, methodology catalog, custom-rule and attachment blobs, intent broadcasts) through the grant-verifying engine-data Lambda. The intents Lambda also signs execution grants. Requires enable_mcp_gateway."
+  description = "Route the AgentCore engine's data access through grant-verifying services: process state, knowledge graph, methodology catalog, custom-rule and attachment blobs, and intent broadcasts through the engine-data Lambda; Git credentials and custom MCP secrets through the credential broker; provider review operations through the source-control runtime alias. The intents Lambda also signs execution grants. Requires enable_mcp_gateway."
   type        = bool
   default     = false
+}
+
+variable "enforce_runtime_grants" {
+  description = "Retire the pre-engine-data runtime request shapes at the credential broker: Git credential and agent credential requests then always require the Gateway grant (and invocation accounting). While false, requests that carry the new authority fields are still fully verified, and legacy-shape requests from runtimes started before enable_engine_data are served the legacy way and logged as LEGACY_RUNTIME_REQUEST. Turn on only after that count has drained to zero. Requires enable_engine_data."
+  type        = bool
+  default     = false
+}
+
+variable "runtime_mcp_credentials" {
+  description = "Custom MCP credential profile. \"allow\" (default) keeps today's behaviour: space and platform custom MCP servers run from the agent runtime with their secrets resolved into it. \"gateway_only\" keeps every custom MCP credential and every direct custom MCP connection out of the runtime microVM: direct servers and their secrets are refused when saved, at launch, at dispatch, by the credential broker and by the runtime, and customer MCP servers are served only as mcp_gateway_custom_targets. Requires enable_mcp_gateway, enable_engine_data and enforce_runtime_grants. Git tokens and model credentials still reach the runtime."
+  type        = string
+  default     = "allow"
+
+  validation {
+    condition     = contains(["allow", "gateway_only"], var.runtime_mcp_credentials)
+    error_message = "runtime_mcp_credentials must be \"allow\" or \"gateway_only\"."
+  }
+}
+
+variable "mcp_gateway_custom_targets" {
+  description = "Customer MCP servers (for example Confluence) served behind the AgentCore Gateway as remote MCP targets, keyed by an immutable target name. The Gateway injects each target's credential from an AgentCore Identity credential provider created out of band; the interceptor allows a call only from a stage session whose signed grant matches the target's allow rule (spaces, optional stages, optional tools). Requires enable_mcp_gateway. Field reference and validation: modules/compute/agentcore/variables.tf; how-to: docs/using-the-platform/customer-mcp-servers.md."
+  type = map(object({
+    endpoint    = string
+    description = optional(string)
+    auth = object({
+      type                    = string
+      credential_provider_arn = string
+      secret_arn              = string
+      scopes                  = optional(list(string), [])
+      credential_location     = optional(string)
+      parameter_name          = optional(string)
+      prefix                  = optional(string)
+    })
+    private_endpoint = optional(object({
+      managed_vpc_resource = optional(object({
+        vpc_identifier           = string
+        subnet_ids               = list(string)
+        endpoint_ip_address_type = string
+        security_group_ids       = optional(list(string))
+        routing_domain           = optional(string)
+      }))
+      self_managed_lattice_resource = optional(object({
+        resource_configuration_identifier = string
+      }))
+    }))
+    allow = object({
+      project_ids = list(string)
+      stage_ids   = optional(list(string))
+      tools       = optional(list(string))
+    })
+  }))
+  default  = {}
+  nullable = false
 }

@@ -23,11 +23,13 @@
 // as index.js. Callback names carry the editId so two edits are distinct
 // durable identities.
 
+import { randomUUID } from 'node:crypto';
 import { resolveRuntimeTarget } from '../shared/runtime-target.js';
 import { credentialProviderForCli } from '../shared/agent-credentials.js';
 import { commandDefinition } from '../shared/agent-command-registry.js';
 import { gatewayScopeForCommand } from '../shared/gateway-grant.js';
 import { quorumEditSessionIdFor } from '../shared/runtime-session-ids.js';
+import { GATEWAY_GRANT_RETIREMENT_FAILURE, retireGrantDurably } from './grant-retirement.js';
 
 const nowIso = () => new Date().toISOString();
 
@@ -75,7 +77,7 @@ export const runQuorumEdit = async (event, ctx, deps) => {
     (credentialProvider ? { provider: credentialProvider, source: 'platform' } : null);
   // Same grant issuing as the stage loop's invokeIntentRuntime (index.js):
   // project and intent come from the META row loaded for this execution.
-  const invokeIntentRuntime = async (rawPayload, session = sessionId) => {
+  const invokeIntentRuntime = async (rawPayload, session = sessionId, gatewayGrantId = null) => {
     const gatewayScope =
       typeof deps.issueGatewayGrant === 'function'
         ? gatewayScopeForCommand(rawPayload, {
@@ -85,7 +87,12 @@ export const runQuorumEdit = async (event, ctx, deps) => {
           })
         : null;
     const payload = gatewayScope
-      ? { ...rawPayload, gatewayGrant: await deps.issueGatewayGrant(gatewayScope) }
+      ? {
+          ...rawPayload,
+          gatewayGrant: gatewayGrantId
+            ? await deps.issueGatewayGrant(gatewayScope, { randomId: () => gatewayGrantId })
+            : await deps.issueGatewayGrant(gatewayScope),
+        }
       : rawPayload;
     const authMode = commandDefinition(payload.command)?.agentAuth;
     let invocationPayload = payload;
@@ -100,6 +107,49 @@ export const runQuorumEdit = async (event, ctx, deps) => {
     });
     invocationPayload = { ...payload, agentCredentialGrant };
     return rawInvokeRuntime(invocationPayload, session, runtimeTarget);
+  };
+
+  // The plan and apply jobs each get a grant whose jti is memoized per phase
+  // and retired once the phase's callback (or a failed dispatch) is in — the
+  // stage-attempt rule (index.js runStage). Null without a retirement table.
+  const grantRetirement =
+    typeof deps.issueGatewayGrant === 'function' && typeof deps.retireGatewayGrant === 'function'
+      ? { retireGatewayGrant: deps.retireGatewayGrant, store, executionId }
+      : null;
+  const phaseGrantId = (phase) =>
+    grantRetirement ? ctx.step(`qe-${phase}-grant-id-${editId}`, async () => randomUUID()) : null;
+  const retirePhaseGrant = (phase, grantId, outcome) =>
+    grantId
+      ? retireGrantDurably(ctx, grantRetirement, {
+          stepKey: `qe-${phase}-${editId}`,
+          grant: { grantId, executionId, outcome },
+        })
+      : true;
+  // Runs one phase: dispatch, wait for its callback, retire the grant. Returns
+  // { dispatch } on a refused dispatch, { result } once the callback is in, or
+  // { error } when the callback failed; { retirementFailed } overrides all.
+  const runPhase = async (phase, done, payload) => {
+    const grantId = await phaseGrantId(phase);
+    let outcome;
+    try {
+      const dispatch = await ctx.step(`qe-${phase}-dispatch-${editId}`, () =>
+        invokeIntentRuntime(payload, sessionId, grantId),
+      );
+      if (!dispatch || dispatch.ok === false || dispatch.error) {
+        outcome = { dispatch: dispatch ?? null };
+      } else {
+        try {
+          outcome = { result: decodeCallback(await done) };
+        } catch (err) {
+          outcome = { error: err };
+        }
+      }
+    } catch (err) {
+      if (!(await retirePhaseGrant(phase, grantId, 'error'))) return { retirementFailed: true };
+      throw err;
+    }
+    const retired = await retirePhaseGrant(phase, grantId, outcome.result ? 'returned' : 'failed');
+    return retired ? outcome : { retirementFailed: true };
   };
 
   // Timeline event + payload-blind reload hint, both best-effort and inside a
@@ -147,37 +197,35 @@ export const runQuorumEdit = async (event, ctx, deps) => {
       timeout: PLAN_CALLBACK_TIMEOUT,
       heartbeatTimeout: CALLBACK_HEARTBEAT_TIMEOUT,
     });
-    const planDispatch = await ctx.step(`qe-plan-dispatch-${editId}`, () =>
-      invokeIntentRuntime(
-        {
-          command: 'quorum-edit-plan-start',
-          projectId,
-          intentId,
-          executionId,
-          editId,
-          artifactId: edit.artifactId,
-          changeDescription: edit.changeDescription,
-          requestedByName: edit.requestedByName ?? '',
-          ...(meta.agentCli ? { requestedCli: meta.agentCli } : {}),
-          ...(meta.cliModels ? { cliModels: meta.cliModels } : {}),
-          ...(meta.tierModels ? { tierModels: meta.tierModels } : {}),
-          callbackId: planCallbackId,
-        },
-        sessionId,
-      ),
-    );
-    if (!planDispatch || planDispatch.ok === false || planDispatch.error) {
+    const planPhase = await runPhase('plan', planDone, {
+      command: 'quorum-edit-plan-start',
+      projectId,
+      intentId,
+      executionId,
+      editId,
+      artifactId: edit.artifactId,
+      changeDescription: edit.changeDescription,
+      requestedByName: edit.requestedByName ?? '',
+      ...(meta.agentCli ? { requestedCli: meta.agentCli } : {}),
+      ...(meta.cliModels ? { cliModels: meta.cliModels } : {}),
+      ...(meta.tierModels ? { tierModels: meta.tierModels } : {}),
+      callbackId: planCallbackId,
+    });
+    if (planPhase.retirementFailed) return await fail(GATEWAY_GRANT_RETIREMENT_FAILURE);
+    if ('dispatch' in planPhase) {
+      const planDispatch = planPhase.dispatch;
       return await fail(
         planDispatch?.reason ?? 'plan_dispatch_failed',
         planDispatch?.detail ?? planDispatch?.error ?? null,
       );
     }
-    let planResult;
-    try {
-      planResult = decodeCallback(await planDone);
-    } catch (err) {
-      return await fail('plan_callback_failed', err?.message ?? String(err));
+    if (planPhase.error) {
+      return await fail(
+        'plan_callback_failed',
+        planPhase.error?.message ?? String(planPhase.error),
+      );
     }
+    const planResult = planPhase.result;
     if (!planResult || planResult.ok === false) {
       return await fail(planResult?.reason ?? 'plan_failed', planResult?.detail ?? null);
     }
@@ -259,40 +307,38 @@ export const runQuorumEdit = async (event, ctx, deps) => {
       timeout: APPLY_CALLBACK_TIMEOUT,
       heartbeatTimeout: CALLBACK_HEARTBEAT_TIMEOUT,
     });
-    const applyDispatch = await ctx.step(`qe-apply-dispatch-${editId}`, () =>
-      invokeIntentRuntime(
-        {
-          command: 'quorum-edit-apply-start',
-          projectId,
-          intentId,
-          executionId,
-          editId,
-          artifactId: edit.artifactId,
-          changeDescription: edit.changeDescription,
-          approvedArtifactIds,
-          decidedBy: decision.decidedBy ?? null,
-          decidedByName: decision.decidedByName ?? null,
-          enrichment: meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
-          ...(meta.agentCli ? { requestedCli: meta.agentCli } : {}),
-          ...(meta.cliModels ? { cliModels: meta.cliModels } : {}),
-          ...(meta.tierModels ? { tierModels: meta.tierModels } : {}),
-          callbackId: applyCallbackId,
-        },
-        sessionId,
-      ),
-    );
-    if (!applyDispatch || applyDispatch.ok === false || applyDispatch.error) {
+    const applyPhase = await runPhase('apply', applyDone, {
+      command: 'quorum-edit-apply-start',
+      projectId,
+      intentId,
+      executionId,
+      editId,
+      artifactId: edit.artifactId,
+      changeDescription: edit.changeDescription,
+      approvedArtifactIds,
+      decidedBy: decision.decidedBy ?? null,
+      decidedByName: decision.decidedByName ?? null,
+      enrichment: meta.deriveEnrichment === 'llm' ? 'llm' : 'off',
+      ...(meta.agentCli ? { requestedCli: meta.agentCli } : {}),
+      ...(meta.cliModels ? { cliModels: meta.cliModels } : {}),
+      ...(meta.tierModels ? { tierModels: meta.tierModels } : {}),
+      callbackId: applyCallbackId,
+    });
+    if (applyPhase.retirementFailed) return await fail(GATEWAY_GRANT_RETIREMENT_FAILURE);
+    if ('dispatch' in applyPhase) {
+      const applyDispatch = applyPhase.dispatch;
       return await fail(
         applyDispatch?.reason ?? 'apply_dispatch_failed',
         applyDispatch?.detail ?? applyDispatch?.error ?? null,
       );
     }
-    let applyResult;
-    try {
-      applyResult = decodeCallback(await applyDone);
-    } catch (err) {
-      return await fail('apply_callback_failed', err?.message ?? String(err));
+    if (applyPhase.error) {
+      return await fail(
+        'apply_callback_failed',
+        applyPhase.error?.message ?? String(applyPhase.error),
+      );
     }
+    const applyResult = applyPhase.result;
     if (!applyResult) return await fail('apply_bad_callback_result');
 
     // ── 4. FINAL ─────────────────────────────────────────────────────────────

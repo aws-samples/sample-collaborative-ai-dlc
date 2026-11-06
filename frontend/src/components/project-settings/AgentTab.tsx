@@ -67,6 +67,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
   const [globalMcpServerSecretRefs, setGlobalMcpServerSecretRefs] = useState<
     Record<string, string[]>
   >({});
+  const [mcpGatewayOnly, setMcpGatewayOnly] = useState(false);
 
   // Form state
   const [editAgentCli, setEditAgentCli] = useState<AgentCli>(project.agentCli ?? 'kiro');
@@ -115,6 +116,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
         setGlobalCliModels(settings.cliModels || {});
         setGlobalMcpServerNames(settings.customMcpServerNames || []);
         setGlobalMcpServerSecretRefs(settings.globalMcpServerSecretRefs || {});
+        setMcpGatewayOnly(settings.runtimeMcpCredentials === 'gateway_only');
       })
       .catch(() => {
         /* non-fatal — placeholders fall back to generic defaults */
@@ -522,6 +524,7 @@ export function AgentTab({ project, canEdit, onProjectUpdated }: Props) {
             mcpSecretsSet={projectMcpSecretsSet}
             onSaveSecrets={saveProjectMcpSecrets}
             globalServerSecretRefs={globalMcpServerSecretRefs}
+            gatewayOnly={mcpGatewayOnly}
             description="Custom MCP servers injected into this space's agent sessions."
           />
 

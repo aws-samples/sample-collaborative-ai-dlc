@@ -225,7 +225,136 @@ variable "enable_mcp_gateway" {
 }
 
 variable "enable_engine_data" {
-  description = "Route the engine's process state, knowledge graph, catalog, blob and realtime calls through the grant-verifying engine-data Lambda (requires enable_mcp_gateway)"
+  description = "Route the engine's process state, knowledge graph, catalog, blob and realtime calls through the grant-verifying engine-data Lambda, and its credential/secret and source-control review calls through the credential broker and the source-control runtime alias (requires enable_mcp_gateway)"
   type        = bool
   default     = false
+}
+
+variable "mcp_gateway_custom_targets" {
+  description = <<-EOT
+    Customer MCP servers served behind the AgentCore Gateway as remote MCP targets (requires enable_mcp_gateway). The map key is the Gateway target name: agents see its tools as <name>___<tool>, and the allow rules below refer to it, so treat it as immutable; renaming creates a new target. The outbound credential comes from an AgentCore Identity credential provider created out of band (no secret in Terraform state) and is injected by the Gateway; the agent runtime never holds it.
+      endpoint                       Streamable HTTP MCP endpoint (https://).
+      description                    Optional target description.
+      auth.type                      "oauth" (client credentials) or "api_key".
+      auth.credential_provider_arn   AgentCore Identity OAuth2 or API-key credential provider ARN.
+      auth.secret_arn                The Secrets Manager secret ARN the provider returned (the Gateway role reads it).
+      auth.scopes                    OAuth scopes to request (oauth only).
+      auth.credential_location       "HEADER" or "QUERY_PARAMETER" (api_key only).
+      auth.parameter_name            Header or query parameter carrying the key (api_key only).
+      auth.prefix                    Value prefix, e.g. "Bearer" (api_key only).
+      private_endpoint               Optional VPC Lattice egress: managed_vpc_resource or self_managed_lattice_resource, as on aws_bedrockagentcore_gateway_target.
+      allow.project_ids              Spaces whose stage sessions may call the target (exact match, required).
+      allow.stage_ids                Stages that may call it; null allows every stage.
+      allow.tools                    Tool names (without the target prefix) that may be called; null allows every tool.
+    Only stage sessions are ever allowed; discussion and conflict sessions are denied. Widening access or rebinding a target's endpoint or provider applies to stages that are already running: drain or restart them first.
+  EOT
+  type = map(object({
+    endpoint    = string
+    description = optional(string)
+    auth = object({
+      type                    = string
+      credential_provider_arn = string
+      secret_arn              = string
+      scopes                  = optional(list(string), [])
+      credential_location     = optional(string)
+      parameter_name          = optional(string)
+      prefix                  = optional(string)
+    })
+    private_endpoint = optional(object({
+      managed_vpc_resource = optional(object({
+        vpc_identifier           = string
+        subnet_ids               = list(string)
+        endpoint_ip_address_type = string
+        security_group_ids       = optional(list(string))
+        routing_domain           = optional(string)
+      }))
+      self_managed_lattice_resource = optional(object({
+        resource_configuration_identifier = string
+      }))
+    }))
+    allow = object({
+      project_ids = list(string)
+      stage_ids   = optional(list(string))
+      tools       = optional(list(string))
+    })
+  }))
+  default  = {}
+  nullable = false
+
+  validation {
+    # Lowercase Gateway target names: never `___`, never the built-in target.
+    condition = alltrue([
+      for name in keys(var.mcp_gateway_custom_targets) :
+      can(regex("^[a-z0-9](-?[a-z0-9]){0,31}$", name)) && name != "aidlc"
+    ])
+    error_message = "mcp_gateway_custom_targets names must be 1-32 lowercase letters, digits and single hyphens, and must not be \"aidlc\"."
+  }
+  validation {
+    condition = alltrue([
+      for t in values(var.mcp_gateway_custom_targets) : can(regex("^https://[^\\s]+$", t.endpoint))
+    ])
+    error_message = "mcp_gateway_custom_targets endpoints must be https:// URLs."
+  }
+  validation {
+    # The Identity API reference documents the provider ARN under the `acps`
+    # service name, IAM under `bedrock-agentcore`; both are accepted and the ARN
+    # is used as returned by Create*CredentialProvider.
+    condition = alltrue([
+      for t in values(var.mcp_gateway_custom_targets) :
+      (t.auth.type == "oauth" && can(regex("^arn:aws[a-z-]*:(bedrock-agentcore|acps):[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/oauth2credentialprovider/[^/]+$", t.auth.credential_provider_arn))) ||
+      (t.auth.type == "api_key" && can(regex("^arn:aws[a-z-]*:(bedrock-agentcore|acps):[a-z0-9-]+:[0-9]{12}:token-vault/[^/]+/apikeycredentialprovider/[^/]+$", t.auth.credential_provider_arn)))
+    ])
+    error_message = "mcp_gateway_custom_targets auth.type must be \"oauth\" or \"api_key\" with a matching AgentCore Identity credential provider ARN."
+  }
+  validation {
+    condition = alltrue([
+      for t in values(var.mcp_gateway_custom_targets) :
+      can(regex("^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$", t.auth.secret_arn))
+    ])
+    error_message = "mcp_gateway_custom_targets auth.secret_arn must be the Secrets Manager secret ARN of the credential provider."
+  }
+  validation {
+    condition = alltrue([
+      for t in values(var.mcp_gateway_custom_targets) :
+      t.auth.type == "oauth" ? (
+        t.auth.credential_location == null && t.auth.parameter_name == null && t.auth.prefix == null
+        ) : (
+        length(t.auth.scopes) == 0 &&
+        contains(["HEADER", "QUERY_PARAMETER", "-"], t.auth.credential_location == null ? "-" : t.auth.credential_location)
+      )
+    ])
+    error_message = "mcp_gateway_custom_targets: scopes apply to oauth only; credential_location (HEADER or QUERY_PARAMETER), parameter_name and prefix apply to api_key only."
+  }
+  validation {
+    condition = alltrue([
+      for t in values(var.mcp_gateway_custom_targets) :
+      length(t.allow.project_ids) > 0 &&
+      alltrue([for p in t.allow.project_ids : trimspace(p) != ""]) &&
+      (t.allow.stage_ids == null || try(length(t.allow.stage_ids) > 0, false)) &&
+      alltrue([for s in(t.allow.stage_ids == null ? [] : t.allow.stage_ids) : trimspace(s) != ""]) &&
+      (t.allow.tools == null || try(length(t.allow.tools) > 0, false)) &&
+      alltrue([for tool in(t.allow.tools == null ? [] : t.allow.tools) : trimspace(tool) != "" && !strcontains(tool, "___")])
+    ])
+    error_message = "mcp_gateway_custom_targets allow.project_ids must list at least one space; stage_ids and tools are null (all) or non-empty lists, and tool names carry no target prefix."
+  }
+  validation {
+    condition = alltrue([
+      for t in values(var.mcp_gateway_custom_targets) :
+      t.private_endpoint == null || (
+        (try(t.private_endpoint.managed_vpc_resource, null) == null) != (try(t.private_endpoint.self_managed_lattice_resource, null) == null)
+      )
+    ])
+    error_message = "mcp_gateway_custom_targets private_endpoint sets exactly one of managed_vpc_resource or self_managed_lattice_resource."
+  }
+}
+
+variable "runtime_mcp_credentials" {
+  description = "Custom MCP credential profile: \"allow\" (default) or \"gateway_only\", in which the runtime refuses direct custom MCP servers and its role can read no MCP secret and fetch no AgentCore Identity credential (requires enable_mcp_gateway and enable_engine_data)"
+  type        = string
+  default     = "allow"
+
+  validation {
+    condition     = contains(["allow", "gateway_only"], var.runtime_mcp_credentials)
+    error_message = "runtime_mcp_credentials must be \"allow\" or \"gateway_only\"."
+  }
 }

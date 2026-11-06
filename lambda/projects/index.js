@@ -48,6 +48,10 @@ import { normalizeCliModels, parseCliModels } from '../shared/cli-models.js';
 import { normalizeTierModels, parseTierModels } from '../shared/tier-models.js';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { deleteIntentCascade } from '../shared/intent-deletion.js';
+import {
+  GatewayGrantRetirementError,
+  gatewayExecutionRetirerFromEnv,
+} from '../shared/gateway-grant-retirement.js';
 import { requireYjsCleanupTime, revokeYjsScope } from '../shared/yjs-revocation.js';
 import { runtimeTargetInput } from '../shared/runtime-target.js';
 import { createSessionCleanupStore } from '../shared/session-cleanup-store.js';
@@ -58,6 +62,11 @@ import {
 } from '../shared/repo-validation.js';
 import { validateMcpServersJson, extractSecretRefs } from '../shared/mcp-validator.js';
 import { listMcpSecrets, putMcpSecrets } from '../shared/mcp-secrets-store.js';
+import {
+  RuntimeMcpPolicyError,
+  assertDirectMcpConfigAllowed,
+  assertMcpSecretWritesAllowed,
+} from '../shared/runtime-mcp-policy.js';
 import { deleteCredentialScope } from '../shared/agent-credentials.js';
 import {
   PROJECT_PR_STRATEGIES,
@@ -79,6 +88,38 @@ const store = createProcessStore({ ddb });
 // Structured logger (Powertools). serviceName defaults to 'projects' and is
 // overridden by POWERTOOLS_SERVICE_NAME; level via POWERTOOLS_LOG_LEVEL.
 const logger = new Logger({ persistentKeys: { component: 'projects' } });
+
+// A project delete force-deletes its intents, live runs included: retire each
+// execution's Gateway grants first. Fail-closed: a failed write throws, the
+// intent's cascade aborts before anything is removed, and the project delete
+// reports the intent as failed (retryable). Fenced on the run id the delete
+// read: when a relaunch replaced it meanwhile, nothing is retired and the
+// intent is reported failed too, so the retried delete sees the current run.
+// No-op without the retirement table.
+const retireExecutionGrants = async (executionId, reason, ifOrchestratorRunId) => {
+  const retire = gatewayExecutionRetirerFromEnv({ ddb });
+  if (!retire) return;
+  let retired;
+  try {
+    retired = await retire({ executionId, reason, ifOrchestratorRunId });
+  } catch (error) {
+    logger.error('gateway execution retirement failed', {
+      code: 'GATEWAY_GRANT_RETIREMENT_FAILED',
+      metric: 'GatewayGrantRetirementFailed',
+      value: 1,
+      executionId,
+      reason,
+      error: error?.name ?? 'Error',
+    });
+    throw new GatewayGrantRetirementError(executionId, error);
+  }
+  if (retired?.superseded) {
+    throw Object.assign(new Error('The run changed while the project was being deleted'), {
+      code: 'GATEWAY_GRANT_RETIREMENT_SUPERSEDED',
+      executionId,
+    });
+  }
+};
 
 const DriverRemoteConnection = gremlin.driver.DriverRemoteConnection;
 const traversal = gremlin.process.AnonymousTraversalSource.traversal;
@@ -612,6 +653,18 @@ const MAX_CUSTOM_RULES = 20;
 // (CustomRulesSection.tsx MAX_FILE_SIZE) — keep the three in sync.
 const MAX_CUSTOM_RULE_BYTES = 100 * 1024;
 
+// runtime_mcp_credentials = gateway_only: direct custom MCP entries and their
+// secrets are refused at write time (reads and clears keep working).
+const gatewayOnlyRefusal = (response, check) => {
+  try {
+    check();
+    return null;
+  } catch (error) {
+    if (!(error instanceof RuntimeMcpPolicyError)) throw error;
+    return response(400, { error: error.message, code: error.code });
+  }
+};
+
 const handleProjectCustomMcpServers = async (
   g,
   response,
@@ -659,6 +712,8 @@ const handleProjectCustomMcpServers = async (
       if (secretsMap === null || typeof secretsMap !== 'object' || Array.isArray(secretsMap)) {
         return response(400, { error: 'mcpSecrets must be an object of { VAR: value }' });
       }
+      const refused = gatewayOnlyRefusal(response, () => assertMcpSecretWritesAllowed(secretsMap));
+      if (refused) return refused;
       try {
         const { errors } = await putMcpSecrets(ssm, { base, projectId, secrets: secretsMap });
         if (errors.length) return response(400, { error: errors.join('; ') });
@@ -716,6 +771,10 @@ const handleProjectCustomMcpServers = async (
         issues: validation.issues,
       });
     }
+    const refused = gatewayOnlyRefusal(response, () =>
+      assertDirectMcpConfigAllowed(JSON.parse(mcpServersJson || '{}')),
+    );
+    if (refused) return refused;
     // Save-time cross-tier collision check (authoritative server-side guard; the
     // client also does this for fast feedback). The child env is one flat
     // namespace, so a `${VAR}` name used by a SURVIVING global server (one the
@@ -1988,6 +2047,8 @@ export const handler = async (event, context) => {
                 sessionCleanupStore,
                 artifactsBucket: process.env.ARTIFACTS_BUCKET || '',
                 actor,
+                retireExecutionGrants: (reason) =>
+                  retireExecutionGrants(intentId, reason, execMeta.orchestratorRunId ?? null),
                 force: true,
               });
             } catch (err) {

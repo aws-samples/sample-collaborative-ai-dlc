@@ -77,8 +77,7 @@ import http from 'node:http';
 import { createProcessStore } from '../shared/v2-process-store.js';
 import { commandDefinition } from './command-registry.js';
 import { installProcessGroupShutdown } from './cli/spawn.js';
-import { createCredentialSession } from './credential-session.js';
-import { accountCredentialInvocation } from './invocation-accounting.js';
+import { prepareCredentialInvocation } from './invocation-context.js';
 import { currentGatewayGrant, runWithGatewayGrant } from './mcp/gateway-context.js';
 import {
   blobAccessFor,
@@ -334,7 +333,6 @@ const main = async () => {
   const { materializeStage, renderRulesDoc } = await import('./stage-materializer.js');
   const { checkoutRepos } = await import('./workspace.js');
   const { discoverInstalledClis } = await import('./cli/discover.js');
-  const { authenticatedClis, resolveInvocationAgentAuth } = await import('./auth-resolver.js');
 
   const workspaceDir = process.env.V2_WORKSPACE_DIR || '/mnt/workspace';
   const mcpEntry = process.env.V2_MCP_ENTRY || new URL('./mcp/index.js', import.meta.url).pathname;
@@ -350,43 +348,8 @@ const main = async () => {
   const catalog = catalogAccessFor({ env: process.env });
   const customRulePins = customRulePinsFor({ env: process.env, s3 });
   const installedClis = await discoverInstalledClis();
-  const invocationContext = async (payload, authMode) => {
-    const auth = await resolveInvocationAgentAuth({
-      payload,
-      authMode,
-      store,
-      env: process.env,
-    });
-    const credentialSession =
-      auth.credentialSession ??
-      createCredentialSession({
-        env: auth.env,
-        credentialEnvironment: auth.credentialEnvironment,
-        expiresAt: auth.expiresAt,
-        authorizationExpiresAt: auth.authorizationExpiresAt,
-        refresh: auth.refresh,
-      });
-    try {
-      await accountCredentialInvocation({
-        ddb,
-        tableName: process.env.V2_PROCESS_TABLE,
-        session: credentialSession,
-        payload: { ...payload, projectId: auth.projectId },
-        bindings: auth.bindings,
-      });
-    } catch (error) {
-      await credentialSession.release();
-      throw error;
-    }
-    return {
-      ...auth,
-      credentialSession,
-      availableClis: authenticatedClis({
-        installed: installedClis,
-        providers: auth.resolvedProviders,
-      }),
-    };
-  };
+  const invocationContext = (payload, authMode) =>
+    prepareCredentialInvocation({ payload, authMode, store, ddb, env: process.env, installedClis });
 
   // Publish a process-state payload on the intent's realtime channel. The
   // payload carries its own intentId (the command stamps it), so fan-out is keyed
