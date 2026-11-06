@@ -361,14 +361,45 @@ describe('IAM credential scope card', () => {
       authentication: { ...platformView, canManageConnections: false },
     });
     render(<AgentCredentialScopeCard scope="personal" />);
-    const access = await screen.findByRole('region', { name: 'Bedrock access for your agents' });
-    expect(access).toHaveTextContent('Bedrock access: IAM');
+    const access = await screen.findByRole('region', { name: 'Platform default Bedrock access' });
+    expect(access).toHaveTextContent('Platform default Bedrock access: IAM');
     expect(access).toHaveTextContent('Status: Ready');
     expect(access).toHaveTextContent(`Role: ${platformRole.roleArn}`);
     expect(access).toHaveTextContent('Region: eu-west-1');
     expect(screen.queryByLabelText(/Bedrock Bearer Token/)).not.toBeInTheDocument();
     expect(screen.getByLabelText(/Kiro API Key/)).toBeEnabled();
     expect(screen.queryByRole('button', { name: /IAM/ })).not.toBeInTheDocument();
+  });
+
+  // The server's personal view carries no space context: it returns the platform default
+  // even when a space has its own role (lambda/agents/test/authentication-settings-providers
+  // .test.js, "overrides a space in the active mode"), while a run in that space binds the
+  // space role (lambda/shared/test/agent-auth-default-selection.test.js). The page must not
+  // present the default as every agent's role.
+  it('labels the personal view as the platform default for a person in a space with its own role', async () => {
+    getPersonal.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      authentication: { ...platformView, canManageConnections: false },
+    });
+    getProjectCredentials.mockResolvedValue({
+      bedrockBearerTokenSet: false,
+      kiroApiKeySet: false,
+      platformFallback: { bedrockBearerTokenSet: false, kiroApiKeySet: false },
+      authentication: { ...authentication, hasOverride: true, canManageConnections: false },
+    });
+    const personal = render(<AgentCredentialScopeCard scope="personal" />);
+    const access = await screen.findByRole('region', { name: 'Platform default Bedrock access' });
+    expect(access).toHaveTextContent(`Role: ${platformRole.roleArn}`);
+    expect(access).toHaveTextContent('A space can use its own access instead.');
+    expect(access).not.toHaveTextContent(config.roleArn);
+    expect(screen.queryByText(/their agents use|for everyone/)).not.toBeInTheDocument();
+    personal.unmount();
+
+    // The space's own page shows the role its runs use.
+    render(<AgentCredentialScopeCard scope="space" projectId="p" />);
+    expect(await screen.findByText(`Role: ${config.roleArn}`)).toBeInTheDocument();
+    expect(screen.getByText(/Space IAM role override/)).toBeInTheDocument();
   });
 
   it('keeps the platform mode select and IAM setup on the admin card', async () => {

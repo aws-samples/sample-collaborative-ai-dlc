@@ -264,6 +264,137 @@ describe('plain impact confirmation', () => {
   });
 });
 
+describe('typed inventory and outcomes the UI does not know', () => {
+  const head = (outcome: string, state = 'ready') =>
+    item(outcome, {
+      id: 'iam-platform',
+      key: `AGENTAUTH#CONNECTION#iam-platform:${outcome}`,
+      type: 'AgentConnectionHead',
+      projectId: null,
+      status: state,
+    });
+  const environment = (outcome: string) =>
+    item(outcome, {
+      id: 'env-1',
+      key: `ENV#env-1:${outcome}`,
+      type: 'EnvironmentRevision',
+      status: 'PUBLISHED',
+      action: 'Publish and verify a compatible environment before selecting a new connection.',
+    });
+  const panel = (name: RegExp | string) => screen.getByRole('region', { name });
+  const WARNING = 'Some work that already started may be affected';
+
+  it('warns about a future outcome and never calls it unaffected', () => {
+    const value = reviewWith(item('future-outcome'));
+    expect(reviewHasNoImpact(value)).toBe(false);
+    renderReview(value);
+    expect(panel(WARNING)).toHaveTextContent(
+      'We could not tell how this change affects 1 agent task. Continue only if you are sure this is safe.',
+    );
+    expect(screen.queryByText(/not affected/)).not.toBeInTheDocument();
+  });
+
+  it('warns about future outcomes of a resumed review that only carries counts', () => {
+    const value = { ...nextStartOnly, items: [], counts: { 'future-outcome': 2, 'next-start': 3 } };
+    expect(reviewHasNoImpact(value)).toBe(false);
+    renderReview(value);
+    expect(panel(WARNING)).toHaveTextContent('We could not tell how this change affects 2 items.');
+    expect(screen.queryByText(/not affected|agent task/)).not.toBeInTheDocument();
+  });
+
+  it('keeps known outcomes of a resumed review without naming them agent tasks', () => {
+    renderReview({ ...nextStartOnly, items: [], counts: { continues: 1, unknown: 1 } });
+    const warning = panel(WARNING);
+    expect(warning).toHaveTextContent('We could not check whether 1 item will be affected.');
+    expect(warning).toHaveTextContent('1 item that already started keeps working.');
+    expect(warning).not.toHaveTextContent(/agent task/);
+  });
+
+  it('does not ask about a shared connection that keeps working', () => {
+    const value = reviewWith(item('next-start', { type: 'CredentialScope' }), head('continues'));
+    expect(reviewHasNoImpact(value)).toBe(true);
+    renderReview(value);
+    expect(panel('Confirm this change')).toHaveTextContent(
+      'Agents that are running now are not affected.',
+    );
+    expect(screen.queryByText(/agent task/)).not.toBeInTheDocument();
+  });
+
+  it('names a shared connection that needs reconnecting as a connection, not an agent task', () => {
+    const value = reviewWith(head('repair', 'reconnect-required'));
+    expect(reviewHasNoImpact(value)).toBe(false);
+    renderReview(value);
+    const warning = panel(WARNING);
+    expect(warning).toHaveTextContent(
+      '1 shared connection needs reconnecting by an administrator. Agents that use it cannot start until then.',
+    );
+    expect(warning).not.toHaveTextContent(/agent task/);
+  });
+
+  it('gives an unverified published environment the publish-and-verify remedy, not a wait', async () => {
+    const value = reviewWith(environment('unknown'));
+    expect(reviewHasNoImpact(value)).toBe(false);
+    expect(reviewHasNoImpact(reviewWith(environment('continues')))).toBe(true);
+    renderReview(value);
+    const warning = panel(WARNING);
+    expect(warning).toHaveTextContent(
+      '1 published runtime environment has not confirmed support for this change. An administrator should publish and verify a compatible environment.',
+    );
+    expect(warning).not.toHaveTextContent(/wait until|agent task/);
+    await userEvent.click(screen.getByText('Show details'));
+    expect(
+      await screen.findByText('Payments · Published runtime environment (published)'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Publish and verify a compatible environment before selecting/),
+    ).toBeInTheDocument();
+  });
+
+  it('asks about real running work even next to continuing setup records', async () => {
+    const value = reviewWith(
+      head('continues'),
+      environment('continues'),
+      item('continues', { id: 'e9', status: 'RUNNING' }),
+    );
+    expect(reviewHasNoImpact(value)).toBe(false);
+    renderReview(value);
+    expect(panel('Confirm this change')).toHaveTextContent(
+      '1 agent task that already started keeps working.',
+    );
+    await userEvent.click(screen.getByText('Show details'));
+    expect(await screen.findByText('Platform · Shared connection (ready)')).toBeInTheDocument();
+    expect(screen.getByText('Payments · Intent run (running)')).toBeInTheDocument();
+  });
+
+  it('saves a platform key straight away when only a shared connection keeps working', async () => {
+    vi.mocked(agentsService.previewCredentialUpdate).mockResolvedValue({
+      ...reviewWith(head('continues')),
+      id: 'review-head',
+    });
+    render(<AgentCredentialScopeCard scope="platform" />);
+    await userEvent.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'replacement-key');
+    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    await waitFor(() =>
+      expect(agentsService.updateSettings).toHaveBeenCalledWith({
+        bedrockBearerToken: 'replacement-key',
+        reviewId: 'review-head',
+      }),
+    );
+    expect(screen.queryByRole('region')).not.toBeInTheDocument();
+  });
+
+  it('asks before saving a platform key while a published environment is unverified', async () => {
+    vi.mocked(agentsService.previewCredentialUpdate).mockResolvedValue(
+      reviewWith(environment('unknown')),
+    );
+    render(<AgentCredentialScopeCard scope="platform" />);
+    await userEvent.type(await screen.findByLabelText(/Bedrock Bearer Token/), 'replacement-key');
+    await userEvent.click(screen.getByRole('button', { name: 'Save Credentials' }));
+    expect(await screen.findByRole('region', { name: WARNING })).toBeInTheDocument();
+    expect(agentsService.updateSettings).not.toHaveBeenCalled();
+  });
+});
+
 describe('saving keys through a review', () => {
   it('asks to confirm a key replacement that affects started work, then writes it', async () => {
     render(<AgentCredentialScopeCard scope="platform" />);

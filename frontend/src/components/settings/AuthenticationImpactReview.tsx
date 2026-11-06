@@ -5,13 +5,10 @@ import { useProjectsCache } from '@/hooks/useProjectsCache';
 import { cn } from '@/lib/utils';
 import type { AgentAuthImpactReview, AgentAuthModeView } from '@/services/agents';
 import {
-  AFFECTING_OUTCOMES,
   APPLIES_AT_NEXT_START,
   NOT_AFFECTED_MESSAGE,
-  affectingMessage,
-  continuingMessage,
   describeCandidate,
-  outcomeCount,
+  summarizeImpact,
 } from './agent-auth/impact';
 
 type ReviewItem = AgentAuthImpactReview['items'][number];
@@ -20,7 +17,8 @@ const WORK_NOUNS: Record<string, string> = {
   Execution: 'Intent run',
   AgentInvocation: 'Running agent',
   AgentSelection: 'Agent that is starting',
-  EnvironmentRevision: 'Runtime environment',
+  AgentConnectionHead: 'Shared connection',
+  EnvironmentRevision: 'Published runtime environment',
   Compose: 'AI draft',
   QuorumEdit: 'Discussion edit',
 };
@@ -47,7 +45,7 @@ function AffectedWorkList({ items }: { items: ReviewItem[] }) {
             {spaceName(item.projectId)} · {WORK_NOUNS[item.type] ?? 'Work item'}
             {item.status ? ` (${item.status.toLowerCase()})` : ''}
           </p>
-          <p>{OUTCOME_LABELS[item.outcome] ?? item.outcome}</p>
+          <p>{OUTCOME_LABELS[item.outcome] ?? 'Effect unknown'}</p>
           <p className="text-muted-foreground">
             {item.reason} {item.action}
           </p>
@@ -83,13 +81,10 @@ export function AuthenticationImpactReview({
   useEffect(() => headingRef.current?.focus(), [review.id]);
 
   const change = describeCandidate(review.candidate, modes);
-  const affecting = AFFECTING_OUTCOMES.flatMap((outcome) => {
-    const count = outcomeCount(review, outcome);
-    return count ? [{ outcome, ...affectingMessage(outcome, count) }] : [];
-  });
-  const continuing = outcomeCount(review, 'continues');
+  // The same reading decides whether a key save asks at all (reviewHasNoImpact).
+  const { warnings, notes } = summarizeImpact(review);
   const startedWork = review.items.filter((item) => item.outcome !== 'next-start');
-  const warn = affecting.length > 0;
+  const warn = warnings.length > 0;
 
   return (
     <section
@@ -125,15 +120,17 @@ export function AuthenticationImpactReview({
       </div>
       {warn ? (
         <ul className="list-disc space-y-1 pl-5">
-          {affecting.map((entry) => (
-            <li key={entry.outcome}>
-              {entry.text} <span className="text-muted-foreground">{entry.action}</span>
+          {[...warnings, ...notes].map((entry) => (
+            <li key={entry.key}>
+              {entry.text}{' '}
+              {entry.action && <span className="text-muted-foreground">{entry.action}</span>}
             </li>
           ))}
-          {continuing > 0 && <li>{continuingMessage(continuing)}</li>}
         </ul>
+      ) : notes.length > 0 ? (
+        notes.map((entry) => <p key={entry.key}>{entry.text}</p>)
       ) : (
-        <p>{continuing > 0 ? continuingMessage(continuing) : NOT_AFFECTED_MESSAGE}</p>
+        <p>{NOT_AFFECTED_MESSAGE}</p>
       )}
       {/* The server's notes (evidence limits, an interrupted write) stay available. */}
       {(startedWork.length > 0 || review.limitations.length > 0) && (

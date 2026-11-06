@@ -64,23 +64,24 @@ export function AgentAuthenticationModeSettings({
       An administrator must reconnect this shared connection before agents can start.
     </p>
   );
-  // People cannot change the shared connection, but they can see which Bedrock
-  // access their agents use and whether it works. Keys mode only needs a word
-  // when no key is available at all.
+  // The personal view has no space context: the server returns the platform
+  // default (or the person's own key in Keys mode), while a space can select its
+  // own connection or key at run time. Say so instead of implying one answer.
   if (scope === 'personal') {
     if (policy.mode === 'keys')
       return connection && connection.state !== 'ready' ? (
         <p role="status" className="rounded-md bg-muted/40 p-3 text-xs">
-          No shared Bedrock key is set up. Add your own key below, or ask an administrator.
+          There is no platform Bedrock key. Agents use a space's key where one is set; otherwise add
+          your own key below or ask an administrator.
         </p>
       ) : null;
     return (
       <section
-        aria-label="Bedrock access for your agents"
+        aria-label="Platform default Bedrock access"
         className="space-y-1 rounded-md bg-muted/40 p-3 text-xs"
       >
-        <p className="font-medium">Bedrock access: {labelFor(policy.mode)}</p>
-        <p>Your administrators manage this for everyone. You can't change it here.</p>
+        <p className="font-medium">Platform default Bedrock access: {labelFor(policy.mode)}</p>
+        <p>Your administrators manage this. A space can use its own access instead.</p>
         <p>Status: {connectionStateLabel(connection?.state)}</p>
         {summary.length > 0 && (
           <div className="break-all text-muted-foreground">
@@ -91,7 +92,12 @@ export function AgentAuthenticationModeSettings({
             ))}
           </div>
         )}
-        {reconnectNotice}
+        {connection?.state === 'reconnect-required' && (
+          <p role="status">
+            An administrator must reconnect the platform default before agents that use it can
+            start.
+          </p>
+        )}
       </section>
     );
   }

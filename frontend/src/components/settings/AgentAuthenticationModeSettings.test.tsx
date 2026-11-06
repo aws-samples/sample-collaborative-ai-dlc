@@ -319,10 +319,11 @@ describe('AgentAuthenticationModeSettings', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows people the shared Bedrock access their agents use, read-only', () => {
+  it('shows people the platform default Bedrock access, read-only, and that a space may differ', () => {
     renderSettings({ scope: 'personal' });
-    const access = screen.getByRole('region', { name: 'Bedrock access for your agents' });
-    expect(access).toHaveTextContent('Bedrock access: Test gateway');
+    const access = screen.getByRole('region', { name: 'Platform default Bedrock access' });
+    expect(access).toHaveTextContent('Platform default Bedrock access: Test gateway');
+    expect(access).toHaveTextContent('A space can use its own access instead.');
     expect(access).toHaveTextContent('Status: Ready');
     expect(access).toHaveTextContent('Gateway: https://platform.example');
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
@@ -339,7 +340,7 @@ describe('AgentAuthenticationModeSettings', () => {
     });
     expect(screen.getByText('Status: Needs reconnecting by an administrator')).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent(
-      'An administrator must reconnect this shared connection before agents can start.',
+      'An administrator must reconnect the platform default before agents that use it can start.',
     );
     expect(screen.getByText('Gateway: https://platform.example')).toBeInTheDocument();
   });
@@ -360,7 +361,7 @@ describe('AgentAuthenticationModeSettings', () => {
 
     renderSettings({ scope: 'personal', authentication: keys('missing') });
     expect(screen.getByRole('status')).toHaveTextContent(
-      'No shared Bedrock key is set up. Add your own key below, or ask an administrator.',
+      "There is no platform Bedrock key. Agents use a space's key where one is set; otherwise add your own key below or ask an administrator.",
     );
   });
 });

@@ -12,52 +12,119 @@ import { summarizeConfiguration } from './summary';
 // piece of work it found (see lambda/shared/agent-auth-changes.js); the browser
 // only decides what to say and whether a person has to confirm.
 
-/** Outcomes where work that already started can stop or cannot be checked. */
-export const AFFECTING_OUTCOMES = ['loses-access', 'repair', 'unknown'] as const;
-export type AffectingOutcome = (typeof AFFECTING_OUTCOMES)[number];
-
 const NEXT_START = 'next-start';
+const CONTINUES = 'continues';
 
-export const outcomeCount = (review: AgentAuthImpactReview, outcome: string) =>
-  review.counts[outcome] ?? 0;
+type ImpactItem = AgentAuthImpactReview['items'][number];
+type Message = { key: string; text: string; action?: string };
 
-/**
- * True when the preview found nothing that has already started: every listed
- * item only picks up the change the next time an agent starts. Unrecognised
- * outcomes count as impact, so a newer server never gets auto-applied by mistake.
- */
-export const reviewHasNoImpact = (review: AgentAuthImpactReview) =>
-  Object.entries(review.counts).every(([outcome, count]) => outcome === NEXT_START || !count) &&
-  review.items.every((item) => item.outcome === NEXT_START);
+// Inventory records that are setup, not work. Every other type, including ones
+// a newer server adds, is read as work that already started.
+const KIND_BY_TYPE: Record<string, 'connection' | 'environment'> = {
+  AgentConnectionHead: 'connection',
+  EnvironmentRevision: 'environment',
+};
+type Kind = 'work' | 'connection' | 'environment' | 'summary';
+const kindOf = (item: ImpactItem): Kind => KIND_BY_TYPE[item.type] ?? 'work';
 
 const plural = (count: number, one: string, many: string) => (count === 1 ? one : many);
-const tasks = (count: number) => `${count} agent ${plural(count, 'task', 'tasks')}`;
+const NOUNS: Record<Kind, [string, string]> = {
+  work: ['agent task', 'agent tasks'],
+  connection: ['shared connection', 'shared connections'],
+  environment: ['published runtime environment', 'published runtime environments'],
+  // Counts without item details (a resumed review) cannot say what they are.
+  summary: ['item', 'items'],
+};
+const counted = (kind: Kind, count: number) => `${count} ${plural(count, ...NOUNS[kind])}`;
 
-/** One sentence and one suggested action per kind of affected work. */
-export const affectingMessage = (outcome: AffectingOutcome, count: number) => {
+const cannotTell = (key: string, kind: Kind, count: number): Message => ({
+  key,
+  text: `We could not tell how this change affects ${counted(kind, count)}.`,
+  action: 'Continue only if you are sure this is safe.',
+});
+
+// One plain sentence, and what to do, per kind of record and server outcome.
+const warningFor = (kind: Kind, outcome: string, count: number): Message => {
+  const key = `${kind}:${outcome}`;
   const it = plural(count, 'it', 'they');
   const finishes = plural(count, 'it finishes', 'they finish');
+  if (kind === 'connection')
+    return outcome === 'repair'
+      ? {
+          key,
+          text: `${counted(kind, count)} ${plural(count, 'needs', 'need')} reconnecting by an administrator.`,
+          action: `Agents that use ${it} cannot start until then.`,
+        }
+      : cannotTell(key, kind, count);
+  if (kind === 'environment')
+    return outcome === 'unknown'
+      ? {
+          key,
+          text: `${counted(kind, count)} ${plural(count, 'has', 'have')} not confirmed support for this change.`,
+          action: 'An administrator should publish and verify a compatible environment.',
+        }
+      : cannotTell(key, kind, count);
   switch (outcome) {
     case 'loses-access':
       return {
-        text: `${tasks(count)} will lose access the next time ${it} ${plural(count, 'needs', 'need')} this key.`,
+        key,
+        text: `${counted(kind, count)} will lose access the next time ${it} ${plural(count, 'needs', 'need')} this key.`,
         action: `To avoid this, keep the current key until ${finishes}.`,
       };
     case 'repair':
       return {
-        text: `${tasks(count)} cannot continue until ${plural(count, 'its', 'their')} connection is reconnected.`,
+        key,
+        text: `${counted(kind, count)} cannot continue until ${plural(count, 'its', 'their')} connection is reconnected.`,
         action: 'A platform administrator needs to reconnect it.',
       };
     case 'unknown':
       return {
-        text: `We could not check whether ${tasks(count)} will be affected.`,
+        key,
+        text: `We could not check whether ${counted(kind, count)} will be affected.`,
         action: `If ${it} might still be running, wait until ${finishes} before you continue.`,
       };
+    default:
+      return cannotTell(key, kind, count);
   }
 };
 
-export const continuingMessage = (count: number) =>
-  `${tasks(count)} that already started ${plural(count, 'keeps', 'keep')} working.`;
+/**
+ * The one reading of a review that decides both what the confirmation says and
+ * whether a key save needs one. Setup records (shared connections, runtime
+ * environments) that keep working are not started work; every other outcome
+ * except next-start, recognised or not, is.
+ */
+export const summarizeImpact = (review: AgentAuthImpactReview) => {
+  const groups = new Map<string, { kind: Kind; outcome: string; count: number }>();
+  const add = (kind: Kind, outcome: string, count: number) => {
+    const key = `${kind}:${outcome}`;
+    const group = groups.get(key) ?? { kind, outcome, count: 0 };
+    group.count += count;
+    groups.set(key, group);
+  };
+  for (const item of review.items)
+    if (item.outcome !== NEXT_START) add(kindOf(item), item.outcome, 1);
+  // Counts the items do not explain stay conservative.
+  for (const [outcome, count] of Object.entries(review.counts)) {
+    const listed = review.items.filter((item) => item.outcome === outcome).length;
+    if (outcome !== NEXT_START && count > listed) add('summary', outcome, count - listed);
+  }
+  const warnings: Message[] = [];
+  const notes: Message[] = [];
+  for (const { kind, outcome, count } of groups.values()) {
+    if (outcome !== CONTINUES) warnings.push(warningFor(kind, outcome, count));
+    else if (kind === 'work' || kind === 'summary')
+      notes.push({
+        key: `${kind}:${outcome}`,
+        text: `${counted(kind, count)} that already started ${plural(count, 'keeps', 'keep')} working.`,
+      });
+  }
+  return { warnings, notes, needsConfirmation: warnings.length > 0 || notes.length > 0 };
+};
+
+/** True when nothing that already started is affected, so a key save needs no confirmation. */
+export const reviewHasNoImpact = (review: AgentAuthImpactReview) =>
+  !summarizeImpact(review).needsConfirmation;
 
 export const NOT_AFFECTED_MESSAGE = 'Agents that are running now are not affected.';
 export const APPLIES_AT_NEXT_START = 'This applies the next time an agent starts.';

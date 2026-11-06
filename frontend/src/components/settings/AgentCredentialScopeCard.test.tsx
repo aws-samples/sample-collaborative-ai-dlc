@@ -321,8 +321,8 @@ describe('AgentCredentialScopeCard', () => {
       const user = userEvent.setup();
       render(<AgentCredentialScopeCard scope="personal" />);
 
-      const access = await screen.findByRole('region', { name: 'Bedrock access for your agents' });
-      expect(access).toHaveTextContent('Bedrock access: Test gateway');
+      const access = await screen.findByRole('region', { name: 'Platform default Bedrock access' });
+      expect(access).toHaveTextContent('Platform default Bedrock access: Test gateway');
       expect(access).toHaveTextContent('Status: Ready');
       expect(access).toHaveTextContent('Endpoint: https://gateway.example');
       expect(access).toHaveTextContent('Region: eu-west-1');
