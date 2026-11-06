@@ -3,7 +3,6 @@
 // the plan sanitization, fence stripping and the rewrite structure guard are
 // unit-testable without a CLI or a graph.
 
-import { flattenVertexMap } from '../../shared/graph-rows.js';
 import { extractArtifactStructure } from '../../shared/artifact-extractors.js';
 import { renderStructureContract } from '../../shared/artifact-structure-contract.js';
 
@@ -130,20 +129,22 @@ export const sanitizePlan = ({ parsed, downstream = [] }) => {
   return { summary: bounded(parsed?.summary, 1000), items };
 };
 
-// One artifact (full row incl. content), intent-scoped. Returns null when
-// absent or superseded — an edit against a rewound-away artifact is a bug.
-export const fetchArtifactForEdit = async (g, intentId, artifactId) => {
-  const res = await g
-    .V()
-    .has('Artifact', 'id', artifactId)
-    .has('intent_id', intentId)
-    .valueMap(true)
-    .next();
-  if (res.done || !res.value) return null;
-  const row = flattenVertexMap(res.value);
-  if (row.superseded_at) return null;
-  return row;
-};
+// One artifact (full row incl. content), intent-scoped, through the engine
+// graph. Null when absent or superseded — an edit against a rewound-away
+// artifact is a bug.
+export const fetchArtifactForEdit = (graph, _intentId, artifactId) =>
+  graph.getArtifactForEdit({ artifactId });
+
+// The rest of an edit's graph work, in the injectable shape the Quorum jobs
+// use. Origin, actor and the stale reason are fixed by the graph operation.
+export const fetchClosureForEdit = ({ graph, artifactId }) =>
+  graph.fetchDownstreamClosure({ artifactId });
+export const applyQuorumEdit = ({ graph, artifactId, editId, content }) =>
+  graph.applyArtifactEdit({ artifactId, editId, content });
+export const markClosureStale = ({ graph, sourceArtifactId, artifactIds, editId }) =>
+  graph.markArtifactsStale({ sourceArtifactId, artifactIds, editId });
+export const verifyUnaffected = ({ graph, artifactId, note }) =>
+  graph.verifyArtifact({ artifactId, note });
 
 // Progress emitter: persisted OUTPUT# chunk (restore-on-reload, keyed under
 // the qedit pane) + live `agent.output` broadcast — the exact contract the
@@ -198,5 +199,9 @@ export default {
   structurePreservationRules,
   sanitizePlan,
   fetchArtifactForEdit,
+  fetchClosureForEdit,
+  applyQuorumEdit,
+  markClosureStale,
+  verifyUnaffected,
   makeProgressEmitter,
 };

@@ -5,7 +5,8 @@
 
 import path from 'node:path';
 import { lstat, readFile } from 'node:fs/promises';
-import { createGraphWriter, closeGraphSource, traceabilitySlug } from './mcp/graph-writer.js';
+import { traceabilitySlug } from './mcp/graph-writer.js';
+import { closeEngineGraph, engineGraphOpener } from './engine-graph.js';
 import { repoTargetDir } from './repo-paths.js';
 
 // Re-exported from the persistence module so collection and persistence share
@@ -246,20 +247,21 @@ export const collectCodeTraceabilityBatches = async ({
 
 export const ingestStageCodeTraceability = async ({
   openGraph,
+  openEngineGraph,
   scope,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  createWriter = createGraphWriter,
+  createWriter,
   ...input
 }) => {
   const batches = await collectCodeTraceabilityBatches(input);
-  if (!batches.length || !openGraph) {
+  const opener = engineGraphOpener({ openEngineGraph, openGraph, createWriter });
+  if (!batches.length || !opener) {
     return { batches: batches.length, codeFiles: 0, evidenceEdges: 0, statuses: [] };
   }
 
-  let g = null;
+  let writer = null;
   try {
-    g = await openGraph();
-    const writer = createWriter({ g, scope });
+    writer = await opener(scope);
     let codeFiles = 0;
     let evidenceEdges = 0;
     for (const batch of batches) {
@@ -286,6 +288,6 @@ export const ingestStageCodeTraceability = async ({
       statuses: batches.map((batch) => batch.traceabilityStatus),
     };
   } finally {
-    await closeGraphSource(g);
+    await closeEngineGraph(writer);
   }
 };

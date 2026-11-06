@@ -9,8 +9,7 @@
 // effect is injected for testing.
 
 import { Logger } from '@aws-lambda-powertools/logger';
-import gremlin from 'gremlin';
-import { closeGraphSource } from '../mcp/graph-writer.js';
+import { closeEngineGraph, engineGraphOpener } from '../engine-graph.js';
 import {
   pushBranch as defaultPushBranch,
   remoteBranchExists as defaultRemoteBranchExists,
@@ -21,8 +20,6 @@ import { invokeSourceControlOperation } from '../clients.js';
 import { materializeAttachments } from '../attachments.js';
 
 const logger = new Logger({ persistentKeys: { component: 'agentcore', module: 'init-ws' } });
-
-const { cardinality } = gremlin.process;
 
 // The repo's provider default branch (populated even for an empty repo). Used
 // to root an empty repo on the right base. null on any provider error.
@@ -41,25 +38,9 @@ const providerDefaultBranch = async ({ projectId, repo, gitProvider }) => {
   }
 };
 
-// Create (idempotent) the Intent anchor vertex. Artifacts created by stages are
-// CONTAINS-ed by this vertex; the page reads the intent subgraph from here.
-export const ensureIntentVertex = async ({ g, projectId, intentId, title = '', now }) => {
-  const __ = gremlin.process.statics;
-  await g
-    .V()
-    .has('Intent', 'id', intentId)
-    .fold()
-    .coalesce(__.unfold(), __.addV('Intent').property(cardinality.single, 'id', intentId))
-    .next();
-  await g
-    .V()
-    .has('Intent', 'id', intentId)
-    .property(cardinality.single, 'project_id', projectId)
-    .property(cardinality.single, 'title', title)
-    .property(cardinality.single, 'created_at', now)
-    .next();
-  return { intentId };
-};
+// The Intent anchor helper lives with the engine's other graph operations;
+// re-exported for the local harnesses that seed an intent directly.
+export { ensureIntentVertex } from '../../shared/engine-graph-ops.js';
 
 export const initWs = async (
   {
@@ -84,7 +65,6 @@ export const initWs = async (
 ) => {
   const {
     store,
-    openGraph,
     checkoutRepos,
     workspaceDir,
     broadcast = async () => {},
@@ -259,13 +239,13 @@ export const initWs = async (
   // 2. Create the Intent anchor in Neptune. Close the connection once done —
   // the graph is only needed here, and the long-lived session process would
   // otherwise leak this fd (see closeGraphSource / the EMFILE fix).
-  const g = await openGraph();
+  const graph = await engineGraphOpener({ ...deps, clock })({ projectId, intentId, executionId });
   try {
-    await ensureIntentVertex({ g, projectId, intentId, title: title ?? '', now });
+    await graph.ensureIntent({ title: title ?? '' });
   } catch (e) {
     return { ok: false, reason: 'intent_vertex_failed', detail: e.message };
   } finally {
-    await closeGraphSource(g);
+    await closeEngineGraph(graph);
   }
 
   // 3. Seed the execution state (idempotent — a re-init keeps the existing row).
