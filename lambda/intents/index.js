@@ -102,6 +102,7 @@ import {
   readIntentArtifactEntries,
   selectCanonicalArtifact,
 } from '../shared/artifact-versioning.js';
+import { htmlArtifactRefusal } from '../shared/html-artifact.js';
 import { pinCustomRuleVersions } from '../shared/custom-rule-versions.js';
 import { canonicalJson, checkpointProjection } from '../shared/workflow-checkpoint.js';
 import { resolveAidlcRepoRef } from '../shared/aidlc-ref.js';
@@ -2376,6 +2377,8 @@ const handleArtifactContentUpdate = async ({
       code: 'artifact_replaced',
     });
   }
+  const htmlRefusal = htmlArtifactRefusal(artifact.artifactType, data.content);
+  if (htmlRefusal) return response(400, { error: htmlRefusal, code: 'html_not_allowed' });
   if (
     !Object.hasOwn(data, 'ifEditRevision') ||
     (data.ifEditRevision !== null && typeof data.ifEditRevision !== 'string') ||
