@@ -123,6 +123,24 @@ variable "aidlc_repo_ref" {
   default     = "83ed7a812c4024904f2c5e4d744e28077e0a5acd"
 }
 
+variable "aidlc_custom_source_gitlab_url" {
+  description = "GitLab instance a custom AI-DLC fork release named \"gitlab:<namespace>/<project>\" is imported from (seed-blocks importRelease). An https origin."
+  type        = string
+  default     = "https://gitlab.com"
+  validation {
+    condition     = can(regex("^https://[^/?#@]+/?$", var.aidlc_custom_source_gitlab_url))
+    error_message = "aidlc_custom_source_gitlab_url must be an https origin, such as https://gitlab.com."
+  }
+}
+variable "aidlc_custom_source_gitlab_token_secret_arn" {
+  description = "Optional Secrets Manager secret ARN whose value is a GitLab token with read_api, used to import a custom AI-DLC fork release from a private GitLab project. Empty: only public GitLab projects can be imported."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.aidlc_custom_source_gitlab_token_secret_arn == "" || can(regex("^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$", var.aidlc_custom_source_gitlab_token_secret_arn))
+    error_message = "aidlc_custom_source_gitlab_token_secret_arn must be empty or a Secrets Manager secret ARN."
+  }
+}
 variable "aidlc_release_pinning" {
   description = "Pin new intents to the immutable AI-DLC release published for the resolved ref (issue #482). \"on\" or \"off\"; existing intents are unaffected either way."
   type        = string

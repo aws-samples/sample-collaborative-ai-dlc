@@ -52,27 +52,50 @@ import {
 const CHANNELS: ReleaseChannelName[] = ['stable', 'candidate', 'preview'];
 
 // Mirrors the backend grammar (lambda/shared/aidlc-custom-source.js): a fork is
-// identified by exactly `owner/name` and pinned to a full 40-hex commit SHA,
+// identified by exactly `owner/name` on GitHub, or `gitlab:<namespace>/<project>`
+// on the deployment's GitLab instance, and pinned to a full 40-hex commit SHA,
 // because a fork's branches and tags are mutable and third-party controlled.
 const CUSTOM_REPOSITORY_RE =
   /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}\/[A-Za-z0-9._-]{1,100}$/;
+const GITLAB_PREFIX = 'gitlab:';
+const GITLAB_SEGMENT_RE = /^[A-Za-z0-9_](?:[A-Za-z0-9._-]{0,253}[A-Za-z0-9_-])?$/;
 const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i;
 const OFFICIAL_AIDLC_REPOSITORY = 'awslabs/aidlc-workflows';
-
-export const isValidCustomSource = (repository: string, sha: string, baseProfile: string) => {
-  const normalizedRepository = repository.trim();
-  const repositoryName = normalizedRepository.split('/')[1];
+const isValidGitlabRepository = (repository: string) => {
+  const path = repository.slice(GITLAB_PREFIX.length);
+  const segments = path.split('/');
   return (
-    CUSTOM_REPOSITORY_RE.test(normalizedRepository) &&
+    path.length <= 255 &&
+    segments.length >= 2 &&
+    segments.length <= 22 &&
+    segments.every(
+      (segment) =>
+        GITLAB_SEGMENT_RE.test(segment) &&
+        !segment.includes('..') &&
+        !/\.(git|atom)$/i.test(segment),
+    )
+  );
+};
+const isValidGithubRepository = (repository: string) => {
+  const repositoryName = repository.split('/')[1];
+  return (
+    CUSTOM_REPOSITORY_RE.test(repository) &&
     repositoryName !== '.' &&
     repositoryName !== '..' &&
     !repositoryName.includes('..') &&
-    normalizedRepository !== OFFICIAL_AIDLC_REPOSITORY &&
+    repository !== OFFICIAL_AIDLC_REPOSITORY
+  );
+};
+export const isValidCustomSource = (repository: string, sha: string, baseProfile: string) => {
+  const normalizedRepository = repository.trim();
+  return (
+    (normalizedRepository.startsWith(GITLAB_PREFIX)
+      ? isValidGitlabRepository(normalizedRepository)
+      : isValidGithubRepository(normalizedRepository)) &&
     COMMIT_SHA_RE.test(sha.trim()) &&
     baseProfile !== ''
   );
 };
-
 const SUPPORT_STATE_OPTIONS: { value: ReleaseSupportState; label: string }[] = [
   { value: 'importable', label: 'Importable' },
   { value: 'structurally-valid', label: 'Structurally valid' },
@@ -770,7 +793,7 @@ export function AidlcReleasesTab() {
       <SettingsCard
         icon={<GitFork />}
         title="Register custom fork"
-        description="Import a fork of aidlc-workflows. It stays import-only until an admin promotes it."
+        description="Import a fork of aidlc-workflows from GitHub (owner/name) or GitLab (gitlab:group/project). It stays import-only until an admin promotes it."
       >
         <div className="grid gap-3 sm:grid-cols-3">
           <div className="space-y-1">
@@ -778,7 +801,7 @@ export function AidlcReleasesTab() {
             <Input
               value={customRepository}
               onChange={(e) => setCustomRepository(e.target.value)}
-              placeholder="owner/name"
+              placeholder="owner/name or gitlab:group/project"
               className="h-8 font-mono text-xs"
               aria-label="Custom fork repository"
             />
