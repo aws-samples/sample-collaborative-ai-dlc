@@ -75,7 +75,7 @@ The external ID is deployment-wide and the app never takes it from a request, so
 
 Repository identity is the **ARN** (region and account are part of it), so CodeCommit repositories appear as `name (region)` and link to the regional console. Commits made by the engine carry the committer configured on the binding (CodeCommit has no user-identity API to discover one).
 
-What CodeCommit cannot do, declared by the provider so the engine never attempts it: no draft pull requests, no reopening a closed pull request (closed is terminal — a new one is opened instead), no issues tracker, no CI check statuses (approval rules are read instead). Because **PR per unit** relies on draft pull requests to keep each unit review unmergeable while its lane reconciles or revises it, that strategy (and its feedback revisions) is not available for a space with CodeCommit repositories: intent creation is refused with `PR_STRATEGY_UNSUPPORTED`; choose one PR per intent for such a space instead. Pull request state is picked up by the same one-minute reconciler as every other provider; no webhook is needed.
+What CodeCommit cannot do, declared by the provider so the engine never attempts it: no draft pull requests, no reopening a closed pull request (closed is terminal — a new execution can open a replacement; final delivery retry refuses only a closed pull request that its own run created), no issues tracker, no CI check statuses (approval rules are read instead). Because **PR per unit** relies on draft pull requests to keep each unit review unmergeable while its lane reconciles or revises it, that strategy (and its feedback revisions) is not available for a space with CodeCommit repositories: intent creation is refused with `PR_STRATEGY_UNSUPPORTED`; choose one PR per intent for such a space instead. Pull request state is picked up by the same one-minute reconciler as every other provider; no webhook is needed.
 
 ## Branches
 
@@ -172,3 +172,144 @@ The platform supports two delivery strategies:
 In the intent view, each unit card shows repository-specific review state and links. Space members can open **Address feedback**, select up to 20 current human-authored comments, and queue a targeted revision. The backend refetches selected comments by provider ID, records their versions, and ignores provider comments unless a member explicitly selects them. The agent does not automatically resolve discussion threads.
 
 If a unit PR closes without merging, or only part of a multi-repository unit merges, the run enters halt-and-ask with retry, skip, and abort outcomes. Already merged work is preserved.
+
+## Check and retry final delivery
+
+Stage completion and final publication are separate outcomes. A completed intent
+can still need attention when its code host rejects or cannot confirm a PR/MR.
+The intent page shows **Final delivery** with each repository's branch, target,
+result and reason. Published PR links also remain available in Code when the
+graph projection was unavailable. **No changes to publish** is a verified
+no-diff outcome; missing records and failed reads are not treated as success.
+
+A project owner or admin can choose **Check delivery**. This is read-only: it
+checks the run's recorded completion decision, the captured branches and existing
+PRs. Review the repository results, then choose **Retry delivery**. This publishes
+only unfinished repositories from their existing intent branches. It does not
+run a model, repeat stages or gates, regenerate code, integrate units again, or
+merge the final PR. Deliberately accepted partial work remains partial.
+
+An uncertain previous create request is reconciled with the code host before
+another request is made. Successfully published repositories are preserved.
+An open PR from the intent branch is reconciled as the current PR. A closed or
+merged PR that this run created (for example after its create response was lost),
+a changed intent branch or a missing branch is shown with an actionable refusal;
+retry does not recreate closed work or choose a different target. Rewind and
+relaunch keep the intent branch: a PR that an earlier run opened and a reviewer
+closed or merged is history, and the new run publishes a new PR. Restore a
+missing captured branch, fix repository access, or review a separate
+execution/recovery plan as the displayed reason directs.
+
+Each PR that final delivery creates ends with a delivery marker, an HTML
+comment such as `<!-- aidlc-delivery: aidlc-delivery-… -->`. GitHub and GitLab
+hide it; Bitbucket and CodeCommit may show it as a line of text. Leave it in
+place: it is how a later check recognizes this run's own closed or merged PR. When a
+create response was lost and a closed or merged PR on the branch has no marker
+(for example because its description was edited), the repository shows
+**Pull request ownership unconfirmed**. Delivery neither adopts that PR nor
+opens a duplicate. Check the branch's PRs at the provider: reopen the PR if it
+holds this run's work (the next check reconciles the open PR), or start a new
+run, which publishes a new PR.
+
+PR-per-unit workflows keep their existing unit review process; this action
+covers their final intent-to-base publication only.
+
+Older completed runs initially show **Delivery not yet verified**. Checking them
+does not rewrite their history. An older serial run without a pinned workflow
+version can be checked when all of its stages succeeded or were skipped; one with
+unit work stays unverified because its historical sections cannot be proven. **Save delivery assessment** records a reconciled
+or refused result when no publication is needed. Missing ownership or unfinished
+workflow/unit records require execution recovery first.
+
+Only one delivery attempt owns an intent at a time. The page refreshes while it
+is publishing. If an attempt stops responding, its lease expires after 20
+minutes; check delivery again to reconcile before retrying. Rewind, relaunch and
+other recovery actions wait for publication ownership to end.
+
+## Final publication recovery
+
+`DELIVERY#<orchestratorRunId>` stores final intent-to-base publication separately
+from `META.status`. Repository entries preserve captured provider, branch, target,
+head SHA and remote PR identity. Current attempt metadata is mutable; prior-run
+delivery rows, unit PR rows, events and human decisions are retained. Publication
+success means the PR was created or reconciled, not that it was merged. Graph
+projection failure does not erase the durable remote identity.
+
+`POST .../intents/{intentId}/delivery` requires project owner/admin membership and
+entity scope. `{"preview":true}` resolves the original methodology/plan and
+reads provider state. A run finalized under the completion policy carries a
+`completionValidation` receipt: when it names the current run, unit plan identity
+and the plan's expected sections, it is the completion decision and is not
+re-assessed. Older runs without a receipt are assessed from their records,
+including missing rows, once: in the preview for a retry, or immediately before
+the claim for initial publication. A subsequent `{"previewToken":"..."}` must
+match the refreshed preview. Unknown legacy runs
+are never automatically migrated. Accepted omission receipts and section-scoped
+legacy halt decisions are honored; unfinished work requires ordinary execution recovery or a new intent.
+
+The process store claims publication with one transaction over META, the checked
+UNITPLAN snapshot and the run's delivery row, which records that snapshot's
+identity. Publication confirms the identity and fences the UNITPLAN snapshot
+again in the write that records each create request; a changed plan or lost
+ownership withholds the repository as non-retryable with a readable reason. It
+compares the current success status, run, META timestamp and delivery revision; only an expired or absent lease can be claimed. Progress
+and result writes require the same run, attempt and revision. Status/run changes
+in `updateExecution` refuse an active delivery lease, preventing rewind or a new
+run from racing publication. A provider mutation requires at least 150 seconds
+of lease remaining. The 20-minute lease exceeds the orchestrator invocation's
+900-second maximum plus the source-control Lambda's 120-second maximum. Preserve
+that bound if either timeout changes. An uncertain launch keeps the lease since
+the invocation might already be accepted; a later check recovers abandonment.
+
+Retry invokes a separate durable `retry-delivery` history through the configured
+orchestrator target. It only uses the shared publication logic and the existing
+source-control service. It never invokes AgentCore, stages, Git integration or
+models. A failed or incomplete provider lookup blocks creation. Strict lookup
+lists every PR from the intent branch in every state on every page, reduced to
+number, state, branches, head SHA and the delivery markers its description
+carries; descriptions do not leave the source-control service. Ownership is
+decided over the whole list by exact identity, never by timestamps or list
+order. Before `create-pr`, the fenced write that records the create request
+stores `createRequestedAt` and a random `deliveryMarker` on the repository
+entry; the PR description carries the same marker, and retries in the run reuse
+it. CodeCommit additionally keeps its per-run idempotency token.
+
+| PR on the intent branch (any target unless stated)     | No create request recorded | Create request recorded         |
+| ------------------------------------------------------ | -------------------------- | ------------------------------- |
+| Open, onto the captured target                         | Reused as the current PR   | Reused as the current PR        |
+| Open, onto another target only                         | Refused (no retarget)      | Refused (no retarget)           |
+| Closed or merged, this entry's marker, captured target | Not applicable             | This run's: refused             |
+| Closed or merged, this entry's marker, other target    | Not applicable             | This run's, retargeted: refused |
+| Closed or merged, this marker on two or more PRs       | Not applicable             | Uncertain                       |
+| Closed or merged, another run's marker                 | Ignored                    | Ignored                         |
+| Closed or merged, no marker                            | Ignored                    | Uncertain                       |
+| None of the above                                      | Published                  | Published                       |
+
+Rows apply top to bottom. The target branch never decides ownership: a reviewer
+can retarget this run's PR and it keeps its marker, so a retargeted, closed or
+merged PR of this run is refused rather than published again. Only PRs from this
+repository count; a fork's branch with the same name is not a candidate. A
+GitLab merge request that is `locked` while it merges counts as open. An
+uncertain entry is not retryable and never blocks a new run: a new run has no
+recorded request. Entries written before markers existed (`createRequestedAt`
+without `deliveryMarker`) can prove no closed PR, so an unmarked one is
+uncertain. The delivery view links only a published or reconciled PR, or one
+proven by this run's marker. A changed source SHA, missing branch, retargeted PR
+or this run's closed work requires review instead of implicit replacement.
+
+Deploy source-control first (strict lookup and branch preconditions), then the
+orchestrator and intents API with the delivery route, then the frontend. Install
+all parts from the same release before offering retry. New orchestrator histories
+capture `deliveryPolicyVersion: 1` in the existing `load-meta` step. Frozen
+pre-change results retain the previous `open-pr` sequence, including #534's
+completion marker. Changing an alias does not upgrade their durable checkpoints.
+The new API can assess a completed old history without changing its execution
+pins; publication retry creates its own history on the configured fixed target.
+This release requires no status migration, production recovery or model E2E as
+part of deployment. The existing tracker handoff is scheduled after complete
+publication, including a successful retry; while only some repositories are
+published, the intent's activity records a `v2.tracker.blocked` note naming how
+many are published, and the tracker receives nothing until the rest are. Graph
+projection retains its owner. Publication recovery
+exposes durable PR links directly. Existing historical tracker rows are not
+rewritten.

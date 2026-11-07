@@ -540,6 +540,56 @@ const findPullRequest = async (
   });
 };
 
+// Every pull request from `sourceBranch` in any state, across all pages, for
+// final-delivery ownership checks. Strict: unlike findPullRequest it does not
+// filter on the session's author (delivery must also see work created before a
+// binding changed), and a truncated listing throws instead of reporting none.
+const listPullRequests = async (ctx, repoId, { sourceBranch }) => {
+  const { region, repositoryName } = parseRepo(repoId);
+  const client = clientFor(ctx, repoId);
+  const prs = [];
+  let nextToken;
+  for (let page = 0; page < LIST_PR_PAGES; page += 1) {
+    const res = await call(
+      client,
+      new ListPullRequestsCommand({ repositoryName, nextToken }),
+      'ListPullRequests',
+    );
+    const ids = res.pullRequestIds ?? [];
+    for (let i = 0; i < ids.length; i += PR_LOOKUP_CONCURRENCY) {
+      const batch = await Promise.all(
+        ids
+          .slice(i, i + PR_LOOKUP_CONCURRENCY)
+          .map((pullRequestId) => getPullRequestRaw(ctx, repoId, pullRequestId)),
+      );
+      for (const pr of batch) {
+        const target = prTarget(pr);
+        if (!pr || !sameRef(target.sourceReference, sourceBranch)) continue;
+        prs.push({
+          number: pr.pullRequestId,
+          url: pullRequestUrl({ region, repositoryName, pullRequestId: pr.pullRequestId }),
+          sourceBranch: shortRef(target.sourceReference),
+          targetBranch: shortRef(target.destinationReference) || null,
+          headSha: target.sourceCommit ?? null,
+          state:
+            pr.pullRequestStatus === 'OPEN'
+              ? 'open'
+              : target.mergeMetadata?.isMerged
+                ? 'merged'
+                : 'closed',
+          body: pr.description ?? '',
+        });
+      }
+    }
+    nextToken = res.nextToken;
+    if (!nextToken) return prs;
+  }
+  throw new ProviderError(409, 'CodeCommit pull-request lookup did not reach the last page', {
+    action: 'ListPullRequests',
+    code: 'PR_LOOKUP_TRUNCATED',
+  });
+};
+
 // Merge options for a ref pair. Errors are thrown as ProviderError;
 // compareBranches decides which of them mean "cannot compare".
 const mergeOptionsFor = async (ctx, repoId, { source, destination }) => {
@@ -582,6 +632,18 @@ const INCOMPARABLE_EXCEPTIONS = new Set([
   'MaximumItemsToCompareExceededException',
   'MaximumFileContentToLoadExceededException',
 ]);
+
+const getBranchHead = async (ctx, repoId, branch) => {
+  const { repositoryName } = parseRepo(repoId);
+  const res = await callOr(
+    clientFor(ctx, repoId),
+    new GetBranchCommand({ repositoryName, branchName: shortRef(branch) }),
+    'GetBranch',
+    404,
+    null,
+  );
+  return res?.branch?.commitId ?? null;
+};
 
 const compareBranches = async (ctx, repoId, { base, head }) => {
   const resolvedBase = base || (await getDefaultBranch(ctx, repoId)) || 'main';
@@ -772,7 +834,7 @@ const draftFields = (pr) => {
 const createPullRequest = async (
   ctx,
   repoId,
-  { branch, baseBranch, title, body, draft = false, attemptKey = '' },
+  { branch, baseBranch, title, body, draft = false, attemptKey = '', allowRetarget = true },
 ) => {
   const { arn, region, repositoryName } = parseRepo(repoId);
   const coordinates = { region, repositoryName };
@@ -816,6 +878,7 @@ const createPullRequest = async (
     };
   }
   if (comparison.status === 'missing_base') {
+    if (!allowRetarget) return { failed: true, reason: 'missing_base' };
     const defaultBranch = await getDefaultBranch(ctx, repoId);
     if (!defaultBranch || defaultBranch === resolvedBase) {
       return {
@@ -861,6 +924,7 @@ const createPullRequest = async (
       throw new ProviderError(502, 'CodeCommit CreatePullRequest returned no pull request');
     }
     if (pr.pullRequestStatus !== 'CLOSED') break;
+    if (!allowRetarget) throw new ProviderError(409, 'The previous pull request is closed');
     key = `${attemptKey ?? ''}\nreplaces:${pr.pullRequestId}`;
   }
   if (pr.pullRequestStatus === 'CLOSED') {
@@ -1230,7 +1294,9 @@ export {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
@@ -1270,7 +1336,9 @@ export default {
   addPRComment,
   getUnmergedConstructionTaskBranches,
   cleanupConstructionTaskBranches,
+  getBranchHead,
   findPullRequest,
+  listPullRequests,
   createPullRequest,
   compareBranches,
   getPullRequestState,
