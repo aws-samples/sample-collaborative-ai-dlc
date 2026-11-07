@@ -1253,3 +1253,84 @@ describe('an answered-early gate never awaits its dangling callback', () => {
     expect(starts.map((p) => p.resumeFrom)).toEqual([null, 'h1']);
   });
 });
+// The durable runtime suspends an invocation whenever no operation is running
+// and any callback is pending, so a dangling `await-<gate>` callback turns
+// every later pause between operations into a possible suspension that nothing
+// wakes. The orchestrator completes it inside the existing `gate-after-<gate>`
+// step, and only when the answer route can't: the answered row doesn't carry
+// this callback's id.
+describe('an answered-early gate releases a callback nothing else completes', () => {
+  const runReleased = async ({ answeredWithCallback }) => {
+    const world = makeWorld({ stages: [{ stageId: 'a', stageInstanceId: 'si-a' }] });
+    world.deps.store.setGateCallbackId = async (input) => {
+      world.gateCallbackBindings.push(input);
+      // The CAS on `pending` fails when the human answered before the bind;
+      // it succeeds when the answer lands just after it.
+      return answeredWithCallback ? {} : null;
+    };
+    world.deps.store.getHumanTask = async () => ({
+      humanTaskId: 'h1',
+      status: 'answered',
+      callbackId: answeredWithCallback ? world.gateCallbackBindings[0]?.callbackId : null,
+      stageInstanceId: 'si-a',
+      answeredAt: '2026-09-24T12:01:48.967Z',
+      answer: { decision: 'approve' },
+    });
+    const released = [];
+    let runner;
+    world.deps.releaseCallback = async (callbackId, result) => {
+      released.push({ callbackId, result });
+      const op = await runner.getOperation('await-h1').waitForData(WaitingOperationStatus.STARTED);
+      await op.sendCallbackSuccess(JSON.stringify(result));
+    };
+    const names = [];
+    const handler = withDurableExecution((event, ctx) => {
+      const wrapped = new Proxy(ctx, {
+        get: (target, key) =>
+          key === 'step'
+            ? (name, fn, options) => {
+                names.push(name);
+                return target.step(name, fn, options);
+              }
+            : typeof target[key] === 'function'
+              ? target[key].bind(target)
+              : target[key],
+      });
+      return __durableHandler(event, wrapped, world.deps);
+    });
+    runner = new LocalDurableTestRunner({ handlerFunction: handler });
+    const executionPromise = runner.run({
+      payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
+    });
+    world.pendingHumanTaskId = 'h1';
+    await completeStage(runner, 'stage-cb-a', {
+      ok: true,
+      state: 'WAITING_FOR_HUMAN',
+      humanTaskId: 'h1',
+      stageInstanceId: 'si-a',
+    });
+    await completeStage(runner, 'stage-cb-a-resume-h1', { ok: true, state: 'SUCCEEDED' });
+    const execution = await executionPromise;
+    return { world, runner, execution, released, names };
+  };
+  it('completes the callback once when the answer landed before the bind', async () => {
+    const { world, runner, execution, released, names } = await runReleased({
+      answeredWithCallback: false,
+    });
+    expect(execution.getResult()).toEqual({ ok: true, intentId: 'i1', stages: 1 });
+    expect(released).toEqual([
+      {
+        callbackId: world.gateCallbackBindings[0].callbackId,
+        result: { released: 'gate_answered_early', humanTaskId: 'h1' },
+      },
+    ]);
+    expect(runner.getOperation('await-h1').getStatus()).toBe('SUCCEEDED');
+    // Released inside the existing step: no new operation names.
+    expect(names.filter((name) => name.startsWith('release-'))).toEqual([]);
+  });
+  it('leaves the callback to the answer route when the answer captured it', async () => {
+    const { execution, released } = await runReleased({ answeredWithCallback: true });
+    expect(execution.getResult()).toEqual({ ok: true, intentId: 'i1', stages: 1 });
+    expect(released).toEqual([]);
+  });
+});
