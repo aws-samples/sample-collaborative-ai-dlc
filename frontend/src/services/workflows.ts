@@ -95,6 +95,8 @@ export type AutonomyLevel = 'self-halting' | 'mixed' | 'human-gated';
 // The derived views returned by GET /workflows/{id}/compiled.
 export interface CompiledWorkflow {
   phases?: PhaseNode[];
+  // Set when the view was compiled over that release's library (?libraryRelease=).
+  libraryRelease?: string;
   scopeGrid: Record<string, Record<string, 'EXECUTE' | 'SKIP'>>;
   autonomy: {
     perStage: Record<string, AutonomyLevel>;
@@ -136,6 +138,8 @@ export interface ExecutionPreviewIssue {
 }
 
 export interface ExecutionPreview {
+  // Set when the preview resolved over that release's library (?libraryRelease=).
+  libraryRelease?: string;
   valid: boolean;
   errors: ExecutionPreviewIssue[];
   warnings: ExecutionPreviewIssue[];
@@ -212,6 +216,15 @@ const setReleaseParams = (
   }
 };
 
+// `libraryRelease` (issue #607) previews the LIVE workflow over that release's
+// library, the way an intent created now and pinned to it would resolve it:
+// the closure replaces the SYSTEM rows and the user library overlays it. The
+// composer passes the stable release so a custom stage naming a release-only
+// agent checks clean. It cannot be combined with `release`.
+const setLibraryReleaseParam = (params: URLSearchParams, libraryRelease?: string | null) => {
+  if (libraryRelease) params.set('libraryRelease', libraryRelease);
+};
+
 const setIntentParams = (params: URLSearchParams, intent?: ExistingIntentContext) => {
   if (!intent) return;
   params.set('projectId', intent.projectId);
@@ -271,11 +284,13 @@ export const workflowsService = {
     release?: string | null,
     releaseImporterRevision?: number | null,
     intent?: ExistingIntentContext,
+    libraryRelease?: string | null,
   ) => {
     const params = new URLSearchParams();
     if (version) params.set('version', String(version));
     setReleaseParams(params, release, releaseImporterRevision);
     setIntentParams(params, intent);
+    setLibraryReleaseParam(params, libraryRelease);
     const qs = params.toString();
     return api.get<CompiledWorkflow & { phases?: PhaseNode[] }>(
       `/workflows/${id}/compiled${qs ? `?${qs}` : ''}`,
@@ -289,6 +304,7 @@ export const workflowsService = {
     release?: string | null,
     releaseImporterRevision?: number | null,
     intent?: ExistingIntentContext,
+    libraryRelease?: string | null,
   ) => {
     const params = new URLSearchParams({ scope });
     if (version) params.set('version', String(version));
@@ -298,6 +314,7 @@ export const workflowsService = {
     if (skipStageIds?.length) params.set('skip', skipStageIds.join(','));
     setReleaseParams(params, release, releaseImporterRevision);
     setIntentParams(params, intent);
+    setLibraryReleaseParam(params, libraryRelease);
     return api.get<ExecutionPreview>(`/workflows/${id}/execution-preview?${params.toString()}`);
   },
   // Dry-run a composed EXECUTE/SKIP grid (POST — a grid over 30+ stages does
@@ -317,14 +334,24 @@ export const workflowsService = {
       version?: number;
       release?: string | null;
       releaseImporterRevision?: number | null;
+      libraryRelease?: string | null;
       projectId?: string;
       intentId?: string;
     },
   ) => {
-    const { version, release, releaseImporterRevision, projectId, intentId, ...body } = input;
+    const {
+      version,
+      release,
+      releaseImporterRevision,
+      libraryRelease,
+      projectId,
+      intentId,
+      ...body
+    } = input;
     const params = new URLSearchParams();
     if (version) params.set('version', String(version));
     setReleaseParams(params, release, releaseImporterRevision);
+    setLibraryReleaseParam(params, libraryRelease);
     if (projectId && intentId) setIntentParams(params, { projectId, intentId });
     const qs = params.toString();
     return api.post<ExecutionPreview>(`/workflows/${id}/validate-grid${qs ? `?${qs}` : ''}`, body);

@@ -228,3 +228,133 @@ describe('channel path encoding', () => {
     });
   });
 });
+
+// ── Release contents (issue #607) ──
+
+const contentsBody = (releaseId = 'aidlc:abc1234def') => ({
+  release: { releaseId, upstreamVersion: '2.11.0' },
+  workflow: null,
+  blocks: { agent: [{ id: 'reviewer-agent', name: 'Reviewer', source: 'release', releaseId }] },
+});
+
+describe('aidlcReleasesService release contents', () => {
+  beforeEach(() => {
+    aidlcReleasesService.invalidateContents();
+    aidlcReleasesService.invalidateSharedChannels();
+    get.mockReset();
+    patch.mockReset().mockResolvedValue({});
+  });
+
+  it('percent-encodes the release id and lists the requested types', async () => {
+    get.mockResolvedValue(contentsBody());
+
+    await aidlcReleasesService.contents('aidlc-custom:gitlab:group/fork@abc', ['agent', 'sensor']);
+
+    expect(get).toHaveBeenCalledWith(
+      '/aidlc-releases/aidlc-custom%3Agitlab%3Agroup%2Ffork%40abc/blocks?type=agent,sensor',
+    );
+  });
+
+  it('lists every type when none is named', async () => {
+    get.mockResolvedValue(contentsBody());
+
+    await aidlcReleasesService.contents('aidlc:abc1234def');
+
+    expect(get).toHaveBeenCalledWith('/aidlc-releases/aidlc%3Aabc1234def/blocks');
+  });
+
+  it('serves repeated reads of the same slice from one request', async () => {
+    get.mockResolvedValue(contentsBody());
+
+    await aidlcReleasesService.contents('aidlc:abc1234def', ['agent', 'stage']);
+    await aidlcReleasesService.contents('aidlc:abc1234def', ['stage', 'agent']);
+
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not cache a failed read', async () => {
+    get.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(contentsBody());
+
+    await expect(aidlcReleasesService.contents('aidlc:abc1234def')).rejects.toThrow('offline');
+    await expect(aidlcReleasesService.contents('aidlc:abc1234def')).resolves.toMatchObject({
+      workflow: null,
+    });
+  });
+
+  it('drops cached contents after a closure upgrade', async () => {
+    get.mockResolvedValue(contentsBody());
+    await aidlcReleasesService.contents('aidlc:abc1234def');
+
+    await aidlcReleasesService.upgradeClosure('aidlc:abc1234def', {
+      expectedRevision: 1,
+      importerRevision: 3,
+    });
+    await aidlcReleasesService.contents('aidlc:abc1234def');
+
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads one block by encoded type and id', async () => {
+    get.mockResolvedValue({ block: {}, body: '', script: '' });
+
+    await aidlcReleasesService.block('aidlc:abc1234def', 'agent', 'reviewer-agent');
+
+    expect(get).toHaveBeenCalledWith(
+      '/aidlc-releases/aidlc%3Aabc1234def/blocks/agent/reviewer-agent',
+    );
+  });
+});
+
+describe('aidlcReleasesService.stableCatalog', () => {
+  const channelsWith = (over: Record<string, unknown>) => ({
+    stable: { channel: 'stable', releaseId: 'aidlc:abc1234def', revision: 1 },
+    candidate: null,
+    preview: null,
+    pinningEnabled: true,
+    ...over,
+  });
+  const route = (channels: unknown, contents: unknown = contentsBody()) =>
+    get.mockImplementation((path: string) =>
+      Promise.resolve(path === '/aidlc-release-channels' ? channels : contents),
+    );
+
+  beforeEach(() => {
+    aidlcReleasesService.invalidateContents();
+    aidlcReleasesService.invalidateSharedChannels();
+    get.mockReset();
+  });
+
+  it('returns the stable release and the requested slice of its catalog', async () => {
+    route(channelsWith({}));
+
+    const stable = await aidlcReleasesService.stableCatalog(['agent']);
+
+    expect(stable?.releaseId).toBe('aidlc:abc1234def');
+    expect(stable?.release.upstreamVersion).toBe('2.11.0');
+    expect(stable?.contents.blocks.agent?.[0].id).toBe('reviewer-agent');
+    expect(get).toHaveBeenCalledWith('/aidlc-releases/aidlc%3Aabc1234def/blocks?type=agent');
+  });
+
+  it('is null while pinning is off: the mutable library is what runs', async () => {
+    route(channelsWith({ pinningEnabled: false }));
+
+    await expect(aidlcReleasesService.stableCatalog(['agent'])).resolves.toBeNull();
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it('is null when no stable release is set', async () => {
+    route(channelsWith({ stable: null }));
+
+    await expect(aidlcReleasesService.stableCatalog(['agent'])).resolves.toBeNull();
+  });
+
+  it('is null, not an error, when the contents cannot be read', async () => {
+    get.mockImplementation((path: string) =>
+      path === '/aidlc-release-channels'
+        ? Promise.resolve(channelsWith({}))
+        : Promise.reject(new Error('forbidden')),
+    );
+
+    await expect(aidlcReleasesService.stableCatalog(['agent'])).resolves.toBeNull();
+  });
+});
