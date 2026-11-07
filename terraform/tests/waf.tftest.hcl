@@ -157,3 +157,85 @@ run "waf_disabled" {
     error_message = "Disabling WAF must create no ACLs or origin restriction."
   }
 }
+
+run "body_content_exempt_paths" {
+  command = plan
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+  module {
+    source = "./modules/security/waf"
+  }
+  variables {
+    body_content_exempt_paths = ["/api/blocks/", "/api/docs.v2/"]
+  }
+
+  assert {
+    condition = alltrue([
+      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] :
+      length(setsubtract(
+        ["CrossSiteScripting_BODY", "GenericLFI_BODY", "GenericRFI_BODY", "EC2MetaDataSSRF_BODY"],
+        flatten([
+          for rule in acl.rule : [
+            for override in rule.statement[0].managed_rule_group_statement[0].rule_action_override : override.name
+          ] if rule.name == "AWSManagedRulesCommonRuleSet"
+        ])
+      )) == 0
+    ])
+    error_message = "Both ACLs must count the four body-content rules when exempt paths are set."
+  }
+
+  assert {
+    condition = alltrue([
+      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] :
+      length([
+        for rule in acl.rule : rule
+        if rule.name == "BodyContentOutsideExemptPaths" && rule.priority == 25 && length(rule.action[0].block) == 1
+      ]) == 1
+    ])
+    error_message = "Both ACLs must re-block body-content matches outside the exempt paths, after the Common Rule Set."
+  }
+
+  assert {
+    condition = alltrue([
+      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] :
+      length([
+        for rule in acl.rule : rule
+        if rule.name == "BodyContentPathTraversal" && length(rule.action[0].block) == 1 &&
+        rule.statement[0].and_statement[0].statement[1].byte_match_statement[0].search_string == ".." &&
+        one(rule.statement[0].and_statement[0].statement[1].byte_match_statement[0].text_transformation).type == "URL_DECODE"
+      ]) == 1
+    ])
+    error_message = "Both ACLs must keep body-content matches blocked on any path containing .., so an exempt prefix cannot reach other routes."
+  }
+
+  assert {
+    condition = one([
+      for rule in aws_wafv2_web_acl.cloudfront[0].rule :
+      rule.statement[0].and_statement[0].statement[1].not_statement[0].statement[0].regex_match_statement[0].regex_string
+      if rule.name == "BodyContentOutsideExemptPaths"
+      ]) == "^(/api/blocks/|/api/docs\\.v2/)" && one([
+      for rule in aws_wafv2_web_acl.regional[0].rule :
+      rule.statement[0].and_statement[0].statement[1].not_statement[0].statement[0].regex_match_statement[0].regex_string
+      if rule.name == "BodyContentOutsideExemptPaths"
+    ]) == "^(/[^/]+)?(/api/blocks/|/api/docs\\.v2/)"
+    error_message = "The exemption must anchor the escaped prefixes, allowing the API Gateway stage prefix on the regional ACL."
+  }
+}
+
+run "body_content_exempt_paths_rejects_traversal" {
+  command = plan
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+  module {
+    source = "./modules/security/waf"
+  }
+  variables {
+    body_content_exempt_paths = ["/api/../"]
+  }
+
+  expect_failures = [var.body_content_exempt_paths]
+}
