@@ -56,4 +56,20 @@ describe('deriveLaneWaits', () => {
     ).toBe('recovery');
     expect(deriveLaneWaits([stage()], [])['s1:auth'].kind).toBe('recovery');
   });
+
+  it('shows a lane the server reports as resuming instead of asking for repair', () => {
+    expect(
+      deriveLaneWaits([stage({ laneResuming: true })], [gate({ status: 'answered' })])['s1:auth'],
+    ).toMatchObject({ kind: 'resuming', humanTaskId: 'q-auth' });
+    expect(
+      deriveLaneWaits([stage({ laneResuming: false })], [gate({ status: 'answered' })])['s1:auth']
+        .kind,
+    ).toBe('recovery');
+  });
+
+  it('prefers a new pending question over a resume', () => {
+    expect(deriveLaneWaits([stage({ laneResuming: true })], [gate()])['s1:auth'].kind).toBe(
+      'input',
+    );
+  });
 });
