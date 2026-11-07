@@ -669,6 +669,14 @@ export const createProcessBridge = ({
         reusedPending = true;
       }
       if (!reusedPending) {
+        if (graphWriter?.recordQuestion) {
+          try {
+            await graphWriter.recordQuestion({
+              questionId: humanTaskId,
+              questionsJson: JSON.stringify(questions),
+            });
+          } catch {}
+        }
         await store.appendEvent({
           executionId,
           type: spec.events.requested,

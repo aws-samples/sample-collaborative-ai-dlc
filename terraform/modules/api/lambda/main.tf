@@ -2461,7 +2461,7 @@ resource "aws_iam_role_policy" "discussions" {
       },
       {
         # Started discussion assists stay on the intent's pinned credential
-        # binding; read only META to sign that exact binding into the grant.
+        # binding; read META for the grant and HUMAN# gates for question repair.
         Effect   = "Allow"
         Action   = ["dynamodb:GetItem"]
         Resource = var.v2_executions_table_arn

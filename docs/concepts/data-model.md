@@ -139,7 +139,7 @@ revision.
 | `Intent`            | Project       | Anchor for one unit of requested agent work.                                                                                   |
 | `Artifact`          | Intent        | Canonical Markdown output produced by a stage.                                                                                 |
 | `ArtifactVersion`   | Artifact      | Immutable history for a logical artifact head.                                                                                 |
-| `Question`          | Intent        | Agent question, structured answer, and answering provenance.                                                                   |
+| `Question`          | Intent        | Agent or checkpoint question (summary confirmation, plan approval), structured answer, and answering provenance.               |
 | `Steering`          | Intent        | Human course correction, revision, or redirect.                                                                                |
 | `Discussion`        | Intent/entity | Thread attached to an entity in the intent graph.                                                                              |
 | `DiscussionMessage` | Discussion    | Durable message in a discussion thread.                                                                                        |
@@ -147,6 +147,10 @@ revision.
 | `UnitPullRequest`   | Intent/unit   | Pull request produced by an individual construction lane.                                                                      |
 | `TeamKnowledge`     | Project       | Reusable knowledge injected into relevant agent runs.                                                                          |
 | `LearningRule`      | Project       | Reusable team or project learning guardrail.                                                                                   |
+
+A checkpoint gate (summary confirmation, plan approval) is a `Question` too:
+the gate is mirrored when it is raised, and Discuss rebuilds a missing vertex
+from the gate row, so a graph write that never landed does not hide a decision.
 
 #### Derived structure
 
