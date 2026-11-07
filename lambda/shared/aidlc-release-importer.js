@@ -55,7 +55,9 @@ import { canonicalJson } from './workflow-checkpoint.js';
 // 3: the mapper handles the 2.11 scope settings guard_policy, plan_approval,
 //    collaborators and existing_code, and resolves changeControl from
 //    guard_policy before change_control.
-const AIDLC_RELEASE_IMPORTER_REVISION = 3;
+// 4: the importer normalizes 2.11.3's unquoted colon in the
+//    requirements-analysis outputs scalar before parsing its frontmatter.
+const AIDLC_RELEASE_IMPORTER_REVISION = 4;
 
 // The first revision whose manifests MUST record a mapper fingerprint. Revision
 // 1 manifests predate the field and MUST NOT carry one — their closure digests
@@ -66,6 +68,7 @@ const FIRST_FINGERPRINTED_IMPORTER_REVISION = 2;
 const AIDLC_RELEASE_MAPPER_FINGERPRINTS = Object.freeze({
   2: '2f286898897690966ec322ca6a02d96362e765d64e661abe583a9f9acc7bb83e',
   3: '542f0c80fd45edb73ebb3084f075890394b0581fbf4ae2008192a6f74cceb8ea',
+  4: '542f0c80fd45edb73ebb3084f075890394b0581fbf4ae2008192a6f74cceb8ea',
 });
 
 // Fixed and never a real upstream commit: the probe catalog's `ref`.

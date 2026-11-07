@@ -1,19 +1,23 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router';
 import {
   blocksService,
   BLOCK_TYPES,
   BLOCK_TYPE_LABELS,
   type BlockInput,
   type BlockType,
-  type Block,
 } from '@/services/blocks';
+import { aidlcReleasesService } from '@/services/aidlcReleases';
 import { SIMPLE_BLOCK_FORMS } from '@/components/blocks/blockFields';
 import {
   StageEditor,
   type StageForm,
   type StageReferenceOptions,
 } from '@/components/blocks/StageEditor';
+import {
+  loadStageReferenceOptions,
+  type StageReferenceRelease,
+} from '@/components/blocks/stageReferenceOptions';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -21,7 +25,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ArrowLeft, AlertCircle, CheckCircle2, X, Lock } from 'lucide-react';
+import { ArrowLeft, AlertCircle, CheckCircle2, X, Lock, Package } from 'lucide-react';
 
 const isBlockType = (v: string | undefined): v is BlockType =>
   !!v && (BLOCK_TYPES as readonly string[]).includes(v);
@@ -29,11 +33,102 @@ const isBlockType = (v: string | undefined): v is BlockType =>
 // kebab-case, matching the backend's id rule.
 const ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+async function loadBlockContent(blockType: BlockType, id: string, releaseId: string | null) {
+  if (releaseId) return aidlcReleasesService.block(releaseId, blockType, id);
+  const block = await blocksService.get(blockType, id);
+  const [body, script] = await Promise.all([
+    block.hasBody ? blocksService.getBody(blockType, id).then((result) => result.body) : '',
+    block.hasScript ? blocksService.getScript(blockType, id).then((result) => result.script) : '',
+  ]);
+  return { block, body, script };
+}
+
+function BlockEditorHeading({
+  isNew,
+  name,
+  label,
+  releaseId,
+  readOnly,
+  onBack,
+}: {
+  isNew: boolean;
+  name: string;
+  label: string;
+  releaseId: string | null;
+  readOnly: boolean;
+  onBack: () => void;
+}) {
+  return (
+    <>
+      <div className="flex items-center gap-3">
+        <Button type="button" variant="ghost" size="sm" className="gap-1.5" onClick={onBack}>
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back
+        </Button>
+        <div className="h-5 w-px bg-border" />
+        <h1 className="text-xl font-semibold tracking-tight">
+          {isNew ? `New ${label}` : name || label}
+        </h1>
+        {releaseId ? (
+          <Badge variant="outline" className="gap-1 text-[10px] ml-auto">
+            <Package className="h-2.5 w-2.5" />
+            Release · read-only
+          </Badge>
+        ) : (
+          readOnly && (
+            <Badge variant="outline" className="gap-1 text-[10px] ml-auto">
+              <Lock className="h-2.5 w-2.5" />
+              SYSTEM · read-only
+            </Badge>
+          )
+        )}
+      </div>
+      {releaseId ? (
+        <p className="text-xs text-muted-foreground">
+          This block is part of the immutable AI-DLC release{' '}
+          <span className="font-mono break-all">{releaseId}</span>, as intents pinned to it resolve
+          it. It cannot be edited here.
+        </p>
+      ) : (
+        readOnly && (
+          <p className="text-xs text-muted-foreground">
+            This is a shipped baseline block and cannot be edited. Clone it to make changes (coming
+            soon).
+          </p>
+        )
+      )}
+    </>
+  );
+}
+
+function StagePickerNotice({
+  pickerRelease,
+  libraryReleaseId,
+}: {
+  pickerRelease: StageReferenceRelease;
+  libraryReleaseId: string | null;
+}) {
+  return (
+    <p className="text-xs text-muted-foreground" data-testid="picker-release-note">
+      The pickers include {pickerRelease.label}
+      {pickerRelease.releaseId === libraryReleaseId
+        ? ', the selected version.'
+        : ', the stable release new intents pin.'}
+      A library block with the same id replaces the release&apos;s in those intents.
+    </p>
+  );
+}
+
 export default function BlockEditor() {
   const navigate = useNavigate();
   const { type: typeParam, id } = useParams<{ type: string; id: string }>();
+  // `?release=<id>` opens a block from that AI-DLC release's closure instead
+  // of the mutable library (issue #607). Release blocks are always read-only.
+  const [searchParams] = useSearchParams();
+  const releaseId = searchParams.get('release') || null;
+  const libraryReleaseId = searchParams.get('libraryRelease') || null;
   const blockType: BlockType = isBlockType(typeParam) ? typeParam : 'stage';
-  const isNew = id === 'new' || id === undefined;
+  const isNew = !releaseId && (id === 'new' || id === undefined);
   const labels = BLOCK_TYPE_LABELS[blockType];
   const isStage = blockType === 'stage';
   const typeForm = SIMPLE_BLOCK_FORMS[blockType];
@@ -46,6 +141,9 @@ export default function BlockEditor() {
   const [script, setScript] = useState('');
   const [readOnly, setReadOnly] = useState(false);
   const [referenceOptions, setReferenceOptions] = useState<StageReferenceOptions>({});
+  const [pickerReleaseError, setPickerReleaseError] = useState<string | null>(null);
+  const [pickerReleaseLoading, setPickerReleaseLoading] = useState(false);
+  const [pickerRelease, setPickerRelease] = useState<StageReferenceRelease | null>(null);
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,58 +152,74 @@ export default function BlockEditor() {
   const str = (k: string) => (typeof form[k] === 'string' ? (form[k] as string) : '');
   const setField = (k: string, v: unknown) => setForm((f) => ({ ...f, [k]: v }));
 
+  const loadGeneration = useRef(0);
   const load = useCallback(async () => {
-    if (isNew || !id) return;
+    const generation = ++loadGeneration.current;
+    setError(null);
+    setReadOnly(Boolean(releaseId));
+    setForm({});
+    setBody('');
+    setScript('');
+    if (isNew || !id) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const block = await blocksService.get(blockType, id);
-      setReadOnly(block.readOnly);
-      setForm(block);
-      if (block.hasBody) {
-        const { body: text } = await blocksService.getBody(blockType, id);
-        setBody(text);
-      }
-      if (block.hasScript) {
-        const { script: text } = await blocksService.getScript(blockType, id);
-        setScript(text);
-      }
+      const detail = await loadBlockContent(blockType, id, releaseId);
+      if (generation !== loadGeneration.current) return;
+      setReadOnly(Boolean(releaseId) || detail.block.readOnly);
+      setForm(detail.block);
+      setBody(detail.body);
+      setScript(detail.script);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load block');
+      if (generation === loadGeneration.current)
+        setError(err instanceof Error ? err.message : 'Failed to load block');
     } finally {
-      setLoading(false);
+      if (generation === loadGeneration.current) setLoading(false);
     }
-  }, [blockType, id, isNew]);
+  }, [blockType, id, isNew, releaseId]);
 
   useEffect(() => {
-    load();
+    void load();
+    return () => {
+      loadGeneration.current += 1;
+    };
   }, [load]);
 
   useEffect(() => {
+    let cancelled = false;
     if (!isStage) return;
-    const toOptions = (blocks: Block[]) =>
-      blocks.map((block) => ({
-        id: block.id,
-        label: block.name,
-        description: typeof block.description === 'string' ? block.description : undefined,
-      }));
-    Promise.all([
-      blocksService.list('agent'),
-      blocksService.list('artifact'),
-      blocksService.list('sensor'),
-      blocksService.list('stage'),
-    ])
-      .then(([agents, artifacts, sensors, stages]) =>
-        setReferenceOptions({
-          agents: toOptions(agents.blocks),
-          artifacts: toOptions(artifacts.blocks),
-          sensors: toOptions(sensors.blocks),
-          stages: toOptions(stages.blocks).filter((stage) => stage.id !== id),
-        }),
-      )
-      .catch(() => {
+    const requestedPickerRelease = releaseId ?? libraryReleaseId;
+    setPickerReleaseError(null);
+    setPickerReleaseLoading(true);
+    setReferenceOptions({});
+    setPickerRelease(null);
+    loadStageReferenceOptions(id, requestedPickerRelease)
+      .then(({ options, release }) => {
+        if (cancelled) return;
+        setReferenceOptions(options);
+        setPickerRelease(release);
+      })
+      .catch((err) => {
+        if (cancelled) return;
         setReferenceOptions({});
+        setPickerRelease(null);
+        setPickerReleaseError(
+          err instanceof Error ? err.message : 'The selected AI-DLC version could not be loaded.',
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setPickerReleaseLoading(false);
       });
-  }, [id, isStage]);
+    return () => {
+      cancelled = true;
+    };
+  }, [id, isStage, libraryReleaseId, releaseId]);
+
+  const backTo = releaseId
+    ? `/blocks/${blockType}?release=${encodeURIComponent(releaseId)}`
+    : `/blocks/${blockType}${libraryReleaseId ? `?libraryRelease=${encodeURIComponent(libraryReleaseId)}` : ''}`;
 
   const buildPayload = (): BlockInput => {
     // Drop server-managed fields; keep intrinsic attributes + name/description.
@@ -164,7 +278,9 @@ export default function BlockEditor() {
     try {
       if (isNew) {
         await blocksService.create(blockType, payload);
-        navigate(`/blocks/${blockType}/${payload.id}`);
+        navigate(
+          `/blocks/${blockType}/${payload.id}${libraryReleaseId ? `?libraryRelease=${encodeURIComponent(libraryReleaseId)}` : ''}`,
+        );
       } else {
         await blocksService.update(blockType, id!, payload);
         setSuccess('Saved.');
@@ -185,35 +301,14 @@ export default function BlockEditor() {
     <div className="h-full overflow-y-auto">
       <form onSubmit={handleSave} className="space-y-6">
         {/* Header */}
-        <div className="flex items-center gap-3">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="gap-1.5"
-            onClick={() => navigate(`/blocks/${blockType}`)}
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back
-          </Button>
-          <div className="h-5 w-px bg-border" />
-          <h1 className="text-xl font-semibold tracking-tight">
-            {isNew ? `New ${labels.singular}` : str('name') || labels.singular}
-          </h1>
-          {readOnly && (
-            <Badge variant="outline" className="gap-1 text-[10px] ml-auto">
-              <Lock className="h-2.5 w-2.5" />
-              SYSTEM · read-only
-            </Badge>
-          )}
-        </div>
-
-        {readOnly && (
-          <p className="text-xs text-muted-foreground">
-            This is a shipped baseline block and cannot be edited. Clone it to make changes (coming
-            soon).
-          </p>
-        )}
+        <BlockEditorHeading
+          isNew={isNew}
+          name={str('name')}
+          label={labels.singular}
+          releaseId={releaseId}
+          readOnly={readOnly}
+          onBack={() => navigate(backTo)}
+        />
 
         {/* Messages */}
         {error && (
@@ -231,6 +326,15 @@ export default function BlockEditor() {
             >
               <X className="h-3.5 w-3.5" />
             </Button>
+          </div>
+        )}
+        {pickerReleaseError && (
+          <div
+            role="alert"
+            className="rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+          >
+            The selected AI-DLC version could not be loaded for stage references. Reload or choose
+            another version before saving this stage. {pickerReleaseError}
           </div>
         )}
         {success && (
@@ -296,11 +400,17 @@ export default function BlockEditor() {
                 <CardHeader>
                   <CardTitle className="text-sm">Configuration</CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-3">
+                  {pickerRelease && !readOnly && (
+                    <StagePickerNotice
+                      pickerRelease={pickerRelease}
+                      libraryReleaseId={libraryReleaseId}
+                    />
+                  )}
                   <StageEditor
                     value={form as StageForm}
                     onChange={(next) => setForm(next as Record<string, unknown>)}
-                    disabled={readOnly}
+                    disabled={readOnly || pickerReleaseLoading || Boolean(pickerReleaseError)}
                     referenceOptions={referenceOptions}
                   />
                 </CardContent>
@@ -414,14 +524,15 @@ export default function BlockEditor() {
         {/* Actions */}
         {!readOnly && (
           <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => navigate(`/blocks/${blockType}`)}
-            >
+            <Button type="button" variant="outline" onClick={() => navigate(backTo)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={saving}>
+            <Button
+              type="submit"
+              disabled={
+                saving || (isStage && (pickerReleaseLoading || Boolean(pickerReleaseError)))
+              }
+            >
               {saving ? 'Saving…' : isNew ? `Create ${labels.singular}` : 'Save'}
             </Button>
           </div>

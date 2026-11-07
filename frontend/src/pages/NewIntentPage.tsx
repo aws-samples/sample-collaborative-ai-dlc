@@ -2,7 +2,12 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation, useSearchParams } from 'react-router';
 import { useProjectCache } from '@/hooks/useProjectsCache';
 import { intentsService, type CreateIntentInput, type Intent } from '@/services/intents';
-import { aidlcReleasesService, type AidlcRelease } from '@/services/aidlcReleases';
+import {
+  aidlcReleasesService,
+  releaseVersionLabel as releaseLabel,
+  isReleaseSelectable,
+  type AidlcRelease,
+} from '@/services/aidlcReleases';
 import { ApiError } from '@/services/api';
 import { trackersService, type TrackerIssue } from '@/services/trackers';
 import type { TrackerBinding } from '@/services/projects';
@@ -27,8 +32,6 @@ import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, Info, Loader2, X } f
 
 // Non-admins receive the reduced release projection (no sourceSha), so the
 // label falls back to the raw release id rather than crashing.
-const releaseLabel = (release: AidlcRelease) =>
-  release.upstreamVersion || release.sourceSha?.slice(0, 7) || release.releaseId;
 
 // Step one of intent creation: capture the seed (title/prompt/tracker import/
 // base branch) and create the intent as a DRAFT immediately. Everything else —
@@ -39,6 +42,9 @@ export default function NewIntentPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  const requestedReleaseId = searchParams.get('release');
+  const testReleaseMode = searchParams.get('testRelease') === '1';
+  const [releaseRequestError, setReleaseRequestError] = useState<string | null>(null);
   const { projectId } = useParams<{ projectId: string }>();
   const { project, loading: projectLoading } = useProjectCache(projectId ?? null);
 
@@ -101,6 +107,8 @@ export default function NewIntentPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setReleasesSettled(false);
+    setReleaseRequestError(null);
     aidlcReleasesService
       .sharedChannels()
       .then((channels) => {
@@ -108,22 +116,38 @@ export default function NewIntentPage() {
         const enabled = channels.pinningEnabled === true;
         setPinningEnabled(enabled);
         if (!enabled) {
+          if (requestedReleaseId)
+            setReleaseRequestError(
+              'This version cannot be used because release selection is disabled. Ask a platform administrator to enable it.',
+            );
           setReleases([]);
           setStableReleaseId(null);
           setSelectedReleaseId(null);
           return null;
         }
-        return aidlcReleasesService.list().then(({ releases: list }) => {
+        return aidlcReleasesService.list().then(({ releases: records }) => {
           if (cancelled) return;
+          const list = records.filter((release) =>
+            isReleaseSelectable(testReleaseMode ? { ...release, visible: true } : release),
+          );
           setReleases(list);
           const stable = channels.stable?.releaseId ?? null;
           const stableOffered = stable && list.some((r) => r.releaseId === stable) ? stable : null;
           setStableReleaseId(stableOffered);
-          setSelectedReleaseId(stableOffered);
+          const requested =
+            requestedReleaseId && list.some((release) => release.releaseId === requestedReleaseId);
+          setSelectedReleaseId(requested ? requestedReleaseId : stableOffered);
+          if (requestedReleaseId && !requested)
+            setReleaseRequestError(
+              'The requested version is no longer available. Select an available version or ask a platform administrator to make it available.',
+            );
         });
       })
       .catch(() => {
-        // Registry unreachable (or pre-#482 backend) — omit the field.
+        if (!cancelled && requestedReleaseId)
+          setReleaseRequestError(
+            'Could not verify the requested version. Reload to retry; no intent will be created on another version.',
+          );
       })
       .finally(() => {
         if (!cancelled) setReleasesSettled(true);
@@ -131,7 +155,7 @@ export default function NewIntentPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [requestedReleaseId, testReleaseMode]);
 
   useEffect(() => {
     if (!projectId || !fromIntentId) return;
@@ -230,10 +254,13 @@ export default function NewIntentPage() {
     setImporting(false);
     setSource(null);
   };
+  const requestedReleaseBlocked = Boolean(
+    requestedReleaseId && (!releasesSettled || releaseRequestError),
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if ((!title.trim() && !prompt.trim()) || !projectId) return;
+    if ((!title.trim() && !prompt.trim()) || !projectId || requestedReleaseBlocked) return;
     setCreating(true);
     setError(null);
     let releaseSelectionFallback = false;
@@ -244,6 +271,7 @@ export default function NewIntentPage() {
       // Scope is deliberately omitted — the server defaults it and the compose
       // page is where the projection is actually chosen (collaboratively).
       const input: CreateIntentInput = {
+        ...(testReleaseMode ? { methodologyReleaseTest: true } : {}),
         title: title.trim(),
         prompt: prompt.trim(),
         baseBranches: Object.keys(baseBranches).length ? baseBranches : undefined,
@@ -251,7 +279,9 @@ export default function NewIntentPage() {
         // only a create without an explicit release lets the server fall back
         // past an incompatible workflow override on the stable channel.
         methodologyReleaseId:
-          showReleaseSelector && selectedReleaseId && selectedReleaseId !== stableReleaseId
+          showReleaseSelector &&
+          selectedReleaseId &&
+          (requestedReleaseId || selectedReleaseId !== stableReleaseId)
             ? selectedReleaseId
             : undefined,
         // Sent only as an explicit opt-in, and only for a selected release that
@@ -277,7 +307,8 @@ export default function NewIntentPage() {
         if (
           err instanceof ApiError &&
           err.body?.code === 'release_selection_disabled' &&
-          input.methodologyReleaseId
+          input.methodologyReleaseId &&
+          !requestedReleaseId
         ) {
           releaseSelectionFallback = true;
           setReleaseSelectionDisabled(true);
@@ -336,8 +367,25 @@ export default function NewIntentPage() {
           <h1 className="text-xl font-semibold tracking-tight">New Intent</h1>
         </div>
 
+        {testReleaseMode && (
+          <p role="status" className="rounded-md border bg-muted p-3 text-sm">
+            Version validation: this draft uses the selected release without publishing it to other
+            users. Platform administrator access is required.
+          </p>
+        )}
+        {releaseRequestError && (
+          <div
+            role="alert"
+            className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive"
+          >
+            {releaseRequestError}
+          </div>
+        )}
         {error && (
-          <div className="bg-destructive/5 border border-destructive/20 text-destructive px-4 py-3 rounded-md flex items-start justify-between gap-3 text-sm">
+          <div
+            role="alert"
+            className="bg-destructive/5 border border-destructive/20 text-destructive px-4 py-3 rounded-md flex items-start justify-between gap-3 text-sm"
+          >
             <div className="flex items-start gap-2">
               <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
               <span>{error}</span>
@@ -477,6 +525,7 @@ export default function NewIntentPage() {
                   onValueChange={(v) => {
                     const next = v === '__default__' ? null : v;
                     setSelectedReleaseId(next);
+                    setReleaseRequestError(null);
                     if (!releaseOffersAutonomy(next)) setAutonomousConstruction(false);
                   }}
                 >
@@ -601,7 +650,10 @@ export default function NewIntentPage() {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={creating || (!title.trim() && !prompt.trim())}>
+              <Button
+                type="submit"
+                disabled={creating || (!title.trim() && !prompt.trim()) || requestedReleaseBlocked}
+              >
                 {creating && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
                 {creating ? 'Creating…' : 'Continue to Compose'}
               </Button>

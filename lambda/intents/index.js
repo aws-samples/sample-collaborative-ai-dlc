@@ -1394,6 +1394,7 @@ const mapIntent = (meta) => ({
   workflowId: meta.workflowId,
   workflowVersion: meta.workflowVersion ?? null,
   aidlcRepoRef: meta.aidlcRepoRef ?? null,
+  ...(meta.methodologyReleaseTest ? { methodologyReleaseTest: true } : {}),
   methodologyRelease: meta.methodologyRelease
     ? {
         ...meta.methodologyRelease,
@@ -3166,6 +3167,10 @@ const handleStartIntent = async ({ event, body, projectId, intentId, sub, g, res
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
     return response(404, { error: 'Intent not found' });
+  }
+  if (meta.methodologyReleaseTest) {
+    const denied = requirePlatformAdmin(event);
+    if (denied) return response(denied.statusCode, { error: denied.error, code: denied.code });
   }
   // Startable states: a fresh DRAFT, a FAILED run the user wants to retry, or
   // a CREATED run whose hand-off never reached a live orchestrator (stranded —
@@ -5626,9 +5631,75 @@ const handleListIntents = async ({ event, projectId, response }) => {
   return response(200, metas.map(mapIntent));
 };
 
+const validateAdminReleaseTest = (event, data) => {
+  const requested = data.methodologyReleaseTest;
+  if (requested === undefined || requested === false) return { enabled: false };
+  if (typeof requested !== 'boolean') {
+    return {
+      error: {
+        status: 400,
+        body: {
+          error: 'methodologyReleaseTest must be a boolean',
+          code: 'release_selection_invalid',
+        },
+      },
+    };
+  }
+  const denied = requirePlatformAdmin(event);
+  if (denied) {
+    return {
+      error: { status: denied.statusCode, body: { error: denied.error, code: denied.code } },
+    };
+  }
+  if (typeof data.methodologyReleaseId !== 'string' || !data.methodologyReleaseId) {
+    return {
+      error: {
+        status: 400,
+        body: {
+          error: 'A version test requires an explicit release',
+          code: 'release_selection_invalid',
+        },
+      },
+    };
+  }
+  return { enabled: true };
+};
+
+const resolveIntentRelease = async ({ requestedReleaseId, forAdminTest }) => {
+  const pinningEnabled = AIDLC_RELEASE_PINNING() === 'on';
+  if (requestedReleaseId && !pinningEnabled) {
+    return {
+      error: {
+        error: 'Per-intent AI-DLC release selection is disabled',
+        code: 'release_selection_disabled',
+      },
+    };
+  }
+  if (!pinningEnabled) return { release: null };
+
+  try {
+    return {
+      release: await resolveSelectableRelease({
+        ddb,
+        tableName: BLOCKS_TABLE(),
+        releaseId: requestedReleaseId,
+        forAdminTest,
+      }),
+    };
+  } catch (error) {
+    if (isReleaseRegistryError(error)) {
+      return { error: { error: error.message, code: error.code } };
+    }
+    throw error;
+  }
+};
+
 const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) => {
   // Create a DRAFT intent (no Neptune anchor yet — init-ws makes it at Start).
   const data = body ? JSON.parse(body) : {};
+  const releaseTest = validateAdminReleaseTest(event, data);
+  if (releaseTest.error) return response(releaseTest.error.status, releaseTest.error.body);
+  const methodologyReleaseTest = releaseTest.enabled;
   if (!data.title && !data.prompt) {
     return response(400, { error: 'title or prompt is required' });
   }
@@ -5715,30 +5786,14 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) 
   // has, so it is stored as no grant and accepted on any release.
   const requestedAutonomyMode =
     data.constructionGateAutonomy === 'autonomous' ? 'autonomous' : null;
-  if (requestedReleaseId && AIDLC_RELEASE_PINNING() !== 'on') {
-    return response(400, {
-      error: 'Per-intent AI-DLC release selection is disabled',
-      code: 'release_selection_disabled',
-    });
-  }
-  let selectedRelease = null;
-  if (AIDLC_RELEASE_PINNING() === 'on') {
-    try {
-      // A null id falls back to the stable channel; an unset stable channel
-      // returns null, which keeps today's derive-the-pin-from-the-ref path.
-      selectedRelease = await resolveSelectableRelease({
-        ddb,
-        tableName: BLOCKS_TABLE(),
-        releaseId: requestedReleaseId,
-      });
-    } catch (error) {
-      // Never substitute a different release than the one requested.
-      if (isReleaseRegistryError(error)) {
-        return response(400, { error: error.message, code: error.code });
-      }
-      throw error;
-    }
-  }
+  // A null id follows the stable channel; if pinning is off, the legacy path
+  // remains unchanged and no registry lookup occurs.
+  const releaseSelection = await resolveIntentRelease({
+    requestedReleaseId,
+    forAdminTest: methodologyReleaseTest,
+  });
+  if (releaseSelection.error) return response(400, releaseSelection.error);
+  const selectedRelease = releaseSelection.release;
   let selectedReleasePin = selectedRelease ? releasePinFromRecord(selectedRelease) : null;
   // Allowed, but loud: the intent pins a closure an older importer produced,
   // so it misses every field later mappers learned until an admin upgrades
@@ -6292,6 +6347,7 @@ const handleCreateIntent = async ({ event, body, projectId, sub, g, response }) 
     aidlcRepoRef,
     methodologyPins,
     methodologyRelease,
+    ...(methodologyReleaseTest ? { methodologyReleaseTest: true } : {}),
     scope,
     startedBy: sub,
     title: data.title || null,

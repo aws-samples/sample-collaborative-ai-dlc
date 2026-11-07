@@ -388,6 +388,8 @@ const buildExecutionMeta = ({
   // overlays — neither changes meaning. Shape:
   // { releaseId, sourceSha, importerRevision, closureDigest, catalogKey, manifestKey }.
   methodologyRelease = null,
+  // Informational marker for an admin-created validation intent; grants no runtime privilege.
+  methodologyReleaseTest = false,
   scope = null,
   currentPhase = null,
   currentStage = null,
@@ -572,6 +574,7 @@ const buildExecutionMeta = ({
   // Only a pinned intent carries a release, and only a failed callback carries a
   // resume marker: an unpinned row keeps exactly the attributes it always had.
   ...(methodologyRelease ? { methodologyRelease } : {}),
+  ...(methodologyReleaseTest ? { methodologyReleaseTest: true } : {}),
   scope,
   currentPhase,
   currentStage,

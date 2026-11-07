@@ -9180,6 +9180,94 @@ describe('AI-DLC per-intent release selection', () => {
     expect(meta.scope).toBe(SCOPE_ONLY_IN_DEPLOYMENT);
   });
 
+  it('lets an admin test a hidden qualified release without publishing it', async () => {
+    const sub = 'u-' + randomUUID();
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0', { visible: false });
+    const event = {
+      httpMethod: 'POST',
+      path: '/projects/' + projectId + '/intents',
+      pathParameters: { projectId },
+      body: JSON.stringify({
+        title: 'Version validation',
+        scope: SCOPE_ONLY_IN_B,
+        methodologyReleaseId: pinB.releaseId,
+        methodologyReleaseTest: true,
+      }),
+      ...claims(sub),
+    };
+    event.requestContext.authorizer.claims['cognito:groups'] = '[platform-admin]';
+    const res = await handler(event);
+    expect(res.statusCode).toBe(201);
+    const intent = JSON.parse(res.body);
+    expect(intent.methodologyReleaseTest).toBe(true);
+    expect(metaFor(intent.id)).toMatchObject({
+      methodologyRelease: pinB,
+      methodologyReleaseTest: true,
+      startedBy: sub,
+    });
+    expect(procStore.get(keyOf('AIDLC_RELEASE#' + pinB.releaseId, 'META'))).toMatchObject({
+      visible: false,
+      revision: 1,
+    });
+    const beforeStart = JSON.stringify([...procStore]);
+    const memberStart = await handler({
+      httpMethod: 'POST',
+      path: '/projects/' + projectId + '/intents/' + intent.id + '/start',
+      pathParameters: { projectId, intentId: intent.id },
+      body: '{}',
+      ...claims(sub),
+    });
+    expect(memberStart.statusCode).toBe(403);
+    expect(JSON.parse(memberStart.body).code).toBe('PLATFORM_ADMIN_REQUIRED');
+    expect(JSON.stringify([...procStore])).toBe(beforeStart);
+  });
+
+  it('refuses hidden-version test privilege to an ordinary project owner before creating an intent', async () => {
+    const sub = 'u-' + randomUUID();
+    const projectId = await seedV2Project(sub);
+    seedRegistryRecord(bundleB, 'v2.9.0', { visible: false });
+    const before = [...procStore.keys()];
+    const res = await createIntent(sub, projectId, {
+      title: 'Test',
+      methodologyReleaseId: pinB.releaseId,
+      methodologyReleaseTest: true,
+    });
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).code).toBe('PLATFORM_ADMIN_REQUIRED');
+    expect([...procStore.keys()]).toEqual(before);
+  });
+
+  it.each([
+    { runnable: false },
+    { supportState: 'structurally-valid' },
+    { supportState: 'existing-only' },
+  ])('does not let admin tests bypass qualification %j', async (overrides) => {
+    const sub = 'u-' + randomUUID();
+    const projectId = await seedV2Project(sub);
+    seedDeploymentWorkflowAtV1();
+    seedRegistryRecord(bundleB, 'v2.9.0', { visible: false, ...overrides });
+    const before = [...procStore.keys()];
+    const event = {
+      httpMethod: 'POST',
+      path: '/projects/' + projectId + '/intents',
+      pathParameters: { projectId },
+      body: JSON.stringify({
+        title: 'Test',
+        scope: SCOPE_ONLY_IN_B,
+        methodologyReleaseId: pinB.releaseId,
+        methodologyReleaseTest: true,
+      }),
+      ...claims(sub),
+    };
+    event.requestContext.authorizer.claims['cognito:groups'] = '[platform-admin]';
+    const res = await handler(event);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).code).toBe('release_not_selectable');
+    expect([...procStore.keys()]).toEqual(before);
+  });
+
   it('rejects a release that is registered but not selectable', async () => {
     const sub = `u-${randomUUID()}`;
     const projectId = await seedV2Project(sub);

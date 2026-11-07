@@ -32,7 +32,8 @@ vi.mock('@/services/sourceControl', () => ({
 
 const listReleases = vi.fn();
 const listChannels = vi.fn();
-vi.mock('@/services/aidlcReleases', () => ({
+vi.mock('@/services/aidlcReleases', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/services/aidlcReleases')>()),
   aidlcReleasesService: {
     list: (...a: unknown[]) => listReleases(...a),
     sharedChannels: (...a: unknown[]) => listChannels(...a),
@@ -119,6 +120,102 @@ describe('NewIntentPage — AI-DLC release selection', () => {
     useProjectCache.mockReset().mockReturnValue({ project, loading: false });
     listReleases.mockReset();
     listChannels.mockReset();
+  });
+
+  it.each(['2.3.3', '2.6.18', '2.7.0', '2.8.2', '2.9.0', '2.11.0', '2.11.1', '2.11.3'])(
+    'pins the requested %s version exactly, even when it is the default',
+    async (version) => {
+      const releaseId = 'aidlc:' + version;
+      listReleases.mockResolvedValue({
+        releases: [release({ releaseId, upstreamVersion: version })],
+      });
+      listChannels.mockResolvedValue({
+        pinningEnabled: true,
+        stable: { releaseId, revision: 1 },
+        candidate: null,
+        preview: null,
+      });
+      const user = userEvent.setup();
+      renderPage('/space/p1/intent/new?release=' + encodeURIComponent(releaseId));
+      expect(await screen.findByLabelText('AI-DLC version')).toHaveTextContent(version);
+      await submitPrompt(user);
+      expect(create.mock.calls[0][1].methodologyReleaseId).toBe(releaseId);
+      expect(await screen.findByTestId('compose-page')).toBeInTheDocument();
+    },
+  );
+
+  it('lets the explicit admin test flow select a hidden qualified release and labels the request', async () => {
+    listReleases.mockResolvedValue({ releases: [release({ visible: false })] });
+    listChannels.mockResolvedValue({ pinningEnabled: true, stable: null });
+    const user = userEvent.setup();
+    renderPage('/space/p1/intent/new?release=aidlc%3Aaaa111bbb222&testRelease=1');
+    expect(await screen.findByRole('status')).toHaveTextContent('Version validation');
+    await submitPrompt(user);
+    expect(create.mock.calls[0][1]).toMatchObject({
+      methodologyReleaseId: 'aidlc:aaa111bbb222',
+      methodologyReleaseTest: true,
+    });
+  });
+
+  it('does not offer hidden or unpromoted records returned to an administrator', async () => {
+    listReleases.mockResolvedValue({
+      releases: [
+        release(),
+        release({ releaseId: 'hidden', visible: false, upstreamVersion: 'hidden-version' }),
+        release({
+          releaseId: 'unpromoted',
+          supportState: 'structurally-valid',
+          upstreamVersion: 'unpromoted-version',
+        }),
+      ],
+    });
+    listChannels.mockResolvedValue({
+      pinningEnabled: true,
+      stable: null,
+      candidate: null,
+      preview: null,
+    });
+    const user = userEvent.setup();
+    renderPage('/space/p1/intent/new?release=unpromoted');
+    expect(await screen.findByRole('alert')).toHaveTextContent('no longer available');
+    await user.type(await screen.findByLabelText('Prompt'), 'Test');
+    expect(screen.getByRole('button', { name: /continue to compose/i })).toBeDisabled();
+    await user.click(screen.getByLabelText('AI-DLC version'));
+    expect(
+      screen.queryByRole('option', { name: /hidden-version|unpromoted-version/ }),
+    ).not.toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('blocks a requested version when release selection is disabled', async () => {
+    listChannels.mockResolvedValue({ pinningEnabled: false });
+    const user = userEvent.setup();
+    renderPage('/space/p1/intent/new?release=aidlc%3Aaaa111bbb222');
+    expect(await screen.findByRole('alert')).toHaveTextContent('release selection is disabled');
+    await user.type(await screen.findByLabelText('Prompt'), 'Test');
+    expect(screen.getByRole('button', { name: /continue to compose/i })).toBeDisabled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('never retries an explicit test-version intent without its pin', async () => {
+    listReleases.mockResolvedValue({ releases: [release()] });
+    listChannels.mockResolvedValue({
+      pinningEnabled: true,
+      stable: null,
+      candidate: null,
+      preview: null,
+    });
+    const { ApiError } = await import('@/services/api');
+    create.mockRejectedValueOnce(
+      new ApiError(400, 'Version selection was disabled', { code: 'release_selection_disabled' }),
+    );
+    const user = userEvent.setup();
+    renderPage('/space/p1/intent/new?release=aidlc%3Aaaa111bbb222');
+    await submitPrompt(user);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Version selection was disabled');
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0][1].methodologyReleaseId).toBe('aidlc:aaa111bbb222');
+    expect(screen.queryByTestId('compose-page')).not.toBeInTheDocument();
   });
 
   it('preselects the stable channel release and leaves the pin to the platform default', async () => {

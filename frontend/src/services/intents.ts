@@ -101,6 +101,7 @@ export interface Intent {
   aidlcRepoRef?: string | null;
   // Per-intent AI-DLC release pin; null/absent on unpinned (legacy) intents.
   methodologyRelease?: MethodologyReleasePin | null;
+  methodologyReleaseTest?: boolean;
   scope: string | null;
   currentPhase: string | null;
   currentStage: string | null;
@@ -937,6 +938,8 @@ export interface CreateIntentInput {
   // selectable releases are accepted; 400 codes: release_not_selectable,
   // release_not_found, release_selection_disabled. Omit for legacy behaviour.
   methodologyReleaseId?: string;
+  // Admin-only test of a qualified release, including hidden versions.
+  methodologyReleaseTest?: boolean;
   // Freeze the construction autonomy grant at create: 'autonomous' lets the run
   // complete the construction stage gates after the first one without stopping
   // (failures, Plan Approval and blocking findings still halt). Omit — or send

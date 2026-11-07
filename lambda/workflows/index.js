@@ -58,13 +58,21 @@ import {
   registerCustomRelease,
   registerRelease,
   releasePinFromRecord,
+  releaseToApi,
+  releaseToSelectionApi,
   ReleaseRegistryError,
   setChannel,
   updateRelease,
   upgradeReleaseClosure,
 } from '../shared/release-registry.js';
-import { loadReleaseClosure, resolveMethodologyLibrary } from '../shared/release-resolver.js';
-import { AIDLC_RELEASE_IMPORTER_REVISION } from '../shared/aidlc-release.js';
+import {
+  loadReleaseClosure,
+  loadReleaseInspectionClosure,
+  readReleaseObject,
+  ReleaseResolverError,
+  resolveMethodologyLibrary,
+} from '../shared/release-resolver.js';
+import { AIDLC_RELEASE_IMPORTER_REVISION, AidlcReleaseError } from '../shared/aidlc-release.js';
 import { resolveTenant, SYSTEM_TENANT } from '../shared/tenant.js';
 import {
   META,
@@ -82,7 +90,16 @@ import {
   validateName,
   validatePhaseNode,
 } from '../shared/workflows.js';
-import { blockPk, catalogGsi1Pk, LATEST, RULE_LAYERS, versionSk } from '../shared/blocks.js';
+import {
+  BLOCK_TYPES,
+  blockPk,
+  catalogGsi1Pk,
+  LATEST,
+  normalizeType,
+  RELEASE_LIBRARY_TYPES,
+  RULE_LAYERS,
+  versionSk,
+} from '../shared/blocks.js';
 import { compileWorkflow } from '../shared/compile.js';
 import { buildExecutionPlan, catalogAuthorsAidlcSettings } from '../shared/v2-execution-plan.js';
 import { normalizeComposedGrid } from '../shared/composed-grid.js';
@@ -867,10 +884,91 @@ const releasePlanInputs = async ({
   return { workflow, library, compiled, phases: workflow.phases ?? [] };
 };
 
+// Authoring previews edit the mutable workflow but need to resolve its blocks
+// against the release a new intent would use. The release closure supplies the
+// SYSTEM baseline; the tenant's current library overlays it. User placements
+// still resolve from the live user library while SYSTEM placements resolve from
+// the immutable release closure.
+const requestedLibraryRelease = (event) => {
+  const raw = event?.queryStringParameters?.libraryRelease;
+  return typeof raw === 'string' && raw ? decodePathParam(raw) : null;
+};
+
+const conflictingReleaseParams = (event) =>
+  requestedRelease(event) && requestedLibraryRelease(event)
+    ? { status: 400, body: { error: 'release and libraryRelease cannot be combined' } }
+    : null;
+
+const queryTenantCatalog = async (tenant, type) => {
+  const items = [];
+  let ExclusiveStartKey;
+  do {
+    const page = await ddb.send(
+      new QueryCommand({
+        TableName: blocksTable(),
+        IndexName: 'GSI1',
+        KeyConditionExpression: 'GSI1PK = :pk',
+        ExpressionAttributeValues: { ':pk': catalogGsi1Pk(tenant, type) },
+        ExclusiveStartKey,
+      }),
+    );
+    items.push(...(page.Items ?? []));
+    ExclusiveStartKey = page.LastEvaluatedKey;
+  } while (ExclusiveStartKey);
+  return items;
+};
+
+const keyByBlockId = (items) =>
+  Object.fromEntries((items ?? []).map((item) => [item.blockId ?? item.id, item]));
+
+const libraryReleaseLibrary = async ({ releaseId, isAdmin, tenant, placements }) => {
+  const methodologyRelease = await releasePinFor(releaseId, { isAdmin });
+  const closure = await loadReleaseClosure({
+    s3,
+    bucket: artifactsBucket(),
+    methodologyRelease,
+    ddb,
+    tableName: blocksTable(),
+  });
+  const overlayTypes = Object.keys(RELEASE_LIBRARY_TYPES).filter((type) => type !== 'STAGE');
+  const userTenant = tenant === SYSTEM_TENANT ? null : tenant;
+  const [overlays, userStages] = await Promise.all([
+    Promise.all(
+      overlayTypes.map((type) => (userTenant ? queryTenantCatalog(userTenant, type) : [])),
+    ),
+    loadStages(
+      placements.filter((placement) => (placement.stageTenant ?? SYSTEM_TENANT) !== SYSTEM_TENANT),
+    ),
+  ]);
+  const library = {};
+  overlayTypes.forEach((type, index) => {
+    library[RELEASE_LIBRARY_TYPES[type]] = {
+      ...keyByBlockId(closure.blocksByType?.[type]),
+      ...keyByBlockId(overlays[index]),
+    };
+  });
+
+  const releaseStages = keyByBlockId(closure.blocksByType?.STAGE);
+  const stagesById = {};
+  for (const placement of placements) {
+    const stage =
+      (placement.stageTenant ?? SYSTEM_TENANT) === SYSTEM_TENANT
+        ? releaseStages[placement.stageId]
+        : userStages[placement.stageId];
+    if (stage) stagesById[placement.stageId] = stage;
+  }
+  library.stagesById = stagesById;
+  library.fromRelease = true;
+  library.runtimeFilePaths = [...(closure.runtimeFiles?.keys() ?? [])].toSorted();
+  return library;
+};
+
 // ── Compiled views ── derive scope-grid + autonomy-profile + stage-graph from
 // the placements, scope refs, and the library Stage blocks they reference.
 // Computed on demand (no cache yet); the pure compilers live in shared/compile.
 const getCompiled = async (event, res, tenant, workflowId) => {
+  const conflict = conflictingReleaseParams(event);
+  if (conflict) return res(conflict.status, conflict.body);
   const releaseId = requestedRelease(event);
   if (releaseId) {
     const requested = getRequestedVersion(event);
@@ -902,6 +1000,31 @@ const getCompiled = async (event, res, tenant, workflowId) => {
   const scopeSlugs = items.filter((i) => i.sk.startsWith('SCOPEREF#')).map((i) => i.scopeId);
   const ruleRefs = items.filter((i) => i.sk.startsWith('RULEREF#')).map(ruleRefToApi);
 
+  const libraryReleaseId = requestedLibraryRelease(event);
+  if (libraryReleaseId) {
+    try {
+      const library = await libraryReleaseLibrary({
+        releaseId: libraryReleaseId,
+        isAdmin: isPlatformAdmin(event),
+        tenant,
+        placements,
+      });
+      return res(200, {
+        ...compileWorkflow(
+          placements,
+          scopeSlugs,
+          library.stagesById,
+          library.artifactsById,
+          ruleRefs,
+          library.rulesById,
+        ),
+        libraryRelease: libraryReleaseId,
+      });
+    } catch (error) {
+      return releaseReadError(res, error);
+    }
+  }
+
   // Batch-get the referenced Stage library blocks (V#latest), keyed by id; the
   // artifact vocabulary (so the graph can flag unknown/typo names); and the
   // referenced Rule blocks (so the rule view can resolve layers + phase match).
@@ -926,6 +1049,8 @@ const getCompiled = async (event, res, tenant, workflowId) => {
 const loadPlanInputs = async (event, tenant, workflowId) => {
   const requested = getRequestedVersion(event);
   if (requested.error) return { status: 400, body: { error: requested.error } };
+  const conflict = conflictingReleaseParams(event);
+  if (conflict) return conflict;
   const releaseId = requestedRelease(event);
   if (releaseId) {
     try {
@@ -952,6 +1077,29 @@ const loadPlanInputs = async (event, tenant, workflowId) => {
   const placements = workflow.placements;
   const ruleRefs = workflow.ruleRefs;
   const scopeSlugs = workflow.scopeRefs.map((scopeRef) => scopeRef.scopeId);
+
+  const libraryReleaseId = requestedLibraryRelease(event);
+  if (libraryReleaseId) {
+    try {
+      const library = await libraryReleaseLibrary({
+        releaseId: libraryReleaseId,
+        isAdmin: isPlatformAdmin(event),
+        tenant,
+        placements,
+      });
+      const compiled = compileWorkflow(
+        placements,
+        scopeSlugs,
+        library.stagesById,
+        library.artifactsById,
+        ruleRefs,
+        library.rulesById,
+      );
+      return { workflow, library, compiled, libraryRelease: libraryReleaseId };
+    } catch (error) {
+      return releaseReadFailure(error);
+    }
+  }
 
   const [stagesById, artifactsById, rulesById, agentsById, sensorsById] = await Promise.all([
     loadStages(placements),
@@ -1009,8 +1157,11 @@ const getExecutionPreview = async (event, res, tenant, workflowId) => {
     compiled: inputs.compiled,
     ...(skipStageIds ? { skipStageIds } : {}),
   });
-  return res(200, preview);
+  return res(200, withLibraryRelease(preview, inputs.libraryRelease));
 };
+
+const withLibraryRelease = (result, libraryRelease) =>
+  libraryRelease ? { ...result, libraryRelease } : result;
 
 // POST /workflows/{id}/validate-grid — dry-run a composed EXECUTE/SKIP grid
 // against the pinned workflow (upstream's validate-grid). Body:
@@ -1069,7 +1220,7 @@ const validateGrid = async (event, res, tenant, workflowId) => {
     ...(skipStageIds ? { skipStageIds } : {}),
     strict: data.strict === true,
   });
-  return res(200, result);
+  return res(200, withLibraryRelease(result, inputs.libraryRelease));
 };
 
 const loadCatalogByType = async (owner, type) => {
@@ -1535,6 +1686,213 @@ const listReleaseProfilesRoute = async (_event, res) => {
   return res(200, { profiles });
 };
 
+const RELEASE_BLOCK_INTERNAL_KEYS = new Set([
+  'pk',
+  'sk',
+  'GSI1PK',
+  'GSI1SK',
+  'bodyRef',
+  'scriptRef',
+  'body',
+  'script',
+  'type',
+]);
+
+const releaseBlockToApi = (block, type, releaseId) => {
+  const out = {};
+  for (const [key, value] of Object.entries(block)) {
+    if (!RELEASE_BLOCK_INTERNAL_KEYS.has(key)) out[key] = value;
+  }
+  return {
+    ...out,
+    id: block.id ?? block.blockId,
+    blockId: block.blockId ?? block.id,
+    blockType: type.toLowerCase(),
+    tenantId: SYSTEM_TENANT,
+    version: Number(block.version ?? 1),
+    readOnly: true,
+    hasBody: Boolean(block.bodyRef),
+    bodyBytes: block.bodyRef?.bytes ?? 0,
+    hasScript: Boolean(block.scriptRef),
+    scriptBytes: block.scriptRef?.bytes ?? 0,
+    source: 'release',
+    releaseId,
+  };
+};
+
+const releaseWorkflowToApi = (workflow, releaseId) =>
+  workflow
+    ? {
+        id: workflow.id ?? workflow.workflowId,
+        workflowId: workflow.workflowId ?? workflow.id,
+        name: workflow.name ?? workflow.id ?? workflow.workflowId,
+        objective: workflow.objective ?? '',
+        workflowVersion: Number(workflow.workflowVersion ?? 1),
+        readOnly: true,
+        phases: workflow.phases ?? [],
+        placements: (workflow.placements ?? []).map((placement) => ({
+          stageId: placement.stageId,
+          phasePath: placement.phasePath ?? null,
+          order: placement.order ?? 0,
+          scopeMembership: placement.scopeMembership ?? {},
+        })),
+        scopeRefs: (workflow.scopeRefs ?? []).map((scopeRef) => ({ scopeId: scopeRef.scopeId })),
+        ruleRefs: (workflow.ruleRefs ?? []).map((ruleRef) => ({
+          ruleId: ruleRef.ruleId,
+          layer: ruleRef.layer,
+        })),
+        source: 'release',
+        releaseId,
+      }
+    : null;
+
+const requestedReleaseBlockTypes = (event) => {
+  const raw = event?.queryStringParameters?.type;
+  if (raw == null || raw === '') return { types: BLOCK_TYPES };
+  const requested = [
+    ...new Set(
+      String(raw)
+        .split(',')
+        .map((part) => part.trim())
+        .filter(Boolean),
+    ),
+  ];
+  const types = requested.map(normalizeType);
+  const unknown = requested.filter((_, index) => !types[index]);
+  if (unknown.length > 0) {
+    return { error: `Unknown block type: ${unknown.join(', ')}` };
+  }
+  return { types };
+};
+
+const readableReleaseForContents = async (event, releaseId) => {
+  const admin = isPlatformAdmin(event);
+  const record = await getRelease({ ...registryArgs(), releaseId });
+  if (!record || (!admin && !isSelectableRecord(record))) {
+    throw new ReleaseRegistryError(
+      'release_not_found',
+      `workflows: release ${String(releaseId)} is not registered`,
+      { details: { releaseId: String(releaseId ?? '') } },
+    );
+  }
+  return { record, admin };
+};
+
+const releaseContentsError = (res, error) => {
+  if (isAccessDenied(error)) {
+    return res(409, {
+      error: 'The release object could not be read or is missing from its published closure.',
+      code: 'release_object_missing',
+    });
+  }
+  if (error instanceof ReleaseResolverError) {
+    const status = error.code === 'release_not_found' ? 404 : 409;
+    return res(status, { error: error.message, code: error.code });
+  }
+  if (error instanceof AidlcReleaseError) {
+    return res(409, {
+      error: error.message,
+      code: error.code,
+      ...(error.diagnostics ? { details: error.diagnostics } : {}),
+    });
+  }
+  return registryError(res, error);
+};
+
+const loadInspectableRelease = async (record) =>
+  loadReleaseInspectionClosure({
+    s3,
+    bucket: artifactsBucket(),
+    methodologyRelease: releasePinFromRecord(record),
+    ddb,
+    tableName: blocksTable(),
+  });
+
+const listReleaseContentsRoute = async (event, res, releaseId) => {
+  const requested = requestedReleaseBlockTypes(event);
+  if (requested.error) return res(400, { error: requested.error });
+  try {
+    const { record, admin } = await readableReleaseForContents(event, releaseId);
+    const closure = await loadInspectableRelease(record);
+    const blocks = Object.fromEntries(
+      requested.types.map((type) => [
+        type.toLowerCase(),
+        (closure.blocksByType[type] ?? []).map((block) =>
+          releaseBlockToApi(block, type, releaseId),
+        ),
+      ]),
+    );
+    return res(200, {
+      release: admin ? releaseToApi(record) : releaseToSelectionApi(record),
+      workflow: releaseWorkflowToApi(closure.catalog.workflow, releaseId),
+      blocks,
+    });
+  } catch (error) {
+    return releaseContentsError(res, error);
+  }
+};
+
+const getReleaseBlockRoute = async (event, res, releaseId, rawType, blockId) => {
+  const type = normalizeType(rawType);
+  if (!type || !BLOCK_TYPES.includes(type)) {
+    return res(400, { error: `Unknown block type: ${String(rawType)}` });
+  }
+  try {
+    const { record } = await readableReleaseForContents(event, releaseId);
+    const closure = await loadInspectableRelease(record);
+    const block = (closure.blocksByType[type] ?? []).find(
+      (candidate) => (candidate.blockId ?? candidate.id) === blockId,
+    );
+    if (!block) {
+      return res(404, {
+        error: `workflows: release ${releaseId} has no ${type} block ${blockId}`,
+        code: 'release_object_missing',
+      });
+    }
+    const body = block.bodyRef?.s3Key
+      ? await readReleaseObject({
+          s3,
+          bucket: artifactsBucket(),
+          closure,
+          key: block.bodyRef.s3Key,
+        })
+      : '';
+    const script = block.scriptRef?.s3Key
+      ? await readReleaseObject({
+          s3,
+          bucket: artifactsBucket(),
+          closure,
+          key: block.scriptRef.s3Key,
+        })
+      : '';
+    return res(200, {
+      block: releaseBlockToApi(block, type, releaseId),
+      body,
+      script,
+    });
+  } catch (error) {
+    return releaseContentsError(res, error);
+  }
+};
+
+const routeReleaseContents = async (event, res, method, path, releaseId) => {
+  if (path.endsWith('/aidlc-releases/{releaseId}/blocks/{type}/{blockId}')) {
+    if (method !== 'GET') return res(405, { error: 'Method not allowed' });
+    return getReleaseBlockRoute(
+      event,
+      res,
+      decodePathParam(releaseId),
+      decodePathParam(event.pathParameters?.type),
+      decodePathParam(event.pathParameters?.blockId),
+    );
+  }
+  if (path.endsWith('/aidlc-releases/{releaseId}/blocks')) {
+    if (method !== 'GET') return res(405, { error: 'Method not allowed' });
+    return listReleaseContentsRoute(event, res, decodePathParam(releaseId));
+  }
+  return null;
+};
+
 // ─── Router ───
 
 export const handler = async (event, context) => {
@@ -1582,6 +1940,8 @@ export const handler = async (event, context) => {
         if (method === 'GET') return await listChannelsRoute(event, res);
         return res(405, { error: 'Method not allowed' });
       }
+      const contentsResponse = await routeReleaseContents(event, res, method, path, releaseId);
+      if (contentsResponse) return await contentsResponse;
       if (path.endsWith('/aidlc-releases/{releaseId}')) {
         if (method === 'PATCH')
           return await updateReleaseRoute(event, res, actor, decodePathParam(releaseId));

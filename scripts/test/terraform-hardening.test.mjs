@@ -7,6 +7,22 @@ import test from 'node:test';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
 const count = (text, pattern) => text.match(pattern)?.length ?? 0;
+
+test('version selection is enabled by default and explicit deployment overrides remain authoritative', () => {
+  for (const path of ['terraform/variables.tf', 'terraform/modules/api/lambda/variables.tf']) {
+    assert.match(
+      read(path),
+      /variable "aidlc_release_pinning" \{[^}]*default\s+= "on"/,
+      `${path} must enable prepared versions by default`,
+    );
+  }
+  assert.match(read('terraform/main.tf'), /aidlc_release_pinning\s+= var\.aidlc_release_pinning/);
+  assert.match(
+    read('.github/workflows/deploy-demo.yml'),
+    /if \[\[ -n "\$AIDLC_RELEASE_PINNING" \]\]; then[\s\S]*?hcl_string "\$AIDLC_RELEASE_PINNING"/,
+  );
+});
+
 const resourceBlocks = (text, resourceType) => {
   const pattern = new RegExp(`resource "${resourceType}" "([^"]+)" \\{`, 'g');
   return [...text.matchAll(pattern)].map((match) => {

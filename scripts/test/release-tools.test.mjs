@@ -610,6 +610,9 @@ fi
 if [[ "$1" == */initialize-agent-auth-inventory.mjs ]]; then
   exit 0
 fi
+if [[ "$1" == */prepare-aidlc-releases.mjs ]]; then
+  exit 0
+fi
 exec '${process.execPath}' "$@"
 `,
     { mode: 0o755 },
@@ -715,6 +718,10 @@ if [[ "$1" == */initialize-agent-auth-inventory.mjs ]]; then
   printf 'initialize-inventory %s %s\\n' "$AWS_REGION" "$V2_PROCESS_TABLE" >> "$AIDLC_TERRAFORM_LOG"
   exit "\${AIDLC_FAKE_INVENTORY_EXIT:-0}"
 fi
+if [[ "$1" == */prepare-aidlc-releases.mjs ]]; then
+  printf 'prepare-releases %s %s\\n' "$AWS_REGION" "$SEED_BLOCKS_FUNCTION" >> "$AIDLC_TERRAFORM_LOG"
+  exit "\${AIDLC_FAKE_RELEASE_PREP_EXIT:-0}"
+fi
 exec '${process.execPath}' "$@"
 `,
     { mode: 0o755 },
@@ -782,6 +789,8 @@ test('standalone deployment forwards --var overrides to terraform plan', () => {
       'app_domain=aidlc.example.com',
       '--var',
       'route53_zone_id=Z1234567890ABC',
+      '--var',
+      'aidlc_release_pinning=off',
     ],
     { env },
   );
@@ -796,6 +805,7 @@ test('standalone deployment forwards --var overrides to terraform plan', () => {
   assert.match(planLine, /-var-file=\S+summary\.tfvars/);
   assert.match(planLine, /-var app_domain=aidlc\.example\.com/);
   assert.match(planLine, /-var route53_zone_id=Z1234567890ABC/);
+  assert.match(planLine, /-var aidlc_release_pinning=off/);
 });
 
 test('standalone deployment omits --var entirely when none are given', () => {
@@ -824,6 +834,28 @@ test('standalone deployment can skip the post-apply baseline seed', () => {
   assert.equal(deployed.status, 0, deployed.stderr);
   assert.match(deployed.stdout, /Skipping AI-DLC default workflow/);
   assert.doesNotMatch(readFileSync(awsLog, 'utf8'), /lambda invoke/);
+});
+
+test('deployment prepares supported catalogs after apply even when baseline reseeding is skipped', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-releases-'));
+  const { env, terraformLog, planFile } = standaloneDeployEnv(dir);
+  const result = run('bash', [deployTerraform, 'summary', '--plan-file', planFile, '--skip-seed'], {
+    env,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const log = readFileSync(terraformLog, 'utf8');
+  assert.match(log, /prepare-releases eu-west-1 seed-summary/);
+  assert.ok(log.indexOf('apply ') < log.indexOf('prepare-releases '));
+});
+
+test('deployment fails visibly if a supported catalog cannot be prepared', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'aidlc-deploy-releases-fail-'));
+  const { env, planFile } = standaloneDeployEnv(dir);
+  const result = run('bash', [deployTerraform, 'summary', '--plan-file', planFile], {
+    env: { ...env, AIDLC_FAKE_RELEASE_PREP_EXIT: '42' },
+  });
+  assert.equal(result.status, 42);
+  assert.doesNotMatch(result.stdout, /Infrastructure deployment complete/);
 });
 
 test('deployment initializes inventory after apply even when baseline seeding is skipped', () => {

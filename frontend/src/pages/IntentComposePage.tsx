@@ -92,7 +92,7 @@ function IntentComposePageContent() {
   const navigate = useNavigate();
   const location = useLocation();
   const { projectId, intentId } = useParams<{ projectId: string; intentId: string }>();
-  const { user } = useAuth();
+  const { user, isPlatformAdmin } = useAuth();
   const { reload } = useIntent();
   const setAssistAgentCli = useDiscussions()?.setAssistAgentCli;
   const userName = user?.displayName || user?.email || '';
@@ -656,7 +656,9 @@ function IntentComposePageContent() {
     intentId,
   ]);
 
+  const validationStartBlocked = Boolean(intent?.methodologyReleaseTest && !isPlatformAdmin);
   const handleStart = async () => {
+    if (validationStartBlocked) return;
     if (!projectId || !intentId || !draftReady || uploadProgress !== null || trackerImportBusy)
       return;
     setStarting(true);
@@ -733,6 +735,12 @@ function IntentComposePageContent() {
           )}
         </div>
 
+        {intent?.methodologyReleaseTest && (
+          <p role="status" className="rounded-md border bg-muted p-3 text-sm">
+            Version validation intent: shared with this space. Only a platform administrator can
+            start or retry this test.
+          </p>
+        )}
         {error && (
           <div className="bg-destructive/5 border border-destructive/20 text-destructive px-4 py-3 rounded-md flex items-start justify-between gap-3 text-sm">
             <div className="flex items-start gap-2">
@@ -1180,6 +1188,7 @@ function IntentComposePageContent() {
               onClick={handleStart}
               disabled={
                 starting ||
+                validationStartBlocked ||
                 !draftReady ||
                 uploadProgress !== null ||
                 trackerImportBusy ||

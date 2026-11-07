@@ -178,13 +178,20 @@ const adminClaims = {
 const memberClaims = { sub: 'user-2', email: 'user2@example.com' };
 
 // API Gateway hands over `event.resource` including the /api stage prefix.
-const releaseEvent = ({ method, resource, pathParameters = {}, body, claims = adminClaims }) => ({
+const releaseEvent = ({
+  method,
+  resource,
+  pathParameters = {},
+  body,
+  claims = adminClaims,
+  queryStringParameters = {},
+}) => ({
   httpMethod: method,
   resource: `/api${resource}`,
   path: `/api${resource}`,
   pathParameters,
   body: body === undefined ? null : JSON.stringify(body),
-  queryStringParameters: {},
+  queryStringParameters,
   requestContext: { authorizer: { claims } },
   headers: {},
 });
@@ -679,6 +686,130 @@ describe('POST /aidlc-releases with a custom fork', () => {
         visible: false,
       }),
     });
+  });
+
+  it('lets an admin inspect an unpromoted custom fork without making it runnable', async () => {
+    const registered = await registerCustom(validCustom());
+    expect(registered.status).toBe(201);
+
+    const res = parse(
+      await handler(
+        releaseEvent({
+          method: 'GET',
+          resource: '/aidlc-releases/{releaseId}/blocks',
+          pathParameters: { releaseId: encodeURIComponent(FORK_RELEASE_ID) },
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.release).toMatchObject({
+      releaseId: FORK_RELEASE_ID,
+      custom: true,
+      runnable: false,
+      visible: false,
+    });
+    expect(res.body.blocks.agent.length).toBeGreaterThan(0);
+    expect(Object.keys(res.body.blocks).every((type) => type === type.toLowerCase())).toBe(true);
+    expect(res.body.blocks.agent[0]).toMatchObject({
+      blockType: 'agent',
+      source: 'release',
+      releaseId: FORK_RELEASE_ID,
+      readOnly: true,
+    });
+    expect(rows.get(keyOf(`AIDLC_RELEASE#${FORK_RELEASE_ID}`, 'META')).runnable).toBe(false);
+  });
+
+  it('serves a custom fork block body only from an object named by its verified manifest', async () => {
+    await registerCustom(validCustom());
+    const block = forkBundle.catalog.blocks.AGENT.find((candidate) => candidate.bodyRef?.s3Key);
+    expect(block).toBeTruthy();
+    const expectedBody = forkBundle.objects.find(
+      (object) => object.key === block.bodyRef.s3Key,
+    ).body;
+
+    const res = parse(
+      await handler(
+        releaseEvent({
+          method: 'GET',
+          resource: '/aidlc-releases/{releaseId}/blocks/{type}/{blockId}',
+          pathParameters: {
+            releaseId: encodeURIComponent(FORK_RELEASE_ID),
+            type: 'agent',
+            blockId: block.blockId,
+          },
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      block: {
+        id: block.blockId,
+        blockType: 'agent',
+        source: 'release',
+        releaseId: FORK_RELEASE_ID,
+      },
+      body: expectedBody,
+      script: '',
+    });
+  });
+
+  it('does not reveal an import-only fork to non-admins', async () => {
+    await registerCustom(validCustom());
+    const res = parse(
+      await handler(
+        releaseEvent({
+          method: 'GET',
+          resource: '/aidlc-releases/{releaseId}/blocks',
+          pathParameters: { releaseId: encodeURIComponent(FORK_RELEASE_ID) },
+          claims: memberClaims,
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('release_not_found');
+  });
+
+  it('rejects a body object that is missing or differs from its manifest digest', async () => {
+    await registerCustom(validCustom());
+    const block = forkBundle.catalog.blocks.AGENT.find((candidate) => candidate.bodyRef?.s3Key);
+    const bodyKey = block.bodyRef.s3Key;
+    objects.set(bodyKey, 'rewritten body');
+
+    const tampered = parse(
+      await handler(
+        releaseEvent({
+          method: 'GET',
+          resource: '/aidlc-releases/{releaseId}/blocks/{type}/{blockId}',
+          pathParameters: {
+            releaseId: encodeURIComponent(FORK_RELEASE_ID),
+            type: 'AGENT',
+            blockId: block.blockId,
+          },
+        }),
+      ),
+    );
+    expect(tampered.status).toBe(409);
+    expect(tampered.body.code).toBe('release_closure_mismatch');
+
+    objects.delete(bodyKey);
+    const missing = parse(
+      await handler(
+        releaseEvent({
+          method: 'GET',
+          resource: '/aidlc-releases/{releaseId}/blocks/{type}/{blockId}',
+          pathParameters: {
+            releaseId: encodeURIComponent(FORK_RELEASE_ID),
+            type: 'AGENT',
+            blockId: block.blockId,
+          },
+        }),
+      ),
+    );
+    expect(missing.status).toBe(409);
+    expect(missing.body.code).toBe('release_object_missing');
   });
 
   it('is platform-admin only', async () => {

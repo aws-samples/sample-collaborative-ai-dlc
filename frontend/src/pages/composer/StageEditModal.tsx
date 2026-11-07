@@ -10,25 +10,33 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, Lock, Library } from 'lucide-react';
-import { blocksService, type Block } from '@/services/blocks';
+import { blocksService } from '@/services/blocks';
 import {
   StageEditor,
   type StageForm,
   type StageReferenceOptions,
 } from '@/components/blocks/StageEditor';
+import { loadStageReferenceOptions } from '@/components/blocks/stageReferenceOptions';
 
 interface StageEditModalProps {
   stageId: string | null;
+  libraryReleaseId?: string | null;
   onClose: () => void;
   onSaved: () => void;
 }
 
-export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProps) {
+export function StageEditModal({
+  stageId,
+  libraryReleaseId = null,
+  onClose,
+  onSaved,
+}: StageEditModalProps) {
   const navigate = useNavigate();
   const [form, setForm] = useState<StageForm>({});
   const [stageName, setStageName] = useState('');
   const [readOnly, setReadOnly] = useState(false);
   const [referenceOptions, setReferenceOptions] = useState<StageReferenceOptions>({});
+  const [referenceOptionsLoading, setReferenceOptionsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,31 +73,23 @@ export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProp
 
   useEffect(() => {
     if (!stageId) return;
-    const toOptions = (blocks: Block[]) =>
-      blocks.map((block) => ({
-        id: block.id,
-        label: block.name,
-        description: typeof block.description === 'string' ? block.description : undefined,
-      }));
-    Promise.all([
-      blocksService.list('agent'),
-      blocksService.list('artifact'),
-      blocksService.list('sensor'),
-      blocksService.list('stage'),
-    ])
-      .then(([agents, artifacts, sensors, stages]) =>
-        setReferenceOptions({
-          agents: toOptions(agents.blocks),
-          artifacts: toOptions(artifacts.blocks),
-          sensors: toOptions(sensors.blocks),
-          stages: toOptions(stages.blocks).filter((stage) => stage.id !== stageId),
-        }),
-      )
-      .catch(() => setReferenceOptions({}));
-  }, [stageId]);
+    setError(null);
+    setReferenceOptionsLoading(Boolean(libraryReleaseId));
+    loadStageReferenceOptions(stageId, libraryReleaseId)
+      .then(({ options }) => setReferenceOptions(options))
+      .catch((e) => {
+        setReferenceOptions({});
+        setError(
+          e instanceof Error
+            ? `${libraryReleaseId ? 'The selected AI-DLC version' : 'Stage references'} could not be loaded: ${e.message}`
+            : `${libraryReleaseId ? 'The selected AI-DLC version' : 'Stage references'} could not be loaded.`,
+        );
+      })
+      .finally(() => setReferenceOptionsLoading(false));
+  }, [stageId, libraryReleaseId]);
 
   const handleSave = async () => {
-    if (!stageId || readOnly) return;
+    if (!stageId || readOnly || referenceOptionsLoading || error) return;
     setSaving(true);
     setError(null);
     try {
@@ -141,7 +141,9 @@ export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProp
               size="sm"
               className="h-6 gap-1 text-[10px] ml-auto shrink-0"
               onClick={() => {
-                navigate('/blocks/stage');
+                navigate(
+                  `/blocks/stage${libraryReleaseId ? `?libraryRelease=${encodeURIComponent(libraryReleaseId)}` : ''}`,
+                );
                 onClose();
               }}
             >
@@ -158,7 +160,7 @@ export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProp
             <StageEditor
               value={form}
               onChange={setForm}
-              disabled={readOnly}
+              disabled={readOnly || referenceOptionsLoading || Boolean(error)}
               referenceOptions={referenceOptions}
             />
           </div>
@@ -169,7 +171,11 @@ export function StageEditModal({ stageId, onClose, onSaved }: StageEditModalProp
             <Button variant="ghost" size="sm" onClick={onClose}>
               Cancel
             </Button>
-            <Button size="sm" disabled={saving} onClick={handleSave}>
+            <Button
+              size="sm"
+              disabled={saving || referenceOptionsLoading || Boolean(error)}
+              onClick={handleSave}
+            >
               {saving && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
               Save
             </Button>

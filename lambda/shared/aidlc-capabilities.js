@@ -125,6 +125,11 @@ const ANNEX_HANDLED_ENGINE_COMMANDS = Object.freeze(
     'engine state set-construction-execution',
     'engine state set-construction-verification-command',
     'engine testing-posture restore',
+    // AI-DLC 2.11.3 repository and on-demand plan actions have no matching
+    // mutation or gate in this runtime; their limits are stated explicitly.
+    'engine intent add-checkout',
+    'engine intent add-repo',
+    'engine plan first',
     'engine worktree discard',
     'engine worktree list',
     'engine worktree purge',
