@@ -283,6 +283,7 @@ const resolveConflictImplementation = async (
     const output = createCliOutputSink({ cli, emit: () => {}, onUsage: usage.onUsage });
     const execute = () =>
       runChild({
+        logContext: { executionId, intentId, projectId },
         command: invocation.command,
         args: invocation.args,
         env: { ...invocation.env, ...driver.envForAuth(env) },

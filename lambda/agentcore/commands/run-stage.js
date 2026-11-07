@@ -3695,6 +3695,7 @@ const runStageAttempt = async (
       // still tees stderr to the container log; the captured value is never
       // persisted verbatim.
       captureStderrTail: 16_384,
+      logContext: { executionId, stageInstanceId, intentId, projectId },
       onStdout: (chunk) => cliOutput.write(chunk),
       spawnFn,
     });
@@ -3807,8 +3808,12 @@ const runStageAttempt = async (
     );
   }
 
-  const exitCode = result?.exitCode ?? 0;
-  logger.error('cli exit', {
+  const exitCode = result?.exitCode;
+  if (exitCode == null) {
+    logger.error('cli_error', { cli, stage: stageId, code: 'cli_no_exit_code' });
+    return fail(stageInstanceId, 'cli_error', 'The agent process ended without an exit code');
+  }
+  logger[exitCode === 0 ? 'info' : 'error']('cli exit', {
     cli,
     stage: stageId,
     exitCode,
@@ -4621,6 +4626,7 @@ const runStageAttempt = async (
             prompt: repair.prompt,
             promptViaStdin: repair.promptViaStdin,
             captureStderrTail: 16_384,
+            logContext: { executionId, stageInstanceId, intentId, projectId },
             onStdout: (chunk) => repairSink.write(chunk),
             spawnFn,
           });

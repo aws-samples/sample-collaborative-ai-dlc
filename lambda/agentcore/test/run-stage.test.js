@@ -907,6 +907,29 @@ describe('runStage — failure paths (always records terminal state)', () => {
     expect(res).toMatchObject({ ok: false, reason: 'stage_not_in_scope' });
   });
 
+  it.each([0, 2])('logs CLI exit %s at the appropriate severity', async (exitCode) => {
+    const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+    const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+    try {
+      await runStage(
+        baseArgs,
+        baseDeps({
+          spawnFn: () => ({
+            on: (event, callback) => event === 'close' && setImmediate(() => callback(exitCode)),
+            stdin: { end() {} },
+          }),
+        }),
+      );
+      const expected = exitCode === 0 ? info : error;
+      const other = exitCode === 0 ? error : info;
+      expect(expected).toHaveBeenCalledWith('cli exit', expect.objectContaining({ exitCode }));
+      expect(other).not.toHaveBeenCalledWith('cli exit', expect.anything());
+    } finally {
+      info.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('records FAILED on a non-zero CLI exit', async () => {
     const deps = baseDeps({
       spawnFn: () => ({
@@ -920,6 +943,46 @@ describe('runStage — failure paths (always records terminal state)', () => {
       deps.store.calls.some((c) => c[0] === 'updateStageState' && c[1].state === 'FAILED'),
     ).toBe(true);
   });
+
+  it.each(['error', 'close'])(
+    'records FAILED and logs cli_error when the child emits %s without an exit code',
+    async (event) => {
+      const info = vi.spyOn(Logger.prototype, 'info').mockImplementation(() => {});
+      const error = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+      try {
+        const deps = baseDeps({
+          spawnFn: () => {
+            const child = new EventEmitter();
+            child.stdin = { end() {} };
+            setImmediate(() =>
+              child.emit(
+                event,
+                event === 'error'
+                  ? Object.assign(new Error('spawn fixture ENOENT'), { code: 'ENOENT' })
+                  : null,
+              ),
+            );
+            return child;
+          },
+        });
+        const result = await runStage(baseArgs, deps);
+        expect(result).toMatchObject({ ok: false, reason: 'cli_error' });
+        expect(
+          deps.store.calls.some(
+            ([name, row]) => name === 'updateStageState' && row.state === 'FAILED',
+          ),
+        ).toBe(true);
+        expect(error).toHaveBeenCalledWith(
+          'cli_error',
+          expect.objectContaining({ code: event === 'error' ? 'ENOENT' : 'cli_no_exit_code' }),
+        );
+        expect(info).not.toHaveBeenCalledWith('cli exit', expect.anything());
+      } finally {
+        info.mockRestore();
+        error.mockRestore();
+      }
+    },
+  );
 
   it('fails fast on a not-implemented (agent-team) stage without spawning', async () => {
     const lib = library();

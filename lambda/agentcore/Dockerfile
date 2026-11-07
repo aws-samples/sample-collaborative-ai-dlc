@@ -10,11 +10,11 @@
 FROM public.ecr.aws/docker/library/node:24.19.0-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
 
 # Base tools: git (workspace checkout), curl/unzip/xz (CLI and managed-tool
-# archives), jq, procps,
+# archives), jq, procps, bubblewrap/socat/ripgrep (SRT),
 # python3 (bare-`python`/`python3` MCP servers; `python`→`python3` symlink so
 # both resolve — uv/uvx manage their own Python separately).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git curl unzip xz-utils jq procps python3 \
+    && apt-get install -y --no-install-recommends ca-certificates git curl unzip xz-utils jq procps python3 bubblewrap socat ripgrep \
     && ln -sf /usr/bin/python3 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
