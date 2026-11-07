@@ -386,65 +386,74 @@ describe('managed environment status handler', () => {
     expect(store.updateRevision).not.toHaveBeenCalled();
   });
 
-  it('records endpoint and command validation evidence', async () => {
-    const verifying = {
-      ...revision,
-      status: 'VERIFYING',
-      scanFindings: { severityCounts: { HIGH: 2 } },
-      securityFindingsAcceptedAt: '2026-08-10T12:00:00.000Z',
-      runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/custom',
-      runtimeId: 'runtime-1',
-      runtimeVersion: '3',
-      runtimeEndpoint: 'revision_r_1',
-      runtimeEndpointArn:
-        'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime-endpoint/custom',
-    };
-    const store = mutableStore(verifying);
-    const runtimeClient = {
-      send: vi
-        .fn()
-        .mockResolvedValueOnce({
-          response: {
-            transformToString: async () => JSON.stringify({ ok: true, clis: ['node', 'python'] }),
-          },
-        })
-        .mockResolvedValueOnce({
-          response: {
-            transformToString: async () =>
-              JSON.stringify({
-                ok: true,
-                nonce: 'check-r-1',
-                compatibilityVersion: '1',
-                nonRoot: true,
-                workspaceWritable: true,
-                protectedRuntime: true,
-              }),
-          },
-        }),
-    };
-    const handler = createStatusHandler({
-      cleanupStore: cleanupStoreStub(),
-      store,
-      ecrClient: { send: vi.fn() },
-      controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
-      runtimeClient,
-    });
-    const result = await handler({ action: 'poll' });
-    expect(result.results[0].revision.status).toBe('READY');
-    expect(result.results[0].revision.verification).toMatchObject({
-      status: 'PASSED',
-      securityScan: 'ACCEPTED',
-      endpoint: 'PASSED',
-      toolBuilds: 'PASSED',
-    });
-    expect(runtimeClient.send.mock.calls[0][0].input.qualifier).toBe('revision_r_1');
-    expect(runtimeClient.send.mock.calls[2][0].constructor.name).toBe('StopRuntimeSessionCommand');
-    expect(runtimeClient.send.mock.calls[2][0].input).toMatchObject({
-      agentRuntimeArn: verifying.runtimeArn,
-      qualifier: 'revision_r_1',
-      runtimeSessionId: expect.stringContaining('managed-environment-r-1-'),
-    });
-  });
+  it.each([undefined, true])(
+    'records runtime validation evidence, sandbox=%s',
+    async (sandboxEnforcement) => {
+      const verifying = {
+        ...revision,
+        status: 'VERIFYING',
+        scanFindings: { severityCounts: { HIGH: 2 } },
+        securityFindingsAcceptedAt: '2026-08-10T12:00:00.000Z',
+        runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime/custom',
+        runtimeId: 'runtime-1',
+        runtimeVersion: '3',
+        runtimeEndpoint: 'revision_r_1',
+        runtimeEndpointArn:
+          'arn:aws:bedrock-agentcore:eu-west-1:111111111111:runtime-endpoint/custom',
+      };
+      const store = mutableStore(verifying);
+      const runtimeClient = {
+        send: vi
+          .fn()
+          .mockResolvedValueOnce({
+            response: {
+              transformToString: async () =>
+                JSON.stringify({ ok: true, clis: ['node', 'python'], sandboxEnforcement }),
+            },
+          })
+          .mockResolvedValueOnce({
+            response: {
+              transformToString: async () =>
+                JSON.stringify({
+                  ok: true,
+                  nonce: 'check-r-1',
+                  compatibilityVersion: '1',
+                  nonRoot: true,
+                  workspaceWritable: true,
+                  protectedRuntime: true,
+                }),
+            },
+          }),
+      };
+      const handler = createStatusHandler({
+        cleanupStore: cleanupStoreStub(),
+        store,
+        ecrClient: { send: vi.fn() },
+        controlClient: { send: vi.fn().mockResolvedValue({ status: 'READY' }) },
+        runtimeClient,
+      });
+      const result = await handler({ action: 'poll' });
+      expect(result.results[0].revision.status).toBe('READY');
+      expect(result.results[0].revision.verification).toMatchObject({
+        status: 'PASSED',
+        securityScan: 'ACCEPTED',
+        endpoint: 'PASSED',
+        toolBuilds: 'PASSED',
+      });
+      if (sandboxEnforcement)
+        expect(result.results[0].revision.verification.sandboxEnforcement).toBe(true);
+      else expect(result.results[0].revision.verification).not.toHaveProperty('sandboxEnforcement');
+      expect(runtimeClient.send.mock.calls[0][0].input.qualifier).toBe('revision_r_1');
+      expect(runtimeClient.send.mock.calls[2][0].constructor.name).toBe(
+        'StopRuntimeSessionCommand',
+      );
+      expect(runtimeClient.send.mock.calls[2][0].input).toMatchObject({
+        agentRuntimeArn: verifying.runtimeArn,
+        qualifier: 'revision_r_1',
+        runtimeSessionId: expect.stringContaining('managed-environment-r-1-'),
+      });
+    },
+  );
 
   it('rejects a runtime whose deterministic check reports root execution', async () => {
     const verifying = {

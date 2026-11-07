@@ -4,8 +4,13 @@ import { PassThrough } from 'node:stream';
 import { Logger } from '@aws-lambda-powertools/logger';
 import { describe, expect, it, vi } from 'vitest';
 import { captureChild, runChild } from '../cli/spawn.js';
+import {
+  currentSandbox,
+  DEFAULT_SANDBOX_CONFIG,
+  resolveInvocationSandbox,
+  withSandbox,
+} from '../sandbox/launcher.js';
 import { createCredentialSession } from '../credential-session.js';
-import { currentSandbox, DEFAULT_SANDBOX_CONFIG, withSandbox } from '../sandbox/launcher.js';
 
 const settings = {
   network: { strictAllowlist: true, allowedDomains: [], deniedDomains: [] },
@@ -23,7 +28,95 @@ const fakeWorker = () => {
   return child;
 };
 
+describe('selecting sandbox settings', () => {
+  const pinned = { enabled: true, version: 5, settings };
+  it.each(['RUNNING', 'FAILED', 'WAITING', 'CREATED'])(
+    'retains the captured policy for %s and ignores payload overrides',
+    async (status) => {
+      const readSettings = vi.fn();
+      const store = {
+        getExecution: vi.fn().mockResolvedValue({ status, projectId: 'p', agentSandbox: pinned }),
+      };
+      const selected = await resolveInvocationSandbox({
+        payload: { executionId: 'e', projectId: 'p', sandbox: { enabled: false } },
+        store,
+        readSettings,
+      });
+      expect(selected).toEqual(pinned);
+      selected.settings.network.allowedDomains.push('changed.invalid');
+      expect(pinned.settings.network.allowedDomains).toEqual([]);
+      expect(readSettings).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps legacy started intents disabled but uses current settings for draft and one-shot agents', async () => {
+    const store = {
+      getExecution: vi.fn().mockResolvedValue({ status: 'RUNNING', projectId: 'p' }),
+    };
+    const readSettings = vi.fn().mockResolvedValue({
+      enabled: true,
+      applied: { version: 5, settings },
+    });
+    expect(
+      await resolveInvocationSandbox({ payload: { intentId: 'e' }, store, readSettings }),
+    ).toEqual(DEFAULT_SANDBOX_CONFIG);
+    store.getExecution.mockResolvedValue({ status: 'DRAFT', projectId: 'p' });
+    for (const payload of [{ intentId: 'e' }, { command: 'capabilities' }]) {
+      expect(await resolveInvocationSandbox({ payload, store, readSettings })).toEqual(pinned);
+    }
+  });
+
+  it('fails when execution state is missing, belongs to another space, or settings cannot be read', async () => {
+    const readSettings = vi.fn().mockRejectedValue(new Error('AccessDenied'));
+    for (const meta of [null, { projectId: 'other' }]) {
+      await expect(
+        resolveInvocationSandbox({
+          payload: { executionId: 'e', projectId: 'p' },
+          store: { getExecution: vi.fn().mockResolvedValue(meta) },
+          readSettings,
+        }),
+      ).rejects.toThrow('context');
+    }
+    await expect(resolveInvocationSandbox({ payload: {}, readSettings })).rejects.toThrow(
+      'AccessDenied',
+    );
+  });
+});
+
 describe('sandbox launch context', () => {
+  it('does not give script sensors the session inference credentials', async () => {
+    const session = createCredentialSession({
+      credentialEnvironment: { AWS_ACCESS_KEY_ID: 'inference-key' },
+    });
+    let request;
+    const spawnFn = () => {
+      const child = fakeWorker();
+      child.send = (message) => {
+        request = message;
+        setImmediate(() => {
+          child.emit('message', { type: 'sandbox.starting' });
+          child.emit('close', 0);
+        });
+      };
+      return child;
+    };
+    try {
+      await session.run(() =>
+        withSandbox({ enabled: true, settings }, () =>
+          captureChild({
+            command: 'python3',
+            args: ['sensor.py'],
+            env: {},
+            inheritCredentialEnvironment: false,
+            spawnFn,
+          }),
+        ),
+      );
+      expect(request.env.AWS_ACCESS_KEY_ID).toBeUndefined();
+    } finally {
+      await session.release();
+    }
+  });
   it.each([
     ['sandbox.starting', 'info'],
     ['sandbox.file_observation', 'info'],
@@ -114,6 +207,35 @@ describe('sandbox launch context', () => {
     expect(directSpawn.mock.calls[0].slice(0, 2)).toEqual(['codex', ['exec']]);
     expect(directSpawn.mock.calls[0][2].stdio).not.toContain('ipc');
   });
+
+  it.each([captureChild, runChild])(
+    'reports namespace setup failures before the worker starts',
+    async (launch) => {
+      const spawnFn = vi.fn(() => {
+        const child = fakeWorker();
+        child.send = vi.fn(() => {
+          setImmediate(() => {
+            child.stderr.write('unshare: mount /proc failed: Operation not permitted\n');
+            child.emit('close', 1);
+          });
+        });
+        return child;
+      });
+      const result = await withSandbox({ enabled: true, settings }, () =>
+        launch({
+          command: 'kiro-cli',
+          args: ['--version'],
+          env: {},
+          captureStderr: true,
+          captureStderrTail: 4096,
+          spawnFn,
+        }),
+      );
+      expect(result).toMatchObject({ exitCode: 1, sandboxError: 'sandbox_start_failed' });
+      expect(result.stderr ?? result.stderrTail).toContain('mount /proc failed');
+      expect(spawnFn).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([captureChild, runChild])(
     'preserves stdin and reports setup failures without retrying',

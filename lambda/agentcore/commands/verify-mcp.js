@@ -27,6 +27,9 @@ import {
   RESERVED_MCP_ENV_KEYS,
 } from '../mcp-secret-resolver.js';
 import { mcpSecretPaths } from '../mcp-secret-paths.js';
+import { fileURLToPath } from 'node:url';
+import { captureChild } from '../cli/spawn.js';
+import { currentSandbox } from '../sandbox/launcher.js';
 
 const { validateMcpServers, toMcpServerMap, extractSecretRefs } = mcpValidatorPkg;
 
@@ -76,13 +79,53 @@ const makeTransport = (server) => {
   return new StdioClientTransport({
     command: server.command,
     args: server.args ?? [],
-    env: { ...getDefaultEnvironment(), ...server.env },
+    env: {
+      ...getDefaultEnvironment(),
+      ...Object.fromEntries(
+        [
+          'HTTP_PROXY',
+          'HTTPS_PROXY',
+          'ALL_PROXY',
+          'NO_PROXY',
+          'http_proxy',
+          'https_proxy',
+          'all_proxy',
+          'no_proxy',
+          'NODE_USE_ENV_PROXY',
+        ]
+          .filter((key) => process.env[key] !== undefined)
+          .map((key) => [key, process.env[key]]),
+      ),
+      ...server.env,
+    },
   });
 };
 
 // Default probe: connect (runs the full MCP handshake), list tools, close.
 // Resolves { ok:true, tools } | { ok:false, error }. Never throws.
 const defaultProbeServer = async (server, { timeoutMs }) => {
+  if (currentSandbox().enabled) {
+    // The SDK owns both its child processes and HTTP transports. Run the whole
+    // handshake inside SRT so neither transport can bypass the selected policy.
+    const result = await captureChild({
+      command: process.execPath,
+      args: [fileURLToPath(import.meta.url), '--sandbox-probe'],
+      env: { NODE_USE_ENV_PROXY: '1' },
+      promptViaStdin: true,
+      prompt: JSON.stringify({ server, timeoutMs }),
+      captureStderr: true,
+      inheritCredentialEnvironment: false,
+      timeoutMs: timeoutMs + 5_000,
+    });
+    if (result.exitCode !== 0) {
+      return { ok: false, error: result.sandboxError ?? 'Sandboxed MCP connection check failed' };
+    }
+    try {
+      return JSON.parse(result.stdout);
+    } catch {
+      return { ok: false, error: 'Invalid MCP connection check response' };
+    }
+  }
   const client = new Client(CLIENT_INFO, { capabilities: {} });
   let transport;
   try {
@@ -109,6 +152,15 @@ const defaultProbeServer = async (server, { timeoutMs }) => {
     }
   }
 };
+
+if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === '--sandbox-probe') {
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  const { server, timeoutMs } = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  const result = await defaultProbeServer(server, { timeoutMs });
+  process.stdout.write(JSON.stringify(result));
+  process.exit(0);
+}
 
 /**
  * Verify a set of custom MCP servers. Payload:

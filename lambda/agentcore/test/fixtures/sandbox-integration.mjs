@@ -2,7 +2,7 @@
 // The same workload runs with enabled=false and enabled=true.
 import { createServer, request } from 'node:http';
 import { connect } from 'node:net';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,9 +12,16 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { captureChild, runChild } from '../../cli/spawn.js';
 import { createCredentialSession } from '../../credential-session.js';
 import { DEFAULT_SANDBOX_CONFIG, withSandbox } from '../../sandbox/launcher.js';
+import { createRuntimeMcpBridge } from '../../mcp/runtime-bridge.js';
 
 const script = fileURLToPath(import.meta.url);
 const outputPaddingBytes = 1024 * 1024;
+const credentialFiles = [
+  '/home/node/.aws/credentials',
+  '/home/node/.ssh/id_ed25519',
+  '/home/node/.git-credentials',
+  '/home/node/.netrc',
+];
 const attempt = async (operation) => {
   try {
     await operation();
@@ -26,7 +33,7 @@ const attempt = async (operation) => {
   }
 };
 
-const workload = async ([workspace, readPath, writePath, nestedWritePath, port]) => {
+const workload = async ([workspace, readPath, writePath, nestedWritePath, port, bridgePath]) => {
   let stdin = '';
   for await (const chunk of process.stdin) stdin += chunk;
   // Native CLIs expect blocking stdout. Exercise a large write after proxy
@@ -56,6 +63,15 @@ const workload = async ([workspace, readPath, writePath, nestedWritePath, port])
   const output = join(workspace, 'allowed.txt');
   await writeFile(output, 'allowed write');
   const workspaceWrite = (await readFile(output, 'utf8')) === 'allowed write';
+  const claudeSession = join(workspace, '.claude', 'projects', 'fixture');
+  await mkdir(claudeSession, { recursive: true });
+  await writeFile(join(claudeSession, 'session.jsonl'), 'session fixture');
+  const credentialReads = await Promise.all(
+    credentialFiles.map((path) => attempt(() => readFile(path, 'utf8'))),
+  );
+  for (const path of credentialFiles) {
+    await attempt(() => writeFile(path, 'child wrote this'));
+  }
   const protectedRead = await attempt(() => readFile(readPath, 'utf8'));
   const protectedWrite = await attempt(() => writeFile(writePath, 'child wrote this'));
   const nestedWrite = await attempt(() => writeFile(nestedWritePath, 'child wrote this'));
@@ -66,7 +82,11 @@ const workload = async ([workspace, readPath, writePath, nestedWritePath, port])
   });
   assert.ifError(namespace.error);
   if (namespace.status !== 0) {
-    assert.match(namespace.stderr, /Operation not permitted/, 'unexpected unshare failure');
+    assert.match(
+      namespace.stderr,
+      /Operation not permitted|No space left on device/,
+      'unexpected unshare failure',
+    );
   }
   const directConnection = await new Promise((resolve) => {
     const socket = connect({ host: '127.0.0.1', port: Number(port), timeout: 1000 });
@@ -104,9 +124,31 @@ const workload = async ([workspace, readPath, writePath, nestedWritePath, port])
     req.end();
   });
   assert.ok([200, 403].includes(httpStatus), `unexpected HTTP status: ${httpStatus}`);
+  const bridgeRoundTrip = await new Promise((resolve) => {
+    const relay = spawn(
+      process.execPath,
+      [fileURLToPath(new URL('../../mcp/stdio-relay.js', import.meta.url)), bridgePath],
+      { stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+    let response = '';
+    const timer = setTimeout(() => relay.kill('SIGKILL'), 3000);
+    relay.stdout.on('data', (chunk) => {
+      response += chunk;
+      if (response === 'bridge round trip') relay.stdin.end();
+    });
+    relay.stdin.on('error', () => {});
+    relay.on('close', (code) => {
+      clearTimeout(timer);
+      resolve(code === 0 && response === 'bridge round trip');
+    });
+    relay.stdin.write('bridge round trip');
+  });
   console.log(
     JSON.stringify({
+      bridgeRoundTrip,
       workspaceWrite,
+      claudeSessionWrite: true,
+      credentialReads,
       protectedRead,
       protectedWrite,
       nestedWrite,
@@ -118,8 +160,14 @@ const workload = async ([workspace, readPath, writePath, nestedWritePath, port])
   );
 };
 
-const runCase = async (enabled, helper) => {
+const runCase = async (enabled, helper, policyName) => {
   assert.equal(DEFAULT_SANDBOX_CONFIG.enabled, false, 'shipping default must remain disabled');
+  const starter = policyName === 'starter';
+  const unixAllowed = policyName !== 'restrictive';
+  const bridge = await createRuntimeMcpBridge({
+    entry: script,
+    trustedEnv: { SRT_TEST_BRIDGE: '1' },
+  });
   const manifest = new URL('../package.json', import.meta.resolve('@anthropic-ai/sandbox-runtime'));
   const srtVersion = JSON.parse(await readFile(manifest, 'utf8')).version;
   const root = await mkdtemp(join(tmpdir(), 'srt-integration-'));
@@ -137,6 +185,8 @@ const runCase = async (enabled, helper) => {
       mkdir(workspace),
       mkdir(readDirectory, { recursive: true }),
       mkdir(nestedDirectory, { recursive: true }),
+      mkdir('/home/node/.aws', { recursive: true }),
+      mkdir('/home/node/.ssh', { recursive: true }),
     ]);
     const readPath = join(readDirectory, 'read.txt');
     const writePath = join(protectedDirectory, 'write.txt');
@@ -145,6 +195,7 @@ const runCase = async (enabled, helper) => {
       writeFile(readPath, 'read fixture'),
       writeFile(writePath, 'write fixture'),
       writeFile(nestedWritePath, 'nested fixture'),
+      ...credentialFiles.map((path) => writeFile(path, 'credential fixture', { flag: 'wx' })),
     ]);
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const port = server.address().port;
@@ -153,9 +204,18 @@ const runCase = async (enabled, helper) => {
     let stdout = '';
     const options = {
       command: process.execPath,
-      args: [script, '--workload', workspace, readPath, writePath, nestedWritePath, String(port)],
+      args: [
+        script,
+        '--workload',
+        workspace,
+        readPath,
+        writePath,
+        nestedWritePath,
+        String(port),
+        bridge.socketPath,
+      ],
       cwd: workspace,
-      env: {},
+      env: { CLAUDE_CONFIG_DIR: join(workspace, '.claude') },
       promptViaStdin: true,
       prompt: 'sandbox integration input',
       captureStderr: true,
@@ -168,18 +228,27 @@ const runCase = async (enabled, helper) => {
     const result = await withSandbox(
       {
         enabled,
-        settings: {
-          network: {
-            allowedDomains: [],
-            deniedDomains: ['denied.example.invalid'],
-            strictAllowlist: true,
-          },
-          filesystem: {
-            allowWrite: [workspace, nestedDirectory],
-            denyRead: [readDirectory],
-            denyWrite: [protectedDirectory],
-          },
-        },
+        settings: starter
+          ? {
+              ...DEFAULT_SANDBOX_CONFIG.settings,
+              network: {
+                ...DEFAULT_SANDBOX_CONFIG.settings.network,
+                deniedDomains: ['denied.example.invalid'],
+              },
+            }
+          : {
+              network: {
+                allowedDomains: [],
+                deniedDomains: ['denied.example.invalid'],
+                strictAllowlist: true,
+                allowAllUnixSockets: unixAllowed,
+              },
+              filesystem: {
+                allowWrite: [workspace, nestedDirectory],
+                denyRead: [readDirectory],
+                denyWrite: [protectedDirectory],
+              },
+            },
         observeFileWrites: true,
         onEvent: (event) => events.push(event),
       },
@@ -194,10 +263,16 @@ const runCase = async (enabled, helper) => {
     const report = {
       enabled,
       helper,
+      policyName,
       srtVersion,
       ...checks,
       protectedFileUnchanged: (await readFile(writePath, 'utf8')) === 'write fixture',
       nestedFileUnchanged: (await readFile(nestedWritePath, 'utf8')) === 'nested fixture',
+      credentialFilesUnchanged: await Promise.all(
+        credentialFiles.map(
+          async (path) => (await readFile(path, 'utf8')) === 'credential fixture',
+        ),
+      ),
       destinationRequests,
       scratchCleaned,
       networkDenialLogged: events.some(
@@ -208,23 +283,29 @@ const runCase = async (enabled, helper) => {
     assert.deepEqual(report, {
       enabled,
       helper,
+      policyName,
       srtVersion: '0.0.81',
+      bridgeRoundTrip: !enabled || unixAllowed,
       workspaceWrite: true,
-      protectedRead: !enabled,
-      protectedWrite: !enabled,
-      nestedWrite: !enabled,
+      claudeSessionWrite: true,
+      credentialReads: credentialFiles.map(() => !enabled || !starter),
+      protectedRead: !enabled || starter,
+      protectedWrite: !enabled || starter,
+      nestedWrite: !enabled || starter,
       nestedNamespace: !enabled,
       directConnection: !enabled,
-      httpRequest: !enabled,
+      httpRequest: !enabled || starter,
       stdin: 'sandbox integration input',
-      protectedFileUnchanged: enabled,
-      nestedFileUnchanged: enabled,
-      destinationRequests: enabled ? 0 : 1,
+      protectedFileUnchanged: enabled && !starter,
+      nestedFileUnchanged: enabled && !starter,
+      credentialFilesUnchanged: credentialFiles.map(() => enabled),
+      destinationRequests: enabled && !starter ? 0 : 1,
       scratchCleaned: true,
-      networkDenialLogged: enabled,
+      networkDenialLogged: enabled && !starter,
     });
     console.log(`SRT_TEST_RESULT=${JSON.stringify(report)}`);
   } finally {
+    await bridge.dispose();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     await rm(root, { recursive: true, force: true });
@@ -295,15 +376,18 @@ const runCancellationCase = async (helper, trigger) => {
   }
 };
 
-if (process.argv[2] === '--cancel-workload') {
+if (process.env.SRT_TEST_BRIDGE === '1') process.stdin.pipe(process.stdout);
+else if (process.argv[2] === '--cancel-workload') {
   await writeFile(process.argv[3], 'ready');
   setInterval(() => {}, 1000);
 } else if (process.argv[2] === '--workload') await workload(process.argv.slice(3));
 else {
   assert.ok(['false', 'true'].includes(process.argv[2]), 'expected enabled=false or true');
   assert.ok(['capture', 'stream'].includes(process.argv[3]), 'expected capture or stream helper');
-  await runCase(process.argv[2] === 'true', process.argv[3]);
-  if (process.argv[2] === 'true') {
+  const policyName = process.argv[4] ?? 'restrictive';
+  assert.ok(['starter', 'restricted-unix', 'restrictive'].includes(policyName), 'unknown policy');
+  await runCase(process.argv[2] === 'true', process.argv[3], policyName);
+  if (process.argv[2] === 'true' && policyName === 'restrictive') {
     for (const trigger of ['timeout', 'credential']) {
       await runCancellationCase(process.argv[3], trigger);
     }

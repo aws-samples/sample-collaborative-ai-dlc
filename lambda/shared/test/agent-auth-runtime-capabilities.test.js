@@ -67,6 +67,7 @@ describe('qualification before IAM grants', () => {
         { purpose: 'execution', credentialBinding: binding },
         {
           issueGrant,
+          readSandbox: async () => ({ enabled: false }),
           qualifyRuntime: async () => ({ agentAuthProtocol: 2, agentAuthModes: ['keys'] }),
         },
       ),
@@ -79,6 +80,7 @@ describe('qualification before IAM grants', () => {
       { purpose: 'compose', projectId: 'p', credentialBinding: binding },
       {
         issueGrant,
+        readSandbox: async () => ({ enabled: false }),
         qualifyRuntime: async () => ({ agentAuthProtocol: 2, agentAuthModes: ['keys', 'iam'] }),
       },
     );
@@ -118,6 +120,98 @@ describe('fallback qualification on the Instances compute type', () => {
         { runtime, env: {}, requiredModes: ['iam'] },
       ),
     ).rejects.toMatchObject({ code: 'AGENT_AUTH_RUNTIME_UNSUPPORTED' });
+    expect(runtime.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('sandbox runtime qualification', () => {
+  const snapshot = {
+    runtimeArn: 'selected-runtime',
+    runtimeEndpoint: 'published-revision',
+    agentAuthProtocol: 2,
+    agentAuthModes: ['keys'],
+  };
+  const runtimeFor = (sandboxEnforcement) => ({
+    send: vi.fn(async () => ({
+      response: {
+        transformToString: async () =>
+          JSON.stringify({ ok: true, ...snapshot, sandboxEnforcement }),
+      },
+    })),
+  });
+
+  it.each([undefined, false, 'true'])(
+    'rejects an older or invalid runtime before issuing a standalone grant: %s',
+    async (sandboxEnforcement) => {
+      const runtime = runtimeFor(sandboxEnforcement);
+      const issueGrant = vi.fn();
+      await expect(
+        prepareAgentInvocation(
+          {
+            purpose: 'compose',
+            runtimeCapabilities: snapshot,
+            credentialBinding: { provider: 'kiro', source: 'platform' },
+          },
+          {
+            issueGrant,
+            readSandbox: async () => ({ enabled: true }),
+            qualifyRuntime: (capabilities, options) =>
+              qualifyAgentAuthRuntime(capabilities, { ...options, runtime }),
+          },
+        ),
+      ).rejects.toMatchObject({ code: 'AGENT_SANDBOX_RUNTIME_UNSUPPORTED' });
+      expect(issueGrant).not.toHaveBeenCalled();
+      expect(runtime.send.mock.calls[0][0].input).toMatchObject({
+        agentRuntimeArn: 'selected-runtime',
+        qualifier: 'published-revision',
+      });
+    },
+  );
+
+  it('accepts a runtime that reports enforcement and preserves the existing grant flow', async () => {
+    const runtime = runtimeFor(true);
+    const issueGrant = vi.fn(async () => 'grant');
+    const result = await prepareAgentInvocation(
+      {
+        purpose: 'compose',
+        runtimeCapabilities: snapshot,
+        credentialBinding: { provider: 'kiro', source: 'platform' },
+      },
+      {
+        issueGrant,
+        readSandbox: async () => ({ enabled: true }),
+        qualifyRuntime: (capabilities, options) =>
+          qualifyAgentAuthRuntime(capabilities, { ...options, runtime }),
+      },
+    );
+    expect(result.agentCredentialGrant).toBe('grant');
+  });
+
+  it('does not require sandbox support for a captured disabled policy', async () => {
+    const qualifyRuntime = vi.fn();
+    await prepareAgentInvocation(
+      { purpose: 'execution', credentialBinding: { provider: 'kiro', source: 'platform' } },
+      {
+        issueGrant: async () => 'grant',
+        readSandbox: async () => ({ enabled: false }),
+        qualifyRuntime,
+      },
+    );
+    expect(qualifyRuntime).not.toHaveBeenCalled();
+  });
+
+  it('uses verified Instances evidence and rejects its absence without allocating a session', async () => {
+    const runtime = runtimeFor(true);
+    const instances = { ...snapshot, capacityProviderArn: 'capacity-provider' };
+    await expect(
+      qualifyAgentAuthRuntime(instances, { runtime, requireSandbox: true }),
+    ).rejects.toMatchObject({ code: 'AGENT_SANDBOX_RUNTIME_UNSUPPORTED' });
+    await expect(
+      qualifyAgentAuthRuntime(
+        { ...instances, sandboxEnforcement: true },
+        { runtime, requireSandbox: true },
+      ),
+    ).resolves.toMatchObject({ sandboxEnforcement: true });
     expect(runtime.send).not.toHaveBeenCalled();
   });
 });

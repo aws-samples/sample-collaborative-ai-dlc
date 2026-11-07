@@ -245,16 +245,31 @@ describe('orchestrator durable handler', () => {
     for (const s of stageStarts()) expect(s).not.toHaveProperty('gatewayGrant');
   });
 
-  it('strongly reads the credential pin before issuing grants', async () => {
+  it('uses the strongly read credential and sandbox pins before issuing grants', async () => {
     const pinnedBinding = { provider: 'kiro', source: 'user', userId: 'starter' };
     const staleDraft = { ...META, status: 'DRAFT', credentialBinding: null };
-    const freshMeta = { ...META, credentialBinding: pinnedBinding };
+    const freshMeta = {
+      ...META,
+      credentialBinding: pinnedBinding,
+      agentSandbox: { enabled: true, version: 1, settings: {} },
+      environment: {
+        ...META.environment,
+        agentAuthProtocol: 2,
+        agentAuthModes: ['keys'],
+        sandboxEnforcement: true,
+      },
+    };
     deps.store.getExecution = vi.fn(async (_executionId, options) =>
       options?.consistentRead ? freshMeta : staleDraft,
     );
 
-    await __durableHandler({ action: 'start', intentId: 'i1', executionId: 'i1' }, ctx, deps);
+    const result = await __durableHandler(
+      { action: 'start', intentId: 'i1', executionId: 'i1' },
+      ctx,
+      deps,
+    );
 
+    expect(result.ok).toBe(true);
     expect(deps.store.getExecution).toHaveBeenCalledWith('i1', { consistentRead: true });
     expect(deps.issueAgentCredentialGrant).toHaveBeenCalledWith(
       expect.objectContaining({ bindings: [pinnedBinding] }),

@@ -46,6 +46,7 @@ export interface IntentEnvironmentSnapshot {
   runtimeArn: string | null;
   runtimeEndpoint: string | null;
   compatibilityVersion: string;
+  sandboxEnforcement?: boolean;
   verification: Record<string, unknown> | null;
 }
 

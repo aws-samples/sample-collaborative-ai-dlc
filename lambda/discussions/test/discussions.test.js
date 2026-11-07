@@ -1346,6 +1346,12 @@ describe('intent-scoped discussions', () => {
   const seedIntent = async () => {
     const projectId = randomUUID();
     const intentId = randomUUID();
+    processStore.set(`EXEC#${intentId}`, {
+      pk: `EXEC#${intentId}`,
+      sk: 'META',
+      projectId,
+      status: 'DRAFT',
+    });
     const artifactId = `art-${randomUUID()}`;
     const questionId = `ht-${randomUUID()}`;
     await seedProject({
@@ -1661,6 +1667,7 @@ describe('intent-scoped discussions', () => {
     processStore.set(`EXEC#${intentId}`, {
       pk: `EXEC#${intentId}`,
       sk: 'META',
+      projectId,
       environment: {
         runtimeArn: 'arn:aws:bedrock-agentcore:eu-west-1:123:runtime/managed',
         runtimeEndpoint: 'revision_r_1',

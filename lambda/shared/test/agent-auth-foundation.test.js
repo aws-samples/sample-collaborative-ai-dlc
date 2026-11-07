@@ -174,7 +174,7 @@ describe('authentication contracts and scope selection', () => {
       const credentialBinding = { provider: 'bedrock', source: 'space' };
       const prepared = await prepareAgentInvocation(
         { purpose, projectId: 'p1', executionId: 'e1', credentialBinding },
-        { issueGrant },
+        { issueGrant, readSandbox: async () => ({ enabled: false }) },
       );
       expect(prepared.agentCredentialGrant).toBe('signed-grant');
       expect(issueGrant).toHaveBeenCalledWith({

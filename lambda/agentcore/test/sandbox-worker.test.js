@@ -66,6 +66,37 @@ const fixtureChild = () => {
 };
 
 describe('SRT worker', () => {
+  it.each([false, true])(
+    'prepares Claude state before filesystem enforcement (disabled: %s)',
+    async (disabled) => {
+      const directory = await mkdtemp(join(tmpdir(), 'srt-claude-test-'));
+      const configDirectory = join(directory, '.claude');
+      const manager = fixtureManager();
+      manager.initialize.mockImplementation(() => {
+        expect(existsSync(configDirectory)).toBe(!disabled);
+      });
+      const child = fixtureChild();
+      try {
+        await runSandboxWorker(
+          {
+            ...request,
+            env: { ...request.env, CLAUDE_CONFIG_DIR: configDirectory },
+            settings: { ...settings, filesystem: { ...settings.filesystem, disabled } },
+          },
+          {
+            manager,
+            spawnFn: () => {
+              setImmediate(() => child.emit('exit', 0, null));
+              return child;
+            },
+          },
+        );
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('keeps harness variables and arguments out of sandbox setup and preserves exit codes', async () => {
     const manager = fixtureManager();
     const child = fixtureChild();

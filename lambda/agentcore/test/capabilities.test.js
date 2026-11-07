@@ -50,6 +50,7 @@ describe('capabilities command', () => {
       },
     );
     expect(res.ok).toBe(true);
+    expect(res.sandboxEnforcement).toBe(true);
     const byCli = Object.fromEntries(res.clis.map((c) => [c.cli, c]));
     expect(byCli.claude).toMatchObject({ installed: true, authed: false, available: false });
     expect(byCli.kiro).toMatchObject({ installed: true, authed: true, available: true });
@@ -138,7 +139,7 @@ describe('capabilities authentication and advertisement', () => {
     expect(res.clis.every((c) => !c.authed && !c.available)).toBe(true);
   });
 
-  it('keeps the keys-only body byte-for-byte', async () => {
+  it('preserves keys-only capabilities alongside sandbox support', async () => {
     const keysOnly = composeRuntimeAuthProviders([KEYS_RUNTIME_PROVIDER]);
     const res = await capabilities(
       {},
@@ -153,8 +154,6 @@ describe('capabilities authentication and advertisement', () => {
         capabilityContributions: keysOnly.capabilityContributions,
       },
     );
-    // The body a keys-only image published before runtime providers were composed, plus the
-    // connection-verification modes it serves (none).
     expect(JSON.stringify(res)).toBe(
       JSON.stringify({
         ok: true,
@@ -169,6 +168,7 @@ describe('capabilities authentication and advertisement', () => {
         agentAuthModes: ['keys'],
         agentAuthVerification: [],
         invocationAccounting: true,
+        sandboxEnforcement: true,
       }),
     );
   });

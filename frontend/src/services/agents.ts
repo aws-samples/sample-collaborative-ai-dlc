@@ -187,6 +187,10 @@ export interface AgentCapabilities {
 }
 
 export interface AgentSettings {
+  /** Effective inference region. Absent from older backends. */
+  bedrockRegion?: string;
+  /** Platform admins only. Draft and applied SRT settings are independent. */
+  sandbox?: SandboxSettings;
   authentication?: AgentAuthenticationView;
   /** True when a bearer token is stored in SSM (value is never returned to the browser) */
   bedrockBearerTokenSet: boolean;
@@ -234,6 +238,24 @@ export interface AgentSettings {
    *  cross-tier collision check the backend does. */
   globalMcpServerSecretRefs?: Record<string, string[]>;
 }
+
+export interface SandboxSettings {
+  revision: number;
+  enabled: boolean;
+  applied: {
+    version: number;
+    settings: Record<string, unknown>;
+    appliedAt: string;
+    appliedBy: string;
+  } | null;
+  draft: Record<string, unknown> | null;
+  defaultSettings: Record<string, unknown>;
+}
+
+export type SandboxSettingsUpdate = { expectedRevision: number } & (
+  | { action: 'draft' | 'apply'; config: string }
+  | { action: 'toggle'; enabled: boolean }
+);
 
 export interface McpVerifyResult {
   ok: boolean;
@@ -306,6 +328,13 @@ export const agentsService = {
 
   async updateSettings(update: AgentSettingsUpdate): Promise<{ saved: boolean }> {
     return api.put('/agents/settings', update);
+  },
+
+  async updateSandbox(update: SandboxSettingsUpdate): Promise<SandboxSettings> {
+    const result = await api.put<{ sandbox: SandboxSettings }>('/agents/settings', {
+      sandbox: update,
+    });
+    return result.sandbox;
   },
 
   async getPersonalCredentials(): Promise<AgentCredentialStatus> {

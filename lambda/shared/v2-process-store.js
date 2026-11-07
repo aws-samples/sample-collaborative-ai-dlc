@@ -478,6 +478,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     starterEmail,
     agentCli,
     credentialBinding,
+    agentSandbox,
     mcpServersByTier,
     constructionAutonomyMode,
     constructionGateAutonomy,
@@ -628,6 +629,22 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
       }
       sets.push('credentialBinding = :acb');
       values[':acb'] = credentialBinding;
+    }
+    if (agentSandbox !== undefined) {
+      if (
+        !(
+          (status === 'CREATED' && fromStatus === 'DRAFT') ||
+          (status === 'DRAFT' && fromStatus === 'CREATED')
+        ) ||
+        (agentSandbox !== null &&
+          (typeof agentSandbox !== 'object' || typeof agentSandbox.enabled !== 'boolean'))
+      ) {
+        throw new Error(
+          'Sandbox settings can only be captured during the first conditional launch',
+        );
+      }
+      sets.push('agentSandbox = :sandbox');
+      values[':sandbox'] = agentSandbox;
     }
     if (mcpServersByTier !== undefined) {
       if (status !== 'CREATED' || !fromStatus) {

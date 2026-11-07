@@ -116,6 +116,7 @@ export const resolvePublishedEnvironment = async ({
     compatibilityVersion,
     verification: revision.verification ?? null,
     tools: revision.flattenedRecipe?.resolvedTools ?? [],
+    ...(revision.verification?.sandboxEnforcement === true ? { sandboxEnforcement: true } : {}),
     ...(revision.verification?.agentAuthProtocol
       ? {
           agentAuthProtocol: revision.verification.agentAuthProtocol,
