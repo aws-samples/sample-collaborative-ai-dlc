@@ -852,7 +852,8 @@ export const materializeOpenCodeConfig = async ({
 // appended rollout JSONL never touches AgentCore's managed-session mount. The
 // stage runner copies only the selected rollout to/from durable storage around
 // resumable author runs (cli/codex-store.js). Config, global guidance, reviewer
-// sessions, and SQLite state always remain local.
+// sessions, and SQLite state always remain local. SQLite defaults to CODEX_HOME:
+// a shared index would retain rollout paths from invocation homes we deleted.
 
 // TOML value emitters — config values here are flat strings/arrays/maps, so a
 // tiny local emitter beats a dependency. Strings are emitted as TOML basic
@@ -979,10 +980,6 @@ export const toCodexMcpToml = (mcpServers = {}, refEnv = {}) => {
   return sections.join('\n\n');
 };
 
-// Ephemeral-local SQLite home for codex state (see header comment). Overridable
-// for tests/local runs via env.
-const codexSqliteHome = (env) => env.V2_CODEX_SQLITE_HOME || '/home/node/.codex-state';
-
 export const buildCodexConfigToml = ({
   mcpEntry,
   scope,
@@ -1009,7 +1006,6 @@ export const buildCodexConfigToml = ({
     // AGENTS.md. When it HAS one, the global $CODEX_HOME/AGENTS.md (written by
     // materializeCodexHome) still points codex at the runtime rules.
     'project_doc_fallback_filenames = [".aidlc/rules.md"]',
-    `sqlite_home = ${tomlString(codexSqliteHome(env))}`,
     '',
     '[history]',
     'persistence = "save-all"',

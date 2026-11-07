@@ -119,7 +119,6 @@ RUN install -d -o node -g node -m 0755 \
     /opt/agentcore \
     /opt/shared \
     /mnt/workspace \
-    /home/node/.codex-state \
     /home/node/.codex-runs
 
 # Install the agentcore package deps (its own package.json — isolated).
