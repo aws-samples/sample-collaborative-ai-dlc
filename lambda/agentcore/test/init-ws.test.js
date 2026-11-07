@@ -546,6 +546,95 @@ describe('workspace checkout (mocked git runner)', () => {
     expect(cmds.some((command) => command.startsWith('git init'))).toBe(false);
   });
 
+  describe('shallow fallback when the full clone exhausts workspace storage', () => {
+    const FULL = 'git clone https://github.com/acme/api.git /ws';
+    const SHALLOW = 'git clone --depth 1 --no-single-branch https://github.com/acme/api.git /ws';
+    const cloneWith = async (fullResult, shallowResult = { code: 0 }) => {
+      const cmds = [];
+      const environments = [];
+      const removed = [];
+      const ensured = [];
+      const runner = async (command, args, options = {}) => {
+        cmds.push([command, ...args].join(' '));
+        if (args[0] !== 'clone') return { code: 0 };
+        environments.push(options);
+        return args.includes('--depth') ? shallowResult : fullResult;
+      };
+      const result = await checkoutRepo({
+        repo: 'acme/api',
+        branch: 'feat/x',
+        targetDir: '/ws',
+        runner,
+        ensureDir: async (dir) => ensured.push(dir),
+        removeDir: async (dir) => removed.push(dir),
+      });
+      const clones = cmds.filter((command) => command.startsWith('git clone'));
+      return { result, cmds, clones, environments, removed, ensured };
+    };
+
+    it('keeps a successful full clone and never clones shallow', async () => {
+      const { result, clones, removed } = await cloneWith({ code: 0 });
+      expect(result).toMatchObject({ cloned: true, branchOk: true });
+      expect(clones).toEqual([FULL]);
+      expect(removed).toEqual([]);
+    });
+
+    it.each([
+      'fatal: write error: No space left on device\nfatal: fetch-pack: invalid index-pack output',
+      'error: unable to write file .git/objects/pack/tmp_pack_x: Disk quota exceeded',
+    ])('removes the partial clone and retries shallow on %j', async (stderr) => {
+      const { result, cmds, clones, environments, removed, ensured } = await cloneWith({
+        code: 128,
+        stderr,
+      });
+      expect(result).toMatchObject({ cloned: true, branchOk: true });
+      expect(clones).toEqual([FULL, SHALLOW]);
+      // The partial full clone is cleared and the directory recreated before
+      // the shallow attempt, and both run in the same credential scope.
+      const shallowAt = cmds.indexOf(SHALLOW);
+      expect(removed).toEqual(['/ws']);
+      expect(ensured.at(-1)).toBe('/ws');
+      expect(shallowAt).toBeGreaterThan(cmds.indexOf(FULL));
+      expect(environments).toHaveLength(2);
+      for (const { env } of environments) {
+        expect(env).toMatchObject({ GIT_ASKPASS: '/tmp/test-askpass' });
+      }
+      // stderr is captured on the full clone so the storage error is visible.
+      expect(environments[0].captureOutput).toBe(true);
+    });
+
+    it('fails and cleans up when the shallow retry also fails', async () => {
+      const { result, clones, removed } = await cloneWith(
+        { code: 128, stderr: 'fatal: write error: No space left on device' },
+        { code: 128, stderr: 'fatal: write error: No space left on device' },
+      );
+      expect(result).toMatchObject({ cloned: false, branchOk: false, error: 'clone_failed' });
+      expect(clones).toEqual([FULL, SHALLOW]);
+      expect(removed).toEqual(['/ws', '/ws']);
+    });
+
+    it.each([
+      [
+        'authentication',
+        "remote: Invalid username or token.\nfatal: Authentication failed for 'https://github.com/acme/api.git/'",
+      ],
+      [
+        'network',
+        "fatal: unable to access 'https://github.com/acme/api.git/': Could not resolve host: github.com",
+      ],
+      [
+        'repository',
+        "remote: Repository not found.\nfatal: repository 'https://github.com/acme/api.git/' not found",
+      ],
+      ['no output', undefined],
+    ])('returns a %s failure without a shallow retry', async (_kind, stderr) => {
+      const { result, clones, removed } = await cloneWith({ code: 128, stderr });
+      expect(result).toMatchObject({ cloned: false, branchOk: false, error: 'clone_failed' });
+      expect(clones).toEqual([FULL]);
+      expect(removed).toEqual(['/ws']);
+    });
+  });
+
   it('scrubs with the provider-correct clean URL for gitlab', async () => {
     const cmds = [];
     const runner = async (command, args) => {
