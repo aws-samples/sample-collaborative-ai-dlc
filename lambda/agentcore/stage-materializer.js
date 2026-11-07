@@ -297,6 +297,49 @@ export const renderIntentBlock = ({ title, prompt, scope } = {}) => {
   ].join('\n');
 };
 
+// The intent's sparse selection ({ repoUrl: directories[] }, validated at
+// create). Without it an agent sees missing paths and may recreate a tracked
+// file from scratch; the engine refuses to commit that (checkSparseSelection),
+// so the agent must know where it may write. `refusals` ([{ repo, paths }])
+// names changes a previous attempt left behind that the engine refused.
+export const renderSparseCheckout = (sparseCheckout, refusals = []) => {
+  const entries = Object.entries(sparseCheckout ?? {}).filter(([, dirs]) => dirs?.length);
+  if (entries.length === 0) return '';
+  const lines = [
+    '## Partial checkout (sparse)',
+    '',
+    'Only part of the repository is on disk. Each repository below materializes',
+    'its selected directories, its root files, and the files directly inside the',
+    'parent directories of a selection (paths relative to that repository):',
+    '',
+    ...entries.map(([repo, dirs]) => `- ${repo}: ${dirs.join(', ')}`),
+    '',
+    'Every other tracked file still exists in the repository; its absence from',
+    'disk is not a deletion. Do NOT create, overwrite, delete, or rename a',
+    'tracked file outside the selection: the engine refuses to commit such a',
+    'change and the stage fails. New files outside the selection are fine. To',
+    'check whether a path is tracked, or to read a file outside the selection,',
+    'run `git show HEAD:<path>` from inside that repository. This read-only',
+    'command is the only exception to the engine-owned git rule. Do not try to',
+    'change the selection.',
+  ];
+  const pending = (refusals ?? []).filter((r) => r?.paths?.length);
+  if (pending.length) {
+    lines.push(
+      '',
+      '**A previous attempt changed tracked files outside the selection, and the',
+      'engine refused to commit them.** Those changes are still in the workspace:',
+      '',
+      ...pending.map((r) => `- ${r.repo}: ${r.paths.join(', ')}`),
+      '',
+      'Before your other work, move any content you need into new files or into',
+      'the selection, then restore each listed path to its committed version (for',
+      'example `git show HEAD:<path> > <path>`). Otherwise the stage fails again.',
+    );
+  }
+  return lines.join('\n');
+};
+
 // Render the unit-scope block for a `forEach: unit-of-work` lane run
 // (docs/v2-parallel.md WP4). PURE. `unit` = { slug, dependsOn, kind } from the
 // promoted UNITPLAN — the engine's scheduling truth, never agent-supplied.
@@ -425,6 +468,8 @@ export const buildStagePrompt = ({
   conductor = '',
   compiledContext = '',
   attachments = [],
+  sparseCheckout = null,
+  sparseRefusals = [],
 }) => {
   const sections = [
     `# Stage: ${stage.stageId ?? 'unknown'} (phase: ${stage.phase ?? 'unphased'})`,
@@ -455,6 +500,8 @@ export const buildStagePrompt = ({
   // worded once-per-workflow) so the agent reads its lane boundary first.
   const unitScope = renderUnitScope(unit);
   if (unitScope) sections.push('', unitScope);
+  const sparseScope = renderSparseCheckout(sparseCheckout, sparseRefusals);
+  if (sparseScope) sections.push('', sparseScope);
   const workspaceDetectionContract = renderWorkspaceDetectionContract(stage.stageId, stage.policy);
   if (workspaceDetectionContract) sections.push('', workspaceDetectionContract);
   const scopePolicy = renderScopePolicy(stage.policy);
@@ -1210,6 +1257,8 @@ export const materializeStage = async ({
   customRules = [],
   attachments = [],
   maxTurns = null,
+  sparseCheckout = null,
+  sparseRefusals = [],
 }) => {
   const aidlcDir = path.join(workspaceDir, '.aidlc');
   await mkdir(aidlcDir, { recursive: true });
@@ -1239,6 +1288,8 @@ export const materializeStage = async ({
     conductor,
     compiledContext,
     attachments,
+    sparseCheckout,
+    sparseRefusals,
   });
   return { prompt, ...cliContext, rulesPath: rulesDoc ? path.join(aidlcDir, 'rules.md') : null };
 };

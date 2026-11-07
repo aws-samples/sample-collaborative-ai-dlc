@@ -1,4 +1,5 @@
 import { withCredentialSession } from '../credential-session.js';
+import { repoTargetDir } from '../repo-paths.js';
 // run-stage — execute ONE workflow stage inside the AgentCore session.
 //
 // The AgentCore Runtime routes the same session to the same microVM, so the git
@@ -91,6 +92,8 @@ import {
 } from '../workspace.js';
 import {
   commitAndPushAll as defaultCommitAndPushAll,
+  checkSparseSelection as defaultCheckSparseSelection,
+  SPARSE_REJECTIONS,
   freeDiskBytes,
   gitResultForCommitRefs as defaultGitResultForCommitRefs,
 } from '../git-engine.js';
@@ -1740,6 +1743,7 @@ const runStageAttempt = async (
     baseBranches,
     gitProvider,
     repoProviders = null,
+    sparseCheckout = null,
     // Commit attribution ({ name, email } of the starting user, resolved by the
     // orchestrator from their OAuth connection): engine commits are authored by
     // the user, committed by AI-DLC Engine. null = engine-only identity.
@@ -1817,6 +1821,8 @@ const runStageAttempt = async (
     // Engine-owned git (docs/v2-parallel.md WP2): commit + push after every CLI
     // exit. Injected for tests.
     commitAndPushAll = defaultCommitAndPushAll,
+    // Reads leftovers of an earlier refused sparse commit (prompt hint only).
+    checkSparseSelection = defaultCheckSparseSelection,
     // Project committed files into Neptune after all stage gates pass. The
     // adapter detects traceability capability from a valid produced artifact,
     // never from workflowVersion, and is deliberately best-effort.
@@ -2240,6 +2246,7 @@ const runStageAttempt = async (
       baseBranches,
       gitProvider,
       repoProviders,
+      sparseCheckout,
       projectId,
       executionId,
       workspaceDir,
@@ -3468,6 +3475,20 @@ const runStageAttempt = async (
     // them into the selected CLI's native rules dir (the CLI auto-loads them).
     const customRuleDocs = await fetchCustomRules({ customRules, env }).catch(() => []);
 
+    // A previous attempt's refused sparse commit leaves its changes staged in
+    // the workspace (kept as evidence). Tell this attempt which paths the
+    // engine will refuse so it can restore them; best-effort, the commit-time
+    // check stays the gate.
+    const sparseRefusals = [];
+    for (const repo of Object.keys(sparseCheckout ?? {})) {
+      const target = repos.find((r) => (typeof r === 'string' ? r : r?.url) === repo);
+      if (!target) continue;
+      const check = await checkSparseSelection({
+        dir: repoTargetDir({ url: repo, workspaceDir, multi: repos.length > 1 }),
+        baseline: {},
+      }).catch(() => null);
+      if (check?.state === 'violations') sparseRefusals.push({ repo, paths: check.paths });
+    }
     const materialized = await materializeStage({
       workspaceDir,
       stage,
@@ -3493,6 +3514,8 @@ const runStageAttempt = async (
       cli,
       customRules: customRuleDocs,
       attachments: attachmentRefs,
+      sparseCheckout,
+      sparseRefusals,
       // AGENT.maxTurns is a release-catalog field; an unpinned run keeps
       // running without a cap, as it always has.
       maxTurns: methodologyRelease ? (agentBlock?.maxTurns ?? null) : null,
@@ -3826,6 +3849,37 @@ const runStageAttempt = async (
     }
   }
 
+  // A sparse checkout leaves tracked files outside the selection off disk;
+  // commitAll refuses commits that change them (see checkSparseSelection).
+  // Name the refused paths on the timeline and live. The stage then fails
+  // through workAtRiskFailure; nothing of that repo was committed or pushed.
+  const reportSparseRefusal = async (result, label) => {
+    const refused = (result.results ?? []).filter((r) => SPARSE_REJECTIONS.has(r.reason));
+    if (refused.length === 0) return;
+    const scope = label ? `${stageLabel} (${label})` : stageLabel;
+    const detail = refused.map((r) => `${r.repo}: ${r.detail ?? r.reason}`).join('; ');
+    const summary = `Engine refused to commit ${scope}: ${detail}. The changes are left uncommitted in the workspace; the next attempt is told to restore them.`;
+    await store
+      .appendEvent({
+        executionId,
+        type: 'v2.git.sparse_outside_selection',
+        stageInstanceId,
+        unitSlug,
+        sectionIndex,
+        actor: 'agentcore',
+        summary,
+      })
+      .catch(() => {});
+    await publish({
+      action: 'agent.note',
+      noteType: 'v2.git.sparse_outside_selection',
+      stageInstanceId,
+      unitSlug,
+      sectionIndex,
+      summary,
+    });
+  };
+
   // The authoritative commit evidence. `v2.git.pushed` is what the plan-approval
   // lineage rule (`latestCommitAt` / `withPlanApprovalLineage`) reads to decide
   // whether the stage's code predates its approval, so EVERY commit of the attempt
@@ -3833,6 +3887,7 @@ const runStageAttempt = async (
   // judging the stage on its pre-approval commit.
   const publishGitEvidence = async (result, { label = null } = {}) => {
     if (!result || (!result.committed && result.ok)) return;
+    await reportSparseRefusal(result, label);
     const failedRepos = (result.results ?? [])
       .filter((r) => r.pushed !== true && r.pushed !== 'empty' && r.pushed !== 'up_to_date')
       // Carry the git stderr into the event — the 2026-07 incident's ENOSPC

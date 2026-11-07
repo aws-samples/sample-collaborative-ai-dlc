@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - Opt-in AgentCore Gateway path for the built-in MCP (`enable_mcp_gateway`, off by default). The four agent CLIs keep the same `aidlc` server and tool names; a runtime proxy forwards calls to an `AWS_IAM` Gateway whose REQUEST interceptor verifies a KMS-signed, control-plane grant and the current execution and stage state on every request, then hands the tools Lambda only the verified context; `tools/list` is filtered to the session's tools. Only the Gateway may invoke the tools and interceptor Lambdas. Requires VPC networking. The runtime role keeps its existing permissions in this release.
+- Optional per-repository directory selection when creating an intent reduces checkout size using Git sparse checkout and is preserved when workspaces are restored. Agents may add new files anywhere, but the engine refuses to commit changes to existing tracked files outside the selection and fails the stage or conflict resolution. Git history still occupies storage; this does not raise the managed workspace limit ([#450](https://github.com/aws-samples/sample-collaborative-ai-dlc/pull/450)).
 
 ### Changed
 
