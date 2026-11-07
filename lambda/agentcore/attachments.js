@@ -2,6 +2,8 @@ import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { MAX_ATTACHMENT_BYTES } from '../shared/intent-attachment-keys.js';
+import { blobAccessFor, directClientTripwire, EngineDataError } from './engine-data-client.js';
 
 const s3 = new S3Client({});
 export const ATTACHMENTS_DIR = '.aidlc/references';
@@ -21,13 +23,70 @@ export const attachmentReferences = (attachments = []) =>
     ),
   }));
 
+const chunkError = () =>
+  new EngineDataError('Attachment chunks do not reassemble the committed version', {
+    code: 'ENGINE_DATA_ATTACHMENT_CHUNKS',
+  });
+
+// Reassembles one attachment from engine-data's version-pinned chunks. Every
+// chunk must continue exactly where the previous one ended, at the version and
+// total the attachment metadata committed; a gap, overlap, version change or
+// short read fails the whole materialization instead of writing a wrong file.
+export const readAttachmentChunks = async (blobs, attachment) => {
+  const chunks = [];
+  let offset = 0;
+  let totalBytes = null;
+  for (;;) {
+    const chunk = await blobs.readAttachmentChunk({
+      attachmentId: attachment.attachmentId,
+      offset,
+    });
+    const bytes = Buffer.from(String(chunk?.bytesBase64 ?? ''), 'base64');
+    totalBytes ??= chunk?.totalBytes;
+    const end = offset + bytes.length;
+    if (
+      chunk?.attachmentId !== attachment.attachmentId ||
+      chunk.versionId !== attachment.s3VersionId ||
+      chunk.offset !== offset ||
+      chunk.totalBytes !== totalBytes ||
+      !Number.isInteger(totalBytes) ||
+      totalBytes > MAX_ATTACHMENT_BYTES ||
+      (attachment.size !== undefined && attachment.size !== totalBytes) ||
+      bytes.length === 0 ||
+      bytes.toString('base64') !== chunk.bytesBase64 ||
+      end > totalBytes ||
+      (chunk.nextOffset === null ? end !== totalBytes : chunk.nextOffset !== end)
+    ) {
+      throw chunkError();
+    }
+    chunks.push(bytes);
+    if (chunk.nextOffset === null) return Buffer.concat(chunks);
+    offset = end;
+  }
+};
+
+const readDirect = async (client, bucket, attachment) => {
+  const response = await client.send(
+    new GetObjectCommand({
+      Bucket: bucket,
+      Key: attachment.s3Key,
+      VersionId: attachment.s3VersionId,
+    }),
+  );
+  return response.Body ? response.Body.transformToByteArray() : new Uint8Array();
+};
+
 // Verifies the local manifest and file set against DynamoDB's authoritative
-// attachment metadata. A mismatch is rebuilt atomically from pinned S3 versions.
+// attachment metadata. A mismatch is rebuilt atomically from pinned S3 versions:
+// directly flag off, through engine-data's blob.readAttachmentChunk with engine
+// data enabled (the runtime S3 client is then a tripwire).
 export const materializeAttachments = async ({
   workspaceDir,
   attachments = [],
   bucket = process.env.ARTIFACTS_BUCKET,
-  client = s3,
+  env = process.env,
+  client = env.ENGINE_DATA_FUNCTION ? directClientTripwire('S3') : s3,
+  blobs,
 }) => {
   attachments = Array.isArray(attachments) ? attachments : [];
   if (!attachments.length) {
@@ -68,20 +127,21 @@ export const materializeAttachments = async ({
   await rm(tempDir, { recursive: true, force: true });
   await mkdir(tempDir, { recursive: true });
   let renamed = false;
+  const remote = env.ENGINE_DATA_FUNCTION ? (blobs ?? blobAccessFor({ env })) : null;
   try {
     for (const [index, attachment] of attachments.entries()) {
-      if (!attachment?.s3Key || !attachment?.attachmentId || !attachment?.s3VersionId || !bucket) {
+      if (
+        !attachment?.s3Key ||
+        !attachment?.attachmentId ||
+        !attachment?.s3VersionId ||
+        (!remote && !bucket)
+      ) {
         throw new Error('Attachment metadata is missing its immutable object version');
       }
       const filePath = path.join(tempDir, path.basename(manifest[index].path));
-      const response = await client.send(
-        new GetObjectCommand({
-          Bucket: bucket,
-          Key: attachment.s3Key,
-          VersionId: attachment.s3VersionId,
-        }),
-      );
-      const body = response.Body ? await response.Body.transformToByteArray() : new Uint8Array();
+      const body = remote
+        ? await readAttachmentChunks(remote, attachment)
+        : await readDirect(client, bucket, attachment);
       await writeFile(filePath, body);
       await chmod(filePath, 0o444);
     }
