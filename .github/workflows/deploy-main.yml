@@ -22,3 +22,6 @@ jobs:
       deployment_target: main
       github_environment: demo-main
       terraform_project_name: collaborative-ai-dlc-main
+    # Environment secrets reach a called workflow only when the caller passes
+    # them; otherwise they resolve to empty strings without an error.
+    secrets: inherit

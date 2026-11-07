@@ -113,6 +113,8 @@ test('release and main deployments use isolated protected environments and GitHu
   assert.match(mainDeployment, /github_environment: demo-main/);
   assert.match(mainDeployment, /terraform_project_name: collaborative-ai-dlc-main/);
   assert.doesNotMatch(mainDeployment, /apply:/);
+  // demo-main environment secrets are empty in the called workflow otherwise.
+  assert.match(mainDeployment, /^    secrets: inherit$/m);
 
   assert.match(deployment, /github_environment:[\s\S]*?default: demo-release/);
   assert.match(deployment, /name: \$\{\{ inputs\.github_environment \|\| 'demo-release' \}\}/);

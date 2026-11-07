@@ -202,7 +202,9 @@ separate.
 After a successful `main` deployment, the workflow can ask a release-testing
 setup in the deployment account to test the deployed revision, for example an
 AWS DevOps Agent release test. The request is sent only when both environment
-secrets below exist in `demo-main`. With neither secret the step exits without
+secrets below exist in `demo-main`. `deploy-main.yml` passes them with
+`secrets: inherit`; without it, environment secrets are empty in the called
+workflow. With neither secret the step exits without
 doing anything; with only one it fails with a warning. It runs
 after `Verify deployment` and uses `continue-on-error`, so a failed request
 never fails the deployment. The step assumes the role through a web-identity
