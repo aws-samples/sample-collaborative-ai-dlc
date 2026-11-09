@@ -14,9 +14,13 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mockClient } from 'aws-sdk-client-mock';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
-import { filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
+import { customProfile, filesFromCompatibilityFixture } from '../../shared/aidlc-compatibility.js';
 import { buildReleaseBundle, publishReleaseBundle } from '../../shared/aidlc-release.js';
-import { __test as releaseResolverTest } from '../../shared/release-resolver.js';
+import {
+  loadReleaseClosure,
+  __test as releaseResolverTest,
+} from '../../shared/release-resolver.js';
+import { releasePinFromRecord } from '../../shared/release-registry.js';
 import { installReleaseStoreFakes, keyOf } from '../../shared/test/fixtures/release-store-fakes.js';
 
 const BLOCKS_TABLE = 'blocks-test';
@@ -29,9 +33,8 @@ const s3 = new S3Client({});
 const objects = new Map();
 const rows = new Map();
 
-const bundle = buildReleaseBundle({
-  profileId: PROFILE,
-  files: filesFromCompatibilityFixture({
+const fixtureFiles = () =>
+  filesFromCompatibilityFixture({
     profileId: PROFILE,
     fixture: JSON.parse(
       readFileSync(
@@ -39,8 +42,8 @@ const bundle = buildReleaseBundle({
         'utf8',
       ),
     ),
-  }),
-});
+  });
+const bundle = buildReleaseBundle({ profileId: PROFILE, files: fixtureFiles() });
 const RELEASE_ID = bundle.manifest.releaseId;
 const catalogBlocks = (type) => bundle.catalog.blocks[type] ?? [];
 const releaseAgent = catalogBlocks('AGENT').find((block) => block.bodyRef);
@@ -112,6 +115,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   installReleaseStoreFakes({ s3Mock, ddbMock, objects, rows });
   releaseResolverTest.releaseClosureCache.clear();
+  releaseResolverTest.releaseInspectionCache.clear();
   await publishReleaseBundle({ s3, bucket: ARTIFACTS_BUCKET, bundle });
   await register();
 });
@@ -314,6 +318,91 @@ describe('GET /aidlc-releases/{releaseId}/blocks/{type}/{blockId}', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('release_block_type_invalid');
+  });
+});
+
+// An admin decides whether to promote a fork by reading what it ships, so its
+// contents must be readable while it is still import-only, without that read
+// making it runnable anywhere.
+describe('contents of an import-only custom fork', () => {
+  const FORK_SHA = '0123456789abcdef0123456789abcdef01234567';
+  const forkBundle = buildReleaseBundle({
+    profile: customProfile({
+      repository: 'acme/aidlc-fork',
+      sha: FORK_SHA,
+      baseProfileId: PROFILE,
+    }),
+    files: fixtureFiles(),
+  });
+  const FORK_ID = forkBundle.manifest.releaseId;
+  const forkAgent = (forkBundle.catalog.blocks.AGENT ?? []).find((block) => block.bodyRef);
+
+  beforeEach(async () => {
+    await publishReleaseBundle({ s3, bucket: ARTIFACTS_BUCKET, bundle: forkBundle });
+    const res = parse(
+      await handler({
+        ...event({ method: 'POST', resource: '/aidlc-releases' }),
+        body: JSON.stringify({
+          custom: { repository: 'acme/aidlc-fork', sha: FORK_SHA, baseProfile: PROFILE },
+        }),
+      }),
+    );
+    expect(res.status).toBe(201);
+    expect(res.body.release).toMatchObject({ custom: true, runnable: false });
+  });
+
+  it('lists the fork and serves its bodies to an admin', async () => {
+    const listing = await contents(FORK_ID);
+    const block = await releaseBlock(FORK_ID, 'agent', forkAgent.id);
+
+    expect(listing.status).toBe(200);
+    expect(listing.body.release).toMatchObject({ releaseId: FORK_ID });
+    expect(listing.body.blocks.agent.map((entry) => entry.id)).toContain(forkAgent.id);
+    expect(block.status).toBe(200);
+    expect(block.body.body).toBe(objects.get(forkAgent.bodyRef.s3Key));
+  });
+
+  it('still verifies the fork closure digests', async () => {
+    objects.set(forkBundle.manifest.catalog.key, JSON.stringify({ tampered: true }));
+
+    const res = await contents(FORK_ID);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('release_closure_mismatch');
+  });
+
+  it('gives a non-admin the unknown-release 404', async () => {
+    const listing = await contents(FORK_ID, { claims: memberClaims });
+    const block = await releaseBlock(FORK_ID, 'agent', forkAgent.id, { claims: memberClaims });
+
+    expect(listing.status).toBe(404);
+    expect(listing.body.code).toBe('release_not_found');
+    expect(block.status).toBe(404);
+  });
+
+  it('keeps an inspected fork unrunnable', async () => {
+    expect((await contents(FORK_ID)).status).toBe(200);
+
+    const record = rows.get(keyOf(`AIDLC_RELEASE#${FORK_ID}`, 'META'));
+    await expect(
+      loadReleaseClosure({
+        s3,
+        bucket: ARTIFACTS_BUCKET,
+        methodologyRelease: releasePinFromRecord(record),
+        ddb: ddbMock,
+        tableName: BLOCKS_TABLE,
+      }),
+    ).rejects.toMatchObject({ code: 'release_not_runnable' });
+    expect(releaseResolverTest.releaseClosureCache.size).toBe(0);
+  });
+
+  it('still refuses to compile against the fork', async () => {
+    seedCustomWorkflow();
+    expect((await contents(FORK_ID)).status).toBe(200);
+
+    const res = await preview({ libraryRelease: FORK_ID });
+
+    expect(res.body.code).toBe('release_not_runnable');
   });
 });
 

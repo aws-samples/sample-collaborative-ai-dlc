@@ -136,6 +136,33 @@ describe('WorkflowComposer release plan check', () => {
     expect(screen.queryByTestId('composer-library-release')).not.toBeInTheDocument();
   });
 
+  it('says the plan check is unavailable when no preview could be read', async () => {
+    compiled.mockResolvedValue(compiledView({ libraryRelease: STABLE }));
+    executionPreview.mockRejectedValue(new Error('preview failed'));
+
+    renderComposer();
+
+    expect(await screen.findByTestId('composer-plan-check-unavailable')).toHaveTextContent(
+      'Plan check unavailable',
+    );
+    // The release read and the library fallback both ran.
+    expect(executionPreview).toHaveBeenCalledTimes(2);
+    expect(screen.queryByTestId('composer-library-release')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('composer-library-release-unavailable')).not.toBeInTheDocument();
+  });
+
+  it('does not claim the release check when only the preview fell back', async () => {
+    compiled.mockResolvedValue(compiledView({ libraryRelease: STABLE }));
+    executionPreview.mockImplementation((...args: unknown[]) =>
+      args[7] ? Promise.reject(new Error('release unreadable')) : Promise.resolve(previewOf()),
+    );
+
+    renderComposer();
+
+    expect(await screen.findByTestId('composer-library-release-unavailable')).toBeInTheDocument();
+    expect(screen.queryByTestId('composer-library-release')).not.toBeInTheDocument();
+  });
+
   it('does not use the release for a SYSTEM workflow', async () => {
     const workflow = await get.getMockImplementation()?.();
     get.mockResolvedValue({ ...workflow, owner: 'SYSTEM', readOnly: true });

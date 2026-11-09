@@ -74,6 +74,7 @@ import {
   upgradeReleaseClosure,
 } from '../shared/release-registry.js';
 import {
+  inspectReleaseClosure,
   loadReleaseClosure,
   ReleaseResolverError,
   resolveMethodologyLibrary,
@@ -1815,14 +1816,15 @@ const requestedReleaseBlockTypes = (event) => {
   return { types };
 };
 
+// Inspection, not execution: an admin may look inside a fork that is still
+// import-only (that is what promotion is decided on), and a non-admin only
+// ever reaches a selectable, runnable record.
 const readableReleaseClosure = async (event, releaseId) => {
   const record = await readableReleaseRecord(releaseId, { isAdmin: isPlatformAdmin(event) });
-  const closure = await loadReleaseClosure({
+  const closure = await inspectReleaseClosure({
     s3,
     bucket: artifactsBucket(),
     methodologyRelease: releasePinFromRecord(record),
-    ddb,
-    tableName: blocksTable(),
   });
   return { record, closure };
 };

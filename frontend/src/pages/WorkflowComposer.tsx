@@ -53,6 +53,9 @@ export default function WorkflowComposer() {
   const [scopeLib, setScopeLib] = useState<Block[]>([]);
   const [compiled, setCompiled] = useState<CompiledWorkflow | null>(null);
   const [preview, setPreview] = useState<ExecutionPreview | null>(null);
+  // Set when no preview could be read at all, so a missing preview isn't
+  // mistaken for one that hasn't arrived yet.
+  const [previewFailed, setPreviewFailed] = useState(false);
   const [workbenchMode, setWorkbenchMode] = useState<'compose' | 'scopes' | 'validate'>('compose');
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -583,6 +586,7 @@ export default function WorkflowComposer() {
   useEffect(() => {
     if (!workflowId || !activeScope) {
       setPreview(null);
+      setPreviewFailed(false);
       return;
     }
     let cancelled = false;
@@ -604,10 +608,14 @@ export default function WorkflowComposer() {
         return workflowsService.executionPreview(workflowId, activeScope);
       })
       .then((next) => {
-        if (!cancelled) setPreview(next);
+        if (cancelled) return;
+        setPreview(next);
+        setPreviewFailed(false);
       })
       .catch(() => {
-        if (!cancelled) setPreview(null);
+        if (cancelled) return;
+        setPreview(null);
+        setPreviewFailed(true);
       });
     return () => {
       cancelled = true;
@@ -712,12 +720,15 @@ export default function WorkflowComposer() {
     return issues;
   }, [preview]);
 
-  // Only claim the release check when both reads actually used the release:
-  // either one falls back to the live library if the release can't be read.
+  // Only claim the release check when every read that ran used the release:
+  // each falls back to the live library if the release can't be read, and the
+  // plan check may not have run at all. With no scope there is no plan check,
+  // so the compiled view alone decides.
+  const previewPending = !!activeScope && preview == null && !previewFailed;
   const checkedAgainstRelease =
     !!libraryRelease &&
     compiled?.libraryRelease === libraryRelease.releaseId &&
-    (preview == null || preview.libraryRelease === libraryRelease.releaseId);
+    (!activeScope || preview?.libraryRelease === libraryRelease.releaseId);
 
   if (loading) {
     return <div className="text-sm text-muted-foreground">Loading…</div>;
@@ -826,7 +837,16 @@ export default function WorkflowComposer() {
           </Tabs>
 
           {libraryRelease &&
-            (checkedAgainstRelease ? (
+            !previewPending &&
+            (previewFailed ? (
+              <span
+                className="text-xs text-amber-600 dark:text-amber-400"
+                data-testid="composer-plan-check-unavailable"
+                title={libraryRelease.releaseId}
+              >
+                Plan check unavailable: the execution preview couldn&apos;t be loaded
+              </span>
+            ) : checkedAgainstRelease ? (
               <span
                 className="text-xs text-muted-foreground"
                 data-testid="composer-library-release"

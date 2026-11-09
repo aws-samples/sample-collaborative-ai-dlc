@@ -373,7 +373,7 @@ A release's closure is browsable read-only, so authors can see what a pinned int
 
 - `GET /aidlc-releases/{releaseId}/blocks[?type=agent,stage]` lists the closure's blocks by type, in the `GET /blocks/{type}` shape with `source: "release"` and the `releaseId`, plus the release's workflow.
 - `GET /aidlc-releases/{releaseId}/blocks/{type}/{blockId}` returns one block with its body and script. Each object must be one the manifest lists, and its bytes must match the recorded digest, or the read is a `409`.
-- Both read the digest-verified closure and never the SYSTEM rows. An admin may read any registered release; anybody else only a selectable one, and an unknown and a hidden release get the same `404`.
+- Both read the digest-verified closure and never the SYSTEM rows. An admin may read any registered release, including an import-only custom fork, so its contents can be reviewed before promotion; reading it doesn't make it runnable. Anybody else may read only a selectable release, and an unknown and a hidden release get the same `404`.
 
 In the app:
 
