@@ -1589,6 +1589,37 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     },
   );
 
+  // A learning candidate is put to the human at the gate, so a jump taken over
+  // it would drop the candidate unseen, exactly as a waiver would.
+  it('opens the human gate instead of jumping when learning candidates wait for review', async () => {
+    const plan = LOOPBACK_PLAN();
+    plan.plan.stages[2] = {
+      ...plan.plan.stages[2],
+      policy: { ...plan.plan.stages[2].policy, learnings: 'on' },
+    };
+    deps.loadPlan = vi.fn(async () => plan);
+    deps.store.listEvents = vi.fn(async () => [
+      {
+        type: 'v2.learning.candidate',
+        stageInstanceId: 'si-build-and-test',
+        summary: 'retry the flaky integration suite once before failing',
+      },
+    ]);
+
+    await run();
+
+    const gate = gateFor('si-build-and-test');
+    expect(gate).toMatchObject({ learningsRitual: true });
+    expect(gate.options).toContain('loop-back');
+    expect(gate.prompt).toContain('retry the flaky integration suite once before failing');
+    expect(deps.store.setGateCallbackId).toHaveBeenCalledWith(
+      expect.objectContaining({ humanTaskId: gate.humanTaskId }),
+    );
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    expect(execution.loopBackCount).toBe(0);
+    expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+  });
+
   // The autonomous path shares ONE offer resolution with the gated path, so the
   // recommender rule holds here too: a stage that does not author
   // `build-test-results` is not the stage the release lets recommend the jump, and
