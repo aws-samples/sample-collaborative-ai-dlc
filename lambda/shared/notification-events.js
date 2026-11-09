@@ -127,10 +127,13 @@ export const gatePromptText = (gate) => {
   return clip(typeof first === 'string' ? first : (first?.text ?? first?.question), PROMPT_CHARS);
 };
 
-// What a gate needs from a human. A checkpoint confirmation is a `question`
-// row asking to approve a plan or summary, so it is an approval.
-export const gateNeed = (gate) =>
-  gate?.kind === 'question' && !gate?.detail?.checkpoint ? 'answer' : 'approval';
+// What a gate needs from a human, or null when the gate couldn't be read. A
+// checkpoint confirmation is a `question` row asking to approve a plan or
+// summary, so it is an approval.
+export const gateNeed = (gate) => {
+  if (!gate?.kind) return null;
+  return gate.kind === 'question' && !gate.detail?.checkpoint ? 'answer' : 'approval';
+};
 
 // The gate.pending detail.
 export const buildGatePending = ({
@@ -185,7 +188,9 @@ export const notifyGatePending = async (store, { gate, meta, ...ids }, deps = {}
       }
     };
     const [gateRow, metaRow] = await Promise.all([
-      read(gate, () => store.getHumanTask(ids.executionId, ids.humanTaskId)),
+      read(gate, () =>
+        store.getHumanTask(ids.executionId, ids.humanTaskId, { consistentRead: true }),
+      ),
       read(meta, () => store.getExecution(ids.executionId)),
     ]);
     return await publishNotificationEvent(

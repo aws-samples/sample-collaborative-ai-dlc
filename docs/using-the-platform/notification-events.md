@@ -56,7 +56,7 @@ An intent is waiting for a human: an agent's question or checkpoint, or an engin
 | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `projectId`, `intentId`, `executionId` | where                                                                                                                                                                            |
 | `humanTaskId`                          | the gate's task id                                                                                                                                                               |
-| `need`                                 | `answer` for an agent's question, `approval` for anything to sign off (checkpoints and engine gates)                                                                             |
+| `need`                                 | `answer` for an agent's question, `approval` for anything to sign off (checkpoints and engine gates), or null if the gate couldn't be read                                       |
 | `kind`                                 | the gate kind, for example `question`, `approval` or `validation`, or null                                                                                                       |
 | `stage`                                | the stage id (per-unit stages add `-u-<unit>`); for an engine gate with no stage, a label such as `Walking skeleton review`, `Batch review`, `Autonomy choice` or `Lane failure` |
 | `intentTitle`                          | the intent's title (up to 200 characters), or null                                                                                                                               |
@@ -65,7 +65,7 @@ An intent is waiting for a human: an agent's question or checkpoint, or an engin
 
 ### `discussion.message`
 
-A message was posted to an intent discussion. `eventId` is the `messageId`.
+A message was posted to an intent discussion. `eventId` is `<discussionId>:<messageId>`, as message ids are unique only within a discussion.
 
 | Field                                                | Description                        |
 | ---------------------------------------------------- | ---------------------------------- |
@@ -78,7 +78,7 @@ A message was posted to an intent discussion. `eventId` is the `messageId`.
 
 ### `discussion.resolved`
 
-An intent discussion was resolved. `eventId` is `<discussionId>:<resolvedAt>`.
+An open intent discussion was resolved. Resolving one that is already resolved publishes nothing; reopening and resolving it again publishes a new event. `eventId` is `<discussionId>:<resolvedAt>`.
 
 | Field                                   | Description                        |
 | --------------------------------------- | ---------------------------------- |

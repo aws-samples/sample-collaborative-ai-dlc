@@ -1078,26 +1078,25 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             const gate = await store.getHumanTask(executionId, humanTaskId, {
               consistentRead: true,
             });
-            return isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
-          });
-        }
-        if (!answeredEarly) {
-          // Notification event: a human is needed. Only with a bus configured,
-          // so the durable step sequence is unchanged otherwise. A durable step,
-          // so a replay doesn't notify twice; publishing never throws.
-          if (process.env.NOTIFICATION_EVENT_BUS) {
-            await ctxArg.step(`notify-gate-${humanTaskId}`, async () => {
+            const answered = isHumanTaskAnswerStatus(gate?.status) || gate?.status === 'superseded';
+            // Notification event: a human is needed. Inside this step, so the
+            // step sequence is unchanged and a replayed history doesn't publish.
+            // Never throws; does nothing without a bus.
+            if (!answered) {
               await notifyGatePending(store, {
                 projectId,
                 intentId,
                 executionId,
                 humanTaskId,
                 stage: label,
+                gate,
                 meta: fresh ?? undefined,
               });
-              return true;
-            });
-          }
+            }
+            return answered;
+          });
+        }
+        if (!answeredEarly) {
           // D1 release-on-park: if no human answers within parkReleaseSeconds, free
           // the warm microVM compute (StopRuntimeSession) while we keep waiting —
           // for a lane, ITS OWN session is released, never a sibling's. Resume

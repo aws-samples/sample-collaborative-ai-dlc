@@ -107,9 +107,16 @@ describe('gateNeed', () => {
     expect(gateNeed({ kind: 'question', detail: { checkpoint: 'plan' } })).toBe('approval');
   });
 
-  it.each(['approval', 'validation', undefined])('%s needs approval', (kind) => {
+  it.each(['approval', 'validation'])('%s needs approval', (kind) => {
     expect(gateNeed({ kind })).toBe('approval');
   });
+
+  it.each([null, undefined, {}, { status: 'pending' }])(
+    'is null for an unreadable gate %j',
+    (gate) => {
+      expect(gateNeed(gate)).toBeNull();
+    },
+  );
 });
 
 describe('gatePromptText', () => {
@@ -163,7 +170,7 @@ describe('buildGatePending', () => {
 
   it('tolerates a missing gate and META', () => {
     expect(buildGatePending({ humanTaskId: 'q-1' })).toMatchObject({
-      need: 'approval',
+      need: null,
       kind: null,
       stage: null,
       intentTitle: null,
@@ -197,7 +204,7 @@ describe('notifyGatePending', () => {
     await expect(
       notifyGatePending(store, { ...ids, stage: 's1' }, { getClient: clientWith(send) }),
     ).resolves.toBe(true);
-    expect(store.getHumanTask).toHaveBeenCalledWith('i1', 'q-1');
+    expect(store.getHumanTask).toHaveBeenCalledWith('i1', 'q-1', { consistentRead: true });
     expect(sent(send)).toMatchObject({
       schemaVersion: 1,
       eventId: 'q-1',
@@ -234,7 +241,7 @@ describe('notifyGatePending', () => {
     await expect(notifyGatePending(store, ids, { getClient: clientWith(send) })).resolves.toBe(
       true,
     );
-    expect(sent(send)).toMatchObject({ humanTaskId: 'q-1', prompt: null });
+    expect(sent(send)).toMatchObject({ humanTaskId: 'q-1', need: null, kind: null, prompt: null });
   });
 
   const never = () => new Promise(() => {});

@@ -524,7 +524,8 @@ export const postMessage = async (event, res) => {
           // The intent's own project, checked by authorizeScope, not the URL's.
           projectId: auth.projectId,
           intentId: scope.rootId,
-          eventId: messageId,
+          // Message ids are unique within a thread only.
+          eventId: `${discussionId}:${messageId}`,
           discussionId,
           entityType: getVal(discussion, 'entity_type'),
           messageId,
@@ -961,8 +962,10 @@ export const updateDiscussion = async (event, res) => {
     );
   }
 
-  // Notification event for integrations (best-effort, never throws).
-  if (resolved && scope.kind === 'intent') {
+  // Notification event for integrations (best-effort, never throws). Only on
+  // the transition, so a repeated resolve publishes nothing.
+  const wasResolved = getVal(discussion, 'status') === 'resolved';
+  if (resolved && !wasResolved && scope.kind === 'intent') {
     await publishNotificationEvent('discussion.resolved', {
       eventId: `${discussionId}:${now}`,
       projectId: auth.projectId,
