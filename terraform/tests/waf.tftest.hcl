@@ -226,16 +226,17 @@ run "block_write_body_content_exemption" {
 
   # The method each pattern pairs with, and what it matches. Terraform's RE2 and
   # AWS WAF agree on these patterns: anchors, alternation, character classes.
+  # Types match in any case, as the handler's normalizeType accepts them.
   assert {
     condition = alltrue([
       for acl, paths in {
         cloudfront = {
-          POST = { match = ["/api/blocks/stage", "/api/blocks/sensor"], miss = ["/test/api/blocks/stage"] }
-          PUT  = { match = ["/api/blocks/agent/aidlc-architect-agent", "/api/blocks/knowledge/k1"], miss = ["/test/api/blocks/agent/x"] }
+          POST = { match = ["/api/blocks/stage", "/api/blocks/sensor", "/api/blocks/STAGE", "/api/blocks/Stage", "/api/blocks/KnowLedge"], miss = ["/test/api/blocks/stage"] }
+          PUT  = { match = ["/api/blocks/agent/aidlc-architect-agent", "/api/blocks/knowledge/k1", "/api/blocks/AGENT/x", "/api/blocks/Template/t1"], miss = ["/test/api/blocks/agent/x"] }
         }
         regional = {
-          POST = { match = ["/api/blocks/stage", "/test/api/blocks/stage"], miss = [] }
-          PUT  = { match = ["/api/blocks/agent/x", "/test/api/blocks/agent/aidlc-architect-agent"], miss = [] }
+          POST = { match = ["/api/blocks/stage", "/test/api/blocks/stage", "/api/blocks/SENSOR", "/test/api/blocks/Stage"], miss = [] }
+          PUT  = { match = ["/api/blocks/agent/x", "/test/api/blocks/agent/aidlc-architect-agent", "/api/blocks/Skill/x", "/test/api/blocks/ARTIFACT/a1"], miss = [] }
         }
         } : alltrue([
           for method, cases in paths : alltrue(concat(
@@ -271,14 +272,18 @@ run "block_write_body_content_exemption" {
               "/api/blocks/",
               "/api/blocks/stage/",
               "/api/blocks/widget",
-              "/api/blocks/STAGE",
+              "/api/blocks/WIDGET",
+              "/api/blocks/stage/X",
+              "/api/blocks/Stage/Bad-Id",
               "/api/blocks/stage/x/body",
+              "/api/blocks/STAGE/x/body",
               "/api/blocks/stage/x/script",
               "/api/blocks/stage/../projects",
               "/api/blocks/stage/%2e%2e",
               "/api/blocks/stage/a.b",
               "/api/blocks/stage/-x",
               "/api/blocks/stageX",
+              "/api/blocks/StageX",
               "/api/blocks/stage/x?y",
               "/../api/blocks/stage",
               "/a/b/api/blocks/stage",

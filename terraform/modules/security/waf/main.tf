@@ -16,11 +16,15 @@ locals {
 
   # The routes that carry a block body (terraform/modules/api/routes.tf):
   # POST /api/blocks/{type} creates and PUT /api/blocks/{type}/{id} updates.
-  # Types are lambda/shared/blocks.js BLOCK_TYPES, as the app sends them; ids
-  # are kebab-case (validateId). Anchored, with no `.` or `%` allowed, so no
-  # other route or encoded traversal can match.
-  block_types = "stage|agent|scope|rule|sensor|artifact|knowledge|skill|template"
-  block_id    = "[a-z0-9]+(-[a-z0-9]+)*"
+  # Types are lambda/shared/blocks.js BLOCK_TYPES, matched in any case as
+  # normalizeType accepts them (per-letter classes, since AWS WAF has no inline
+  # case-insensitive flag); ids are kebab-case (validateId). Anchored, with no
+  # `.` or `%` allowed, so no other route or encoded traversal can match.
+  block_type_names = ["stage", "agent", "scope", "rule", "sensor", "artifact", "knowledge", "skill", "template"]
+  block_types = join("|", [
+    for name in local.block_type_names : join("", [for c in split("", name) : "[${upper(c)}${c}]"])
+  ])
+  block_id = "[a-z0-9]+(-[a-z0-9]+)*"
 
   # CloudFront sees the browser path; API Gateway may see it after the stage
   # name (/<stage>/api/...), whose characters are [A-Za-z0-9_-].
