@@ -666,7 +666,11 @@ describe('runStage — the lead draft is durable before any persona runs', () =>
 // The lead describes its changes, and the lead-draft commit is the one that
 // holds them; personas cannot describe. The final commit may hold nothing.
 describe('runStage — the change description on an ensemble stage', () => {
-  const describedHarness = (mode, { leadCommits }) => {
+  const A = 'https://x/a.git';
+  const B = 'https://x/b.git';
+  // outcomes: per commit call, the repositories that commit and those whose
+  // commit fails; the others are clean.
+  const describedHarness = (mode, { repoUrls = [A], outcomes }) => {
     const { deps, store, args } = harness({ mode, ...withGraph() });
     let row = {
       stageInstanceId: STAGE_INSTANCE_ID,
@@ -679,46 +683,78 @@ describe('runStage — the change description on an ensemble stage', () => {
       },
     };
     store.getStage = async () => row;
-    store.clearCommitDescription = async ({ descriptionId }) => {
+    store.recordCommitDescriptionUse = async ({ descriptionId, repos }) => {
       if (row.commitDescription?.descriptionId !== descriptionId) return false;
-      row = { ...row, commitDescription: undefined };
+      const committedRepos = [...(row.commitDescription.committedRepos ?? []), ...repos];
+      row = { ...row, commitDescription: { ...row.commitDescription, committedRepos } };
       return true;
     };
     const commits = [];
     deps.ensureWorkspaceSource = async () => ({ restored: false, repos: [], failed: [] });
     deps.spawnFn = outputWritingSpawn;
-    deps.commitAndPushAll = async ({ message }) => {
-      commits.push(message.split('\n')[0]);
-      const committed = commits.length === 1 ? leadCommits : false;
+    deps.commitAndPushAll = async ({ repos, message, messages }) => {
+      const outcome = outcomes[commits.length] ?? {};
+      const call = {};
+      const results = repos.map((repo) => {
+        const url = typeof repo === 'string' ? repo : repo.url;
+        call[url] = (messages?.[url] ?? message).split('\n')[0];
+        if (outcome.committed?.includes(url)) {
+          return { repo: url, sha: `sha-${commits.length}`, committed: true, pushed: true };
+        }
+        if (outcome.failed?.includes(url)) {
+          return { repo: url, committed: false, pushed: false, reason: 'commit_failed' };
+        }
+        return { repo: url, committed: false, pushed: 'up_to_date' };
+      });
+      commits.push(call);
       return {
-        ok: true,
-        committed,
-        results: committed ? [{ repo: 'r1', sha: 'lead1', committed: true, pushed: true }] : [],
+        ok: results.every((r) => r.reason !== 'commit_failed'),
+        committed: results.some((r) => r.committed),
+        results,
       };
     };
-    const repoArgs = { ...args, repos: [{ cloneUrl: 'https://x/r.git' }], branch: 'aidlc/i1' };
+    const repoArgs = {
+      ...args,
+      repos: repoUrls,
+      branch: 'aidlc/i1',
+    };
     return { deps, args: repoArgs, commits, row: () => row };
   };
+  const FEAT = 'feat(api): add retries';
+  const CHECKPOINT = 'docs(aidlc): checkpoint requirements-analysis stage';
 
   it.each(['pipeline', 'mob'])(
     'uses it for a dirty %s lead draft and checkpoints the clean final tree',
     async (mode) => {
-      const { deps, args, commits, row } = describedHarness(mode, { leadCommits: true });
+      const { deps, args, commits, row } = describedHarness(mode, {
+        outcomes: [{ committed: [A] }, {}],
+      });
       await runStage(args, deps);
-      expect(commits).toEqual([
-        'feat(api): add retries',
-        'docs(aidlc): checkpoint requirements-analysis stage',
-      ]);
-      expect(row().commitDescription).toBeUndefined();
+      expect(commits.map((call) => call[A])).toEqual([FEAT, CHECKPOINT]);
+      expect(row().commitDescription.committedRepos).toEqual([A]);
     },
   );
 
   it.each(['pipeline', 'mob'])(
     'keeps it for the final commit when the %s lead draft tree is clean',
     async (mode) => {
-      const { deps, args, commits } = describedHarness(mode, { leadCommits: false });
+      const { deps, args, commits } = describedHarness(mode, { outcomes: [{}, {}] });
       await runStage(args, deps);
-      expect(commits).toEqual(['feat(api): add retries', 'feat(api): add retries']);
+      expect(commits.map((call) => call[A])).toEqual([FEAT, FEAT]);
+    },
+  );
+
+  it.each(['pipeline', 'mob'])(
+    'keeps it for a repository whose %s lead-draft commit failed, checkpointing the one that committed',
+    async (mode) => {
+      const { deps, args, commits, row } = describedHarness(mode, {
+        repoUrls: [A, B],
+        outcomes: [{ committed: [A], failed: [B] }, { committed: [B] }],
+      });
+      await runStage(args, deps);
+      expect(commits[0]).toEqual({ [A]: FEAT, [B]: FEAT });
+      expect(commits[1]).toEqual({ [A]: CHECKPOINT, [B]: FEAT });
+      expect(row().commitDescription.committedRepos).toEqual([A, B]);
     },
   );
 });

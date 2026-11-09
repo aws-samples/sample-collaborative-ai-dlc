@@ -1911,22 +1911,23 @@ describe('steering store methods', () => {
     });
   });
 
-  it('clears the commit description only while it is the one that was used', async () => {
+  it('records the repositories a commit used the description in, only while it is current', async () => {
     ddb.on(UpdateCommand).resolvesOnce({});
     const where = { executionId: 'e1', stageInstanceId: 'si-1', descriptionId: 'd1' };
-    expect(await store.clearCommitDescription(where)).toBe(true);
+    expect(await store.recordCommitDescriptionUse({ ...where, repos: ['a'] })).toBe(true);
     expect(ddb.commandCalls(UpdateCommand)[0].args[0].input).toMatchObject({
       Key: stageKey('e1', 'si-1'),
-      UpdateExpression: 'REMOVE commitDescription',
+      UpdateExpression:
+        'SET commitDescription.committedRepos = list_append(if_not_exists(commitDescription.committedRepos, :none), :repos)',
       ConditionExpression: 'commitDescription.descriptionId = :descriptionId',
-      ExpressionAttributeValues: { ':descriptionId': 'd1' },
+      ExpressionAttributeValues: { ':descriptionId': 'd1', ':repos': ['a'], ':none': [] },
     });
     ddb
       .on(UpdateCommand)
       .rejects(
         Object.assign(new Error('conditional'), { name: 'ConditionalCheckFailedException' }),
       );
-    expect(await store.clearCommitDescription(where)).toBe(false);
+    expect(await store.recordCommitDescriptionUse({ ...where, repos: ['a'] })).toBe(false);
   });
 
   // Stamped by the target's re-run after it archived both rewound stages, so a

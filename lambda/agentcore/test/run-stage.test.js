@@ -6025,7 +6025,7 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     ]);
   });
 
-  it('commits with the change description the agent recorded, then clears it', async () => {
+  it('commits with the change description the agent recorded, then records its use', async () => {
     const messages = [];
     const store = spyStore({
       unitPlan: UNIT_PLAN,
@@ -6041,8 +6041,8 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
         },
       },
     });
-    const cleared = [];
-    store.clearCommitDescription = async (args) => cleared.push(args);
+    const recorded = [];
+    store.recordCommitDescriptionUse = async (args) => recorded.push(args);
     let mcpScope = null;
     const deps = unitDeps({
       store,
@@ -6053,7 +6053,11 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       ensureWorkspaceSource: async () => ({ restored: false, repos: [], failed: [] }),
       commitAndPushAll: async ({ message }) => {
         messages.push(message);
-        return { ok: true, committed: true, results: [] };
+        return {
+          ok: true,
+          committed: true,
+          results: [{ repo: 'https://x/r.git', committed: true, pushed: true }],
+        };
       },
     });
     await runStage(
@@ -6062,7 +6066,13 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
     );
     expect(mcpScope).toMatchObject({ describeChanges: true });
     expect(messages[0].split('\n')[0]).toBe('fix(billing): round totals [ABC-12]');
-    expect(cleared).toEqual([expect.objectContaining({ executionId: 'e1', descriptionId: 'd1' })]);
+    expect(recorded).toEqual([
+      expect.objectContaining({
+        executionId: 'e1',
+        descriptionId: 'd1',
+        repos: ['https://x/r.git'],
+      }),
+    ]);
   });
 
   it('retains committed code refs when a unit stage parks before projection', async () => {

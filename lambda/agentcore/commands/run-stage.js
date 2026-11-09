@@ -98,6 +98,7 @@ import {
   consumeCommitDescription,
   createEngineCommitMessages,
   readCommitDescription,
+  stageCommitMessages,
 } from '../commit-message.js';
 import { resolveStageModel } from '../model-resolver.js';
 import { createGraphWriter, closeGraphSource } from '../mcp/graph-writer.js';
@@ -3947,7 +3948,8 @@ const runStageAttempt = async (
       // the personas added.
       await warnIfDiskLow('before the lead-draft commit');
       // The lead described its changes, which this commit holds; the final
-      // commit uses the description instead when this tree is clean.
+      // commit uses the description instead in each repository this one didn't
+      // commit to (a clean tree or a failed commit).
       const leadDescription =
         repos.length > 0
           ? await readCommitDescription({ store: processStore, executionId, stageInstanceId })
@@ -3963,26 +3965,26 @@ const runStageAttempt = async (
         projectId,
         executionId,
         author: gitAuthor,
-        message: await engineCommitMessage({
+        ...(await stageCommitMessages({
+          messageFor: engineCommitMessage,
           stageId,
           phase: stage.phase,
           unitSlug,
           label: 'lead draft',
           description: leadDescription,
-        }),
+        })),
       }).catch((error) => ({
         ok: false,
         committed: false,
         results: [{ repo: '-', reason: 'engine_crashed', detail: error?.message }],
       }));
-      if (leadDraftGit?.committed) {
-        await consumeCommitDescription({
-          store: processStore,
-          executionId,
-          stageInstanceId,
-          description: leadDescription,
-        });
-      }
+      await consumeCommitDescription({
+        store: processStore,
+        executionId,
+        stageInstanceId,
+        description: leadDescription,
+        gitResult: leadDraftGit,
+      });
       const leadDraftRefs = mergeCodeCommitRefs(carriedCodeCommitRefs, leadDraftGit);
       if (leadDraftRefs.length > 0) retainedCodeCommitRefs = leadDraftRefs;
       await publishGitEvidence(leadDraftGit, { label: 'lead draft' });
@@ -4324,21 +4326,21 @@ const runStageAttempt = async (
     author: gitAuthor,
     // Commit message carries the unit dimension on lane runs (docs/v2-parallel.md
     // A3): every commit is attributable to stage + lane + execution from git alone.
-    message: await engineCommitMessage({
+    ...(await stageCommitMessages({
+      messageFor: engineCommitMessage,
       stageId,
       phase: stage.phase,
       unitSlug,
       description: commitDescription,
-    }),
+    })),
   });
-  if (gitResult?.committed) {
-    await consumeCommitDescription({
-      store: processStore,
-      executionId,
-      stageInstanceId,
-      description: commitDescription,
-    });
-  }
+  await consumeCommitDescription({
+    store: processStore,
+    executionId,
+    stageInstanceId,
+    description: commitDescription,
+    gitResult,
+  });
   // Every commit of this attempt: carried from a parked leg, this leg's, and the
   // repair turns' (added by runRepairTurn below).
   let stageCodeCommitRefs = mergeCodeCommitRefs(

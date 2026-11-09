@@ -1928,8 +1928,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   };
 
   // The agent's description of the stage's changes (describe_changes), read by
-  // the engine for its next commit message and cleared once a commit used it.
-  // With ownership, a retired attempt's delayed call cannot overwrite it.
+  // the engine for its commit messages. Each commit records the repositories it
+  // used it in. With ownership, a retired attempt's delayed call cannot
+  // overwrite it.
   const setCommitDescription = async ({
     executionId,
     stageInstanceId,
@@ -1950,17 +1951,28 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     await ddb.send(new UpdateCommand(input));
   };
 
-  // Clears the description only if it is still the one the commit used, so a
-  // newer one written meanwhile survives. Returns whether it was cleared.
-  const clearCommitDescription = async ({ executionId, stageInstanceId, descriptionId }) => {
+  // Records the repositories a commit used the description in, only while it
+  // is still that description, so a newer one written meanwhile starts unused.
+  // Returns whether it was recorded.
+  const recordCommitDescriptionUse = async ({
+    executionId,
+    stageInstanceId,
+    descriptionId,
+    repos,
+  }) => {
     try {
       await ddb.send(
         new UpdateCommand({
           TableName: table(),
           Key: stageKey(executionId, stageInstanceId),
-          UpdateExpression: 'REMOVE commitDescription',
+          UpdateExpression:
+            'SET commitDescription.committedRepos = list_append(if_not_exists(commitDescription.committedRepos, :none), :repos)',
           ConditionExpression: 'commitDescription.descriptionId = :descriptionId',
-          ExpressionAttributeValues: { ':descriptionId': descriptionId },
+          ExpressionAttributeValues: {
+            ':descriptionId': descriptionId,
+            ':repos': repos,
+            ':none': [],
+          },
         }),
       );
       return true;
@@ -3555,7 +3567,7 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
     markLoopBackArchived,
     setLoopBackRecommendation,
     setCommitDescription,
-    clearCommitDescription,
+    recordCommitDescriptionUse,
     recordMetric,
     recordGraphRead,
     recordSensorRun,

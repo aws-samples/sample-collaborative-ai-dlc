@@ -5,6 +5,7 @@ import {
   engineCommitMessage,
   normaliseChangeDescription,
   readCommitDescription,
+  stageCommitMessages,
   trackerKey,
 } from '../commit-message.js';
 
@@ -230,9 +231,29 @@ describe('engineCommitMessage with a change description', () => {
     ).split('\n');
     expect(lines[0]).toBe('feat!: drop the v1 API [ABC-12]');
     expect(lines).toContain('BREAKING CHANGE: use /v2');
-    expect(lines.indexOf('BREAKING CHANGE: use /v2')).toBeLessThan(
-      lines.indexOf('AIDLC-Stage: code-generation'),
-    );
+    // Its own paragraph, ahead of the trailer block.
+    const at = lines.indexOf('BREAKING CHANGE: use /v2');
+    expect(lines[at - 1]).toBe('');
+    expect(lines[at + 1]).toBe('');
+    expect(at).toBeLessThan(lines.indexOf('AIDLC-Stage: code-generation'));
+  });
+
+  it('wraps a long breaking-change note to 100 columns without losing any of it', () => {
+    const breakingChange =
+      'the billing API now returns totals in minor units; clients must divide by 100 before ' +
+      'display and migrate stored totals with scripts/migrate-totals.js during the release window ' +
+      `see https://example.com/${'migrations/'.repeat(10)}minor-units`;
+    const text = message({}, { type: 'feat', summary: 'x', breaking: true, breakingChange });
+    const lines = text.split('\n');
+    for (const line of lines) expect(line.length).toBeLessThanOrEqual(100);
+    const start = lines.findIndex((line) => line.startsWith('BREAKING CHANGE: '));
+    const end = lines.indexOf('', start);
+    expect(end - start).toBeGreaterThan(1);
+    const note = lines.slice(start, end).join(' ');
+    const words = `BREAKING CHANGE: ${breakingChange}`.split(' ');
+    // Every word survives in order; only the URL longer than a line is split.
+    expect(note.replace(/\s+/g, '')).toBe(words.join(''));
+    for (const word of words.filter((w) => w.length <= 100)) expect(note).toContain(word);
   });
 
   it('uses the description for a labelled commit that holds the work, such as a lead draft', () => {
@@ -278,15 +299,74 @@ describe('readCommitDescription and consumeCommitDescription', () => {
     expect(await readCommitDescription({ store, ...where })).toBeNull();
   });
 
-  it('clears the description it used, and never throws', async () => {
-    const store = { clearCommitDescription: vi.fn(async () => true) };
-    await consumeCommitDescription({ store, ...where, description: { descriptionId: 'd1' } });
-    expect(store.clearCommitDescription).toHaveBeenCalledWith({ ...where, descriptionId: 'd1' });
-    await consumeCommitDescription({ store, ...where, description: null });
-    expect(store.clearCommitDescription).toHaveBeenCalledTimes(1);
-    const failing = { clearCommitDescription: async () => Promise.reject(new Error('down')) };
+  it('records the repositories that committed with the description, and never throws', async () => {
+    const store = { recordCommitDescriptionUse: vi.fn(async () => true) };
+    const gitResult = {
+      results: [
+        { repo: 'a', committed: true },
+        { repo: 'b', committed: false, reason: 'commit_failed' },
+        { repo: 'c', committed: true },
+      ],
+    };
+    const description = { descriptionId: 'd1', committedRepos: ['c'] };
+    await consumeCommitDescription({ store, ...where, description, gitResult });
+    expect(store.recordCommitDescriptionUse).toHaveBeenCalledWith({
+      ...where,
+      descriptionId: 'd1',
+      repos: ['a'],
+    });
+    await consumeCommitDescription({ store, ...where, description: null, gitResult });
+    await consumeCommitDescription({
+      store,
+      ...where,
+      description,
+      gitResult: { results: [{ repo: 'b', committed: false }] },
+    });
+    expect(store.recordCommitDescriptionUse).toHaveBeenCalledTimes(1);
+    const failing = { recordCommitDescriptionUse: async () => Promise.reject(new Error('down')) };
     await expect(
-      consumeCommitDescription({ store: failing, ...where, description: { descriptionId: 'd1' } }),
+      consumeCommitDescription({ store: failing, ...where, description, gitResult }),
     ).resolves.toBeUndefined();
+  });
+
+  it('reads the repositories a commit already used the description in', async () => {
+    const store = {
+      getStage: async () => ({
+        commitDescription: {
+          type: 'fix',
+          summary: 'x',
+          descriptionId: 'd1',
+          committedRepos: ['a'],
+        },
+      }),
+    };
+    expect(await readCommitDescription({ store, ...where })).toMatchObject({
+      committedRepos: ['a'],
+    });
+  });
+});
+
+describe('stageCommitMessages', () => {
+  const messageFor = async ({ description }) => (description ? 'feat: x' : 'chore: checkpoint');
+
+  it('uses the description in every repository when none has used it', async () => {
+    const description = { type: 'feat', summary: 'x', committedRepos: [] };
+    expect(await stageCommitMessages({ messageFor, stageId: 's', description })).toEqual({
+      message: 'feat: x',
+    });
+  });
+
+  it('checkpoints only the repositories that already used it', async () => {
+    const description = { type: 'feat', summary: 'x', committedRepos: ['a'] };
+    expect(await stageCommitMessages({ messageFor, stageId: 's', description })).toEqual({
+      message: 'feat: x',
+      messages: { a: 'chore: checkpoint' },
+    });
+  });
+
+  it('checkpoints every repository without a description', async () => {
+    expect(await stageCommitMessages({ messageFor, stageId: 's' })).toEqual({
+      message: 'chore: checkpoint',
+    });
   });
 });

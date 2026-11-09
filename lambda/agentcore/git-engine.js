@@ -1318,6 +1318,7 @@ export const commitAndPushAll = async ({
   projectId,
   executionId,
   message,
+  messages = null, // { [repoUrl]: message } — overrides `message` for those repos
   author = null,
   urlsFor = null, // (repoUrl) => { clean, auth } — test seam for file:// remotes
   git = runGit,
@@ -1349,7 +1350,7 @@ export const commitAndPushAll = async ({
       }).catch(() => null);
       const commit = await commitAll({
         dir,
-        message,
+        message: messages?.[url] ?? message,
         author,
         committer,
         git,
