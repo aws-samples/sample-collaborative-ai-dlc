@@ -1725,6 +1725,15 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
           let autoLoopBack = false;
           let autonomyGrantOffered = false;
           try {
+            // "No finding" only means clean when the outputs were OBSERVED: the
+            // evaluator deliberately skips the required-output check for an
+            // unobserved set, so an unobserved set halts here instead. A
+            // candidate list that could not be READ halts for the same reason:
+            // the jump and the waiver both need evidence, not its absence.
+            const evidenceObserved =
+              outcome.result?.producedHeadsUnavailable !== true &&
+              Array.isArray(outcome.result?.producedHeads) &&
+              !learningCandidateLookup.unavailable;
             // Upstream takes the Build-and-Test jump itself under autonomy, so an
             // offered loop-back is TAKEN rather than approved — and it is decided
             // first, because a stage whose agent asked to go back to code
@@ -1752,24 +1761,16 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
             autoLoopBack =
               meta.autonomousLoopBackVersion >= 1 &&
               autonomyWaivable &&
+              evidenceObserved &&
               loopBack.offered &&
               !blocked;
-            // "No finding" only means clean when the outputs were OBSERVED: the
-            // evaluator deliberately skips the required-output check for an
-            // unobserved set, so an unobserved set halts here instead.
-            const outputsObserved =
-              outcome.result?.producedHeadsUnavailable !== true &&
-              Array.isArray(outcome.result?.producedHeads);
             // Learning candidates and a loop-back recommendation are put to the
             // human at the gate; a waived gate would drop them unseen, so a gate
             // with either halts. That covers every recommendation: offered, at
-            // the cap (upstream halts there too), or with no target. A candidate
-            // list that could not be READ halts for the same reason as an
-            // unobserved output set: the waiver needs evidence, not its absence.
+            // the cap (upstream halts there too), or with no target.
             autoApprove =
               autonomyWaivable &&
-              outputsObserved &&
-              !learningCandidateLookup.unavailable &&
+              evidenceObserved &&
               learningCandidates.length === 0 &&
               !loopBackLookup.recommended &&
               gateFindings.length === 0;

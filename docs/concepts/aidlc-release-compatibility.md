@@ -558,7 +558,9 @@ bounded by the same three per intent.
   itself. Any blocking finding — a blocking gate sensor that did not pass, a
   missing required output, or a reviewer still not ready — opens the human gate
   instead, because rewinding would discard the finding and silently re-run the
-  work. Advisory findings do not withhold the jump.
+  work. Advisory findings do not withhold the jump. Missing evidence does, as it
+  keeps a gate from being waived: outputs that could not be observed, or
+  learning candidates that could not be read, open the human gate.
 - The autonomous jump is stored the way a human one is: build-and-test's
   validation gate row, under a run-scoped id, written already answered
   (`rejected`, `loop-back`, the marker as the answer, no human author) with the

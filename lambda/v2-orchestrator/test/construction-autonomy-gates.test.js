@@ -1532,6 +1532,63 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     ).not.toContain('build-and-test');
   });
 
+  // The jump needs the same evidence the waiver needs: no finding only means
+  // clean when the outputs were observed and the learning candidates were read.
+  it.each([
+    {
+      name: 'its produced outputs could not be observed',
+      verdict: () => observed('build-and-test', { producedHeadsUnavailable: true }),
+    },
+    {
+      name: 'the runner reported no produced outputs at all',
+      verdict: () => ({ ok: true, state: 'SUCCEEDED' }),
+    },
+    {
+      name: 'its learning candidates could not be read',
+      verdict: () => observed('build-and-test'),
+      learningsReadFails: true,
+    },
+  ])(
+    'opens the human gate instead of jumping when $name',
+    async ({ verdict, learningsReadFails = false }) => {
+      stageVerdicts = (stageId) => (stageId === 'build-and-test' ? verdict() : observed(stageId));
+      if (learningsReadFails) {
+        const plan = LOOPBACK_PLAN();
+        plan.plan.stages[2] = {
+          ...plan.plan.stages[2],
+          policy: { ...plan.plan.stages[2].policy, learnings: 'on' },
+        };
+        deps.loadPlan = vi.fn(async () => plan);
+        let lookingUpCandidates = false;
+        ctx = makeCtx({
+          step: async (name, fn) => {
+            lookingUpCandidates = name.startsWith('learning-candidates-');
+            try {
+              return await fn();
+            } finally {
+              lookingUpCandidates = false;
+            }
+          },
+        });
+        deps.store.listEvents = vi.fn(async () => {
+          if (lookingUpCandidates) throw new Error('ProvisionedThroughputExceededException');
+          return [];
+        });
+      }
+
+      await run();
+
+      const gate = gateFor('si-build-and-test');
+      expect(gate.options).toContain('loop-back');
+      expect(deps.store.setGateCallbackId).toHaveBeenCalledWith(
+        expect.objectContaining({ humanTaskId: gate.humanTaskId }),
+      );
+      expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+      expect(execution.loopBackCount).toBe(0);
+      expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+    },
+  );
+
   // The autonomous path shares ONE offer resolution with the gated path, so the
   // recommender rule holds here too: a stage that does not author
   // `build-test-results` is not the stage the release lets recommend the jump, and
