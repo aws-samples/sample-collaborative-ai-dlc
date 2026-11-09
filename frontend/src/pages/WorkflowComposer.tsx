@@ -141,10 +141,25 @@ export default function WorkflowComposer() {
 
   const readOnly = workflow?.readOnly ?? false;
 
+  // The workflow and release the loaded state belongs to. Until the current
+  // request key has loaded, nothing from a previous key may be shown, edited
+  // or refreshed: a failed switch must not leave the old version in charge.
+  const requestKey = `${workflowId ?? ''}\n${requestedLibraryRelease ?? ''}`;
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const loadedKeyRef = useRef<string | null>(null);
+  const contextReady = loadedKey === requestKey;
+
   const loadGeneration = useRef(0);
   // A route or release change owns a new load; stale responses cannot retarget it.
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
+    loadedKeyRef.current = null;
+    setLoadedKey(null);
+    setWorkflow(null);
+    setCompiled(null);
+    setLibraryRelease(null);
+    setStageLib([]);
+    setScopeLib([]);
     if (!workflowId) return;
     setLoading(true);
     setError(null);
@@ -157,32 +172,35 @@ export default function WorkflowComposer() {
       setStageLib(mergeReleaseLibraryBlocks(result.stages, release?.stages ?? null));
       setScopeLib(mergeReleaseLibraryBlocks(result.scopes, release?.scopes ?? null));
       setCompiled(result.compiled);
+      loadedKeyRef.current = requestKey;
+      setLoadedKey(requestKey);
     } catch (e) {
       if (generation === loadGeneration.current)
         setError(e instanceof Error ? e.message : 'Failed to load workflow');
     } finally {
       if (generation === loadGeneration.current) setLoading(false);
     }
-  }, [workflowId, requestedLibraryRelease]);
+  }, [workflowId, requestedLibraryRelease, requestKey]);
 
   // Silent refresh — re-fetches workflow + compiled without touching loading.
+  // Only for the context this callback was created with, and only once loaded.
   const refresh = useCallback(async () => {
     const generation = loadGeneration.current;
-    if (!workflowId) return;
+    if (!workflowId || loadedKeyRef.current !== requestKey) return;
     try {
       const [wf, comp, scopes] = await Promise.all([
         workflowsService.get(workflowId),
         compiledOver(workflowId, libraryRelease?.releaseId ?? null, !libraryRelease?.explicit),
         blocksService.list('scope'),
       ]);
-      if (generation !== loadGeneration.current) return;
+      if (generation !== loadGeneration.current || loadedKeyRef.current !== requestKey) return;
       setWorkflow(wf);
       setCompiled(comp);
       if (!libraryRelease?.explicit) setScopeLib(scopes.blocks);
     } catch {
       // silent — the optimistic state is good enough for now
     }
-  }, [workflowId, libraryRelease]);
+  }, [workflowId, libraryRelease, requestKey]);
 
   useEffect(() => {
     void load();
@@ -650,7 +668,7 @@ export default function WorkflowComposer() {
   }, [scopeIds, workflow?.defaultScope]);
 
   useEffect(() => {
-    if (!workflowId || !activeScope) {
+    if (!workflowId || !activeScope || !contextReady) {
       setPreview(null);
       setPreviewSettled(true);
       return;
@@ -693,7 +711,7 @@ export default function WorkflowComposer() {
     return () => {
       cancelled = true;
     };
-  }, [activeScope, workflowId, workflow?.version, libraryRelease]);
+  }, [activeScope, workflowId, workflow?.version, libraryRelease, contextReady]);
 
   const stageMeta = useMemo(() => {
     const meta: Record<string, { number: string; name: string; phase: string }> = {};
@@ -796,7 +814,7 @@ export default function WorkflowComposer() {
   if (loading) {
     return <div className="text-sm text-muted-foreground">Loading…</div>;
   }
-  if (!workflow) {
+  if (!workflow || !contextReady) {
     return <div className="text-sm text-destructive">{error ?? 'Not found'}</div>;
   }
 

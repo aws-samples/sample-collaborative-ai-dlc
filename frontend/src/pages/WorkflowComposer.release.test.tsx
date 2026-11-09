@@ -8,6 +8,7 @@ import { Link, MemoryRouter, Route, Routes } from 'react-router';
 const get = vi.fn();
 const compiled = vi.fn();
 const executionPreview = vi.fn();
+const update = vi.fn();
 const list = vi.fn();
 const stableCatalog = vi.fn();
 const catalog = vi.fn();
@@ -20,6 +21,7 @@ vi.mock('@/services/workflows', async (importOriginal) => {
       get: (...a: unknown[]) => get(...a),
       compiled: (...a: unknown[]) => compiled(...a),
       executionPreview: (...a: unknown[]) => executionPreview(...a),
+      update: (...a: unknown[]) => update(...a),
     },
   };
 });
@@ -266,5 +268,62 @@ describe('WorkflowComposer release plan check', () => {
     expect(compiled).toHaveBeenCalledTimes(1);
     expect(compiled.mock.calls[0][5]).toBe(selected);
     expect(stableCatalog).not.toHaveBeenCalled();
+  });
+
+  it('drops the loaded version when a newly selected version fails to load', async () => {
+    const first = 'aidlc:2.11.1';
+    const second = 'aidlc:2.11.3';
+    catalog.mockImplementation((releaseId: string) =>
+      releaseId === first
+        ? Promise.resolve({
+            releaseId: first,
+            release: { releaseId: first, upstreamVersion: '2.11.1' },
+            contents: { workflow: null, blocks: { stage: [], scope: [] } },
+          })
+        : Promise.reject(new Error('2.11.3 unavailable')),
+    );
+    compiled.mockImplementation((...args: unknown[]) =>
+      Promise.resolve(compiledView({ libraryRelease: args[5] })),
+    );
+    executionPreview.mockImplementation((...args: unknown[]) =>
+      Promise.resolve(previewOf({ libraryRelease: args[7] })),
+    );
+    let finishSave!: (value: unknown) => void;
+    update.mockReturnValue(
+      new Promise((resolve) => {
+        finishSave = resolve;
+      }),
+    );
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter
+        initialEntries={[`/workflows/my-flow?libraryRelease=${encodeURIComponent(first)}`]}
+      >
+        <Link to={`/workflows/my-flow?libraryRelease=${encodeURIComponent(second)}`}>
+          Switch version
+        </Link>
+        <Routes>
+          <Route path="/workflows/:workflowId" element={<WorkflowComposer />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByTestId('composer-library-release')).toHaveTextContent(
+      'AI-DLC 2.11.1',
+    );
+    // A save started against the first version is still in flight.
+    await user.click(screen.getByRole('button', { name: 'Save workflow' }));
+    expect(update).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('link', { name: 'Switch version' }));
+    expect(await screen.findByText('2.11.3 unavailable')).toBeInTheDocument();
+    const compiledCallsBefore = compiled.mock.calls.length;
+    await act(async () => {
+      finishSave({});
+    });
+
+    expect(screen.queryByTestId('composer-library-release')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Save workflow|Saving/ })).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('My flow')).not.toBeInTheDocument();
+    expect(compiled.mock.calls.slice(compiledCallsBefore)).toEqual([]);
   });
 });
