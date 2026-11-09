@@ -23,14 +23,17 @@ run "preserve_application_request_sizes" {
   assert {
     condition = toset(flatten([
       for rule in aws_wafv2_web_acl.cloudfront[0].rule : [
-        for override in rule.statement[0].managed_rule_group_statement[0].rule_action_override :
-        "${rule.name}/${override.name}"
+        for group in rule.statement[0].managed_rule_group_statement : [
+          for override in group.rule_action_override : "${rule.name}/${override.name}"
+        ]
       ]
       ])) == toset([
       "AWSManagedRulesCommonRuleSet/SizeRestrictions_BODY",
       "AWSManagedRulesCommonRuleSet/SizeRestrictions_QUERYSTRING",
+      "AWSManagedRulesCommonRuleSet/CrossSiteScripting_BODY",
+      "AWSManagedRulesCommonRuleSet/GenericLFI_BODY",
     ])
-    error_message = "CloudFront must override only the Common Rule Set body and query-string size rules."
+    error_message = "CloudFront must override only the Common Rule Set size rules and the two block-body rules."
   }
 
   assert {
@@ -40,8 +43,12 @@ run "preserve_application_request_sizes" {
           for override in group.rule_action_override : "${rule.name}/${override.name}"
         ]
       ]
-    ])) == toset(["AWSManagedRulesCommonRuleSet/SizeRestrictions_BODY"])
-    error_message = "The regional ACL must override only the Common Rule Set body size rule."
+      ])) == toset([
+      "AWSManagedRulesCommonRuleSet/SizeRestrictions_BODY",
+      "AWSManagedRulesCommonRuleSet/CrossSiteScripting_BODY",
+      "AWSManagedRulesCommonRuleSet/GenericLFI_BODY",
+    ])
+    error_message = "The regional ACL must override only the Common Rule Set body size rule and the two block-body rules."
   }
 
   assert {
@@ -54,13 +61,13 @@ run "preserve_application_request_sizes" {
         ]
       ]
     ]))
-    error_message = "Individual size overrides must count matches so subsequent rules still evaluate requests."
+    error_message = "Individual overrides must count matches so subsequent rules still evaluate requests."
   }
 
   assert {
     condition = alltrue([
       for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] :
-      toset([for rule in acl.rule : rule.name if rule.name != "RequireCloudFrontOrigin"]) == toset([
+      toset([for rule in acl.rule : rule.name if !contains(["RequireCloudFrontOrigin", "LabelBlockWrites", "BlockBodyContentOutsideBlockWrites"], rule.name)]) == toset([
         "AWSManagedRulesAmazonIpReputationList",
         "AWSManagedRulesCommonRuleSet",
         "AWSManagedRulesKnownBadInputsRuleSet",
@@ -68,7 +75,7 @@ run "preserve_application_request_sizes" {
         for rule in acl.rule :
         length(rule.override_action[0].none) == 1 &&
         length(rule.statement[0].managed_rule_group_statement[0].scope_down_statement) == 0
-        if rule.name != "RequireCloudFrontOrigin"
+        if !contains(["RequireCloudFrontOrigin", "LabelBlockWrites", "BlockBodyContentOutsideBlockWrites"], rule.name)
       ])
     ])
     error_message = "Both ACLs must retain all baseline groups with their default actions and no route exclusions."
@@ -120,12 +127,14 @@ run "api_origin_verification" {
       "AWSManagedRulesAmazonIpReputationList",
       "AWSManagedRulesCommonRuleSet",
       "AWSManagedRulesKnownBadInputsRuleSet",
+      "LabelBlockWrites",
+      "BlockBodyContentOutsideBlockWrites",
       ]) && alltrue([
       for rule in aws_wafv2_web_acl.regional[0].rule :
       rule.priority > 0 &&
       length(rule.override_action[0].none) == 1 &&
       length(rule.statement[0].managed_rule_group_statement[0].scope_down_statement) == 0
-      if rule.name != "RequireCloudFrontOrigin"
+      if !contains(["RequireCloudFrontOrigin", "LabelBlockWrites", "BlockBodyContentOutsideBlockWrites"], rule.name)
     ])
     error_message = "A correct origin header must continue through every existing managed rule group."
   }
@@ -158,7 +167,9 @@ run "waf_disabled" {
   }
 }
 
-run "body_content_exempt_paths" {
+# The two Common Rule Set body rules that block bodies trigger count, and their matches are
+# re-blocked on every request except a block write.
+run "block_write_body_content_exemption" {
   command = plan
   providers = {
     aws           = aws
@@ -167,75 +178,129 @@ run "body_content_exempt_paths" {
   module {
     source = "./modules/security/waf"
   }
-  variables {
-    body_content_exempt_paths = ["/api/blocks/", "/api/docs.v2/"]
+
+  assert {
+    condition = alltrue([
+      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] : (
+        one([for rule in acl.rule : rule.priority if rule.name == "LabelBlockWrites"]) == 24 &&
+        one([for rule in acl.rule : length(rule.action[0].count) if rule.name == "LabelBlockWrites"]) == 1 &&
+        one([for rule in acl.rule : one(rule.rule_label).name if rule.name == "LabelBlockWrites"]) == "block-write" &&
+        one([for rule in acl.rule : rule.priority if rule.name == "BlockBodyContentOutsideBlockWrites"]) == 25 &&
+        one([for rule in acl.rule : length(rule.action[0].block) if rule.name == "BlockBodyContentOutsideBlockWrites"]) == 1
+      )
+    ])
+    error_message = "Both ACLs must label block writes (count) and then block body-content matches without that label, after the Common Rule Set."
   }
 
   assert {
     condition = alltrue([
-      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] :
-      length(setsubtract(
-        ["CrossSiteScripting_BODY", "GenericLFI_BODY", "GenericRFI_BODY", "EC2MetaDataSSRF_BODY"],
-        flatten([
-          for rule in acl.rule : [
-            for override in rule.statement[0].managed_rule_group_statement[0].rule_action_override : override.name
-          ] if rule.name == "AWSManagedRulesCommonRuleSet"
-        ])
-      )) == 0
+      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] : alltrue([
+        for rule in acl.rule : (
+          toset([
+            for part in rule.statement[0].and_statement[0].statement[0].or_statement[0].statement :
+            part.label_match_statement[0].key
+            ]) == toset([
+            "awswaf:managed:aws:core-rule-set:CrossSiteScripting_Body",
+            "awswaf:managed:aws:core-rule-set:GenericLFI_Body",
+          ]) &&
+          rule.statement[0].and_statement[0].statement[1].not_statement[0].statement[0].label_match_statement[0].key == "block-write"
+        ) if rule.name == "BlockBodyContentOutsideBlockWrites"
+      ])
     ])
-    error_message = "Both ACLs must count the four body-content rules when exempt paths are set."
+    error_message = "The blocking rule must match the two block-body labels and exempt only the block-write label."
   }
 
   assert {
     condition = alltrue([
-      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] :
-      length([
-        for rule in acl.rule : rule
-        if rule.name == "BodyContentOutsideExemptPaths" && rule.priority == 25 && length(rule.action[0].block) == 1
-      ]) == 1
+      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] : alltrue([
+        for rule in acl.rule : alltrue([
+          for route in rule.statement[0].or_statement[0].statement :
+          length(route.and_statement[0].statement[1].regex_match_statement[0].regex_string) <= 512 &&
+          one(route.and_statement[0].statement[0].byte_match_statement[0].text_transformation).type == "NONE" &&
+          one(route.and_statement[0].statement[1].regex_match_statement[0].text_transformation).type == "NONE"
+        ]) if rule.name == "LabelBlockWrites"
+      ])
     ])
-    error_message = "Both ACLs must re-block body-content matches outside the exempt paths, after the Common Rule Set."
+    error_message = "Each block-write pattern must fit AWS WAF's 512-character regex limit and match the raw path and method."
+  }
+
+  # The method each pattern pairs with, and what it matches. Terraform's RE2 and
+  # AWS WAF agree on these patterns: anchors, alternation, character classes.
+  assert {
+    condition = alltrue([
+      for acl, paths in {
+        cloudfront = {
+          POST = { match = ["/api/blocks/stage", "/api/blocks/sensor"], miss = ["/test/api/blocks/stage"] }
+          PUT  = { match = ["/api/blocks/agent/aidlc-architect-agent", "/api/blocks/knowledge/k1"], miss = ["/test/api/blocks/agent/x"] }
+        }
+        regional = {
+          POST = { match = ["/api/blocks/stage", "/test/api/blocks/stage"], miss = [] }
+          PUT  = { match = ["/api/blocks/agent/x", "/test/api/blocks/agent/aidlc-architect-agent"], miss = [] }
+        }
+        } : alltrue([
+          for method, cases in paths : alltrue(concat(
+            [for path in cases.match : anytrue([
+              for rule in(acl == "cloudfront" ? aws_wafv2_web_acl.cloudfront[0] : aws_wafv2_web_acl.regional[0]).rule : anytrue([
+                for route in rule.statement[0].or_statement[0].statement :
+                route.and_statement[0].statement[0].byte_match_statement[0].search_string == method &&
+                can(regex(route.and_statement[0].statement[1].regex_match_statement[0].regex_string, path))
+              ]) if rule.name == "LabelBlockWrites"
+            ])],
+            [for path in cases.miss : !anytrue([
+              for rule in(acl == "cloudfront" ? aws_wafv2_web_acl.cloudfront[0] : aws_wafv2_web_acl.regional[0]).rule : anytrue([
+                for route in rule.statement[0].or_statement[0].statement :
+                route.and_statement[0].statement[0].byte_match_statement[0].search_string == method &&
+                can(regex(route.and_statement[0].statement[1].regex_match_statement[0].regex_string, path))
+              ]) if rule.name == "LabelBlockWrites"
+            ])],
+          ))
+      ])
+    ])
+    error_message = "POST must match only the block collection and PUT only a block item, with the stage prefix allowed only on the regional ACL."
+  }
+
+  # Nothing but a block create or update may be labelled, whatever the method.
+  assert {
+    condition = alltrue([
+      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] : alltrue([
+        for rule in acl.rule : alltrue([
+          for route in rule.statement[0].or_statement[0].statement : alltrue([
+            for path in [
+              "/api/projects",
+              "/api/blocks",
+              "/api/blocks/",
+              "/api/blocks/stage/",
+              "/api/blocks/widget",
+              "/api/blocks/STAGE",
+              "/api/blocks/stage/x/body",
+              "/api/blocks/stage/x/script",
+              "/api/blocks/stage/../projects",
+              "/api/blocks/stage/%2e%2e",
+              "/api/blocks/stage/a.b",
+              "/api/blocks/stage/-x",
+              "/api/blocks/stageX",
+              "/api/blocks/stage/x?y",
+              "/../api/blocks/stage",
+              "/a/b/api/blocks/stage",
+              "/api/discussions/api/blocks/stage",
+              "/x/api/blocks/stage/x/y",
+            ] : !can(regex(route.and_statement[0].statement[1].regex_match_statement[0].regex_string, path))
+          ])
+        ]) if rule.name == "LabelBlockWrites"
+      ])
+    ])
+    error_message = "No path other than a block create or update may be exempt, including traversal, encoded paths and sub-resources."
   }
 
   assert {
     condition = alltrue([
-      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] :
-      length([
-        for rule in acl.rule : rule
-        if rule.name == "BodyContentPathTraversal" && length(rule.action[0].block) == 1 &&
-        rule.statement[0].and_statement[0].statement[1].byte_match_statement[0].search_string == ".." &&
-        one(rule.statement[0].and_statement[0].statement[1].byte_match_statement[0].text_transformation).type == "URL_DECODE"
-      ]) == 1
+      for acl in [aws_wafv2_web_acl.cloudfront[0], aws_wafv2_web_acl.regional[0]] : toset(flatten([
+        for rule in acl.rule : [
+          for route in rule.statement[0].or_statement[0].statement :
+          route.and_statement[0].statement[0].byte_match_statement[0].search_string
+        ] if rule.name == "LabelBlockWrites"
+      ])) == toset(["POST", "PUT"])
     ])
-    error_message = "Both ACLs must keep body-content matches blocked on any path containing .., so an exempt prefix cannot reach other routes."
+    error_message = "Only POST (create) and PUT (update) may be exempt; DELETE and GET carry no block body."
   }
-
-  assert {
-    condition = one([
-      for rule in aws_wafv2_web_acl.cloudfront[0].rule :
-      rule.statement[0].and_statement[0].statement[1].not_statement[0].statement[0].regex_match_statement[0].regex_string
-      if rule.name == "BodyContentOutsideExemptPaths"
-      ]) == "^(/api/blocks/|/api/docs\\.v2/)" && one([
-      for rule in aws_wafv2_web_acl.regional[0].rule :
-      rule.statement[0].and_statement[0].statement[1].not_statement[0].statement[0].regex_match_statement[0].regex_string
-      if rule.name == "BodyContentOutsideExemptPaths"
-    ]) == "^(/[^/]+)?(/api/blocks/|/api/docs\\.v2/)"
-    error_message = "The exemption must anchor the escaped prefixes, allowing the API Gateway stage prefix on the regional ACL."
-  }
-}
-
-run "body_content_exempt_paths_rejects_traversal" {
-  command = plan
-  providers = {
-    aws           = aws
-    aws.us_east_1 = aws.us_east_1
-  }
-  module {
-    source = "./modules/security/waf"
-  }
-  variables {
-    body_content_exempt_paths = ["/api/../"]
-  }
-
-  expect_failures = [var.body_content_exempt_paths]
 }

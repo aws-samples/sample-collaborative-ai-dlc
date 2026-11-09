@@ -154,7 +154,7 @@ A bare `terraform destroy` remains blocked by those protections.
 
 ## WAF origin verification
 
-Run the credential-free Terraform configuration tests with `terraform -chdir=terraform test -filter=tests/waf.tftest.hcl`. They check the API path scope, blocking rule, managed-rule preservation, disabled sampling, WAF-disabled configuration, and `waf_body_content_exempt_paths` (counted body-content rules, the two re-blocking rules, and prefix validation). These tests inspect planned configuration; they do not execute the AWS WAF engine.
+Run the credential-free Terraform configuration tests with `terraform -chdir=terraform test -filter=tests/waf.tftest.hcl`. They check the API path scope, blocking rule, managed-rule preservation, disabled sampling, WAF-disabled configuration, and the building-block exemption (the counted body-content rules, the labelling and blocking rules, and which methods and paths the exemption matches). These tests inspect planned configuration; they do not execute the AWS WAF engine.
 
 For a deployed non-production environment, verify both `enable_waf` settings after Terraform apply and WAF propagation. Use a current Cognito JWT and an authenticated REST route such as `/api/projects`:
 
@@ -170,7 +170,7 @@ For a deployed non-production environment, verify both `enable_waf` settings aft
 
 Also verify in a controlled test that the correct origin header with a missing or invalid JWT still fails authentication, and that a request matching an existing blocking managed rule remains blocked with the correct header.
 
-With `waf_body_content_exempt_paths` set, also check that a body containing `../templates/foo.md` succeeds on an exempt route (for example saving a block) and is still blocked with a WAF 403 on another route, and on an exempt prefix followed by `..`.
+Also check that saving a building block whose body contains `../templates/foo.md` and an HTML comment succeeds, and that the same body sent to another write route (for example `POST /api/projects`) is still blocked with a WAF 403.
 
 Retrieve the secret securely from `/{project}/{environment}/cloudfront-origin-secret` in SSM; do not print it, record it in test output, or paste it into shell history. Check that WAF request sampling remains disabled and any separately configured WAF logs redact the header.
 
