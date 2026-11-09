@@ -5472,7 +5472,29 @@ const handleIntentAudit = async ({ projectId, intentId, response }) => {
 //   stageInstanceId — that stage's chunks; the literal "intent" selects
 //     the stage-less workspace/init bucket; absent = ALL chunks.
 //   afterSeq — only chunks with seq > afterSeq (incremental catch-up
-//     after a websocket-live pane is seeded).
+//     after a websocket-live pane is seeded). The response then also carries
+//     `cursor`: the next afterSeq to send, which may be past the pane's own
+//     last chunk.
+
+// A writer allocates a sequence (ADD on META) before it puts the row, so a
+// read can see seq N+1 while N is still in flight. The cursor therefore only
+// advances over a contiguous run of sequences, and skips a gap only once a
+// later chunk is older than this grace period (its writer died between the
+// two writes, so that sequence will never be written).
+const OUTPUT_GAP_GRACE_MS = 5 * 60 * 1000;
+const outputsCursor = (rows, afterSeq, nowMs) => {
+  let cursor = Math.max(0, Math.floor(afterSeq));
+  for (const row of rows) {
+    const seq = Number(row.seq);
+    if (seq <= cursor) continue;
+    const written = Date.parse(row.timestamp);
+    const gapAbandoned = Number.isFinite(written) && nowMs - written > OUTPUT_GAP_GRACE_MS;
+    if (seq !== cursor + 1 && !gapAbandoned) break;
+    cursor = seq;
+  }
+  return cursor;
+};
+
 const handleIntentOutputs = async ({ event, projectId, intentId, response }) => {
   const meta = await store.getExecution(intentId);
   if (!meta || meta.projectId !== projectId) {
@@ -5484,14 +5506,28 @@ const handleIntentOutputs = async ({ event, projectId, intentId, response }) => 
   if (afterSeq != null && !Number.isFinite(afterSeq)) {
     return response(400, { error: 'afterSeq must be a number' });
   }
-  const rows = await store.getOutputs(intentId, {
-    // "intent" is the UI's bucket key for stage-less (init-ws) output.
-    ...(rawStage !== undefined
+  // "intent" is the UI's bucket key for stage-less (init-ws) output.
+  const stageFilter =
+    rawStage !== undefined
       ? { stageInstanceId: rawStage === 'intent' ? null : rawStage, filterByStage: true }
-      : {}),
-    afterSeq,
-  });
+      : {};
+  let rows;
+  let cursor;
+  if (afterSeq == null) {
+    rows = await store.getOutputs(intentId, { ...stageFilter, afterSeq });
+  } else {
+    // Catch-up reads every chunk after the cursor (the stage filter is applied
+    // here, not in DynamoDB) so the response can carry a `cursor` covering
+    // other stages' chunks too. Without it a pane for a finished stage would
+    // re-read every later chunk of the run on each poll.
+    const all = await store.getOutputs(intentId, { afterSeq });
+    cursor = outputsCursor(all, afterSeq, Date.now());
+    rows = stageFilter.filterByStage
+      ? all.filter((o) => (o.stageInstanceId ?? null) === stageFilter.stageInstanceId)
+      : all;
+  }
   return response(200, {
+    ...(cursor !== undefined ? { cursor } : {}),
     outputs: rows.map((o) => ({
       seq: o.seq,
       stageInstanceId: o.stageInstanceId ?? null,

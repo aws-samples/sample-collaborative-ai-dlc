@@ -23,6 +23,7 @@ import { LOOP_BACK_LIMIT } from './stage-loopback.js';
 import {
   META,
   executionMetaKey,
+  outputKey,
   workflowCheckpointKey,
   stageKey,
   humanTaskKey,
@@ -2194,12 +2195,28 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
   //   stageInstanceId — only that stage's chunks; pass null EXPLICITLY (via
   //     `filterByStage: true`) to select the stage-less workspace/init bucket.
   //   afterSeq — only chunks with seq > afterSeq (incremental catch-up cursor).
+  //     This is an SK range, not a filter: a FilterExpression is applied after
+  //     the read, so a catch-up would otherwise read (and bill) the whole
+  //     transcript, which for a long run is tens of MB on one partition key.
   // Paginated: output partitions routinely exceed one 1MB Query page.
+  // OUTPUT_SEQ_MAX is the largest sequence the 12-digit padded SK holds.
+  const OUTPUT_SEQ_MAX = 999_999_999_999;
   const getOutputs = async (
     executionId,
     { stageInstanceId, filterByStage = stageInstanceId !== undefined, afterSeq = null } = {},
   ) => {
-    const values = { ':pk': executionPk(executionId), ':p': 'OUTPUT#' };
+    const values = { ':pk': executionPk(executionId) };
+    let keyCondition = 'pk = :pk AND begins_with(sk, :p)';
+    if (afterSeq == null) {
+      values[':p'] = 'OUTPUT#';
+    } else {
+      // seq > afterSeq ⇔ seq >= floor(afterSeq) + 1 for integer sequences.
+      const first = Math.max(0, Math.floor(Number(afterSeq)) + 1);
+      if (first > OUTPUT_SEQ_MAX) return [];
+      keyCondition = 'pk = :pk AND sk BETWEEN :from AND :to';
+      values[':from'] = outputKey(executionId, first).sk;
+      values[':to'] = outputKey(executionId, OUTPUT_SEQ_MAX).sk;
+    }
     const filters = [];
     if (filterByStage) {
       if (stageInstanceId == null) {
@@ -2210,13 +2227,9 @@ const createProcessStore = ({ ddb: client, tableName, clock, ids } = {}) => {
         values[':sid'] = stageInstanceId;
       }
     }
-    if (afterSeq != null) {
-      filters.push('seq > :after');
-      values[':after'] = Number(afterSeq);
-    }
     return queryAll(ddb, {
       TableName: table(),
-      KeyConditionExpression: 'pk = :pk AND begins_with(sk, :p)',
+      KeyConditionExpression: keyCondition,
       ...(filters.length > 0
         ? { FilterExpression: filters.map((f) => `(${f})`).join(' AND ') }
         : {}),

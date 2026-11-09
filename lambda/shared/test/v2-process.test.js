@@ -1146,10 +1146,32 @@ describe('createProcessStore', () => {
     ddb.on(QueryCommand).resolves({ Items: [] });
     await store.getOutputs('e1', { stageInstanceId: 'si-1', afterSeq: 7 });
     let input = ddb.commandCalls(QueryCommand)[0].args[0].input;
-    expect(input.KeyConditionExpression).toBe('pk = :pk AND begins_with(sk, :p)');
-    expect(input.FilterExpression).toBe('(stageInstanceId = :sid) AND (seq > :after)');
+    // afterSeq is an SK range (a filter would still read the whole transcript).
+    expect(input.KeyConditionExpression).toBe('pk = :pk AND sk BETWEEN :from AND :to');
+    expect(input.ExpressionAttributeValues[':from']).toBe('OUTPUT#000000000008');
+    expect(input.ExpressionAttributeValues[':to']).toBe('OUTPUT#999999999999');
+    expect(input.FilterExpression).toBe('(stageInstanceId = :sid)');
     expect(input.ExpressionAttributeValues[':sid']).toBe('si-1');
-    expect(input.ExpressionAttributeValues[':after']).toBe(7);
+
+    // A fractional or negative cursor still means seq > afterSeq.
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.getOutputs('e1', { afterSeq: 2.5 });
+    expect(ddb.commandCalls(QueryCommand)[0].args[0].input.ExpressionAttributeValues[':from']).toBe(
+      'OUTPUT#000000000003',
+    );
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    await store.getOutputs('e1', { afterSeq: -4 });
+    expect(ddb.commandCalls(QueryCommand)[0].args[0].input.ExpressionAttributeValues[':from']).toBe(
+      'OUTPUT#000000000000',
+    );
+
+    // Past the largest sequence the SK can hold: nothing to read.
+    ddb.reset();
+    ddb.on(QueryCommand).resolves({ Items: [] });
+    expect(await store.getOutputs('e1', { afterSeq: 999_999_999_999 })).toEqual([]);
+    expect(ddb.commandCalls(QueryCommand)).toHaveLength(0);
 
     ddb.reset();
     ddb.on(QueryCommand).resolves({ Items: [] });
