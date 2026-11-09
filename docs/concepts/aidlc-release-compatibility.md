@@ -568,6 +568,12 @@ bounded by the same three per intent.
   agent's reason. Code generation resumes from that row, so the same resets,
   archive of both stages, reason in the prompt and cap tally apply, and a
   relaunch takes a new decision rather than reusing the earlier one.
+- The autonomous gate creation and answer, and each stage reset, verify the
+  run's ownership in the transaction that writes them. Gate creation and resets
+  also require the intent to remain `RUNNING`; recording the decision never
+  parks it. A cancel or relaunch between those writes retires the old run without
+  further resets, cap spending or re-dispatch. A reset that committed while the
+  old run still owned the intent remains part of its history.
 - An autonomous jump does not run on to build-and-test unattended. Code
   generation runs again under a new attempt, so it asks for Plan Approval
   again, and its validation gate opens for a human again: the grant never

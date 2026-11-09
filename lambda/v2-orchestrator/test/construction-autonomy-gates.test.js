@@ -19,7 +19,7 @@ const makeCtx = (over = {}) => {
     logger: { info() {}, debug() {}, error() {} },
     step: async (_name, fn) => fn(),
     createCallback: async (name) => {
-      if (String(name).startsWith('stage-cb-')) {
+      if (name === 'init-ws-cb' || String(name).startsWith('stage-cb-')) {
         let resolve;
         const promise = new Promise((r) => {
           resolve = r;
@@ -113,6 +113,12 @@ const makeRuntime = () =>
   vi.fn(async (payload) => {
     if (payload.command === 'create-workflow-checkpoint') return { ok: true, checkpointId: 'cp' };
     if (payload.command === 'init-ws') return { ok: true };
+    if (payload.command === 'init-ws-start') {
+      if (payload.callbackId) {
+        ctx.stageCallbackResolvers.get(payload.callbackId)({ ok: true });
+      }
+      return { ok: true, accepted: true };
+    }
     if (payload.command === 'run-stage-start') {
       const resolve = ctx.stageCallbackResolvers.get(payload.stageCallbackId);
       resolve(stageVerdicts(payload.stageId));
@@ -199,8 +205,19 @@ beforeEach(() => {
         return {};
       }),
       // A conditional put, like the real store: an existing row is never
-      // overwritten, so a re-executed step cannot reopen an answered gate.
+      // overwritten, so a re-executed step cannot reopen an answered gate. With
+      // a run, the gate row and its owned META park commit together, so nothing
+      // parks META separately afterwards.
       createHumanTask: vi.fn(async (args) => {
+        if (
+          args.ifOrchestratorRunId &&
+          (execution.orchestratorRunId !== args.ifOrchestratorRunId ||
+            execution.status !== 'RUNNING')
+        ) {
+          throw Object.assign(new Error('conditional'), {
+            name: 'ConditionalCheckFailedException',
+          });
+        }
         if (storedGates.has(args.humanTaskId)) {
           throw Object.assign(new Error('exists'), { name: 'ConditionalCheckFailedException' });
         }
@@ -222,6 +239,13 @@ beforeEach(() => {
       }),
       // Same CAS as the real store: only a pending row can be answered.
       answerHumanTask: vi.fn(async ({ humanTaskId, ...answer }) => {
+        if (
+          answer.ifOrchestratorRunId &&
+          (execution.orchestratorRunId !== answer.ifOrchestratorRunId ||
+            !['RUNNING', 'WAITING'].includes(execution.status))
+        ) {
+          return null;
+        }
         const row = storedGates.get(humanTaskId);
         if (!row || row.status !== 'pending') return null;
         const answered = { ...row, ...answer };
@@ -256,6 +280,15 @@ beforeEach(() => {
       // so the fake has to bump it too — otherwise an autonomous run keeps
       // re-taking a jump that is never spent.
       resetStageRow: vi.fn(async (args) => {
+        if (
+          args.ifOrchestratorRunId &&
+          (execution.orchestratorRunId !== args.ifOrchestratorRunId ||
+            execution.status !== 'RUNNING')
+        ) {
+          throw Object.assign(new Error('conditional'), {
+            name: 'ConditionalCheckFailedException',
+          });
+        }
         // Matches the real store: `loopBackId` supplies the guards for EITHER row,
         // and `countsAgainstCap` is what spends the bound. The cap counts
         // decisions, not rows, so a double that tallied both resets of one jump
@@ -265,7 +298,18 @@ beforeEach(() => {
         }
         return args;
       }),
-      updateStageState: vi.fn(async (args) => args),
+      updateStageState: vi.fn(async (args) => {
+        if (
+          args.ifOrchestratorRunId &&
+          (execution.orchestratorRunId !== args.ifOrchestratorRunId ||
+            execution.status !== 'RUNNING')
+        ) {
+          throw Object.assign(new Error('conditional'), {
+            name: 'ConditionalCheckFailedException',
+          });
+        }
+        return args;
+      }),
     },
     loadPlan: vi.fn(async () => ({ valid: true, plan: { stages: [ANCHOR, SECOND] } })),
     invokeRuntime: null,
@@ -1395,6 +1439,116 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     expect(dispatchedResumes()).toEqual([]);
   });
 
+  it.each([
+    { name: 'cancel', takeover: { status: 'CANCELLED' } },
+    { name: 'relaunch', takeover: { orchestratorRunId: 'run-relaunched' } },
+  ])(
+    'retires when a $name lands after the fence but before the gate write',
+    async ({ takeover }) => {
+      const create = deps.store.createHumanTask.getMockImplementation();
+      deps.store.createHumanTask = vi.fn(async (args) => {
+        if (args.options?.length === 1 && args.options[0] === 'loop-back') {
+          execution = { ...execution, ...takeover };
+        }
+        return create(args);
+      });
+
+      expect(await run()).toMatchObject({ ok: false, reason: 'retired' });
+      expect([...storedGates.keys()].filter((id) => id.includes('si-build-and-test'))).toEqual([]);
+      expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+      expect(execution.loopBackCount).toBe(0);
+      expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+      expect(dispatchedResumes()).toEqual([]);
+    },
+  );
+
+  it.each([
+    { name: 'cancel', takeover: { status: 'CANCELLED' } },
+    { name: 'relaunch', takeover: { orchestratorRunId: 'run-relaunched' } },
+  ])('retires when a $name lands before answering the autonomous gate', async ({ takeover }) => {
+    const answer = deps.store.answerHumanTask.getMockImplementation();
+    deps.store.answerHumanTask = vi.fn(async (args) => {
+      execution = { ...execution, ...takeover };
+      return answer(args);
+    });
+
+    expect(await run()).toMatchObject({ ok: false, reason: 'retired' });
+    const gate = [...storedGates.values()].find(
+      (row) => row.stageInstanceId === 'si-build-and-test',
+    );
+    expect(gate).toMatchObject({ status: 'pending' });
+    expect(gate.answer ?? null).toBeNull();
+    expect(deps.store.resetStageRow).not.toHaveBeenCalled();
+    expect(execution.loopBackCount).toBe(0);
+    expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+    expect(dispatchedResumes()).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: 'cancel before the recommender reset',
+      stageId: 'si-build-and-test',
+      takeover: { status: 'CANCELLED' },
+    },
+    {
+      name: 'relaunch before the recommender reset',
+      stageId: 'si-build-and-test',
+      takeover: { orchestratorRunId: 'run-relaunched' },
+    },
+    {
+      name: 'cancel before the target reset',
+      stageId: 'si-code-generation',
+      takeover: { status: 'CANCELLED' },
+    },
+    {
+      name: 'relaunch before the target reset',
+      stageId: 'si-code-generation',
+      takeover: { orchestratorRunId: 'run-relaunched' },
+    },
+  ])(
+    'retires on a $name without spending the bound or failing the new run',
+    async ({ stageId, takeover }) => {
+      const reset = deps.store.resetStageRow.getMockImplementation();
+      const applied = [];
+      deps.store.resetStageRow = vi.fn(async (args) => {
+        if (args.stageInstanceId === stageId) execution = { ...execution, ...takeover };
+        const row = await reset(args);
+        applied.push(args.stageInstanceId);
+        return row;
+      });
+
+      expect(await run()).toMatchObject({ ok: false, reason: 'retired' });
+      expect(applied).toEqual(stageId === 'si-code-generation' ? ['si-build-and-test'] : []);
+      expect(execution.loopBackCount).toBe(0);
+      expect(deps.store.updateStageState).not.toHaveBeenCalled();
+      expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+      expect(dispatchedResumes()).toEqual([]);
+    },
+  );
+
+  it.each([
+    { name: 'cancel', takeover: { status: 'CANCELLED' } },
+    { name: 'relaunch', takeover: { orchestratorRunId: 'run-relaunched' } },
+  ])('does not mark a stage failed when a $name wins the failure write', async ({ takeover }) => {
+    deps.store.resetStageRow = vi.fn(async () => {
+      throw new Error('DynamoDB unavailable');
+    });
+    const update = deps.store.updateStageState.getMockImplementation();
+    const written = [];
+    deps.store.updateStageState = vi.fn(async (args) => {
+      execution = { ...execution, ...takeover };
+      const row = await update(args);
+      written.push(row);
+      return row;
+    });
+
+    expect(await run()).toMatchObject({ ok: false, reason: 'retired' });
+    expect(written).toEqual([]);
+    expect(execution.loopBackCount).toBe(0);
+    expect(eventsOfType('v2.loopback.recorded')).toEqual([]);
+    expect(dispatchedResumes()).toEqual([]);
+  });
+
   it('retires instead of jumping when a cancel superseded the row first', async () => {
     const create = deps.store.createHumanTask.getMockImplementation();
     deps.store.createHumanTask = vi.fn(async (args) => {
@@ -1448,6 +1602,8 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     const [, first] = dispatchedResumes()[0];
     recommendations.set('si-build-and-test', 'three suites fail');
     deps.invokeRuntime.mockClear();
+    // The relaunch puts META back to CREATED, as `/start` does.
+    execution = { ...execution, status: 'CREATED' };
     ctx = makeCtx();
     await run();
     const [, second] = dispatchedResumes()[0];
@@ -1689,6 +1845,10 @@ describe('construction autonomy: the build-and-test loop-back', () => {
     const runDurably = async ({ loadMeta = null, parkOnFirstPass = false } = {}) => {
       const callbackNames = new Map();
       let parkedGate = null;
+      // The previous release runs until the first suspension; every later
+      // invocation is the current handler replaying that history.
+      let upgraded = !loadMeta;
+      let previousLoads = 0;
       let runner;
       const deliver = (callbackId, body) =>
         runner
@@ -1735,11 +1895,16 @@ describe('construction autonomy: the build-and-test loop-back', () => {
                 return created;
               };
             }
-            if (key === 'step' && loadMeta) {
+            if (key === 'step' && !upgraded) {
               return (name, fn, options) =>
                 target.step(
                   name,
-                  name === 'load-meta' ? () => loadMeta(deps.store, event.executionId) : fn,
+                  name === 'load-meta'
+                    ? () => {
+                        previousLoads++;
+                        return loadMeta(deps.store, event.executionId);
+                      }
+                    : fn,
                   options,
                 );
             }
@@ -1751,6 +1916,7 @@ describe('construction autonomy: the build-and-test loop-back', () => {
       runner = new LocalDurableTestRunner({
         handlerFunction: async (...input) => {
           const invocation = await handler(...input);
+          if (invocation.Status === 'PENDING') upgraded = true;
           if (invocation.Status === 'PENDING' && parkedGate) void answerParkedGate();
           return invocation;
         },
@@ -1758,11 +1924,15 @@ describe('construction autonomy: the build-and-test loop-back', () => {
       const result = await runner.run({
         payload: { action: 'start', intentId: 'i1', executionId: 'i1' },
       });
-      return { result, names: result.getOperations().map((operation) => operation.getName()) };
+      return {
+        result,
+        previousLoads,
+        names: result.getOperations().map((operation) => operation.getName()),
+      };
     };
 
     it('replays a history parked on the offered loop-back gate before the jump existed', async () => {
-      const { result, names } = await runDurably({
+      const { result, names, previousLoads } = await runDurably({
         loadMeta: loadMetaBeforeAutonomousLoopBack,
         parkOnFirstPass: true,
       });
@@ -1775,6 +1945,7 @@ describe('construction autonomy: the build-and-test loop-back', () => {
       expect(names).not.toContain('auto-loop-back-si-build-and-test-0');
       expect(result.getResult()).toMatchObject({ ok: true });
       expect(result.getInvocations().length).toBeGreaterThan(1);
+      expect(previousLoads).toBe(1);
       const [first] = openedGates().filter((gate) => gate.stageInstanceId === 'si-build-and-test');
       expect(first.options).toContain('loop-back');
       expect(storedGates.get(first.humanTaskId).answer).toEqual({ decision: 'loop-back' });

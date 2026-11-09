@@ -37,7 +37,7 @@ const constructionStage = (stageId) => ({
 });
 
 describe.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
-  'construction autonomy grant against the production process store',
+  'construction autonomy decisions against the production process store',
   () => {
     const table = `v2-proc-autonomy-${randomUUID()}`;
     let raw;
@@ -91,6 +91,128 @@ describe.skipIf(!process.env.DYNAMODB_LOCAL_ENDPOINT)(
         environment: { runtimeArn: 'arn:runtime', runtimeEndpoint: 'revision_r_1' },
       });
     };
+
+    const seedLoopBack = async () => {
+      const executionId = `i-${randomUUID()}`;
+      await seed(executionId);
+      await store.updateExecution({
+        executionId,
+        status: 'RUNNING',
+        orchestratorRunId: 'run-loopback',
+      });
+      for (const stageInstanceId of ['si-bt', 'si-code']) {
+        await store.putStage({
+          executionId,
+          stageInstanceId,
+          stageId: stageInstanceId === 'si-bt' ? 'build-and-test' : 'code-generation',
+          state: 'SUCCEEDED',
+          attempt: 1,
+        });
+      }
+      return executionId;
+    };
+
+    it('records an autonomous gate without parking and resets each row only once', async () => {
+      const executionId = await seedLoopBack();
+      const humanTaskId = 'eg-loopback';
+      await store.createHumanTask({
+        executionId,
+        humanTaskId,
+        stageInstanceId: 'si-bt',
+        kind: 'validation',
+        options: ['loop-back'],
+        ifOrchestratorRunId: 'run-loopback',
+      });
+      expect(await store.getExecution(executionId, { consistentRead: true })).toMatchObject({
+        status: 'RUNNING',
+        pendingHumanTaskId: null,
+      });
+      await store.answerHumanTask({
+        executionId,
+        humanTaskId,
+        status: 'rejected',
+        answer: { decision: 'loop-back' },
+        ifOrchestratorRunId: 'run-loopback',
+      });
+      for (let replay = 0; replay < 2; replay++) {
+        for (const stageInstanceId of ['si-bt', 'si-code']) {
+          await store.resetStageRow({
+            executionId,
+            stageInstanceId,
+            loopBackId: humanTaskId,
+            countsAgainstCap: stageInstanceId === 'si-code',
+            ifOrchestratorRunId: 'run-loopback',
+          });
+        }
+      }
+      expect(await store.getExecution(executionId, { consistentRead: true })).toMatchObject({
+        status: 'RUNNING',
+        loopBackCount: 1,
+        loopBackIds: [humanTaskId],
+      });
+      for (const stageInstanceId of ['si-bt', 'si-code']) {
+        expect(
+          await store.getStage(executionId, stageInstanceId, { consistentRead: true }),
+        ).toMatchObject({
+          state: 'PENDING',
+          attempt: 2,
+          lastLoopBackId: humanTaskId,
+        });
+      }
+    });
+
+    it.each([
+      { name: 'cancel', takeover: { status: 'CANCELLED' } },
+      { name: 'relaunch', takeover: { orchestratorRunId: 'run-new' } },
+    ])('rejects an autonomous gate and both resets after a $name', async ({ takeover }) => {
+      const executionId = await seedLoopBack();
+      await store.updateExecution({ executionId, ...takeover });
+
+      await expect(
+        store.createHumanTask({
+          executionId,
+          humanTaskId: 'eg-retired',
+          stageInstanceId: 'si-bt',
+          kind: 'validation',
+          ifOrchestratorRunId: 'run-loopback',
+        }),
+      ).rejects.toMatchObject({ name: 'ConditionalCheckFailedException' });
+      expect(
+        await store.getHumanTask(executionId, 'eg-retired', { consistentRead: true }),
+      ).toBeNull();
+      for (const stageInstanceId of ['si-bt', 'si-code']) {
+        await expect(
+          store.resetStageRow({
+            executionId,
+            stageInstanceId,
+            loopBackId: 'eg-retired',
+            countsAgainstCap: stageInstanceId === 'si-code',
+            ifOrchestratorRunId: 'run-loopback',
+          }),
+        ).rejects.toMatchObject({ name: 'ConditionalCheckFailedException' });
+        expect(
+          await store.getStage(executionId, stageInstanceId, { consistentRead: true }),
+        ).toMatchObject({
+          state: 'SUCCEEDED',
+          attempt: 1,
+        });
+      }
+      await expect(
+        store.updateStageState({
+          executionId,
+          stageInstanceId: 'si-bt',
+          state: 'FAILED',
+          ifOrchestratorRunId: 'run-loopback',
+        }),
+      ).rejects.toMatchObject({ name: 'ConditionalCheckFailedException' });
+      expect(await store.getStage(executionId, 'si-bt', { consistentRead: true })).toMatchObject({
+        state: 'SUCCEEDED',
+        attempt: 1,
+      });
+      const meta = await store.getExecution(executionId, { consistentRead: true });
+      expect(meta.loopBackCount ?? 0).toBe(0);
+      expect(meta.loopBackIds ?? []).toEqual([]);
+    });
 
     // The run answers its own gate: the answer is written through the real
     // `answerHumanTask` once the run has bound its callback to the gate row,

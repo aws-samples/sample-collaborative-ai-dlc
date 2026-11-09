@@ -1881,14 +1881,21 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                         loopBack,
                         findings: gateFindings,
                       });
-                      await store.createHumanTask({ executionId, ...open }).catch((error) => {
-                        if (error?.name !== 'ConditionalCheckFailedException') throw error;
-                      });
+                      await store
+                        .createHumanTask({
+                          executionId,
+                          ...open,
+                          ifOrchestratorRunId: runId,
+                        })
+                        .catch((error) => {
+                          if (error?.name !== 'ConditionalCheckFailedException') throw error;
+                        });
                       return (
                         (await store.answerHumanTask({
                           executionId,
                           humanTaskId: open.humanTaskId,
                           ...answer,
+                          ifOrchestratorRunId: runId,
                         })) ??
                         (await store.getHumanTask(executionId, open.humanTaskId, {
                           consistentRead: true,
@@ -2007,6 +2014,7 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                     stageInstanceId: stage.stageInstanceId,
                     loopBackId: validation.gate.humanTaskId,
                     countsAgainstCap: false,
+                    ...(autoLoopBack && runId ? { ifOrchestratorRunId: runId } : {}),
                   }),
               );
               if (!recommenderReset) {
@@ -2022,25 +2030,43 @@ const handler = async (event, ctx, deps = defaultDeps()) => {
                     executionId,
                     stageInstanceId: targetStage.stageInstanceId,
                     loopBackId: validation.gate.humanTaskId,
+                    ...(autoLoopBack && runId ? { ifOrchestratorRunId: runId } : {}),
                   }),
               );
               if (!reset) {
                 throw new Error('target stage row was not reset; loop-back cap was not recorded');
               }
             } catch (error) {
+              if (autoLoopBack && runId) {
+                const live = await store.getExecution(executionId, { consistentRead: true });
+                if (live?.orchestratorRunId !== runId || live.status !== 'RUNNING') {
+                  return { ok: false, reason: 'retired', intentId };
+                }
+              }
               const detail = error?.message ?? String(error);
               logger.error('Loop-back stage reset failed', error);
-              await ctx.step(
+              const failureWrite = await ctx.step(
                 `loop-back-reset-failed-stage-${resetFailureStage.stageInstanceId}-${round}`,
                 () =>
-                  store.updateStageState({
-                    executionId,
-                    stageInstanceId: resetFailureStage.stageInstanceId,
-                    state: 'FAILED',
-                    runtimeError: `loopback_reset_failed: ${detail}`,
-                    completedAt: nowIso(),
-                  }),
+                  store
+                    .updateStageState({
+                      executionId,
+                      stageInstanceId: resetFailureStage.stageInstanceId,
+                      state: 'FAILED',
+                      runtimeError: `loopback_reset_failed: ${detail}`,
+                      completedAt: nowIso(),
+                      ...(autoLoopBack && runId ? { ifOrchestratorRunId: runId } : {}),
+                    })
+                    .catch((writeError) => {
+                      if (autoLoopBack && writeError?.name === 'ConditionalCheckFailedException') {
+                        return null;
+                      }
+                      throw writeError;
+                    }),
               );
+              if (autoLoopBack && failureWrite === null) {
+                return { ok: false, reason: 'retired', intentId };
+              }
               return await fail('loopback_reset_failed', `${resetFailureStage.stageId}: ${detail}`);
             }
             await emitEvent(
@@ -3136,7 +3162,7 @@ const producedArtifactTypes = (producedHeads) =>
 
 // The `awaitEngineGate` result shape for a gate row read directly.
 const asEngineGateResult = (gate) =>
-  !gate || gate.status === 'superseded' ? { superseded: true } : { gate };
+  !gate || gate.status === 'superseded' || !gate.answer ? { superseded: true } : { gate };
 
 const findingLine = (item) =>
   [
