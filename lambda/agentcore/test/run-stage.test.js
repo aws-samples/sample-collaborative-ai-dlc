@@ -6201,6 +6201,11 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       commitRefs: pendingCodeCommitRefs,
       repos: ['owner/repo'],
       workspaceDir: '/ws',
+      // Credential context so a re-cloned shallow checkout can deepen to the commit.
+      projectId: 'p1',
+      executionId: 'e1',
+      gitProvider: undefined,
+      repoProviders: null,
     });
     expect(ingestStageCodeTraceability).toHaveBeenCalledWith(
       expect.objectContaining({ gitResult: parkedGitResult, unitSlug: 'billing' }),
@@ -6283,6 +6288,11 @@ describe('runStage — unit lanes (docs/v2-parallel.md WP4)', () => {
       commitRefs: pendingCodeCommitRefs,
       repos: ['owner/repo'],
       workspaceDir: '/ws',
+      // Credential context so a re-cloned shallow checkout can deepen to the commit.
+      projectId: 'p1',
+      executionId: 'e1',
+      gitProvider: undefined,
+      repoProviders: null,
     });
     expect(ingestStageCodeTraceability).toHaveBeenCalledWith(
       expect.objectContaining({ gitResult: failedGitResult, unitSlug: 'billing' }),

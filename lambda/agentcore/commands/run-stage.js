@@ -4574,6 +4574,10 @@ const runStageAttempt = async (
           commitRefs: stageCodeCommitRefs,
           repos,
           workspaceDir,
+          projectId,
+          executionId,
+          gitProvider,
+          repoProviders,
         });
         completedGitError = null;
       } catch (error) {
